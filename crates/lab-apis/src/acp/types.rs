@@ -70,6 +70,36 @@ pub struct AcpSessionSummary {
     pub agent_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_options: Vec<AcpSessionConfigOptionView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct AcpModelOption {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fixed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct AcpSessionConfigOptionView {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<AcpModelOption>,
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +127,12 @@ pub struct AcpProviderHealth {
     pub available: bool,
     pub version: Option<String>,
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<AcpModelOption>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_model_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +188,8 @@ pub enum AcpEvent {
         created_at: String,
         session_id: String,
         seq: u64,
+        #[serde(default)]
+        provider: String,
         role: String,
         text: String,
         message_id: String,
@@ -161,6 +199,8 @@ pub enum AcpEvent {
         created_at: String,
         session_id: String,
         seq: u64,
+        #[serde(default)]
+        provider: String,
         text: String,
     },
     ToolCallStart {
@@ -168,6 +208,8 @@ pub enum AcpEvent {
         created_at: String,
         session_id: String,
         seq: u64,
+        #[serde(default)]
+        provider: String,
         tool_call_id: String,
         name: String,
         input: Value,
@@ -177,6 +219,8 @@ pub enum AcpEvent {
         created_at: String,
         session_id: String,
         seq: u64,
+        #[serde(default)]
+        provider: String,
         tool_call_id: String,
         output: Value,
         status: String,
@@ -186,6 +230,8 @@ pub enum AcpEvent {
         created_at: String,
         session_id: String,
         seq: u64,
+        #[serde(default)]
+        provider: String,
         request_id: String,
         action_summary: String,
         options: Vec<AcpPermissionOption>,
@@ -195,6 +241,8 @@ pub enum AcpEvent {
         created_at: String,
         session_id: String,
         seq: u64,
+        #[serde(default)]
+        provider: String,
         request_id: String,
         granted: bool,
     },
@@ -203,6 +251,8 @@ pub enum AcpEvent {
         created_at: String,
         session_id: String,
         seq: u64,
+        #[serde(default)]
+        provider: String,
         raw: Value,
     },
     ContentBlocks {
@@ -210,6 +260,8 @@ pub enum AcpEvent {
         created_at: String,
         session_id: String,
         seq: u64,
+        #[serde(default)]
+        provider: String,
         blocks: Vec<AcpContentBlock>,
     },
     SessionUpdate {
@@ -217,7 +269,19 @@ pub enum AcpEvent {
         created_at: String,
         session_id: String,
         seq: u64,
+        #[serde(default)]
+        provider: String,
         state: AcpSessionState,
+    },
+    ProviderSwitch {
+        id: String,
+        created_at: String,
+        session_id: String,
+        seq: u64,
+        from_provider: String,
+        to_provider: String,
+        continuity_mode: String,
+        message: String,
     },
     ProviderInfo {
         id: String,
@@ -253,6 +317,7 @@ impl AcpEvent {
             | Self::UsageUpdate { seq, .. }
             | Self::ContentBlocks { seq, .. }
             | Self::SessionUpdate { seq, .. }
+            | Self::ProviderSwitch { seq, .. }
             | Self::ProviderInfo { seq, .. }
             | Self::Unknown { seq, .. } => *seq,
         }
@@ -270,8 +335,34 @@ impl AcpEvent {
             | Self::UsageUpdate { session_id, .. }
             | Self::ContentBlocks { session_id, .. }
             | Self::SessionUpdate { session_id, .. }
+            | Self::ProviderSwitch { session_id, .. }
             | Self::ProviderInfo { session_id, .. }
             | Self::Unknown { session_id, .. } => session_id,
+        }
+    }
+
+    /// Returns the provider that owns this event, when the event represents
+    /// provider-owned turn output or a provider switch target.
+    pub fn provider_id(&self) -> Option<&str> {
+        match self {
+            Self::MessageChunk { provider, .. }
+            | Self::ReasoningChunk { provider, .. }
+            | Self::ToolCallStart { provider, .. }
+            | Self::ToolCallUpdate { provider, .. }
+            | Self::PermissionRequest { provider, .. }
+            | Self::PermissionOutcome { provider, .. }
+            | Self::UsageUpdate { provider, .. }
+            | Self::ContentBlocks { provider, .. }
+            | Self::SessionUpdate { provider, .. }
+            | Self::ProviderInfo { provider, .. } => {
+                if provider.is_empty() {
+                    None
+                } else {
+                    Some(provider)
+                }
+            }
+            Self::ProviderSwitch { to_provider, .. } => Some(to_provider),
+            Self::Unknown { .. } => None,
         }
     }
 }

@@ -19,13 +19,16 @@ use futures::{Stream, StreamExt, stream};
 use tokio::sync::{Mutex, OnceCell, RwLock, mpsc};
 
 use lab_apis::acp::persistence::AcpPersistence;
-use lab_apis::acp::types::{AcpEvent, AcpProviderHealth, AcpSessionState, AcpSessionSummary};
+use lab_apis::acp::types::{
+    AcpEvent, AcpModelOption, AcpProviderHealth, AcpSessionState, AcpSessionSummary,
+};
 
 use crate::dispatch::acp::persistence::SqliteAcpPersistence;
 use crate::dispatch::error::ToolError;
 
 use super::runtime::{
-    RuntimeHandle, launch_codex_runtime, normalize_provider_id, provider_healths,
+    PromptAttachment, PromptAttachmentContent, PromptInput, RuntimeHandle, launch_codex_runtime,
+    normalize_provider_id, provider_healths,
 };
 use super::types::{
     StartSessionInput, event_created_at, session_title_from_event, stamp_event_sequence,
@@ -74,6 +77,9 @@ const HEALTH_REPORT_INTERVAL_SECS: u64 = 60;
 
 /// Idle reaper check interval (seconds, production).
 const IDLE_REAPER_INTERVAL_SECS: u64 = 5 * 60;
+
+const HANDOFF_MAX_MESSAGES: usize = 10;
+const HANDOFF_MAX_BYTES: usize = 12 * 1024;
 
 // ---------------------------------------------------------------------------
 // Session struct
@@ -132,6 +138,13 @@ pub struct AcpSessionRegistry {
     shutting_down: Arc<AtomicBool>,
     /// Idle timeout — configurable for tests.
     idle_timeout: Duration,
+    provider_models: Arc<RwLock<HashMap<String, Vec<AcpModelOption>>>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PromptSessionOptions {
+    pub provider: Option<String>,
+    pub continuity_mode: Option<String>,
 }
 
 impl AcpSessionRegistry {
@@ -150,6 +163,7 @@ impl AcpSessionRegistry {
             recent_creations: Arc::new(Mutex::new(VecDeque::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
             idle_timeout: Duration::from_secs(SESSION_IDLE_TIMEOUT_MINS * 60),
+            provider_models: Arc::new(RwLock::new(HashMap::new())),
         };
         Self::spawn_health_reporter(Arc::clone(&registry.sessions));
         Self::spawn_idle_reaper(registry.clone(), IDLE_REAPER_INTERVAL_SECS);
@@ -178,6 +192,15 @@ impl AcpSessionRegistry {
             .ok_or_else(|| not_found("unknown ACP session"))
     }
 
+    async fn provider_model_options(&self, provider: &str) -> Vec<AcpModelOption> {
+        self.provider_models
+            .read()
+            .await
+            .get(provider)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn check_principal(session: &Session, principal: &str) -> Result<(), ToolError> {
         if principal.trim().is_empty() || session.principal.trim().is_empty() {
             return Err(ToolError::Sdk {
@@ -198,7 +221,15 @@ impl AcpSessionRegistry {
 
     #[must_use]
     pub fn provider_healths(&self) -> Vec<AcpProviderHealth> {
-        provider_healths()
+        let mut healths = provider_healths();
+        if let Ok(models) = self.provider_models.try_read() {
+            for health in &mut healths {
+                if let Some(provider_models) = models.get(&health.provider) {
+                    health.models = provider_models.clone();
+                }
+            }
+        }
+        healths
     }
 
     pub async fn list_sessions(&self, principal: &str) -> Vec<AcpSessionSummary> {
@@ -334,6 +365,7 @@ impl AcpSessionRegistry {
                 cwd: cwd.clone(),
                 title: input.title.clone(),
                 principal: input.principal.clone(),
+                model_id: input.model_id.clone(),
             },
             event_tx.clone(),
         )
@@ -351,6 +383,19 @@ impl AcpSessionRegistry {
         })?;
 
         let provider = normalize_provider_id(input.provider.as_deref());
+        if !started.models.is_empty() {
+            self.provider_models
+                .write()
+                .await
+                .insert(provider.clone(), started.models.clone());
+        }
+        let options = self.provider_model_options(&provider).await;
+        let (model_id, model_name) = resolve_model_selection(
+            &provider,
+            input.model_id.as_deref(),
+            &options,
+            started.model_id.as_deref(),
+        )?;
         let summary = AcpSessionSummary {
             id: session_id.clone(),
             provider,
@@ -367,6 +412,9 @@ impl AcpSessionRegistry {
             provider_session_id: Some(started.provider_session_id),
             agent_name: Some(started.agent_name),
             agent_version: Some(started.agent_version),
+            model_id,
+            model_name: model_name.or(started.model_name),
+            config_options: started.config_options,
         };
 
         let session = Session::new(session_id.clone(), principal.to_string(), summary.clone());
@@ -379,7 +427,11 @@ impl AcpSessionRegistry {
             map_guard.insert(session_id.clone(), Arc::clone(&session));
         }
 
-        self.spawn_event_forwarder(Arc::clone(&session), event_rx);
+        self.spawn_event_forwarder(
+            Arc::clone(&session),
+            event_rx,
+            summary.provider_session_id.clone(),
+        );
 
         tracing::info!(
             surface = "acp", service = "registry", action = "session.create",
@@ -406,11 +458,131 @@ impl AcpSessionRegistry {
         session_id: &str,
         prompt: &str,
         principal: &str,
+        model_id: Option<&str>,
+    ) -> Result<(), ToolError> {
+        self.prompt_session_input(
+            session_id,
+            PromptInput {
+                text: prompt.to_string(),
+                attachments: Vec::new(),
+            },
+            principal,
+            model_id,
+        )
+        .await
+    }
+
+    pub async fn prompt_session_with_attachments(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        attachments: Vec<crate::dispatch::acp::params::LocalPromptAttachment>,
+        principal: &str,
+        model_id: Option<&str>,
+        options: PromptSessionOptions,
+    ) -> Result<(), ToolError> {
+        let runtime_attachments = attachments
+            .into_iter()
+            .map(|attachment| {
+                let content = match attachment.content {
+                    crate::dispatch::acp::params::LocalAttachmentContent::Text { text } => {
+                        PromptAttachmentContent::Text(text)
+                    }
+                    crate::dispatch::acp::params::LocalAttachmentContent::Blob { base64 } => {
+                        PromptAttachmentContent::Blob(base64)
+                    }
+                };
+                PromptAttachment {
+                    id: attachment.id,
+                    name: attachment.name,
+                    mime_type: attachment.mime_type,
+                    size: attachment.size,
+                    content,
+                }
+            })
+            .collect();
+
+        self.prompt_session_input_with_options(
+            session_id,
+            PromptInput {
+                text: prompt.to_string(),
+                attachments: runtime_attachments,
+            },
+            principal,
+            model_id,
+            options,
+        )
+        .await
+    }
+
+    async fn prompt_session_input(
+        &self,
+        session_id: &str,
+        prompt: PromptInput,
+        principal: &str,
+        model_id: Option<&str>,
+    ) -> Result<(), ToolError> {
+        self.prompt_session_input_with_options(
+            session_id,
+            prompt,
+            principal,
+            model_id,
+            PromptSessionOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn prompt_session_with_options(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        principal: &str,
+        model_id: Option<&str>,
+        options: PromptSessionOptions,
+    ) -> Result<(), ToolError> {
+        self.prompt_session_input_with_options(
+            session_id,
+            PromptInput {
+                text: prompt.to_string(),
+                attachments: Vec::new(),
+            },
+            principal,
+            model_id,
+            options,
+        )
+        .await
+    }
+
+    async fn prompt_session_input_with_options(
+        &self,
+        session_id: &str,
+        mut prompt: PromptInput,
+        principal: &str,
+        model_id: Option<&str>,
+        options: PromptSessionOptions,
     ) -> Result<(), ToolError> {
         let session = self.get_session_arc(session_id).await?;
         Self::check_principal(&session, principal)?;
+        let (selected_model_id, selected_model_name) = {
+            let summary = session.summary.read().await;
+            let options = if summary.config_options.is_empty() {
+                self.provider_model_options(&summary.provider).await
+            } else {
+                summary
+                    .config_options
+                    .iter()
+                    .flat_map(|option| option.options.clone())
+                    .collect()
+            };
+            resolve_model_selection(
+                &summary.provider,
+                model_id,
+                &options,
+                summary.model_id.as_deref(),
+            )?
+        };
 
-        {
+        let previous_state = {
             let state = session.state.read().await;
             if !state.can_transition_to(&AcpSessionState::Running) {
                 return Err(ToolError::Sdk {
@@ -418,7 +590,8 @@ impl AcpSessionRegistry {
                     message: format!("session is in state {state:?}, cannot send prompt"),
                 });
             }
-        }
+            state.clone()
+        };
         {
             let mut state = session.state.write().await;
             *state = AcpSessionState::Running;
@@ -426,12 +599,16 @@ impl AcpSessionRegistry {
         {
             let mut summary = session.summary.write().await;
             if should_replace_prompt_title(&summary.title)
-                && let Some(title) = title_from_prompt(prompt)
+                && let Some(title) = title_from_prompt(&prompt.text)
             {
                 summary.title = title;
             }
             summary.state = AcpSessionState::Running;
             summary.updated_at = jiff::Timestamp::now().to_string();
+            if model_id.is_some() {
+                summary.model_id = selected_model_id.clone();
+                summary.model_name = selected_model_name.clone();
+            }
         }
         // Touch activity timestamp so idle reaper leaves this session alone.
         {
@@ -441,9 +618,30 @@ impl AcpSessionRegistry {
 
         tracing::debug!(
             surface = "acp", service = "registry", action = "session.prompt",
-            session_id = %session_id, prompt_len = prompt.len(),
+            session_id = %session_id,
+            prompt_len = prompt.text.len(),
+            attachment_count = prompt.attachments.len(),
             "ACP session prompt dispatched",
         );
+
+        prompt.text = match self
+            .switch_runtime_if_requested(&session, &prompt.text, options)
+            .await
+        {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                {
+                    let mut state = session.state.write().await;
+                    *state = previous_state.clone();
+                }
+                {
+                    let mut summary = session.summary.write().await;
+                    summary.state = previous_state;
+                    summary.updated_at = jiff::Timestamp::now().to_string();
+                }
+                return Err(error);
+            }
+        };
 
         let needs_reattach = { session.handle.lock().await.is_none() };
         if needs_reattach {
@@ -464,7 +662,7 @@ impl AcpSessionRegistry {
                 .ok_or_else(|| internal("ACP runtime unavailable"))?
         };
         runtime
-            .prompt(prompt.to_string())
+            .prompt_input(prompt, selected_model_id)
             .await
             .map_err(session_command_error)?;
 
@@ -480,6 +678,155 @@ impl AcpSessionRegistry {
         }
 
         Ok(())
+    }
+
+    async fn switch_runtime_if_requested(
+        &self,
+        session: &Arc<Session>,
+        prompt: &str,
+        options: PromptSessionOptions,
+    ) -> Result<String, ToolError> {
+        let Some(requested_provider) = options
+            .provider
+            .as_deref()
+            .map(|provider| normalize_provider_id(Some(provider)))
+            .filter(|provider| !provider.trim().is_empty())
+        else {
+            return Ok(prompt.to_string());
+        };
+
+        let (current_provider, cwd, title) = {
+            let summary = session.summary.read().await;
+            (
+                summary.provider.clone(),
+                summary.cwd.clone(),
+                summary.title.clone(),
+            )
+        };
+        if requested_provider == current_provider {
+            return Ok(prompt.to_string());
+        }
+
+        {
+            let state = session.state.read().await;
+            if !matches!(
+                *state,
+                AcpSessionState::Idle | AcpSessionState::Completed | AcpSessionState::Running
+            ) {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "invalid_state".to_string(),
+                    message: format!("session is in state {state:?}, cannot switch provider"),
+                });
+            }
+        }
+
+        let Some(health) = self
+            .provider_healths()
+            .into_iter()
+            .find(|health| health.provider == requested_provider)
+        else {
+            return Err(ToolError::InvalidParam {
+                message: format!("unknown provider `{requested_provider}`"),
+                param: "provider".to_string(),
+            });
+        };
+        if !health.available {
+            return Err(ToolError::Sdk {
+                sdk_kind: "service_unavailable".to_string(),
+                message: health
+                    .message
+                    .unwrap_or_else(|| format!("provider `{requested_provider}` is unavailable")),
+            });
+        }
+
+        let continuity_mode = match options.continuity_mode.as_deref() {
+            Some("reset") => "reset",
+            Some("handoff") | None | Some("") => "handoff",
+            Some(other) => {
+                return Err(ToolError::InvalidParam {
+                    message: format!("unsupported continuity_mode `{other}`"),
+                    param: "continuity_mode".to_string(),
+                });
+            }
+        };
+
+        let prompt_for_provider = if continuity_mode == "reset" {
+            format!(
+                "You are continuing a Lab conversation that was previously handled by {current_provider}.\n\
+                 Continuity mode: reset.\n\
+                 No prior transcript was provided to this provider.\n\n\
+                 New user prompt:\n{prompt}"
+            )
+        } else {
+            build_handoff_prompt(session, &current_provider, prompt).await
+        };
+
+        let (event_tx, event_rx) = mpsc::channel::<AcpEvent>(ACP_EVENT_CHANNEL_CAPACITY);
+        let (new_runtime, started) = launch_codex_runtime(
+            session.id.clone(),
+            StartSessionInput {
+                provider: Some(requested_provider.clone()),
+                cwd,
+                title: Some(title),
+                principal: Some(session.principal.clone()),
+                model_id: None,
+            },
+            event_tx,
+        )
+        .await
+        .map_err(internal_message)?;
+
+        let switch_message = if continuity_mode == "reset" {
+            format!(
+                "Switched from {current_provider} to {requested_provider}. Context was reset for this provider."
+            )
+        } else {
+            format!(
+                "Switched from {current_provider} to {requested_provider}. Continuing with a bounded transcript handoff."
+            )
+        };
+        let switch_event = next_session_event(
+            session,
+            AcpEvent::ProviderSwitch {
+                id: uuid::Uuid::new_v4().to_string(),
+                created_at: jiff::Timestamp::now().to_string(),
+                session_id: session.id.clone(),
+                seq: 0,
+                from_provider: current_provider,
+                to_provider: requested_provider.clone(),
+                continuity_mode: continuity_mode.to_string(),
+                message: switch_message,
+            },
+        )
+        .await;
+
+        persist_session_event(self, &switch_event).await;
+        apply_session_event(session, &switch_event).await;
+        let _ = fanout_event(session, Arc::new(switch_event)).await;
+
+        let old_runtime = {
+            let mut handle = session.handle.lock().await;
+            handle.replace(new_runtime)
+        };
+        self.spawn_event_forwarder(
+            Arc::clone(session),
+            event_rx,
+            Some(started.provider_session_id.clone()),
+        );
+        if let Some(old_runtime) = old_runtime {
+            drop(old_runtime.cancel().await);
+        }
+
+        {
+            let mut summary = session.summary.write().await;
+            summary.provider = requested_provider;
+            summary.provider_session_id = Some(started.provider_session_id);
+            summary.agent_name = Some(started.agent_name);
+            summary.agent_version = Some(started.agent_version);
+            summary.updated_at = jiff::Timestamp::now().to_string();
+        }
+
+        Ok(prompt_for_provider)
     }
 
     pub async fn cancel_session(&self, session_id: &str, principal: &str) -> Result<(), ToolError> {
@@ -857,7 +1204,12 @@ impl AcpSessionRegistry {
         }
     }
 
-    fn spawn_event_forwarder(&self, session: Arc<Session>, mut rx: mpsc::Receiver<AcpEvent>) {
+    fn spawn_event_forwarder(
+        &self,
+        session: Arc<Session>,
+        mut rx: mpsc::Receiver<AcpEvent>,
+        provider_session_id: Option<String>,
+    ) {
         let registry = self.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -898,6 +1250,24 @@ impl AcpSessionRegistry {
             // Runtime thread exited (event_tx dropped). Keep the session and
             // transcript available for replay; the idle reaper or explicit
             // close path owns eventual removal.
+            let current_handle_matches = {
+                let handle = session.handle.lock().await;
+                match (handle.as_ref(), provider_session_id.as_deref()) {
+                    (Some(handle), Some(provider_session_id)) => {
+                        handle.provider_session_id == provider_session_id
+                    }
+                    (None, _) => true,
+                    _ => false,
+                }
+            };
+            if !current_handle_matches {
+                tracing::debug!(
+                    surface = "acp", service = "registry", action = "runtime.exit",
+                    session_id = %session.id,
+                    "superseded ACP runtime exited after provider switch",
+                );
+                return;
+            }
             let current_state = session.state.read().await.clone();
             if matches!(
                 current_state,
@@ -910,6 +1280,7 @@ impl AcpSessionRegistry {
                         created_at: jiff::Timestamp::now().to_string(),
                         session_id: session.id.clone(),
                         seq: 0,
+                        provider: session.summary.read().await.provider.clone(),
                         state: AcpSessionState::Failed,
                     },
                 )
@@ -988,13 +1359,18 @@ impl AcpSessionRegistry {
                 cwd,
                 title: Some(title),
                 principal: None,
+                model_id: None,
             },
             event_tx.clone(),
         )
         .await
         .map_err(internal_message)?;
 
-        self.spawn_event_forwarder(Arc::clone(session), event_rx);
+        self.spawn_event_forwarder(
+            Arc::clone(session),
+            event_rx,
+            Some(started.provider_session_id.clone()),
+        );
         {
             *session.handle.lock().await = Some(runtime);
         }
@@ -1116,6 +1492,7 @@ impl AcpSessionRegistry {
                         created_at: now.clone(),
                         session_id: summary.id.clone(),
                         seq: 0,
+                        provider: summary.provider.clone(),
                         state: AcpSessionState::Failed,
                     },
                 )
@@ -1175,6 +1552,26 @@ impl AcpSessionRegistry {
             recent_creations: Arc::new(Mutex::new(VecDeque::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
             idle_timeout,
+            provider_models: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test_with_provider_models(
+        provider_models: Vec<(String, Vec<AcpModelOption>)>,
+    ) -> Self {
+        let models = provider_models
+            .into_iter()
+            .map(|(provider, models)| (normalize_provider_id(Some(&provider)), models))
+            .collect();
+        Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            persistence: Arc::new(OnceCell::new()),
+            default_cwd: ".".to_string(),
+            recent_creations: Arc::new(Mutex::new(VecDeque::new())),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            idle_timeout: Duration::from_millis(100),
+            provider_models: Arc::new(RwLock::new(models)),
         }
     }
 
@@ -1204,6 +1601,9 @@ impl AcpSessionRegistry {
             provider_session_id: Some("fake-provider-session".to_string()),
             agent_name: Some("test-agent".to_string()),
             agent_version: Some("0.0.1".to_string()),
+            model_id: None,
+            model_name: None,
+            config_options: Vec::new(),
         };
         let session = Session::new(
             session_id.to_string(),
@@ -1262,6 +1662,9 @@ impl AcpSessionRegistry {
             provider_session_id: Some("fake-provider-session".to_string()),
             agent_name: Some("test-agent".to_string()),
             agent_version: Some("0.0.1".to_string()),
+            model_id: None,
+            model_name: None,
+            config_options: Vec::new(),
         };
         let session = Session::new(
             session_id.to_string(),
@@ -1365,6 +1768,9 @@ async fn apply_session_event(session: &Arc<Session>, event: &AcpEvent) {
         }
         if let Some(title) = session_title_from_event(event) {
             summary.title = title;
+        }
+        if let AcpEvent::ProviderSwitch { to_provider, .. } = event {
+            summary.provider = to_provider.clone();
         }
     }
     if let Some(new_state) = maybe_new_state {
@@ -1475,6 +1881,28 @@ fn not_found(message: &str) -> ToolError {
     }
 }
 
+fn resolve_model_selection(
+    provider: &str,
+    requested: Option<&str>,
+    options: &[AcpModelOption],
+    current: Option<&str>,
+) -> Result<(Option<String>, Option<String>), ToolError> {
+    let selected = requested.or(current);
+    let Some(selected) = selected.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok((None, None));
+    };
+    if options.is_empty() {
+        return Ok((Some(selected.to_string()), None));
+    }
+    let Some(option) = options.iter().find(|option| option.id == selected) else {
+        return Err(ToolError::InvalidParam {
+            message: format!("model `{selected}` is not valid for provider `{provider}`"),
+            param: "model".to_string(),
+        });
+    };
+    Ok((Some(option.id.clone()), Some(option.name.clone())))
+}
+
 fn should_replace_prompt_title(title: &str) -> bool {
     title.trim().is_empty() || title.trim() == "New session"
 }
@@ -1501,6 +1929,79 @@ fn title_from_prompt(prompt: &str) -> Option<String> {
         return Some(title);
     }
     Some(normalized)
+}
+
+async fn build_handoff_prompt(session: &Arc<Session>, from_provider: &str, prompt: &str) -> String {
+    let events = session.events.read().await;
+    let mut lines = Vec::new();
+    for event in events.iter().rev() {
+        if lines.len() >= HANDOFF_MAX_MESSAGES {
+            break;
+        }
+        if let AcpEvent::MessageChunk {
+            role,
+            text,
+            provider,
+            ..
+        } = event
+        {
+            if text.trim().is_empty() {
+                continue;
+            }
+            let label = match role.as_str() {
+                "user" => "User".to_string(),
+                "assistant" => {
+                    let owner = if provider.is_empty() {
+                        from_provider
+                    } else {
+                        provider.as_str()
+                    };
+                    format!("Assistant ({owner})")
+                }
+                other => other.to_string(),
+            };
+            lines.push(format!(
+                "{label}: {}",
+                crate::dispatch::redact::redact_stdio_value(text)
+            ));
+        }
+    }
+    lines.reverse();
+    let transcript = if lines.is_empty() {
+        "(No prior text transcript available.)".to_string()
+    } else {
+        lines.join("\n")
+    };
+    let prompt_section = format!("\n\nNew user prompt:\n{prompt}");
+    let mut transcript_header = "Recent transcript:\n";
+    let mut transcript_body = transcript.as_str();
+    let prefix = format!(
+        "You are continuing a Lab conversation that was previously handled by {from_provider}.\n\
+         Continuity mode: handoff.\n"
+    );
+    let full_len =
+        prefix.len() + transcript_header.len() + transcript_body.len() + prompt_section.len();
+    if full_len > HANDOFF_MAX_BYTES {
+        transcript_header = "Recent transcript was truncated to fit the handoff budget.\n";
+        let fixed_len = prefix.len() + transcript_header.len() + prompt_section.len();
+        let transcript_budget = HANDOFF_MAX_BYTES.saturating_sub(fixed_len);
+        transcript_body = utf8_tail_by_bytes(&transcript, transcript_budget);
+    }
+    format!("{prefix}{transcript_header}{transcript_body}{prompt_section}")
+}
+
+fn utf8_tail_by_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    if max_bytes == 0 {
+        return "";
+    }
+    let mut start = value.len().saturating_sub(max_bytes);
+    while start < value.len() && !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
 }
 
 // ---------------------------------------------------------------------------
@@ -1666,7 +2167,7 @@ mod tests {
             .await;
 
         let err = registry
-            .prompt_session("saturated-sess", "hello", "alice")
+            .prompt_session("saturated-sess", "hello", "alice", None)
             .await
             .expect_err("full command queue must be rejected");
 
@@ -1686,6 +2187,7 @@ mod tests {
                 "title-sess",
                 "Context: route=/chat\n\nInvestigate empty ACP sessions",
                 "alice",
+                None,
             )
             .await
             .expect("prompt dispatch");
@@ -1695,6 +2197,71 @@ mod tests {
             .await
             .expect("session summary");
         assert_eq!(summary.title, "Investigate empty ACP sessions");
+    }
+
+    #[tokio::test]
+    async fn prompt_session_rolls_back_state_when_provider_switch_fails() {
+        let registry = test_registry();
+        registry
+            .inject_fake_session("switch-fail-sess", "alice")
+            .await;
+
+        let err = registry
+            .prompt_session_with_options(
+                "switch-fail-sess",
+                "continue this on another provider",
+                "alice",
+                None,
+                PromptSessionOptions {
+                    provider: Some("missing-provider".to_string()),
+                    continuity_mode: Some("handoff".to_string()),
+                },
+            )
+            .await
+            .expect_err("unknown provider switch should fail");
+
+        assert_eq!(err.kind(), "invalid_param");
+        let summary = registry
+            .get_session("switch-fail-sess")
+            .await
+            .expect("session summary");
+        assert_eq!(summary.state, AcpSessionState::Idle);
+    }
+
+    #[tokio::test]
+    async fn handoff_truncation_preserves_full_prompt_and_utf8_boundaries() {
+        let registry = test_registry();
+        registry.inject_fake_session("handoff-sess", "alice").await;
+        let session = registry
+            .get_session_arc("handoff-sess")
+            .await
+            .expect("session");
+        {
+            let mut events = session.events.write().await;
+            events.push(AcpEvent::MessageChunk {
+                id: "evt-1".to_string(),
+                created_at: "2026-05-05T00:00:00Z".to_string(),
+                session_id: "handoff-sess".to_string(),
+                seq: 1,
+                provider: "codex-acp".to_string(),
+                role: "assistant".to_string(),
+                text: "🙂".repeat(HANDOFF_MAX_BYTES),
+                message_id: "msg-1".to_string(),
+            });
+        }
+        let prompt = format!("Preserve this exact prompt: {}", "ü".repeat(256));
+
+        let handoff = build_handoff_prompt(&session, "codex-acp", &prompt).await;
+
+        assert!(
+            handoff.ends_with(&format!("New user prompt:\n{prompt}")),
+            "handoff should preserve the full new prompt"
+        );
+        assert!(
+            handoff.len() <= HANDOFF_MAX_BYTES + "\n\nNew user prompt:\n".len() + prompt.len(),
+            "transcript truncation should stay byte-bounded apart from the preserved prompt"
+        );
+        assert!(std::str::from_utf8(handoff.as_bytes()).is_ok());
     }
 
     #[tokio::test]
@@ -1728,5 +2295,61 @@ mod tests {
             title_from_prompt(prompt).as_deref(),
             Some("Summarize the Docker ACP session creation behavior and identi...")
         );
+    }
+
+    #[test]
+    fn resolve_model_selection_accepts_requested_model_without_cached_options() {
+        let (model_id, model_name) =
+            resolve_model_selection("codex-acp", Some("gpt-5.4"), &[], None)
+                .expect("requested model should pass through when provider model cache is empty");
+
+        assert_eq!(model_id.as_deref(), Some("gpt-5.4"));
+        assert_eq!(model_name, None);
+    }
+
+    #[test]
+    fn resolve_model_selection_uses_cached_model_metadata() {
+        let options = vec![AcpModelOption {
+            id: "gpt-5.4".to_string(),
+            name: "GPT 5.4".to_string(),
+            description: Some("fast".to_string()),
+            fixed: false,
+        }];
+
+        let (model_id, model_name) =
+            resolve_model_selection("codex-acp", Some("gpt-5.4"), &options, None)
+                .expect("cached model should validate");
+
+        assert_eq!(model_id.as_deref(), Some("gpt-5.4"));
+        assert_eq!(model_name.as_deref(), Some("GPT 5.4"));
+    }
+
+    #[test]
+    fn provider_healths_does_not_synthesize_current_or_default_model_from_order() {
+        let registry = AcpSessionRegistry::new_for_test_with_provider_models(vec![(
+            "codex-acp".to_string(),
+            vec![AcpModelOption {
+                id: "gpt-5-mini".to_string(),
+                name: "GPT-5 Mini".to_string(),
+                description: None,
+                fixed: false,
+            }],
+        )]);
+
+        let codex = registry
+            .provider_healths()
+            .into_iter()
+            .find(|health| health.provider == "codex-acp")
+            .expect("codex provider health should be present");
+
+        assert_eq!(codex.models.len(), 1);
+        assert_eq!(codex.default_model_id, None);
+        assert_eq!(codex.current_model_id, None);
+    }
+
+    #[test]
+    fn utf8_tail_by_bytes_never_splits_multibyte_characters() {
+        assert_eq!(utf8_tail_by_bytes("a🙂b", 2), "b");
+        assert_eq!(utf8_tail_by_bytes("a🙂b", 5), "🙂b");
     }
 }

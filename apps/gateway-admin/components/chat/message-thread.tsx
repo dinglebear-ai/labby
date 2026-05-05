@@ -13,6 +13,10 @@ interface MessageThreadProps {
   run: ACPRun | null
   messages: ACPMessage[]
   connectionState?: SessionEventConnectionState
+  canRetryMessages?: boolean
+  canEditMessages?: boolean
+  onRetryMessage?: (message: ACPMessage) => void
+  onEditMessage?: (message: ACPMessage) => void
 }
 
 function EmptyState() {
@@ -76,12 +80,66 @@ export function shouldShowWorkingAssistantBubble(
   return !hasStreamingAssistantMessage
 }
 
-export function MessageThread({ run, messages, connectionState }: MessageThreadProps) {
+export type MessageTimestampSelectionAction =
+  | { type: 'select'; messageId: string }
+  | { type: 'dismiss' }
+  | { type: 'run-change'; runId: string | null }
+
+export function reduceSelectedMessageId(
+  selectedMessageId: string | null,
+  action: MessageTimestampSelectionAction,
+): string | null {
+  switch (action.type) {
+    case 'select':
+      return action.messageId
+    case 'dismiss':
+    case 'run-change':
+      return null
+    default:
+      return selectedMessageId
+  }
+}
+
+export function MessageThread({
+  run,
+  messages,
+  connectionState,
+  canRetryMessages = false,
+  canEditMessages = false,
+  onRetryMessage,
+  onEditMessage,
+}: MessageThreadProps) {
   const bottomRef = React.useRef<HTMLDivElement>(null)
+  const threadRef = React.useRef<HTMLDivElement>(null)
+  const [selectedMessageId, setSelectedMessageId] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  React.useEffect(() => {
+    setSelectedMessageId((current) => reduceSelectedMessageId(current, { type: 'run-change', runId: run?.id ?? null }))
+  }, [run?.id])
+
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSelectedMessageId((current) => reduceSelectedMessageId(current, { type: 'dismiss' }))
+      }
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!threadRef.current?.contains(event.target as Node)) {
+        setSelectedMessageId((current) => reduceSelectedMessageId(current, { type: 'dismiss' }))
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      document.removeEventListener('pointerdown', handlePointerDown)
+    }
+  }, [])
 
   if (!run) {
     return <EmptyState />
@@ -89,10 +147,27 @@ export function MessageThread({ run, messages, connectionState }: MessageThreadP
 
   return (
     <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden">
-      <div className="mx-auto flex w-full max-w-[860px] min-w-0 flex-col gap-4 px-3 py-4 sm:gap-5 sm:px-6 sm:py-6">
+      <div
+        ref={threadRef}
+        className="mx-auto flex w-full max-w-[860px] min-w-0 flex-col gap-4 px-3 py-4 sm:gap-5 sm:px-6 sm:py-6"
+      >
         <SessionStatusNotice run={run} connectionState={connectionState} />
         {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
+          <MessageBubble
+            key={message.id}
+            message={message}
+            actionState={{
+              selected: selectedMessageId === message.id,
+              canRetry: canRetryMessages,
+              canEdit: canEditMessages,
+            }}
+            actionHandlers={{
+              onSelect: (messageId) =>
+                setSelectedMessageId((current) => reduceSelectedMessageId(current, { type: 'select', messageId })),
+              onRetry: onRetryMessage,
+              onEdit: onEditMessage,
+            }}
+          />
         ))}
         {shouldShowWorkingAssistantBubble(run, messages, connectionState) ? (
           <WorkingAssistantBubble />

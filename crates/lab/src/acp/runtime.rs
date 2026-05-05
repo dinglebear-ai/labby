@@ -5,13 +5,15 @@ use std::time::{Duration, Instant};
 use std::{collections::HashMap, fmt};
 
 use agent_client_protocol::schema::{
-    CancelNotification, ClientCapabilities, ConfigOptionUpdate, ContentBlock, ContentChunk,
-    CreateTerminalRequest, CurrentModeUpdate, FileSystemCapabilities, Implementation,
-    InitializeRequest, KillTerminalRequest, PermissionOption, PermissionOptionKind,
+    BlobResourceContents, CancelNotification, ClientCapabilities, ConfigOptionUpdate, ContentBlock,
+    ContentChunk, CreateTerminalRequest, CurrentModeUpdate, EmbeddedResource,
+    EmbeddedResourceResource, FileSystemCapabilities, Implementation, InitializeRequest,
+    KillTerminalRequest, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
     ProtocolVersion, ReadTextFileRequest, ReleaseTerminalRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionInfoUpdate, SessionNotification, SessionUpdate, StopReason, TerminalOutputRequest,
-    WaitForTerminalExitRequest, WriteTextFileRequest,
+    SessionInfoUpdate, SessionNotification, SessionUpdate, SetSessionModelRequest, StopReason,
+    TerminalOutputRequest, TextContent, TextResourceContents, WaitForTerminalExitRequest,
+    WriteTextFileRequest,
 };
 use agent_client_protocol::{
     Agent, ByteStreams, Client, ConnectionTo, Dispatch, JsonRpcMessage, on_receive_request,
@@ -112,9 +114,24 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
-    pub async fn prompt(&self, prompt: String) -> Result<(), String> {
+    pub async fn prompt(&self, prompt: String, model_id: Option<String>) -> Result<(), String> {
+        self.prompt_input(
+            PromptInput {
+                text: prompt,
+                attachments: Vec::new(),
+            },
+            model_id,
+        )
+        .await
+    }
+
+    pub async fn prompt_input(
+        &self,
+        input: PromptInput,
+        model_id: Option<String>,
+    ) -> Result<(), String> {
         self.command_tx
-            .try_send(SessionCommand::Prompt(prompt))
+            .try_send(SessionCommand::Prompt(PromptCommand { input, model_id }))
             .map_err(session_command_send_error)
     }
 
@@ -138,9 +155,35 @@ impl RuntimeHandle {
     }
 }
 
+#[derive(Clone)]
+pub struct PromptAttachment {
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub content: PromptAttachmentContent,
+}
+
+#[derive(Clone)]
+pub enum PromptAttachmentContent {
+    Text(String),
+    Blob(String),
+}
+
+#[derive(Clone)]
+pub struct PromptInput {
+    pub text: String,
+    pub attachments: Vec<PromptAttachment>,
+}
+
 enum SessionCommand {
-    Prompt(String),
+    Prompt(PromptCommand),
     Cancel,
+}
+
+struct PromptCommand {
+    input: PromptInput,
+    model_id: Option<String>,
 }
 
 fn session_command_send_error(error: mpsc::error::TrySendError<SessionCommand>) -> String {
@@ -148,6 +191,48 @@ fn session_command_send_error(error: mpsc::error::TrySendError<SessionCommand>) 
         mpsc::error::TrySendError::Full(_) => "ACP session command queue saturated".to_string(),
         mpsc::error::TrySendError::Closed(_) => "ACP session command channel closed".to_string(),
     }
+}
+
+fn prompt_input_to_content_blocks(input: &PromptInput) -> Vec<ContentBlock> {
+    let mut blocks = Vec::with_capacity(1 + input.attachments.len());
+    blocks.push(ContentBlock::Text(TextContent::new(input.text.clone())));
+
+    for attachment in &input.attachments {
+        let uri = format!(
+            "file://local-attachment/{}",
+            percent_encode_path_segment(&attachment.name)
+        );
+        let resource = match &attachment.content {
+            PromptAttachmentContent::Text(text) => EmbeddedResourceResource::TextResourceContents(
+                TextResourceContents::new(text.clone(), uri)
+                    .mime_type(attachment.mime_type.clone()),
+            ),
+            PromptAttachmentContent::Blob(base64) => {
+                EmbeddedResourceResource::BlobResourceContents(
+                    BlobResourceContents::new(base64.clone(), uri)
+                        .mime_type(attachment.mime_type.clone()),
+                )
+            }
+        };
+        blocks.push(ContentBlock::Resource(EmbeddedResource::new(resource)));
+    }
+
+    blocks
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => {
+                encoded.push(char::from(byte));
+            }
+            _ => {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    encoded
 }
 
 #[derive(Default)]
@@ -174,6 +259,29 @@ struct RuntimeStarted {
     provider_session_id: String,
     agent_name: String,
     agent_version: String,
+    model_id: Option<String>,
+    model_name: Option<String>,
+    models: Vec<lab_apis::acp::types::AcpModelOption>,
+}
+
+fn session_model_options(
+    response: &agent_client_protocol::schema::NewSessionResponse,
+) -> (Option<String>, Vec<lab_apis::acp::types::AcpModelOption>) {
+    let Some(models) = response.models.as_ref() else {
+        return (None, Vec::new());
+    };
+    let current = Some(models.current_model_id.to_string());
+    let options = models
+        .available_models
+        .iter()
+        .map(|model| lab_apis::acp::types::AcpModelOption {
+            id: model.model_id.to_string(),
+            name: model.name.clone(),
+            description: model.description.clone(),
+            fixed: false,
+        })
+        .collect();
+    (current, options)
 }
 
 #[derive(Default)]
@@ -440,6 +548,10 @@ pub async fn launch_codex_runtime(
             provider_session_id: started.provider_session_id,
             agent_name: started.agent_name,
             agent_version: started.agent_version,
+            model_id: started.model_id,
+            model_name: started.model_name,
+            models: started.models,
+            config_options: Vec::new(),
         },
     ))
 }
@@ -492,6 +604,9 @@ pub fn codex_provider_health() -> AcpProviderHealth {
                     .to_string(),
             )
         },
+        models: Vec::new(),
+        default_model_id: None,
+        current_model_id: None,
     }
 }
 
@@ -514,6 +629,9 @@ fn health_for_provider_entry(provider: &AcpProviderEntry) -> AcpProviderHealth {
                 launch.command
             ))
         },
+        models: Vec::new(),
+        default_model_id: None,
+        current_model_id: None,
     }
 }
 
@@ -663,6 +781,7 @@ fn launch_from_provider_entry(provider: &AcpProviderEntry) -> ProviderLaunch {
 
 async fn handle_permission_request(
     runtime_session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     permissions: &PendingPermissions,
     args: RequestPermissionRequest,
@@ -699,7 +818,14 @@ async fn handle_permission_request(
         Err(_) => true,
     };
     if lock_poisoned {
-        emit_permission_outcome(event_tx, runtime_session_id, &request_id, false).await;
+        emit_permission_outcome(
+            event_tx,
+            runtime_session_id,
+            provider_id,
+            &request_id,
+            false,
+        )
+        .await;
         return RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
     }
 
@@ -710,6 +836,7 @@ async fn handle_permission_request(
                 created_at: jiff::Timestamp::now().to_string(),
                 session_id: runtime_session_id.to_string(),
                 seq: 0,
+                provider: provider_id.to_string(),
                 request_id: request_id.clone(),
                 action_summary,
                 options: public_options,
@@ -755,6 +882,7 @@ async fn handle_permission_request(
     emit_permission_outcome(
         event_tx,
         runtime_session_id,
+        provider_id,
         &request_id,
         matches!(response.outcome, RequestPermissionOutcome::Selected(_))
             && selected_option_is_allow(&options, &response),
@@ -827,6 +955,7 @@ fn find_permission_option<'a>(
 async fn emit_permission_outcome(
     event_tx: &mpsc::Sender<AcpEvent>,
     session_id: &str,
+    provider_id: &str,
     request_id: &str,
     granted: bool,
 ) {
@@ -837,6 +966,7 @@ async fn emit_permission_outcome(
                 created_at: jiff::Timestamp::now().to_string(),
                 session_id: session_id.to_string(),
                 seq: 0,
+                provider: provider_id.to_string(),
                 request_id: request_id.to_string(),
                 granted,
             })
@@ -862,6 +992,20 @@ fn acp_permission_option_from_protocol(option: &PermissionOption) -> AcpPermissi
 fn resolve_provider_launch(provider: Option<&str>) -> Result<ProviderLaunch, String> {
     let provider_id = normalize_provider_id(provider);
     if provider_id == "codex-acp" {
+        if codex_launch_override()
+            .lock()
+            .expect("codex launch override poisoned")
+            .is_some()
+        {
+            let (command, args) = resolve_codex_launch();
+            return Ok(ProviderLaunch {
+                id: provider_id,
+                command,
+                args,
+                cwd: None,
+                env: std::collections::BTreeMap::new(),
+            });
+        }
         if let Some(entry) = read_providers()
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -1163,9 +1307,10 @@ async fn run_codex_session(
                 let session_id = session_id.clone();
                 let event_tx = event_tx.clone();
                 let permissions = Arc::clone(&permissions);
+                let provider_id = provider_id.clone();
                 async move |args: RequestPermissionRequest, responder, _cx| {
                     let response =
-                        handle_permission_request(&session_id, &event_tx, &permissions, args)
+                        handle_permission_request(&session_id, &provider_id, &event_tx, &permissions, args)
                             .await;
                     responder.respond(response)
                 }
@@ -1256,6 +1401,12 @@ async fn run_codex_session(
                         .start_session()
                         .await
                         .map_err(|error| acp_internal_error(error.to_string()))?;
+                    let session_response = session.response();
+                    let (model_id, models) = session_model_options(&session_response);
+                    let model_name = model_id
+                        .as_ref()
+                        .and_then(|id| models.iter().find(|model| &model.id == id))
+                        .map(|model| model.name.clone());
 
                     let started = RuntimeStarted {
                         provider_session_id: session.session_id().to_string(),
@@ -1275,6 +1426,9 @@ async fn run_codex_session(
                             .as_ref()
                             .map(|info| info.version.clone())
                             .unwrap_or_else(|| "unknown".to_string()),
+                        model_id,
+                        model_name,
+                        models,
                     };
                     if let Some(sender) = started_tx.lock().ok().and_then(|mut guard| guard.take()) {
                         drop(sender.send(Ok(started)));
@@ -1290,7 +1444,8 @@ async fn run_codex_session(
 
                     while let Some(command) = command_rx.recv().await {
                         match command {
-                            SessionCommand::Prompt(prompt) => {
+                            SessionCommand::Prompt(command) => {
+                                let PromptCommand { input, model_id } = command;
                                 prompt_lifecycle.start();
 
                                 if previous_turn_idle {
@@ -1376,10 +1531,25 @@ async fn run_codex_session(
                                     event_tx
                                         .send(session_state_event(
                                             session_id.clone(),
+                                            &provider_id,
                                             lab_apis::acp::types::AcpSessionState::Running,
                                         ))
                                         .await,
                                 );
+                                if let Some(model_id) = model_id.as_deref() {
+                                    session
+                                        .connection()
+                                        .send_request_to(
+                                            Agent,
+                                            SetSessionModelRequest::new(
+                                                session.session_id().clone(),
+                                                model_id.to_string(),
+                                            ),
+                                        )
+                                        .block_task()
+                                        .await
+                                        .map_err(|error| acp_internal_error(error.to_string()))?;
+                                }
                                 drop(
                                     event_tx
                                         .send(provider_info_event(
@@ -1388,14 +1558,31 @@ async fn run_codex_session(
                                             json!({
                                                 "type": "prompt_started",
                                                 "title": "Prompt started",
-                                                "text": prompt.clone(),
+                                                "text": input.text.clone(),
+                                                "attachment_count": input.attachments.len(),
+                                                "model_id": model_id,
                                             }),
                                         ))
                                         .await,
                                 );
 
+                                let (prompt_response_tx, prompt_response_rx) =
+                                    oneshot::channel::<Result<StopReason, String>>();
+                                let mut prompt_response_rx = Box::pin(prompt_response_rx);
+                                let blocks = prompt_input_to_content_blocks(&input);
                                 session
-                                    .send_prompt(prompt)
+                                    .connection()
+                                    .send_request_to(
+                                        Agent,
+                                        PromptRequest::new(session.session_id().clone(), blocks),
+                                    )
+                                    .on_receiving_result(async move |result| {
+                                        let stop_reason = result
+                                            .map(|PromptResponse { stop_reason, .. }| stop_reason)
+                                            .map_err(|error| error.to_string());
+                                        drop(prompt_response_tx.send(stop_reason));
+                                        Ok(())
+                                    })
                                     .map_err(|error| acp_internal_error(error.to_string()))?;
 
                                 let mut saw_assistant_output = false;
@@ -1404,6 +1591,12 @@ async fn run_codex_session(
                                 // before the next turn's prompt is dispatched.
                                 let mut ended_via_idle = false;
                                 loop {
+                                    enum PromptTurnMessage {
+                                        Provider(Result<agent_client_protocol::SessionMessage, agent_client_protocol::Error>),
+                                        Stop(Result<StopReason, String>),
+                                        Idle,
+                                    }
+
                                     let update = tokio::select! {
                                         // Prefer consuming a real update over the idle timeout.
                                         // Without `biased`, when both arms are ready simultaneously
@@ -1411,16 +1604,85 @@ async fn run_codex_session(
                                         // tokio picks randomly. A timeout win leaves StopReason
                                         // in the channel where it poisons the next turn's read loop.
                                         biased;
-                                        update = session.read_update() => Some(update),
-                                        () = tokio::time::sleep(acp_prompt_idle_timeout()), if saw_assistant_output => None,
+                                        stop_reason = &mut prompt_response_rx => {
+                                            PromptTurnMessage::Stop(
+                                                stop_reason.unwrap_or_else(|_| Err("prompt response channel closed".to_string())),
+                                            )
+                                        },
+                                        update = session.read_update() => PromptTurnMessage::Provider(update),
+                                        () = tokio::time::sleep(acp_prompt_idle_timeout()), if saw_assistant_output => PromptTurnMessage::Idle,
                                     };
                                     let update = match update {
-                                        Some(update) => update,
-                                        None => {
+                                        PromptTurnMessage::Provider(update) => update,
+                                        PromptTurnMessage::Stop(Ok(stop_reason)) => {
+                                            let stop_reason =
+                                                map_stop_reason(&stop_reason).to_string();
+                                            let state = if stop_reason == "cancelled" {
+                                                lab_apis::acp::types::AcpSessionState::Cancelled
+                                            } else {
+                                                lab_apis::acp::types::AcpSessionState::Completed
+                                            };
                                             drop(
                                                 event_tx
                                                     .send(session_state_event(
                                                         session_id.clone(),
+                                                        &provider_id,
+                                                        state.clone(),
+                                                    ))
+                                                    .await,
+                                            );
+                                            drop(
+                                                event_tx
+                                                    .send(provider_info_event(
+                                                        session_id.clone(),
+                                                        &provider_id,
+                                                        json!({
+                                                            "type": "stop_reason",
+                                                            "title": "Prompt completed",
+                                                            "status": match state {
+                                                                lab_apis::acp::types::AcpSessionState::Cancelled => "cancelled",
+                                                                _ => "completed",
+                                                            },
+                                                            "stop_reason": stop_reason,
+                                                        }),
+                                                    ))
+                                                    .await,
+                                            );
+                                            prompt_lifecycle.finish();
+                                            break;
+                                        }
+                                        PromptTurnMessage::Stop(Err(error)) => {
+                                            drop(
+                                                event_tx
+                                                    .send(session_state_event(
+                                                        session_id.clone(),
+                                                        &provider_id,
+                                                        lab_apis::acp::types::AcpSessionState::Failed,
+                                                    ))
+                                                    .await,
+                                            );
+                                            drop(
+                                                event_tx
+                                                    .send(provider_info_event(
+                                                        session_id.clone(),
+                                                        &provider_id,
+                                                        json!({
+                                                            "type": "provider_error",
+                                                            "title": "Provider error",
+                                                            "text": error,
+                                                        }),
+                                                    ))
+                                                    .await,
+                                            );
+                                            prompt_lifecycle.finish();
+                                            break;
+                                        }
+                                        PromptTurnMessage::Idle => {
+                                            drop(
+                                                event_tx
+                                                    .send(session_state_event(
+                                                        session_id.clone(),
+                                                        &provider_id,
                                                         lab_apis::acp::types::AcpSessionState::Completed,
                                                     ))
                                                     .await,
@@ -1451,6 +1713,7 @@ async fn run_codex_session(
                                         )) => {
                                             let progress = handle_session_dispatch(
                                                 &session_id,
+                                                &provider_id,
                                                 &event_tx,
                                                 dispatch,
                                                 &stream_message_ids,
@@ -1476,6 +1739,7 @@ async fn run_codex_session(
                                                 event_tx
                                                     .send(session_state_event(
                                                         session_id.clone(),
+                                                        &provider_id,
                                                         state.clone(),
                                                     ))
                                                     .await,
@@ -1519,6 +1783,7 @@ async fn run_codex_session(
                                                 event_tx
                                                     .send(session_state_event(
                                                         session_id.clone(),
+                                                        &provider_id,
                                                         lab_apis::acp::types::AcpSessionState::Failed,
                                                     ))
                                                     .await,
@@ -1584,7 +1849,7 @@ async fn run_codex_session(
         );
         drop(
             event_tx
-                .send(session_state_event(session_id.clone(), state))
+                .send(session_state_event(session_id.clone(), &provider_id, state))
                 .await,
         );
         drop(event_tx.send(event).await);
@@ -1659,6 +1924,7 @@ async fn terminate_codex_child(
 
 async fn push_session_update(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     update: SessionUpdate,
     stream_message_ids: &Arc<Mutex<StreamMessageIds>>,
@@ -1679,6 +1945,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     role: "user".to_string(),
                     text: content_to_text(content),
                     message_id,
@@ -1699,6 +1966,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     role: "assistant".to_string(),
                     text: content_to_text(content),
                     message_id,
@@ -1713,6 +1981,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     text: content_to_text(content),
                 })
                 .await
@@ -1725,6 +1994,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     tool_call_id: tool_call.tool_call_id.to_string(),
                     name: tool_call.title.clone(),
                     input: tool_call.raw_input.unwrap_or(Value::Null),
@@ -1755,7 +2025,7 @@ async fn push_session_update(
                 event_tx
                     .send(provider_info_event(
                         session_id.to_string(),
-                        "codex",
+                        provider_id,
                         payload,
                     ))
                     .await
@@ -1776,6 +2046,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     tool_call_id,
                     output: tool_call_update_output(update),
                     status,
@@ -1787,7 +2058,7 @@ async fn push_session_update(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "plan",
                         "title": "Execution plan updated",
@@ -1804,7 +2075,7 @@ async fn push_session_update(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "commands",
                         "title": "Available commands updated",
@@ -1818,19 +2089,19 @@ async fn push_session_update(
                 .map_err(|_| event_channel_closed())?;
         }
         SessionUpdate::CurrentModeUpdate(update) => {
-            emit_current_mode(session_id, event_tx, update).await?;
+            emit_current_mode(session_id, provider_id, event_tx, update).await?;
         }
         SessionUpdate::ConfigOptionUpdate(update) => {
-            emit_config_update(session_id, event_tx, update).await?;
+            emit_config_update(session_id, provider_id, event_tx, update).await?;
         }
         SessionUpdate::SessionInfoUpdate(update) => {
-            emit_session_info(session_id, event_tx, update).await?;
+            emit_session_info(session_id, provider_id, event_tx, update).await?;
         }
         other => {
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "debug",
                         "title": "Unhandled session update",
@@ -1847,6 +2118,7 @@ async fn push_session_update(
 
 async fn handle_session_dispatch(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     dispatch: Dispatch,
     stream_message_ids: &Arc<Mutex<StreamMessageIds>>,
@@ -1864,6 +2136,7 @@ async fn handle_session_dispatch(
             let is_prompt_progress = is_prompt_progress_update(&notification.update);
             push_session_update(
                 session_id,
+                provider_id,
                 event_tx,
                 notification.update,
                 stream_message_ids,
@@ -1878,7 +2151,7 @@ async fn handle_session_dispatch(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "unhandled_provider_notification",
                         "title": "Unhandled provider notification",
@@ -1897,7 +2170,7 @@ async fn handle_session_dispatch(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "unhandled_provider_request",
                         "title": "Unhandled provider request",
@@ -1915,7 +2188,7 @@ async fn handle_session_dispatch(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "unhandled_provider_response",
                         "title": "Unhandled provider response",
@@ -1945,13 +2218,14 @@ fn is_prompt_progress_update(update: &SessionUpdate) -> bool {
 
 async fn emit_current_mode(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     update: CurrentModeUpdate,
 ) -> Result<(), String> {
     event_tx
         .send(provider_info_event(
             session_id.to_string(),
-            "codex",
+            provider_id,
             json!({
                 "type": "current_mode",
                 "title": "Agent mode updated",
@@ -1964,13 +2238,14 @@ async fn emit_current_mode(
 
 async fn emit_config_update(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     update: ConfigOptionUpdate,
 ) -> Result<(), String> {
     event_tx
         .send(provider_info_event(
             session_id.to_string(),
-            "codex",
+            provider_id,
             json!({
                 "type": "config_update",
                 "title": "Configuration options updated",
@@ -1983,13 +2258,14 @@ async fn emit_config_update(
 
 async fn emit_session_info(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     update: SessionInfoUpdate,
 ) -> Result<(), String> {
     event_tx
         .send(provider_info_event(
             session_id.to_string(),
-            "codex",
+            provider_id,
             json!({
                 "type": "session_info",
                 "title": "Session info updated",
@@ -2002,6 +2278,7 @@ async fn emit_session_info(
 
 fn session_state_event(
     session_id: String,
+    provider: &str,
     state: lab_apis::acp::types::AcpSessionState,
 ) -> AcpEvent {
     AcpEvent::SessionUpdate {
@@ -2009,6 +2286,7 @@ fn session_state_event(
         created_at: jiff::Timestamp::now().to_string(),
         session_id,
         seq: 0,
+        provider: provider.to_string(),
         state,
     }
 }
@@ -2141,6 +2419,14 @@ mod tests {
         AvailableCommandsUpdate, PermissionOptionId, TextContent, ToolCall, ToolCallUpdate,
         ToolCallUpdateFields,
     };
+
+    #[test]
+    fn percent_encode_path_segment_escapes_local_attachment_names() {
+        assert_eq!(
+            percent_encode_path_segment("../my notes#1.txt"),
+            "..%2Fmy%20notes%231.txt"
+        );
+    }
 
     #[test]
     fn launch_uses_structured_args_when_present() {
@@ -2283,6 +2569,7 @@ mod tests {
 
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::UserMessageChunk(text_chunk("hello ")),
             &message_ids,
@@ -2291,6 +2578,7 @@ mod tests {
         .expect("first user chunk");
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::UserMessageChunk(text_chunk("world")),
             &message_ids,
@@ -2299,6 +2587,7 @@ mod tests {
         .expect("second user chunk");
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::AgentMessageChunk(text_chunk("reply ")),
             &message_ids,
@@ -2307,6 +2596,7 @@ mod tests {
         .expect("first assistant chunk");
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::AgentMessageChunk(text_chunk("done")),
             &message_ids,
@@ -2387,6 +2677,7 @@ mod tests {
             .meta(meta.clone());
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::ToolCall(tool_call),
             &message_ids,
@@ -2433,6 +2724,7 @@ mod tests {
         let update = ToolCallUpdate::new("tc-2", fields).meta(update_meta.clone());
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::ToolCallUpdate(update),
             &message_ids,
@@ -2517,6 +2809,7 @@ mod tests {
             .status(agent_client_protocol::schema::ToolCallStatus::Completed);
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::ToolCall(tool_call),
             &message_ids,
@@ -2541,6 +2834,7 @@ mod tests {
         let update = ToolCallUpdate::new("tc-no-meta-update", fields);
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::ToolCallUpdate(update),
             &message_ids,
@@ -2676,9 +2970,14 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(crate::acp::registry::ACP_EVENT_CHANNEL_CAPACITY);
         let permissions = PendingPermissions::new(Duration::from_millis(25));
 
-        let response =
-            handle_permission_request("session-1", &tx, &permissions, permission_request("tool-1"))
-                .await;
+        let response = handle_permission_request(
+            "session-1",
+            "codex-acp",
+            &tx,
+            &permissions,
+            permission_request("tool-1"),
+        )
+        .await;
 
         assert!(matches!(
             response.outcome,
@@ -2700,6 +2999,7 @@ mod tests {
         let pending = tokio::spawn(async move {
             handle_permission_request(
                 "session-1",
+                "codex-acp",
                 &tx,
                 &permissions,
                 permission_request("tool-reject"),
@@ -2734,6 +3034,7 @@ mod tests {
         let pending = tokio::spawn(async move {
             handle_permission_request(
                 "session-1",
+                "codex-acp",
                 &tx,
                 &permissions,
                 permission_request("tool-allow"),
@@ -2778,6 +3079,7 @@ mod tests {
         let pending = tokio::spawn(async move {
             handle_permission_request(
                 "session-1",
+                "codex-acp",
                 &tx,
                 &permissions,
                 permission_request("tool-cancel"),
@@ -2934,7 +3236,13 @@ pub fn fake_handle_for_tests() -> (RuntimeHandle, mpsc::Receiver<AcpEvent>) {
 pub fn saturated_fake_handle_for_tests() -> (RuntimeHandle, mpsc::Receiver<AcpEvent>) {
     let (command_tx, command_rx) = mpsc::channel::<SessionCommand>(1);
     command_tx
-        .try_send(SessionCommand::Prompt("already queued".to_string()))
+        .try_send(SessionCommand::Prompt(PromptCommand {
+            input: PromptInput {
+                text: "already queued".to_string(),
+                attachments: Vec::new(),
+            },
+            model_id: None,
+        }))
         .expect("prefill command queue");
     tokio::spawn(async move {
         let _command_rx = command_rx;

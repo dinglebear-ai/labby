@@ -9,14 +9,22 @@ import { SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
 import { SessionSidebar } from './session-sidebar'
 import { MessageThread } from './message-thread'
-import { ChatInput } from './chat-input'
+import { ChatInput, type ChatInputPayload } from './chat-input'
 import { SettingsPanel } from './settings-panel'
+import type { ACPMessage } from './types'
 import {
   useChatSessionData,
   useChatSessionActions,
   useChatSessionConnection,
   useChatSessionStream,
 } from '@/lib/chat/chat-session-provider'
+
+export async function retryMessageText(
+  message: Pick<ACPMessage, 'text'> & { attachments?: ChatInputPayload['attachments'] },
+  send: (payload: ChatInputPayload) => Promise<void>,
+) {
+  await send({ text: message.text, attachments: message.attachments ?? [] })
+}
 
 export {
   createSessionForIntent,
@@ -25,6 +33,7 @@ export {
   integrateCreatedRun,
   providerDisplayName,
   resolveSelectedAgent,
+  resolveSelectedModel,
   sendPromptForSelectedProvider,
   sessionCreationOptionsForIntent,
   shouldAutoCreateInitialRun,
@@ -37,9 +46,11 @@ export function ChatShell() {
   const [systemPrompt, setSystemPrompt] = React.useState('')
   const [temperature, setTemperature] = React.useState(0.7)
   const [maxTokens, setMaxTokens] = React.useState(8192)
-  const { runs, selectedRun, selectedRunId, providerHealth, selectedAgent, agents, projects } =
+  const [draftText, setDraftText] = React.useState('')
+  const [attachmentsResetToken, setAttachmentsResetToken] = React.useState(0)
+  const { runs, selectedRun, selectedRunId, providerHealth, selectedAgent, selectedModel, agents, projects } =
     useChatSessionData()
-  const { selectRun, createSession, sendPrompt, selectAgent } = useChatSessionActions()
+  const { selectRun, createSession, sendPrompt, selectAgent, selectModel } = useChatSessionActions()
   const { messages } = useChatSessionStream()
   const { connectionState } = useChatSessionConnection()
   const providerReady = Boolean(providerHealth?.ready)
@@ -54,15 +65,35 @@ export function ChatShell() {
   }, [createSession, isMobileViewport])
 
   const handleSendPrompt = React.useCallback(
-    async (payload: Parameters<typeof sendPrompt>[0]) => {
+    async (payload: Parameters<typeof sendPrompt>[0], options?: Parameters<typeof sendPrompt>[1]) => {
       try {
-        await sendPrompt(payload)
+        await sendPrompt(payload, options)
       } catch {
         // Provider health carries the failure detail.
       }
     },
     [sendPrompt],
   )
+
+  const handleRetryMessage = React.useCallback(
+    async (message: ACPMessage) => {
+      if (message.runId !== selectedRunId) return
+      await retryMessageText(message, (payload) =>
+        handleSendPrompt(payload, { providerId: selectedRun?.provider ?? selectedAgent.id }),
+      )
+    },
+    [handleSendPrompt, selectedAgent.id, selectedRun?.provider, selectedRunId],
+  )
+
+  const handleEditMessage = React.useCallback((message: ACPMessage) => {
+    setDraftText(message.text)
+    setAttachmentsResetToken((token) => token + 1)
+  }, [])
+
+  React.useEffect(() => {
+    setDraftText('')
+    setAttachmentsResetToken((token) => token + 1)
+  }, [selectedRunId])
 
   React.useEffect(() => {
     const media = window.matchMedia('(max-width: 767px)')
@@ -77,7 +108,10 @@ export function ChatShell() {
 
   return (
     <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-aurora-page-bg">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-aurora-border-default bg-aurora-nav-bg px-2.5 sm:px-3">
+      <header
+        role="banner"
+        className="sticky top-0 z-20 flex h-[calc(3rem+env(safe-area-inset-top,0px))] shrink-0 items-center gap-2 border-b border-aurora-border-default bg-aurora-nav-bg px-2.5 pt-[env(safe-area-inset-top,0px)] sm:px-3 md:static md:z-auto md:h-12 md:pt-0"
+      >
         <SidebarTrigger
           aria-label="Toggle app sidebar"
           className="-ml-1 text-aurora-text-muted/60 hover:text-aurora-text-primary"
@@ -109,6 +143,14 @@ export function ChatShell() {
             <span className="hidden text-aurora-text-muted/50 sm:block">{projects[0]?.name}</span>
             <span className="hidden text-aurora-text-muted/30 sm:block">/</span>
             <span className="max-w-[180px] truncate text-aurora-text-primary sm:max-w-[300px]">{selectedRun.title}</span>
+            {selectedRun.modelName && (
+              <>
+                <span className="hidden text-aurora-text-muted/30 sm:block">/</span>
+                <span className="max-w-[120px] truncate text-aurora-text-muted sm:max-w-[180px]">
+                  {selectedRun.modelName}
+                </span>
+              </>
+            )}
           </div>
         )}
 
@@ -202,14 +244,28 @@ export function ChatShell() {
               <span className="text-aurora-text-muted">{providerUnavailableMessage}</span>
             </div>
           )}
-          <MessageThread run={selectedRun} messages={messages} connectionState={connectionState} />
+          <MessageThread
+            run={selectedRun}
+            messages={messages}
+            connectionState={connectionState}
+            canRetryMessages={providerReady}
+            canEditMessages
+            onRetryMessage={handleRetryMessage}
+            onEditMessage={handleEditMessage}
+          />
           <ChatInput
             onSend={handleSendPrompt}
             disabled={!providerReady}
             disabledReason={providerUnavailableMessage ?? undefined}
+            draftText={draftText}
+            onDraftTextChange={setDraftText}
+            attachmentsResetToken={attachmentsResetToken}
             selectedAgent={selectedAgent}
             agents={agents.length > 0 ? agents : [selectedAgent]}
             onSelectAgent={selectAgent}
+            selectedModel={selectedModel}
+            modelOptions={selectedAgent.models ?? []}
+            onSelectModel={(modelId) => selectModel(selectedAgent.id, modelId)}
           />
         </div>
 

@@ -114,7 +114,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "session.prompt",
-        description: "Send a prompt to a running session",
+        description: "Send a prompt to a session. Optional provider switches the active runtime inside the same Lab session before dispatch.",
         destructive: false,
         returns: "Value",
         params: &[
@@ -135,6 +135,18 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string",
                 required: true,
                 description: "Caller principal for ownership verification",
+            },
+            ParamSpec {
+                name: "provider",
+                ty: "string",
+                required: false,
+                description: "Provider to use for this prompt; if different from the current session provider, Lab switches runtime before dispatch",
+            },
+            ParamSpec {
+                name: "continuity_mode",
+                ty: "string",
+                required: false,
+                description: "Provider switch continuity mode: 'handoff' (bounded transcript) or 'reset'",
             },
             ParamSpec {
                 name: "page_context",

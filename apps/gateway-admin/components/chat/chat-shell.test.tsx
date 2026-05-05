@@ -6,7 +6,9 @@ import {
   ensurePromptRunIdForProvider,
   integrateCreatedRun,
   providerDisplayName,
+  retryMessageText,
   resolveSelectedAgent,
+  resolveSelectedModel,
   sendPromptForSelectedProvider,
   sessionCreationOptionsForIntent,
   shouldAutoCreateInitialRun,
@@ -114,6 +116,89 @@ test('resolveSelectedAgent prefers the selected provider over the selected run',
   assert.equal(selected.name, 'claude-acp')
 })
 
+test('normalizes adapter-scoped model options and selected run model', () => {
+  const agentsWithModels: ACPAgent[] = [
+    {
+      id: 'codex-acp',
+      name: 'Codex ACP',
+      description: 'codex-acp over local ACP bridge',
+      version: 'live',
+      capabilities: [],
+      models: [
+        { id: 'gpt-5', name: 'GPT-5' },
+        { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
+      ],
+      defaultModelId: 'gpt-5',
+      currentModelId: 'gpt-5-mini',
+    },
+  ]
+
+  const selected = resolveSelectedAgent(agentsWithModels, 'codex-acp', {
+    ...run('run-codex'),
+    provider: 'codex-acp',
+    modelId: 'gpt-5-mini',
+    modelName: 'GPT-5 Mini',
+  })
+
+  assert.equal(selected.id, 'codex-acp')
+  assert.equal(selected.models?.length, 2)
+  assert.equal(selected.currentModelId, 'gpt-5-mini')
+})
+
+test('resolveSelectedModel clears invalid model when adapter changes', () => {
+  const codex: ACPAgent = {
+    id: 'codex-acp',
+    name: 'Codex ACP',
+    description: '',
+    version: 'live',
+    capabilities: [],
+    models: [
+      { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
+      { id: 'gpt-5', name: 'GPT-5' },
+    ],
+    defaultModelId: 'gpt-5',
+  }
+  const claude: ACPAgent = {
+    id: 'claude-acp',
+    name: 'Claude ACP',
+    description: '',
+    version: 'live',
+    capabilities: [],
+    models: [{ id: 'sonnet-4.5', name: 'Sonnet 4.5' }],
+    defaultModelId: 'sonnet-4.5',
+  }
+
+  assert.equal(resolveSelectedModel(codex, 'sonnet-4.5', null)?.id, 'gpt-5')
+  assert.equal(resolveSelectedModel(claude, 'gpt-5', null)?.id, 'sonnet-4.5')
+})
+
+test('resolveSelectedModel falls through invalid requested ids before using list order', () => {
+  const codex: ACPAgent = {
+    id: 'codex-acp',
+    name: 'Codex ACP',
+    description: '',
+    version: 'live',
+    capabilities: [],
+    models: [
+      { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
+      { id: 'gpt-5', name: 'GPT-5' },
+      { id: 'gpt-5-pro', name: 'GPT-5 Pro' },
+    ],
+    defaultModelId: 'gpt-5',
+    currentModelId: 'gpt-5-pro',
+  }
+
+  assert.equal(resolveSelectedModel(codex, 'stale-model', null)?.id, 'gpt-5-pro')
+  assert.equal(
+    resolveSelectedModel(codex, 'stale-model', {
+      ...run('run-codex'),
+      provider: 'codex-acp',
+      modelId: 'gpt-5',
+    })?.id,
+    'gpt-5',
+  )
+})
+
 test('ensurePromptRunIdForProvider creates a run when selected provider differs from selected run', async () => {
   let createCalls = 0
   let receivedOptions: { closeSessionPanel?: boolean } | undefined
@@ -214,6 +299,83 @@ test('sendPromptForSelectedProvider creates provider-matched run and posts page 
   ])
 })
 
+test('sendPromptForSelectedProvider posts local attachment payloads without dropping prompt text', async () => {
+  const requests: Array<{ path: string; body: unknown }> = []
+
+  await sendPromptForSelectedProvider({
+    payload: {
+      text: 'summarize this file',
+      attachments: [
+        {
+          kind: 'local',
+          id: 'local-notes',
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          size: 11,
+          contentKind: 'text',
+          text: 'hello world',
+        },
+      ],
+    },
+    selectedRun: {
+      ...run('run-codex'),
+      provider: 'codex-acp',
+    },
+    selectedProviderId: 'codex-acp',
+    createSession: async () => run('unused'),
+    isMobileViewport: false,
+    fetchAcp: async (path, init) => {
+      requests.push({ path, body: JSON.parse(String(init?.body)) })
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    },
+    refreshSessions: async () => {},
+    addOptimisticMessage: () => {},
+    removeOptimisticMessage: () => {},
+  })
+
+  assert.deepEqual(requests, [
+    {
+      path: '/sessions/run-codex/prompt',
+      body: {
+        prompt: 'summarize this file',
+        attachments: [
+          {
+            kind: 'local',
+            id: 'local-notes',
+            name: 'notes.txt',
+            mimeType: 'text/plain',
+            size: 11,
+            contentKind: 'text',
+            text: 'hello world',
+          },
+        ],
+      },
+    },
+  ])
+})
+
+test('sendPromptForSelectedProvider includes selected model', async () => {
+  const requests: Array<{ body: unknown }> = []
+
+  await sendPromptForSelectedProvider({
+    payload: { text: 'hello', attachments: [] },
+    selectedRun: { ...run('run-codex'), provider: 'codex-acp' },
+    selectedProviderId: 'codex-acp',
+    selectedModelId: 'gpt-5-mini',
+    createSession: async () => run('unused'),
+    isMobileViewport: false,
+    fetchAcp: async (_path, init) => {
+      requests.push({ body: JSON.parse(String(init?.body)) })
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    },
+    refreshSessions: async () => {},
+    addOptimisticMessage: () => {},
+    removeOptimisticMessage: () => {},
+  })
+
+  assert.deepEqual(requests[0]?.body, { prompt: 'hello', model: 'gpt-5-mini' })
+})
+
 test('sendPromptForSelectedProvider removes optimistic message and throws normalized backend errors', async () => {
   const optimisticIds: string[] = []
 
@@ -246,4 +408,19 @@ test('sendPromptForSelectedProvider removes optimistic message and throws normal
   )
 
   assert.deepEqual(optimisticIds, [])
+})
+
+test('retry payload preserves the original message text and attachments', async () => {
+  const sent: unknown[] = []
+  await retryMessageText(
+    {
+      text: 'retry this',
+      attachments: [{ kind: 'file', path: '/tmp/original.txt' }],
+    },
+    async (payload) => {
+      sent.push(payload)
+    },
+  )
+
+  assert.deepEqual(sent, [{ text: 'retry this', attachments: [{ kind: 'file', path: '/tmp/original.txt' }] }])
 })
