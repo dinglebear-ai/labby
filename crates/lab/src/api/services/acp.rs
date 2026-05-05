@@ -198,6 +198,8 @@ struct PageContextBody {
 #[serde(rename_all = "camelCase")]
 struct PromptBody {
     prompt: String,
+    provider: Option<String>,
+    continuity_mode: Option<String>,
     /// Optional structured page context. Passed to dispatch; injection is handled there.
     page_context: Option<PageContextBody>,
     attachments: Option<Vec<PromptAttachmentParam>>,
@@ -255,6 +257,8 @@ async fn prompt_session(
     let params = json!({
         "session_id": session_id,
         "text": body.prompt.trim(),
+        "provider": body.provider,
+        "continuity_mode": body.continuity_mode,
         "page_context": page_context_value,
         "attachments": local_attachments,
         "model": preferred_model_param(body.model, body.model_id),

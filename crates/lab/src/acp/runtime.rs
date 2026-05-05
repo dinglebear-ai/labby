@@ -781,6 +781,7 @@ fn launch_from_provider_entry(provider: &AcpProviderEntry) -> ProviderLaunch {
 
 async fn handle_permission_request(
     runtime_session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     permissions: &PendingPermissions,
     args: RequestPermissionRequest,
@@ -817,7 +818,14 @@ async fn handle_permission_request(
         Err(_) => true,
     };
     if lock_poisoned {
-        emit_permission_outcome(event_tx, runtime_session_id, &request_id, false).await;
+        emit_permission_outcome(
+            event_tx,
+            runtime_session_id,
+            provider_id,
+            &request_id,
+            false,
+        )
+        .await;
         return RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
     }
 
@@ -828,6 +836,7 @@ async fn handle_permission_request(
                 created_at: jiff::Timestamp::now().to_string(),
                 session_id: runtime_session_id.to_string(),
                 seq: 0,
+                provider: provider_id.to_string(),
                 request_id: request_id.clone(),
                 action_summary,
                 options: public_options,
@@ -873,6 +882,7 @@ async fn handle_permission_request(
     emit_permission_outcome(
         event_tx,
         runtime_session_id,
+        provider_id,
         &request_id,
         matches!(response.outcome, RequestPermissionOutcome::Selected(_))
             && selected_option_is_allow(&options, &response),
@@ -945,6 +955,7 @@ fn find_permission_option<'a>(
 async fn emit_permission_outcome(
     event_tx: &mpsc::Sender<AcpEvent>,
     session_id: &str,
+    provider_id: &str,
     request_id: &str,
     granted: bool,
 ) {
@@ -955,6 +966,7 @@ async fn emit_permission_outcome(
                 created_at: jiff::Timestamp::now().to_string(),
                 session_id: session_id.to_string(),
                 seq: 0,
+                provider: provider_id.to_string(),
                 request_id: request_id.to_string(),
                 granted,
             })
@@ -1295,9 +1307,10 @@ async fn run_codex_session(
                 let session_id = session_id.clone();
                 let event_tx = event_tx.clone();
                 let permissions = Arc::clone(&permissions);
+                let provider_id = provider_id.clone();
                 async move |args: RequestPermissionRequest, responder, _cx| {
                     let response =
-                        handle_permission_request(&session_id, &event_tx, &permissions, args)
+                        handle_permission_request(&session_id, &provider_id, &event_tx, &permissions, args)
                             .await;
                     responder.respond(response)
                 }
@@ -1518,6 +1531,7 @@ async fn run_codex_session(
                                     event_tx
                                         .send(session_state_event(
                                             session_id.clone(),
+                                            &provider_id,
                                             lab_apis::acp::types::AcpSessionState::Running,
                                         ))
                                         .await,
@@ -1612,6 +1626,7 @@ async fn run_codex_session(
                                                 event_tx
                                                     .send(session_state_event(
                                                         session_id.clone(),
+                                                        &provider_id,
                                                         state.clone(),
                                                     ))
                                                     .await,
@@ -1641,6 +1656,7 @@ async fn run_codex_session(
                                                 event_tx
                                                     .send(session_state_event(
                                                         session_id.clone(),
+                                                        &provider_id,
                                                         lab_apis::acp::types::AcpSessionState::Failed,
                                                     ))
                                                     .await,
@@ -1666,6 +1682,7 @@ async fn run_codex_session(
                                                 event_tx
                                                     .send(session_state_event(
                                                         session_id.clone(),
+                                                        &provider_id,
                                                         lab_apis::acp::types::AcpSessionState::Completed,
                                                     ))
                                                     .await,
@@ -1696,6 +1713,7 @@ async fn run_codex_session(
                                         )) => {
                                             let progress = handle_session_dispatch(
                                                 &session_id,
+                                                &provider_id,
                                                 &event_tx,
                                                 dispatch,
                                                 &stream_message_ids,
@@ -1721,6 +1739,7 @@ async fn run_codex_session(
                                                 event_tx
                                                     .send(session_state_event(
                                                         session_id.clone(),
+                                                        &provider_id,
                                                         state.clone(),
                                                     ))
                                                     .await,
@@ -1764,6 +1783,7 @@ async fn run_codex_session(
                                                 event_tx
                                                     .send(session_state_event(
                                                         session_id.clone(),
+                                                        &provider_id,
                                                         lab_apis::acp::types::AcpSessionState::Failed,
                                                     ))
                                                     .await,
@@ -1829,7 +1849,7 @@ async fn run_codex_session(
         );
         drop(
             event_tx
-                .send(session_state_event(session_id.clone(), state))
+                .send(session_state_event(session_id.clone(), &provider_id, state))
                 .await,
         );
         drop(event_tx.send(event).await);
@@ -1904,6 +1924,7 @@ async fn terminate_codex_child(
 
 async fn push_session_update(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     update: SessionUpdate,
     stream_message_ids: &Arc<Mutex<StreamMessageIds>>,
@@ -1924,6 +1945,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     role: "user".to_string(),
                     text: content_to_text(content),
                     message_id,
@@ -1944,6 +1966,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     role: "assistant".to_string(),
                     text: content_to_text(content),
                     message_id,
@@ -1958,6 +1981,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     text: content_to_text(content),
                 })
                 .await
@@ -1970,6 +1994,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     tool_call_id: tool_call.tool_call_id.to_string(),
                     name: tool_call.title.clone(),
                     input: tool_call.raw_input.unwrap_or(Value::Null),
@@ -2000,7 +2025,7 @@ async fn push_session_update(
                 event_tx
                     .send(provider_info_event(
                         session_id.to_string(),
-                        "codex",
+                        provider_id,
                         payload,
                     ))
                     .await
@@ -2021,6 +2046,7 @@ async fn push_session_update(
                     created_at: jiff::Timestamp::now().to_string(),
                     session_id: session_id.to_string(),
                     seq: 0,
+                    provider: provider_id.to_string(),
                     tool_call_id,
                     output: tool_call_update_output(update),
                     status,
@@ -2032,7 +2058,7 @@ async fn push_session_update(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "plan",
                         "title": "Execution plan updated",
@@ -2049,7 +2075,7 @@ async fn push_session_update(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "commands",
                         "title": "Available commands updated",
@@ -2063,19 +2089,19 @@ async fn push_session_update(
                 .map_err(|_| event_channel_closed())?;
         }
         SessionUpdate::CurrentModeUpdate(update) => {
-            emit_current_mode(session_id, event_tx, update).await?;
+            emit_current_mode(session_id, provider_id, event_tx, update).await?;
         }
         SessionUpdate::ConfigOptionUpdate(update) => {
-            emit_config_update(session_id, event_tx, update).await?;
+            emit_config_update(session_id, provider_id, event_tx, update).await?;
         }
         SessionUpdate::SessionInfoUpdate(update) => {
-            emit_session_info(session_id, event_tx, update).await?;
+            emit_session_info(session_id, provider_id, event_tx, update).await?;
         }
         other => {
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "debug",
                         "title": "Unhandled session update",
@@ -2092,6 +2118,7 @@ async fn push_session_update(
 
 async fn handle_session_dispatch(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     dispatch: Dispatch,
     stream_message_ids: &Arc<Mutex<StreamMessageIds>>,
@@ -2109,6 +2136,7 @@ async fn handle_session_dispatch(
             let is_prompt_progress = is_prompt_progress_update(&notification.update);
             push_session_update(
                 session_id,
+                provider_id,
                 event_tx,
                 notification.update,
                 stream_message_ids,
@@ -2123,7 +2151,7 @@ async fn handle_session_dispatch(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "unhandled_provider_notification",
                         "title": "Unhandled provider notification",
@@ -2142,7 +2170,7 @@ async fn handle_session_dispatch(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "unhandled_provider_request",
                         "title": "Unhandled provider request",
@@ -2160,7 +2188,7 @@ async fn handle_session_dispatch(
             event_tx
                 .send(provider_info_event(
                     session_id.to_string(),
-                    "codex",
+                    provider_id,
                     json!({
                         "type": "unhandled_provider_response",
                         "title": "Unhandled provider response",
@@ -2190,13 +2218,14 @@ fn is_prompt_progress_update(update: &SessionUpdate) -> bool {
 
 async fn emit_current_mode(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     update: CurrentModeUpdate,
 ) -> Result<(), String> {
     event_tx
         .send(provider_info_event(
             session_id.to_string(),
-            "codex",
+            provider_id,
             json!({
                 "type": "current_mode",
                 "title": "Agent mode updated",
@@ -2209,13 +2238,14 @@ async fn emit_current_mode(
 
 async fn emit_config_update(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     update: ConfigOptionUpdate,
 ) -> Result<(), String> {
     event_tx
         .send(provider_info_event(
             session_id.to_string(),
-            "codex",
+            provider_id,
             json!({
                 "type": "config_update",
                 "title": "Configuration options updated",
@@ -2228,13 +2258,14 @@ async fn emit_config_update(
 
 async fn emit_session_info(
     session_id: &str,
+    provider_id: &str,
     event_tx: &mpsc::Sender<AcpEvent>,
     update: SessionInfoUpdate,
 ) -> Result<(), String> {
     event_tx
         .send(provider_info_event(
             session_id.to_string(),
-            "codex",
+            provider_id,
             json!({
                 "type": "session_info",
                 "title": "Session info updated",
@@ -2247,6 +2278,7 @@ async fn emit_session_info(
 
 fn session_state_event(
     session_id: String,
+    provider: &str,
     state: lab_apis::acp::types::AcpSessionState,
 ) -> AcpEvent {
     AcpEvent::SessionUpdate {
@@ -2254,6 +2286,7 @@ fn session_state_event(
         created_at: jiff::Timestamp::now().to_string(),
         session_id,
         seq: 0,
+        provider: provider.to_string(),
         state,
     }
 }
@@ -2536,6 +2569,7 @@ mod tests {
 
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::UserMessageChunk(text_chunk("hello ")),
             &message_ids,
@@ -2544,6 +2578,7 @@ mod tests {
         .expect("first user chunk");
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::UserMessageChunk(text_chunk("world")),
             &message_ids,
@@ -2552,6 +2587,7 @@ mod tests {
         .expect("second user chunk");
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::AgentMessageChunk(text_chunk("reply ")),
             &message_ids,
@@ -2560,6 +2596,7 @@ mod tests {
         .expect("first assistant chunk");
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::AgentMessageChunk(text_chunk("done")),
             &message_ids,
@@ -2640,6 +2677,7 @@ mod tests {
             .meta(meta.clone());
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::ToolCall(tool_call),
             &message_ids,
@@ -2686,6 +2724,7 @@ mod tests {
         let update = ToolCallUpdate::new("tc-2", fields).meta(update_meta.clone());
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::ToolCallUpdate(update),
             &message_ids,
@@ -2770,6 +2809,7 @@ mod tests {
             .status(agent_client_protocol::schema::ToolCallStatus::Completed);
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::ToolCall(tool_call),
             &message_ids,
@@ -2794,6 +2834,7 @@ mod tests {
         let update = ToolCallUpdate::new("tc-no-meta-update", fields);
         push_session_update(
             "session-1",
+            "codex-acp",
             &tx,
             SessionUpdate::ToolCallUpdate(update),
             &message_ids,
@@ -2929,9 +2970,14 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(crate::acp::registry::ACP_EVENT_CHANNEL_CAPACITY);
         let permissions = PendingPermissions::new(Duration::from_millis(25));
 
-        let response =
-            handle_permission_request("session-1", &tx, &permissions, permission_request("tool-1"))
-                .await;
+        let response = handle_permission_request(
+            "session-1",
+            "codex-acp",
+            &tx,
+            &permissions,
+            permission_request("tool-1"),
+        )
+        .await;
 
         assert!(matches!(
             response.outcome,
@@ -2953,6 +2999,7 @@ mod tests {
         let pending = tokio::spawn(async move {
             handle_permission_request(
                 "session-1",
+                "codex-acp",
                 &tx,
                 &permissions,
                 permission_request("tool-reject"),
@@ -2987,6 +3034,7 @@ mod tests {
         let pending = tokio::spawn(async move {
             handle_permission_request(
                 "session-1",
+                "codex-acp",
                 &tx,
                 &permissions,
                 permission_request("tool-allow"),
@@ -3031,6 +3079,7 @@ mod tests {
         let pending = tokio::spawn(async move {
             handle_permission_request(
                 "session-1",
+                "codex-acp",
                 &tx,
                 &permissions,
                 permission_request("tool-cancel"),
