@@ -4,6 +4,9 @@ import assert from 'node:assert/strict'
 import { shouldShowWorkingAssistantBubble } from './message-thread'
 import type { ACPMessage, ACPRun } from './types'
 
+const RUN_TIMESTAMP = new Date('2026-05-05T00:00:00Z')
+const MESSAGE_TIMESTAMP = new Date('2026-05-05T00:00:01Z')
+
 function run(status: ACPRun['status'] = 'running'): ACPRun {
   return {
     id: 'run-1',
@@ -11,8 +14,8 @@ function run(status: ACPRun['status'] = 'running'): ACPRun {
     agentId: 'codex',
     provider: 'codex',
     title: 'Optimize mobile chat',
-    createdAt: new Date('2026-05-05T00:00:00Z'),
-    updatedAt: new Date('2026-05-05T00:00:00Z'),
+    createdAt: RUN_TIMESTAMP,
+    updatedAt: RUN_TIMESTAMP,
     status,
     providerSessionId: 'provider-run-1',
     cwd: '/home/jmagar/workspace/lab',
@@ -25,7 +28,7 @@ function message(overrides: Partial<ACPMessage> = {}): ACPMessage {
     runId: 'run-1',
     role: 'user',
     text: 'Please continue.',
-    createdAt: new Date('2026-05-05T00:00:01Z'),
+    createdAt: MESSAGE_TIMESTAMP,
     isStreaming: false,
     thoughts: [],
     toolCalls: [],

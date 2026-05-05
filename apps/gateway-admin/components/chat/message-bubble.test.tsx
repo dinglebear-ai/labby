@@ -6,13 +6,27 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MessageBubble, WorkingAssistantBubble, getMessageCopyText } from './message-bubble'
 import type { ACPMessage } from './types'
 
-function assistantMessage(overrides: Partial<ACPMessage> = {}): ACPMessage {
+const MESSAGE_TIMESTAMP = new Date('2026-05-04T12:00:00Z')
+
+function baseMessage(overrides: Partial<ACPMessage>): ACPMessage {
   return {
     id: 'message-1',
     runId: 'run-1',
     role: 'assistant',
     text: 'Done.',
-    createdAt: new Date('2026-05-04T12:00:00Z'),
+    createdAt: MESSAGE_TIMESTAMP,
+    isStreaming: false,
+    thoughts: [],
+    toolCalls: [],
+    version: 1,
+    ...overrides,
+  }
+}
+
+function assistantMessage(overrides: Partial<ACPMessage> = {}): ACPMessage {
+  return baseMessage({
+    role: 'assistant',
+    text: 'Done.',
     isStreaming: true,
     thoughts: ['Checked the current chat surface.'],
     toolCalls: [
@@ -33,24 +47,17 @@ function assistantMessage(overrides: Partial<ACPMessage> = {}): ACPMessage {
         locations: ['README.md'],
       },
     ],
-    version: 1,
     ...overrides,
-  }
+  })
 }
 
 function userMessage(overrides: Partial<ACPMessage> = {}): ACPMessage {
-  return {
+  return baseMessage({
     id: 'message-user-1',
-    runId: 'run-1',
     role: 'user',
     text: 'Hello.',
-    createdAt: new Date('2026-05-04T12:00:00Z'),
-    isStreaming: false,
-    thoughts: [],
-    toolCalls: [],
-    version: 1,
     ...overrides,
-  }
+  })
 }
 
 test('renders reasoning summary separately from agent actions', () => {

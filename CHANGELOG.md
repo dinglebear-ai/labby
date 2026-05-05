@@ -8,6 +8,25 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.15.0] — 2026-05-05
+
+### Highlights
+
+- **gateway-admin mobile chat**: chat message bubbles now preserve long prose, markdown, code blocks, and action traces inside the mobile viewport; the copy affordance remains reachable on touch devices.
+- **agent running state**: active runs now show as an inline assistant working bubble instead of a top-of-conversation status banner, with tests covering the streaming and waiting-for-permission conditions.
+- **chat state mockups**: adds the assistant working-bubble mockup used to compare running-state placement options.
+
+| Commit | Change |
+|--------|--------|
+| *(this)* | feat: optimize mobile chat running state |
+
+### Version bumps
+
+- Rust workspace: `0.14.0 → 0.15.0`
+- Gateway admin package: `0.14.0 → 0.15.0`
+
+---
+
 ## [0.14.0] — 2026-05-04
 
 ### Highlights

@@ -44,12 +44,10 @@ function SessionStatusNotice({ run, connectionState }: { run: ACPRun; connection
     return null
   }
 
-  const Icon = ShieldQuestion
-
   return (
     <div className="rounded-aurora-2 border border-aurora-accent-primary/18 bg-aurora-accent-deep/12 px-3 py-2.5 shadow-[var(--aurora-highlight-medium)]">
       <div className="flex min-w-0 items-center gap-2">
-        <Icon
+        <ShieldQuestion
           className="size-3.5 shrink-0 text-aurora-accent-primary"
         />
         <span className="shrink-0 text-[12px] font-medium text-aurora-text-primary">

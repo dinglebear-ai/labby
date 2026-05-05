@@ -64,6 +64,12 @@ function StreamingCursor() {
 const SAFE_MARKDOWN_IMAGE_ELEMENTS = ['img'] as const
 const NO_REHYPE_PLUGINS: never[] = []
 const DISABLED_LINK_SAFETY = { enabled: false } as const
+const MESSAGE_CONTENT_CLASS =
+  'relative max-w-full overflow-hidden rounded-aurora-2 px-4 py-3'
+const ASSISTANT_MESSAGE_CONTENT_CLASS =
+  'border border-aurora-border-default bg-aurora-panel-medium shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]'
+const USER_MESSAGE_CONTENT_CLASS =
+  'border border-aurora-border-strong bg-aurora-panel-strong shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]'
 
 function isAllowedMarkdownUrl(url: string) {
   const trimmed = url.trim()
@@ -200,19 +206,23 @@ export function WorkingAssistantBubble({ label = 'Codex is working' }: { label?:
 
 function MessageBubbleComponent({ message }: { message: ACPMessage }) {
   const isUser = message.role === 'user'
-  const [reasoningOpen, setReasoningOpen] = React.useState(Boolean(message.isStreaming))
-  const [chainOpen, setChainOpen] = React.useState(Boolean(message.isStreaming))
-  const [actionsOpen, setActionsOpen] = React.useState(Boolean(message.isStreaming))
+  const isStreaming = Boolean(message.isStreaming)
+  const [reasoningOpen, setReasoningOpen] = React.useState(isStreaming)
+  const [chainOpen, setChainOpen] = React.useState(isStreaming)
+  const [actionsOpen, setActionsOpen] = React.useState(isStreaming)
 
   React.useEffect(() => {
-    const streaming = Boolean(message.isStreaming)
-    setReasoningOpen(streaming)
-    setChainOpen(streaming)
-    setActionsOpen(streaming || message.toolCalls.length > 0)
-  }, [message.isStreaming, message.toolCalls.length])
+    setReasoningOpen(isStreaming)
+    setChainOpen(isStreaming)
+    setActionsOpen(isStreaming || message.toolCalls.length > 0)
+  }, [isStreaming, message.toolCalls.length])
 
   const hasReasoning = !isUser && message.thoughts.length > 0
   const hasActions = !isUser && message.toolCalls.length > 0
+  const messageContentClass = cn(
+    MESSAGE_CONTENT_CLASS,
+    isUser ? USER_MESSAGE_CONTENT_CLASS : ASSISTANT_MESSAGE_CONTENT_CLASS,
+  )
 
   return (
     <div className={cn('group/bubble flex min-w-0 gap-3', isUser && 'flex-row-reverse')}>
@@ -245,7 +255,7 @@ function MessageBubbleComponent({ message }: { message: ACPMessage }) {
               <ChainOfThoughtContent className="pt-1">
                 <div className="rounded-aurora-2 border border-aurora-border-default/70 bg-aurora-control-surface px-3 py-3">
                   <Reasoning
-                    isStreaming={Boolean(message.isStreaming)}
+                    isStreaming={isStreaming}
                     open={reasoningOpen}
                     onOpenChange={setReasoningOpen}
                     className="mb-0"
@@ -277,14 +287,7 @@ function MessageBubbleComponent({ message }: { message: ACPMessage }) {
         )}
 
         {message.text && (
-          <div
-            className={cn(
-              'relative max-w-full overflow-hidden rounded-aurora-2 px-4 py-3',
-              isUser
-                ? 'border border-aurora-border-strong bg-aurora-panel-strong shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]'
-                : 'border border-aurora-border-default bg-aurora-panel-medium shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]',
-            )}
-          >
+          <div className={messageContentClass}>
             {!isUser && (
               <span
                 aria-hidden="true"
@@ -297,7 +300,7 @@ function MessageBubbleComponent({ message }: { message: ACPMessage }) {
                 {message.isStreaming ? <StreamingCursor /> : null}
               </p>
             ) : (
-              <AssistantMarkdown text={message.text} isStreaming={Boolean(message.isStreaming)} />
+              <AssistantMarkdown text={message.text} isStreaming={isStreaming} />
             )}
             <div className="absolute right-2 top-2">
               <CopyButton text={getMessageCopyText(message)} />

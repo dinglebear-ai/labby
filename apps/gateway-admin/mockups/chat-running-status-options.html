@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chat Running Status Options</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b10;
+      --panel: #0f141c;
+      --panel-2: #141b25;
+      --panel-3: #182231;
+      --border: #253244;
+      --border-strong: #39485d;
+      --text: #edf4ff;
+      --muted: #9ba8b8;
+      --muted-2: #687789;
+      --accent: #63d2ff;
+      --accent-2: #9ef2c7;
+      --warn: #f2c15f;
+      --shadow: 0 18px 60px rgba(0, 0, 0, 0.42);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 18% 8%, rgba(99, 210, 255, 0.12), transparent 28rem),
+        linear-gradient(180deg, #0a0e14, var(--bg));
+      color: var(--text);
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+    }
+
+    header {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: 0;
+      font-weight: 680;
+    }
+
+    .subtitle {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .option {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(15, 20, 28, 0.86);
+      box-shadow: var(--shadow);
+    }
+
+    .option-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(20, 27, 37, 0.72);
+    }
+
+    .option-title {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .tag {
+      flex: 0 0 auto;
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      padding: 3px 8px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 650;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .phone {
+      width: min(100%, 390px);
+      height: 540px;
+      margin: 18px auto;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      border-radius: 20px;
+      background: #0b1017;
+    }
+
+    .phone-top {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 46px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border);
+      background: #101722;
+    }
+
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: var(--muted);
+      background: transparent;
+    }
+
+    .thread-title {
+      min-width: 0;
+      flex: 1;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .thread {
+      min-height: 0;
+      flex: 1;
+      overflow: hidden;
+      padding: 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .row {
+      display: flex;
+      min-width: 0;
+      gap: 9px;
+    }
+
+    .row.user {
+      flex-direction: row-reverse;
+    }
+
+    .avatar {
+      flex: 0 0 auto;
+      width: 24px;
+      height: 24px;
+      margin-top: 4px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--panel-2);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .avatar.agent {
+      border-color: rgba(99, 210, 255, 0.38);
+      color: var(--accent);
+      background: rgba(99, 210, 255, 0.08);
+    }
+
+    .bubble {
+      min-width: 0;
+      max-width: calc(100% - 34px);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: var(--panel);
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .user .bubble {
+      background: var(--panel-3);
+      border-color: var(--border-strong);
+    }
+
+    .meta {
+      margin-top: 7px;
+      color: var(--muted-2);
+      font-size: 11px;
+    }
+
+    .composer {
+      flex: 0 0 auto;
+      padding: 10px;
+      border-top: 1px solid var(--border);
+      background: #101722;
+    }
+
+    .composer-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      padding: 8px 10px;
+      color: var(--muted-2);
+      background: #0d131c;
+      font-size: 13px;
+    }
+
+    .dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .dots span {
+      width: 5px;
+      height: 5px;
+      border-radius: 999px;
+      background: var(--accent);
+      opacity: 0.38;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .dots span:nth-child(2) {
+      animation-delay: 0.18s;
+    }
+
+    .dots span:nth-child(3) {
+      animation-delay: 0.36s;
+    }
+
+    .working-line {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--muted);
+    }
+
+    .working-line strong {
+      color: var(--text);
+      font-weight: 650;
+    }
+
+    .assistant-skeleton {
+      display: grid;
+      gap: 7px;
+      margin-top: 8px;
+    }
+
+    .skel {
+      height: 8px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(99, 210, 255, 0.10), rgba(99, 210, 255, 0.28), rgba(99, 210, 255, 0.10));
+      background-size: 220% 100%;
+      animation: shimmer 1.8s linear infinite;
+    }
+
+    .skel.short {
+      width: 58%;
+    }
+
+    .ambient {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: -2px 0 0 33px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .ambient-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--accent-2);
+      box-shadow: 0 0 18px rgba(158, 242, 199, 0.75);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+
+    .bottom-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: auto 2px 0;
+      border: 1px solid rgba(99, 210, 255, 0.22);
+      border-radius: 8px;
+      padding: 9px 10px;
+      color: var(--muted);
+      background: rgba(99, 210, 255, 0.07);
+      font-size: 12px;
+    }
+
+    .permission {
+      border-color: rgba(242, 193, 95, 0.34);
+      background: rgba(242, 193, 95, 0.08);
+    }
+
+    .permission .avatar {
+      color: var(--warn);
+      border-color: rgba(242, 193, 95, 0.45);
+      background: rgba(242, 193, 95, 0.08);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    .mini-button {
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      padding: 5px 8px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .mini-button.primary {
+      border-color: rgba(158, 242, 199, 0.42);
+      background: rgba(158, 242, 199, 0.13);
+    }
+
+    .note {
+      border-top: 1px solid var(--border);
+      padding: 12px 14px 14px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.35; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1); }
+    }
+
+    @keyframes shimmer {
+      from { background-position: 120% 0; }
+      to { background-position: -120% 0; }
+    }
+
+    @media (max-width: 860px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dots span,
+      .ambient-dot,
+      .skel {
+        animation: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Running Status Placement Options</h1>
+        <p class="subtitle">Four treatments for replacing the current top-of-thread banner.</p>
+      </div>
+    </header>
+
+    <section class="grid" aria-label="Running status mockup options">
+      <article class="option">
+        <div class="option-header">
+          <h2 class="option-title">A. Assistant Bubble Placeholder</h2>
+          <span class="tag">Recommended</span>
+        </div>
+        <div class="phone">
+          <div class="phone-top">
+            <span class="icon-btn">☰</span>
+            <span class="thread-title">Optimize mobile chat</span>
+            <span class="icon-btn">⚙</span>
+          </div>
+          <div class="thread">
+            <div class="row user">
+              <div class="avatar">U</div>
+              <div class="bubble">Can you make the chat render better on mobile?</div>
+            </div>
+            <div class="row">
+              <div class="avatar agent">A</div>
+              <div class="bubble">
+                <span class="working-line"><strong>Codex is working</strong><span class="dots"><span></span><span></span><span></span></span></span>
+                <div class="assistant-skeleton" aria-hidden="true">
+                  <div class="skel"></div>
+                  <div class="skel"></div>
+                  <div class="skel short"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="composer"><div class="composer-box">Message the assistant...</div></div>
+        </div>
+        <div class="note">Best when the agent is producing the next answer. It reads as part of the conversation, then turns into the real streaming assistant bubble.</div>
+      </article>
+
+      <article class="option">
+        <div class="option-header">
+          <h2 class="option-title">B. Assistant Lane Microstatus</h2>
+          <span class="tag">Subtle</span>
+        </div>
+        <div class="phone">
+          <div class="phone-top">
+            <span class="icon-btn">☰</span>
+            <span class="thread-title">Optimize mobile chat</span>
+            <span class="icon-btn">⚙</span>
+          </div>
+          <div class="thread">
+            <div class="row user">
+              <div class="avatar">U</div>
+              <div class="bubble">Can you review the rest of the chat page?</div>
+            </div>
+            <div class="row">
+              <div class="avatar agent">A</div>
+              <div class="bubble">I found a few performance and mobile layout issues.</div>
+            </div>
+            <div class="ambient">
+              <span class="ambient-dot"></span>
+              <span>Codex is still working on the next update</span>
+            </div>
+          </div>
+          <div class="composer"><div class="composer-box">Message the assistant...</div></div>
+        </div>
+        <div class="note">Good if we want status without creating a fake message. Less visually heavy, but easier to miss in long threads.</div>
+      </article>
+
+      <article class="option">
+        <div class="option-header">
+          <h2 class="option-title">C. Bottom Docked Status</h2>
+          <span class="tag">Chrome</span>
+        </div>
+        <div class="phone">
+          <div class="phone-top">
+            <span class="icon-btn">☰</span>
+            <span class="thread-title">Optimize mobile chat</span>
+            <span class="icon-btn">⚙</span>
+          </div>
+          <div class="thread">
+            <div class="row user">
+              <div class="avatar">U</div>
+              <div class="bubble">Can you make a mockup?</div>
+            </div>
+            <div class="row">
+              <div class="avatar agent">A</div>
+              <div class="bubble">Here are a few possible directions.</div>
+            </div>
+            <div class="bottom-status">
+              <span>Codex is working</span>
+              <span class="dots"><span></span><span></span><span></span></span>
+            </div>
+          </div>
+          <div class="composer"><div class="composer-box">Message the assistant...</div></div>
+        </div>
+        <div class="note">Always visible near the composer, which is useful. It feels more like app chrome than conversation content.</div>
+      </article>
+
+      <article class="option">
+        <div class="option-header">
+          <h2 class="option-title">D. Permission/Blocked State Card</h2>
+          <span class="tag">Separate State</span>
+        </div>
+        <div class="phone">
+          <div class="phone-top">
+            <span class="icon-btn">☰</span>
+            <span class="thread-title">Optimize mobile chat</span>
+            <span class="icon-btn">⚙</span>
+          </div>
+          <div class="thread">
+            <div class="row user">
+              <div class="avatar">U</div>
+              <div class="bubble">Please run the formatter.</div>
+            </div>
+            <div class="row permission">
+              <div class="avatar">!</div>
+              <div class="bubble permission">
+                <span class="working-line"><strong>Permission needed</strong></span>
+                <div class="meta">Codex wants to run a workspace command.</div>
+                <div class="actions">
+                  <button class="mini-button primary" type="button">Allow once</button>
+                  <button class="mini-button" type="button">Reject</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="composer"><div class="composer-box">Message the assistant...</div></div>
+        </div>
+        <div class="note">Use this for `waiting_for_permission`, not regular running. It should be actionable and visually distinct from normal work.</div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
