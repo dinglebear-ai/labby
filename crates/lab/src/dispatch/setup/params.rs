@@ -51,10 +51,7 @@ pub fn parse_force(params: &Value) -> bool {
 
 #[must_use]
 pub fn parse_bool(params: &Value, name: &str) -> bool {
-    params
-        .get(name)
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    params.get(name).and_then(Value::as_bool).unwrap_or(false)
 }
 
 pub fn parse_service(params: &Value) -> Result<String, ToolError> {
@@ -79,16 +76,4 @@ pub fn parse_services_filter(params: &Value) -> Option<Vec<String>> {
             .filter_map(|v| v.as_str().map(String::from))
             .collect(),
     )
-}
-
-pub fn parse_service(params: &Value) -> Result<String, ToolError> {
-    params
-        .get("service")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| value.trim().to_string())
-        .ok_or_else(|| ToolError::MissingParam {
-            message: "missing required parameter `service`".into(),
-            param: "service".into(),
-        })
 }

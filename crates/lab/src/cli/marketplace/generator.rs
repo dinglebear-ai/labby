@@ -8,7 +8,10 @@ use serde_json::json;
 
 use crate::registry::{build_default_registry, service_meta};
 
-const DEFAULT_ORG: &str = option_env!("LAB_PLUGIN_ORG").unwrap_or("lab");
+const DEFAULT_ORG: &str = match option_env!("LAB_PLUGIN_ORG") {
+    Some(value) => value,
+    None => "lab",
+};
 const CORE_PLUGIN: &str = "lab-core";
 const CORE_BINARY_NAME: &str = "labby";
 const CORE_BINARY_PATH: &str = "${HOME}/.claude/plugins/lab-core/bin/labby";
@@ -74,7 +77,10 @@ fn write_core_plugin(out: &Path, org: &str, binary: &Path) -> Result<()> {
     write_json(&root.join(".claude-plugin/plugin.json"), &manifest)?;
     write_json(&root.join("plugin.json"), &manifest)?;
     fs::write(root.join("README.md"), core_readme(org))?;
-    fs::write(root.join("commands/setup-core.md"), setup_core_command(false))?;
+    fs::write(
+        root.join("commands/setup-core.md"),
+        setup_core_command(false),
+    )?;
     fs::write(
         root.join("commands/setup-core-advanced.md"),
         setup_core_command(true),
@@ -239,7 +245,7 @@ fn install_core_command(org: &str) -> String {
 }
 
 fn install_binary_skill() -> &'static str {
-    r"---
+    r#"---
 name: install-binary
 description: Ensure the bundled labby binary is reachable from ~/.local/bin.
 ---
@@ -258,7 +264,7 @@ ln -sfn "${CLAUDE_PLUGIN_ROOT}/bin/labby" ~/.local/bin/labby
 If symlink creation fails, tell the user that the core binary is still available at `${CLAUDE_PLUGIN_ROOT}/bin/labby`; service plugins use that absolute plugin path directly and do not require PATH.
 
 Never install other plugins, edit Claude Code config, or restart services.
-"
+"#
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
@@ -302,6 +308,9 @@ mod tests {
 
     #[test]
     fn service_mcp_path_has_no_path_dependency() {
-        assert_eq!(CORE_BINARY_PATH, "${HOME}/.claude/plugins/lab-core/bin/labby");
+        assert_eq!(
+            CORE_BINARY_PATH,
+            "${HOME}/.claude/plugins/lab-core/bin/labby"
+        );
     }
 }
