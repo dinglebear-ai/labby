@@ -1,11 +1,15 @@
 mod catalog;
 mod client;
 pub(crate) mod config;
+mod config_mutation;
 mod dispatch;
 mod index;
 pub mod manager;
 pub mod oauth;
+mod oauth_lifecycle;
 mod params;
+mod projection;
+mod runtime;
 mod service_catalog;
 mod shared;
 pub(crate) mod types;

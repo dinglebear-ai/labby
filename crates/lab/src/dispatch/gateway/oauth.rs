@@ -15,6 +15,8 @@ pub struct UpstreamOauthStatusView {
 pub struct ProbeResult {
     pub upstream: String,
     pub url: String,
+    pub transient: bool,
+    pub durability: String,
     pub oauth_discovered: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issuer: Option<String>,
@@ -26,6 +28,16 @@ pub struct ProbeResult {
 
 pub async fn probe(manager: &GatewayManager, url: &str) -> Result<ProbeResult, ToolError> {
     manager.probe_upstream_oauth(url).await
+}
+
+pub async fn probe_for_upstream(
+    manager: &GatewayManager,
+    url: &str,
+    upstream: Option<&str>,
+) -> Result<ProbeResult, ToolError> {
+    manager
+        .probe_upstream_oauth_for_upstream(url, upstream)
+        .await
 }
 
 pub async fn begin_authorization(

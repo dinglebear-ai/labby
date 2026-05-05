@@ -250,7 +250,11 @@ fn header(name: &str, command: &str) -> String {
 fn write_cli_command(out: &mut String, command: &mut clap::Command, path: &str) {
     writeln!(out, "## `{path}`\n\n```text").ok();
     let help = command.render_long_help().to_string();
-    out.push_str(help.trim_end());
+    for line in help.trim_end().lines() {
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out.pop();
     out.push_str("\n```\n\n");
 
     let subcommands = command

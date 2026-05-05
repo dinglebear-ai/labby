@@ -257,7 +257,7 @@ pub async fn dispatch_with_manager(
         }
         "gateway.oauth.probe" => {
             let url = require_str(&params_value, "url")?;
-            to_json(manager.probe_upstream_oauth(url).await?)
+            to_json(crate::dispatch::gateway::oauth::probe(manager, url).await?)
         }
         "gateway.oauth.start" => {
             let params: GatewayOauthNameParams = parse_params(params_value)?;

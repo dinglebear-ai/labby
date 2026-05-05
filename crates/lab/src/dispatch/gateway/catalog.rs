@@ -379,7 +379,9 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.oauth.probe",
         description: "Probe a URL for OAuth support via RFC 8414 AS metadata discovery. \
-                       Registers a transient OAuth manager so subsequent authorize calls work.",
+                       Rejects userinfo, query strings, and fragments. Registers a transient \
+                       OAuth manager keyed by URL host, port, and path; it is persisted only \
+                       after a successful callback updates gateway config.",
         destructive: true,
         returns: "ProbeResult",
         params: &[ParamSpec {

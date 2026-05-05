@@ -11,6 +11,7 @@ use tracing::{info, warn};
 use crate::api::state::AppState;
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
+use crate::dispatch::redact::redact_url;
 
 pub fn gateway_routes(_state: AppState) -> Router<AppState> {
     Router::new()
@@ -80,6 +81,9 @@ async fn oauth_client_metadata(State(state): State<AppState>) -> impl IntoRespon
 #[derive(Debug, Deserialize)]
 struct ProbeRequest {
     url: String,
+    #[serde(default)]
+    upstream: Option<String>,
+    confirm: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,9 +126,10 @@ struct UpstreamEntry {
 
 async fn upstreams(
     State(state): State<AppState>,
-    Extension(_auth): Extension<crate::api::oauth::AuthContext>,
+    Extension(auth): Extension<crate::api::oauth::AuthContext>,
 ) -> Result<Json<Vec<UpstreamEntry>>, ToolError> {
     require_master(&state)?;
+    require_admin_scope(&auth, "upstreams")?;
     let manager = state
         .gateway_manager
         .clone()
@@ -147,6 +152,28 @@ fn require_master(state: &AppState) -> Result<(), ToolError> {
             message: "upstream oauth routes are master-only".to_string(),
         })
     }
+}
+
+fn require_admin_scope(
+    auth: &crate::api::oauth::AuthContext,
+    action: &str,
+) -> Result<(), ToolError> {
+    if auth.scopes.iter().any(|scope| scope == "lab:admin") {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        surface = "api",
+        service = "upstream_oauth",
+        action,
+        subject = %auth.sub,
+        kind = "forbidden",
+        "upstream oauth action rejected: lab:admin scope required"
+    );
+    Err(ToolError::Sdk {
+        sdk_kind: "forbidden".to_string(),
+        message: format!("upstream oauth `{action}` requires `lab:admin` scope"),
+    })
 }
 
 async fn callback_subject(
@@ -219,30 +246,41 @@ async fn probe(
 ) -> Result<Json<crate::dispatch::gateway::oauth::ProbeResult>, ToolError> {
     let started = std::time::Instant::now();
     require_master(&state)?;
+    require_admin_scope(&auth, "probe")?;
+    if body.confirm != Some(true) {
+        return Err(ToolError::Sdk {
+            sdk_kind: "confirmation_required".to_string(),
+            message: "set confirm=true to probe and prepare upstream oauth".to_string(),
+        });
+    }
     let manager = state
         .gateway_manager
         .clone()
         .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
-    let result = crate::dispatch::gateway::oauth::probe(&manager, &body.url)
-        .await
-        .inspect_err(|error| {
-            warn!(
-                surface = "api",
-                service = "upstream_oauth",
-                action = "probe",
-                subject = %auth.sub,
-                elapsed_ms = started.elapsed().as_millis(),
-                kind = error.kind(),
-                "upstream oauth probe failed"
-            );
-        })?;
+    let result = crate::dispatch::gateway::oauth::probe_for_upstream(
+        &manager,
+        &body.url,
+        body.upstream.as_deref(),
+    )
+    .await
+    .inspect_err(|error| {
+        warn!(
+            surface = "api",
+            service = "upstream_oauth",
+            action = "probe",
+            subject = %auth.sub,
+            elapsed_ms = started.elapsed().as_millis(),
+            kind = error.kind(),
+            "upstream oauth probe failed"
+        );
+    })?;
     info!(
         surface = "api",
         service = "upstream_oauth",
         action = "probe",
         subject = %auth.sub,
         elapsed_ms = started.elapsed().as_millis(),
-        url = %body.url,
+        url = %redact_url(&body.url),
         oauth_discovered = result.oauth_discovered,
         "upstream oauth probe completed"
     );
@@ -256,6 +294,7 @@ async fn start(
 ) -> Result<Json<StartResponse>, ToolError> {
     let started = std::time::Instant::now();
     require_master(&state)?;
+    require_admin_scope(&auth, "start")?;
     let manager = state
         .gateway_manager
         .clone()
@@ -309,6 +348,7 @@ async fn status(
 ) -> Result<Json<crate::dispatch::gateway::oauth::UpstreamOauthStatusView>, ToolError> {
     let started = std::time::Instant::now();
     require_master(&state)?;
+    require_admin_scope(&auth, "status")?;
     let manager = state
         .gateway_manager
         .clone()
@@ -351,6 +391,9 @@ async fn clear(
 ) -> impl IntoResponse {
     let started = std::time::Instant::now();
     if let Err(error) = require_master(&state) {
+        return error.into_response();
+    }
+    if let Err(error) = require_admin_scope(&auth, "clear") {
         return error.into_response();
     }
     if query.confirm != Some(true) {
@@ -453,6 +496,23 @@ async fn callback(
                 .into_response();
         }
     };
+
+    if state_subject != SHARED_GATEWAY_OAUTH_SUBJECT {
+        warn!(
+            surface = "api",
+            service = "upstream_oauth",
+            action = "callback",
+            upstream = %upstream,
+            state_subject = %state_subject,
+            expected_subject = SHARED_GATEWAY_OAUTH_SUBJECT,
+            "upstream oauth callback rejected: state subject mismatch"
+        );
+        return ToolError::Sdk {
+            sdk_kind: "auth_failed".to_string(),
+            message: "OAuth state subject mismatch".to_string(),
+        }
+        .into_response();
+    }
 
     // If a browser session is present, verify it matches the subject from state.
     if let Ok(session_subject) = callback_subject(&state, auth.map(|e| e.0), &headers).await {
@@ -641,6 +701,77 @@ mod tests {
         assert_eq!(json["kind"], "confirmation_required");
     }
 
+    #[tokio::test]
+    async fn probe_requires_explicit_confirmation() {
+        let state = AppState::new();
+        let app = gateway_routes(state.clone())
+            .layer(Extension(test_auth_context()))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/probe")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"url":"https://fixture.example.com/mcp"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "confirmation_required");
+    }
+
+    #[tokio::test]
+    async fn upstream_oauth_routes_require_admin_scope() {
+        let state = AppState::new();
+        let app = gateway_routes(state.clone())
+            .layer(Extension(read_only_auth_context()))
+            .with_state(state);
+
+        let cases = [
+            (
+                "POST",
+                "/probe",
+                Some(serde_json::json!({"url":"https://fixture.example.com/mcp","confirm":true})),
+            ),
+            (
+                "POST",
+                "/start",
+                Some(serde_json::json!({"upstream":"fixture"})),
+            ),
+            ("GET", "/status?upstream=fixture", None),
+            ("POST", "/clear?upstream=fixture&confirm=true", None),
+        ];
+
+        for (method, uri, body) in cases {
+            let request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json");
+            let body = body.map(|value| value.to_string()).unwrap_or_default();
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+            let body = body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["kind"], "forbidden", "{method} {uri}");
+        }
+    }
+
     fn test_auth_context() -> AuthContext {
         AuthContext {
             sub: "browser-user".to_string(),
@@ -650,6 +781,18 @@ mod tests {
             via_session: true,
             csrf_token: Some("csrf-123".to_string()),
             email: Some("browser@example.com".to_string()),
+        }
+    }
+
+    fn read_only_auth_context() -> AuthContext {
+        AuthContext {
+            sub: "read-only-user".to_string(),
+            actor_key: None,
+            scopes: vec!["lab:read".to_string()],
+            issuer: "https://issuer.example".to_string(),
+            via_session: true,
+            csrf_token: Some("csrf-123".to_string()),
+            email: Some("reader@example.com".to_string()),
         }
     }
 
