@@ -113,6 +113,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             id,
             created_at,
             session_id,
+            provider,
             role,
             text,
             message_id,
@@ -122,6 +123,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             created_at,
             session_id,
             seq,
+            provider,
             role,
             text,
             message_id,
@@ -130,6 +132,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             id,
             created_at,
             session_id,
+            provider,
             text,
             ..
         } => AcpEvent::ReasoningChunk {
@@ -137,12 +140,14 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             created_at,
             session_id,
             seq,
+            provider,
             text,
         },
         AcpEvent::ToolCallStart {
             id,
             created_at,
             session_id,
+            provider,
             tool_call_id,
             name,
             input,
@@ -152,6 +157,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             created_at,
             session_id,
             seq,
+            provider,
             tool_call_id,
             name,
             input,
@@ -160,6 +166,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             id,
             created_at,
             session_id,
+            provider,
             tool_call_id,
             output,
             status,
@@ -169,6 +176,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             created_at,
             session_id,
             seq,
+            provider,
             tool_call_id,
             output,
             status,
@@ -177,6 +185,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             id,
             created_at,
             session_id,
+            provider,
             request_id,
             action_summary,
             options,
@@ -186,6 +195,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             created_at,
             session_id,
             seq,
+            provider,
             request_id,
             action_summary,
             options,
@@ -194,6 +204,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             id,
             created_at,
             session_id,
+            provider,
             request_id,
             granted,
             ..
@@ -202,6 +213,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             created_at,
             session_id,
             seq,
+            provider,
             request_id,
             granted,
         },
@@ -209,6 +221,7 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             id,
             created_at,
             session_id,
+            provider,
             raw,
             ..
         } => AcpEvent::UsageUpdate {
@@ -216,12 +229,14 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             created_at,
             session_id,
             seq,
+            provider,
             raw,
         },
         AcpEvent::ContentBlocks {
             id,
             created_at,
             session_id,
+            provider,
             blocks,
             ..
         } => AcpEvent::ContentBlocks {
@@ -229,12 +244,14 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             created_at,
             session_id,
             seq,
+            provider,
             blocks,
         },
         AcpEvent::SessionUpdate {
             id,
             created_at,
             session_id,
+            provider,
             state,
             ..
         } => AcpEvent::SessionUpdate {
@@ -242,7 +259,27 @@ pub(crate) fn stamp_event_sequence(event: AcpEvent, seq: u64) -> AcpEvent {
             created_at,
             session_id,
             seq,
+            provider,
             state,
+        },
+        AcpEvent::ProviderSwitch {
+            id,
+            created_at,
+            session_id,
+            from_provider,
+            to_provider,
+            continuity_mode,
+            message,
+            ..
+        } => AcpEvent::ProviderSwitch {
+            id,
+            created_at,
+            session_id,
+            seq,
+            from_provider,
+            to_provider,
+            continuity_mode,
+            message,
         },
         AcpEvent::ProviderInfo {
             id,
@@ -289,6 +326,7 @@ pub(crate) fn event_created_at(event: &AcpEvent) -> &str {
         | AcpEvent::UsageUpdate { created_at, .. }
         | AcpEvent::ContentBlocks { created_at, .. }
         | AcpEvent::SessionUpdate { created_at, .. }
+        | AcpEvent::ProviderSwitch { created_at, .. }
         | AcpEvent::ProviderInfo { created_at, .. }
         | AcpEvent::Unknown { created_at, .. } => created_at,
     }

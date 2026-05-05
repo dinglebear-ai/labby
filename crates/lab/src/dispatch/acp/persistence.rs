@@ -765,6 +765,7 @@ fn event_id(event: &AcpEvent) -> &str {
         | AcpEvent::UsageUpdate { id, .. }
         | AcpEvent::ContentBlocks { id, .. }
         | AcpEvent::SessionUpdate { id, .. }
+        | AcpEvent::ProviderSwitch { id, .. }
         | AcpEvent::ProviderInfo { id, .. }
         | AcpEvent::Unknown { id, .. } => id,
     }
@@ -781,6 +782,7 @@ fn event_kind_str(event: &AcpEvent) -> &'static str {
         AcpEvent::UsageUpdate { .. } => "usage_update",
         AcpEvent::ContentBlocks { .. } => "content_blocks",
         AcpEvent::SessionUpdate { .. } => "session_update",
+        AcpEvent::ProviderSwitch { .. } => "provider_switch",
         AcpEvent::ProviderInfo { .. } => "provider_info",
         AcpEvent::Unknown { .. } => "unknown",
     }
@@ -797,6 +799,7 @@ fn event_created_at(event: &AcpEvent) -> &str {
         | AcpEvent::UsageUpdate { created_at, .. }
         | AcpEvent::ContentBlocks { created_at, .. }
         | AcpEvent::SessionUpdate { created_at, .. }
+        | AcpEvent::ProviderSwitch { created_at, .. }
         | AcpEvent::ProviderInfo { created_at, .. }
         | AcpEvent::Unknown { created_at, .. } => created_at,
     }
@@ -938,6 +941,7 @@ mod db_load_events_tests {
                 session_id: session_id.to_string(),
                 seq: n,
                 created_at: "2026-04-30T00:00:00Z".to_string(),
+                provider: "codex-acp".to_string(),
                 role: "assistant".to_string(),
                 text: format!("chunk-{n}"),
                 message_id: "msg-1".to_string(),
@@ -1048,6 +1052,7 @@ mod hmac_tests {
             session_id: "sess-1".to_string(),
             seq: 7,
             created_at: "2026-04-30T00:00:00Z".to_string(),
+            provider: "codex-acp".to_string(),
             request_id: "perm-1".to_string(),
             granted: true,
         };

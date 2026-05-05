@@ -6,6 +6,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
+use crate::acp::registry::PromptSessionOptions;
 use crate::acp::types::StartSessionInput;
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, to_json};
@@ -252,7 +253,15 @@ pub async fn dispatch_with_registry(
             ensure_prompt_size(&effective_text)?;
 
             registry
-                .prompt_session(session_id, &effective_text, principal)
+                .prompt_session_with_options(
+                    session_id,
+                    &effective_text,
+                    principal,
+                    PromptSessionOptions {
+                        provider: opt_str(&params, "provider").map(ToOwned::to_owned),
+                        continuity_mode: opt_str(&params, "continuity_mode").map(ToOwned::to_owned),
+                    },
+                )
                 .await?;
             to_json(json!({ "ok": true, "session_id": session_id }))
         }
