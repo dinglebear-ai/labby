@@ -1,11 +1,11 @@
 'use client'
 
 import * as React from 'react'
-import { Loader2, MessageSquare, ShieldQuestion } from 'lucide-react'
+import { MessageSquare, ShieldQuestion } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AURORA_CARD_TITLE, AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { MessageBubble } from './message-bubble'
+import { MessageBubble, WorkingAssistantBubble } from './message-bubble'
 import type { ACPMessage, ACPRun } from './types'
 import type { SessionEventConnectionState } from '@/lib/chat/use-session-events'
 
@@ -35,7 +35,7 @@ function EmptyState() {
 }
 
 function SessionStatusNotice({ run, connectionState }: { run: ACPRun; connectionState?: SessionEventConnectionState }) {
-  if (run.status !== 'running' && run.status !== 'waiting_for_permission') {
+  if (run.status !== 'waiting_for_permission') {
     return null
   }
   // Wait until SSE is open — avoids a false "still running" notice during the
@@ -44,29 +44,38 @@ function SessionStatusNotice({ run, connectionState }: { run: ACPRun; connection
     return null
   }
 
-  const waitingForPermission = run.status === 'waiting_for_permission'
-  const Icon = waitingForPermission ? ShieldQuestion : Loader2
+  const Icon = ShieldQuestion
 
   return (
     <div className="rounded-aurora-2 border border-aurora-accent-primary/18 bg-aurora-accent-deep/12 px-3 py-2.5 shadow-[var(--aurora-highlight-medium)]">
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <Icon
-          className={cn(
-            'size-3.5 shrink-0 text-aurora-accent-primary',
-            !waitingForPermission && 'animate-spin',
-          )}
+          className="size-3.5 shrink-0 text-aurora-accent-primary"
         />
-        <span className="text-[12px] font-medium text-aurora-text-primary">
-          {waitingForPermission ? 'Waiting for permission' : 'Running'}
+        <span className="shrink-0 text-[12px] font-medium text-aurora-text-primary">
+          Waiting for permission
         </span>
-        <span className="ml-auto text-[11px] text-aurora-text-muted/60">
-          {waitingForPermission
-            ? 'Approve or reject in the activity panel'
-            : 'Response in progress…'}
+        <span className="ml-auto min-w-0 truncate text-right text-[11px] text-aurora-text-muted/60">
+          Approval needed before the agent can continue
         </span>
       </div>
     </div>
   )
+}
+
+export function shouldShowWorkingAssistantBubble(
+  run: ACPRun | null,
+  messages: ACPMessage[],
+  connectionState?: SessionEventConnectionState,
+) {
+  if (!run) return false
+  if (run.status !== 'running') return false
+  if (connectionState === 'error') return false
+
+  const hasStreamingAssistantMessage = messages.some(
+    (message) => message.role === 'assistant' && Boolean(message.isStreaming),
+  )
+  return !hasStreamingAssistantMessage
 }
 
 export function MessageThread({ run, messages, connectionState }: MessageThreadProps) {
@@ -87,6 +96,9 @@ export function MessageThread({ run, messages, connectionState }: MessageThreadP
         {messages.map((message) => (
           <MessageBubble key={message.id} message={message} />
         ))}
+        {shouldShowWorkingAssistantBubble(run, messages, connectionState) ? (
+          <WorkingAssistantBubble />
+        ) : null}
         <div ref={bottomRef} />
       </div>
     </ScrollArea>
