@@ -41,7 +41,7 @@ function CopyButton({ text }: { text: string }) {
       size="icon"
       onClick={handleCopy}
       aria-label="Copy message"
-      className="size-6 shrink-0 rounded text-aurora-text-muted/40 opacity-0 transition-opacity group-hover/bubble:opacity-100 hover:bg-aurora-hover-bg hover:text-aurora-text-muted"
+      className="size-6 shrink-0 rounded text-aurora-text-muted/40 transition-opacity hover:bg-aurora-hover-bg hover:text-aurora-text-muted sm:opacity-0 sm:group-hover/bubble:opacity-100 sm:focus-visible:opacity-100"
     >
       {copied ? <Check className="size-3 text-aurora-success" /> : <Copy className="size-3" />}
     </Button>
@@ -160,6 +160,44 @@ function AgentActionsPanel({
   )
 }
 
+export function WorkingAssistantBubble({ label = 'Codex is working' }: { label?: string }) {
+  return (
+    <div className="group/bubble flex min-w-0 gap-3">
+      <div className="mt-1 flex size-6 shrink-0 items-center justify-center rounded-full border border-aurora-accent-primary/30 bg-aurora-accent-deep/18">
+        <Bot className="size-3 text-aurora-accent-primary" />
+      </div>
+
+      <div className="flex min-w-0 max-w-[calc(100%-2.25rem)] flex-col gap-2.5 sm:max-w-[80%]">
+        <div
+          role="status"
+          aria-label={label}
+          className="relative max-w-full overflow-hidden rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-medium px-4 py-3 shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]"
+        >
+          <span
+            aria-hidden="true"
+            className="absolute inset-y-0 left-0 w-[2px] rounded-l-aurora-2 bg-aurora-accent-primary/40"
+          />
+
+          <div className="flex min-w-0 items-center gap-2 pr-1 text-[13px] leading-[1.55] text-aurora-text-primary">
+            <span className="font-medium">{label}</span>
+            <span className="inline-flex shrink-0 items-center gap-1" aria-hidden="true">
+              <span className="size-1.5 animate-pulse rounded-full bg-aurora-accent-primary motion-reduce:animate-none" />
+              <span className="size-1.5 animate-pulse rounded-full bg-aurora-accent-primary/70 delay-150 motion-reduce:animate-none" />
+              <span className="size-1.5 animate-pulse rounded-full bg-aurora-accent-primary/40 delay-300 motion-reduce:animate-none" />
+            </span>
+          </div>
+
+          <div className="mt-3 space-y-1.5" aria-hidden="true">
+            <div className="h-2 rounded-full bg-aurora-accent-primary/15" />
+            <div className="h-2 rounded-full bg-aurora-accent-primary/10" />
+            <div className="h-2 w-7/12 rounded-full bg-aurora-accent-primary/10" />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function MessageBubbleComponent({ message }: { message: ACPMessage }) {
   const isUser = message.role === 'user'
   const [reasoningOpen, setReasoningOpen] = React.useState(Boolean(message.isStreaming))
@@ -215,7 +253,7 @@ function MessageBubbleComponent({ message }: { message: ACPMessage }) {
                     <ReasoningTrigger
                       className="text-aurora-text-muted"
                       getThinkingMessage={(isStreaming, duration) => {
-                        if (isStreaming || duration === 0) return <span className="animate-pulse">Reasoning...</span>
+                        if (isStreaming || duration === 0) return <span className="animate-pulse">Reasoning…</span>
                         if (duration === undefined) return <span>Reasoning</span>
                         return <span>Reasoned for {duration} seconds</span>
                       }}
