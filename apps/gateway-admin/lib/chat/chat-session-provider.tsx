@@ -93,7 +93,7 @@ export type ChatSessionActionsContextValue = {
   selectRun: (runId: string) => void
   sendPrompt: (
     payload: PromptPayload,
-    options?: { includePageContext?: boolean; pageContext?: unknown },
+    options?: { includePageContext?: boolean; pageContext?: unknown; providerId?: string | null },
   ) => Promise<void>
   refreshSessions: () => Promise<void>
   refreshProvider: () => Promise<void>
@@ -400,12 +400,15 @@ export function ChatSessionProvider({
 
   const sendPrompt = React.useCallback<ChatSessionActionsContextValue['sendPrompt']>(
     async (payload, options) => {
+      const providerId = options?.providerId ?? selectedProviderId
+      const selectedModelId =
+        providerId === selectedAgent.id ? selectedModel?.id ?? null : selectedModelByProvider[providerId ?? ''] ?? null
       try {
         await sendPromptForSelectedProvider({
           payload,
           selectedRun,
-          selectedProviderId,
-          selectedModelId: selectedModel?.id ?? null,
+          selectedProviderId: providerId,
+          selectedModelId,
           createSession,
           isMobileViewport,
           fetchAcp,
@@ -434,7 +437,9 @@ export function ChatSessionProvider({
       isMobileViewport,
       refreshSessions,
       selectedProviderId,
+      selectedAgent.id,
       selectedModel?.id,
+      selectedModelByProvider,
       selectedRun,
     ],
   )

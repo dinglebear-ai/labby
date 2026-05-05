@@ -9,14 +9,22 @@ import { SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
 import { SessionSidebar } from './session-sidebar'
 import { MessageThread } from './message-thread'
-import { ChatInput } from './chat-input'
+import { ChatInput, type ChatInputPayload } from './chat-input'
 import { SettingsPanel } from './settings-panel'
+import type { ACPMessage } from './types'
 import {
   useChatSessionData,
   useChatSessionActions,
   useChatSessionConnection,
   useChatSessionStream,
 } from '@/lib/chat/chat-session-provider'
+
+export async function retryMessageText(
+  message: Pick<ACPMessage, 'text'> & { attachments?: ChatInputPayload['attachments'] },
+  send: (payload: ChatInputPayload) => Promise<void>,
+) {
+  await send({ text: message.text, attachments: message.attachments ?? [] })
+}
 
 export {
   createSessionForIntent,
@@ -38,6 +46,8 @@ export function ChatShell() {
   const [systemPrompt, setSystemPrompt] = React.useState('')
   const [temperature, setTemperature] = React.useState(0.7)
   const [maxTokens, setMaxTokens] = React.useState(8192)
+  const [draftText, setDraftText] = React.useState('')
+  const [attachmentsResetToken, setAttachmentsResetToken] = React.useState(0)
   const { runs, selectedRun, selectedRunId, providerHealth, selectedAgent, selectedModel, agents, projects } =
     useChatSessionData()
   const { selectRun, createSession, sendPrompt, selectAgent, selectModel } = useChatSessionActions()
@@ -55,15 +65,35 @@ export function ChatShell() {
   }, [createSession, isMobileViewport])
 
   const handleSendPrompt = React.useCallback(
-    async (payload: Parameters<typeof sendPrompt>[0]) => {
+    async (payload: Parameters<typeof sendPrompt>[0], options?: Parameters<typeof sendPrompt>[1]) => {
       try {
-        await sendPrompt(payload)
+        await sendPrompt(payload, options)
       } catch {
         // Provider health carries the failure detail.
       }
     },
     [sendPrompt],
   )
+
+  const handleRetryMessage = React.useCallback(
+    async (message: ACPMessage) => {
+      if (message.runId !== selectedRunId) return
+      await retryMessageText(message, (payload) =>
+        handleSendPrompt(payload, { providerId: selectedRun?.provider ?? selectedAgent.id }),
+      )
+    },
+    [handleSendPrompt, selectedAgent.id, selectedRun?.provider, selectedRunId],
+  )
+
+  const handleEditMessage = React.useCallback((message: ACPMessage) => {
+    setDraftText(message.text)
+    setAttachmentsResetToken((token) => token + 1)
+  }, [])
+
+  React.useEffect(() => {
+    setDraftText('')
+    setAttachmentsResetToken((token) => token + 1)
+  }, [selectedRunId])
 
   React.useEffect(() => {
     const media = window.matchMedia('(max-width: 767px)')
@@ -214,11 +244,22 @@ export function ChatShell() {
               <span className="text-aurora-text-muted">{providerUnavailableMessage}</span>
             </div>
           )}
-          <MessageThread run={selectedRun} messages={messages} connectionState={connectionState} />
+          <MessageThread
+            run={selectedRun}
+            messages={messages}
+            connectionState={connectionState}
+            canRetryMessages={providerReady}
+            canEditMessages
+            onRetryMessage={handleRetryMessage}
+            onEditMessage={handleEditMessage}
+          />
           <ChatInput
             onSend={handleSendPrompt}
             disabled={!providerReady}
             disabledReason={providerUnavailableMessage ?? undefined}
+            draftText={draftText}
+            onDraftTextChange={setDraftText}
+            attachmentsResetToken={attachmentsResetToken}
             selectedAgent={selectedAgent}
             agents={agents.length > 0 ? agents : [selectedAgent]}
             onSelectAgent={selectAgent}

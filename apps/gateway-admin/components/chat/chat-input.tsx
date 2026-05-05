@@ -27,6 +27,9 @@ interface ChatInputProps {
   onSend: (payload: ChatInputPayload) => void | Promise<void>
   disabled?: boolean
   disabledReason?: string
+  draftText?: string
+  onDraftTextChange?: (value: string) => void
+  attachmentsResetToken?: number
   selectedAgent: ACPAgent | null
   agents: ACPAgent[]
   onSelectAgent: (agentId: string) => void
@@ -49,14 +52,17 @@ export function ChatInput({
   onSend,
   disabled = false,
   disabledReason,
+  draftText,
+  onDraftTextChange,
+  attachmentsResetToken,
   selectedAgent,
   agents,
   onSelectAgent,
   selectedModel,
-  modelOptions,
-  onSelectModel,
+  modelOptions = [],
+  onSelectModel = () => {},
 }: ChatInputProps) {
-  const [value, setValue] = React.useState('')
+  const [uncontrolledValue, setUncontrolledValue] = React.useState('')
   const [sending, setSending] = React.useState(false)
   const [agentPickerOpen, setAgentPickerOpen] = React.useState(false)
   const [modelPickerOpen, setModelPickerOpen] = React.useState(false)
@@ -81,6 +87,17 @@ export function ChatInput({
   const [activeModelIndex, setActiveModelIndex] = React.useState(0)
   const pickerId = React.useId()
   const modelPickerId = React.useId()
+
+  const value = draftText ?? uncontrolledValue
+  const setValue = React.useCallback(
+    (nextValue: string) => {
+      if (draftText === undefined) {
+        setUncontrolledValue(nextValue)
+      }
+      onDraftTextChange?.(nextValue)
+    },
+    [draftText, onDraftTextChange],
+  )
 
   optionRefs.current.length = agents.length
   modelOptionRefs.current.length = modelOptions.length
@@ -178,6 +195,16 @@ export function ChatInput({
     setValue(e.target.value)
     resizeChatPromptTextarea(e.target)
   }
+
+  React.useEffect(() => {
+    if (!textareaRef.current) return
+    textareaRef.current.style.height = 'auto'
+    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`
+  }, [value])
+
+  React.useEffect(() => {
+    setAttachments([])
+  }, [attachmentsResetToken])
 
   React.useEffect(() => {
     if (!agentPickerOpen) return
