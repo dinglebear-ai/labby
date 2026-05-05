@@ -439,7 +439,7 @@ impl AcpSessionRegistry {
         let session = self.get_session_arc(session_id).await?;
         Self::check_principal(&session, principal)?;
 
-        {
+        let previous_state = {
             let state = session.state.read().await;
             if !state.can_transition_to(&AcpSessionState::Running) {
                 return Err(ToolError::Sdk {
@@ -447,7 +447,8 @@ impl AcpSessionRegistry {
                     message: format!("session is in state {state:?}, cannot send prompt"),
                 });
             }
-        }
+            state.clone()
+        };
         {
             let mut state = session.state.write().await;
             *state = AcpSessionState::Running;
@@ -474,9 +475,24 @@ impl AcpSessionRegistry {
             "ACP session prompt dispatched",
         );
 
-        let prompt = self
+        let prompt = match self
             .switch_runtime_if_requested(&session, prompt, options)
-            .await?;
+            .await
+        {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                {
+                    let mut state = session.state.write().await;
+                    *state = previous_state.clone();
+                }
+                {
+                    let mut summary = session.summary.write().await;
+                    summary.state = previous_state;
+                    summary.updated_at = jiff::Timestamp::now().to_string();
+                }
+                return Err(error);
+            }
+        };
 
         let needs_reattach = { session.handle.lock().await.is_none() };
         if needs_reattach {
@@ -1757,28 +1773,36 @@ async fn build_handoff_prompt(session: &Arc<Session>, from_provider: &str, promp
     } else {
         lines.join("\n")
     };
-    let mut handoff = format!(
+    let prompt_section = format!("\n\nNew user prompt:\n{prompt}");
+    let mut transcript_header = "Recent transcript:\n";
+    let mut transcript_body = transcript.as_str();
+    let prefix = format!(
         "You are continuing a Lab conversation that was previously handled by {from_provider}.\n\
-         Continuity mode: handoff.\n\
-         Recent transcript:\n{transcript}\n\n\
-         New user prompt:\n{prompt}"
+         Continuity mode: handoff.\n"
     );
-    if handoff.len() > HANDOFF_MAX_BYTES {
-        let tail = handoff
-            .chars()
-            .rev()
-            .take(HANDOFF_MAX_BYTES)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<String>();
-        handoff = format!(
-            "You are continuing a Lab conversation that was previously handled by {from_provider}.\n\
-             Continuity mode: handoff.\n\
-             Recent transcript was truncated to fit the handoff budget.\n{tail}\n",
-        );
+    let full_len =
+        prefix.len() + transcript_header.len() + transcript_body.len() + prompt_section.len();
+    if full_len > HANDOFF_MAX_BYTES {
+        transcript_header = "Recent transcript was truncated to fit the handoff budget.\n";
+        let fixed_len = prefix.len() + transcript_header.len() + prompt_section.len();
+        let transcript_budget = HANDOFF_MAX_BYTES.saturating_sub(fixed_len);
+        transcript_body = utf8_tail_by_bytes(&transcript, transcript_budget);
     }
-    handoff
+    format!("{prefix}{transcript_header}{transcript_body}{prompt_section}")
+}
+
+fn utf8_tail_by_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    if max_bytes == 0 {
+        return "";
+    }
+    let mut start = value.len().saturating_sub(max_bytes);
+    while start < value.len() && !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
 }
 
 // ---------------------------------------------------------------------------
@@ -1976,6 +2000,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prompt_session_rolls_back_state_when_provider_switch_fails() {
+        let registry = test_registry();
+        registry
+            .inject_fake_session("switch-fail-sess", "alice")
+            .await;
+
+        let err = registry
+            .prompt_session_with_options(
+                "switch-fail-sess",
+                "continue this on another provider",
+                "alice",
+                PromptSessionOptions {
+                    provider: Some("missing-provider".to_string()),
+                    continuity_mode: Some("handoff".to_string()),
+                },
+            )
+            .await
+            .expect_err("unknown provider switch should fail");
+
+        assert_eq!(err.kind(), "invalid_param");
+        let summary = registry
+            .get_session("switch-fail-sess")
+            .await
+            .expect("session summary");
+        assert_eq!(summary.state, AcpSessionState::Idle);
+    }
+
+    #[tokio::test]
+    async fn handoff_truncation_preserves_full_prompt_and_utf8_boundaries() {
+        let registry = test_registry();
+        registry.inject_fake_session("handoff-sess", "alice").await;
+        let session = registry
+            .get_session_arc("handoff-sess")
+            .await
+            .expect("session");
+        {
+            let mut events = session.events.write().await;
+            events.push(AcpEvent::MessageChunk {
+                id: "evt-1".to_string(),
+                created_at: "2026-05-05T00:00:00Z".to_string(),
+                session_id: "handoff-sess".to_string(),
+                seq: 1,
+                provider: "codex-acp".to_string(),
+                role: "assistant".to_string(),
+                text: "🙂".repeat(HANDOFF_MAX_BYTES),
+                message_id: "msg-1".to_string(),
+            });
+        }
+        let prompt = format!("Preserve this exact prompt: {}", "ü".repeat(256));
+
+        let handoff = build_handoff_prompt(&session, "codex-acp", &prompt).await;
+
+        assert!(
+            handoff.ends_with(&format!("New user prompt:\n{prompt}")),
+            "handoff should preserve the full new prompt"
+        );
+        assert!(
+            handoff.len() <= HANDOFF_MAX_BYTES + "\n\nNew user prompt:\n".len() + prompt.len(),
+            "transcript truncation should stay byte-bounded apart from the preserved prompt"
+        );
+        assert!(std::str::from_utf8(handoff.as_bytes()).is_ok());
+    }
+
+    #[tokio::test]
     async fn test_session_limit_resets_after_removal() {
         let registry = test_registry();
         for i in 0..MAX_CONCURRENT_SESSIONS {
@@ -2006,5 +2094,11 @@ mod tests {
             title_from_prompt(prompt).as_deref(),
             Some("Summarize the Docker ACP session creation behavior and identi...")
         );
+    }
+
+    #[test]
+    fn utf8_tail_by_bytes_never_splits_multibyte_characters() {
+        assert_eq!(utf8_tail_by_bytes("a🙂b", 2), "b");
+        assert_eq!(utf8_tail_by_bytes("a🙂b", 5), "🙂b");
     }
 }
