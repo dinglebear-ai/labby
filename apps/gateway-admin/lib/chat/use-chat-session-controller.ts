@@ -127,8 +127,11 @@ export function resolveSelectedModel(
   const models = agent?.models ?? []
   if (models.length === 0) return null
   const runModel = selectedRun?.provider === agent?.id ? selectedRun.modelId : null
-  const candidate = requestedModelId ?? runModel ?? agent?.currentModelId ?? agent?.defaultModelId ?? null
-  return models.find((model) => model.id === candidate) ?? models[0] ?? null
+  for (const candidate of [requestedModelId, runModel, agent?.currentModelId, agent?.defaultModelId]) {
+    const model = candidate ? models.find((option) => option.id === candidate) : null
+    if (model) return model
+  }
+  return models[0] ?? null
 }
 
 export type PromptPayload = {

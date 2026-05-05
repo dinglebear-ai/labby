@@ -216,8 +216,6 @@ impl AcpSessionRegistry {
             for health in &mut healths {
                 if let Some(provider_models) = models.get(&health.provider) {
                     health.models = provider_models.clone();
-                    health.default_model_id = provider_models.first().map(|model| model.id.clone());
-                    health.current_model_id = health.default_model_id.clone();
                 }
             }
         }
@@ -1868,5 +1866,28 @@ mod tests {
 
         assert_eq!(model_id.as_deref(), Some("gpt-5.4"));
         assert_eq!(model_name.as_deref(), Some("GPT 5.4"));
+    }
+
+    #[test]
+    fn provider_healths_does_not_synthesize_current_or_default_model_from_order() {
+        let registry = AcpSessionRegistry::new_for_test_with_provider_models(vec![(
+            "codex-acp".to_string(),
+            vec![AcpModelOption {
+                id: "gpt-5-mini".to_string(),
+                name: "GPT-5 Mini".to_string(),
+                description: None,
+                fixed: false,
+            }],
+        )]);
+
+        let codex = registry
+            .provider_healths()
+            .into_iter()
+            .find(|health| health.provider == "codex-acp")
+            .expect("codex provider health should be present");
+
+        assert_eq!(codex.models.len(), 1);
+        assert_eq!(codex.default_model_id, None);
+        assert_eq!(codex.current_model_id, None);
     }
 }

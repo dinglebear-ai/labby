@@ -151,7 +151,10 @@ test('resolveSelectedModel clears invalid model when adapter changes', () => {
     description: '',
     version: 'live',
     capabilities: [],
-    models: [{ id: 'gpt-5', name: 'GPT-5' }],
+    models: [
+      { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
+      { id: 'gpt-5', name: 'GPT-5' },
+    ],
     defaultModelId: 'gpt-5',
   }
   const claude: ACPAgent = {
@@ -166,6 +169,33 @@ test('resolveSelectedModel clears invalid model when adapter changes', () => {
 
   assert.equal(resolveSelectedModel(codex, 'sonnet-4.5', null)?.id, 'gpt-5')
   assert.equal(resolveSelectedModel(claude, 'gpt-5', null)?.id, 'sonnet-4.5')
+})
+
+test('resolveSelectedModel falls through invalid requested ids before using list order', () => {
+  const codex: ACPAgent = {
+    id: 'codex-acp',
+    name: 'Codex ACP',
+    description: '',
+    version: 'live',
+    capabilities: [],
+    models: [
+      { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
+      { id: 'gpt-5', name: 'GPT-5' },
+      { id: 'gpt-5-pro', name: 'GPT-5 Pro' },
+    ],
+    defaultModelId: 'gpt-5',
+    currentModelId: 'gpt-5-pro',
+  }
+
+  assert.equal(resolveSelectedModel(codex, 'stale-model', null)?.id, 'gpt-5-pro')
+  assert.equal(
+    resolveSelectedModel(codex, 'stale-model', {
+      ...run('run-codex'),
+      provider: 'codex-acp',
+      modelId: 'gpt-5',
+    })?.id,
+    'gpt-5',
+  )
 })
 
 test('ensurePromptRunIdForProvider creates a run when selected provider differs from selected run', async () => {

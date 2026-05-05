@@ -145,6 +145,20 @@ struct CreateSessionBody {
     model_id: Option<String>,
 }
 
+fn preferred_model_param(model: Option<String>, model_id: Option<String>) -> Option<String> {
+    model
+        .and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .or_else(|| {
+            model_id.and_then(|value| {
+                let trimmed = value.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            })
+        })
+}
+
 async fn create_session(
     State(state): State<AppState>,
     auth: Option<Extension<AuthContext>>,
@@ -158,7 +172,7 @@ async fn create_session(
         "provider": body.provider,
         "cwd": body.cwd,
         "title": body.title,
-        "model": body.model.or(body.model_id),
+        "model": preferred_model_param(body.model, body.model_id),
         "principal": principal,
     });
     match dispatch_with_registry(&state.acp_registry, "session.start", params).await {
@@ -232,12 +246,33 @@ async fn prompt_session(
         "session_id": session_id,
         "text": body.prompt.trim(),
         "page_context": page_context_value,
-        "model": body.model.or(body.model_id),
+        "model": preferred_model_param(body.model, body.model_id),
         "principal": principal,
     });
     match dispatch_with_registry(&state.acp_registry, "session.prompt", params).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => e.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preferred_model_param;
+
+    #[test]
+    fn preferred_model_param_treats_blank_model_as_absent() {
+        assert_eq!(
+            preferred_model_param(Some("  ".to_string()), Some("gpt-5".to_string())),
+            Some("gpt-5".to_string())
+        );
+        assert_eq!(
+            preferred_model_param(Some(" claude ".to_string()), Some("gpt-5".to_string())),
+            Some("claude".to_string())
+        );
+        assert_eq!(
+            preferred_model_param(Some("".to_string()), Some(" ".to_string())),
+            None
+        );
     }
 }
 
