@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { MessageBubble, getMessageCopyText } from './message-bubble'
+import { MessageBubble, WorkingAssistantBubble, getMessageCopyText } from './message-bubble'
 import type { ACPMessage } from './types'
 
 function assistantMessage(overrides: Partial<ACPMessage> = {}): ACPMessage {
@@ -229,4 +229,18 @@ test('keeps large fenced code blocks in an overflow-safe markdown container', ()
   assert.match(markup, /overflow-x-auto/)
   assert.match(markup, new RegExp(longCommand))
   assert.doesNotMatch(markup, /```sh/)
+})
+
+test('renders assistant working placeholder as a stable assistant bubble', () => {
+  const markup = renderToStaticMarkup(<WorkingAssistantBubble label="Codex is working" />)
+
+  assert.match(markup, /Codex is working/)
+  assert.match(markup, /aria-label="Codex is working"/)
+  assert.match(markup, /role="status"/)
+  assert.match(markup, /group\/bubble flex min-w-0 gap-3/)
+  assert.match(markup, /border-aurora-accent-primary\/30/)
+  assert.match(markup, /animate-pulse/)
+  assert.match(markup, /motion-reduce:animate-none/)
+  assert.match(markup, /h-2 rounded-full/)
+  assert.doesNotMatch(markup, /Copy message/)
 })
