@@ -80,3 +80,15 @@ pub fn parse_services_filter(params: &Value) -> Option<Vec<String>> {
             .collect(),
     )
 }
+
+pub fn parse_service(params: &Value) -> Result<String, ToolError> {
+    params
+        .get("service")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
+        .ok_or_else(|| ToolError::MissingParam {
+            message: "missing required parameter `service`".into(),
+            param: "service".into(),
+        })
+}

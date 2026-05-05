@@ -76,7 +76,9 @@ impl LabMcpServer {
     }
 
     pub(crate) async fn catalog_json(&self) -> anyhow::Result<Value> {
-        let mut catalog = crate::catalog::build_catalog(&self.registry);
+        let show_all = std::env::var("LAB_SHOW_ALL").as_deref() == Ok("1");
+        let registry = crate::registry::filter_by_configured_env(&self.registry, show_all);
+        let mut catalog = crate::catalog::build_catalog(&registry);
         let mut services = Vec::new();
         for mut service in catalog.services {
             if !self.service_visible_on_mcp(&service.name).await {

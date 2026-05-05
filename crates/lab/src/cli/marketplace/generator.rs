@@ -239,7 +239,7 @@ fn install_core_command(org: &str) -> String {
 }
 
 fn install_binary_skill() -> &'static str {
-    r#"---
+    r"---
 name: install-binary
 description: Ensure the bundled labby binary is reachable from ~/.local/bin.
 ---
@@ -258,7 +258,7 @@ ln -sfn "${CLAUDE_PLUGIN_ROOT}/bin/labby" ~/.local/bin/labby
 If symlink creation fails, tell the user that the core binary is still available at `${CLAUDE_PLUGIN_ROOT}/bin/labby`; service plugins use that absolute plugin path directly and do not require PATH.
 
 Never install other plugins, edit Claude Code config, or restart services.
-"#
+"
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
