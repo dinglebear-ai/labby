@@ -540,7 +540,7 @@
         },
         {
           "name": "gateway.oauth.probe",
-          "description": "Probe a URL for OAuth support via RFC 8414 AS metadata discovery. Registers a transient OAuth manager so subsequent authorize calls work.",
+          "description": "Probe a URL for OAuth support via RFC 8414 AS metadata discovery. Rejects userinfo, query strings, and fragments. Registers a transient OAuth manager keyed by URL host, port, and path; it is persisted only after a successful callback updates gateway config.",
           "destructive": true,
           "params": [
             {
@@ -847,6 +847,55 @@
             }
           ],
           "returns": "CommitOutcome"
+        },
+        {
+          "name": "installed_plugins",
+          "description": "List installed Claude Code lab plugins",
+          "destructive": false,
+          "params": [
+            {
+              "name": "force",
+              "ty": "bool",
+              "required": false,
+              "description": "Bypass the short in-process cache"
+            }
+          ],
+          "returns": "InstalledPlugin[]"
+        },
+        {
+          "name": "services_status",
+          "description": "Join service configuration, draft, and Claude plugin state",
+          "destructive": false,
+          "params": [],
+          "returns": "ServiceStatus[]"
+        },
+        {
+          "name": "install_plugin",
+          "description": "Install the Claude Code plugin for one configured service",
+          "destructive": true,
+          "params": [
+            {
+              "name": "service",
+              "ty": "string",
+              "required": true,
+              "description": "Registered service name"
+            }
+          ],
+          "returns": "PluginMutationResult"
+        },
+        {
+          "name": "uninstall_plugin",
+          "description": "Uninstall the Claude Code plugin for one service",
+          "destructive": true,
+          "params": [
+            {
+              "name": "service",
+              "ty": "string",
+              "required": true,
+              "description": "Registered service name"
+            }
+          ],
+          "returns": "PluginMutationResult"
         },
         {
           "name": "finalize",
