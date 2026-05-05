@@ -1,7 +1,8 @@
 import type { LocalAttachmentDraft, SerializableLocalAttachment } from '@/lib/fs/types'
 
 export const MAX_LOCAL_ATTACHMENTS = 5
-export const MAX_LOCAL_ATTACHMENT_BYTES = 2 * 1024 * 1024
+export const MAX_LOCAL_ATTACHMENT_BYTES = 48 * 1024
+export const MAX_LOCAL_ATTACHMENT_LABEL = '48 KiB'
 
 const ALLOWED_EXACT_TYPES = new Set([
   'application/json',
@@ -58,7 +59,7 @@ export function validateLocalFiles(
     }
 
     if (candidate.size > MAX_LOCAL_ATTACHMENT_BYTES) {
-      errors.push(`${candidate.name} is larger than 2 MiB.`)
+      errors.push(`${candidate.name} is larger than ${MAX_LOCAL_ATTACHMENT_LABEL}.`)
       continue
     }
 
@@ -83,7 +84,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 export async function fileToSerializableAttachment(
   attachment: LocalAttachmentDraft,
 ): Promise<SerializableLocalAttachment> {
-  const mimeType = attachment.file.type || 'application/octet-stream'
+  const mimeType = (attachment.file.type || 'application/octet-stream').trim().toLowerCase()
   const base = {
     kind: 'local' as const,
     id: attachment.id,
@@ -92,7 +93,7 @@ export async function fileToSerializableAttachment(
     size: attachment.file.size,
   }
 
-  if (mimeType.trim().toLowerCase().startsWith('text/') || mimeType === 'application/json') {
+  if (mimeType.startsWith('text/') || mimeType === 'application/json') {
     return {
       ...base,
       contentKind: 'text',

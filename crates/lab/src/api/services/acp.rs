@@ -22,7 +22,7 @@ use crate::dispatch::acp::catalog::ACTIONS;
 use crate::dispatch::acp::dispatch::dispatch_with_registry;
 use crate::dispatch::acp::dispatch::validate_subscribe_ticket;
 use crate::dispatch::acp::params::{
-    PromptAttachmentParam, local_prompt_attachments, validate_prompt_attachments,
+    PromptAttachmentParam, into_local_prompt_attachments, validate_prompt_attachments,
 };
 use crate::dispatch::error::ToolError;
 
@@ -218,7 +218,7 @@ async fn prompt_session(
     if let Err(error) = validate_prompt_attachments(&attachments) {
         return error.into_response();
     }
-    let local_attachments = local_prompt_attachments(&attachments);
+    let local_attachments = into_local_prompt_attachments(attachments);
 
     // Pass page_context as a JSON object to the dispatch layer.
     // All sanitization and prefix assembly happens there — HTTP handler is a thin shim.

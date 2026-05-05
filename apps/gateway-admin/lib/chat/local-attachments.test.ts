@@ -38,7 +38,7 @@ test('validateLocalFiles rejects unsupported types, oversized files, and count o
   assert.equal(result.accepted.length, 0)
   assert.ok(result.errors.some((message) => message.includes('You can attach up to 5 files')))
   assert.ok(result.errors.some((message) => message.includes('archive.zip has unsupported type application/zip')))
-  assert.ok(result.errors.some((message) => message.includes('big.txt is larger than 2 MiB')))
+  assert.ok(result.errors.some((message) => message.includes('big.txt is larger than 48 KiB')))
 })
 
 test('fileToSerializableAttachment emits text resources for text files', async () => {
@@ -81,4 +81,19 @@ test('fileToSerializableAttachment emits base64 blob resources for binary files'
     contentKind: 'blob',
     base64: 'AQID',
   })
+})
+
+test('fileToSerializableAttachment normalizes json MIME casing before content selection', async () => {
+  const result = await fileToSerializableAttachment(
+    {
+      id: 'local-json',
+      kind: 'local',
+      file: file('data.json', 'Application/JSON', '{"ok":true}'),
+      previewUrl: null,
+    },
+  )
+
+  assert.equal(result.mimeType, 'application/json')
+  assert.equal(result.contentKind, 'text')
+  assert.equal(result.text, '{"ok":true}')
 })

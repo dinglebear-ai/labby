@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use std::{collections::HashMap, fmt};
 
 use agent_client_protocol::schema::{
-    BlobResourceContents, CancelNotification, ClientCapabilities, ConfigOptionUpdate,
-    ContentBlock, ContentChunk, CreateTerminalRequest, CurrentModeUpdate, EmbeddedResource,
+    BlobResourceContents, CancelNotification, ClientCapabilities, ConfigOptionUpdate, ContentBlock,
+    ContentChunk, CreateTerminalRequest, CurrentModeUpdate, EmbeddedResource,
     EmbeddedResourceResource, FileSystemCapabilities, Implementation, InitializeRequest,
     KillTerminalRequest, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
     ProtocolVersion, ReadTextFileRequest, ReleaseTerminalRequest, RequestPermissionOutcome,
@@ -185,10 +185,14 @@ fn prompt_input_to_content_blocks(input: &PromptInput) -> Vec<ContentBlock> {
     blocks.push(ContentBlock::Text(TextContent::new(input.text.clone())));
 
     for attachment in &input.attachments {
-        let uri = format!("file://local-attachment/{}", attachment.name);
+        let uri = format!(
+            "file://local-attachment/{}",
+            percent_encode_path_segment(&attachment.name)
+        );
         let resource = match &attachment.content {
             PromptAttachmentContent::Text(text) => EmbeddedResourceResource::TextResourceContents(
-                TextResourceContents::new(text.clone(), uri).mime_type(attachment.mime_type.clone()),
+                TextResourceContents::new(text.clone(), uri)
+                    .mime_type(attachment.mime_type.clone()),
             ),
             PromptAttachmentContent::Blob(base64) => {
                 EmbeddedResourceResource::BlobResourceContents(
@@ -201,6 +205,21 @@ fn prompt_input_to_content_blocks(input: &PromptInput) -> Vec<ContentBlock> {
     }
 
     blocks
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => {
+                encoded.push(char::from(byte));
+            }
+            _ => {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    encoded
 }
 
 #[derive(Default)]
@@ -2296,6 +2315,14 @@ mod tests {
         AvailableCommandsUpdate, PermissionOptionId, TextContent, ToolCall, ToolCallUpdate,
         ToolCallUpdateFields,
     };
+
+    #[test]
+    fn percent_encode_path_segment_escapes_local_attachment_names() {
+        assert_eq!(
+            percent_encode_path_segment("../my notes#1.txt"),
+            "..%2Fmy%20notes%231.txt"
+        );
+    }
 
     #[test]
     fn launch_uses_structured_args_when_present() {
