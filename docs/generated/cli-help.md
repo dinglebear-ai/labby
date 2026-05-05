@@ -75,7 +75,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -105,7 +105,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -120,7 +120,7 @@ Options:
 
       --role <ROLE>
           Explicit runtime role override. Takes precedence over [node].role in config.toml and over hostname-based inference. `--role node` requires a controller host to be configured
-          
+
           [possible values: controller, node]
 
   -h, --help
@@ -143,7 +143,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -167,7 +167,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -197,7 +197,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -218,7 +218,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -239,7 +239,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -264,7 +264,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -285,7 +285,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -310,7 +310,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -331,7 +331,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -352,7 +352,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -379,7 +379,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -400,7 +400,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -417,7 +417,7 @@ Usage: get [OPTIONS] <NODE_ID>
 
 Arguments:
   <NODE_ID>
-          
+
 
 Options:
       --json
@@ -425,7 +425,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -453,7 +453,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -479,7 +479,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -500,7 +500,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -517,18 +517,18 @@ Usage: approve [OPTIONS] <NODE_ID>
 
 Arguments:
   <NODE_ID>
-          
+
 
 Options:
       --json
           Emit JSON instead of human-readable tables
 
       --note <NOTE>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -545,18 +545,18 @@ Usage: deny [OPTIONS] <NODE_ID>
 
 Arguments:
   <NODE_ID>
-          
+
 
 Options:
       --json
           Emit JSON instead of human-readable tables
 
       --reason <REASON>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -577,7 +577,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -598,7 +598,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -622,7 +622,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -647,7 +647,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -672,7 +672,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -697,7 +697,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -718,7 +718,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -745,13 +745,13 @@ Options:
 
       --mode <MODE>
           Setup UI mode. Standalone setup defaults to full; /setup-core passes plugin
-          
+
           [default: full]
           [possible values: plugin, full]
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -784,7 +784,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -805,7 +805,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -833,7 +833,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -864,7 +864,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -891,7 +891,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -915,7 +915,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -944,12 +944,12 @@ Options:
           Possible values:
           - http:     HTTP service with CLI, MCP, and API adapters
           - non-http: Non-HTTP service that still participates in the onboarding contract
-          
+
           [default: http]
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -973,7 +973,7 @@ Usage: completions [OPTIONS] <SHELL>
 Arguments:
   <SHELL>
           Target shell
-          
+
           [possible values: bash, elvish, fish, powershell, zsh]
 
 Options:
@@ -982,7 +982,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1007,7 +1007,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1041,16 +1041,16 @@ Manage proxied upstream MCP gateways
 Usage: gateway [OPTIONS] <COMMAND>
 
 Commands:
-  list         
-  get          
-  test         
-  add          
-  update       
-  remove       
-  quarantine   
-  tool-search  
-  reload       
-  mcp          
+  list
+  get
+  test
+  add
+  update
+  remove
+  quarantine
+  tool-search
+  reload
+  mcp
 
 Options:
       --json
@@ -1058,7 +1058,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1077,7 +1077,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1092,7 +1092,7 @@ Usage: get [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --json
@@ -1100,7 +1100,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1118,14 +1118,14 @@ Options:
           Emit JSON instead of human-readable tables
 
       --name <NAME>
-          
+
 
       --allow-stdio
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1143,31 +1143,31 @@ Options:
           Emit JSON instead of human-readable tables
 
       --name <NAME>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --url <URL>
-          
+
 
       --command <COMMAND>
-          
+
 
       --arg <ARGS>
-          
+
 
       --bearer-token-env <BEARER_TOKEN_ENV>
-          
+
 
       --proxy-resources
-          
+
 
       --allow-stdio
-          
+
 
   -h, --help
           Print help
@@ -1180,38 +1180,38 @@ Usage: update [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --json
           Emit JSON instead of human-readable tables
 
       --new-name <NEW_NAME>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --url <URL>
-          
+
 
       --command <COMMAND>
-          
+
 
       --arg <ARGS>
-          
+
 
       --bearer-token-env <BEARER_TOKEN_ENV>
-          
+
 
       --proxy-resources <PROXY_RESOURCES>
           [possible values: true, false]
 
       --allow-stdio
-          
+
 
   -h, --help
           Print help
@@ -1224,7 +1224,7 @@ Usage: remove [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --json
@@ -1232,7 +1232,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1246,8 +1246,8 @@ Options:
 Usage: quarantine [OPTIONS] <COMMAND>
 
 Commands:
-  list     
-  restore  
+  list
+  restore
 
 Options:
       --json
@@ -1255,7 +1255,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1274,7 +1274,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1289,7 +1289,7 @@ Usage: restore [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          
+
 
 Options:
       --json
@@ -1297,7 +1297,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1311,9 +1311,9 @@ Options:
 Usage: tool-search [OPTIONS] <COMMAND>
 
 Commands:
-  status   
-  enable   
-  disable  
+  status
+  enable
+  disable
 
 Options:
       --json
@@ -1321,7 +1321,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1340,7 +1340,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1358,16 +1358,16 @@ Options:
           Emit JSON instead of human-readable tables
 
       --top-k-default <TOP_K_DEFAULT>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --max-tools <MAX_TOOLS>
-          
+
 
   -h, --help
           Print help
@@ -1384,7 +1384,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1403,7 +1403,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1417,11 +1417,11 @@ Options:
 Usage: mcp [OPTIONS] <COMMAND>
 
 Commands:
-  auth     
-  list     
-  enable   
-  disable  
-  cleanup  
+  auth
+  list
+  enable
+  disable
+  cleanup
 
 Options:
       --json
@@ -1429,7 +1429,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1443,10 +1443,10 @@ Options:
 Usage: auth [OPTIONS] <COMMAND>
 
 Commands:
-  start   
-  open    
-  status  
-  clear   
+  start
+  open
+  status
+  clear
 
 Options:
       --json
@@ -1454,7 +1454,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1469,26 +1469,26 @@ Usage: start [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --json
           Emit JSON instead of human-readable tables
 
       --subject <SUBJECT>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --open
-          
+
 
       --wait
-          
+
 
       --wait-timeout-secs <WAIT_TIMEOUT_SECS>
           [default: 120]
@@ -1504,26 +1504,26 @@ Usage: open [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --json
           Emit JSON instead of human-readable tables
 
       --subject <SUBJECT>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --open
-          
+
 
       --wait
-          
+
 
       --wait-timeout-secs <WAIT_TIMEOUT_SECS>
           [default: 120]
@@ -1539,26 +1539,26 @@ Usage: status [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --json
           Emit JSON instead of human-readable tables
 
       --subject <SUBJECT>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --open
-          
+
 
       --wait
-          
+
 
       --wait-timeout-secs <WAIT_TIMEOUT_SECS>
           [default: 120]
@@ -1574,26 +1574,26 @@ Usage: clear [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --json
           Emit JSON instead of human-readable tables
 
       --subject <SUBJECT>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --open
-          
+
 
       --wait
-          
+
 
       --wait-timeout-secs <WAIT_TIMEOUT_SECS>
           [default: 120]
@@ -1613,7 +1613,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1628,26 +1628,26 @@ Usage: enable [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --allow-stdio
-          
+
 
       --json
           Emit JSON instead of human-readable tables
 
       --cleanup
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --aggressive
-          
+
 
   -h, --help
           Print help
@@ -1660,26 +1660,26 @@ Usage: disable [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --allow-stdio
-          
+
 
       --json
           Emit JSON instead of human-readable tables
 
       --cleanup
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --aggressive
-          
+
 
   -h, --help
           Print help
@@ -1692,23 +1692,23 @@ Usage: cleanup [OPTIONS] <NAME>
 
 Arguments:
   <NAME>
-          
+
 
 Options:
       --aggressive
-          
+
 
       --json
           Emit JSON instead of human-readable tables
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --dry-run
-          
+
 
   -h, --help
           Print help
@@ -1722,7 +1722,7 @@ Run local OAuth callback relay helpers
 Usage: oauth [OPTIONS] <COMMAND>
 
 Commands:
-  relay-local  
+  relay-local
 
 Options:
       --json
@@ -1730,7 +1730,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1748,19 +1748,19 @@ Options:
           Emit JSON instead of human-readable tables
 
       --machine <MACHINE>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --forward-base <FORWARD_BASE>
-          
+
 
       --port <PORT>
-          
+
 
   -h, --help
           Print help
@@ -1784,7 +1784,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1801,10 +1801,10 @@ Usage: search [OPTIONS] <DEVICE> <QUERY>
 
 Arguments:
   <DEVICE>
-          
+
 
   <QUERY>
-          
+
 
 Options:
       --json
@@ -1812,7 +1812,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1839,7 +1839,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1859,19 +1859,19 @@ Options:
           Emit JSON instead of human-readable tables
 
       --text <TEXT>
-          
+
 
       --after-ts <AFTER_TS>
-          
+
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --before-ts <BEFORE_TS>
-          
+
 
       --level <LEVELS>
           [possible values: trace, debug, info, warn, error]
@@ -1883,19 +1883,19 @@ Options:
           [possible values: cli, mcp, api, web, core_runtime]
 
       --action <ACTION>
-          
+
 
       --request-id <REQUEST_ID>
-          
+
 
       --session-id <SESSION_ID>
-          
+
 
       --correlation-id <CORRELATION_ID>
-          
+
 
       --limit <LIMIT>
-          
+
 
   -h, --help
           Print help
@@ -1910,22 +1910,22 @@ Usage: tail [OPTIONS]
 
 Options:
       --after-ts <AFTER_TS>
-          
+
 
       --json
           Emit JSON instead of human-readable tables
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --since-event-id <SINCE_EVENT_ID>
-          
+
 
       --limit <LIMIT>
-          
+
 
   -h, --help
           Print help
@@ -1944,7 +1944,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1965,7 +1965,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -1986,28 +1986,28 @@ Options:
 
       --master-url <MASTER_URL>
           Override the master base URL (default: LAB_MASTER_URL)
-          
+
           [env: LAB_MASTER_URL=]
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --master-token <MASTER_TOKEN>
           Override the bearer token (default: LAB_MASTER_TOKEN or LAB_MCP_HTTP_TOKEN)
-          
+
           [env: LAB_MASTER_TOKEN=]
 
       --node-id <NODE_ID>
           Node ID to stamp on every forwarded event (default: LAB_NODE_ID or hostname)
-          
+
           [env: LAB_NODE_ID=]
 
       --batch-size <BATCH_SIZE>
           How many events to batch per request (default 200)
-          
+
           [default: 200]
 
       --syslog-only
@@ -2030,7 +2030,7 @@ Commands:
 Arguments:
   [ACTION]
           Action to run (e.g. sources.list, plugins.list, plugin.install)
-          
+
           [default: help]
 
 Options:
@@ -2039,7 +2039,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2072,13 +2072,13 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --org <ORG>
           Marketplace/org suffix used in plugin ids, for example `lab`
-          
+
           [default: lab]
 
       --binary <BINARY>
@@ -2098,7 +2098,7 @@ Usage: stash [OPTIONS] <ACTION> [KEY=VALUE]...
 Arguments:
   <ACTION>
           Action to run, e.g. `help`, `components.list`, `component.get`
-          
+
           [possible values: help, schema, components.list, component.get, component.create, component.import, component.workspace, component.save, component.revisions, component.export, component.deploy, providers.list, provider.link, provider.push, provider.pull, targets.list, target.add, target.remove]
 
   [KEY=VALUE]...
@@ -2113,7 +2113,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2179,7 +2179,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2200,7 +2200,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2221,7 +2221,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2242,7 +2242,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2263,7 +2263,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2284,7 +2284,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2305,7 +2305,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2326,7 +2326,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2351,7 +2351,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2376,7 +2376,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2400,7 +2400,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2418,7 +2418,7 @@ Options:
 
       --year <YEAR>
           Release year (default 0; use movie-lookup to retrieve from TMDB)
-          
+
           [default: 0]
 
   -h, --help
@@ -2445,7 +2445,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2469,7 +2469,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2500,7 +2500,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2527,7 +2527,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2554,7 +2554,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2579,7 +2579,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2604,7 +2604,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2625,18 +2625,18 @@ Options:
 
       --page <PAGE>
           Page number (default 1)
-          
+
           [default: 1]
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --page-size <PAGE_SIZE>
           Items per page (default 10)
-          
+
           [default: 10]
 
   -h, --help
@@ -2656,7 +2656,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2681,7 +2681,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2702,7 +2702,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2727,7 +2727,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2748,7 +2748,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2769,7 +2769,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2790,7 +2790,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2811,7 +2811,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2832,7 +2832,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2853,7 +2853,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2878,7 +2878,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2899,7 +2899,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2920,7 +2920,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2941,7 +2941,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2962,7 +2962,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -2983,7 +2983,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3008,7 +3008,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3029,7 +3029,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3050,7 +3050,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3071,7 +3071,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3092,7 +3092,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3117,7 +3117,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3135,7 +3135,7 @@ Usage: sonarr [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help, series.list, episode.list)
-          
+
           [default: help]
           [possible values: help, schema, series.list, series.get, series.lookup, series.add, series.delete, episode.list, episode.get, queue.list, queue.delete, history.list, wanted.list, calendar.list, health, system.status, tag.list, tag.create, tag.delete, rootfolder.list, qualityprofile.list, languageprofile.list, series.edit, episode.monitor, wanted.cutoff, release.search, release.grab, history.series, history.failed-retry, blocklist.list, blocklist.delete, episodefile.delete, system.restart, system.backup]
 
@@ -3148,7 +3148,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3172,7 +3172,7 @@ Usage: prowlarr [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, indexer.list, indexer.get, indexer.delete, indexer.test, indexer.testall, indexer.categories, history.list, application.list, application.get, application.delete, indexer.edit, indexer.add, indexer.stats, indexer.status, indexer.search, indexer.grab, history.indexer, application.add, system.restart, system.backup, tag.list, system.status, system.health]
 
@@ -3185,7 +3185,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3209,7 +3209,7 @@ Usage: plex [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, server.info, server.capabilities, library.list, library.get, library.scan, library.refresh, media.search, media.get, session.list, session.terminate, playlist.list, playlist.get, playlist.create, playlist.delete, library.browse, library.empty-trash, metadata.delete, metadata.edit, metadata.refresh, session.history, hubs.continue-watching, butler.list, butler.run, item.scrobble, item.unscrobble, updater.status, health]
 
@@ -3222,7 +3222,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3246,7 +3246,7 @@ Usage: tautulli [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, activity.list, activity.stream, history.list, users.list, users.get, users.watch_time, users.player_stats, libraries.list, libraries.get, libraries.media_info, stats.home, stats.plays_by_date, media.recently-added, media.metadata, media.children, media.export-metadata, user.item-stats, user.delete-history, plays.by-day, plays.by-hour, plays.by-stream-type, plays.by-month, server.pms-update, system.info, system.settings]
 
@@ -3259,7 +3259,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3283,7 +3283,7 @@ Usage: sabnzbd [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, server.version, queue.list, queue.delete, history.list, history.delete, history.purge, server.stats, server.warnings, queue.pause, queue.resume, queue.speed.limit, queue.addurl, history.retry, history.retry-all, server.fullstatus, category.list, queue.set-complete-action, pp.pause, pp.resume, rss.fetch-now, config.get]
 
@@ -3296,7 +3296,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3320,7 +3320,7 @@ Usage: qbittorrent [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, transfer.info, transfer.download.limit, transfer.upload.limit, torrent.list, torrent.properties, torrent.trackers, torrent.pause, torrent.resume, torrent.delete, torrent.recheck, torrent.category.set, torrent.download.limit, torrent.upload.limit, category.list, app.version, app.preferences, log.list, torrent.add, transfer.toggle-speed-limits, torrent.files, torrent.set-file-prio, torrent.set-location, torrent.add-tags, torrent.remove-tags, torrent.reannounce, torrent.set-share-limits, category.create, category.edit, sync.maindata]
 
@@ -3333,7 +3333,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3357,7 +3357,7 @@ Usage: tailscale [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, device.list, device.get, device.delete, device.authorize, key.list, key.get, key.delete, dns.nameservers, dns.search_paths, dns.split-get, dns.split-set, acl.get, acl.validate, acl.set, device.routes-get, device.routes-set, device.tag, device.expire, user.list, tailnet.settings-get, tailnet.settings-patch, key.create]
 
@@ -3370,7 +3370,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3394,7 +3394,7 @@ Usage: linkding [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, bookmark.list, bookmark.archived.list, bookmark.get, bookmark.check, bookmark.create, bookmark.update, bookmark.archive, bookmark.unarchive, bookmark.delete, tag.list, tag.get, tag.create, user.profile, bundle.list, bundle.create, bundle.update, bundle.delete, bookmark.assets, bookmark.assets-upload]
 
@@ -3407,7 +3407,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3431,7 +3431,7 @@ Usage: memos [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, memos.list, memos.get, memos.create, memos.update, memos.delete, tags.list, workspace.profile, user.me, user.list, user.stats, webhook.list, webhook.create, attachment.upload, attachment.delete, memo.comment-list, memo.comment-create, memo.share-list, memo.share-create]
 
@@ -3444,7 +3444,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3481,7 +3481,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3499,7 +3499,7 @@ Usage: bytestash [OPTIONS] <ACTION> [KEY=VALUE]...
 Arguments:
   <ACTION>
           Action to run, e.g. `help`, `snippets.list`, `categories.list`
-          
+
           [possible values: help, schema, auth.config, auth.register, auth.login, snippets.list, snippets.get, snippets.create, snippets.update, snippets.delete, snippets.public.list, snippets.public.get, snippets.share.create, snippets.share.get, categories.list, users.list, users.toggle-active, users.delete]
 
   [KEY=VALUE]...
@@ -3514,7 +3514,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3535,7 +3535,7 @@ Usage: paperless [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, documents.list, documents.get, documents.metadata, documents.update, documents.delete, tags.list, tags.get, tags.create, tags.delete, correspondents.list, correspondents.get, correspondents.create, correspondents.delete, document_types.list, document_types.get, document_types.create, document_types.delete, statistics, tasks.list, document.upload, document.bulk-edit, document.download, tag.update, saved-view.list, saved-view.create, custom-field.list, custom-field.create, storage-path.list, storage-path.create]
 
@@ -3548,7 +3548,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3572,7 +3572,7 @@ Usage: arcane [OPTIONS] [ACTION] [KEY=VALUE]...
 Arguments:
   [ACTION]
           Action to run, e.g. `help`, `system.health`, `container.list`
-          
+
           [default: help]
           [possible values: help, schema, health, environment.list, environment.get, container.list, container.get, container.start, container.stop, container.restart, container.redeploy, project.list, project.create, project.up, project.down, project.redeploy, volume.list, volume.delete, volume.prune, image.list, image.pull, image.prune, image.update-summary]
 
@@ -3588,7 +3588,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3609,7 +3609,7 @@ Usage: unraid [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, system.info, system.metrics, system.array, system.online, docker.list, docker.start, docker.stop, docker.restart, disk.list, vm.list, vm.start, vm.stop, vm.pause, vm.resume, notification.list, notification.create, notification.archive, parity.history, parity.check-start, parity.check-pause, parity.check-cancel, share.list, plugin.list, network.list, ups.devices, ups.config, log.read, flash.status, flash.backup]
 
@@ -3622,7 +3622,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3649,7 +3649,7 @@ Usage: unifi [OPTIONS] <ACTION> [KEY=VALUE]...
 Arguments:
   <ACTION>
           Action to run, e.g. `help`, `sites.list`, `firewall.zones.list`
-          
+
           [possible values: help, system.info, sites.list, wans.list, vpn.site-to-site-tunnels.list, vpn.servers.list, radius.profiles.list, device-tags.list, dpi.categories.list, dpi.applications.list, countries.list, wan.get, devices.list, devices.get, devices.stats, pending-devices.list, devices.create, devices.port-action, devices.action, devices.delete, device.update, clients.list, clients.get, clients.action, client.history, client.block, client.unblock, networks.list, networks.get, networks.references, networks.create, networks.update, networks.delete, wifi.broadcasts.list, wifi.broadcasts.get, wifi.broadcasts.create, wifi.broadcasts.update, wifi.broadcasts.delete, wifi.update, hotspot.vouchers.list, hotspot.vouchers.create, hotspot.vouchers.delete, hotspot.vouchers.get, firewall.zones.list, firewall.zones.get, firewall.zones.create, firewall.zones.update, firewall.zones.delete, firewall.policies.list, firewall.policies.get, firewall.policies.create, firewall.policies.update, firewall.policies.patch, firewall.policies.ordering.get, firewall.policies.ordering.set, acl.rules.list, acl.rules.get, acl.rules.create, acl.rules.update, acl.rules.delete, acl.rules.ordering.get, acl.rules.ordering.set, switching.switch-stacks.list, switching.switch-stacks.get, switching.mc-lag-domains.list, switching.mc-lag-domains.get, switching.lags.list, switching.lags.get, port-profile.list, port-profile.create, port-profile.update, dns.policies.list, dns.policies.get, dns.policies.create, dns.policies.update, dns.policies.delete, traffic-matching-lists.list, traffic-matching-lists.get, traffic-matching-lists.create, traffic-matching-lists.update, traffic-matching-lists.delete]
 
   [KEY=VALUE]...
@@ -3664,7 +3664,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3688,7 +3688,7 @@ Usage: overseerr [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, health, status, request.list, request.get, request.create, request.approve, request.decline, request.delete, movie.search, tv.search, movie.get, tv.get, user.list, user.get, issue.list, issue.get, issue.create, issue.comment, request.retry, request.count, issue.update, media.delete, media.update-status, user.requests, user.quota, user.edit, job.run, discover.trending]
 
@@ -3701,7 +3701,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3725,7 +3725,7 @@ Usage: gotify [OPTIONS] <ACTION> [KEY=VALUE]...
 Arguments:
   <ACTION>
           Action to run, e.g. `help`, `message.send`, `app.list`
-          
+
           [possible values: help, schema, message.send, message.list, message.delete, message.purge, app.list, app.create, app.delete, client.list, client.create, client.delete, application.update, application.messages, application.messages-delete, client.update, plugin.list, plugin.enable, plugin.disable, plugin.config-get, plugin.config-set, user.list, user.create, user.delete, server.health, server.version]
 
   [KEY=VALUE]...
@@ -3740,7 +3740,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3761,7 +3761,7 @@ Usage: openai [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, model.list, chat.complete, embed.create, server.health]
 
@@ -3774,7 +3774,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3792,7 +3792,7 @@ Usage: openacp [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run, for example `system.health`
-          
+
           [default: help]
           [possible values: help, schema, system.health, system.version, system.restart, adapters.list, sessions.list, sessions.get, sessions.create, sessions.prompt, sessions.cancel, sessions.bypass.set, sessions.permission.resolve, sessions.archive, sessions.adopt, agents.list, config.get, config.editable, config.patch, topics.list, topics.delete, topics.cleanup, tunnel.status, tunnel.list, tunnel.create, tunnel.delete, tunnel.delete_all, notify.send]
 
@@ -3805,7 +3805,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3829,7 +3829,7 @@ Usage: notebooklm [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, notebook.list, notebook.create, notebook.get, notebook.delete, source.list, source.add_url, server.health]
 
@@ -3842,7 +3842,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3866,7 +3866,7 @@ Usage: qdrant [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, server.health, collections.list, collections.get, collection.create, collection.delete, point.upsert, point.search, point.query, point.scroll, point.count, point.delete, snapshot.create, index.create]
 
@@ -3879,7 +3879,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3903,7 +3903,7 @@ Usage: tei [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, server.health, server.info, embed.create, embed.rerank, embed.tokenize, embed.similarity, embed.sparse, embed.openai]
 
@@ -3916,7 +3916,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3934,7 +3934,7 @@ Usage: apprise [OPTIONS] [ACTION]
 Arguments:
   [ACTION]
           Action to run (e.g. help)
-          
+
           [default: help]
           [possible values: help, schema, server.health, notify.send, notify.key.send, config.add, config.get, config.delete, config.urls, server.details]
 
@@ -3947,7 +3947,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -3981,7 +3981,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4002,7 +4002,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4027,7 +4027,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4052,12 +4052,12 @@ Options:
 
   -y, --yes
           Confirm the destructive operation (required non-interactively)
-          
+
           [aliases: --no-confirm]
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4091,12 +4091,12 @@ Options:
 
   -y, --yes
           Confirm the destructive operation
-          
+
           [aliases: --no-confirm]
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4123,7 +4123,7 @@ Arguments:
 Options:
       --interval <INTERVAL>
           Poll interval in seconds
-          
+
           [default: 30]
 
       --json
@@ -4131,13 +4131,13 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
       --timeout <TIMEOUT>
           TCP probe timeout in seconds
-          
+
           [default: 3]
 
   -h, --help
@@ -4167,7 +4167,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4198,7 +4198,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4228,7 +4228,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4252,7 +4252,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4281,7 +4281,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4305,7 +4305,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4329,7 +4329,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4353,7 +4353,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4381,7 +4381,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4405,7 +4405,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4429,7 +4429,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4456,7 +4456,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4480,7 +4480,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4509,7 +4509,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4536,7 +4536,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4551,7 +4551,7 @@ Options:
 
       --recursive <RECURSIVE>
           Recurse into child folders
-          
+
           [possible values: true, false]
 
       --start-index <START_INDEX>
@@ -4584,7 +4584,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4608,7 +4608,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4635,7 +4635,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4659,7 +4659,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4686,7 +4686,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4710,7 +4710,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4744,7 +4744,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4775,7 +4775,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4806,7 +4806,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4837,7 +4837,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4868,7 +4868,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4899,7 +4899,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4930,7 +4930,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4961,7 +4961,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 
@@ -4992,7 +4992,7 @@ Options:
 
       --color <COLOR>
           Control human-readable CLI styling
-          
+
           [default: auto]
           [possible values: auto, plain, color]
 

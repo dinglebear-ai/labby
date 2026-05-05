@@ -342,7 +342,7 @@
   {
     "service": "acp",
     "action": "session.prompt",
-    "description": "Send a prompt to a running session",
+    "description": "Send a prompt to a session. Optional provider switches the active runtime inside the same Lab session before dispatch.",
     "destructive": false,
     "params": [
       {
@@ -362,6 +362,18 @@
         "ty": "string",
         "required": true,
         "description": "Caller principal for ownership verification"
+      },
+      {
+        "name": "provider",
+        "ty": "string",
+        "required": false,
+        "description": "Provider to use for this prompt; if different from the current session provider, Lab switches runtime before dispatch"
+      },
+      {
+        "name": "continuity_mode",
+        "ty": "string",
+        "required": false,
+        "description": "Provider switch continuity mode: 'handoff' (bounded transcript) or 'reset'"
       },
       {
         "name": "page_context",
@@ -3663,7 +3675,7 @@
   {
     "service": "gateway",
     "action": "gateway.oauth.probe",
-    "description": "Probe a URL for OAuth support via RFC 8414 AS metadata discovery. Registers a transient OAuth manager so subsequent authorize calls work.",
+    "description": "Probe a URL for OAuth support via RFC 8414 AS metadata discovery. Rejects userinfo, query strings, and fragments. Registers a transient OAuth manager keyed by URL host, port, and path; it is persisted only after a successful callback updates gateway config.",
     "destructive": true,
     "params": [
       {

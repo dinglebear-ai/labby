@@ -83,7 +83,8 @@ impl LabMcpServer {
 
     pub(crate) async fn catalog_json(&self) -> anyhow::Result<Value> {
         let filtered;
-        let registry = if crate::registry::lab_show_all_enabled() {
+        let registry = if crate::registry::lab_show_all_enabled() || self.gateway_manager.is_some()
+        {
             &self.registry
         } else {
             filtered = crate::registry::filter_by_configured_env(&self.registry);
@@ -92,7 +93,8 @@ impl LabMcpServer {
         let mut catalog = crate::catalog::build_catalog(registry);
         let mut services = Vec::new();
         for mut service in catalog.services {
-            if !self.service_visible_on_mcp(&service.name).await {
+            let visible_on_mcp = self.service_visible_on_mcp(&service.name).await;
+            if !visible_on_mcp {
                 continue;
             }
             if !self.service_visible_by_env_or_gateway(&service.name) {

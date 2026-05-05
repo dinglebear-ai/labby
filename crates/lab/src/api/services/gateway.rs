@@ -12,6 +12,40 @@ pub fn routes(_state: AppState) -> Router<AppState> {
     Router::new().route("/", post(handle))
 }
 
+fn has_admin_scope(auth: Option<&Extension<AuthContext>>) -> bool {
+    auth.is_none_or(|ctx| ctx.0.scopes.iter().any(|scope| scope == "lab:admin"))
+}
+
+fn gateway_action_requires_admin(action: &str) -> bool {
+    !matches!(
+        action,
+        "help" | "schema" | "gateway.help" | "gateway.schema"
+    )
+}
+
+fn require_gateway_admin(
+    action: &str,
+    request_id: Option<&str>,
+    auth: Option<&Extension<AuthContext>>,
+) -> Result<(), ToolError> {
+    if !gateway_action_requires_admin(action) || has_admin_scope(auth) {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        surface = "api",
+        service = "gateway",
+        action,
+        request_id,
+        kind = "forbidden",
+        "gateway action rejected: lab:admin scope required"
+    );
+    Err(ToolError::Sdk {
+        sdk_kind: "forbidden".to_string(),
+        message: format!("action `{action}` requires `lab:admin` scope"),
+    })
+}
+
 async fn handle(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -19,6 +53,7 @@ async fn handle(
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ToolError> {
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
+    require_gateway_admin(&req.action, request_id, auth.as_ref())?;
     let subject = auth.as_ref().map(|value| value.0.sub.clone());
     let manager = state
         .gateway_manager
@@ -78,13 +113,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use axum::{
-        Router,
+        Extension, Router,
         body::Body,
         http::{Request, StatusCode, header},
     };
     use serde_json::json;
     use tower::ServiceExt;
 
+    use crate::api::oauth::AuthContext;
     use crate::api::{router::build_router_with_bearer, state::AppState};
     use crate::config::{LabConfig, VirtualServerConfig, VirtualServerSurfacesConfig};
     use crate::dispatch::gateway::config::{load_gateway_config, write_gateway_config};
@@ -120,6 +156,22 @@ mod tests {
         build_router_with_bearer(state, None, None)
     }
 
+    fn test_app_with_auth(auth: AuthContext) -> Router {
+        test_app().layer(Extension(auth))
+    }
+
+    fn read_only_auth_context() -> AuthContext {
+        AuthContext {
+            sub: "read-only-user".to_string(),
+            actor_key: None,
+            scopes: vec!["lab:read".to_string()],
+            issuer: "test".to_string(),
+            via_session: false,
+            csrf_token: None,
+            email: Some("reader@example.com".to_string()),
+        }
+    }
+
     async fn post_gateway(app: Router, body: serde_json::Value) -> axum::response::Response {
         app.oneshot(
             Request::builder()
@@ -153,6 +205,42 @@ mod tests {
     async fn gateway_list_route_exists() {
         let response = post_gateway_fresh(json!({"action":"gateway.list","params":{}})).await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn gateway_sensitive_actions_require_admin_when_authenticated() {
+        let app = test_app_with_auth(read_only_auth_context());
+
+        for action in [
+            "gateway.list",
+            "gateway.status",
+            "gateway.service_config.get",
+            "gateway.add",
+            "gateway.reload",
+            "gateway.oauth.probe",
+            "gateway.mcp.cleanup",
+        ] {
+            let response = post_gateway(
+                app.clone(),
+                json!({
+                    "action": action,
+                    "params": {
+                        "confirm": true,
+                        "service": "plex",
+                        "url": "https://fixture.example.com/mcp",
+                        "name": "fixture-http",
+                        "spec": {"name":"fixture-http","url":"https://fixture.example.com/mcp"}
+                    }
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{action}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            assert_eq!(payload["kind"], "forbidden", "{action}");
+        }
     }
 
     #[tokio::test]

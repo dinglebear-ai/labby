@@ -42,10 +42,10 @@ export const upstreamOauthApi = {
     )
   },
 
-  probe(url: string, signal?: AbortSignal): Promise<ProbeResponse> {
+  probe(url: string, signal?: AbortSignal, upstream?: string): Promise<ProbeResponse> {
     return apiFetch('/gateway/oauth/probe', {
       method: 'POST',
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, upstream, confirm: true }),
       headers: { 'Content-Type': 'application/json' },
       signal,
     })

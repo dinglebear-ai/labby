@@ -262,7 +262,12 @@ export function GatewayFormDialog({
     setOauthState({ kind: 'probing' })
     try {
       // Reuse already-probed result to avoid a duplicate round-trip.
-      const probe = oauthProbed?.oauth_discovered ? oauthProbed : await upstreamOauthApi.probe(url.trim())
+      const requestedUpstream = name.trim() || undefined
+      const reusableProbe = oauthProbed?.oauth_discovered
+        && (!requestedUpstream || oauthProbed.upstream === requestedUpstream)
+      const probe = reusableProbe
+        ? oauthProbed
+        : await upstreamOauthApi.probe(url.trim(), undefined, requestedUpstream)
       if (!probe.oauth_discovered) {
         authTab?.close()
         setOauthState({ kind: 'error', message: 'This server does not advertise OAuth support' })

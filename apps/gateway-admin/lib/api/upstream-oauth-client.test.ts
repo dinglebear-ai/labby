@@ -33,3 +33,35 @@ test('upstreamOauthApi keeps hosted session auth and omits bearer headers', asyn
     globalThis.fetch = originalFetch
   }
 })
+
+test('upstreamOauthApi confirms upstream oauth probes', async () => {
+  const originalFetch = globalThis.fetch
+
+  try {
+    globalThis.fetch = (async (input, init) => {
+      assert.equal(String(input), '/v1/gateway/oauth/probe')
+      assert.equal(init?.method, 'POST')
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        url: 'https://fixture.example/mcp',
+        upstream: 'fixture',
+        confirm: true,
+      })
+
+      return new Response(
+        JSON.stringify({
+          upstream: 'fixture.example-mcp',
+          url: 'https://fixture.example/mcp',
+          oauth_discovered: false,
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    }) as typeof fetch
+
+    await upstreamOauthApi.probe('https://fixture.example/mcp', undefined, 'fixture')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
