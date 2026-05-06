@@ -246,15 +246,13 @@ pub async fn dispatch_with_registry(
         "session.prompt" => {
             let session_id = require_str(&params, "session_id")?;
             let principal = opt_str(&params, "principal").unwrap_or("");
-            let raw_text = params
-                .get("text")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| ToolError::MissingParam {
-                    message: "required param `text` is missing or empty".to_string(),
-                    param: "text".to_string(),
-                })?;
-            ensure_prompt_size(raw_text)?;
+            let raw_text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            // Allow attachments-only prompts: the surface adapter already
+            // verified that at least one of text/attachments was supplied.
+            // We must still cap the size if text is present.
+            if !raw_text.is_empty() {
+                ensure_prompt_size(raw_text)?;
+            }
 
             // Optional structured page context (HTTP / MCP / CLI can all supply it).
             let page_ctx = params

@@ -218,9 +218,12 @@ async fn prompt_session(
         Ok(principal) => principal,
         Err(error) => return error.into_response(),
     };
-    if body.prompt.trim().is_empty() {
+    let attachments = body.attachments.unwrap_or_default();
+    let prompt_is_empty = body.prompt.trim().is_empty();
+    let no_attachments = attachments.is_empty();
+    if prompt_is_empty && no_attachments {
         return ToolError::MissingParam {
-            message: "prompt is required".to_string(),
+            message: "prompt or attachments is required".to_string(),
             param: "prompt".to_string(),
         }
         .into_response();
@@ -238,7 +241,6 @@ async fn prompt_session(
         .into_response();
     }
 
-    let attachments = body.attachments.unwrap_or_default();
     if let Err(error) = validate_prompt_attachments(&attachments) {
         return error.into_response();
     }
