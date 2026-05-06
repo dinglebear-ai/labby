@@ -46,7 +46,7 @@ const DEV_MARKETPLACE_READ_ACTIONS: &[&str] = &[
 
 /// Constant-time byte comparison using `subtle::ConstantTimeEq` to prevent
 /// timing-based token prefix leakage (lab-63jc).
-fn tokens_equal(a: &str, b: &str) -> bool {
+pub(crate) fn tokens_equal(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
 }
 
@@ -72,7 +72,7 @@ fn percent_encode_path(s: &str) -> String {
     out
 }
 
-fn parse_bearer_token(header_value: &str) -> Option<String> {
+pub(crate) fn parse_bearer_token(header_value: &str) -> Option<String> {
     let mut parts = header_value.split_whitespace();
     let scheme = parts.next()?;
     let token = parts.next()?;
@@ -755,6 +755,7 @@ pub fn build_router(
         state = state.with_oauth_state(auth_state.clone());
     }
     let static_token = bearer_token.map(Arc::<str>::from);
+    state = state.with_bearer_token(static_token.clone());
     let auth_state = auth_state.map(Arc::new);
     let needs_auth = static_token.is_some() || auth_state.is_some();
     if !needs_auth {
