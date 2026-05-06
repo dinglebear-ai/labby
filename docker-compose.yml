@@ -36,6 +36,15 @@ services:
       # provider commands; overrides whatever is in the host ~/.lab/. File-level
       # mount wins over the parent directory bind mount above.
       - ./config/acp-providers.docker.json:/home/lab/.lab/acp-providers.json:ro
+      # Claude credentials — sourced live from the host's ~/.claude/ so the
+      # token the container uses stays in lockstep with whatever the host
+      # `claude` CLI most recently refreshed. Without this the lab-stored copy
+      # at ~/.lab/acp/claude-home/.credentials.json drifts as the host token
+      # rotates and Anthropic eventually returns 401 on every Claude session.
+      # File-level mount wins over the parent ~/.lab bind. Mounted rw because
+      # claude-agent-sdk may rewrite the file on token refresh; that goes
+      # straight back to the host source-of-truth.
+      - ${HOME}/.claude/.credentials.json:/home/lab/.lab/acp/claude-home/.credentials.json
       - ${HOME}/.gemini:/home/lab/.gemini
       - .:/workspace/lab
 
