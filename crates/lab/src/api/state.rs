@@ -70,6 +70,12 @@ pub struct AppState {
     pub workspace_root: Option<Arc<PathBuf>>,
     /// When true, `/v1/*` skips auth middleware for hosted UI requests.
     pub web_ui_auth_disabled: bool,
+    /// Static bearer token (LAB_MCP_HTTP_TOKEN), if configured.
+    ///
+    /// Stored on AppState so handlers outside the auth middleware
+    /// (e.g. `/auth/session`) can validate the same token. The middleware
+    /// remains the canonical enforcement point for `/v1/*`.
+    pub bearer_token: Option<Arc<str>>,
     /// HTTP bind host resolved by `labby serve`.
     pub http_bind_host: Option<Arc<String>>,
     /// Shared SQLite-backed MCP registry store for `/v0.1` read endpoints.
@@ -131,6 +137,7 @@ impl AppState {
             embedded_web_assets: false,
             workspace_root: None,
             web_ui_auth_disabled: false,
+            bearer_token: None,
             http_bind_host: None,
             server_start: std::time::Instant::now(),
             #[cfg(feature = "mcpregistry")]
@@ -235,6 +242,14 @@ impl AppState {
     #[must_use]
     pub fn with_web_ui_auth_disabled(mut self, disabled: bool) -> Self {
         self.web_ui_auth_disabled = disabled;
+        self
+    }
+
+    /// Attach the static bearer token (LAB_MCP_HTTP_TOKEN) so handlers
+    /// outside the auth middleware can validate it.
+    #[must_use]
+    pub fn with_bearer_token(mut self, token: Option<Arc<str>>) -> Self {
+        self.bearer_token = token;
         self
     }
 

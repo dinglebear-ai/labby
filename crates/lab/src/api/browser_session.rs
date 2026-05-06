@@ -133,6 +133,32 @@ pub async fn auth_session(State(state): State<AppState>, headers: HeaderMap) -> 
         return response;
     }
 
+    // If a valid static bearer token is presented, treat the caller as a
+    // first-class authenticated session for browser-state purposes. This lets
+    // automation tools (e.g. agent-browser with --headers) drive the UI while
+    // OAuth remains enabled for normal browser users.
+    if let Some(expected) = state.bearer_token.as_ref()
+        && let Some(token) = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::api::router::parse_bearer_token)
+        && crate::api::router::tokens_equal(&token, expected.as_ref())
+    {
+        let response = no_store_json(serde_json::json!({
+            "authenticated": true,
+            "login_available": state.oauth_state.is_some(),
+            "is_admin": true,
+            "user": {
+                "sub": "static-bearer",
+                "email": serde_json::Value::Null,
+            },
+            "expires_at": DEV_SESSION_EXPIRES_AT,
+            "csrf_token": "",
+        }));
+        log_auth_dispatch("session.get", request_id.as_deref(), start, None, None);
+        return response;
+    }
+
     let login_available = state.oauth_state.is_some();
     let Some(auth_state) = oauth_state(&state) else {
         let response = unauthenticated_session_response(false);
