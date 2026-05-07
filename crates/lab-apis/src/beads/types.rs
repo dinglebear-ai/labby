@@ -74,7 +74,6 @@ pub struct Issue {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub closed_at: Option<String>,
-    pub started_at: Option<String>,
     pub due_at: Option<String>,
     pub defer_until: Option<String>,
     #[serde(default)]

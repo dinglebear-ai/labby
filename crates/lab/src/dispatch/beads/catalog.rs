@@ -94,7 +94,7 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "status",
                 ty: "string",
                 required: false,
-                description: "Optional stored status filter: open, in_progress, blocked, deferred, closed",
+                description: "Optional stored status filter (canonical: open, in_progress, blocked, deferred, closed; custom statuses defined in `custom_statuses` are also accepted)",
             },
             LIMIT_PARAM,
         ],

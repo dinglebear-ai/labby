@@ -27,9 +27,11 @@ const KEY_GRAPH = (project: string, id: string) => ['beads:issue-graph', project
 const POLL_INTERVAL_MS = 30_000
 
 export function useBeadsProjects() {
+  // Intentionally no `fallbackData`: `BeadsShell` distinguishes "still loading"
+  // from "loaded, no projects" via `data === undefined`, and a default `[]`
+  // would briefly render the empty state on first paint.
   return useSWR<Project[]>(KEY_PROJECTS, () => beadsApi.projects(), {
     revalidateOnFocus: false,
-    fallbackData: [],
   })
 }
 

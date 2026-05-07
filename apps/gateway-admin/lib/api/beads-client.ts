@@ -68,7 +68,6 @@ export interface Issue {
   created_at?: string | null
   updated_at?: string | null
   closed_at?: string | null
-  started_at?: string | null
   due_at?: string | null
   defer_until?: string | null
   labels: string[]

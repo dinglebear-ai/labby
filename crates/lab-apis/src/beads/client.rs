@@ -62,20 +62,21 @@ const SYSTEM_DATABASES: &[&str] = &[
     "dolt_cluster",
 ];
 
-const ALLOWED_STATUSES: &[&str] = &[
-    "open",
-    "in_progress",
-    "blocked",
-    "deferred",
-    "closed",
-    "tombstone",
-    "pinned",
-    "hooked",
-];
+// Maximum length for a Beads status filter value. The actual `issues.status`
+// column is `VARCHAR(32)`, so anything longer than that is meaningless.
+// Beads supports user-defined statuses via `custom_statuses`, so the SDK no
+// longer hardcodes the canonical built-ins — the value travels as a bound
+// parameter and is validated for shape only.
+const MAX_STATUS_LEN: usize = 64;
 
+// Stable projection of `issues` columns. Kept narrow on purpose:
+// - we only surface what the Lab UI displays
+// - columns added in later migrations (e.g. `started_at` from migration 0027)
+//   are deliberately omitted so the same projection works against older Beads
+//   schemas, including the `WHERE status = 'open'` fallback path used when the
+//   `ready_issues` view is missing.
 const ISSUE_COLUMNS: &str = "id, title, description, status, priority, issue_type, assignee, \
-    created_by, owner, external_ref, created_at, updated_at, closed_at, started_at, due_at, \
-    defer_until";
+    created_by, owner, external_ref, created_at, updated_at, closed_at, due_at, defer_until";
 
 impl BeadsClient {
     /// Build a client from connection parameters. The pool itself is lazy — no
@@ -136,6 +137,12 @@ impl BeadsClient {
     }
 
     /// `SHOW DATABASES`, filtered to user-visible DBs.
+    ///
+    /// Names that fail `validate_identifier` are dropped — every other action
+    /// requires a project name that re-passes that check before being
+    /// interpolated as a backtick-quoted database name, so surfacing names the
+    /// dispatcher would later refuse just gives the UI a project that can't be
+    /// queried.
     pub async fn databases(&self) -> Result<Vec<Project>, BeadsError> {
         let mut conn = self.conn().await?;
         let rows: Vec<String> = conn.query("SHOW DATABASES").await?;
@@ -145,6 +152,7 @@ impl BeadsClient {
                 let lower = name.to_ascii_lowercase();
                 !SYSTEM_DATABASES.contains(&lower.as_str())
             })
+            .filter(|name| validate_identifier(name).is_ok())
             .map(|name| Project { name })
             .collect())
     }
@@ -262,7 +270,7 @@ impl BeadsClient {
             .await
         {
             Ok(rows) => rows,
-            Err(_) => {
+            Err(err) if is_missing_relation(&err) => {
                 conn.exec_map(
                     format!(
                         "SELECT {ISSUE_COLUMNS} FROM `{project}`.issues \
@@ -274,6 +282,7 @@ impl BeadsClient {
                 )
                 .await?
             }
+            Err(err) => return Err(err.into()),
         };
         attach_labels(&mut conn, &project, issues).await
     }
@@ -493,14 +502,27 @@ fn validate_identifier(value: &str) -> Result<(), BeadsError> {
 }
 
 fn validate_status(status: &str) -> Result<(), BeadsError> {
-    if ALLOWED_STATUSES.contains(&status) {
-        Ok(())
-    } else {
-        Err(BeadsError::InvalidIdentifier {
+    if status.is_empty() {
+        return Err(BeadsError::InvalidIdentifier {
             value: status.to_string(),
-            message: format!("must be one of: {}", ALLOWED_STATUSES.join(", ")),
-        })
+            message: "status filter is empty".into(),
+        });
     }
+    if status.len() > MAX_STATUS_LEN {
+        return Err(BeadsError::InvalidIdentifier {
+            value: status.to_string(),
+            message: format!("status filter exceeds {MAX_STATUS_LEN} characters"),
+        });
+    }
+    for ch in status.chars() {
+        if ch.is_control() || ch.is_whitespace() {
+            return Err(BeadsError::InvalidIdentifier {
+                value: status.to_string(),
+                message: "status filter must not contain whitespace or control characters".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn attach_labels(
@@ -550,7 +572,6 @@ fn row_to_issue(mut row: Row) -> Issue {
         created_at: take_datetime_string(&mut row, "created_at"),
         updated_at: take_datetime_string(&mut row, "updated_at"),
         closed_at: take_datetime_string(&mut row, "closed_at"),
-        started_at: take_datetime_string(&mut row, "started_at"),
         due_at: take_datetime_string(&mut row, "due_at"),
         defer_until: take_datetime_string(&mut row, "defer_until"),
         labels: Vec::new(),
@@ -588,16 +609,33 @@ where
 }
 
 fn take_datetime_string(row: &mut Row, column: &str) -> Option<String> {
-    if let Some(value) = take_opt::<String>(row, column) {
-        return Some(value);
-    }
-    if let Some(time) = take_opt::<mysql_async::Value>(row, column) {
-        if matches!(time, mysql_async::Value::NULL) {
-            return None;
+    let value: mysql_async::Value = row.take(column)?;
+    match value {
+        mysql_async::Value::NULL => None,
+        mysql_async::Value::Date(year, month, day, hour, minute, second, micros) => {
+            if micros > 0 {
+                Some(format!(
+                    "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{micros:06}"
+                ))
+            } else {
+                Some(format!(
+                    "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
+                ))
+            }
         }
-        return Some(time.as_sql(true));
+        mysql_async::Value::Bytes(bytes) => String::from_utf8(bytes).ok(),
+        _ => None,
     }
-    None
+}
+
+/// Recognise MySQL "no such table/view" errors so callers can fall back to a
+/// pre-view query path on older Beads schemas. Anything else propagates.
+fn is_missing_relation(err: &mysql_async::Error) -> bool {
+    if let mysql_async::Error::Server(server) = err {
+        // 1146 = ER_NO_SUCH_TABLE, 1051 = ER_BAD_TABLE_ERROR
+        return server.code == 1146 || server.code == 1051;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -619,9 +657,12 @@ mod tests {
     }
 
     #[test]
-    fn validates_known_statuses() {
+    fn validates_well_formed_statuses() {
         assert!(validate_status("open").is_ok());
         assert!(validate_status("closed").is_ok());
-        assert!(validate_status("nope").is_err());
+        assert!(validate_status("custom_done").is_ok());
+        assert!(validate_status("backlog-q4").is_ok());
+        assert!(validate_status("").is_err());
+        assert!(validate_status("with space").is_err());
     }
 }

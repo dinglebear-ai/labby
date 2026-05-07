@@ -37,7 +37,7 @@ pub fn require_client() -> Result<BeadsClient, ToolError> {
 
 pub fn not_configured_error() -> ToolError {
     ToolError::Sdk {
-        sdk_kind: "internal_error".into(),
+        sdk_kind: "not_configured".into(),
         message: "BEADS_DOLT_URL not configured".into(),
     }
 }

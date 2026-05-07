@@ -28,18 +28,14 @@ pub fn optional_status(params: &Value) -> Result<Option<String>, ToolError> {
                 });
             };
             let status = status.trim();
-            if matches!(
-                status,
-                "open" | "in_progress" | "blocked" | "deferred" | "closed"
-            ) {
-                Ok(Some(status.to_owned()))
-            } else {
-                Err(ToolError::InvalidParam {
-                    message: "`status` must be one of open, in_progress, blocked, deferred, closed"
-                        .into(),
-                    param: "status".into(),
-                })
+            if status.is_empty() {
+                return Ok(None);
             }
+            // Beads supports user-defined statuses via `custom_statuses`, so the
+            // dispatch layer doesn't enforce a hardcoded allowlist. The SDK
+            // applies a shape check (length / no whitespace) and the value
+            // travels as a bound MySQL parameter, never string-interpolated.
+            Ok(Some(status.to_owned()))
         }
     }
 }
