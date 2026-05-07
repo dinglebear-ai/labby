@@ -521,38 +521,35 @@ fn read_url(vars: &HashMap<String, String>, key: &str) -> Result<Option<Url>, Au
 fn read_u64(vars: &HashMap<String, String>, key: &str) -> Result<Option<u64>, AuthError> {
     read_string(vars, key)
         .map(|value| {
-            value.parse::<u64>().map(Some).map_err(|error| {
+            value.parse::<u64>().map_err(|error| {
                 AuthError::Config(format!(
                     "{key} must be an integer number of seconds: {error}"
                 ))
             })
         })
         .transpose()
-        .map(Option::flatten)
 }
 
 fn read_u32(vars: &HashMap<String, String>, key: &str) -> Result<Option<u32>, AuthError> {
     read_string(vars, key)
         .map(|value| {
-            value.parse::<u32>().map(Some).map_err(|error| {
+            value.parse::<u32>().map_err(|error| {
                 AuthError::Config(format!(
                     "{key} must be an integer number of requests per minute: {error}"
                 ))
             })
         })
         .transpose()
-        .map(|value| value.flatten())
 }
 
 fn read_usize(vars: &HashMap<String, String>, key: &str) -> Result<Option<usize>, AuthError> {
     read_string(vars, key)
         .map(|value| {
-            value.parse::<usize>().map(Some).map_err(|error| {
+            value.parse::<usize>().map_err(|error| {
                 AuthError::Config(format!("{key} must be a positive integer: {error}"))
             })
         })
         .transpose()
-        .map(|value| value.flatten())
 }
 
 #[cfg(test)]
