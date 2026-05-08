@@ -155,7 +155,11 @@ pub async fn authorize(
     state.ensure_pending_oauth_state_capacity().await?;
     validate_response_type(&query.response_type)?;
     validate_resource(&state, query.resource.as_deref())?;
-    let scope = validate_scope(&query.scope, &state.config.default_scope)?;
+    let scope = validate_scope(
+        &query.scope,
+        &state.config.default_scope,
+        &state.config.scopes_supported,
+    )?;
     let client_state_id = fingerprint(&query.state);
     info!(
         client_id = %query.client_id,
@@ -428,17 +432,31 @@ fn validate_response_type(response_type: &str) -> Result<(), AuthError> {
     }
 }
 
-fn validate_scope(scope: &str, default_scope: &str) -> Result<String, AuthError> {
+fn validate_scope(
+    scope: &str,
+    default_scope: &str,
+    scopes_supported: &[String],
+) -> Result<String, AuthError> {
     let normalized = scope.trim();
     if normalized.is_empty() {
         return Ok(default_scope.to_string());
     }
-    if normalized == default_scope {
+    // Accept any space-separated combination where every token is in scopes_supported.
+    // Falls back to exact-match against default_scope when scopes_supported is empty.
+    if !scopes_supported.is_empty() {
+        let all_valid = normalized
+            .split_whitespace()
+            .all(|s| scopes_supported.iter().any(|sup| sup == s));
+        if all_valid {
+            return Ok(normalized.to_string());
+        }
+    } else if normalized == default_scope {
         return Ok(normalized.to_string());
     }
     warn!(scope = %normalized, "oauth authorize rejected: unsupported scope");
     Err(AuthError::Validation(format!(
-        "scope must be `{default_scope}`"
+        "scope must be one of: {}",
+        scopes_supported.join(", ")
     )))
 }
 
