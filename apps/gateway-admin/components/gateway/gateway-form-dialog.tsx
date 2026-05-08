@@ -38,6 +38,7 @@ import { upstreamOauthApi } from '@/lib/api/upstream-oauth-client'
 import { useUpstreamOauthStatus } from '@/lib/hooks/use-upstream-oauth'
 import type { OAuthConnectState } from '@/lib/types/upstream-oauth'
 import { Badge } from '@/components/ui/badge'
+import { ProtectedMcpRoutesPanel } from './protected-mcp-routes-panel'
 import {
   SERVICE_BRANDS,
   SERVICE_BRAND_FALLBACK,
@@ -54,7 +55,7 @@ interface GatewayFormDialogProps {
   onSave: (input: CreateGatewayInput | UpdateGatewayInput) => Promise<void>
 }
 
-type FormMode = 'custom' | 'lab'
+type FormMode = 'custom' | 'lab' | 'protected'
 type GatewayAuthMode = 'none' | 'bearer' | 'oauth'
 type GatewayAuthSource = 'paste' | 'env'
 
@@ -149,6 +150,7 @@ export function GatewayFormDialog({
     useGatewayMutations()
 
   const [mode, setMode] = useState<FormMode>('custom')
+  const isProtectedMode = mode === 'protected' && !isEditing
   const [transport, setTransport] = useState<TransportType>('http')
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
@@ -541,6 +543,8 @@ export function GatewayFormDialog({
         return
       }
 
+      if (mode === 'protected') return
+
       if (!validateCustom()) return
       setSaveError(null)
       await onSave(buildInput())
@@ -670,7 +674,8 @@ export function GatewayFormDialog({
     }}>
         <DialogContent
           className={cn(
-            'overflow-visible sm:max-w-[540px] transition-[border-radius] duration-[250ms]',
+            'overflow-visible transition-[border-radius] duration-[250ms]',
+            isProtectedMode ? 'sm:max-w-[920px]' : 'sm:max-w-[540px]',
             (envDrawerOpen || jsonDrawerOpen) && 'rounded-r-none',
           )}
         >
@@ -683,6 +688,8 @@ export function GatewayFormDialog({
                   ? 'Edit gateway settings.'
                   : mode === 'lab'
                     ? 'Connect a built-in Lab service.'
+                    : mode === 'protected'
+                      ? 'Protect an existing MCP endpoint through Lab OAuth.'
                     : 'Connect an upstream MCP server.'}
               </DialogDescription>
             </div>
@@ -734,13 +741,18 @@ export function GatewayFormDialog({
           }}
           className="space-y-6"
         >
-          <TabsList className="grid w-full grid-cols-2 overflow-hidden">
+          <TabsList className={cn('grid w-full overflow-hidden', isEditing ? 'grid-cols-2' : 'grid-cols-3')}>
             <TabsTrigger value="lab" disabled={isEditing && !isLabGateway}>
               Lab Service
             </TabsTrigger>
             <TabsTrigger value="custom" disabled={isEditing && isLabGateway}>
               Custom
             </TabsTrigger>
+            {!isEditing ? (
+              <TabsTrigger value="protected">
+                Protected Routes
+              </TabsTrigger>
+            ) : null}
           </TabsList>
 
           <TabsContent value="lab" className="space-y-6">
@@ -1149,6 +1161,12 @@ export function GatewayFormDialog({
               />
             </div>
           </TabsContent>
+
+          {!isEditing ? (
+            <TabsContent value="protected" className="space-y-6">
+              <ProtectedMcpRoutesPanel />
+            </TabsContent>
+          ) : null}
         </Tabs>
         </div>
 
@@ -1292,42 +1310,50 @@ export function GatewayFormDialog({
           </div>
         </div>
 
-        {saveError && (
+        {saveError && mode !== 'protected' && (
           <div className="shrink-0 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertCircle className="size-4 mt-0.5 shrink-0" />
             <span>{saveError}</span>
           </div>
         )}
         <DialogFooter className="shrink-0 gap-2 sm:gap-0">
-          {isEditing && !isLabGateway && (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={handleTest}
-              disabled={isTesting || isSaving}
-              className="mr-auto"
-            >
-              {isTesting ? (
-                <Loader2 className="size-4 mr-2 animate-spin" />
-              ) : (
-                <Play className="size-4 mr-2" />
-              )}
-              Test
-            </Button>
-          )}
+          {isProtectedMode ? (
             <Button variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
+              Close
             </Button>
-          <Button onClick={handleSave} disabled={isSaving || isTesting}>
-            {isSaving && <Loader2 className="size-4 mr-2 animate-spin" />}
-            {mode === 'lab'
-              ? isEditing
-                ? 'Save Service'
-                : 'Configure Service'
-              : isEditing
-                ? 'Save Changes'
-                : 'Add Gateway'}
-          </Button>
+          ) : (
+            <>
+              {isEditing && !isLabGateway && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleTest}
+                  disabled={isTesting || isSaving}
+                  className="mr-auto"
+                >
+                  {isTesting ? (
+                    <Loader2 className="size-4 mr-2 animate-spin" />
+                  ) : (
+                    <Play className="size-4 mr-2" />
+                  )}
+                  Test
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSave} disabled={isSaving || isTesting}>
+                {isSaving && <Loader2 className="size-4 mr-2 animate-spin" />}
+                {mode === 'lab'
+                  ? isEditing
+                    ? 'Save Service'
+                    : 'Configure Service'
+                  : isEditing
+                    ? 'Save Changes'
+                    : 'Add Gateway'}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
