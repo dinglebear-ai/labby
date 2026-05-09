@@ -909,11 +909,26 @@ pub struct AdminPreferences {
 }
 
 /// Per-service preference overrides (non-secret values only).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServicePreferences {
+    /// Enable built-in integrations that call external service APIs.
+    ///
+    /// Default: true. When false, runtime registries keep bootstrap/operator
+    /// tools available but remove built-in upstream API integrations.
+    #[serde(default = "default_true")]
+    pub built_in_upstream_apis_enabled: bool,
     /// Tailscale preferences.
     #[serde(default)]
     pub tailscale: TailscalePreferences,
+}
+
+impl Default for ServicePreferences {
+    fn default() -> Self {
+        Self {
+            built_in_upstream_apis_enabled: true,
+            tailscale: TailscalePreferences::default(),
+        }
+    }
 }
 
 /// Tailscale non-secret preferences.
@@ -1555,6 +1570,25 @@ mod tests {
         pairs
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+    }
+
+    #[test]
+    fn service_preferences_default_enable_upstream_apis() {
+        let cfg = toml::from_str::<LabConfig>("").expect("empty config should parse");
+        assert!(cfg.services.built_in_upstream_apis_enabled);
+    }
+
+    #[test]
+    fn service_preferences_can_disable_upstream_apis() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+            [services]
+            built_in_upstream_apis_enabled = false
+            "#,
+        )
+        .expect("services config should parse");
+
+        assert!(!cfg.services.built_in_upstream_apis_enabled);
     }
 
     #[test]

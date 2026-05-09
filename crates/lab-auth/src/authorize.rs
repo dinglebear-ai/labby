@@ -1228,7 +1228,7 @@ pub mod tests {
         AuthState::new(config).await.unwrap()
     }
 
-    fn test_auth_config() -> AuthConfig {
+    pub fn test_auth_config() -> AuthConfig {
         let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
         AuthConfig {
             mode: AuthMode::OAuth,
@@ -1236,6 +1236,7 @@ pub mod tests {
             sqlite_path: dir.path().join("auth.db"),
             key_path: dir.path().join("auth-jwt.pem"),
             bootstrap_secret: Some("bootstrap-secret".to_string()),
+            enable_dynamic_registration: true,
             allowed_client_redirect_uris: Vec::new(),
             // Matches the mock id_token email returned by signed_test_id_token,
             // so happy-path callback tests pass the allowlist check.

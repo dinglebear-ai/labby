@@ -107,6 +107,7 @@ export interface ServiceSchema {
   category: string
   supports_multi_instance: boolean
   default_port: number | null
+  built_in_upstream_api?: boolean
   env: ServiceEnvVar[]
 }
 
@@ -250,6 +251,21 @@ export interface ServicesStatusResponse {
   plugins: InstalledPlugin[]
 }
 
+export interface SettingsState {
+  config_path: string
+  services: {
+    built_in_upstream_apis_enabled: boolean
+    built_in_upstream_api_services: string[]
+    bootstrap_services: string[]
+  }
+}
+
+export interface SettingsUpdate {
+  services?: {
+    built_in_upstream_apis_enabled?: boolean
+  }
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────
 
 export const setupApi = {
@@ -274,6 +290,37 @@ export const setupApi = {
       })
     }
     return setupAction<SchemaGetResponse>('schema.get', services ? { services } : {}, signal)
+  },
+
+  settingsState(signal?: AbortSignal): Promise<SettingsState> {
+    if (USE_MOCK_DATA) {
+      signal?.throwIfAborted?.()
+      return Promise.resolve({
+        config_path: '~/.config/lab/config.toml',
+        services: {
+          built_in_upstream_apis_enabled: true,
+          built_in_upstream_api_services: Object.keys(MOCK_SERVICES),
+          bootstrap_services: ['setup', 'doctor', 'extract', 'gateway'],
+        },
+      })
+    }
+    return setupAction<SettingsState>('settings.state', {}, signal)
+  },
+
+  settingsUpdate(patch: SettingsUpdate, signal?: AbortSignal): Promise<SettingsState> {
+    if (USE_MOCK_DATA) {
+      signal?.throwIfAborted?.()
+      return Promise.resolve({
+        config_path: '~/.config/lab/config.toml',
+        services: {
+          built_in_upstream_apis_enabled:
+            patch.services?.built_in_upstream_apis_enabled ?? true,
+          built_in_upstream_api_services: Object.keys(MOCK_SERVICES),
+          bootstrap_services: ['setup', 'doctor', 'extract', 'gateway'],
+        },
+      })
+    }
+    return setupAction<SettingsState>('settings.update', patch as Record<string, unknown>, signal)
   },
 
   draftGet(signal?: AbortSignal): Promise<{ entries: DraftEntry[] }> {

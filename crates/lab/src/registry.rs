@@ -271,6 +271,84 @@ pub fn service_configured_by_env(service: &str) -> bool {
     })
 }
 
+#[must_use]
+pub fn is_built_in_upstream_api_service(service: &str) -> bool {
+    matches!(
+        service,
+        "radarr"
+            | "sonarr"
+            | "prowlarr"
+            | "plex"
+            | "tautulli"
+            | "overseerr"
+            | "jellyfin"
+            | "navidrome"
+            | "immich"
+            | "sabnzbd"
+            | "qbittorrent"
+            | "linkding"
+            | "memos"
+            | "bytestash"
+            | "paperless"
+            | "freshrss"
+            | "tailscale"
+            | "arcane"
+            | "unraid"
+            | "unifi"
+            | "dozzle"
+            | "scrutiny"
+            | "adguard"
+            | "glances"
+            | "uptime-kuma"
+            | "pihole"
+            | "gotify"
+            | "apprise"
+            | "openacp"
+            | "openai"
+            | "notebooklm"
+            | "qdrant"
+            | "tei"
+            | "neo4j"
+    )
+}
+
+#[must_use]
+pub fn built_in_upstream_api_services(registry: &ToolRegistry) -> Vec<&'static str> {
+    registry
+        .services()
+        .iter()
+        .filter_map(|service| {
+            is_built_in_upstream_api_service(service.name).then_some(service.name)
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn bootstrap_operator_services(registry: &ToolRegistry) -> Vec<&'static str> {
+    registry
+        .services()
+        .iter()
+        .filter_map(|service| {
+            (!is_built_in_upstream_api_service(service.name)).then_some(service.name)
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn filter_built_in_upstream_apis(registry: ToolRegistry, enabled: bool) -> ToolRegistry {
+    if enabled {
+        return registry;
+    }
+
+    let mut filtered = ToolRegistry::new();
+    for service in registry.services() {
+        if !is_built_in_upstream_api_service(service.name) {
+            filtered.register(service.clone());
+        }
+    }
+    filtered
+}
+
 /// Build a registry with every feature-enabled service registered.
 ///
 /// This is the single place feature flags gate MCP tool availability.
@@ -685,7 +763,10 @@ const fn category_slug(cat: lab_apis::core::Category) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{RegisteredService, ToolRegistry, build_default_registry, service_meta};
+    use super::{
+        RegisteredService, ToolRegistry, build_default_registry, filter_built_in_upstream_apis,
+        is_built_in_upstream_api_service, service_meta,
+    };
     use lab_apis::core::action::ActionSpec;
     use serde_json::Value;
     use std::future::Future;
@@ -757,6 +838,54 @@ mod tests {
         assert!(names.contains(&"tei"), "tei missing");
         #[cfg(feature = "apprise")]
         assert!(names.contains(&"apprise"), "apprise missing");
+    }
+
+    #[test]
+    fn bootstrap_services_are_not_built_in_upstream_apis() {
+        for service in [
+            "gateway",
+            "setup",
+            "doctor",
+            "extract",
+            "logs",
+            "device",
+            "marketplace",
+            "acp",
+            "stash",
+            "deploy",
+            "fs",
+            "lab_admin",
+            "beads",
+            "loggifly",
+        ] {
+            assert!(
+                !is_built_in_upstream_api_service(service),
+                "{service} must remain available when upstream APIs are disabled"
+            );
+        }
+    }
+
+    #[test]
+    fn upstream_api_filter_removes_upstreams_and_keeps_bootstrap() {
+        let reg = filter_built_in_upstream_apis(build_default_registry(), false);
+        let names: std::collections::BTreeSet<&str> =
+            reg.services().iter().map(|service| service.name).collect();
+
+        for removed in ["radarr", "sonarr", "tailscale", "openai", "uptime-kuma"] {
+            assert!(!names.contains(removed), "{removed} should be disabled");
+        }
+
+        for kept in [
+            "setup",
+            "doctor",
+            "extract",
+            "gateway",
+            "marketplace",
+            "acp",
+            "stash",
+        ] {
+            assert!(names.contains(kept), "{kept} should stay available");
+        }
     }
 
     #[test]

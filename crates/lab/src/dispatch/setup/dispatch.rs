@@ -18,7 +18,11 @@ use serde_json::{Value, json};
 
 use std::time::Duration;
 
+use crate::config::config_toml_path;
 use crate::config::env_merge::{self, EnvEntry, MergeRequest, snapshot_mtime};
+use crate::dispatch::gateway::config::{
+    load_gateway_config as load_config_file, write_gateway_config as write_config_file,
+};
 
 /// Maximum elapsed time for the inline doctor.audit.full call inside
 /// setup.draft.commit. A misconfigured probe (network hang, dead host)
@@ -32,7 +36,10 @@ const AUDIT_TIMEOUT: Duration = Duration::from_secs(30);
 const REDACTED_LOG_ACTIONS: &[&str] = &["draft.set", "draft.commit", "finalize"];
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, to_json};
-use crate::registry::service_meta;
+use crate::registry::{
+    bootstrap_operator_services, built_in_upstream_api_services, is_built_in_upstream_api_service,
+    service_meta,
+};
 
 use super::catalog::ACTIONS;
 use super::claude_plugins;
@@ -64,6 +71,8 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
         "draft.get" => draft_get_action(),
         "draft.set" => draft_set_action(params).await,
         "draft.commit" => draft_commit_action(params).await,
+        "settings.state" => settings_state_action(),
+        "settings.update" => settings_update_action(params),
         "installed_plugins" => installed_plugins_action(params).await,
         "services_status" => services_status_action().await,
         "install_plugin" => install_plugin_action(params).await,
@@ -104,9 +113,16 @@ fn state_action() -> Result<Value, ToolError> {
 
 fn schema_get_action(params: &Value) -> Result<Value, ToolError> {
     let registry = cached_registry();
+    let upstream_apis_enabled = config_toml_path()
+        .and_then(|path| load_config_file(&path).ok())
+        .map(|cfg| cfg.services.built_in_upstream_apis_enabled)
+        .unwrap_or(true);
     let filter = parse_services_filter(params);
     let mut services_out = serde_json::Map::new();
     for entry in registry.services() {
+        if !upstream_apis_enabled && is_built_in_upstream_api_service(entry.name) {
+            continue;
+        }
         if let Some(ref allowed) = filter
             && !allowed.iter().any(|s| s == entry.name)
         {
@@ -150,7 +166,68 @@ fn service_schema(meta: &PluginMeta) -> Value {
         "category": format!("{:?}", meta.category).to_lowercase(),
         "supports_multi_instance": meta.supports_multi_instance,
         "default_port": meta.default_port,
+        "built_in_upstream_api": is_built_in_upstream_api_service(meta.name),
         "env": env_array,
+    })
+}
+
+fn settings_state_action() -> Result<Value, ToolError> {
+    let path = config_toml_path().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "internal_error".into(),
+        message: "HOME env var not set; cannot resolve config.toml path".into(),
+    })?;
+    let cfg = load_config_file(&path)?;
+    Ok(settings_state_json(&cfg, path.display().to_string()))
+}
+
+fn settings_update_action(params: &Value) -> Result<Value, ToolError> {
+    let path = config_toml_path().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "internal_error".into(),
+        message: "HOME env var not set; cannot resolve config.toml path".into(),
+    })?;
+    let mut cfg = load_config_file(&path)?;
+    if let Some(enabled) = parse_built_in_upstream_apis_enabled(params)? {
+        cfg.services.built_in_upstream_apis_enabled = enabled;
+    }
+    write_config_file(&path, &cfg)?;
+    Ok(settings_state_json(&cfg, path.display().to_string()))
+}
+
+fn parse_built_in_upstream_apis_enabled(params: &Value) -> Result<Option<bool>, ToolError> {
+    let flat_key = "services.built_in_upstream_apis_enabled";
+    if let Some(value) = params.get(flat_key) {
+        return value
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| ToolError::InvalidParam {
+                message: format!("{flat_key} must be a boolean"),
+                param: flat_key.into(),
+            });
+    }
+    if let Some(value) = params
+        .get("services")
+        .and_then(|services| services.get("built_in_upstream_apis_enabled"))
+    {
+        return value
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| ToolError::InvalidParam {
+                message: "services.built_in_upstream_apis_enabled must be a boolean".into(),
+                param: "services.built_in_upstream_apis_enabled".into(),
+            });
+    }
+    Ok(None)
+}
+
+fn settings_state_json(cfg: &crate::config::LabConfig, config_path: String) -> Value {
+    let registry = cached_registry();
+    json!({
+        "config_path": config_path,
+        "services": {
+            "built_in_upstream_apis_enabled": cfg.services.built_in_upstream_apis_enabled,
+            "built_in_upstream_api_services": built_in_upstream_api_services(registry),
+            "bootstrap_services": bootstrap_operator_services(registry),
+        },
     })
 }
 
@@ -399,6 +476,58 @@ mod tests {
     async fn help_returns_catalog() {
         let v = dispatch("help", Value::Null).await.unwrap();
         assert!(v.get("actions").is_some());
+    }
+
+    #[test]
+    fn setup_actions_are_unique() {
+        let mut seen = std::collections::BTreeSet::new();
+        for action in ACTIONS {
+            assert!(
+                seen.insert(action.name),
+                "duplicate setup action {}",
+                action.name
+            );
+        }
+    }
+
+    #[test]
+    fn setup_catalog_covers_dispatch_actions() {
+        let names: std::collections::BTreeSet<&str> =
+            ACTIONS.iter().map(|action| action.name).collect();
+
+        for required in [
+            "schema.get",
+            "state",
+            "draft.set",
+            "draft.commit",
+            "settings.state",
+            "settings.update",
+            "finalize",
+            "installed_plugins",
+            "services_status",
+            "install_plugin",
+            "uninstall_plugin",
+        ] {
+            assert!(names.contains(required), "missing setup action {required}");
+        }
+    }
+
+    #[test]
+    fn settings_update_accepts_flat_and_nested_toggle_param() {
+        assert_eq!(
+            parse_built_in_upstream_apis_enabled(
+                &json!({"services.built_in_upstream_apis_enabled": false})
+            )
+            .unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            parse_built_in_upstream_apis_enabled(
+                &json!({"services": {"built_in_upstream_apis_enabled": true}})
+            )
+            .unwrap(),
+            Some(true)
+        );
     }
 
     #[tokio::test]

@@ -227,6 +227,18 @@ The node runtime reuses the same target model when `POST /v1/nodes/oauth/relay/s
 |-----|-------------|---------|-------------|
 | `enabled` | `LAB_ADMIN_ENABLED=1` | `false` | Enable the `lab_admin` MCP tool |
 
+### `[services]`
+
+| Key | Env override | Default | Description |
+|-----|-------------|---------|-------------|
+| `built_in_upstream_apis_enabled` | none | `true` | Enables all compiled built-in service integrations that call external service APIs. Set to `false` to keep bootstrap/operator tools online while removing built-in upstream API integrations from runtime discovery and dispatch. |
+
+When `built_in_upstream_apis_enabled = false`, Lab preserves stored service credentials and config on disk. Disablement controls runtime exposure only; it does not delete `.env` values.
+
+Persistent disablement wins over `labby serve --services` and `labby mcp --services` by default. The `--services` flag can narrow the already-enabled runtime registry, but it does not re-enable a built-in upstream API service disabled by `[services]`.
+
+Generated/static docs describe the compiled surface. Runtime discovery (`lab://catalog`, MCP list tools, HTTP route mounting, and settings projections) reflects the running process and this config value.
+
 ### `[services.tailscale]`
 
 | Key | Env override | Default | Description |
