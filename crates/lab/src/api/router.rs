@@ -500,7 +500,9 @@ async fn proxy_protected_mcp_route(
         upstream_auth = upstream_auth_token.is_some(),
         "protected MCP route proxy start"
     );
-    let mut builder = reqwest::Client::new().request(method.clone(), upstream);
+    let mut builder = state
+        .protected_mcp_http_client
+        .request(method.clone(), upstream);
     if let Some(token) = upstream_auth_token {
         builder = builder.bearer_auth(token);
     }

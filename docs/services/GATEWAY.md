@@ -346,6 +346,13 @@ The Gateway UI exposes the same split: **Test** validates the Lab route config,
 and **Smoke** runs the public proxy check using the current browser origin as
 the Lab app URL and the route's public host/path as the MCP URL.
 
+Operational timeout:
+
+- `LAB_PROTECTED_MCP_CONNECT_TIMEOUT_SECS` controls the connect timeout for
+  Lab's protected MCP upstream proxy HTTP client. The default is `10` seconds.
+  Set this higher only when upstream TCP/TLS connection setup is expected to be
+  slow; long-lived MCP streams are not bounded by this connect timeout.
+
 ### Migration From Legacy Env Routes
 
 Older inline MCP proxy experiments used service-specific env vars such as

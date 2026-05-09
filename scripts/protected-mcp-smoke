@@ -21,21 +21,35 @@ mcp_url=""
 route=""
 labby_bin="${LABBY_BIN:-labby}"
 
+require_value() {
+  local flag="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    echo "error: $flag requires a value" >&2
+    usage
+    exit 2
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --app-url)
+      require_value "$1" "${2:-}"
       app_url="${2:-}"
       shift 2
       ;;
     --mcp-url)
+      require_value "$1" "${2:-}"
       mcp_url="${2:-}"
       shift 2
       ;;
     --route)
+      require_value "$1" "${2:-}"
       route="${2:-}"
       shift 2
       ;;
     --labby-bin)
+      require_value "$1" "${2:-}"
       labby_bin="${2:-}"
       shift 2
       ;;

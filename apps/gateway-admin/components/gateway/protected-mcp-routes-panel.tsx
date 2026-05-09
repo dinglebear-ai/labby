@@ -92,6 +92,10 @@ function isRouteComplete(draft: RouteDraft) {
   )
 }
 
+function isSmokeRouteComplete(draft: RouteDraft) {
+  return Boolean(draft.public_host.trim() && draft.public_path.trim())
+}
+
 const LAB_RESERVED_PATH_PREFIXES = [
   '/.well-known',
   '/_next',
@@ -179,7 +183,7 @@ function protectedRouteDraftHints(
         hints.push('Backend URL must use http:// or https://.')
       }
       if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
-        hints.push('Backend URL should be only an origin; put the MCP path in Backend MCP path.')
+        hints.push('Backend URL should be only an origin; remove any path, query, or fragment.')
       }
     } catch {
       hints.push('Backend URL must be a valid URL.')
@@ -298,7 +302,7 @@ export function ProtectedMcpRoutesPanel() {
   }
 
   const handleSmoke = async () => {
-    if (!isRouteComplete(draft)) {
+    if (!isSmokeRouteComplete(draft)) {
       setFormError('Public host and public path are required before running the proxy smoke check.')
       return
     }

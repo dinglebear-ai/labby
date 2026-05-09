@@ -25,7 +25,6 @@ fn parse_params<T: DeserializeOwned>(params_value: Value) -> Result<T, ToolError
     })
 }
 
-#[allow(clippy::large_stack_frames)]
 pub async fn dispatch_with_manager(
     manager: &GatewayManager,
     action: &str,
@@ -37,6 +36,49 @@ pub async fn dispatch_with_manager(
             let action_name = require_str(&params_value, "action")?;
             action_schema(ACTIONS, action_name)
         }
+        "tool_search" | "tool_invoke" | "gateway.tool_search.get" | "gateway.tool_search.set" => {
+            handle_tool_actions(manager, action, params_value).await
+        }
+        "gateway.list"
+        | "gateway.server.get"
+        | "gateway.supported_services"
+        | "gateway.get"
+        | "gateway.test"
+        | "gateway.add"
+        | "gateway.update"
+        | "gateway.remove"
+        | "gateway.reload"
+        | "gateway.status"
+        | "gateway.discovered_tools"
+        | "gateway.discovered_resources"
+        | "gateway.discovered_prompts" => {
+            handle_gateway_actions(manager, action, params_value).await
+        }
+        action if action.starts_with("gateway.protected_route.") => {
+            handle_protected_route_actions(manager, action, params_value).await
+        }
+        action if action.starts_with("gateway.virtual_server.") => {
+            handle_virtual_server_actions(manager, action, params_value).await
+        }
+        action if action.starts_with("gateway.service_") => {
+            handle_service_actions(manager, action, params_value).await
+        }
+        action if action.starts_with("gateway.oauth.") => {
+            handle_oauth_actions(manager, action, params_value).await
+        }
+        action if action.starts_with("gateway.mcp.") => {
+            handle_mcp_actions(manager, action, params_value).await
+        }
+        unknown => unknown_action(unknown),
+    }
+}
+
+async fn handle_tool_actions(
+    manager: &GatewayManager,
+    action: &str,
+    params_value: Value,
+) -> Result<Value, ToolError> {
+    match action {
         "tool_search" => {
             let params: ToolSearchParams = parse_params(params_value)?;
             let top_k = match params.top_k {
@@ -92,16 +134,16 @@ pub async fn dispatch_with_manager(
             }
             to_json(manager.set_tool_search_config(next, None, None).await?)
         }
-        "gateway.list" => to_json(manager.list().await?),
-        "gateway.server.get" => {
-            let params: VirtualServerNameParams = parse_params(params_value)?;
-            to_json(manager.get_server(&params.id).await?)
-        }
-        "gateway.supported_services" => {
-            to_json(super::service_catalog::supported_services_from_registry(
-                manager.builtin_service_registry(),
-            ))
-        }
+        unknown => unknown_action(unknown),
+    }
+}
+
+async fn handle_protected_route_actions(
+    manager: &GatewayManager,
+    action: &str,
+    params_value: Value,
+) -> Result<Value, ToolError> {
+    match action {
         "gateway.protected_route.list" => to_json(manager.protected_route_list().await),
         "gateway.protected_route.get" => {
             let params: ProtectedRouteNameParams = parse_params(params_value)?;
@@ -127,6 +169,16 @@ pub async fn dispatch_with_manager(
             let params: ProtectedRouteSpecParams = parse_params(params_value)?;
             to_json(manager.protected_route_test(params.route).await?)
         }
+        unknown => unknown_action(unknown),
+    }
+}
+
+async fn handle_virtual_server_actions(
+    manager: &GatewayManager,
+    action: &str,
+    params_value: Value,
+) -> Result<Value, ToolError> {
+    match action {
         "gateway.virtual_server.enable" => {
             let params: VirtualServerNameParams = parse_params(params_value)?;
             to_json(manager.enable_virtual_server(&params.id).await?)
@@ -172,10 +224,7 @@ pub async fn dispatch_with_manager(
                     .any(|candidate| candidate.name == action.as_str())
                 {
                     return Err(ToolError::InvalidParam {
-                        message: format!(
-                            "action `{action}` is not valid for service `{}`",
-                            service
-                        ),
+                        message: format!("action `{action}` is not valid for service `{service}`"),
                         param: "allowed_actions".to_string(),
                     });
                 }
@@ -186,6 +235,16 @@ pub async fn dispatch_with_manager(
                     .await?,
             )
         }
+        unknown => unknown_action(unknown),
+    }
+}
+
+async fn handle_service_actions(
+    manager: &GatewayManager,
+    action: &str,
+    params_value: Value,
+) -> Result<Value, ToolError> {
+    match action {
         "gateway.service_config.get" => {
             let params: ServiceConfigGetParams = parse_params(params_value)?;
             to_json(manager.get_service_config(&params.service).await?)
@@ -201,6 +260,26 @@ pub async fn dispatch_with_manager(
         "gateway.service_actions" => {
             let params: ServiceConfigGetParams = parse_params(params_value)?;
             to_json(compiled_service_actions(manager, &params.service)?)
+        }
+        unknown => unknown_action(unknown),
+    }
+}
+
+async fn handle_gateway_actions(
+    manager: &GatewayManager,
+    action: &str,
+    params_value: Value,
+) -> Result<Value, ToolError> {
+    match action {
+        "gateway.list" => to_json(manager.list().await?),
+        "gateway.server.get" => {
+            let params: VirtualServerNameParams = parse_params(params_value)?;
+            to_json(manager.get_server(&params.id).await?)
+        }
+        "gateway.supported_services" => {
+            to_json(super::service_catalog::supported_services_from_registry(
+                manager.builtin_service_registry(),
+            ))
         }
         "gateway.get" => {
             let params: GatewayNameParams = parse_params(params_value)?;
@@ -286,6 +365,16 @@ pub async fn dispatch_with_manager(
             let params: GatewayNameParams = parse_params(params_value)?;
             to_json(manager.discovered_prompts(&params.name).await?)
         }
+        unknown => unknown_action(unknown),
+    }
+}
+
+async fn handle_oauth_actions(
+    manager: &GatewayManager,
+    action: &str,
+    params_value: Value,
+) -> Result<Value, ToolError> {
+    match action {
         "gateway.oauth.probe" => {
             let url = require_str(&params_value, "url")?;
             to_json(crate::dispatch::gateway::oauth::probe(manager, url).await?)
@@ -324,6 +413,16 @@ pub async fn dispatch_with_manager(
             crate::dispatch::gateway::oauth::clear(manager, &params.upstream, subject).await?;
             to_json(serde_json::json!({ "ok": true }))
         }
+        unknown => unknown_action(unknown),
+    }
+}
+
+async fn handle_mcp_actions(
+    manager: &GatewayManager,
+    action: &str,
+    params_value: Value,
+) -> Result<Value, ToolError> {
+    match action {
         "gateway.mcp.enable" => {
             let params: GatewayNameParams = parse_params(params_value)?;
             to_json(
@@ -380,12 +479,16 @@ pub async fn dispatch_with_manager(
                     .await?,
             )
         }
-        unknown => Err(ToolError::UnknownAction {
-            message: format!("unknown action '{unknown}'"),
-            valid: ACTIONS.iter().map(|a| a.name.to_string()).collect(),
-            hint: None,
-        }),
+        unknown => unknown_action(unknown),
     }
+}
+
+fn unknown_action(unknown: &str) -> Result<Value, ToolError> {
+    Err(ToolError::UnknownAction {
+        message: format!("unknown action '{unknown}'"),
+        valid: ACTIONS.iter().map(|a| a.name.to_string()).collect(),
+        hint: None,
+    })
 }
 
 fn compiled_service_actions(
