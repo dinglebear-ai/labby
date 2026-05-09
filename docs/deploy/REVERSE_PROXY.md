@@ -43,7 +43,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header Authorization $http_authorization;
         proxy_set_header Accept $http_accept;
-        proxy_set_header Content-Type $content_type;
+        proxy_set_header Content-Type $http_content_type;
         proxy_set_header Mcp-Session-Id $http_mcp_session_id;
         proxy_set_header Mcp-Protocol-Version $http_mcp_protocol_version;
         proxy_set_header Last-Event-Id $http_last_event_id;
