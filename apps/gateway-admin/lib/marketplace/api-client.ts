@@ -50,6 +50,7 @@ export interface McpListOptions {
 }
 
 const MCP_LIST_PAGE_SIZE = 20
+const MCP_LIST_MAX_PAGES = 100
 
 export async function listMcpServersPage(
   options: McpListOptions = {},
@@ -71,11 +72,41 @@ export async function listMcpServersPage(
 export async function listMcpServers(signal?: AbortSignal): Promise<McpServer[]> {
   const servers: McpServer[] = []
   let cursor: string | null | undefined = null
+  const seenCursors = new Set<string>()
+  let pageCount = 0
 
   do {
+    pageCount += 1
+    if (pageCount > MCP_LIST_MAX_PAGES) {
+      throw new MarketplaceError(
+        `Marketplace MCP registry pagination exceeded ${MCP_LIST_MAX_PAGES} pages`,
+        502,
+        'pagination_limit_exceeded',
+      )
+    }
+
     const res = await listMcpServersPage({ limit: MCP_LIST_PAGE_SIZE, cursor }, signal)
-    servers.push(...(res.servers ?? []))
-    cursor = res.metadata?.nextCursor ?? null
+    const pageServers = res.servers ?? []
+    servers.push(...pageServers)
+    const nextCursor = res.metadata?.nextCursor ?? null
+    if (nextCursor) {
+      if (pageServers.length === 0) {
+        throw new MarketplaceError(
+          `Marketplace MCP registry returned empty page with next cursor ${nextCursor}`,
+          502,
+          'pagination_empty_page',
+        )
+      }
+      if (seenCursors.has(nextCursor)) {
+        throw new MarketplaceError(
+          `Marketplace MCP registry pagination cursor did not advance: ${nextCursor}`,
+          502,
+          'pagination_cursor_stalled',
+        )
+      }
+      seenCursors.add(nextCursor)
+    }
+    cursor = nextCursor
   } while (cursor)
 
   return servers

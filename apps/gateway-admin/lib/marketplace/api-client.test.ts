@@ -100,3 +100,81 @@ test('listMcpServers follows marketplace registry cursors', async () => {
     globalThis.fetch = originalFetch
   }
 })
+
+test('listMcpServers rejects repeated marketplace registry cursors', async () => {
+  const originalFetch = globalThis.fetch
+
+  try {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          servers: [{ name: 'io.github.example/repeated' }],
+          metadata: { count: 1, nextCursor: 'same-page' },
+        }),
+        { status: 200 },
+      )) as typeof fetch
+
+    await assert.rejects(
+      () => listMcpServers(),
+      (error) =>
+        error instanceof Error &&
+        error.message.includes('pagination cursor did not advance'),
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('listMcpServers rejects empty pages with a next cursor', async () => {
+  const originalFetch = globalThis.fetch
+
+  try {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          servers: [],
+          metadata: { count: 0, nextCursor: 'page-2' },
+        }),
+        { status: 200 },
+      )) as typeof fetch
+
+    await assert.rejects(
+      () => listMcpServers(),
+      (error) =>
+        error instanceof Error &&
+        error.message.includes('empty page with next cursor'),
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('listMcpServers propagates aborts between pages', async () => {
+  const originalFetch = globalThis.fetch
+  const controller = new AbortController()
+  let calls = 0
+
+  try {
+    globalThis.fetch = (async (_input, init) => {
+      calls += 1
+      if (calls === 1) {
+        controller.abort()
+        return new Response(
+          JSON.stringify({
+            servers: [{ name: 'io.github.example/first' }],
+            metadata: { count: 1, nextCursor: 'page-2' },
+          }),
+          { status: 200 },
+        )
+      }
+
+      assert.equal(init?.signal?.aborted, true)
+      throw new DOMException('aborted', 'AbortError')
+    }) as typeof fetch
+
+    await assert.rejects(() => listMcpServers(controller.signal), { name: 'AbortError' })
+    assert.equal(calls, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
