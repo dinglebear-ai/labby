@@ -9,7 +9,8 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, to_json};
 
 use super::catalog::ACTIONS;
-use super::params::parse_service_probe;
+use super::params::{parse_proxy_check, parse_service_probe};
+use super::proxy;
 use super::service;
 use super::system;
 use super::types::Report;
@@ -39,6 +40,10 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
                     message: format!("auth.check task panicked: {e}"),
                 })?;
             return to_json(Report { findings });
+        }
+        "proxy.check" => {
+            let p = parse_proxy_check(&params)?;
+            return to_json(proxy::check_proxy(p).await?);
         }
         a if !ACTIONS.iter().any(|s| s.name == a) => {
             return Err(ToolError::UnknownAction {
@@ -88,6 +93,10 @@ pub async fn dispatch_with_clients(
                 message: format!("auth.check task panicked: {e}"),
             }),
         },
+        "proxy.check" => {
+            let p = parse_proxy_check(&params)?;
+            to_json(proxy::check_proxy(p).await?)
+        }
         "service.probe" => {
             let p = parse_service_probe(&params)?;
             let finding = service::probe_service(clients, p.service, p.instance).await?;

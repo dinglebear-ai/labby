@@ -8,6 +8,7 @@ mod catalog;
 mod client;
 mod dispatch;
 mod params;
+pub mod proxy;
 pub mod service;
 mod system;
 mod types;
