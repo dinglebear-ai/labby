@@ -340,14 +340,14 @@ impl SqliteStore {
             let deleted = match delete_result {
                 Ok(n) => n,
                 Err(e) => {
-                    let _ = conn.execute_batch("ROLLBACK");
+                    drop(conn.execute_batch("ROLLBACK"));
                     return Err(e);
                 }
             };
 
             if deleted == 0 {
                 // Old token not found or already expired — rollback and reject.
-                let _ = conn.execute_batch("ROLLBACK");
+                drop(conn.execute_batch("ROLLBACK"));
                 return Ok(None);
             }
 
@@ -375,7 +375,7 @@ impl SqliteStore {
                     Ok(Some(new_token))
                 }
                 Err(e) => {
-                    let _ = conn.execute_batch("ROLLBACK");
+                    drop(conn.execute_batch("ROLLBACK"));
                     Err(e)
                 }
             }
