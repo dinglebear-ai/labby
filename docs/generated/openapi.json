@@ -4231,6 +4231,28 @@
           }
         }
       },
+      "DoctorProxyCheckParams": {
+        "type": "object",
+        "required": [
+          "app_url",
+          "mcp_url",
+          "route"
+        ],
+        "properties": {
+          "app_url": {
+            "type": "string"
+          },
+          "backend_url": {
+            "type": "string"
+          },
+          "mcp_url": {
+            "type": "string"
+          },
+          "route": {
+            "type": "string"
+          }
+        }
+      },
       "DoctorSchemaParams": {
         "type": "object",
         "required": [

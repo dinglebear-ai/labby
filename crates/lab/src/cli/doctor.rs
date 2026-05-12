@@ -32,6 +32,8 @@ pub struct DoctorArgs {
 pub enum DoctorCheck {
     /// Check auth/OAuth configuration (env vars, files, permissions)
     Auth,
+    /// Check public Lab and protected MCP proxy endpoints from caller-visible URLs
+    Proxy(DoctorProxyArgs),
     /// Run local system checks (env vars, Docker, disk, toolchain)
     System,
     /// Probe a single configured service
@@ -43,11 +45,28 @@ pub enum DoctorCheck {
     Services,
 }
 
+#[derive(Debug, Args)]
+pub struct DoctorProxyArgs {
+    /// Public Lab app URL, e.g. https://lab.example.com
+    #[arg(long)]
+    pub app_url: String,
+    /// Public MCP gateway URL, e.g. https://mcp.example.com
+    #[arg(long)]
+    pub mcp_url: String,
+    /// Protected MCP public route path, e.g. /syslog
+    #[arg(long)]
+    pub route: String,
+    /// Optional private backend origin for backend-leak probe, e.g. http://mcp-backend:3100
+    #[arg(long)]
+    pub backend_url: Option<String>,
+}
+
 /// Run the doctor subcommand.
 pub async fn run(args: DoctorArgs, format: OutputFormat) -> Result<ExitCode> {
     match args.check {
         None => run_full_audit(format).await,
         Some(DoctorCheck::Auth) => run_auth(format).await,
+        Some(DoctorCheck::Proxy(args)) => run_proxy(args, format).await,
         Some(DoctorCheck::System) => run_system(format).await,
         Some(DoctorCheck::Service { name }) => run_service(name, format).await,
         Some(DoctorCheck::Services) => run_services(format).await,
@@ -133,6 +152,34 @@ async fn run_auth(format: OutputFormat) -> Result<ExitCode> {
             last_group = group_label;
         }
         print_finding_indented(f);
+    }
+    println!();
+
+    Ok(exit_code(&report))
+}
+
+async fn run_proxy(args: DoctorProxyArgs, format: OutputFormat) -> Result<ExitCode> {
+    let mut params = serde_json::json!({
+        "app_url": args.app_url,
+        "mcp_url": args.mcp_url,
+        "route": args.route,
+    });
+    if let Some(backend_url) = &args.backend_url {
+        params["backend_url"] = serde_json::Value::String(backend_url.clone());
+    }
+    let value = crate::dispatch::doctor::dispatch("proxy.check", params)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let report: Report = serde_json::from_value(value)?;
+
+    if format.is_json() {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(exit_code(&report));
+    }
+
+    print_section("Reverse proxy checks");
+    for finding in &report.findings {
+        print_finding_indented(finding);
     }
     println!();
 
