@@ -25,7 +25,23 @@ use tracing::Level;
 
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::upstream::auth::configured_bearer_token;
+use lab_auth::AuthLayer;
 use lab_auth::error::AuthError as LabAuthError;
+
+/// Convert lab's strongly-typed [`crate::observability::activity::ActorKeyDeriver`]
+/// into the closure-erased [`lab_auth::ActorKeyDeriver`] alias accepted by
+/// [`AuthLayer::with_actor_key_deriver`]. Keeps the lab-specific HMAC actor-key
+/// derivation while letting lab-auth stay agnostic about consumer-specific
+/// observability hooks.
+fn lab_auth_deriver(
+    deriver: Arc<crate::observability::activity::ActorKeyDeriver>,
+) -> Arc<lab_auth::ActorKeyDeriver> {
+    Arc::new(move |subject: &str| {
+        deriver
+            .derive_subject(subject)
+            .map(crate::observability::activity::ActorKey::into_arc)
+    })
+}
 
 const DEV_MARKETPLACE_READ_ACTIONS: &[&str] = &[
     "help",
@@ -47,7 +63,7 @@ const DEV_MARKETPLACE_READ_ACTIONS: &[&str] = &[
 ];
 
 /// Constant-time byte comparison using `subtle::ConstantTimeEq` to prevent
-/// timing-based token prefix leakage (lab-63jc).
+/// timing-based token prefix leakage.
 pub(crate) fn tokens_equal(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
 }
@@ -60,12 +76,12 @@ fn percent_encode_path(s: &str) -> String {
         } else {
             out.push('%');
             out.push(
-                char::from_digit((b >> 4) as u32, 16)
+                char::from_digit(u32::from(b >> 4), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
             );
             out.push(
-                char::from_digit((b & 0xf) as u32, 16)
+                char::from_digit(u32::from(b & 0xf), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
             );
@@ -1402,24 +1418,27 @@ pub fn build_router(
                 .and_then(|cfg| cfg.public_url.as_ref().map(url::Url::as_str))
         })
         .map(Arc::from);
-    let auth_state_for_v1 = auth_state.clone();
-    let static_token_for_v1 = static_token.clone();
-    let actor_key_deriver_for_v1 = state.actor_key_deriver.clone();
-    let resource_url_for_v1 = resource_url.clone();
+    let layer_deriver = state.actor_key_deriver.clone().map(lab_auth_deriver);
+    // Build the shared AuthLayer once; per-route variants only differ in
+    // whether the session-cookie path is enabled (true for browser-facing
+    // /v1 + /dev + /v0.1; false for the bearer-only /mcp transport).
+    let make_auth_layer = |allow_session_cookie: bool| -> AuthLayer {
+        let mut layer = match auth_state.clone() {
+            Some(state) => AuthLayer::from_state(state),
+            // Bearer-only path (no OAuth state): grant the same legacy scopes
+            // that the old middleware always issued for static-token requests.
+            None => AuthLayer::new()
+                .with_static_token_scopes(vec!["lab:read".to_string(), "lab:admin".to_string()]),
+        };
+        layer = layer
+            .with_static_token(static_token.clone())
+            .with_actor_key_deriver(layer_deriver.clone())
+            .with_resource_url(resource_url.clone())
+            .with_allow_session_cookie(allow_session_cookie);
+        layer
+    };
     let v1_protected = if needs_auth {
-        v1_router.route_layer(axum::middleware::from_fn(
-            move |request: Request<Body>, next: Next| {
-                authenticate_request(
-                    request,
-                    next,
-                    static_token_for_v1.clone(),
-                    auth_state_for_v1.clone(),
-                    actor_key_deriver_for_v1.clone(),
-                    resource_url_for_v1.clone(),
-                    true,
-                )
-            },
-        ))
+        v1_router.route_layer(make_auth_layer(true))
     } else {
         v1_router
     };
@@ -1427,24 +1446,8 @@ pub fn build_router(
     #[cfg(feature = "mcpregistry")]
     let v0_1_protected = {
         let v0_1_router = build_v0_1_router();
-        let auth_state_for_v0_1 = auth_state.clone();
-        let static_token_for_v0_1 = static_token.clone();
-        let actor_key_deriver_for_v0_1 = state.actor_key_deriver.clone();
-        let resource_url_for_v0_1 = resource_url.clone();
         if needs_auth {
-            v0_1_router.route_layer(axum::middleware::from_fn(
-                move |request: Request<Body>, next: Next| {
-                    authenticate_request(
-                        request,
-                        next,
-                        static_token_for_v0_1.clone(),
-                        auth_state_for_v0_1.clone(),
-                        actor_key_deriver_for_v0_1.clone(),
-                        resource_url_for_v0_1.clone(),
-                        true,
-                    )
-                },
-            ))
+            v0_1_router.route_layer(make_auth_layer(true))
         } else {
             v0_1_router
         }
@@ -1571,23 +1574,7 @@ pub fn build_router(
         .route("/dev/mockup/{name}", get(dev_mockup_named))
         .route("/dev/mockup/{name}/", get(dev_mockup_named));
     let dev_routes = if needs_auth {
-        let auth_state_for_dev = auth_state.clone();
-        let static_token_for_dev = static_token.clone();
-        let actor_key_deriver_for_dev = state.actor_key_deriver.clone();
-        let resource_url_for_dev = resource_url.clone();
-        dev_routes.route_layer(axum::middleware::from_fn(
-            move |request: Request<Body>, next: Next| {
-                authenticate_request(
-                    request,
-                    next,
-                    static_token_for_dev.clone(),
-                    auth_state_for_dev.clone(),
-                    actor_key_deriver_for_dev.clone(),
-                    resource_url_for_dev.clone(),
-                    true,
-                )
-            },
-        ))
+        dev_routes.route_layer(make_auth_layer(true))
     } else {
         dev_routes
     };
@@ -2151,21 +2138,12 @@ mod tests {
             crate::observability::activity::ActorKeyDeriver::from_secret("test-secret").unwrap();
         let expected = deriver.derive_subject("static-bearer").unwrap();
         let deriver = Arc::new(deriver);
+        let layer = AuthLayer::new()
+            .with_static_token(Some(Arc::<str>::from("secret-token")))
+            .with_actor_key_deriver(Some(lab_auth_deriver(Arc::clone(&deriver))));
         let app = Router::new()
             .route("/probe", get(actor_key_probe))
-            .route_layer(axum::middleware::from_fn(
-                move |request: Request<Body>, next: Next| {
-                    authenticate_request(
-                        request,
-                        next,
-                        Some(Arc::<str>::from("secret-token")),
-                        None,
-                        Some(Arc::clone(&deriver)),
-                        None,
-                        false,
-                    )
-                },
-            ));
+            .route_layer(layer);
 
         let response = app
             .oneshot(
@@ -2195,22 +2173,12 @@ mod tests {
             crate::observability::activity::ActorKeyDeriver::from_secret("test-secret").unwrap();
         let expected = deriver.derive_subject(&session.subject).unwrap();
         let deriver = Arc::new(deriver);
-        let auth_state_for_layer = Arc::clone(&auth_state);
+        let layer = AuthLayer::from_state(Arc::clone(&auth_state))
+            .with_actor_key_deriver(Some(lab_auth_deriver(Arc::clone(&deriver))))
+            .with_allow_session_cookie(true);
         let app = Router::new()
             .route("/probe", get(actor_key_probe))
-            .route_layer(axum::middleware::from_fn(
-                move |request: Request<Body>, next: Next| {
-                    authenticate_request(
-                        request,
-                        next,
-                        None,
-                        Some(Arc::clone(&auth_state_for_layer)),
-                        Some(Arc::clone(&deriver)),
-                        None,
-                        true,
-                    )
-                },
-            ));
+            .route_layer(layer);
 
         let response = app
             .oneshot(
@@ -2241,21 +2209,10 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_bind_leaves_actor_key_null_without_deriver() {
+        let layer = AuthLayer::new().with_static_token(Some(Arc::<str>::from("secret-token")));
         let app = Router::new()
             .route("/probe", get(actor_key_probe))
-            .route_layer(axum::middleware::from_fn(
-                move |request: Request<Body>, next: Next| {
-                    authenticate_request(
-                        request,
-                        next,
-                        Some(Arc::<str>::from("secret-token")),
-                        None,
-                        None,
-                        None,
-                        false,
-                    )
-                },
-            ));
+            .route_layer(layer);
 
         let response = app
             .oneshot(
