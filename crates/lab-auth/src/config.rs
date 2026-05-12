@@ -456,7 +456,7 @@ impl AuthConfigBuilder {
             disable_static_token_with_oauth: self.disable_static_token_with_oauth,
             token_encryption_key: read_string(&vars, &key_enc_key)
                 .map(|raw| {
-                    TokenEncryptionKey::from_str(&raw)
+                    TokenEncryptionKey::from_encoded(&raw)
                         .map_err(|e| AuthError::Config(format!("invalid {key_enc_key}: {e}")))
                 })
                 .transpose()?,
