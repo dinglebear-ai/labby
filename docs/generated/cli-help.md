@@ -187,6 +187,7 @@ Usage: doctor [OPTIONS] [COMMAND]
 
 Commands:
   auth      Check auth/OAuth configuration (env vars, files, permissions)
+  proxy     Check public Lab and protected MCP proxy endpoints from caller-visible URLs
   system    Run local system checks (env vars, Docker, disk, toolchain)
   service   Probe a single configured service
   services  Probe all configured services
@@ -221,6 +222,39 @@ Options:
 
           [default: auto]
           [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby doctor proxy`
+
+```text
+Check public Lab and protected MCP proxy endpoints from caller-visible URLs
+
+Usage: proxy [OPTIONS] --app-url <APP_URL> --mcp-url <MCP_URL> --route <ROUTE>
+
+Options:
+      --app-url <APP_URL>
+          Public Lab app URL, e.g. https://lab.example.com
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --mcp-url <MCP_URL>
+          Public MCP gateway URL, e.g. https://mcp.example.com
+
+      --route <ROUTE>
+          Protected MCP public route path, e.g. /syslog
+
+      --backend-url <BACKEND_URL>
+          Optional private backend origin for backend-leak probe, e.g. http://mcp-backend:3100
 
   -h, --help
           Print help
@@ -1052,6 +1086,7 @@ Commands:
   tool-search
   reload
   mcp
+  public-urls      Show resolved public URL configuration (app and MCP gateway)
 
 Options:
       --json
@@ -1935,6 +1970,27 @@ Options:
 
       --dry-run
 
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway public-urls`
+
+```text
+Show resolved public URL configuration (app and MCP gateway)
+
+Usage: public-urls [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
 
   -h, --help
           Print help
