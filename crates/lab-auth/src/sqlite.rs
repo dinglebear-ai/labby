@@ -1216,7 +1216,7 @@ fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
 fn hash_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     let mut hex = String::with_capacity(64);
-    for byte in digest.iter() {
+    for byte in &digest {
         let _ = write!(&mut hex, "{byte:02x}");
     }
     hex

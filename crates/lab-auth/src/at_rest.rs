@@ -47,7 +47,7 @@ impl std::fmt::Debug for TokenEncryptionKey {
 
 impl TokenEncryptionKey {
     /// Parse a 32-byte key from a hex (64 chars) or base64url-no-pad (43 chars) string.
-    pub fn from_str(s: &str) -> Result<Self, AuthError> {
+    pub fn from_encoded(s: &str) -> Result<Self, AuthError> {
         let s = s.trim();
         if s.len() == 64 {
             // 64-char hex string
@@ -256,14 +256,14 @@ mod tests {
     #[test]
     fn key_from_str_accepts_hex() {
         let hex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
-        let key = TokenEncryptionKey::from_str(hex).unwrap();
+        let key = TokenEncryptionKey::from_encoded(hex).unwrap();
         assert_eq!(key.0[0], 0x01);
         assert_eq!(key.0[31], 0x20);
     }
 
     #[test]
     fn key_from_str_rejects_short_hex() {
-        let err = TokenEncryptionKey::from_str("aabbcc").unwrap_err();
+        let err = TokenEncryptionKey::from_encoded("aabbcc").unwrap_err();
         assert!(err.to_string().contains("TOKEN_ENCRYPTION_KEY"));
     }
 
