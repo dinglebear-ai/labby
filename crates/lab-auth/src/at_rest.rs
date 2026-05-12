@@ -29,7 +29,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use getrandom::fill;
-use sha2::{Digest, Sha256};
 
 use crate::error::AuthError;
 
@@ -91,6 +90,7 @@ impl TokenEncryptionKey {
     /// without managing hex strings.
     #[cfg(test)]
     pub fn from_passphrase(passphrase: &str) -> Self {
+        use sha2::{Digest, Sha256};
         let hash = Sha256::digest(passphrase.as_bytes());
         let mut key = [0u8; 32];
         key.copy_from_slice(&hash);
