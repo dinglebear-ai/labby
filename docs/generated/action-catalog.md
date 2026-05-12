@@ -105,6 +105,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `doctor` | `audit.full` | false | false |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false |  | `DoctorReport` | cli, mcp, api |
 | `doctor` | `help` | false | false |  | `Catalog` | cli, mcp, api |
+| `doctor` | `proxy.check` | false | false | `app_url*: string`<br>`mcp_url*: string`<br>`route*: string`<br>`backend_url: string` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `schema` | false | false | `action*: string` | `Schema` | cli, mcp, api |
 | `doctor` | `service.probe` | false | false | `service*: string`<br>`instance: string` | `Finding` | cli, mcp, api |
 | `doctor` | `system.checks` | false | false |  | `DoctorReport` | cli, mcp, api |
@@ -151,6 +152,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.protected_route.remove` | false | true | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.test` | false | false | `route*: json` | `ProtectedMcpRouteTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.update` | false | true | `name*: string`<br>`route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.public_urls.get` | false | false |  | `{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}` | cli, mcp, api, web |
 | `gateway` | `gateway.reload` | false | true |  | `GatewayCatalogDiff` | cli, mcp, api, web |
 | `gateway` | `gateway.remove` | false | true | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.server.get` | false | false | `id*: string` | `ServerView` | cli, mcp, api, web |

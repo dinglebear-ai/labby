@@ -2672,6 +2672,49 @@
   },
   {
     "service": "doctor",
+    "action": "proxy.check",
+    "description": "Check public Lab and protected MCP proxy endpoints from caller-visible URLs. Probes: app health, protected-resource metadata, OAuth bearer challenge, wrong-path 404 behavior, and (when backend_url is provided) backend-leak redaction.",
+    "destructive": false,
+    "params": [
+      {
+        "name": "app_url",
+        "ty": "string",
+        "required": true,
+        "description": "Public Lab app URL, e.g. https://lab.example.com"
+      },
+      {
+        "name": "mcp_url",
+        "ty": "string",
+        "required": true,
+        "description": "Public MCP gateway URL, e.g. https://mcp.example.com"
+      },
+      {
+        "name": "route",
+        "ty": "string",
+        "required": true,
+        "description": "Protected MCP public route path, e.g. /syslog"
+      },
+      {
+        "name": "backend_url",
+        "ty": "string",
+        "required": false,
+        "description": "Optional private backend origin, e.g. http://mcp-backend:3100. When provided, enables the backend-leak redaction probe."
+      }
+    ],
+    "returns": "DoctorReport",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "doctor",
     "action": "schema",
     "description": "Return the parameter schema for a named action",
     "destructive": false,
@@ -3897,6 +3940,24 @@
       }
     ],
     "returns": "ProtectedMcpRouteConfig",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.public_urls.get",
+    "description": "Read the resolved canonical public URL pair (app and MCP gateway). Merges LAB_PUBLIC_URL / LAB_MCP_GATEWAY_URL env vars over config.toml [public_urls] section and the legacy [auth].public_url field.",
+    "destructive": false,
+    "params": [],
+    "returns": "{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}",
     "surface_availability": {
       "cli": true,
       "mcp": true,

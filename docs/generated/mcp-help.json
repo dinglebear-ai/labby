@@ -767,6 +767,13 @@
             }
           ],
           "returns": "GatewayCleanupView"
+        },
+        {
+          "name": "gateway.public_urls.get",
+          "description": "Read the resolved canonical public URL pair (app and MCP gateway). Merges LAB_PUBLIC_URL / LAB_MCP_GATEWAY_URL env vars over config.toml [public_urls] section and the legacy [auth].public_url field.",
+          "destructive": false,
+          "params": [],
+          "returns": "{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}"
         }
       ]
     },
@@ -837,6 +844,38 @@
           "description": "Check auth/OAuth configuration: env vars, file presence, and Unix file permissions",
           "destructive": false,
           "params": [],
+          "returns": "DoctorReport"
+        },
+        {
+          "name": "proxy.check",
+          "description": "Check public Lab and protected MCP proxy endpoints from caller-visible URLs. Probes: app health, protected-resource metadata, OAuth bearer challenge, wrong-path 404 behavior, and (when backend_url is provided) backend-leak redaction.",
+          "destructive": false,
+          "params": [
+            {
+              "name": "app_url",
+              "ty": "string",
+              "required": true,
+              "description": "Public Lab app URL, e.g. https://lab.example.com"
+            },
+            {
+              "name": "mcp_url",
+              "ty": "string",
+              "required": true,
+              "description": "Public MCP gateway URL, e.g. https://mcp.example.com"
+            },
+            {
+              "name": "route",
+              "ty": "string",
+              "required": true,
+              "description": "Protected MCP public route path, e.g. /syslog"
+            },
+            {
+              "name": "backend_url",
+              "ty": "string",
+              "required": false,
+              "description": "Optional private backend origin, e.g. http://mcp-backend:3100. When provided, enables the backend-leak redaction probe."
+            }
+          ],
           "returns": "DoctorReport"
         }
       ]
