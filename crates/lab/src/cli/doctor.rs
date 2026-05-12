@@ -32,6 +32,8 @@ pub struct DoctorArgs {
 pub enum DoctorCheck {
     /// Check auth/OAuth configuration (env vars, files, permissions)
     Auth,
+    /// Check public Lab and protected MCP proxy endpoints from caller-visible URLs
+    Proxy(DoctorProxyArgs),
     /// Run local system checks (env vars, Docker, disk, toolchain)
     System,
     /// Probe a single configured service
@@ -64,6 +66,7 @@ pub async fn run(args: DoctorArgs, format: OutputFormat) -> Result<ExitCode> {
     match args.check {
         None => run_full_audit(format).await,
         Some(DoctorCheck::Auth) => run_auth(format).await,
+        Some(DoctorCheck::Proxy(args)) => run_proxy(args, format).await,
         Some(DoctorCheck::System) => run_system(format).await,
         Some(DoctorCheck::Service { name }) => run_service(name, format).await,
         Some(DoctorCheck::Services) => run_services(format).await,
