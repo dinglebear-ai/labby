@@ -100,13 +100,35 @@ pub(crate) fn extract_mcp_entries(
     vec![]
 }
 
-/// Read a JSON file and return parsed Value, ignoring missing-file and parse errors.
+/// Read a JSON file and return parsed Value, distinguishing missing-file from parse errors.
 pub(crate) fn read_json(path: &Path) -> Option<Value> {
-    let raw = std::fs::read_to_string(path).ok()?;
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::debug!(
+                path = %path.display(),
+                error.kind = %e.kind(),
+                "discovery: skipping unreadable config"
+            );
+            return None;
+        }
+    };
     // Strip JSONC-style comments by using a lenient approach: serde_json doesn't
     // support JSONC natively, so strip line comments and block comments first.
     let stripped = strip_jsonc_comments(&raw);
-    serde_json::from_str(&stripped).ok()
+    match serde_json::from_str(&stripped) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                kind = "decode_error",
+                error = %e,
+                "discovery: skipping malformed config"
+            );
+            None
+        }
+    }
 }
 
 /// Strip `//` line comments and `/* */` block comments from JSON-like text.
