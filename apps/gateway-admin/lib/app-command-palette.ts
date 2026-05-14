@@ -60,8 +60,8 @@ export const appCommandItems: AppCommandItem[] = [
   {
     id: 'destination-gateways',
     kind: 'destination',
-    title: 'Servers',
-    description: 'Manage upstream servers, policies, and runtime exposure.',
+    title: 'Gateway',
+    description: 'Open the gateway that hosts upstream servers, policies, and runtime exposure.',
     keywords: ['server', 'servers', 'gateway', 'gateways', 'routes', 'upstream', 'policy'],
     group: 'destinations',
     icon: 'gateway',
@@ -168,8 +168,8 @@ export const appCommandItems: AppCommandItem[] = [
   {
     id: 'action-review-gateways',
     kind: 'action',
-    title: 'Review servers',
-    description: 'Open server management to inspect upstreams and exposure state.',
+    title: 'Review gateway',
+    description: 'Inspect gateway-hosted servers, upstreams, and exposure state.',
     keywords: ['review', 'server', 'servers', 'gateway', 'gateways', 'health', 'runtime'],
     group: 'actions',
     icon: 'gateway',

@@ -140,14 +140,24 @@ impl LabMcpServer {
     }
 
     pub(crate) async fn snapshot_catalog(&self) -> CatalogSnapshot {
+        let tool_search_enabled = if let Some(manager) = &self.gateway_manager {
+            manager.tool_search_enabled().await
+        } else {
+            false
+        };
         let mut tools = BTreeSet::new();
-        for svc in self.registry.services() {
-            if self.service_visible_on_mcp(svc.name).await {
-                tools.insert(svc.name.to_string());
+        if tool_search_enabled {
+            tools.insert("tool_search".to_string());
+            tools.insert("tool_execute".to_string());
+        } else {
+            for svc in self.registry.services() {
+                if self.service_visible_on_mcp(svc.name).await {
+                    tools.insert(svc.name.to_string());
+                }
             }
         }
 
-        if let Some(pool) = self.current_upstream_pool().await {
+        if !tool_search_enabled && let Some(pool) = self.current_upstream_pool().await {
             for tool in pool.healthy_tools().await {
                 let name = tool.tool.name.to_string();
                 if !tools.contains(&name) {

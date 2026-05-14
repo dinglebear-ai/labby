@@ -36,9 +36,11 @@ pub async fn dispatch_with_manager(
             let action_name = require_str(&params_value, "action")?;
             action_schema(ACTIONS, action_name)
         }
-        "tool_search" | "tool_invoke" | "gateway.tool_search.get" | "gateway.tool_search.set" => {
-            handle_tool_actions(manager, action, params_value).await
-        }
+        "tool_search"
+        | "tool_execute"
+        | "tool_invoke"
+        | "gateway.tool_search.get"
+        | "gateway.tool_search.set" => handle_tool_actions(manager, action, params_value).await,
         "gateway.list"
         | "gateway.server.get"
         | "gateway.supported_services"
@@ -92,7 +94,7 @@ async fn handle_tool_actions(
                     .await?,
             )
         }
-        "tool_invoke" => {
+        "tool_execute" | "tool_invoke" => {
             let params: ToolInvokeParams = parse_params(params_value)?;
             let (upstream_name, _) = manager.resolve_tool_invoke(&params.name).await?;
             let pool = manager.current_pool().await.ok_or_else(|| ToolError::Sdk {

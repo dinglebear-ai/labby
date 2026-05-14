@@ -13,6 +13,7 @@ test('app command palette ranks server searches first', () => {
   assert.equal(state.activeItemId, 'destination-gateways')
   assert.equal(state.groups[0]?.key, 'best-match')
   assert.equal(state.groups[0]?.items[0]?.href, '/gateways')
+  assert.equal(state.groups[0]?.items[0]?.title, 'Gateway')
 })
 
 test('app command palette includes core admin destinations', () => {

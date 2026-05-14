@@ -1,5 +1,9 @@
 import type { Gateway, ServiceAction, ServiceConfig, SupportedService } from '../types/gateway.ts'
 
+export function upstreamMcpGateways(gateways: Gateway[]): Gateway[] {
+  return gateways.filter((gateway) => gateway.source !== 'in_process' && gateway.transport !== 'in_process')
+}
+
 export function synthesizeLabGateway(
   service: SupportedService,
   config: ServiceConfig | undefined,

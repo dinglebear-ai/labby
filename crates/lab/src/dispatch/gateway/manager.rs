@@ -228,6 +228,7 @@ impl GatewayManager {
         // config.rs normalizes legacy tool_search before calling seed_config;
         // do not re-normalize here with false — that would incorrectly promote
         // legacy upstream config when the root [tool_search] is explicitly disabled.
+        crate::config::set_process_tool_search_enabled(config.tool_search.enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&config.protected_mcp_routes);
         *self.config.write().await = config;
@@ -1240,6 +1241,7 @@ impl GatewayManager {
             upstream_count = cfg.upstream.len(),
             "gateway reconcile"
         );
+        crate::config::set_process_tool_search_enabled(cfg.tool_search.enabled);
         let fresh_pool = {
             let base_pool = match &self.oauth_client_cache {
                 Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
@@ -1386,17 +1388,6 @@ impl GatewayManager {
         Ok(prompts)
     }
 
-    pub async fn tool_search_enabled_gateways(&self) -> Vec<String> {
-        let cfg = self.config.read().await;
-        if !cfg.tool_search.enabled {
-            return Vec::new();
-        }
-        cfg.upstream
-            .iter()
-            .map(|upstream| upstream.name.clone())
-            .collect()
-    }
-
     pub async fn tool_search_enabled(&self) -> bool {
         self.config.read().await.tool_search.enabled
     }
@@ -1481,7 +1472,7 @@ impl GatewayManager {
         if !self.config.read().await.tool_search.enabled {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
-                message: "tool search is not enabled; tool_invoke requires tool_search mode"
+                message: "tool search is not enabled; tool_execute requires tool_search mode"
                     .to_string(),
             });
         }

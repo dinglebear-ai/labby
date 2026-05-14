@@ -536,7 +536,7 @@ export function GatewayListView({
   return (
     <>
       <AppHeader
-        breadcrumbs={[{ label: 'Servers' }]}
+        breadcrumbs={[{ label: 'Gateway' }]}
         actions={
           <div className="flex items-center gap-2">
             {showToolsView ? (

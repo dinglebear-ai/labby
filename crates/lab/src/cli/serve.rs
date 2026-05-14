@@ -293,6 +293,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             .count(),
         "starting upstream gateway discovery"
     );
+    crate::config::set_process_tool_search_enabled(config.tool_search.enabled);
     let mut pool_builder = crate::dispatch::upstream::pool::UpstreamPool::new();
     if let Some(rt) = &upstream_oauth_runtime {
         pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());
@@ -345,10 +346,12 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     }
     gateway_manager.set_notifier(CatalogChangeNotifier::new(notify_tx));
     let gateway_manager = Arc::new(gateway_manager);
-    // Skip seeding and installing the gateway manager in MCP-only mode — seeding
-    // can trigger async tasks that spawn upstream connections.
+    // Seed config for both transports so MCP catalog visibility and tool-search
+    // settings match the persisted config. MCP-only stdio still skips installing
+    // the process-global gateway manager and upstream discovery, which are the
+    // paths that can create recursive upstream connections.
+    gateway_manager.seed_config(config.clone()).await;
     if !stdio_mode {
-        gateway_manager.seed_config(config.clone()).await;
         install_gateway_manager(Arc::clone(&gateway_manager));
         tracing::info!(
             subsystem = "gateway_client",
@@ -360,7 +363,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         tracing::info!(
             subsystem = "gateway_client",
             phase = "manager.skipped",
-            "gateway manager seed skipped for MCP-only stdio mode"
+            "gateway manager install skipped for MCP-only stdio mode"
         );
     }
     let logs_system = bootstrap_running_log_system(

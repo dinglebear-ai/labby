@@ -1,228 +1,224 @@
 ---
 name: unifi
-description: This skill should be used when the user needs to inspect or manage UniFi network infrastructure, including connected clients and devices, network health, firewall rules, WiFi configuration, port forwarding, DPI statistics, rogue APs, speedtest results, network events, or management actions such as blocking clients, restarting APs, or locating devices.
+description: >
+  Use this skill whenever the user asks about their UniFi network — connected clients, who's
+  on the WiFi, which devices are online, access points, switches, gateways, network health,
+  site health, active alarms, network events, WiFi configurations (SSIDs), controller sysinfo,
+  or their authenticated UniFi identity. This skill covers the rustifi MCP server (read-only
+  Rust bridge to the UniFi REST API via X-API-KEY). Trigger phrases include: "UniFi clients",
+  "connected clients", "who's on the network", "UniFi devices", "access points", "APs",
+  "UniFi switches", "WiFi networks", "WLAN config", "SSIDs", "network health", "UniFi health",
+  "site health", "UniFi alarms", "network alerts", "network events", "UniFi events",
+  "sysinfo", "controller version", "UniFi me". Always use this skill rather than guessing
+  at curl commands or API paths — the UniFi REST API has several gotchas around path prefixes
+  and auth that this skill encodes.
 ---
 
-# UniFi Skill
+# UniFi Skill (rustifi)
 
-Manages UniFi network infrastructure via the `unifi` action-router tool (and `unifi_help` for discovery).
+Read-only access to a UniFi network controller via the **rustifi** MCP server. All data is
+fetched from the UniFi REST API using X-API-KEY authentication.
 
-## Mode Detection
+## Quick Reference
 
-**MCP mode** (preferred): Use when `mcp__claude_ai_Unifi__unifi` (or `mcp__unifi-mcp__unifi`) tools are available. The server handles UniFi controller authentication internally — session cookies are managed server-side.
-
-**HTTP fallback mode**: UniFi requires session-based authentication (login → cookie → requests). This is complex to replicate in curl. **Strongly prefer keeping the MCP server running.** For emergencies only, see fallback section below.
-
-**Transport**: Controlled by `UNIFI_MCP_TRANSPORT` env var — `http` (default, port 8001) or `stdio`.
-
-**MCP URL**: `${user_config.unifi_mcp_url}` (default `http://localhost:8001/mcp`)
-
----
-
-## MCP Mode — Tool Reference
-
-All operations go through two tools:
-
-- **`unifi`** — action router: `{"action": "<action_name>", ...params}`
-- **`unifi_help`** — list available actions and their parameters
-
-### Clients
+All operations use a single `unifi` MCP tool with an `action` parameter:
 
 ```
-unifi  action=get_clients
-  connected_only  (optional) true/false — default true
-  site_name       (optional) default "default"
-
-unifi  action=block_client
-  mac        (required) Client MAC address — DESTRUCTIVE, confirm before use
-  site_name  (optional) default "default"
-
-unifi  action=unblock_client
-  mac        (required) Client MAC address
-  site_name  (optional) default "default"
-
-unifi  action=reconnect_client
-  mac        (required) Client MAC address
-  site_name  (optional) default "default"
-
-unifi  action=forget_client
-  mac        (required) Client MAC address — DESTRUCTIVE, removes from history
-  site_name  (optional) default "default"
-
-unifi  action=set_client_name
-  mac   (required) Client MAC address
-  name  (required) New display name
-  site_name  (optional) default "default"
-
-unifi  action=set_client_note
-  mac   (required) Client MAC address
-  note  (required) Note text
-  site_name  (optional) default "default"
-```
-
-### Devices
-
-```
-unifi  action=get_devices
-  site_name  (optional) default "default"
-
-unifi  action=get_device_by_mac
-  mac        (required) Device MAC address
-  site_name  (optional) default "default"
-
-unifi  action=restart_device
-  mac        (required) Device MAC address — DESTRUCTIVE, causes brief outage
-  site_name  (optional) default "default"
-
-unifi  action=locate_device
-  mac        (required) Device MAC address — flashes LED for identification
-  site_name  (optional) default "default"
-```
-
-### Network
-
-```
-unifi  action=get_sites
-  (no parameters)
-
-unifi  action=get_wlan_configs
-  site_name  (optional) default "default"
-
-unifi  action=get_network_configs
-  site_name  (optional) default "default"
-
-unifi  action=get_port_configs
-  site_name  (optional) default "default"
-
-unifi  action=get_port_forwarding_rules
-  site_name  (optional) default "default"
-
-unifi  action=get_firewall_rules
-  site_name  (optional) default "default"
-
-unifi  action=get_firewall_groups
-  site_name  (optional) default "default"
-
-unifi  action=get_static_routes
-  site_name  (optional) default "default"
-```
-
-### Monitoring
-
-```
-unifi  action=get_controller_status
-  (no parameters)
-
-unifi  action=get_events
-  limit      (optional) default 100
-  site_name  (optional) default "default"
-
-unifi  action=get_alarms
-  active_only  (optional) default true
-  site_name    (optional) default "default"
-
-unifi  action=get_dpi_stats
-  by_filter  (optional) "by_app" or "by_cat" — default "by_app"
-  site_name  (optional) default "default"
-
-unifi  action=get_rogue_aps
-  site_name  (optional) default "default"
-  limit      (optional) default 20
-
-unifi  action=get_speedtest_results
-  site_name  (optional) default "default"
-  limit      (optional) default 20
-
-unifi  action=start_spectrum_scan
-  mac        (required) Access point MAC address — long-running operation
-  site_name  (optional) default "default"
-
-unifi  action=get_spectrum_scan_state
-  mac        (required) Access point MAC address
-  site_name  (optional) default "default"
-
-unifi  action=authorize_guest
-  mac        (required) Guest client MAC address
-  site_name  (optional) default "default"
+unifi(action="clients")           # who's connected
+unifi(action="devices")           # APs, switches, gateways
+unifi(action="health")            # site health summary
+unifi(action="wlans")             # WiFi network configs
+unifi(action="alarms")            # active alarms
+unifi(action="events", limit=20)  # recent events (limit optional)
+unifi(action="sysinfo")           # controller version/uptime
+unifi(action="me")                # authenticated user info
+unifi(action="help")              # built-in documentation
 ```
 
 ---
 
-## Destructive Operations — Confirmation Required
+## Tier 1 — MCP Tool (preferred)
 
-Always confirm with the user before executing:
-- `block_client` — blocks network access for a device
-- `forget_client` — removes client from controller history
-- `restart_device` — reboots an AP or switch, causes brief outage
+**Tool name:** `unifi`
+**Required parameter:** `action` (string)
+
+### Action Reference
+
+| action | description | extra params |
+|--------|-------------|--------------|
+| `clients` | Connected wireless and wired clients | — |
+| `devices` | Network devices: APs, switches, gateways | — |
+| `wlans` | WiFi network configurations (SSID/band/security/VLAN) | — |
+| `health` | Site health summary (subsystems, AP counts, client counts) | — |
+| `alarms` | Active alarms and alerts | — |
+| `events` | Recent network events | `limit` (int, optional) |
+| `sysinfo` | Controller version, build, hostname, uptime, timezone | — |
+| `me` | Authenticated user info (name, email, role) | — |
+| `help` | Returns built-in action documentation | — |
+
+### Response Shape
+
+All actions return: `{"meta": {"rc": "ok"}, "data": [...]}`
+
+Always index into `["data"]` for the actual records.
+
+**Exception — `me`:** Returns `{"data": {...}}` (object, not array). The `/api/self` endpoint
+it calls does not use the `/proxy/network` prefix — this is intentional and unique to this action.
+
+### Example Calls
+
+```python
+# List connected clients
+unifi(action="clients")
+# → data[].{hostname, mac, ip, is_wired, essid, sw_port}
+
+# List network devices
+unifi(action="devices")
+# → data[].{name, model, type, mac, ip, state, state_str}
+
+# Recent 10 events
+unifi(action="events", limit=10)
+# → data[].{key, msg}
+
+# WiFi networks (configurations, not per-SSID client counts)
+unifi(action="wlans")
+# → data[].{name, band, security, enabled, vlan_enabled, vlanid}
+
+# Health overview
+unifi(action="health")
+# → data[].{subsystem, status, num_ap, num_disconnected, num_user, num_guest}
+
+# Controller info
+unifi(action="sysinfo")
+# → data[0].{version, build, hostname, uptime, timezone}
+
+# Current user
+unifi(action="me")
+# → data.{name, email, role, is_super_admin}
+```
 
 ---
 
-## Example Workflows
+## Tier 2 — CLI Binary (fallback when MCP is unavailable)
 
-**Check who's connected:**
-```
-unifi  action=get_clients  connected_only=true
-```
+Binary: `/home/jmagar/workspace/rustifi/target/release/unifi`
 
-**Block a client by MAC:**
-```
-# Confirm with user first
-unifi  action=block_client  mac=aa:bb:cc:dd:ee:ff
+If the binary does not exist, build it first:
+```bash
+cd /home/jmagar/workspace/rustifi && cargo build --release
+# or run without building:
+cargo run --bin unifi -- <command>
 ```
 
-**Restart an access point:**
-```
-# Confirm with user first — causes brief outage
-unifi  action=restart_device  mac=aa:bb:cc:dd:ee:ff
-```
+| command | output |
+|---------|--------|
+| `unifi clients` | HOSTNAME / MAC / IP / TYPE / SSID or PORT |
+| `unifi devices` | NAME / TYPE / MAC / STATE / IP |
+| `unifi wlans` | SSID / BAND / VLAN / SECURITY |
+| `unifi health` | subsystem status with AP and client counts |
+| `unifi alarms` | `[key] message` per alarm |
+| `unifi events [--limit N]` | `[key] message` per event |
+| `unifi sysinfo` | Version, Build, Hostname, Uptime, Timezone |
+| `unifi me` | Name, Email, Role, Super admin flag |
 
-**Check network health / controller status:**
-```
-unifi  action=get_controller_status
-unifi  action=get_alarms  active_only=true
-```
-
-**View firewall rules:**
-```
-unifi  action=get_firewall_rules
-unifi  action=get_firewall_groups
-```
-
-**Run a speedtest (view results):**
-```
-unifi  action=get_speedtest_results  limit=5
-```
-
-**Discover available actions:**
-```
-unifi_help
-```
-
----
-
-## HTTP Fallback Mode
-
-UniFi uses session-based auth. For emergency fallback only:
+All commands accept `--json` for raw JSON output.
 
 ```bash
-# Step 1: Login and capture cookie
-COOKIE_JAR=$(mktemp)
-curl -s -X POST "$CLAUDE_PLUGIN_OPTION_UNIFI_CONTROLLER_URL/api/auth/login" \
-  -H "Content-Type: application/json" \
-  -k --cookie-jar "$COOKIE_JAR" \
-  -d "{\"username\":\"$CLAUDE_PLUGIN_OPTION_UNIFI_USERNAME\",\"password\":\"$CLAUDE_PLUGIN_OPTION_UNIFI_PASSWORD\"}"
-
-# Step 2: Use session for requests
-curl -s "$CLAUDE_PLUGIN_OPTION_UNIFI_CONTROLLER_URL/proxy/network/api/s/default/stat/sta" \
-  -k --cookie "$COOKIE_JAR"
+# Examples
+unifi clients
+unifi devices --json
+unifi events --limit 20
+unifi health
 ```
 
 ---
 
-## Notes
+## Tier 3 — Direct REST API (emergency fallback)
 
-- `site_name` defaults to `"default"` for most single-site deployments
-- `start_spectrum_scan` is long-running — poll `get_spectrum_scan_state` for results
-- Controller URL typically ends in `:443` for UDM Pro / Cloud Key Gen2+
-- SSL verification is usually disabled for self-signed controller certs (handled server-side)
-- Transport mode (`http` vs `stdio`) is set via `UNIFI_MCP_TRANSPORT` env var; default is `http` on port 3003
+Use when neither MCP nor CLI is available. Requires `UNIFI_URL` and `UNIFI_API_KEY` in environment.
+
+**Auth:** `X-API-KEY` header — only works on UniFi OS consoles (UDM, UDR, UCG, UX, UDW).
+**TLS:** Self-signed certs are normal — always use `-sk` with curl.
+**Site:** Defaults to `default`.
+
+**UDM/UniFi OS paths** (include `/proxy/network` prefix):
+
+```bash
+SITE=${UNIFI_SITE:-default}
+
+# Clients
+curl -sk "$UNIFI_URL/proxy/network/api/s/$SITE/stat/sta" \
+  -H "X-API-KEY: $UNIFI_API_KEY" | jq '.data[] | {hostname, mac, ip, is_wired}'
+
+# Devices
+curl -sk "$UNIFI_URL/proxy/network/api/s/$SITE/stat/device" \
+  -H "X-API-KEY: $UNIFI_API_KEY" | jq '.data[] | {name, type, mac, ip, state}'
+
+# WLANs
+curl -sk "$UNIFI_URL/proxy/network/api/s/$SITE/rest/wlanconf" \
+  -H "X-API-KEY: $UNIFI_API_KEY" | jq '.data[] | {name, band, security, enabled}'
+
+# Health
+curl -sk "$UNIFI_URL/proxy/network/api/s/$SITE/stat/health" \
+  -H "X-API-KEY: $UNIFI_API_KEY" | jq '.data'
+
+# Alarms
+curl -sk "$UNIFI_URL/proxy/network/api/s/$SITE/rest/alarm" \
+  -H "X-API-KEY: $UNIFI_API_KEY" | jq '.data[] | {key, msg}'
+
+# Events (most recent 20)
+curl -sk "$UNIFI_URL/proxy/network/api/s/$SITE/rest/event" \
+  -H "X-API-KEY: $UNIFI_API_KEY" | jq '.data[:20]'
+
+# Sysinfo
+curl -sk "$UNIFI_URL/proxy/network/api/s/$SITE/stat/sysinfo" \
+  -H "X-API-KEY: $UNIFI_API_KEY" | jq '.data[0]'
+
+# Me — NOTE: no /proxy/network prefix, even on UDM
+curl -sk "$UNIFI_URL/api/self" \
+  -H "X-API-KEY: $UNIFI_API_KEY" | jq '.data'
+```
+
+**Legacy controllers** (`UNIFI_LEGACY=true`, typically port 8443): use the same paths but
+omit the `/proxy/network` prefix entirely.
+
+---
+
+## Key Gotchas
+
+1. **`me` has a unique path.** `/api/self` never uses the `/proxy/network` prefix, even on
+   modern UDM hardware. Every other action uses the site-scoped prefix.
+
+2. **`events` limit is client-side.** The server fetches all events then truncates — it does
+   not pass the limit to the UniFi API. Large event logs still incur full fetch cost.
+
+3. **`wlans` is configuration, not client counts.** It returns SSID names, band, security
+   mode, and VLAN settings. To count clients per SSID, cross-reference `clients` by `essid`.
+
+4. **Wireless vs wired clients.** In `clients` data: `is_wired=false` means wireless — check
+   `essid` for the SSID. `is_wired=true` means wired — check `sw_port` for the switch port.
+
+5. **Device state.** In `devices` data: `state==1` means connected. Prefer `state_str` for
+   human display; fall back to checking `state==1` when `state_str` is absent.
+
+6. **Self-signed TLS is expected.** The UniFi controller uses a self-signed certificate by
+   default. `UNIFI_SKIP_TLS_VERIFY=true` is the default in rustifi; use `-sk` in curl.
+
+7. **`meta.rc` should be `"ok"`.** If the UniFi API returns an error, `meta.rc` will not be
+   `"ok"`. The client raises an HTTP error in this case, so you'll see an anyhow error rather
+   than an unexpected data shape.
+
+---
+
+## Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `UNIFI_URL` | Controller base URL, e.g. `https://192.168.1.1` | required |
+| `UNIFI_API_KEY` | X-API-KEY header value | required |
+| `UNIFI_SITE` | Site name | `default` |
+| `UNIFI_SKIP_TLS_VERIFY` | Skip TLS certificate check | `true` |
+| `UNIFI_LEGACY` | Omit `/proxy/network` prefix (legacy controllers) | `false` |
+| `UNIFI_MCP_PORT` | MCP server bind port | `7474` |
+| `UNIFI_MCP_TOKEN` | Static bearer token for MCP auth | — |
+| `UNIFI_MCP_NO_AUTH` | Disable MCP auth (loopback only) | — |
