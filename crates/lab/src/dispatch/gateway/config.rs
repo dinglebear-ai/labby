@@ -1350,6 +1350,119 @@ args = ["server.js"]
     }
 
     #[test]
+    fn insert_upstream_rejects_name_over_128_chars() {
+        let long_name = "a".repeat(129);
+        let err = insert_upstream(
+            &mut LabConfig::default(),
+            UpstreamConfig {
+                enabled: true,
+                name: long_name,
+                url: Some("https://example.com/mcp".to_string()),
+                bearer_token_env: None,
+                command: None,
+                args: Vec::new(),
+                env: std::collections::BTreeMap::new(),
+                proxy_resources: false,
+                proxy_prompts: false,
+                expose_tools: None,
+                expose_resources: None,
+                expose_prompts: None,
+                oauth: None,
+                imported_from: None,
+                tool_search: crate::config::ToolSearchConfig::default(),
+            },
+        )
+        .expect_err("name over 128 chars should be rejected");
+
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[test]
+    fn insert_upstream_rejects_invalid_chars_in_name() {
+        let err = insert_upstream(
+            &mut LabConfig::default(),
+            UpstreamConfig {
+                enabled: true,
+                name: "evil\x1bgateway".to_string(),
+                url: Some("https://example.com/mcp".to_string()),
+                bearer_token_env: None,
+                command: None,
+                args: Vec::new(),
+                env: std::collections::BTreeMap::new(),
+                proxy_resources: false,
+                proxy_prompts: false,
+                expose_tools: None,
+                expose_resources: None,
+                expose_prompts: None,
+                oauth: None,
+                imported_from: None,
+                tool_search: crate::config::ToolSearchConfig::default(),
+            },
+        )
+        .expect_err("control char in name should be rejected");
+
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[test]
+    fn insert_upstream_rejects_bidi_override_in_name() {
+        // U+202E RIGHT-TO-LEFT OVERRIDE (bidi char, not caught by is_control())
+        let err = insert_upstream(
+            &mut LabConfig::default(),
+            UpstreamConfig {
+                enabled: true,
+                name: "safe\u{202e}gateway".to_string(),
+                url: Some("https://example.com/mcp".to_string()),
+                bearer_token_env: None,
+                command: None,
+                args: Vec::new(),
+                env: std::collections::BTreeMap::new(),
+                proxy_resources: false,
+                proxy_prompts: false,
+                expose_tools: None,
+                expose_resources: None,
+                expose_prompts: None,
+                oauth: None,
+                imported_from: None,
+                tool_search: crate::config::ToolSearchConfig::default(),
+            },
+        )
+        .expect_err("bidi override in name should be rejected");
+
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[test]
+    fn insert_upstream_accepts_valid_names() {
+        // Positive test: ensure we didn't over-block valid names.
+        let valid_names = ["my-gateway", "plex.primary", "cursor_mcp", "abc123"];
+        for name in &valid_names {
+            let mut cfg = LabConfig::default();
+            insert_upstream(
+                &mut cfg,
+                UpstreamConfig {
+                    enabled: true,
+                    name: name.to_string(),
+                    url: Some("https://example.com/mcp".to_string()),
+                    bearer_token_env: None,
+                    command: None,
+                    args: Vec::new(),
+                    env: std::collections::BTreeMap::new(),
+                    proxy_resources: false,
+                    proxy_prompts: false,
+                    expose_tools: None,
+                    expose_resources: None,
+                    expose_prompts: None,
+                    oauth: None,
+                    imported_from: None,
+                    tool_search: crate::config::ToolSearchConfig::default(),
+                },
+            )
+            .unwrap_or_else(|e| panic!("valid name '{name}' should be accepted: {e}"));
+        }
+    }
+
+    #[test]
     fn default_gateway_bearer_env_name_normalizes_gateway_names() {
         assert_eq!(
             default_gateway_bearer_env_name("github"),
