@@ -133,6 +133,13 @@ async fn handle_discover(
 async fn handle_import(manager: &GatewayManager, params_value: Value) -> Result<Value, ToolError> {
     let params: GatewayImportParams = parse_params(params_value)?;
 
+    if !params.names.is_empty() && params.all {
+        return Err(ToolError::InvalidParam {
+            message: "gateway.import requires either `all` or `names`, not both".to_string(),
+            param: "names".to_string(),
+        });
+    }
+
     if params.names.is_empty() && !params.all {
         return Err(ToolError::InvalidParam {
             message: "gateway.import requires either `all: true` or a non-empty `names` list"
@@ -153,6 +160,8 @@ async fn handle_import(manager: &GatewayManager, params_value: Value) -> Result<
         discovered.retain(|s| filter.contains(s.source_client.as_str()));
     }
 
+    // When all=true, names is ignored even if provided (guarded above for explicit both-provided case,
+    // but callers should use one or the other).
     let to_import: Vec<_> = if params.all {
         discovered
     } else {
