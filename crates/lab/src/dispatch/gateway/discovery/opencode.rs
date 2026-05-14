@@ -33,6 +33,67 @@ pub fn discover(home: &Path) -> Vec<DiscoveredServer> {
     results
 }
 
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn write(dir: &Path, rel: &str, content: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, content).unwrap();
+    }
+
+    /// Return the opencode config dir that `candidate_paths` will use for the
+    /// given `home`, replicating the same XDG / default logic so the tests are
+    /// not broken by an ambient `XDG_CONFIG_HOME` on the test runner.
+    fn opencode_config_dir(home: &Path) -> std::path::PathBuf {
+        let xdg = std::env::var("XDG_CONFIG_HOME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from);
+        xdg.map(|x| x.join("opencode"))
+            .unwrap_or_else(|| home.join(".config/opencode"))
+    }
+
+    #[test]
+    fn discovers_from_default_config_dir() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = opencode_config_dir(dir.path());
+        let rel = config_dir
+            .strip_prefix(dir.path())
+            .expect("config dir must be under home")
+            .join("opencode.json");
+        write(
+            dir.path(),
+            rel.to_str().unwrap(),
+            r#"{"mcp": {"my-server": {"command": "node", "args": ["server.js"]}}}"#,
+        );
+        let results = super::discover(dir.path());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "my-server");
+        assert_eq!(results[0].source_client, "opencode");
+    }
+
+    #[test]
+    fn mcp_key_only_no_mcp_servers_fallback() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = opencode_config_dir(dir.path());
+        let rel = config_dir
+            .strip_prefix(dir.path())
+            .expect("config dir must be under home")
+            .join("opencode.json");
+        // opencode only uses "mcp" key, NOT "mcpServers"
+        write(
+            dir.path(),
+            rel.to_str().unwrap(),
+            r#"{"mcpServers": {"wrong-key": {"command": "node"}}}"#,
+        );
+        let results = super::discover(dir.path());
+        assert!(results.is_empty(), "opencode must not use mcpServers key");
+    }
+}
+
 fn candidate_paths(home: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
