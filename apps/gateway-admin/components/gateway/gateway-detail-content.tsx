@@ -189,7 +189,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       <>
         <AppHeader
           breadcrumbs={[
-            { label: 'Servers', href: '/gateways' },
+            { label: 'Gateway', href: '/gateways' },
             { label: 'Missing Server' }
           ]}
         />
@@ -324,7 +324,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       <>
         <AppHeader
           breadcrumbs={[
-            { label: 'Servers', href: '/gateways' },
+            { label: 'Gateway', href: '/gateways' },
             { label: 'Loading...' }
           ]}
         />
@@ -352,7 +352,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       <>
         <AppHeader
           breadcrumbs={[
-            { label: 'Servers', href: '/gateways' },
+            { label: 'Gateway', href: '/gateways' },
             { label: 'Error' }
           ]}
         />
@@ -560,7 +560,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     <>
       <AppHeader
         breadcrumbs={[
-          { label: 'Servers', href: '/gateways' },
+          { label: 'Gateway', href: '/gateways' },
           { label: gateway.name }
         ]}
         actions={headerActions}

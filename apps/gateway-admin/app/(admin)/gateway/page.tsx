@@ -21,7 +21,7 @@ export default function GatewayDetailPage() {
         <>
           <AppHeader
             breadcrumbs={[
-              { label: 'Servers', href: '/gateways' },
+              { label: 'Gateway', href: '/gateways' },
               { label: 'Loading...' },
             ]}
           />

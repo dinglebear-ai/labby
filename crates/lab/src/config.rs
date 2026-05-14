@@ -16,6 +16,7 @@
 
 pub mod env_merge;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 use std::{
@@ -25,6 +26,26 @@ use std::{
     io::Write as _,
     path::{Path, PathBuf},
 };
+
+static PROCESS_TOOL_SEARCH_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_process_tool_search_enabled(enabled: bool) {
+    let previous = PROCESS_TOOL_SEARCH_ENABLED.swap(enabled, Ordering::AcqRel);
+    if previous != enabled {
+        tracing::info!(
+            surface = "mcp",
+            service = "tool_search",
+            action = "tool_search.process_enablement",
+            previous_enabled = previous,
+            enabled,
+            "process-wide tool search enablement changed"
+        );
+    }
+}
+
+pub(crate) fn process_tool_search_enabled() -> bool {
+    PROCESS_TOOL_SEARCH_ENABLED.load(Ordering::Acquire)
+}
 
 use anyhow::{Context, Result};
 use lab_apis::extract::types::ServiceCreds;

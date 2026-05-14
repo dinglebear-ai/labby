@@ -141,17 +141,21 @@ impl GatewayManager {
                     .unwrap_or_else(|| probe_manager_key(&parsed))
             }
         };
-        {
+        let name_is_persisted = {
             let cfg = self.config.read().await;
-            if let Some(existing) = cfg.upstream.iter().find(|upstream| upstream.name == name)
-                && existing.url.as_deref() != Some(canonical_url.as_str())
-            {
-                return Err(ToolError::InvalidParam {
-                    message: format!("upstream `{name}` is already configured for a different URL"),
-                    param: "upstream".to_string(),
-                });
+            match cfg.upstream.iter().find(|upstream| upstream.name == name) {
+                Some(existing) if existing.url.as_deref() != Some(canonical_url.as_str()) => {
+                    return Err(ToolError::InvalidParam {
+                        message: format!(
+                            "upstream `{name}` is already configured for a different URL"
+                        ),
+                        param: "upstream".to_string(),
+                    });
+                }
+                Some(_) => true,
+                None => false,
             }
-        }
+        };
 
         // SSRF validation (synchronous DNS) — must run in spawn_blocking.
         // Also enforces https-only and rejects RFC 1918, loopback, and link-local.
@@ -288,22 +292,37 @@ impl GatewayManager {
         ) {
             (Some(managers), Some(sqlite), Some(key), Some(redirect_uri)) => {
                 if let Some(existing) = managers.get(&name) {
-                    if existing.upstream_config().url.as_deref() != Some(canonical_url.as_str()) {
-                        return Err(ToolError::InvalidParam {
-                            message: format!(
-                                "transient upstream `{name}` is already registered for a different URL"
-                            ),
-                            param: "upstream".to_string(),
-                        });
+                    let existing_url = existing.upstream_config().url.clone();
+                    drop(existing);
+                    if existing_url.as_deref() != Some(canonical_url.as_str()) {
+                        if name_is_persisted {
+                            return Err(ToolError::InvalidParam {
+                                message: format!(
+                                    "upstream `{name}` is already configured for a different URL"
+                                ),
+                                param: "upstream".to_string(),
+                            });
+                        }
+                        managers.remove(&name);
+                        self.evict_upstream_clients(&name);
+                        tracing::info!(
+                            service = "upstream_oauth",
+                            action = "probe",
+                            upstream = %name,
+                            "upstream oauth probe: replaced stale transient manager"
+                        );
+                    } else {
+                        tracing::info!(
+                            service = "upstream_oauth",
+                            action = "probe",
+                            upstream = %name,
+                            elapsed_ms = started.elapsed().as_millis(),
+                            "upstream oauth probe: reusing existing manager"
+                        );
                     }
-                    tracing::info!(
-                        service = "upstream_oauth",
-                        action = "probe",
-                        upstream = %name,
-                        elapsed_ms = started.elapsed().as_millis(),
-                        "upstream oauth probe: reusing existing manager"
-                    );
-                } else {
+                }
+
+                if !managers.contains_key(&name) {
                     let registration = if use_dynamic_registration {
                         UpstreamOauthRegistration::Dynamic
                     } else {

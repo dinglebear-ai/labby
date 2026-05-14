@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { Gateway, ServiceAction, ServiceConfig, SupportedService } from '../types/gateway.ts'
-import { mergeGatewayListWithSupportedServices } from './gateway-list-model.ts'
+import { mergeGatewayListWithSupportedServices, upstreamMcpGateways } from './gateway-list-model.ts'
 
 function makeGateway(partial: Partial<Gateway> & Pick<Gateway, 'id' | 'name'>): Gateway {
   return {
@@ -93,6 +93,18 @@ test('mergeGatewayListWithSupportedServices appends missing lab services as deac
   assert.equal(merged[2]?.status.connected, false)
   assert.equal(merged[2]?.status.discovered_tool_count, 1)
   assert.equal(merged[2]?.status.exposed_tool_count, 0)
+})
+
+test('upstreamMcpGateways excludes lab-backed virtual service rows from the gateway surface', () => {
+  const gateways = [
+    makeGateway({ id: 'syslog', name: 'syslog', transport: 'http', source: 'custom' }),
+    makeGateway({ id: 'deploy', name: 'deploy', transport: 'in_process', source: 'in_process', enabled: false }),
+    makeGateway({ id: 'context7', name: 'context7', transport: 'http', source: 'custom_gateway' }),
+  ]
+
+  const filtered = upstreamMcpGateways(gateways)
+
+  assert.deepEqual(filtered.map((gateway) => gateway.id), ['syslog', 'context7'])
 })
 
 test('mergeGatewayListWithSupportedServices preserves existing disabled lab rows and keeps them after active rows', () => {

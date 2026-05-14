@@ -10,7 +10,7 @@ import {
   getMockSupportedServicesFallback,
 } from '@/lib/api/mock-fallback'
 import { setMockGatewayOverride } from '@/lib/api/mock-gateway-overrides'
-import { mergeGatewayListWithSupportedServices } from '@/lib/api/gateway-list-model'
+import { upstreamMcpGateways } from '@/lib/api/gateway-list-model'
 import {
   mockGateways,
   mockReloadResult,
@@ -35,7 +35,6 @@ import type {
   ProtectedMcpRouteTestResult,
 } from '@/lib/types/gateway'
 import { useCallback } from 'react'
-import { safeFanout } from '@/lib/api/service-action-client'
 
 // Set NEXT_PUBLIC_MOCK_DATA=true to use mock data for development
 const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
@@ -86,63 +85,10 @@ function abortableMockDelay(ms: number, signal?: AbortSignal): Promise<void> {
 const fetchGateways = async (): Promise<Gateway[]> => {
   if (USE_MOCK_DATA) {
     await mockDelay()
-    return getMockGatewaysFallback()
+    return upstreamMcpGateways(getMockGatewaysFallback())
   }
 
-  const [gateways, supportedServices] = await Promise.all([
-    gatewayApi.list(),
-    gatewayApi.supportedServices(),
-  ])
-
-  const missingServices = supportedServices.filter(
-    (service) => !gateways.some((gateway) => gateway.id === service.key),
-  )
-
-  if (missingServices.length === 0) {
-    return gateways
-  }
-
-  const serviceEntries = await safeFanout(
-    missingServices,
-    async (service) => {
-      const [configResult, actionsResult] = await safeFanout(
-        ['config', 'actions'] as const,
-        async (kind): Promise<ServiceConfig | ServiceAction[]> => {
-          if (kind === 'config') {
-            return gatewayApi.getServiceConfig(service.key)
-          }
-          return gatewayApi.serviceActions(service.key)
-        },
-      )
-
-      return {
-        key: service.key,
-        config: configResult.ok ? configResult.value as ServiceConfig : undefined,
-        actions: actionsResult.ok ? actionsResult.value as ServiceAction[] : undefined,
-      }
-    },
-  )
-  const loadedServiceEntries = serviceEntries
-    .filter((entry) => entry.ok)
-    .map((entry) => entry.value)
-
-  const serviceConfigs = new Map(
-    loadedServiceEntries
-      .filter((entry) => entry.config !== undefined)
-      .map((entry) => [entry.key, entry.config!]),
-  )
-  const serviceActions = new Map(
-    loadedServiceEntries
-      .filter((entry) => entry.actions !== undefined)
-      .map((entry) => [entry.key, entry.actions!]),
-  )
-
-  return mergeGatewayListWithSupportedServices(
-    gateways,
-    supportedServices,
-    serviceConfigs,
-    serviceActions,
-  )
+  return upstreamMcpGateways(await gatewayApi.list())
 }
 
 const fetchGateway = async (id: string): Promise<Gateway> => {

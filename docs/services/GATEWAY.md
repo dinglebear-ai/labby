@@ -92,7 +92,7 @@ When enabled, Lab hides raw proxied upstream tools from MCP `list_tools()` and e
 | Tool | Purpose |
 |------|---------|
 | `tool_search` | Search healthy discovered upstream tools across the gateway. |
-| `tool_invoke` | Invoke one tool returned by `tool_search`. |
+| `tool_execute` | Invoke one tool returned by `tool_search`. |
 
 This keeps the MCP catalog small while still allowing clients to reach every exposed upstream tool. Per-upstream `expose_tools` filters still apply before tools enter the searchable catalog.
 
@@ -144,6 +144,18 @@ Rules:
 - `include_schema` defaults to `false`; schemas are sanitized before return when requested
 - old `[[upstream]].tool_search` blocks are accepted only as migration input and are dropped on the next gateway config write
 - `gateway.update` rejects `patch.tool_search`; use `gateway.tool_search.set` instead
+
+Tool-search observability:
+
+- root MCP `list_tools` logs include `visibility_mode`, `hide_raw_tools`,
+  `manager_tool_search_enabled`, `process_tool_search_enabled`,
+  `suppressed_builtin_tool_count`, and the final advertised `total_tool_count`
+- in-process Lab service peer discovery logs `in_process.list_tools.start` and
+  `in_process.list_tools.finish` with `process_tool_search_enabled` and
+  `tool_count`; when root tool search is enabled, built-in peers should report
+  `tool_count=0`
+- process-wide enablement changes log `tool_search.process_enablement` with
+  `previous_enabled` and `enabled`
 
 ## Validation
 

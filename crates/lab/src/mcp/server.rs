@@ -4,6 +4,7 @@
 //! can share the same handler logic.
 
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering as CmpOrdering;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
@@ -22,7 +23,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::config::NodeRole;
-use crate::dispatch::gateway::manager::GatewayManager;
+use crate::dispatch::gateway::manager::{GatewayManager, GatewayToolSearchResult};
 use crate::mcp::elicitation::{ElicitResult, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra, build_success};
 use crate::mcp::error::DispatchError;
@@ -895,22 +896,35 @@ impl ServerHandler for LabMcpServer {
         let mut upstream_tool_count = 0usize;
         let mut subject_scoped_tool_count = 0usize;
         let mut gateway_tool_count = 0usize;
-        let (tool_search_enabled, enabled_tool_search_gateways) =
-            if let Some(manager) = &self.gateway_manager {
-                (
-                    manager.tool_search_enabled().await,
-                    manager.tool_search_enabled_gateways().await,
-                )
-            } else {
-                (false, Vec::new())
-            };
+        let mut suppressed_builtin_tool_count = 0usize;
+        let manager_tool_search_enabled = if let Some(manager) = &self.gateway_manager {
+            manager.tool_search_enabled().await
+        } else {
+            false
+        };
+        let process_tool_search_enabled = crate::config::process_tool_search_enabled();
+        let hide_raw_tools = manager_tool_search_enabled
+            || (self.gateway_manager.is_none() && process_tool_search_enabled);
+        let visibility_mode = match (
+            manager_tool_search_enabled,
+            process_tool_search_enabled,
+            self.gateway_manager.is_some(),
+        ) {
+            (true, _, _) => "tool_search_root",
+            (false, true, false) => "tool_search_in_process_peer",
+            _ => "raw",
+        };
         for svc in self.registry.services() {
             if self.service_visible_on_mcp(svc.name).await {
-                tools.push(Tool::new(svc.name, svc.description, Arc::clone(&schema)));
-                builtin_tool_count += 1;
+                if hide_raw_tools {
+                    suppressed_builtin_tool_count += 1;
+                } else {
+                    tools.push(Tool::new(svc.name, svc.description, Arc::clone(&schema)));
+                    builtin_tool_count += 1;
+                }
             }
         }
-        if tool_search_enabled {
+        if manager_tool_search_enabled {
             let tool_search_schema = match serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -925,11 +939,11 @@ impl ServerHandler for LabMcpServer {
             };
             tools.push(Tool::new(
                 "tool_search",
-                "Search the gateway's proxied upstream tool catalog",
+                "Search Lab and proxied upstream tool catalogs",
                 tool_search_schema,
             ));
             gateway_tool_count += 1;
-            let tool_invoke_schema = match serde_json::json!({
+            let tool_execute_schema = match serde_json::json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
@@ -938,18 +952,18 @@ impl ServerHandler for LabMcpServer {
                 "required": ["name", "arguments"]
             }) {
                 Value::Object(map) => Arc::new(map),
-                _ => unreachable!("tool_invoke schema must be an object"),
+                _ => unreachable!("tool_execute schema must be an object"),
             };
             tools.push(Tool::new(
-                "tool_invoke",
-                "Invoke one upstream tool discovered through tool_search",
-                tool_invoke_schema,
+                "tool_execute",
+                "Invoke one Lab or upstream tool discovered through tool_search",
+                tool_execute_schema,
             ));
             gateway_tool_count += 1;
         }
 
         // Merge upstream tools (healthy only, filtered for collisions with built-in services).
-        if let Some(pool) = self.current_upstream_pool().await {
+        if !hide_raw_tools && let Some(pool) = self.current_upstream_pool().await {
             let mut builtin_names = Vec::new();
             for service in self.registry.services() {
                 if self.service_visible_on_mcp(service.name).await {
@@ -958,13 +972,6 @@ impl ServerHandler for LabMcpServer {
             }
             let upstream_tools = pool.healthy_tools().await;
             for ut in upstream_tools {
-                if tool_search_enabled
-                    && enabled_tool_search_gateways
-                        .iter()
-                        .any(|gateway| gateway == ut.upstream_name.as_ref())
-                {
-                    continue;
-                }
                 let tool_name = ut.tool.name.as_ref();
                 if builtin_names.contains(&tool_name) {
                     tracing::debug!(
@@ -1009,6 +1016,11 @@ impl ServerHandler for LabMcpServer {
             gateway_tool_count,
             upstream_tool_count,
             subject_scoped_tool_count,
+            suppressed_builtin_tool_count,
+            manager_tool_search_enabled,
+            process_tool_search_enabled,
+            hide_raw_tools,
+            visibility_mode,
             total_tool_count = tools.len(),
             "tool list ok"
         );
@@ -1047,11 +1059,14 @@ impl ServerHandler for LabMcpServer {
 
         let svc = self.registry.services().iter().find(|s| s.name == service);
         if service == "tool_search" {
+            let started = Instant::now();
+            let subject = self.request_subject_log_tag(&context);
             let query = args
                 .get("query")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
+            let query_hash = hash_arguments(&Value::String(query.clone()));
             let requested_top_k = args
                 .get("top_k")
                 .and_then(Value::as_u64)
@@ -1075,12 +1090,77 @@ impl ServerHandler for LabMcpServer {
                 Some(value) => value,
                 None => manager.tool_search_config().await.top_k_default,
             };
+            tracing::info!(
+                surface = "mcp",
+                service = "tool_search",
+                action = "call_tool",
+                subject,
+                query_hash = %query_hash,
+                query_len = query.len(),
+                top_k,
+                include_schema,
+                "gateway tool search start"
+            );
+            let builtin_results = self
+                .search_builtin_tools(&query, top_k, include_schema)
+                .await;
             return match manager.search_tools(&query, top_k, include_schema).await {
-                Ok(results) => Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string()),
-                )])),
+                Ok(upstream_results) => {
+                    let results =
+                        merge_tool_search_results(builtin_results, upstream_results, top_k);
+                    tracing::info!(
+                        surface = "mcp",
+                        service = "tool_search",
+                        action = "call_tool",
+                        subject,
+                        query_hash = %query_hash,
+                        query_len = query.len(),
+                        top_k,
+                        include_schema,
+                        result_count = results.len(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "gateway tool search ok"
+                    );
+                    Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string()),
+                    )]))
+                }
                 Err(err) => {
                     let kind = err.kind();
+                    if kind == "index_warming" && !builtin_results.is_empty() {
+                        tracing::info!(
+                            surface = "mcp",
+                            service = "tool_search",
+                            action = "call_tool",
+                            subject,
+                            query_hash = %query_hash,
+                            query_len = query.len(),
+                            top_k,
+                            include_schema,
+                            result_count = builtin_results.len(),
+                            elapsed_ms = started.elapsed().as_millis(),
+                            upstream_kind = kind,
+                            "gateway tool search ok"
+                        );
+                        return Ok(CallToolResult::success(vec![Content::text(
+                            serde_json::to_string(&builtin_results)
+                                .unwrap_or_else(|_| "[]".to_string()),
+                        )]));
+                    }
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "tool_search",
+                        action = "call_tool",
+                        subject,
+                        query_hash = %query_hash,
+                        query_len = query.len(),
+                        top_k,
+                        include_schema,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        kind,
+                        error = %err,
+                        "gateway tool search failed"
+                    );
                     let mut extra = serde_json::Map::new();
                     if kind == "index_warming" {
                         extra.insert("retry_after_ms".to_string(), serde_json::json!(2000));
@@ -1099,7 +1179,8 @@ impl ServerHandler for LabMcpServer {
                 }
             };
         }
-        if service == "tool_invoke" {
+        if matches!(service.as_str(), "tool_execute" | "tool_invoke") {
+            let started = Instant::now();
             let tool_name = args
                 .get("name")
                 .and_then(Value::as_str)
@@ -1115,19 +1196,20 @@ impl ServerHandler for LabMcpServer {
             if !tool_invoke_scope_allowed(auth_context_from_extensions(&context.extensions)) {
                 tracing::warn!(
                     surface = "mcp",
-                    service = "tool_invoke",
+                    service = %service,
                     action = "call_tool",
                     subject,
                     upstream_tool = %tool_name,
                     arguments_hash = %arguments_hash,
+                    elapsed_ms = started.elapsed().as_millis(),
                     kind = "forbidden",
-                    "gateway tool invoke denied by scope"
+                    "gateway tool execute denied by scope"
                 );
                 let env = build_error_extra(
                     &service,
                     "call_tool",
                     "forbidden",
-                    "tool_invoke requires one of scopes: lab, lab:admin",
+                    "tool_execute requires one of scopes: lab, lab:admin",
                     &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
                 );
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
@@ -1137,16 +1219,217 @@ impl ServerHandler for LabMcpServer {
                     &service,
                     "call_tool",
                     "unknown_tool",
-                    "tool invoke is not enabled",
+                    "tool execute is not enabled",
                 );
                 return Ok(CallToolResult::error(vec![Content::text(
                     envelope.to_string(),
                 )]));
             };
+            if let Some(entry) = self
+                .registry
+                .services()
+                .iter()
+                .find(|svc| svc.name == tool_name)
+            {
+                if !self.service_visible_on_mcp(entry.name).await {
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = %service,
+                        action = "call_tool",
+                        subject,
+                        upstream = "lab",
+                        upstream_tool = %tool_name,
+                        arguments_hash = %arguments_hash,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        kind = "not_found",
+                        "gateway tool execute failed"
+                    );
+                    let env = build_error(
+                        &service,
+                        "call_tool",
+                        "not_found",
+                        &format!("service `{tool_name}` is not enabled on the mcp surface"),
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+
+                let builtin_action = arguments
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let builtin_params = arguments.get("params").cloned().unwrap_or(Value::Null);
+
+                if !self
+                    .action_allowed_on_mcp(entry.name, &builtin_action)
+                    .await
+                {
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = %service,
+                        action = "call_tool",
+                        subject,
+                        upstream = "lab",
+                        upstream_tool = %tool_name,
+                        arguments_hash = %arguments_hash,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        kind = "unknown_action",
+                        "gateway tool execute failed"
+                    );
+                    let mut extra = serde_json::Map::new();
+                    if let Some(valid) = self.allowed_mcp_actions(entry.name).await {
+                        extra.insert(
+                            "valid".to_string(),
+                            serde_json::to_value(valid).unwrap_or(Value::Array(Vec::new())),
+                        );
+                    }
+                    let env = build_error_extra(
+                        &service,
+                        "call_tool",
+                        "unknown_action",
+                        &format!(
+                            "action `{builtin_action}` is not exposed for service `{}`",
+                            entry.name
+                        ),
+                        &Value::Object(extra),
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+
+                let is_destructive = entry
+                    .actions
+                    .iter()
+                    .any(|action| action.name == builtin_action && action.destructive);
+                if is_destructive {
+                    match elicit_confirm(&context, entry.name, &builtin_action).await {
+                        ElicitResult::Confirmed => {}
+                        ElicitResult::Declined | ElicitResult::Cancelled => {
+                            let env = build_error(
+                                &service,
+                                "call_tool",
+                                "confirmation_required",
+                                &format!(
+                                    "action `{builtin_action}` is destructive — confirm to proceed"
+                                ),
+                            );
+                            return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                        }
+                        ElicitResult::NotSupported => {
+                            if builtin_params.get("confirm").and_then(Value::as_bool) != Some(true)
+                            {
+                                let env = build_error(
+                                    &service,
+                                    "call_tool",
+                                    "confirmation_required",
+                                    &format!(
+                                        "action `{builtin_action}` is destructive — pass \
+                                         {{\"confirm\":true}} in params or use a client \
+                                         that supports MCP elicitation"
+                                    ),
+                                );
+                                return Ok(CallToolResult::error(vec![Content::text(
+                                    env.to_string(),
+                                )]));
+                            }
+                        }
+                        ElicitResult::Failed => {
+                            let env = build_error(
+                                &service,
+                                "call_tool",
+                                "confirmation_required",
+                                &format!(
+                                    "action `{builtin_action}` is destructive — confirmation failed, retry with a client that supports MCP elicitation"
+                                ),
+                            );
+                            return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                        }
+                    }
+                }
+
+                tracing::info!(
+                    surface = "mcp",
+                    service = %service,
+                    action = "call_tool",
+                    subject,
+                    upstream = "lab",
+                    upstream_tool = %tool_name,
+                    builtin_action = %builtin_action,
+                    arguments_hash = %arguments_hash,
+                    "gateway tool execute start"
+                );
+                let params = if entry.name == "gateway" {
+                    inject_gateway_origin_param(builtin_params, self.request_subject(&context))
+                } else {
+                    builtin_params
+                };
+                let result = (entry.dispatch)(builtin_action.clone(), params)
+                    .await
+                    .map_err(|te| anyhow::Error::from(DispatchError::from(te)));
+                let elapsed_ms = started.elapsed().as_millis();
+                match &result {
+                    Ok(_) => tracing::info!(
+                        surface = "mcp",
+                        service = %service,
+                        action = "call_tool",
+                        subject,
+                        upstream = "lab",
+                        upstream_tool = %tool_name,
+                        builtin_action = %builtin_action,
+                        arguments_hash = %arguments_hash,
+                        elapsed_ms,
+                        "gateway tool execute ok"
+                    ),
+                    Err(err) => {
+                        let (kind, _, _) = extract_error_info(err);
+                        tracing::warn!(
+                            surface = "mcp",
+                            service = %service,
+                            action = "call_tool",
+                            subject,
+                            upstream = "lab",
+                            upstream_tool = %tool_name,
+                            builtin_action = %builtin_action,
+                            arguments_hash = %arguments_hash,
+                            elapsed_ms,
+                            kind,
+                            "gateway tool execute failed"
+                        );
+                    }
+                }
+                let (result, outcome) = format_dispatch_result(
+                    result,
+                    entry.name,
+                    &builtin_action,
+                    elapsed_ms,
+                    &subject,
+                    self.request_actor_key(&context),
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    entry.name,
+                    &builtin_action,
+                    elapsed_ms,
+                    outcome,
+                )
+                .await;
+                return Ok(result);
+            }
             let resolved = manager.resolve_tool_invoke(&tool_name).await;
             let (upstream_name, _) = match resolved {
                 Ok(value) => value,
                 Err(crate::dispatch::error::ToolError::AmbiguousTool { message, valid }) => {
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = %service,
+                        action = "call_tool",
+                        subject,
+                        upstream_tool = %tool_name,
+                        arguments_hash = %arguments_hash,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        kind = "ambiguous_tool",
+                        valid_count = valid.len(),
+                        "gateway tool execute failed"
+                    );
                     let mut extra = serde_json::Map::new();
                     extra.insert("valid".to_string(), serde_json::json!(valid));
                     let env = build_error_extra(
@@ -1160,6 +1443,18 @@ impl ServerHandler for LabMcpServer {
                 }
                 Err(err) => {
                     let kind = err.kind();
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = %service,
+                        action = "call_tool",
+                        subject,
+                        upstream_tool = %tool_name,
+                        arguments_hash = %arguments_hash,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        kind,
+                        error = %err,
+                        "gateway tool execute failed"
+                    );
                     let mut extra = serde_json::Map::new();
                     if kind == "unknown_tool" {
                         extra.insert(
@@ -1178,16 +1473,15 @@ impl ServerHandler for LabMcpServer {
                 }
             };
             if let Some(pool) = self.current_upstream_pool().await {
-                let started = Instant::now();
                 tracing::info!(
                     surface = "mcp",
-                    service = "tool_invoke",
+                    service = %service,
                     action = "call_tool",
                     subject,
                     upstream = %upstream_name,
                     upstream_tool = %tool_name,
                     arguments_hash = %arguments_hash,
-                    "gateway tool invoke start"
+                    "gateway tool execute start"
                 );
                 let mut upstream_params = CallToolRequestParams::new(tool_name.clone());
                 upstream_params.arguments = Some(match arguments {
@@ -1198,21 +1492,21 @@ impl ServerHandler for LabMcpServer {
                     Some(Ok(result)) => {
                         tracing::info!(
                             surface = "mcp",
-                            service = "tool_invoke",
+                            service = %service,
                             action = "call_tool",
                             subject,
                             upstream = %upstream_name,
                             upstream_tool = %tool_name,
                             arguments_hash = %arguments_hash,
                             elapsed_ms = started.elapsed().as_millis(),
-                            "gateway tool invoke ok"
+                            "gateway tool execute ok"
                         );
                         return Ok(result);
                     }
                     Some(Err(e)) => {
                         tracing::warn!(
                             surface = "mcp",
-                            service = "tool_invoke",
+                            service = %service,
                             action = "call_tool",
                             subject,
                             upstream = %upstream_name,
@@ -1221,7 +1515,7 @@ impl ServerHandler for LabMcpServer {
                             elapsed_ms = started.elapsed().as_millis(),
                             kind = "upstream_error",
                             error = %e,
-                            "gateway tool invoke failed"
+                            "gateway tool execute failed"
                         );
                         let env = build_error(&service, "call_tool", "upstream_error", &e);
                         return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
@@ -1229,7 +1523,7 @@ impl ServerHandler for LabMcpServer {
                     None => {
                         tracing::warn!(
                             surface = "mcp",
-                            service = "tool_invoke",
+                            service = %service,
                             action = "call_tool",
                             subject,
                             upstream = %upstream_name,
@@ -1237,7 +1531,7 @@ impl ServerHandler for LabMcpServer {
                             arguments_hash = %arguments_hash,
                             elapsed_ms = started.elapsed().as_millis(),
                             kind = "upstream_error",
-                            "gateway tool invoke upstream disconnected"
+                            "gateway tool execute upstream disconnected"
                         );
                         let env = build_error(
                             &service,
@@ -1257,20 +1551,21 @@ impl ServerHandler for LabMcpServer {
             // envelope instead.
             tracing::warn!(
                 surface = "mcp",
-                service = "tool_invoke",
+                service = %service,
                 action = "call_tool",
                 subject,
                 upstream = %upstream_name,
                 upstream_tool = %tool_name,
                 arguments_hash = %arguments_hash,
+                elapsed_ms = started.elapsed().as_millis(),
                 kind = "upstream_error",
-                "gateway tool invoke dispatched without upstream pool"
+                "gateway tool execute dispatched without upstream pool"
             );
             let env = build_error(
                 &service,
                 "call_tool",
                 "upstream_error",
-                "no upstream pool available to dispatch tool_invoke",
+                "no upstream pool available to dispatch tool_execute",
             );
             return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
         }
@@ -1877,6 +2172,128 @@ impl LabMcpServer {
             "MCP peer catalog-change notification complete"
         );
     }
+
+    async fn search_builtin_tools(
+        &self,
+        query: &str,
+        top_k: usize,
+        include_schema: bool,
+    ) -> Vec<GatewayToolSearchResult> {
+        let needle = query.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+
+        let mut results = Vec::new();
+        for service in self.registry.services() {
+            if !self.service_visible_on_mcp(service.name).await {
+                continue;
+            }
+
+            let action_text = service
+                .actions
+                .iter()
+                .map(|action| format!("{} {}", action.name, action.description))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let haystack = format!("{}\n{}\n{}", service.name, service.description, action_text)
+                .to_ascii_lowercase();
+            let score = score_builtin_tool(&needle, service.name, &haystack);
+            if score <= 0.0 {
+                continue;
+            }
+
+            results.push(GatewayToolSearchResult {
+                name: service.name.to_string(),
+                description: builtin_tool_search_description(service),
+                upstream: "lab".to_string(),
+                score,
+                input_schema: include_schema.then(|| builtin_tool_search_schema(service)),
+            });
+        }
+
+        results.sort_by(compare_tool_search_results);
+        results.truncate(top_k.max(1).min(50));
+        results
+    }
+}
+
+fn merge_tool_search_results(
+    mut left: Vec<GatewayToolSearchResult>,
+    right: Vec<GatewayToolSearchResult>,
+    top_k: usize,
+) -> Vec<GatewayToolSearchResult> {
+    left.extend(right);
+    left.sort_by(compare_tool_search_results);
+    left.truncate(top_k.max(1).min(50));
+    left
+}
+
+fn compare_tool_search_results(
+    a: &GatewayToolSearchResult,
+    b: &GatewayToolSearchResult,
+) -> CmpOrdering {
+    b.score
+        .partial_cmp(&a.score)
+        .unwrap_or(CmpOrdering::Equal)
+        .then_with(|| a.name.cmp(&b.name))
+        .then_with(|| a.upstream.cmp(&b.upstream))
+}
+
+fn score_builtin_tool(query: &str, name: &str, haystack: &str) -> f32 {
+    let name_lower = name.to_ascii_lowercase();
+    let mut score = 0.0;
+    if name_lower == query {
+        score += 100.0;
+    }
+    if name_lower.contains(query) {
+        score += 25.0;
+    }
+    for token in query.split_whitespace() {
+        if name_lower.contains(token) {
+            score += 10.0;
+        }
+        if haystack.contains(token) {
+            score += 3.0;
+        }
+    }
+    score
+}
+
+fn builtin_tool_search_description(service: &crate::registry::RegisteredService) -> String {
+    let mut description = service.description.to_string();
+    let actions = service
+        .actions
+        .iter()
+        .take(12)
+        .map(|action| action.name)
+        .collect::<Vec<_>>();
+    if !actions.is_empty() {
+        description.push_str(". Actions: ");
+        description.push_str(&actions.join(", "));
+        if service.actions.len() > actions.len() {
+            description.push_str(", ...");
+        }
+    }
+    description
+}
+
+fn builtin_tool_search_schema(service: &crate::registry::RegisteredService) -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "Lab service action to perform. Use \"help\" to list actions.",
+                "enum": service.actions.iter().map(|action| action.name).collect::<Vec<_>>(),
+            },
+            "params": {
+                "type": "object",
+                "description": "Action-specific parameters."
+            }
+        },
+        "required": ["action"]
+    })
 }
 
 fn subject_from_extensions(extensions: &rmcp::model::Extensions) -> Option<&str> {
@@ -2392,6 +2809,76 @@ mod tests {
         assert!(completion.values.is_empty());
         assert_eq!(completion.total, Some(0));
         assert_eq!(completion.has_more, Some(false));
+    }
+
+    #[tokio::test]
+    async fn tool_search_indexes_builtin_lab_services() {
+        let server = super::LabMcpServer {
+            registry: std::sync::Arc::new(completion_test_registry()),
+            gateway_manager: None,
+            node_role: None,
+            peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                logging_level_rank(rmcp::model::LoggingLevel::Info),
+            )),
+        };
+
+        let results = server.search_builtin_tools("movie search", 5, true).await;
+
+        let radarr = results
+            .iter()
+            .find(|result| result.name == "radarr")
+            .expect("radarr should match action text");
+        assert_eq!(radarr.upstream, "lab");
+        assert!(
+            radarr.description.contains("movie.search"),
+            "description should include action hints"
+        );
+        assert!(
+            radarr
+                .input_schema
+                .as_ref()
+                .and_then(|schema| schema.pointer("/properties/action/enum"))
+                .and_then(Value::as_array)
+                .is_some_and(|actions| actions.iter().any(|action| action == "movie.search")),
+            "schema should expose Lab action choices"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_catalog_hides_builtin_tools_when_tool_search_is_enabled() {
+        let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+        let manager = std::sync::Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
+            std::path::PathBuf::from("config.toml"),
+            runtime,
+        ));
+        manager
+            .seed_config(crate::config::LabConfig {
+                tool_search: crate::config::ToolSearchConfig {
+                    enabled: true,
+                    ..crate::config::ToolSearchConfig::default()
+                },
+                ..crate::config::LabConfig::default()
+            })
+            .await;
+        let server = super::LabMcpServer {
+            registry: std::sync::Arc::new(completion_test_registry()),
+            gateway_manager: Some(manager),
+            node_role: None,
+            peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                logging_level_rank(rmcp::model::LoggingLevel::Info),
+            )),
+        };
+
+        let snapshot = server.snapshot_catalog().await;
+
+        assert_eq!(
+            snapshot.tools,
+            ["tool_execute".to_string(), "tool_search".to_string()]
+                .into_iter()
+                .collect()
+        );
     }
 
     #[tokio::test]

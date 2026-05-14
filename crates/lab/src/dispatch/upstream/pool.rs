@@ -3300,6 +3300,7 @@ async fn connect_in_process_service_peer(
     tracing::info!(
         service = service.name,
         phase = "in_process.list_tools.start",
+        process_tool_search_enabled = crate::config::process_tool_search_enabled(),
         "requesting in-process tool list"
     );
     let tools = peer.list_all_tools().await?;
@@ -3307,6 +3308,7 @@ async fn connect_in_process_service_peer(
         service = service.name,
         phase = "in_process.list_tools.finish",
         tool_count = tools.len(),
+        process_tool_search_enabled = crate::config::process_tool_search_enabled(),
         "in-process tool list received"
     );
 

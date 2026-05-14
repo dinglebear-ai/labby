@@ -51,7 +51,7 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "enabled",
                 ty: "boolean",
                 required: true,
-                description: "Whether tool_search/tool_invoke mode is enabled for the gateway",
+                description: "Whether tool_search/tool_execute mode is enabled for the gateway",
             },
             ParamSpec {
                 name: "top_k_default",
