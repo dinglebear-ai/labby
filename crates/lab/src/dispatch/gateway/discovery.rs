@@ -309,6 +309,114 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn strip_jsonc_comments_handles_all_cases() {
+        let cases: &[(&str, &str)] = &[
+            // URL strings with // must not be stripped
+            (
+                r#"{"url": "https://host/path"}"#,
+                r#"{"url": "https://host/path"}"#,
+            ),
+            // Block comment markers inside string survive
+            (
+                r#"{"key": "/* not stripped */"}"#,
+                r#"{"key": "/* not stripped */"}"#,
+            ),
+            // Line comment after value is stripped
+            ("{\"k\": 1} // comment", "{\"k\": 1} "),
+            // Block comment stripped
+            ("{/* x */\"k\":1}", "{\"k\":1}"),
+            // Unterminated block — no panic, rest is empty
+            ("{\"k\": 1} /* never closed", "{\"k\": 1} "),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                &super::strip_jsonc_comments(input),
+                expected,
+                "input: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_jsonc_comments_preserves_newlines_in_line_comments() {
+        let input = "{\n// comment line\n\"k\":1\n}";
+        let output = super::strip_jsonc_comments(input);
+        // The newline after the comment should be preserved
+        assert!(output.contains('\n'));
+        assert!(!output.contains("comment line"));
+        assert!(output.contains("\"k\":1"));
+    }
+
+    #[test]
+    fn strip_jsonc_comments_escaped_backslash_before_closing_quote() {
+        // Escaped backslash before closing quote: string ends at the quote after \\
+        // The // comment that follows should be stripped
+        let input = r#"{"k": "end\\"}//comment"#;
+        let output = super::strip_jsonc_comments(input);
+        assert!(
+            !output.contains("comment"),
+            "line comment should be stripped: {output:?}"
+        );
+        assert!(
+            output.contains("end\\\\"),
+            "escaped backslash in string should survive: {output:?}"
+        );
+    }
+
+    #[test]
+    fn strip_jsonc_comments_nested_block_comment_markers_in_string() {
+        // Block comment markers inside a string must not terminate the string
+        let input = r#"{"k": "a /* b */"}"#;
+        let output = super::strip_jsonc_comments(input);
+        assert_eq!(output, r#"{"k": "a /* b */"}"#);
+    }
+
+    #[test]
+    fn entry_to_upstream_command_array_extracts_first_as_command() {
+        let entry = json!({"command": ["node", "server.js"]});
+        let spec = super::entry_to_upstream("x", &entry, "test", "/p", "2026-01-01T00:00:00Z")
+            .expect("should produce spec");
+        assert_eq!(spec.command.as_deref(), Some("node"));
+        assert_eq!(spec.args, vec!["server.js"]);
+    }
+
+    #[test]
+    fn entry_to_upstream_single_element_array_uses_sibling_args() {
+        // len==1 array falls through to read the sibling "args" key
+        let entry = json!({"command": ["node"], "args": ["x", "y"]});
+        let spec = super::entry_to_upstream("x", &entry, "test", "/p", "2026-01-01T00:00:00Z")
+            .expect("should produce spec");
+        assert_eq!(spec.command.as_deref(), Some("node"));
+        assert_eq!(spec.args, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn entry_to_upstream_multi_element_array_ignores_sibling_args() {
+        // len>1 array: remaining elements ARE the args, sibling ignored
+        let entry = json!({"command": ["node", "s.js"], "args": ["ignored"]});
+        let spec = super::entry_to_upstream("x", &entry, "test", "/p", "2026-01-01T00:00:00Z")
+            .expect("should produce spec");
+        assert_eq!(spec.command.as_deref(), Some("node"));
+        assert_eq!(spec.args, vec!["s.js"]);
+    }
+
+    #[test]
+    fn entry_to_upstream_empty_array_yields_none() {
+        let entry = json!({"command": []});
+        assert!(
+            super::entry_to_upstream("x", &entry, "test", "/p", "2026-01-01T00:00:00Z").is_none()
+        );
+    }
+
+    #[test]
+    fn entry_to_upstream_non_string_array_element_yields_none() {
+        let entry = json!({"command": [42, "server.js"]});
+        assert!(
+            super::entry_to_upstream("x", &entry, "test", "/p", "2026-01-01T00:00:00Z").is_none()
+        );
+    }
+
+    #[test]
     fn imported_upstream_does_not_copy_raw_env_values() {
         let entry = json!({
             "command": "example-mcp",
@@ -332,5 +440,89 @@ mod tests {
         assert!(spec.env.is_empty());
         assert!(!spec.enabled);
         assert!(spec.imported_from.is_some());
+    }
+
+    #[test]
+    fn extract_mcp_entries_prefers_mcp_servers_over_servers() {
+        let v = serde_json::json!({
+            "mcpServers": {"a": {"command": "x"}},
+            "servers":    {"b": {"command": "y"}}
+        });
+        let entries = super::extract_mcp_entries(&v, false);
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["a"]);
+    }
+
+    #[test]
+    fn extract_mcp_entries_root_fallback_disabled_returns_empty() {
+        let v = serde_json::json!({"a": {"command": "x"}});
+        assert!(super::extract_mcp_entries(&v, false).is_empty());
+    }
+
+    #[test]
+    fn extract_mcp_entries_root_fallback_skips_non_server_root() {
+        let v = serde_json::json!({"theme": "dark", "version": 1});
+        assert!(super::extract_mcp_entries(&v, true).is_empty());
+    }
+
+    #[test]
+    fn extract_mcp_entries_root_fallback_returns_server_looking_keys() {
+        let v = serde_json::json!({
+            "a": {"command": "node"},
+            "b": {"url": "https://h"}
+        });
+        let entries = super::extract_mcp_entries(&v, true);
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn extract_mcp_entries_root_fallback_enabled_but_mcp_servers_key_present_uses_it() {
+        // When mcpServers is present, root fallback is never reached
+        let v = serde_json::json!({
+            "mcpServers": {"canonical": {"command": "c"}},
+            "root_server": {"command": "r"}
+        });
+        let entries = super::extract_mcp_entries(&v, true);
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["canonical"]);
+    }
+
+    #[test]
+    fn discover_all_deduplicates_by_name_first_seen_wins() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+
+        // Cursor config with "shared" server — scanned first
+        let cursor_dir = home.join(".cursor");
+        std::fs::create_dir_all(&cursor_dir).unwrap();
+        std::fs::write(
+            cursor_dir.join("mcp.json"),
+            r#"{"mcpServers": {"shared": {"command": "from-cursor"}}}"#,
+        )
+        .unwrap();
+
+        // Claude Code settings.json with same "shared" server — scanned second
+        let claude_dir = home.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"mcpServers": {"shared": {"command": "from-claude-code"}}}"#,
+        )
+        .unwrap();
+
+        let results = super::discover_all(home);
+
+        // cursor wins (first-seen)
+        let shared: Vec<_> = results.iter().filter(|s| s.name == "shared").collect();
+        assert_eq!(shared.len(), 1, "shared should appear exactly once");
+        assert_eq!(
+            shared[0].source_client, "cursor",
+            "cursor should win as first-seen"
+        );
+        assert_eq!(
+            shared[0].spec.command.as_deref(),
+            Some("from-cursor"),
+            "cursor command should be preserved"
+        );
     }
 }
