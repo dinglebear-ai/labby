@@ -98,7 +98,17 @@ async fn handle_discover(
     let existing: std::collections::HashSet<String> =
         cfg.upstream.iter().map(|u| u.name.clone()).collect();
 
-    let views: Vec<DiscoveredServerView> = discovered
+    let views = shape_discovered_views(discovered, &existing, &params);
+
+    to_json(views)
+}
+
+fn shape_discovered_views(
+    discovered: Vec<super::discovery::DiscoveredServer>,
+    existing: &std::collections::HashSet<String>,
+    params: &GatewayDiscoverParams,
+) -> Vec<DiscoveredServerView> {
+    discovered
         .into_iter()
         .filter(|s| params.include_existing || !existing.contains(&s.name))
         .map(|s| {
@@ -125,9 +135,7 @@ async fn handle_discover(
                 already_configured: existing.contains(&s.spec.name),
             }
         })
-        .collect();
-
-    to_json(views)
+        .collect()
 }
 
 async fn handle_import(manager: &GatewayManager, params_value: Value) -> Result<Value, ToolError> {
@@ -627,11 +635,15 @@ pub async fn dispatch(action: &str, params_value: Value) -> Result<Value, ToolEr
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use serde_json::json;
 
-    use crate::config::{ProtectedMcpRouteConfig, UpstreamConfig};
+    use crate::config::{ProtectedMcpRouteConfig, ToolSearchConfig, UpstreamConfig};
 
+    use super::super::discovery::DiscoveredServer;
     use super::super::manager::GatewayRuntimeHandle;
+    use super::super::params::GatewayDiscoverParams;
     use super::*;
 
     #[test]
@@ -1860,5 +1872,125 @@ mod tests {
             "https://example.com/mcp"
         );
         assert_eq!(redact_url_preview("not a url token=secret"), "<redacted>");
+    }
+
+    // ── shape_discovered_views unit tests ──────────────────────────────────
+
+    fn make_discovered_http(name: &str) -> DiscoveredServer {
+        DiscoveredServer {
+            name: name.to_string(),
+            spec: UpstreamConfig {
+                name: name.to_string(),
+                enabled: false,
+                url: Some("http://127.0.0.1:9000".to_string()),
+                bearer_token_env: None,
+                command: None,
+                args: Vec::new(),
+                env: std::collections::BTreeMap::new(),
+                proxy_resources: true,
+                proxy_prompts: true,
+                expose_tools: None,
+                expose_resources: None,
+                expose_prompts: None,
+                oauth: None,
+                imported_from: None,
+                tool_search: ToolSearchConfig::default(),
+            },
+            source_client: "cursor".to_string(),
+            source_path: "/home/user/.cursor/mcp.json".to_string(),
+            env_key_count: 0,
+        }
+    }
+
+    fn make_discovered_stdio(name: &str, command: &str) -> DiscoveredServer {
+        DiscoveredServer {
+            name: name.to_string(),
+            spec: UpstreamConfig {
+                name: name.to_string(),
+                enabled: false,
+                url: None,
+                bearer_token_env: None,
+                command: Some(command.to_string()),
+                args: vec!["--serve".to_string()],
+                env: std::collections::BTreeMap::new(),
+                proxy_resources: true,
+                proxy_prompts: true,
+                expose_tools: None,
+                expose_resources: None,
+                expose_prompts: None,
+                oauth: None,
+                imported_from: None,
+                tool_search: ToolSearchConfig::default(),
+            },
+            source_client: "claude-code".to_string(),
+            source_path: "/home/user/.claude/settings.json".to_string(),
+            env_key_count: 2,
+        }
+    }
+
+    #[test]
+    fn shape_http_server_gets_http_transport_no_command_preview() {
+        let discovered = vec![make_discovered_http("my-http-server")];
+        let existing: HashSet<String> = HashSet::new();
+        let params = GatewayDiscoverParams::default();
+
+        let views = shape_discovered_views(discovered, &existing, &params);
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].transport, "http");
+        assert!(views[0].command_preview.is_none());
+        assert_eq!(views[0].name, "my-http-server");
+    }
+
+    #[test]
+    fn shape_stdio_server_gets_stdio_transport_and_command_preview_first_token() {
+        let discovered = vec![make_discovered_stdio(
+            "my-stdio-server",
+            "npx --yes some-mcp",
+        )];
+        let existing: HashSet<String> = HashSet::new();
+        let params = GatewayDiscoverParams::default();
+
+        let views = shape_discovered_views(discovered, &existing, &params);
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].transport, "stdio");
+        assert_eq!(views[0].command_preview.as_deref(), Some("npx"));
+    }
+
+    #[test]
+    fn shape_already_configured_true_when_name_in_existing_set() {
+        let discovered = vec![make_discovered_http("configured-server")];
+        let mut existing: HashSet<String> = HashSet::new();
+        existing.insert("configured-server".to_string());
+        let params = GatewayDiscoverParams {
+            include_existing: true,
+            ..GatewayDiscoverParams::default()
+        };
+
+        let views = shape_discovered_views(discovered, &existing, &params);
+
+        assert_eq!(views.len(), 1);
+        assert!(views[0].already_configured);
+    }
+
+    #[test]
+    fn shape_include_existing_false_filters_out_already_configured_servers() {
+        let discovered = vec![
+            make_discovered_http("new-server"),
+            make_discovered_http("existing-server"),
+        ];
+        let mut existing: HashSet<String> = HashSet::new();
+        existing.insert("existing-server".to_string());
+        let params = GatewayDiscoverParams {
+            include_existing: false,
+            ..GatewayDiscoverParams::default()
+        };
+
+        let views = shape_discovered_views(discovered, &existing, &params);
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].name, "new-server");
+        assert!(!views[0].already_configured);
     }
 }
