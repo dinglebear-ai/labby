@@ -11,17 +11,33 @@ pub fn discover(home: &Path) -> Vec<DiscoveredServer> {
         let Ok(raw) = std::fs::read_to_string(path) else {
             continue;
         };
-        let Ok(table) = toml::from_str::<toml::Value>(&raw) else {
-            continue;
-        };
         let path_str = path.to_string_lossy().to_string();
+        let table = match toml::from_str::<toml::Value>(&raw) {
+            Ok(t) => t,
+            Err(_) => {
+                tracing::warn!(
+                    path = %path_str,
+                    kind = "decode_error",
+                    "discovery: skipping malformed codex config"
+                );
+                continue;
+            }
+        };
         let Some(servers) = table.get("mcp_servers").and_then(|v| v.as_table()) else {
             continue;
         };
         for (name, entry) in servers {
             // Convert TOML value to serde_json::Value for shared entry_to_upstream
-            let Ok(json_entry) = serde_json::to_value(entry) else {
-                continue;
+            let json_entry = match serde_json::to_value(entry) {
+                Ok(v) => v,
+                Err(_) => {
+                    tracing::debug!(
+                        path = %path_str,
+                        kind = "conversion_error",
+                        "discovery: skipping unconvertible codex entry"
+                    );
+                    continue;
+                }
             };
             if let Some(spec) = entry_to_upstream(name, &json_entry, "codex", &path_str, &now) {
                 results.push(DiscoveredServer {
