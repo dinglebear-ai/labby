@@ -160,8 +160,8 @@ async fn handle_import(manager: &GatewayManager, params_value: Value) -> Result<
         discovered.retain(|s| filter.contains(s.source_client.as_str()));
     }
 
-    // When all=true, names is ignored even if provided (guarded above for explicit both-provided case,
-    // but callers should use one or the other).
+    // Reaching here: exactly one of `all=true` or a non-empty `names` list is set.
+    // (both-provided is rejected above; neither-provided is rejected above)
     let to_import: Vec<_> = if params.all {
         discovered
     } else {

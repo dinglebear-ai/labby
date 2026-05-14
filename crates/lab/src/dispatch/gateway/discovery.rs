@@ -108,7 +108,8 @@ pub(crate) fn read_json(path: &Path) -> Option<Value> {
         Err(e) => {
             tracing::debug!(
                 path = %path.display(),
-                error.kind = %e.kind(),
+                kind = "io_error",
+                error = %e,
                 "discovery: skipping unreadable config"
             );
             return None;
