@@ -854,7 +854,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
-                tool_search: crate::config::ToolSearchConfig::default(),
+                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -893,7 +893,7 @@ mod tests {
                     expose_prompts: None,
                     oauth: None,
                     imported_from: None,
-                    tool_search: crate::config::ToolSearchConfig::default(),
+                    tool_search: ToolSearchConfig::default(),
                 },
                 UpstreamConfig {
                     enabled: true,
@@ -910,7 +910,7 @@ mod tests {
                     expose_prompts: None,
                     oauth: None,
                     imported_from: None,
-                    tool_search: crate::config::ToolSearchConfig::default(),
+                    tool_search: ToolSearchConfig::default(),
                 },
             ])
             .await;
@@ -1005,7 +1005,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
-                tool_search: crate::config::ToolSearchConfig::default(),
+                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -1041,7 +1041,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
-                tool_search: crate::config::ToolSearchConfig::default(),
+                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -1525,7 +1525,7 @@ mod tests {
                     expose_prompts: None,
                     oauth: None,
                     imported_from: None,
-                    tool_search: crate::config::ToolSearchConfig::default(),
+                    tool_search: ToolSearchConfig::default(),
                 },
                 UpstreamConfig {
                     enabled: true,
@@ -1542,7 +1542,7 @@ mod tests {
                     expose_prompts: None,
                     oauth: None,
                     imported_from: None,
-                    tool_search: crate::config::ToolSearchConfig::default(),
+                    tool_search: ToolSearchConfig::default(),
                 },
             ])
             .await;
@@ -1809,7 +1809,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
-                tool_search: crate::config::ToolSearchConfig::default(),
+                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -1853,17 +1853,21 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
-                tool_search: crate::config::ToolSearchConfig::default(),
+                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
-        let mut child = Command::new("python3")
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new("python3");
+        command
             .args(["-c", "import time; time.sleep(60)", runtime_arg])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn github chat stand-in");
+            .stderr(Stdio::null());
+        // Keep this stand-in out of nextest's process group so the test
+        // process survives when cleanup kills the child's process group.
+        command.process_group(0);
+        let mut child = command.spawn().expect("spawn github chat stand-in");
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -1925,7 +1929,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
-                tool_search: crate::config::ToolSearchConfig::default(),
+                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -2176,7 +2180,7 @@ mod tests {
 mod discovery_shape_tests {
     use std::collections::HashSet;
 
-    use crate::config::UpstreamConfig;
+    use crate::config::{ToolSearchConfig, UpstreamConfig};
     use crate::dispatch::gateway::discovery::DiscoveredServer;
     use crate::dispatch::gateway::params::GatewayDiscoverParams;
     use crate::dispatch::gateway::types::McpClientTransportType;
@@ -2203,7 +2207,7 @@ mod discovery_shape_tests {
             expose_prompts: None,
             oauth: None,
             imported_from: None,
-            tool_search: crate::config::ToolSearchConfig::default(),
+            tool_search: ToolSearchConfig::default(),
         }
     }
 
