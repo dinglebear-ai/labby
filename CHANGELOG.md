@@ -8,6 +8,14 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.16.0] - 2026-05-16
+
+### Added
+- `GET /v1/catalog` endpoint: aggregated service+action catalog filtered to enabled services, with ETag and Cache-Control headers
+- ⌘K command palette web CLI: live catalog browse, cmdk page-stack navigation, schema-driven param forms, destructive confirmation, `X-Lab-Source: palette` tracing
+
+---
+
 ## [0.15.2] — 2026-05-11
 
 ### Highlights
