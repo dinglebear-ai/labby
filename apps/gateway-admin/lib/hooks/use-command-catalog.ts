@@ -35,6 +35,7 @@ export function useCommandCatalog(): {
     () => fetchCatalog().then((r) => r.services),
     {
       revalidateIfStale: false,
+      revalidateOnMount: true,
       revalidateOnFocus: false,
       dedupingInterval: 60_000,
       revalidateOnReconnect: false,

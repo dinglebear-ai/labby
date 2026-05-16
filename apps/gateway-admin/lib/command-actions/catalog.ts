@@ -66,14 +66,23 @@ export async function fetchCatalog(signal?: AbortSignal): Promise<CatalogRespons
   })
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({})) as { message?: string }
-    throw Object.assign(new Error(err.message ?? `catalog fetch failed: ${response.status}`), {
+    const errorBody = await response.json().catch(() => null)
+    const message =
+      errorBody != null && typeof errorBody === 'object' && 'message' in errorBody
+        ? String((errorBody as Record<string, unknown>).message)
+        : `catalog fetch failed: ${response.status}`
+    throw Object.assign(new Error(message), {
       kind: 'catalog_fetch_error',
       status: response.status,
     })
   }
 
-  const raw: unknown = await response.json()
+  let raw: unknown
+  try {
+    raw = await response.json()
+  } catch {
+    throw new Error('decode_error: catalog response is not valid JSON')
+  }
 
   const result = CatalogResponseSchema.safeParse(raw)
   if (!result.success) {

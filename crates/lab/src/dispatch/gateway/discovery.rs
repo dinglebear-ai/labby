@@ -302,12 +302,16 @@ pub(crate) fn entry_to_upstream(
     })
 }
 
+fn canonical_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_lowercase()
+}
+
 fn transport_fingerprint(url: Option<&str>, command: Option<&str>, args: &[String]) -> String {
     let mut hasher = Sha256::new();
     match (url, command) {
         (Some(url), _) => {
             hasher.update(b"http\0");
-            hasher.update(url.trim().as_bytes());
+            hasher.update(canonical_url(url).as_bytes());
         }
         (_, Some(command)) => {
             hasher.update(b"stdio\0");

@@ -8,28 +8,11 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [0.16.0] — 2026-05-15
+## [0.16.0] - 2026-05-16
 
-### Highlights
-
-- **mcpregistry SDK**: new `lab-apis` module wrapping the official MCP Registry v0.1 API — `list_servers`, `get_server`, `list_versions`, `validate`, `health`; no-redirect SSRF prevention, 5/20 s timeouts, percent-encoded path segments, blank-input validation.
-- **lab registry install**: new CLI command chains registry fetch → SSRF validation → `gateway.add` in one step; honors `-y/--yes` destructive gate per CLAUDE.md.
-- **tool-search scoring**: token-boundary segment matching, `starts_with` prefix boost, length normalization, and unified builtin/upstream scoring path; removes duplicate `score_builtin_tool` function.
-- **tool-search observability**: WARN log when index is truncated at `max_tools`; 500-char query cap on builtin path; 16 KB schema byte cap in `sanitize_schema`.
-- **gateway MCP discovery**: fix `hex::encode` on SHA-256 finalize (was `{:x}` on a GenericArray, which doesn't implement `LowerHex`).
-
-| Commit | Change |
-|--------|--------|
-| `c655f456` | fix(lab-77y5.3): add -y/--yes gate for destructive mcp.install dispatch |
-| `c94f4255` | feat(lab-77y5.3): add lab registry install CLI command |
-| `95520fa4` | fix(lab-77y5.1): review fixes — ServiceClient to entry point, auth wiring, version validation |
-| `df54925a` | feat(lab-77y5.1): add mcpregistry SDK and fix tool-search scoring |
-| `93392f8a` | feat(gateway): MCP config discovery and import from external editors |
-
-### Version bumps
-
-- Rust workspace: `0.15.2 → 0.16.0`
-- Gateway admin package: `0.15.2 → 0.16.0`
+### Added
+- `GET /v1/catalog` endpoint: aggregated service+action catalog filtered to enabled services, with ETag and Cache-Control headers
+- ⌘K command palette web CLI: live catalog browse, cmdk page-stack navigation, schema-driven param forms, destructive confirmation, `X-Lab-Source: palette` tracing
 
 ---
 
