@@ -125,6 +125,7 @@ pub fn resolve_runtime_role(
     local_host: &str,
     configured_master: Option<&str>,
 ) -> Result<ResolvedNodeRuntime> {
+    let started = std::time::Instant::now();
     let local_host =
         normalize_host_identifier(local_host).unwrap_or_else(|| "localhost".to_string());
     let master_host = configured_master
@@ -142,6 +143,7 @@ pub fn resolve_runtime_role(
         master_host = %master_host,
         role = ?role,
         is_master = matches!(role, NodeRole::Master),
+        elapsed_ms = started.elapsed().as_millis(),
         "runtime role resolved",
     );
     Ok(ResolvedNodeRuntime {

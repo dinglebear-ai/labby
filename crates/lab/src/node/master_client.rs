@@ -95,15 +95,31 @@ impl MasterClient {
                 }
             }
             if Instant::now() >= deadline {
+                tracing::warn!(
+                    surface = "node",
+                    service = "master_client",
+                    action = "node.connect_wait",
+                    kind = "timeout",
+                    node_id = %node_id,
+                    timeout_ms = timeout.as_millis(),
+                    "wait_for_node_connected timed out",
+                );
                 anyhow::bail!(
                     "timed out waiting for node `{node_id}` to reconnect to controller ({}s)",
                     timeout.as_secs()
                 );
             }
             attempt += 1;
-            // Exponential backoff: 2s, 4s, 8s, capped at 16s.
-            let delay =
-                std::time::Duration::from_secs(std::cmp::min(2u64.saturating_pow(attempt), 16));
+            // Exponential backoff: 2s, 4s, 8s, capped at 16s — but never
+            // sleep past the deadline, so the timeout fires on schedule.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let delay = remaining.min(std::time::Duration::from_secs(std::cmp::min(
+                2u64.saturating_pow(attempt),
+                16,
+            )));
+            if delay.is_zero() {
+                continue;
+            }
             tokio::time::sleep(delay).await;
         }
     }

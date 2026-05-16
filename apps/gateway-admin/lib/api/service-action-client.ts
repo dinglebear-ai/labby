@@ -68,6 +68,7 @@ export async function performServiceAction<T, TError extends ServiceActionError>
   serviceLabel,
   url,
   createError,
+  source,
 }: {
   action: string
   params: object
@@ -75,12 +76,17 @@ export async function performServiceAction<T, TError extends ServiceActionError>
   serviceLabel: string
   url: string
   createError: ActionErrorFactory<TError>
+  source?: string
 }): Promise<T> {
   assertDevPreviewCanRunAction(action)
 
   let response: Response
   try {
-    response = await fetch(devPreviewActionUrl(url), gatewayRequestInit(action, params, undefined, signal))
+    const init = gatewayRequestInit(action, params, undefined, signal)
+    if (source) {
+      init.headers = { ...(init.headers as Record<string, string>), 'X-Lab-Source': source }
+    }
+    response = await fetch(devPreviewActionUrl(url), init)
   } catch (error) {
     if (isAbortError(error)) {
       throw error

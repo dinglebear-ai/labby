@@ -169,7 +169,22 @@ pub async fn run_update(
                 .get(&ArtifactRole::Controller)
                 .expect("controller artifact was built above"),
         );
-        let health_port = config.mcp.port.unwrap_or(8765);
+        const DEFAULT_PORT: u16 = 8765;
+        let health_port = std::env::var("LAB_MCP_HTTP_PORT")
+            .ok()
+            .and_then(|v| {
+                v.parse::<u16>()
+                    .map_err(|e| {
+                        tracing::warn!(
+                            key = "LAB_MCP_HTTP_PORT",
+                            error = %e,
+                            "invalid port value, falling through to config.mcp.port"
+                        );
+                    })
+                    .ok()
+            })
+            .or(config.mcp.port)
+            .unwrap_or(DEFAULT_PORT);
         results.push(
             run_local_controller(
                 local_target.identity,
@@ -372,6 +387,7 @@ async fn run_remote_target<I: HostIo + 'static>(
                 "resolve".into(),
                 stages_ms,
                 error.to_string(),
+                None,
             );
         }
     };
@@ -413,6 +429,7 @@ async fn run_remote_target<I: HostIo + 'static>(
                 "preflight".into(),
                 stages_ms,
                 error.to_string(),
+                None,
             );
         }
     };
@@ -443,6 +460,7 @@ async fn run_remote_target<I: HostIo + 'static>(
                     "transfer".into(),
                     stages_ms,
                     format!("open artifact: {error}"),
+                    None,
                 );
             }
         };
@@ -470,6 +488,7 @@ async fn run_remote_target<I: HostIo + 'static>(
                 "transfer".into(),
                 stages_ms,
                 error.to_string(),
+                None,
             );
         }
         log_remote_update_stage_exit(
@@ -505,6 +524,7 @@ async fn run_remote_target<I: HostIo + 'static>(
             "normalize".into(),
             stages_ms,
             error.to_string(),
+            None,
         );
     }
     stages_ms.insert("normalize".into(), normalize_started.elapsed().as_millis());
@@ -535,6 +555,7 @@ async fn run_remote_target<I: HostIo + 'static>(
             "restart".into(),
             stages_ms,
             error.to_string(),
+            None,
         );
     }
     stages_ms.insert("restart".into(), restart_started.elapsed().as_millis());
@@ -565,6 +586,7 @@ async fn run_remote_target<I: HostIo + 'static>(
             "verify".into(),
             stages_ms,
             error.to_string(),
+            None,
         );
     }
     stages_ms.insert("verify".into(), verify_started.elapsed().as_millis());
@@ -611,6 +633,7 @@ async fn run_remote_target<I: HostIo + 'static>(
                 "controller did not report node `{}` as connected",
                 resolved_node_id
             ),
+            Some(false),
         );
     }
     log_remote_update_stage_exit(
@@ -716,6 +739,7 @@ async fn run_local_controller(
                 "install".into(),
                 stages_ms,
                 error.to_string(),
+                None,
             );
         }
     };
@@ -736,6 +760,7 @@ async fn run_local_controller(
             "normalize".into(),
             stages_ms,
             error.to_string(),
+            None,
         );
     }
     stages_ms.insert("normalize".into(), normalize_started.elapsed().as_millis());
@@ -751,6 +776,7 @@ async fn run_local_controller(
             "restart".into(),
             stages_ms,
             error.to_string(),
+            None,
         );
     }
     stages_ms.insert("restart".into(), restart_started.elapsed().as_millis());
@@ -1190,13 +1216,14 @@ fn failed_result(
     failed_stage: String,
     stages_ms: BTreeMap<String, u128>,
     error: String,
+    controller_health_ok: Option<bool>,
 ) -> UpdateTargetResult {
     UpdateTargetResult {
         target,
         kind,
         node_id,
         connected: Some(false),
-        controller_health_ok: Some(false),
+        controller_health_ok,
         skipped_transfer,
         ok: false,
         failed_stage: Some(failed_stage),
