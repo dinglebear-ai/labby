@@ -28,7 +28,7 @@ export const COMMAND_CATALOG_KEY = '/v1/catalog'
 export function useCommandCatalog(): {
   data: CatalogService[]
   isLoading: boolean
-  error: unknown
+  error: Error | null
 } {
   const { data, isLoading, error } = useSWR<CatalogService[]>(
     COMMAND_CATALOG_KEY,
@@ -42,9 +42,11 @@ export function useCommandCatalog(): {
     },
   )
 
+  const typedError = error instanceof Error ? error : error != null ? new Error(String(error)) : null
+
   return {
     data: data ?? [],
     isLoading,
-    error,
+    error: typedError,
   }
 }

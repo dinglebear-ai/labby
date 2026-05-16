@@ -303,6 +303,7 @@ export function AppCommandPalette() {
         serviceLabel: service,
         url,
         createError: makePaletteError,
+        source: 'palette',
       })
       toast.success(`${service} ${action.action}`, {
         description: 'Action completed successfully.',
