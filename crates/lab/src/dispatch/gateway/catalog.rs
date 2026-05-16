@@ -401,14 +401,66 @@ pub const ACTIONS: &[ActionSpec] = &[
         description: "Clear one import tombstone so a previously deleted imported server can be imported again",
         destructive: true,
         returns: "ImportTombstoneView[]",
-        params: &[NAME_PARAM],
+        params: &[
+            NAME_PARAM,
+            ParamSpec {
+                name: "source_client",
+                ty: "string",
+                required: false,
+                description: "Client kind that originated the import (e.g. \"cursor\", \"vscode\"). Use to disambiguate when multiple tombstones share the same name.",
+            },
+            ParamSpec {
+                name: "source_path",
+                ty: "string",
+                required: false,
+                description: "Path of the client config file the server was imported from. Use to disambiguate when multiple tombstones share the same name.",
+            },
+            ParamSpec {
+                name: "server_name",
+                ty: "string",
+                required: false,
+                description: "Server name as it appeared in the source client config. Use to disambiguate when the gateway name differs from the original config key.",
+            },
+            ParamSpec {
+                name: "transport_fingerprint",
+                ty: "string",
+                required: false,
+                description: "Stable SHA-256 hash of the transport target (URL for HTTP, command+args for stdio). Use to uniquely identify the tombstone when name alone is ambiguous.",
+            },
+        ],
     },
     ActionSpec {
         name: "gateway.import_tombstones.restore",
         description: "Atomically clear one import tombstone and restore the matching discovered server as disabled",
         destructive: true,
         returns: "GatewayView",
-        params: &[NAME_PARAM],
+        params: &[
+            NAME_PARAM,
+            ParamSpec {
+                name: "source_client",
+                ty: "string",
+                required: false,
+                description: "Client kind that originated the import (e.g. \"cursor\", \"vscode\"). Use to disambiguate when multiple tombstones share the same name.",
+            },
+            ParamSpec {
+                name: "source_path",
+                ty: "string",
+                required: false,
+                description: "Path of the client config file the server was imported from. Use to disambiguate when multiple tombstones share the same name.",
+            },
+            ParamSpec {
+                name: "server_name",
+                ty: "string",
+                required: false,
+                description: "Server name as it appeared in the source client config. Use to disambiguate when the gateway name differs from the original config key.",
+            },
+            ParamSpec {
+                name: "transport_fingerprint",
+                ty: "string",
+                required: false,
+                description: "Stable SHA-256 hash of the transport target (URL for HTTP, command+args for stdio). Use to uniquely identify the tombstone when name alone is ambiguous.",
+            },
+        ],
     },
     ActionSpec {
         name: "gateway.add",
