@@ -83,13 +83,13 @@ const OPEN_COMMAND_PALETTE_EVENT = 'labby:open-command-palette'
 type PaletteMode =
   | { kind: 'browse' }
   | { kind: 'param_prompt'; service: string; action: CatalogAction }
-  | { kind: 'confirmation'; service: string; action: CatalogAction; params: Record<string, string> }
+  | { kind: 'confirmation'; service: string; action: CatalogAction; params: Record<string, unknown> }
   | { kind: 'result'; service: string; action: string; data: unknown }
 
 type PaletteAction =
   | { type: 'BROWSE' }
   | { type: 'PARAM_PROMPT'; service: string; action: CatalogAction }
-  | { type: 'CONFIRMATION'; service: string; action: CatalogAction; params: Record<string, string> }
+  | { type: 'CONFIRMATION'; service: string; action: CatalogAction; params: Record<string, unknown> }
   | { type: 'RESULT'; service: string; action: string; data: unknown }
 
 function paletteReducer(state: PaletteMode, action: PaletteAction): PaletteMode {
@@ -123,6 +123,26 @@ function serviceActionUrl(service: string): string {
 /** Simple error factory for palette dispatched actions (no typed error class needed). */
 function makePaletteError(message: string, status: number, code?: string): ServiceActionError {
   return Object.assign(new Error(message), { status, code }) as ServiceActionError
+}
+
+/**
+ * Coerce a raw form string value to the JSON type declared in `CatalogParam.ty`.
+ * Without coercion, integer/boolean params would arrive as strings and fail server-side
+ * `invalid_param` validation even when the user entered a correct value.
+ */
+function coerceParamValue(rawValue: string, ty: string): unknown {
+  const normalized = ty.toLowerCase()
+  if (normalized === 'integer' || normalized === 'number') {
+    const n = Number(rawValue)
+    return Number.isFinite(n) ? n : rawValue
+  }
+  if (normalized === 'boolean') {
+    if (rawValue === 'true' || rawValue === '1') return true
+    if (rawValue === 'false' || rawValue === '0') return false
+    return rawValue
+  }
+  // string, object, array, and union types: pass through as-is
+  return rawValue
 }
 
 // ── Public components ─────────────────────────────────────────────────────────
@@ -264,7 +284,7 @@ export function AppCommandPalette() {
 
   // ── Dispatch (catalog action execution) ────────────────────────────────────
 
-  async function executeAction(service: string, action: CatalogAction, params: Record<string, string>) {
+  async function executeAction(service: string, action: CatalogAction, params: Record<string, unknown>) {
     const controller = new AbortController()
     abortRef.current = controller
 
@@ -318,12 +338,17 @@ export function AppCommandPalette() {
     const requiredParams = action.params.filter((p) => p.required)
 
     if (requiredParams.length === 0) {
-      // 0 required params: dispatch immediately
-      void executeAction(svc.name, action, {})
+      if (action.destructive) {
+        // Zero required params but destructive: show ConfirmDialog before dispatch
+        dispatch({ type: 'CONFIRMATION', service: svc.name, action, params: {} })
+      } else {
+        // Zero required params and non-destructive: dispatch immediately
+        void executeAction(svc.name, action, {})
+      }
       return
     }
 
-    // 1+ required params: show param prompt
+    // 1+ required params: show param prompt (destructive confirmation happens after form fill)
     dispatch({ type: 'PARAM_PROMPT', service: svc.name, action })
   }
 
@@ -345,9 +370,13 @@ export function AppCommandPalette() {
     if (mode.kind !== 'param_prompt') return
 
     const formData = new FormData(event.currentTarget)
-    const params: Record<string, string> = {}
+    const params: Record<string, unknown> = {}
     for (const [key, value] of formData.entries()) {
-      if (typeof value === 'string') params[key] = value
+      if (typeof value !== 'string') continue
+      // Coerce to declared type (integer, boolean, etc.) so Rust param validators don't reject
+      // valid user input that arrives as a string from FormData.
+      const paramSpec = mode.action.params.find((p) => p.name === key)
+      params[key] = paramSpec ? coerceParamValue(value, paramSpec.ty) : value
     }
 
     if (mode.action.destructive) {
