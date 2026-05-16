@@ -448,7 +448,9 @@ export function AppCommandPalette() {
               </div>
             )}
 
-            {/* Param form — rendered OUTSIDE CommandList to avoid cmdk arrow-key interception */}
+            {/* Param form — rendered OUTSIDE CommandList to avoid cmdk arrow-key interception.
+                The `mode.kind === 'param_prompt'` check is needed for TypeScript narrowing even
+                though showParamForm already captures this condition. */}
             {showParamForm && mode.kind === 'param_prompt' && (
               <ParamPromptForm
                 service={mode.service}

@@ -33,13 +33,7 @@ export const CatalogActionSchema = z.object({
   params: z.array(CatalogParamSchema),
   returns: z.string(),
 })
-.transform((a) => ({
-  action: a.name,
-  description: a.description,
-  destructive: a.destructive,
-  params: a.params,
-  returns: a.returns,
-}))
+.transform(({ name, ...rest }) => ({ action: name, ...rest }))
 
 export const CatalogServiceSchema = z.object({
   name: z.string(),
