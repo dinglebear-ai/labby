@@ -172,16 +172,16 @@ pub async fn run_update(
         const DEFAULT_PORT: u16 = 8765;
         let health_port = std::env::var("LAB_MCP_HTTP_PORT")
             .ok()
-            .map(|v| {
-                v.parse::<u16>().unwrap_or_else(|e| {
-                    tracing::warn!(
-                        key = "LAB_MCP_HTTP_PORT",
-                        error = %e,
-                        default = DEFAULT_PORT,
-                        "invalid port value, using default"
-                    );
-                    DEFAULT_PORT
-                })
+            .and_then(|v| {
+                v.parse::<u16>()
+                    .map_err(|e| {
+                        tracing::warn!(
+                            key = "LAB_MCP_HTTP_PORT",
+                            error = %e,
+                            "invalid port value, falling through to config.mcp.port"
+                        );
+                    })
+                    .ok()
             })
             .or(config.mcp.port)
             .unwrap_or(DEFAULT_PORT);
