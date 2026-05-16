@@ -133,6 +133,8 @@ function makePaletteError(message: string, status: number, code?: string): Servi
 function coerceParamValue(rawValue: string, ty: string): unknown {
   const normalized = ty.toLowerCase()
   if (normalized === 'integer' || normalized === 'number') {
+    // Issue 1: empty/whitespace string must NOT coerce to 0 — let server reject it
+    if (rawValue.trim() === '') return rawValue
     const n = Number(rawValue)
     return Number.isFinite(n) ? n : rawValue
   }
@@ -141,8 +143,31 @@ function coerceParamValue(rawValue: string, ty: string): unknown {
     if (rawValue === 'false' || rawValue === '0') return false
     return rawValue
   }
-  // string, object, array, and union types: pass through as-is
+  // Issue 2: object/array params must be parsed so server receives a JSON value, not a string
+  if (normalized === 'object' || normalized === 'array') {
+    try {
+      return JSON.parse(rawValue)
+    } catch {
+      return rawValue // let server reject malformed JSON
+    }
+  }
+  // string and union types: pass through as-is
   return rawValue
+}
+
+/**
+ * Parse instance labels from a param description.
+ * Handles patterns like "Valid labels: default, node2" or "one of: default, node2".
+ * Returns [] when no recognisable pattern is found.
+ */
+function parseInstanceLabels(description: string): string[] {
+  // Look for text after a colon, then split on commas
+  const match = description.match(/:\s*([a-zA-Z0-9_,\s-]+)$/)
+  if (!match) return []
+  return match[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s.length <= 64)
 }
 
 // ── Public components ─────────────────────────────────────────────────────────
@@ -183,7 +208,8 @@ export function AppCommandPalette() {
   const [isDispatching, setIsDispatching] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
-  const { data: catalogServices, isLoading: catalogLoading } = useCommandCatalog()
+  // Issue 4: destructure error so we can surface catalog fetch failures
+  const { data: catalogServices, isLoading: catalogLoading, error: catalogError } = useCommandCatalog()
 
   const state = useMemo(() => buildAppCommandState(query), [query])
   const [activeItemId, setActiveItemId] = useState<string | null>(state.activeItemId)
@@ -256,12 +282,10 @@ export function AppCommandPalette() {
     }
   }, [open, openPalette, closePalette])
 
-  // Close on pathname change. closePalette is stable (useCallback deps chain is stable).
-  // Omitting closePalette from deps is safe because its identity never changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Close on pathname change. closePalette is stable (useCallback with stable deps).
   useEffect(() => {
     if (open) closePalette()
-  }, [pathname])
+  }, [pathname, open, closePalette])
 
   // Sync active item when state changes
   useEffect(() => {
@@ -378,6 +402,14 @@ export function AppCommandPalette() {
       // valid user input that arrives as a string from FormData.
       const paramSpec = mode.action.params.find((p) => p.name === key)
       params[key] = paramSpec ? coerceParamValue(value, paramSpec.ty) : value
+    }
+
+    // Issue 7: client-side required-field validation before dispatch
+    const requiredParams = mode.action.params.filter((p) => p.required)
+    const emptyRequired = requiredParams.filter((p) => !params[p.name]?.toString().trim())
+    if (emptyRequired.length > 0) {
+      toast.error(`Required: ${emptyRequired.map((p) => p.name).join(', ')}`)
+      return
     }
 
     if (mode.action.destructive) {
@@ -507,8 +539,17 @@ export function AppCommandPalette() {
                   </div>
                 )}
 
+                {/* Issue 4: surface catalog fetch error instead of silently showing empty list */}
+                {catalogError && !catalogLoading && (
+                  <CommandGroup>
+                    <CommandItem disabled className="text-aurora-error text-xs">
+                      Failed to load actions — check server connection
+                    </CommandItem>
+                  </CommandGroup>
+                )}
+
                 {/* Catalog service / action items for current page */}
-                {!catalogLoading && catalogItems.length > 0 && (
+                {!catalogLoading && !catalogError && catalogItems.length > 0 && (
                   <CommandGroup
                     heading={currentPage ? `${currentPage} actions` : 'Services'}
                     className="mb-3 overflow-visible p-0 [&_[cmdk-group-heading]]:px-0 [&_[cmdk-group-heading]]:py-0 [&_[cmdk-group-heading]]:pb-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-bold [&_[cmdk-group-heading]]:tracking-[0.18em] [&_[cmdk-group-heading]]:text-aurora-text-muted [&_[cmdk-group-heading]]:uppercase"
@@ -714,9 +755,12 @@ function ParamPromptForm({
   const optionalParams = action.params.filter((p) => !p.required)
   const totalParams = action.params.length
 
-  // 5+ total params: too complex for inline form (Sheet deferred to v2)
-  // For now, all params shown if >= 5 total params too
-  const showAllOptional = requiredParams.length < 3 || showAdvanced
+  // Issue 8: when there are 5+ total params, hide optional params by default behind the
+  // Advanced toggle. Also hide when 3+ required params (existing rule). Show when
+  // toggle is open (showAdvanced).
+  const showAllOptional = (requiredParams.length < 3 && totalParams < 5) || showAdvanced
+  // Show the Advanced toggle whenever there are optional params AND they are hidden by default
+  const showAdvancedToggle = optionalParams.length > 0 && (requiredParams.length >= 3 || totalParams >= 5)
 
   return (
     <div className="px-4 py-4">
@@ -730,18 +774,18 @@ function ParamPromptForm({
       <form onSubmit={onSubmit} className="space-y-3">
         {/* Required params */}
         {requiredParams.map((param) => (
-          <ParamField key={param.name} param={param} />
+          <ParamField key={param.name} param={param} actionName={action.action} />
         ))}
 
         {/* Optional params */}
         {optionalParams.length > 0 && (
           <>
             {showAllOptional && optionalParams.map((param) => (
-              <ParamField key={param.name} param={param} />
+              <ParamField key={param.name} param={param} actionName={action.action} />
             ))}
 
-            {/* Advanced toggle when 3+ required params and < 5 total */}
-            {requiredParams.length >= 3 && totalParams < 5 && (
+            {/* Advanced toggle: shown when optional params are hidden by default */}
+            {showAdvancedToggle && (
               <button
                 type="button"
                 className="text-[12px] text-aurora-accent-primary hover:underline"
@@ -779,8 +823,23 @@ function ParamPromptForm({
 
 // ── ParamField ─────────────────────────────────────────────────────────────────
 
-function ParamField({ param }: { param: CatalogParam }) {
+function ParamField({ param, actionName }: { param: CatalogParam; actionName: string }) {
   const isPassword = param.secret === true
+  const normalized = param.ty.toLowerCase()
+
+  // Issue 6: for 'instance' params, parse labels from description and render a datalist
+  const isInstanceParam = param.name === 'instance'
+  const instanceLabels = isInstanceParam && param.description
+    ? parseInstanceLabels(param.description)
+    : []
+  const datalistId = instanceLabels.length > 0 ? `instance-${actionName}` : undefined
+
+  // Issue 3: cap input length by type to prevent bloated payloads
+  const maxLength = (normalized === 'integer' || normalized === 'number')
+    ? 20
+    : normalized === 'boolean'
+      ? 5
+      : 2000
 
   return (
     <div className="grid gap-1">
@@ -798,9 +857,18 @@ function ParamField({ param }: { param: CatalogParam }) {
         type={isPassword ? 'password' : 'text'}
         required={param.required}
         autoComplete={isPassword ? 'current-password' : 'off'}
+        maxLength={maxLength}
+        list={datalistId}
         className="w-full rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface px-2.5 py-1.5 text-[13px] text-aurora-text-primary placeholder:text-aurora-text-muted focus:border-aurora-accent-primary focus:outline-none"
         placeholder={isPassword ? '••••••••' : param.description || param.name}
       />
+      {datalistId && (
+        <datalist id={datalistId}>
+          {instanceLabels.map((label) => (
+            <option key={label} value={label} />
+          ))}
+        </datalist>
+      )}
     </div>
   )
 }
