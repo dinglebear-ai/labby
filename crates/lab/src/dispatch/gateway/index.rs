@@ -123,10 +123,6 @@ fn score_tool(query: &str, tool: &IndexedTool) -> f32 {
     score_name_haystack(query, &tool.name_lower, &tool.haystack)
 }
 
-/// Score a tool given pre-lowercased name and haystack strings.
-///
-/// Exported so the builtin-tool search path in the MCP server can use the
-/// same algorithm without duplicating it.
 pub(crate) fn score_name_haystack(query: &str, name_lower: &str, haystack: &str) -> f32 {
     // Exact name match always wins.
     if name_lower == query {
@@ -150,7 +146,7 @@ pub(crate) fn score_name_haystack(query: &str, name_lower: &str, haystack: &str)
         .collect();
     if !q_tokens.is_empty() {
         let name_segments: Vec<&str> = name_lower
-            .split(|c: char| c == '_' || c == '-')
+            .split(['_', '-'])
             .filter(|s| !s.is_empty())
             .collect();
         for token in &q_tokens {
@@ -171,6 +167,9 @@ pub(crate) fn score_name_haystack(query: &str, name_lower: &str, haystack: &str)
     // Length normalization: prefer concise, focused names for equal relevance.
     // The divisor is capped at 1.0 so short names get no bonus, only long ones
     // are gently penalized.
+    // `name_lower.len()` is bounded by tool-name length (well under f32 mantissa range);
+    // cast precision loss is irrelevant for this length normalization heuristic.
+    #[allow(clippy::cast_precision_loss)]
     let len_factor = (name_lower.len() as f32 / 12.0).max(1.0).sqrt();
     score / len_factor
 }

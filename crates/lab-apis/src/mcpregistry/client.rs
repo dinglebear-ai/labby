@@ -129,7 +129,6 @@ impl McpRegistryClient {
         Ok(self.http.post_json("/v0.1/validate", server_json).await?)
     }
 
-    /// Health probe called by the `ServiceClient` impl in `mcpregistry.rs`.
     pub(super) async fn health_probe(&self) -> Result<(), RegistryError> {
         Ok(self.http.get_void("/v0.1/health").await?)
     }

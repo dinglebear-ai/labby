@@ -978,12 +978,12 @@ fn protected_resource_metadata_candidates(upstream: &url::Url) -> Vec<url::Url> 
 
     paths
         .into_iter()
-        .filter_map(|path| {
+        .map(|path| {
             let mut candidate = upstream.clone();
             candidate.set_query(None);
             candidate.set_fragment(None);
             candidate.set_path(&path);
-            Some(candidate)
+            candidate
         })
         .collect()
 }
@@ -998,12 +998,12 @@ fn authorization_metadata_candidates(server: &url::Url) -> Vec<url::Url> {
         "/.well-known/openid-configuration",
     ]
     .into_iter()
-    .filter_map(|path| {
+    .map(|path| {
         let mut candidate = server.clone();
         candidate.set_query(None);
         candidate.set_fragment(None);
         candidate.set_path(path);
-        Some(candidate)
+        candidate
     })
     .collect()
 }

@@ -800,10 +800,6 @@ impl WsClient {
     }
 }
 
-/// Dispatch an inbound RPC request from master to the appropriate handler.
-///
-/// Returns a JSON-RPC 2.0 response value (with `result` or `error`).
-/// Progress notifications are sent via `progress_tx` as JSON-encoded strings.
 // lab-zxx5.18: structured error for pre-handler validation of
 // marketplace.install_component params. `kind` maps to the stable error
 // taxonomy in docs/dev/ERRORS.md.

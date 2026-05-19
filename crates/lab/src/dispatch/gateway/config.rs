@@ -133,7 +133,7 @@ fn render_gateway_config(path: &Path, cfg: &LabConfig) -> Result<String, ToolErr
     for key in KNOWN_LAB_CONFIG_KEYS {
         existing.as_table_mut().remove(key);
     }
-    for (key, item) in desired.as_table().iter() {
+    for (key, item) in desired.as_table() {
         existing[key] = item.clone();
     }
 
@@ -794,11 +794,6 @@ pub(crate) fn validate_bearer_token_env_name(value: &str) -> Result<(), ToolErro
     Ok(())
 }
 
-/// Derive a default bearer-token env var name from a gateway name.
-///
-/// Matches the TS `defaultGatewayBearerEnvName` helper in
-/// `apps/gateway-admin/lib/gateway-env.ts`: always prefixes with `LAB_GW_`
-/// so generated names are scoped and cannot collide with arbitrary system vars.
 pub(crate) fn default_gateway_bearer_env_name(name: &str) -> String {
     let normalized = name
         .trim()
