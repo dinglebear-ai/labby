@@ -5,11 +5,11 @@
 //! modules declared here.
 
 #![allow(clippy::multiple_crate_versions)]
-#![allow(unreachable_pub)] // binary crate — `pub` items are crate-internal by design
+#![allow(unreachable_pub)]
+// binary crate — `pub` items are crate-internal by design
 
 mod acp;
 mod api;
-mod audit;
 mod catalog;
 mod cli;
 mod config;
@@ -24,10 +24,8 @@ mod observability;
 mod output;
 mod process;
 mod registry;
-mod scaffold;
 #[cfg(test)]
 mod test_support;
-mod tui;
 
 use std::process::ExitCode;
 

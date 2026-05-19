@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use super::error::ExtractError;
 use super::types::ServiceCreds;
 
-/// Shared minimal INI parser (no external dep).
 pub(super) mod ini;
 /// Linkding config parser.
 pub mod linkding;

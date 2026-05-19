@@ -68,7 +68,6 @@ impl AcpRegistryClient {
         Ok(agents.into_iter().find(|a| a.id == id))
     }
 
-    /// Raw health probe — fetches the registry manifest and returns Ok on success.
     pub(super) async fn health_probe(&self) -> Result<AcpRegistryResponse, AcpRegistryError> {
         Ok(self.http.get_json(REGISTRY_PATH).await?)
     }

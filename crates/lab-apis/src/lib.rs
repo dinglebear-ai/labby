@@ -1,24 +1,14 @@
-//! Pure Rust SDK for homelab service APIs.
+//! Core Rust library for the `lab` MCP gateway.
 //!
-//! `lab-apis` wraps every service that `lab` (the binary) talks to. It is
-//! intentionally free of `clap`, `rmcp`, `ratatui`, and `anyhow` so that any
-//! Rust program can pull it in as a standalone SDK.
-//!
-//! Each service lives behind a feature flag so consumers compile only what
-//! they need:
-//!
-//! ```toml
-//! lab-apis = { version = "0.1", default-features = false, features = ["radarr", "plex"] }
-//! ```
+//! Provides cross-cutting primitives (HTTP client, auth, errors), gateway-adjacent
+//! operator modules (marketplace, mcpregistry, device_runtime, deploy, doctor, setup,
+//! stash, acp, acp_registry), and the `extract` bootstrap utility for scanning hosts
+//! for service credentials.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 /// Cross-cutting primitives: HTTP client, auth, errors, status, action specs.
 pub mod core;
-
-/// Shared `*arr` primitives used by Radarr/Sonarr/Prowlarr.
-#[cfg(feature = "servarr")]
-pub mod servarr;
 
 /// Bootstrap utility: extract API keys from existing service config files.
 #[cfg(feature = "extract")]
@@ -42,106 +32,6 @@ pub mod setup;
 /// Stash — component versioning and deployment (skills, agents, configs, binaries).
 pub mod stash;
 
-/// Radarr movie management client.
-#[cfg(feature = "radarr")]
-pub mod radarr;
-
-/// Sonarr TV management client.
-#[cfg(feature = "sonarr")]
-pub mod sonarr;
-
-/// Prowlarr indexer management client.
-#[cfg(feature = "prowlarr")]
-pub mod prowlarr;
-
-/// Overseerr media request management client.
-#[cfg(feature = "overseerr")]
-pub mod overseerr;
-
-/// Plex media server client.
-#[cfg(feature = "plex")]
-pub mod plex;
-
-/// Jellyfin media server client.
-#[cfg(feature = "jellyfin")]
-pub mod jellyfin;
-
-/// Tautulli Plex analytics client.
-#[cfg(feature = "tautulli")]
-pub mod tautulli;
-
-/// SABnzbd usenet downloader client.
-#[cfg(feature = "sabnzbd")]
-pub mod sabnzbd;
-
-/// qBittorrent torrent client.
-#[cfg(feature = "qbittorrent")]
-pub mod qbittorrent;
-
-/// Tailscale VPN client.
-#[cfg(feature = "tailscale")]
-pub mod tailscale;
-
-/// Linkding bookmark manager client.
-#[cfg(feature = "linkding")]
-pub mod linkding;
-
-/// Memos note-taking client.
-#[cfg(feature = "memos")]
-pub mod memos;
-
-/// Beads local issue tracker client.
-#[cfg(feature = "beads")]
-pub mod beads;
-
-/// ByteStash code snippet client.
-#[cfg(feature = "bytestash")]
-pub mod bytestash;
-
-/// Paperless-ngx document management client.
-#[cfg(feature = "paperless")]
-pub mod paperless;
-
-/// Arcane Docker management UI client.
-#[cfg(feature = "arcane")]
-pub mod arcane;
-
-/// Unraid GraphQL API client.
-#[cfg(feature = "unraid")]
-pub mod unraid;
-
-/// UniFi Network Application local API client.
-#[cfg(feature = "unifi")]
-pub mod unifi;
-
-/// Gotify push-notification server client.
-#[cfg(feature = "gotify")]
-pub mod gotify;
-
-/// Upstream OpenACP daemon client.
-#[cfg(feature = "openacp")]
-pub mod openacp;
-
-/// OpenAI API client (chat, embeddings, models, images, audio).
-#[cfg(feature = "openai")]
-pub mod openai;
-
-/// Google NotebookLM client.
-#[cfg(feature = "notebooklm")]
-pub mod notebooklm;
-
-/// Qdrant vector database client.
-#[cfg(feature = "qdrant")]
-pub mod qdrant;
-
-/// Hugging Face Text Embeddings Inference (TEI) client.
-#[cfg(feature = "tei")]
-pub mod tei;
-
-/// Apprise universal notification dispatcher client.
-#[cfg(feature = "apprise")]
-pub mod apprise;
-
 /// Deploy service — push local release binary to SSH targets.
 #[cfg(feature = "deploy")]
 pub mod deploy;
@@ -153,25 +43,3 @@ pub mod mcpregistry;
 /// ACP Agent Registry client — discover and install ACP-compatible AI coding agents.
 #[cfg(feature = "acp_registry")]
 pub mod acp_registry;
-#[cfg(feature = "adguard")]
-pub mod adguard;
-#[cfg(feature = "dozzle")]
-pub mod dozzle;
-#[cfg(feature = "freshrss")]
-pub mod freshrss;
-#[cfg(feature = "glances")]
-pub mod glances;
-#[cfg(feature = "immich")]
-pub mod immich;
-#[cfg(feature = "loggifly")]
-pub mod loggifly;
-#[cfg(feature = "navidrome")]
-pub mod navidrome;
-#[cfg(feature = "neo4j")]
-pub mod neo4j;
-#[cfg(feature = "pihole")]
-pub mod pihole;
-#[cfg(feature = "scrutiny")]
-pub mod scrutiny;
-#[cfg(feature = "uptime_kuma")]
-pub mod uptime_kuma;

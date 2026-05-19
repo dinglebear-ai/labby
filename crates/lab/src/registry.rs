@@ -486,113 +486,8 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         });
     }
 
-    register_service!(
-        reg,
-        "radarr",
-        radarr,
-        actions = crate::dispatch::radarr::actions(),
-        dispatch = dispatch_fn!(crate::dispatch::radarr::dispatch)
-    );
-
-    register_service!(reg, "sonarr", sonarr);
-
-    register_service!(
-        reg,
-        "prowlarr",
-        prowlarr,
-        actions = crate::dispatch::prowlarr::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::prowlarr::dispatch)
-    );
-
-    register_service!(
-        reg,
-        "plex",
-        plex,
-        actions = crate::dispatch::plex::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::plex::dispatch)
-    );
-    register_service!(
-        reg,
-        "tautulli",
-        tautulli,
-        actions = crate::dispatch::tautulli::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::tautulli::dispatch)
-    );
-
-    register_service!(
-        reg,
-        "sabnzbd",
-        sabnzbd,
-        actions = crate::dispatch::sabnzbd::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::sabnzbd::dispatch)
-    );
-
-    register_service!(reg, "qbittorrent", qbittorrent);
-    register_service!(
-        reg,
-        "tailscale",
-        tailscale,
-        actions = crate::dispatch::tailscale::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::tailscale::dispatch)
-    );
-    register_service!(
-        reg,
-        "linkding",
-        linkding,
-        actions = crate::dispatch::linkding::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::linkding::dispatch)
-    );
-    register_service!(reg, "memos", memos);
-
-    register_service!(
-        reg,
-        "bytestash",
-        bytestash,
-        actions = crate::dispatch::bytestash::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::bytestash::dispatch)
-    );
     // Audit anchor: register_service!(reg, "beads"
-    register_service!(
-        reg,
-        "beads",
-        beads,
-        actions = crate::dispatch::beads::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::beads::dispatch)
-    );
 
-    register_service!(
-        reg,
-        "paperless",
-        paperless,
-        actions = crate::dispatch::paperless::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::paperless::dispatch)
-    );
-    register_service!(reg, "arcane", arcane);
-
-    register_service!(
-        reg,
-        "unraid",
-        unraid,
-        actions = crate::dispatch::unraid::ACTIONS,
-        dispatch = dispatch_fn!(crate::dispatch::unraid::dispatch)
-    );
-
-    register_service!(
-        reg,
-        "unifi",
-        unifi,
-        actions = crate::dispatch::unifi::actions(),
-        dispatch = dispatch_fn!(crate::dispatch::unifi::dispatch)
-    );
-
-    register_service!(reg, "overseerr", overseerr);
-    register_service!(reg, "gotify", gotify);
-    register_service!(reg, "openacp", openacp);
-    register_service!(reg, "openai", openai);
-    register_service!(reg, "notebooklm", notebooklm);
-    register_service!(reg, "qdrant", qdrant);
-    register_service!(reg, "tei", tei);
-    register_service!(reg, "apprise", apprise);
     register_service!(
         reg,
         "deploy",
@@ -647,86 +542,12 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         dispatch: dispatch_fn!(crate::mcp::services::fs::dispatch),
     });
 
-    register_service!(reg, "dozzle", dozzle);
-
-    register_service!(reg, "immich", immich);
-
-    register_service!(reg, "jellyfin", jellyfin);
-
-    register_service!(reg, "navidrome", navidrome);
-
-    register_service!(reg, "scrutiny", scrutiny);
-
-    register_service!(reg, "freshrss", freshrss);
-
-    register_service!(reg, "loggifly", loggifly);
-
-    register_service!(reg, "adguard", adguard);
-
-    register_service!(reg, "glances", glances);
-
-    register_service!(reg, "uptime_kuma", uptime_kuma);
-
-    register_service!(reg, "pihole", pihole);
-
-    register_service!(reg, "neo4j", neo4j);
-
     reg
 }
 
 #[must_use]
 pub fn service_meta(name: &str) -> Option<&'static PluginMeta> {
     match name {
-        #[cfg(feature = "radarr")]
-        "radarr" => Some(&lab_apis::radarr::META),
-        #[cfg(feature = "sonarr")]
-        "sonarr" => Some(&lab_apis::sonarr::META),
-        #[cfg(feature = "prowlarr")]
-        "prowlarr" => Some(&lab_apis::prowlarr::META),
-        #[cfg(feature = "plex")]
-        "plex" => Some(&lab_apis::plex::META),
-        #[cfg(feature = "jellyfin")]
-        "jellyfin" => Some(&lab_apis::jellyfin::META),
-        #[cfg(feature = "tautulli")]
-        "tautulli" => Some(&lab_apis::tautulli::META),
-        #[cfg(feature = "sabnzbd")]
-        "sabnzbd" => Some(&lab_apis::sabnzbd::META),
-        #[cfg(feature = "qbittorrent")]
-        "qbittorrent" => Some(&lab_apis::qbittorrent::META),
-        #[cfg(feature = "tailscale")]
-        "tailscale" => Some(&lab_apis::tailscale::META),
-        #[cfg(feature = "linkding")]
-        "linkding" => Some(&lab_apis::linkding::META),
-        #[cfg(feature = "memos")]
-        "memos" => Some(&lab_apis::memos::META),
-        #[cfg(feature = "bytestash")]
-        "bytestash" => Some(&lab_apis::bytestash::META),
-        #[cfg(feature = "beads")]
-        "beads" => Some(&lab_apis::beads::META),
-        #[cfg(feature = "paperless")]
-        "paperless" => Some(&lab_apis::paperless::META),
-        #[cfg(feature = "arcane")]
-        "arcane" => Some(&lab_apis::arcane::META),
-        #[cfg(feature = "unraid")]
-        "unraid" => Some(&lab_apis::unraid::META),
-        #[cfg(feature = "unifi")]
-        "unifi" => Some(&lab_apis::unifi::META),
-        #[cfg(feature = "overseerr")]
-        "overseerr" => Some(&lab_apis::overseerr::META),
-        #[cfg(feature = "gotify")]
-        "gotify" => Some(&lab_apis::gotify::META),
-        #[cfg(feature = "openacp")]
-        "openacp" => Some(&lab_apis::openacp::META),
-        #[cfg(feature = "openai")]
-        "openai" => Some(&lab_apis::openai::META),
-        #[cfg(feature = "notebooklm")]
-        "notebooklm" => Some(&lab_apis::notebooklm::META),
-        #[cfg(feature = "qdrant")]
-        "qdrant" => Some(&lab_apis::qdrant::META),
-        #[cfg(feature = "tei")]
-        "tei" => Some(&lab_apis::tei::META),
-        #[cfg(feature = "apprise")]
-        "apprise" => Some(&lab_apis::apprise::META),
         #[cfg(feature = "deploy")]
         "deploy" => Some(&lab_apis::deploy::META),
         _ => None,
@@ -813,56 +634,6 @@ mod tests {
         // extract is always-on (no feature flag)
         assert!(names.contains(&"extract"), "extract missing");
         // feature-gated services — present only when the flag is enabled
-        #[cfg(feature = "radarr")]
-        assert!(names.contains(&"radarr"), "radarr missing");
-        #[cfg(feature = "sonarr")]
-        assert!(names.contains(&"sonarr"), "sonarr missing");
-        #[cfg(feature = "prowlarr")]
-        assert!(names.contains(&"prowlarr"), "prowlarr missing");
-        #[cfg(feature = "plex")]
-        assert!(names.contains(&"plex"), "plex missing");
-        #[cfg(feature = "tautulli")]
-        assert!(names.contains(&"tautulli"), "tautulli missing");
-        #[cfg(feature = "sabnzbd")]
-        assert!(names.contains(&"sabnzbd"), "sabnzbd missing");
-        #[cfg(feature = "qbittorrent")]
-        assert!(names.contains(&"qbittorrent"), "qbittorrent missing");
-        #[cfg(feature = "tailscale")]
-        assert!(names.contains(&"tailscale"), "tailscale missing");
-        #[cfg(feature = "linkding")]
-        assert!(names.contains(&"linkding"), "linkding missing");
-        #[cfg(feature = "memos")]
-        assert!(names.contains(&"memos"), "memos missing");
-        #[cfg(feature = "bytestash")]
-        assert!(names.contains(&"bytestash"), "bytestash missing");
-        #[cfg(feature = "beads")]
-        assert!(names.contains(&"beads"), "beads missing");
-        #[cfg(feature = "paperless")]
-        assert!(names.contains(&"paperless"), "paperless missing");
-        #[cfg(feature = "arcane")]
-        assert!(names.contains(&"arcane"), "arcane missing");
-        #[cfg(feature = "unraid")]
-        assert!(names.contains(&"unraid"), "unraid missing");
-        #[cfg(feature = "unifi")]
-        assert!(names.contains(&"unifi"), "unifi missing");
-        #[cfg(feature = "overseerr")]
-        assert!(names.contains(&"overseerr"), "overseerr missing");
-        #[cfg(feature = "gotify")]
-        assert!(names.contains(&"gotify"), "gotify missing");
-        #[cfg(feature = "jellyfin")]
-        assert!(names.contains(&"jellyfin"), "jellyfin missing");
-        #[cfg(feature = "openacp")]
-        assert!(names.contains(&"openacp"), "openacp missing");
-        #[cfg(feature = "openai")]
-        assert!(names.contains(&"openai"), "openai missing");
-        #[cfg(feature = "notebooklm")]
-        assert!(names.contains(&"notebooklm"), "notebooklm missing");
-        #[cfg(feature = "qdrant")]
-        assert!(names.contains(&"qdrant"), "qdrant missing");
-        #[cfg(feature = "tei")]
-        assert!(names.contains(&"tei"), "tei missing");
-        #[cfg(feature = "apprise")]
-        assert!(names.contains(&"apprise"), "apprise missing");
     }
 
     #[test]
@@ -890,37 +661,24 @@ mod tests {
     }
 
     #[test]
-    fn upstream_api_filter_removes_upstreams_and_keeps_bootstrap() {
+    fn upstream_api_filter_is_noop_after_gateway_pivot() {
+        // Post-pivot all surviving services are operator/bootstrap tools — there
+        // are no `BuiltInUpstreamApi` services left. The filter is still wired
+        // (kept for forward-compat with future plugin-based upstreams) but
+        // currently filters nothing.
         let unfiltered = build_default_registry();
-        let unfiltered_names: std::collections::BTreeSet<&str> = unfiltered
+        let unfiltered_count = unfiltered.services().len();
+        let filtered = filter_built_in_upstream_apis(unfiltered, false);
+        assert_eq!(
+            filtered.services().len(),
+            unfiltered_count,
+            "no upstream-API services remain to filter post-pivot"
+        );
+        let names: std::collections::BTreeSet<&str> = filtered
             .services()
             .iter()
             .map(|service| service.name)
             .collect();
-        let removed_services = [
-            "radarr",
-            "sonarr",
-            "tailscale",
-            "openai",
-            "uptime-kuma",
-            "dozzle",
-            "beads",
-        ];
-        for removed in removed_services {
-            assert!(
-                unfiltered_names.contains(removed),
-                "{removed} should exist in the unfiltered registry"
-            );
-        }
-
-        let reg = filter_built_in_upstream_apis(unfiltered, false);
-        let names: std::collections::BTreeSet<&str> =
-            reg.services().iter().map(|service| service.name).collect();
-
-        for removed in removed_services {
-            assert!(!names.contains(removed), "{removed} should be disabled");
-        }
-
         for kept in [
             "setup",
             "doctor",
@@ -943,12 +701,9 @@ mod tests {
                 | RegisteredServiceKind::BuiltInUpstreamApi => {}
             }
         }
-        assert!(
-            reg.services()
-                .iter()
-                .any(|service| service.kind == RegisteredServiceKind::BuiltInUpstreamApi),
-            "registry should include upstream API services in all-features builds"
-        );
+        // Post-pivot only Bootstrap/operator services remain. The
+        // `BuiltInUpstreamApi` variant is preserved on the enum for
+        // forward-compat with future plugin-based upstreams.
         assert!(
             reg.services()
                 .iter()
@@ -959,8 +714,6 @@ mod tests {
 
     #[test]
     fn service_meta_tracks_feature_enabled_services() {
-        #[cfg(feature = "plex")]
-        assert_eq!(service_meta("plex").map(|meta| meta.name), Some("plex"));
         assert!(service_meta("extract").is_none());
         assert!(service_meta("gateway").is_none());
     }
@@ -996,78 +749,6 @@ mod tests {
             s.insert(lab_apis::doctor::META.name); // always-on
             s.insert(lab_apis::setup::META.name); // always-on
             s.insert(lab_apis::stash::META.name); // always-on
-            #[cfg(feature = "radarr")]
-            s.insert(lab_apis::radarr::META.name);
-            #[cfg(feature = "sonarr")]
-            s.insert(lab_apis::sonarr::META.name);
-            #[cfg(feature = "prowlarr")]
-            s.insert(lab_apis::prowlarr::META.name);
-            #[cfg(feature = "plex")]
-            s.insert(lab_apis::plex::META.name);
-            #[cfg(feature = "tautulli")]
-            s.insert(lab_apis::tautulli::META.name);
-            #[cfg(feature = "sabnzbd")]
-            s.insert(lab_apis::sabnzbd::META.name);
-            #[cfg(feature = "qbittorrent")]
-            s.insert(lab_apis::qbittorrent::META.name);
-            #[cfg(feature = "tailscale")]
-            s.insert(lab_apis::tailscale::META.name);
-            #[cfg(feature = "linkding")]
-            s.insert(lab_apis::linkding::META.name);
-            #[cfg(feature = "memos")]
-            s.insert(lab_apis::memos::META.name);
-            #[cfg(feature = "bytestash")]
-            s.insert(lab_apis::bytestash::META.name);
-            #[cfg(feature = "beads")]
-            s.insert(lab_apis::beads::META.name);
-            #[cfg(feature = "paperless")]
-            s.insert(lab_apis::paperless::META.name);
-            #[cfg(feature = "arcane")]
-            s.insert(lab_apis::arcane::META.name);
-            #[cfg(feature = "unraid")]
-            s.insert(lab_apis::unraid::META.name);
-            #[cfg(feature = "unifi")]
-            s.insert(lab_apis::unifi::META.name);
-            #[cfg(feature = "overseerr")]
-            s.insert(lab_apis::overseerr::META.name);
-            #[cfg(feature = "gotify")]
-            s.insert(lab_apis::gotify::META.name);
-            #[cfg(feature = "openacp")]
-            s.insert(lab_apis::openacp::META.name);
-            #[cfg(feature = "openai")]
-            s.insert(lab_apis::openai::META.name);
-            #[cfg(feature = "notebooklm")]
-            s.insert(lab_apis::notebooklm::META.name);
-            #[cfg(feature = "qdrant")]
-            s.insert(lab_apis::qdrant::META.name);
-            #[cfg(feature = "tei")]
-            s.insert(lab_apis::tei::META.name);
-            #[cfg(feature = "apprise")]
-            s.insert(lab_apis::apprise::META.name);
-            #[cfg(feature = "dozzle")]
-            s.insert(lab_apis::dozzle::META.name);
-            #[cfg(feature = "immich")]
-            s.insert(lab_apis::immich::META.name);
-            #[cfg(feature = "jellyfin")]
-            s.insert(lab_apis::jellyfin::META.name);
-            #[cfg(feature = "navidrome")]
-            s.insert(lab_apis::navidrome::META.name);
-            #[cfg(feature = "scrutiny")]
-            s.insert(lab_apis::scrutiny::META.name);
-            #[cfg(feature = "freshrss")]
-            s.insert(lab_apis::freshrss::META.name);
-            #[cfg(feature = "loggifly")]
-            s.insert(lab_apis::loggifly::META.name);
-            #[cfg(feature = "adguard")]
-            s.insert(lab_apis::adguard::META.name);
-            #[cfg(feature = "glances")]
-            s.insert(lab_apis::glances::META.name);
-            #[cfg(feature = "uptime_kuma")]
-            s.insert(lab_apis::uptime_kuma::META.name);
-            #[cfg(feature = "pihole")]
-            s.insert(lab_apis::pihole::META.name);
-            #[cfg(feature = "neo4j")]
-            s.insert(lab_apis::neo4j::META.name);
             #[cfg(feature = "fs")]
             s.insert("fs");
             s

@@ -18,10 +18,6 @@ use crate::dispatch::stash::store::StashStore;
 
 // ── Walk helpers ──────────────────────────────────────────────────────────────
 
-/// Walk `dir` and collect `(relative_path, absolute_path)` for every regular
-/// file, sorted by relative path for deterministic digest computation.
-///
-/// Rejects symlinks. Returns `symlink_rejected` error on encounter.
 pub(crate) fn walk_files_sorted(dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, ToolError> {
     let mut entries: Vec<(PathBuf, PathBuf)> = Vec::new();
     collect_files(dir, dir, &mut entries)?;
@@ -86,16 +82,6 @@ fn read_file_bytes(path: &Path) -> Result<Vec<u8>, ToolError> {
     })
 }
 
-/// Compute SHA-256 of all files in sorted order.
-///
-/// Each file is hashed as a length-prefixed record to prevent collisions
-/// between workspaces that differ only in how content is split across files:
-///
-///   `len(path_bytes as u64 LE) ++ path_bytes`
-///   `len(file_bytes as u64 LE) ++ file_bytes`
-///
-/// Files must be sorted by relative path before calling this function.
-/// Returns lowercase hex string.
 pub(crate) fn compute_digest(files: &[(PathBuf, PathBuf)]) -> Result<String, ToolError> {
     let mut hasher = Sha256::new();
     for (rel, abs) in files {

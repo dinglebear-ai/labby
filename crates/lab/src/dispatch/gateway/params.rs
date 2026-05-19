@@ -254,7 +254,7 @@ pub struct ToolSearchSetParams {
 /// Parameters for `gateway.discover` — read-only scan of external MCP configs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayDiscoverParams {
-    /// Limit discovery to these client kinds (e.g. ["cursor", "vscode"]).
+    /// Limit discovery to these client kinds (e.g. `["cursor", "vscode"]`).
     /// Empty means scan all supported clients.
     #[serde(default)]
     pub clients: Vec<String>,

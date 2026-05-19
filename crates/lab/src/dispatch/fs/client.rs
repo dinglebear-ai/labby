@@ -20,7 +20,6 @@ use crate::dispatch::error::ToolError;
 #[cfg(feature = "fs")]
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
-/// Structured error when `workspace.root` is invalid.
 pub(crate) fn not_configured_error() -> ToolError {
     ToolError::Sdk {
         sdk_kind: "workspace_not_configured".to_string(),

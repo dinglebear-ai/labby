@@ -12,7 +12,6 @@ use super::types::{
     ServiceExposure, SurfaceAvailability,
 };
 use crate::api::openapi::build_openapi_spec;
-use crate::audit::{AuditReport, CheckResult, ServiceReport, audit_services};
 use crate::catalog::build_catalog;
 use crate::registry::{RegisteredService, build_docs_registry};
 
@@ -32,9 +31,6 @@ pub fn build_docs_projection(repo_root: &Path) -> Result<DocsProjection> {
     let api_routes = build_route_docs(&api_route_services);
     let openapi_json =
         Arc::unwrap_or_clone(build_openapi_spec(services).context("failed to build OpenAPI spec")?);
-    let mut onboarding_audit = build_onboarding_audit(&service_catalog, repo_root);
-    normalize_audit_paths(&mut onboarding_audit, repo_root);
-
     Ok(DocsProjection {
         mcp_help,
         service_catalog,
@@ -42,7 +38,6 @@ pub fn build_docs_projection(repo_root: &Path) -> Result<DocsProjection> {
         action_catalog,
         feature_matrix,
         api_routes,
-        onboarding_audit,
         openapi_json,
     })
 }
@@ -250,118 +245,6 @@ fn build_feature_matrix(repo_root: &Path) -> Result<FeatureMatrix> {
     })
 }
 
-fn normalize_audit_paths(report: &mut AuditReport, repo_root: &Path) {
-    let roots = path_prefixes(repo_root);
-    for service in &mut report.services {
-        for (_, result) in &mut service.checks {
-            match result {
-                CheckResult::Fail(message) | CheckResult::Skip(message) => {
-                    for root in &roots {
-                        *message = message.replace(root, ".");
-                    }
-                    *message = scrub_absolute_paths(message);
-                }
-                CheckResult::Pass => {}
-            }
-        }
-    }
-}
-
-fn build_onboarding_audit(services: &[ServiceDoc], repo_root: &Path) -> AuditReport {
-    let audited = services
-        .iter()
-        .filter(|service| should_run_onboarding_audit(service))
-        .map(|service| service.name.clone())
-        .collect::<Vec<_>>();
-    let raw = audit_services(&audited, repo_root);
-    let mut raw_by_service = raw
-        .services
-        .into_iter()
-        .map(|report| (report.service.clone(), report))
-        .collect::<BTreeMap<_, _>>();
-
-    let services = services
-        .iter()
-        .map(|service| {
-            raw_by_service
-                .remove(&service.name)
-                .unwrap_or_else(|| skipped_onboarding_report(service))
-        })
-        .collect();
-
-    AuditReport { services }
-}
-
-fn should_run_onboarding_audit(service: &ServiceDoc) -> bool {
-    matches!(service.exposure, ServiceExposure::FeatureGated)
-        && service.surfaces.cli
-        && service.surfaces.mcp
-        && service.surfaces.api
-        && !matches!(service.name.as_str(), "deploy")
-}
-
-fn skipped_onboarding_report(service: &ServiceDoc) -> ServiceReport {
-    let reason = match service.exposure {
-        ServiceExposure::SdkOnly => "sdk-only service; no lab binary surface expected",
-        ServiceExposure::RuntimeConditional => {
-            "runtime-conditional service; scaffold audit is not applicable"
-        }
-        ServiceExposure::AlwaysOn => {
-            "always-on synthetic/internal service; scaffold audit is not applicable"
-        }
-        ServiceExposure::FeatureGated => {
-            "non-standard service surface; scaffold audit is not applicable"
-        }
-    };
-    ServiceReport {
-        service: service.name.clone(),
-        checks: vec![(
-            "onboarding.scope".to_string(),
-            CheckResult::Skip(reason.to_string()),
-        )],
-    }
-}
-
-fn path_prefixes(repo_root: &Path) -> Vec<String> {
-    let mut roots = vec![repo_root.display().to_string()];
-    if let Ok(canonical) = repo_root.canonicalize() {
-        let canonical = canonical.display().to_string();
-        if !roots.contains(&canonical) {
-            roots.push(canonical);
-        }
-    }
-    roots
-}
-
-fn scrub_absolute_paths(message: &str) -> String {
-    message
-        .split_whitespace()
-        .map(scrub_path_token)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn scrub_path_token(token: &str) -> String {
-    let trimmed = token.trim_matches(|ch: char| matches!(ch, '"' | '\'' | '`' | ',' | ';' | ':'));
-    if is_absolute_path_like(trimmed) {
-        token.replace(trimmed, "<absolute-path>")
-    } else {
-        token.to_string()
-    }
-}
-
-fn is_absolute_path_like(value: &str) -> bool {
-    value.starts_with("/home/")
-        || value.starts_with("/Users/")
-        || value.starts_with("/tmp/")
-        || value.starts_with("/build/")
-        || value.starts_with("\\Users\\")
-        || (value.len() > 2
-            && value.as_bytes()[1] == b':'
-            && value.as_bytes()[2] == b'\\'
-            && value.as_bytes()[0].is_ascii_alphabetic())
-}
-
 fn read_manifest(path: &Path) -> Result<CargoManifest> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -554,80 +437,8 @@ fn meta_for(name: &str) -> Option<&'static PluginMeta> {
         "stash" => Some(&lab_apis::stash::META),
         "acp" => Some(&lab_apis::acp::META),
         "device_runtime" => Some(&lab_apis::device_runtime::META),
-        #[cfg(feature = "adguard")]
-        "adguard" => Some(&lab_apis::adguard::META),
-        #[cfg(feature = "apprise")]
-        "apprise" => Some(&lab_apis::apprise::META),
-        #[cfg(feature = "arcane")]
-        "arcane" => Some(&lab_apis::arcane::META),
-        #[cfg(feature = "beads")]
-        "beads" => Some(&lab_apis::beads::META),
-        #[cfg(feature = "bytestash")]
-        "bytestash" => Some(&lab_apis::bytestash::META),
         #[cfg(feature = "deploy")]
         "deploy" => Some(&lab_apis::deploy::META),
-        #[cfg(feature = "dozzle")]
-        "dozzle" => Some(&lab_apis::dozzle::META),
-        #[cfg(feature = "freshrss")]
-        "freshrss" => Some(&lab_apis::freshrss::META),
-        #[cfg(feature = "glances")]
-        "glances" => Some(&lab_apis::glances::META),
-        #[cfg(feature = "gotify")]
-        "gotify" => Some(&lab_apis::gotify::META),
-        #[cfg(feature = "immich")]
-        "immich" => Some(&lab_apis::immich::META),
-        #[cfg(feature = "jellyfin")]
-        "jellyfin" => Some(&lab_apis::jellyfin::META),
-        #[cfg(feature = "linkding")]
-        "linkding" => Some(&lab_apis::linkding::META),
-        #[cfg(feature = "loggifly")]
-        "loggifly" => Some(&lab_apis::loggifly::META),
-        #[cfg(feature = "memos")]
-        "memos" => Some(&lab_apis::memos::META),
-        #[cfg(feature = "navidrome")]
-        "navidrome" => Some(&lab_apis::navidrome::META),
-        #[cfg(feature = "neo4j")]
-        "neo4j" => Some(&lab_apis::neo4j::META),
-        #[cfg(feature = "notebooklm")]
-        "notebooklm" => Some(&lab_apis::notebooklm::META),
-        #[cfg(feature = "openacp")]
-        "openacp" => Some(&lab_apis::openacp::META),
-        #[cfg(feature = "openai")]
-        "openai" => Some(&lab_apis::openai::META),
-        #[cfg(feature = "overseerr")]
-        "overseerr" => Some(&lab_apis::overseerr::META),
-        #[cfg(feature = "paperless")]
-        "paperless" => Some(&lab_apis::paperless::META),
-        #[cfg(feature = "pihole")]
-        "pihole" => Some(&lab_apis::pihole::META),
-        #[cfg(feature = "plex")]
-        "plex" => Some(&lab_apis::plex::META),
-        #[cfg(feature = "prowlarr")]
-        "prowlarr" => Some(&lab_apis::prowlarr::META),
-        #[cfg(feature = "qbittorrent")]
-        "qbittorrent" => Some(&lab_apis::qbittorrent::META),
-        #[cfg(feature = "qdrant")]
-        "qdrant" => Some(&lab_apis::qdrant::META),
-        #[cfg(feature = "radarr")]
-        "radarr" => Some(&lab_apis::radarr::META),
-        #[cfg(feature = "sabnzbd")]
-        "sabnzbd" => Some(&lab_apis::sabnzbd::META),
-        #[cfg(feature = "scrutiny")]
-        "scrutiny" => Some(&lab_apis::scrutiny::META),
-        #[cfg(feature = "sonarr")]
-        "sonarr" => Some(&lab_apis::sonarr::META),
-        #[cfg(feature = "tailscale")]
-        "tailscale" => Some(&lab_apis::tailscale::META),
-        #[cfg(feature = "tautulli")]
-        "tautulli" => Some(&lab_apis::tautulli::META),
-        #[cfg(feature = "tei")]
-        "tei" => Some(&lab_apis::tei::META),
-        #[cfg(feature = "unifi")]
-        "unifi" => Some(&lab_apis::unifi::META),
-        #[cfg(feature = "unraid")]
-        "unraid" => Some(&lab_apis::unraid::META),
-        #[cfg(feature = "uptime_kuma")]
-        "uptime_kuma" => Some(&lab_apis::uptime_kuma::META),
         _ => None,
     }
 }

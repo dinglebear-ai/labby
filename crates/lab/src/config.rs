@@ -487,11 +487,13 @@ impl ImportSource {
         }
     }
 
+    #[must_use]
     pub fn with_server_name(mut self, server_name: impl Into<String>) -> Self {
         self.server_name = Some(server_name.into());
         self
     }
 
+    #[must_use]
     pub fn with_transport_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
         self.transport_fingerprint = Some(fingerprint.into());
         self
@@ -1420,9 +1422,6 @@ pub fn toml_candidates() -> Vec<PathBuf> {
     paths
 }
 
-/// Cross-platform home directory.
-///
-/// Checks `HOME` (Unix) then `USERPROFILE` (Windows). No external crate needed.
 pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
