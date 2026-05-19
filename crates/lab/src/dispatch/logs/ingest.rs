@@ -10,7 +10,6 @@ use super::stream::StreamHub;
 use super::types::{LogEvent, LogLevel, RawLogEvent, Subsystem, Surface};
 use crate::dispatch::error::ToolError;
 
-/// Milliseconds since the Unix epoch, clamped to a signed 64-bit range.
 pub(super) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

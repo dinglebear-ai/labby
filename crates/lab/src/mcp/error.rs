@@ -209,10 +209,6 @@ impl From<ToolError> for DispatchError {
     }
 }
 
-/// Map a dynamic kind string to a `&'static str` from the canonical vocabulary.
-///
-/// This is the single MCP-local normalization point for kind tags recovered
-/// from serialized upstream error payloads and `ToolError::kind()` values.
 pub(crate) fn canonical_kind(s: &str) -> &'static str {
     match s {
         "unknown_action" => "unknown_action",

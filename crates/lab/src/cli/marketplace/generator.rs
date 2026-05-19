@@ -299,11 +299,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn service_readme_lists_required_env_vars() {
-        let readme = service_readme("radarr", "lab");
-        assert!(readme.contains("RADARR_URL"));
-        assert!(readme.contains("RADARR_API_KEY"));
+    fn service_readme_renders_known_service() {
+        // `deploy` is one of the surviving operator-tool services post-pivot.
+        // It has no required env vars; the readme should still render with the
+        // standard scaffolding (description, /setup-core hint, env sections).
+        let readme = service_readme("deploy", "lab");
+        assert!(readme.contains("# lab-deploy"));
         assert!(readme.contains("/setup-core"));
+        assert!(readme.contains("Required env vars"));
+        assert!(readme.contains("Optional env vars"));
+    }
+
+    #[test]
+    fn service_readme_returns_empty_for_unknown_service() {
+        // Services that aren't registered (e.g. former homelab integrations
+        // removed in the gateway pivot) return an empty readme rather than
+        // panicking.
+        let readme = service_readme("radarr", "lab");
+        assert!(readme.is_empty());
     }
 
     #[test]

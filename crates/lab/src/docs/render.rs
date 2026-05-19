@@ -161,62 +161,6 @@ pub fn api_routes(routes: &[RouteDoc]) -> String {
     }
     out
 }
-
-pub fn onboarding_audit(report: &crate::audit::AuditReport) -> String {
-    let mut out = header("onboarding-audit", "labby docs generate");
-    out.push_str("Audit findings are reported here, but audit failures do not fail docs freshness by default.\n\n");
-    out.push_str("## Failures\n\n");
-    let mut failures = 0usize;
-    for service in &report.services {
-        for (name, result) in &service.checks {
-            if let crate::audit::CheckResult::Fail(message) = result {
-                failures += 1;
-                writeln!(
-                    out,
-                    "- {} {}: {}",
-                    code(&service.service),
-                    code(name),
-                    cell(message)
-                )
-                .ok();
-            }
-        }
-    }
-    if failures == 0 {
-        out.push_str("None.\n");
-    }
-    out.push_str("\n## Matrix\n\n");
-    out.push_str("| Service | Pass | Fail | Skip |\n");
-    out.push_str("| --- | ---: | ---: | ---: |\n");
-    for service in &report.services {
-        let pass = service
-            .checks
-            .iter()
-            .filter(|(_, result)| matches!(result, crate::audit::CheckResult::Pass))
-            .count();
-        let fail = service
-            .checks
-            .iter()
-            .filter(|(_, result)| matches!(result, crate::audit::CheckResult::Fail(_)))
-            .count();
-        let skip = service
-            .checks
-            .iter()
-            .filter(|(_, result)| matches!(result, crate::audit::CheckResult::Skip(_)))
-            .count();
-        writeln!(
-            out,
-            "| {} | {} | {} | {} |",
-            code(&service.service),
-            pass,
-            fail,
-            skip
-        )
-        .ok();
-    }
-    out
-}
-
 pub fn generated_readme() -> String {
     let mut out = String::from("# Generated Docs\n\n");
     out.push_str("Files in this directory are generated from code-owned metadata.\n\n");
@@ -231,7 +175,6 @@ pub fn generated_readme() -> String {
         "api-routes.md/json",
         "openapi.json",
         "feature-matrix.md/json",
-        "onboarding-audit.md/json",
         "mcp-help.md/json",
         "cli-help.md",
     ] {

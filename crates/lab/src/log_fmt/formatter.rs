@@ -131,8 +131,6 @@ fn style_value(key: &str, value: &str, level: tracing::Level) -> String {
     }
 }
 
-/// Strip Unicode control characters from upstream-controlled field values to prevent ANSI injection.
-/// Tab (0x09) and newline (0x0A) are preserved.
 pub(crate) fn sanitize_field_value(value: &str) -> std::borrow::Cow<'_, str> {
     if value
         .chars()

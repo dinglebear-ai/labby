@@ -26,14 +26,11 @@ tokio::task_local! {
 pub enum McpContext {
     /// Command invoked from the CLI; operator confirmed via `-y`.
     Cli,
-    /// HTTP call carrying a bearer token; treated like CLI for now (V1).
     // Not yet constructed: wired in when the HTTP surface adds bearer-scoped deploy dispatch.
     #[allow(dead_code)]
     HttpWithToken,
     /// MCP call whose client completed an elicitation exchange.
     McpElicited,
-    /// MCP call whose client did not offer elicitation; `confirm: true`
-    /// alone is insufficient.
     // Not yet constructed: wired in when the MCP surface implements elicitation negotiation.
     #[allow(dead_code)]
     HeadlessNoElicitation,

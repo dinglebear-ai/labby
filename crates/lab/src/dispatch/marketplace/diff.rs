@@ -10,7 +10,6 @@ use std::process::Command;
 
 use crate::dispatch::error::ToolError;
 
-/// Stub for `git diff --no-index --unified=3 <base_path> <current_path>`.
 pub(super) async fn git_diff_files(
     _base: &Path,
     _current: &Path,
@@ -22,7 +21,6 @@ pub(super) async fn git_diff_files(
     })
 }
 
-/// Stub for `git merge-file -p --diff3 <ours_tmp> <base_tmp> <theirs_tmp>`.
 pub(super) async fn git_merge_file(
     _base: &Path,
     _ours: &Path,
@@ -31,7 +29,6 @@ pub(super) async fn git_merge_file(
     Err("git merge-file helper is not implemented yet".to_string())
 }
 
-/// Build a git command with local-only hardened environment.
 pub(super) fn git_local_env() -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0")

@@ -91,12 +91,10 @@ pub fn discover_all(home: &Path) -> Vec<DiscoveredServer> {
         .collect()
 }
 
-/// Resolve home directory from env, falling back to dirs crate.
 pub(crate) fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
-/// Return an XDG config dir if set, else ~/.config.
 pub(crate) fn xdg_config_home(home: &Path) -> PathBuf {
     std::env::var("XDG_CONFIG_HOME")
         .ok()
@@ -105,8 +103,6 @@ pub(crate) fn xdg_config_home(home: &Path) -> PathBuf {
         .unwrap_or_else(|| home.join(".config"))
 }
 
-/// Parse `mcpServers`, `servers`, `mcp`, or root-level keys from a JSON value.
-/// Returns a vec of (name, entry_json) pairs.
 pub(crate) fn extract_mcp_entries(
     value: &Value,
     allow_root_fallback: bool,
@@ -131,7 +127,6 @@ pub(crate) fn extract_mcp_entries(
     vec![]
 }
 
-/// Read a JSON file and return parsed Value, distinguishing missing-file from parse errors.
 pub(crate) fn read_json(path: &Path) -> Option<Value> {
     let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -213,8 +208,6 @@ fn strip_jsonc_comments(src: &str) -> String {
     out
 }
 
-/// Convert a JSON server entry to an `UpstreamConfig`.
-/// Returns None if the entry has neither command nor url.
 pub(crate) fn entry_to_upstream(
     name: &str,
     entry: &Value,
@@ -333,7 +326,6 @@ pub(crate) fn env_key_count(entry: &Value) -> usize {
         .map_or(0, serde_json::Map::len)
 }
 
-/// Scan a list of candidate paths and return discovered servers from the first one that parses.
 pub(crate) fn scan_paths(
     paths: &[PathBuf],
     source_client: &str,

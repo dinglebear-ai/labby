@@ -38,9 +38,6 @@ pub trait NodeRpcPort: Send + Sync {
     ) -> impl Future<Output = Result<Value, ToolError>> + Send;
 }
 
-/// Fallback port used by surfaces that can't reach the WS sender registry
-/// (CLI over stdio, MCP without a master transport). Every `send_rpc` call
-/// returns `not_connected` so callers get a clear, stable error kind.
 pub(super) struct NoopNodeRpcPort;
 
 impl NodeRpcPort for NoopNodeRpcPort {
@@ -64,7 +61,6 @@ static TEST_PLUGINS_ROOT_OVERRIDE: std::sync::Mutex<Option<PathBuf>> = std::sync
 #[cfg(test)]
 static TEST_PLUGINS_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Alias used by `backends/claude.rs`.
 pub(super) fn claude_plugins_root() -> Result<PathBuf, ToolError> {
     plugins_root()
 }
@@ -477,22 +473,14 @@ fn read_text_if_present(path: &Path) -> Option<String> {
 
 pub(crate) use super::dispatch::walk_artifacts;
 
-/// Cross-platform home directory (checks `HOME` then `USERPROFILE`).
-///
-/// Returns `ToolError::Sdk { sdk_kind: "internal_error", .. }` when neither env
-/// var is set. Do NOT fall back to `/root` — a silent root fallback is the
-/// Docker footgun this helper was created to avoid. Callers that legitimately
-/// need a home-less path should pass one in explicitly.
 pub(crate) fn home_dir() -> Result<PathBuf, ToolError> {
     crate::config::home_dir().ok_or_else(|| io_internal("HOME env var not set"))
 }
 
-/// Path to the Codex TOML config file (`~/.codex/config.toml`).
 pub(crate) fn codex_config_path() -> Result<PathBuf, ToolError> {
     Ok(home_dir()?.join(".codex").join("config.toml"))
 }
 
-/// Root of the Codex cache directory (`~/.codex/cache/`).
 pub(crate) fn codex_cache_root() -> Result<PathBuf, ToolError> {
     Ok(home_dir()?.join(".codex").join("cache"))
 }

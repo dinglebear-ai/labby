@@ -62,8 +62,6 @@ const DEV_MARKETPLACE_READ_ACTIONS: &[&str] = &[
     "mcp.meta.get",
 ];
 
-/// Constant-time byte comparison using `subtle::ConstantTimeEq` to prevent
-/// timing-based token prefix leakage.
 pub(crate) fn tokens_equal(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
 }
@@ -1082,75 +1080,7 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
         }
     }
 
-    macro_rules! mount_if_enabled {
-        ($v1:ident, $state:ident, $feat:literal, $name:literal, $mod:ident) => {
-            #[cfg(feature = $feat)]
-            if $state.registry.services().iter().any(|s| s.name == $name) {
-                $v1 = $v1.nest(concat!("/", $name), services::$mod::routes($state.clone()));
-            }
-        };
-        ($v1:ident, $state:ident, $feat:literal, $registry_name:literal, $route_name:literal, $mod:ident) => {
-            #[cfg(feature = $feat)]
-            if $state
-                .registry
-                .services()
-                .iter()
-                .any(|s| s.name == $registry_name)
-            {
-                $v1 = $v1.nest(
-                    concat!("/", $route_name),
-                    services::$mod::routes($state.clone()),
-                );
-            }
-        };
-    }
-
-    if is_master {
-        mount_if_enabled!(v1, state, "radarr", "radarr", radarr);
-        mount_if_enabled!(v1, state, "sonarr", "sonarr", sonarr);
-        mount_if_enabled!(v1, state, "prowlarr", "prowlarr", prowlarr);
-        mount_if_enabled!(v1, state, "plex", "plex", plex);
-        mount_if_enabled!(v1, state, "tautulli", "tautulli", tautulli);
-        mount_if_enabled!(v1, state, "sabnzbd", "sabnzbd", sabnzbd);
-        mount_if_enabled!(v1, state, "qbittorrent", "qbittorrent", qbittorrent);
-        mount_if_enabled!(v1, state, "tailscale", "tailscale", tailscale);
-        mount_if_enabled!(v1, state, "linkding", "linkding", linkding);
-        mount_if_enabled!(v1, state, "memos", "memos", memos);
-        mount_if_enabled!(v1, state, "beads", "beads", beads);
-        mount_if_enabled!(v1, state, "bytestash", "bytestash", bytestash);
-        mount_if_enabled!(v1, state, "paperless", "paperless", paperless);
-        mount_if_enabled!(v1, state, "arcane", "arcane", arcane);
-        mount_if_enabled!(v1, state, "unraid", "unraid", unraid);
-        mount_if_enabled!(v1, state, "unifi", "unifi", unifi);
-        mount_if_enabled!(v1, state, "overseerr", "overseerr", overseerr);
-        mount_if_enabled!(v1, state, "gotify", "gotify", gotify);
-        mount_if_enabled!(v1, state, "openacp", "openacp", openacp);
-        mount_if_enabled!(v1, state, "openai", "openai", openai);
-        mount_if_enabled!(v1, state, "notebooklm", "notebooklm", notebooklm);
-        mount_if_enabled!(v1, state, "qdrant", "qdrant", qdrant);
-        mount_if_enabled!(v1, state, "tei", "tei", tei);
-        mount_if_enabled!(v1, state, "apprise", "apprise", apprise);
-        mount_if_enabled!(v1, state, "dozzle", "dozzle", dozzle);
-        mount_if_enabled!(v1, state, "immich", "immich", immich);
-        mount_if_enabled!(v1, state, "jellyfin", "jellyfin", jellyfin);
-        mount_if_enabled!(v1, state, "navidrome", "navidrome", navidrome);
-        mount_if_enabled!(v1, state, "scrutiny", "scrutiny", scrutiny);
-        mount_if_enabled!(v1, state, "freshrss", "freshrss", freshrss);
-        mount_if_enabled!(v1, state, "loggifly", "loggifly", loggifly);
-        mount_if_enabled!(v1, state, "adguard", "adguard", adguard);
-        mount_if_enabled!(v1, state, "glances", "glances", glances);
-        mount_if_enabled!(
-            v1,
-            state,
-            "uptime_kuma",
-            "uptime-kuma",
-            "uptime-kuma",
-            uptime_kuma
-        );
-        mount_if_enabled!(v1, state, "pihole", "pihole", pihole);
-        mount_if_enabled!(v1, state, "neo4j", "neo4j", neo4j);
-        // [lab-scaffold: api-routes]
-    }
+    let _ = is_master;
 
     v1
 }
@@ -2024,76 +1954,6 @@ mod tests {
     /// This test uses an empty registry to simulate `labby serve --services <other>`
     /// excluding `radarr`, then verifies that `POST /v1/radarr` returns 404 rather
     /// than reaching the handler.
-    #[cfg(feature = "radarr")]
-    #[tokio::test]
-    async fn service_filtered_from_registry_has_no_http_route() {
-        use crate::registry::ToolRegistry;
-
-        // An empty registry = no services enabled at runtime.
-        let registry = ToolRegistry::new();
-        let state = AppState::from_registry(registry);
-        let app = build_router_with_bearer(state, None, None);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/radarr")
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"action":"help"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::NOT_FOUND,
-            "radarr routes must not be mounted when radarr is absent from the runtime registry"
-        );
-    }
-
-    #[cfg(feature = "uptime_kuma")]
-    #[tokio::test]
-    async fn uptime_kuma_route_uses_registry_service_name() {
-        let mut state = AppState::new();
-        state.clients = Arc::new(crate::dispatch::clients::ServiceClients {
-            uptime_kuma: Some(Arc::new(
-                lab_apis::uptime_kuma::UptimeKumaClient::new(
-                    "http://127.0.0.1:3001",
-                    lab_apis::core::Auth::None,
-                )
-                .unwrap(),
-            )),
-            ..Default::default()
-        });
-        let app = build_router_with_bearer(state, None, None);
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/uptime-kuma")
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"action":"contract.status","params":{}}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/uptime_kuma")
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"action":"contract.status","params":{}}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
 
     #[tokio::test]
     async fn bearer_mode_still_accepts_lab_mcp_http_token() {

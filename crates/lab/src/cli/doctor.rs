@@ -363,13 +363,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "radarr")]
-    fn radarr_in_checks_when_feature_enabled() {
-        let checks = service_env_checks();
-        assert!(checks.iter().any(|(name, _)| *name == "radarr"));
-    }
-
-    #[test]
     fn auth_checks_returns_findings() {
         let findings = crate::dispatch::doctor::run_auth_checks();
         assert!(!findings.is_empty());

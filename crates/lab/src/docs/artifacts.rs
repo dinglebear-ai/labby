@@ -121,14 +121,6 @@ fn build_artifacts(projection: &DocsProjection) -> Result<Vec<Artifact>> {
             "docs/generated/feature-matrix.json",
             render::json(&projection.feature_matrix)?,
         ),
-        artifact(
-            "docs/generated/onboarding-audit.md",
-            render::onboarding_audit(&projection.onboarding_audit),
-        ),
-        artifact(
-            "docs/generated/onboarding-audit.json",
-            render::json(&projection.onboarding_audit)?,
-        ),
     ])
 }
 
