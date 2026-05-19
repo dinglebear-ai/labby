@@ -5,7 +5,6 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
-/// Outcome of an elicitation confirmation request.
 pub(crate) enum ElicitResult {
     /// User confirmed the destructive action.
     Confirmed,
@@ -19,10 +18,6 @@ pub(crate) enum ElicitResult {
     Failed,
 }
 
-/// Ask the MCP client to confirm a destructive action via elicitation.
-///
-/// Sends a form with a single required `confirm: boolean` field.
-/// Returns `NotSupported` if the client's capabilities do not include elicitation.
 pub(crate) async fn elicit_confirm(
     context: &RequestContext<RoleServer>,
     service: &str,

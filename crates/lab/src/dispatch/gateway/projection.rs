@@ -11,7 +11,14 @@ use crate::dispatch::gateway::view_models::{
 use crate::dispatch::gateway::virtual_servers::{VirtualServerRecord, VirtualServerSource};
 use crate::dispatch::redact::{redact_stdio_args, redact_stdio_value, redact_url};
 use crate::dispatch::upstream::pool::{UpstreamCachedSummary, UpstreamPool};
-use crate::tui::events::ServiceHealth;
+/// Per-service health probe result. Carried through gateway projection so the
+/// `ServerView` can surface upstream-service reachability without forcing the
+/// caller to thread separate fields.
+#[derive(Debug, Clone)]
+pub struct ServiceHealth {
+    pub reachable: bool,
+    pub auth_ok: bool,
+}
 
 const WARNING_UNKNOWN_SERVICE: &str = "unknown_service";
 

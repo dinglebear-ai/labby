@@ -44,11 +44,6 @@ pub fn routes(_state: AppState) -> Router<AppState> {
         .route("/cherry-pick/progress", get(cherry_pick_progress))
 }
 
-/// Concrete `NodeRpcPort` impl that sends JSON-RPC requests over the node
-/// WebSocket and awaits the response via the master-side pending map.
-///
-/// Built here (not in `dispatch/`) so the dispatch layer stays free of any
-/// master-transport concerns. The dispatch layer only sees the trait.
 pub(crate) struct WsNodeRpcPort;
 
 impl NodeRpcPort for WsNodeRpcPort {

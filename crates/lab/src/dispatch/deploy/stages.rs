@@ -277,16 +277,10 @@ pub async fn verify<I: HostIo + 'static>(
 
 // ── Internal helpers ────────────────────────────────────────────────────────
 
-/// Strip a Rust target triple to its architecture field (first `-`-delimited token).
 pub(super) fn triple_to_arch(triple: &str) -> String {
     triple.split('-').next().unwrap_or(triple).to_string()
 }
 
-/// Normalize common architecture aliases to canonical Rust triple arch names.
-///
-/// This handles cases like Docker/OCI image platforms (`amd64`, `arm64`) and
-/// Linux `uname -m` names (`armv7l`, `armhf`) which differ from Rust triple
-/// arch names (`x86_64`, `aarch64`, `armv7`).
 pub(super) fn normalize_arch(arch: &str) -> &str {
     match arch {
         "amd64" | "x64" => "x86_64",
@@ -298,11 +292,6 @@ pub(super) fn normalize_arch(arch: &str) -> &str {
     }
 }
 
-/// Compare `uname -m` output to the architecture from a Rust target triple.
-///
-/// Normalizes known aliases (e.g. `amd64` → `x86_64`, `arm64` → `aarch64`)
-/// before comparing so that cross-platform CI and OCI-derived arch strings
-/// do not cause spurious mismatches.
 pub(super) fn arch_matches(local: &str, remote: &str) -> bool {
     normalize_arch(local) == normalize_arch(remote)
 }

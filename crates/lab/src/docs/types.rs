@@ -8,7 +8,6 @@ pub struct DocsProjection {
     pub action_catalog: Vec<ActionDoc>,
     pub feature_matrix: FeatureMatrix,
     pub api_routes: Vec<RouteDoc>,
-    pub onboarding_audit: crate::audit::AuditReport,
     pub openapi_json: String,
 }
 

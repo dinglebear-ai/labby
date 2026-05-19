@@ -29,8 +29,6 @@ russh-config = { workspace = true, optional = true }
 quick-xml = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 tempfile.workspace = true
-neo4rs = { version = "0.9.0-rc.9", features = ["json"], optional = true }
-rust_socketio = { version = "0.6.0", features = ["async"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = [
@@ -43,56 +41,14 @@ insta.workspace = true
 
 [features]
 acp_registry = []
-adguard = []
 all = [
-  "radarr",
-  "sonarr",
-  "prowlarr",
-  "overseerr",
-  "plex",
-  "tautulli",
-  "sabnzbd",
-  "qbittorrent",
-  "tailscale",
-  "linkding",
-  "memos",
-  "beads",
-  "bytestash",
-  "paperless",
-  "arcane",
-  "unraid",
-  "unifi",
-  "gotify",
-  "jellyfin",
-  "adguard",
-  "glances",
-  "pihole",
-  "neo4j",
-  "uptime_kuma",
-  "immich",
-  "loggifly",
-  "navidrome",
-  "scrutiny",
-  "freshrss",
-  "openacp",
-  "openai",
-  "notebooklm",
-  "qdrant",
-  "tei",
-  "apprise",
   "deploy",
   "mcpregistry",
   "acp_registry",
-  "dozzle",
   "extract",
 ]
-apprise = []
-arcane = []
-beads = []
-bytestash = []
 default = []
 deploy = []
-dozzle = []
 extract = [
   "dep:russh",
   "dep:russh-sftp",
@@ -100,54 +56,7 @@ extract = [
   "dep:quick-xml",
   "dep:rusqlite",
 ]
-freshrss = []
-glances = []
-gotify = []
-immich = []
-jellyfin = []
-linkding = []
-loggifly = []
 mcpregistry = []
-memos = []
-navidrome = []
-neo4j = ["dep:neo4rs"]
-notebooklm = []
-openacp = []
-openai = []
-overseerr = []
-paperless = []
-pihole = []
-plex = []
-prowlarr = ["servarr"]
-qbittorrent = []
-qdrant = []
-radarr = ["servarr"]
-sabnzbd = []
-scrutiny = []
-servarr = []
-sonarr = ["servarr"]
-tailscale = []
-tautulli = []
-tei = []
 test-utils = []
-unifi = []
-unraid = []
-uptime_kuma = ["dep:rust_socketio"]
-[[test]]
-name = "plex_client"
-required-features = ["plex"]
-
-[[test]]
-name = "gotify_client"
-required-features = ["gotify"]
-
-[[test]]
-name = "openacp_client"
-required-features = ["openacp"]
-
-[[test]]
-name = "jellyfin_client"
-required-features = ["jellyfin"]
-
 [lints]
 workspace = true

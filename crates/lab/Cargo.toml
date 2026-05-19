@@ -58,8 +58,6 @@ dotenvy.workspace = true
 toml.workspace = true
 dirs = "5"
 
-ratatui.workspace = true
-crossterm.workspace = true
 
 base64.workspace = true
 fd-lock = "4"
@@ -123,99 +121,18 @@ path = "src/lib.rs"
 [features]
 acp_registry = ["lab-apis/acp_registry"]
 node-runtime = []
-adguard = ["lab-apis/adguard"]
-all = ["lab-apis/all", "controller", "services-all", "lab-admin"]
-controller = [
-  "gateway",
-  "marketplace",
-  "deploy",
-  "extract",
-  "fs",
-  "acp_registry",
-  "dep:clap_complete",
-]
+all = ["lab-apis/all", "lab-admin"]
 gateway = []
 marketplace = ["mcpregistry"]
 services-all = [
-  "radarr",
-  "sonarr",
-  "prowlarr",
-  "overseerr",
-  "plex",
-  "tautulli",
-  "sabnzbd",
-  "qbittorrent",
-  "tailscale",
-  "unraid",
-  "unifi",
-  "arcane",
-  "linkding",
-  "memos",
-  "beads",
-  "bytestash",
-  "paperless",
-  "gotify",
-  "jellyfin",
-  "adguard",
-  "glances",
-  "pihole",
-  "neo4j",
-  "uptime_kuma",
-  "immich",
-  "loggifly",
-  "navidrome",
-  "scrutiny",
-  "freshrss",
-  "openacp",
-  "apprise",
-  "openai",
-  "notebooklm",
-  "qdrant",
-  "tei",
-  "dozzle",
 ]
-apprise = ["lab-apis/apprise"]
-arcane = ["lab-apis/arcane"]
-beads = ["lab-apis/beads"]
-bytestash = ["lab-apis/bytestash"]
 default = ["all"]
 deploy = ["lab-apis/deploy", "dep:regex"]
-dozzle = ["lab-apis/dozzle"]
 extract = ["lab-apis/extract"]
-freshrss = ["lab-apis/freshrss"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
-glances = ["lab-apis/glances"]
-gotify = ["lab-apis/gotify"]
-immich = ["lab-apis/immich"]
-jellyfin = ["lab-apis/jellyfin"]
 lab-admin = []
-linkding = ["lab-apis/linkding"]
-loggifly = ["lab-apis/loggifly"]
 mcpregistry = ["lab-apis/mcpregistry"]
-memos = ["lab-apis/memos"]
-navidrome = ["lab-apis/navidrome"]
-neo4j = ["lab-apis/neo4j"]
-notebooklm = ["lab-apis/notebooklm"]
-openacp = ["lab-apis/openacp"]
-openai = ["lab-apis/openai"]
-overseerr = ["lab-apis/overseerr"]
-paperless = ["lab-apis/paperless"]
-pihole = ["lab-apis/pihole"]
-plex = ["lab-apis/plex"]
-prowlarr = ["lab-apis/prowlarr"]
-qbittorrent = ["lab-apis/qbittorrent"]
-qdrant = ["lab-apis/qdrant"]
-radarr = ["lab-apis/radarr"]
-sabnzbd = ["lab-apis/sabnzbd"]
-scrutiny = ["lab-apis/scrutiny"]
-sonarr = ["lab-apis/sonarr"]
 systemd = ["dep:sd-notify"]
-tailscale = ["lab-apis/tailscale"]
-tautulli = ["lab-apis/tautulli"]
-tei = ["lab-apis/tei"]
 test-utils = []
-unifi = ["lab-apis/unifi"]
-unraid = ["lab-apis/unraid"]
-uptime_kuma = ["lab-apis/uptime_kuma"]
 [lints]
 workspace = true

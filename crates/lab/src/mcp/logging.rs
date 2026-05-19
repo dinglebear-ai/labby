@@ -7,7 +7,6 @@ use serde_json::json;
 
 use super::server::LabMcpServer;
 
-/// Outcome of a dispatch operation for RMCP logging notifications.
 pub(crate) enum DispatchLogOutcome {
     Success,
     Failure {
@@ -16,8 +15,6 @@ pub(crate) enum DispatchLogOutcome {
     },
 }
 
-/// Rank of an RMCP `LoggingLevel` for severity comparison, and the encoding
-/// used when the level is stored in the shared `AtomicU8`.
 pub(crate) fn logging_level_rank(level: LoggingLevel) -> u8 {
     match level {
         LoggingLevel::Debug => 0,
