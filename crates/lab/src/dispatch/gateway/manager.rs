@@ -1895,11 +1895,12 @@ impl GatewayManager {
             .await;
 
         let requested = top_k.max(1).min(50);
+        let score_floor_fraction = self.config.read().await.tool_search.score_floor_fraction;
         let mut hits: Vec<SearchHit> = self
             .tool_indexes
             .iter()
             .filter_map(|entry| entry.value().index.load_full())
-            .flat_map(|index| index.search(trimmed, requested))
+            .flat_map(|index| index.search(trimmed, requested, score_floor_fraction))
             .collect();
 
         hits.sort_by(|a, b| {
@@ -2662,6 +2663,7 @@ mod tests {
             expose_prompts: None,
             oauth: None,
             imported_from: None,
+            priority: 1.0,
             tool_search: ToolSearchConfig::default(),
         }
     }
@@ -2682,6 +2684,7 @@ mod tests {
             expose_prompts: None,
             oauth: None,
             imported_from: None,
+            priority: 1.0,
             tool_search: ToolSearchConfig::default(),
         }
     }
@@ -3007,6 +3010,7 @@ mod tests {
             expose_prompts: None,
             oauth: None,
             imported_from: None,
+            priority: 1.0,
             tool_search: ToolSearchConfig::default(),
         };
 
@@ -3061,6 +3065,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
+                priority: 1.0,
                 tool_search: ToolSearchConfig::default(),
             }])
             .await;
@@ -3133,6 +3138,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
+                priority: 1.0,
                 tool_search: ToolSearchConfig::default(),
             }])
             .await;
@@ -3171,6 +3177,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
+                priority: 1.0,
                 tool_search: ToolSearchConfig::default(),
             }])
             .await;
@@ -3205,6 +3212,7 @@ mod tests {
             expose_prompts: None,
             oauth: None,
             imported_from: None,
+            priority: 1.0,
             tool_search: ToolSearchConfig::default(),
         };
 
@@ -3233,6 +3241,7 @@ mod tests {
             expose_prompts: None,
             oauth: None,
             imported_from: None,
+            priority: 1.0,
             tool_search: ToolSearchConfig::default(),
         };
 
@@ -3265,6 +3274,7 @@ mod tests {
             expose_prompts: None,
             oauth: None,
             imported_from: None,
+            priority: 1.0,
             tool_search: ToolSearchConfig::default(),
         };
 
@@ -3570,6 +3580,7 @@ mod tests {
                     expose_prompts: None,
                     oauth: None,
                     imported_from: None,
+                    priority: 1.0,
                     tool_search: ToolSearchConfig::default(),
                 },
                 Some("ghp_secret".to_string()),
@@ -4062,6 +4073,7 @@ mod tests {
                     expose_prompts: None,
                     oauth: None,
                     imported_from: None,
+                    priority: 1.0,
                     tool_search: ToolSearchConfig::default(),
                 }],
                 ..LabConfig::default()
@@ -4100,6 +4112,7 @@ mod tests {
                         scopes: None,
                     }),
                     imported_from: None,
+                    priority: 1.0,
                     tool_search: ToolSearchConfig::default(),
                 }],
                 ..LabConfig::default()
@@ -4250,6 +4263,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
+                priority: 1.0,
                 tool_search: ToolSearchConfig::default(),
             },
         )
@@ -4314,6 +4328,7 @@ mod tests {
                 expose_prompts: None,
                 oauth: None,
                 imported_from: None,
+                priority: 1.0,
                 tool_search: ToolSearchConfig::default(),
             },
         )
@@ -4340,6 +4355,7 @@ mod tests {
             expose_prompts: None,
             oauth: None,
             imported_from: None,
+            priority: 1.0,
             tool_search: ToolSearchConfig::default(),
         };
         let upstream_name: Arc<str> = Arc::from("partial-upstream");
