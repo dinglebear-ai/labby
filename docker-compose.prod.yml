@@ -126,13 +126,13 @@ volumes:
     driver: local
 
 networks:
-  # External so multiple compose stacks (lab + SWAG + sibling services) can share
-  # the same bridge. Create it once per host before `docker compose up`:
+  # External so this stack can share a bridge with other compose stacks on the
+  # same host. Create the network once before `docker compose up`:
   #
   #     docker network create ${DOCKER_NETWORK:-lab}
   #
-  # Override the name via the DOCKER_NETWORK env var when joining an existing
-  # shared bridge (e.g. a SWAG reverse-proxy network).
+  # Override the name via the DOCKER_NETWORK env var to attach to an existing
+  # bridge instead.
   lab:
     name: ${DOCKER_NETWORK:-lab}
     external: true
