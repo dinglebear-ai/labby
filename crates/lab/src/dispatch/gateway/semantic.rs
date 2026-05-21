@@ -59,15 +59,6 @@ pub fn term_to_index(term: &str) -> u32 {
     hash % SPARSE_DIM
 }
 
-/// Compute a BM42-style sparse vector for `text`.
-///
-/// TF weight = `ln(1 + raw_count)`. Qdrant applies IDF server-side.
-/// Terms shorter than 3 bytes or in STOP_WORDS are excluded.
-///
-/// When `text` yields no indexable terms (non-ASCII / all-stopword / all-short)
-/// returns an empty `SparseVector` and emits a `tracing::warn!` with a coarse
-/// character profile so operators can see when hybrid silently degrades to
-/// dense-only.
 /// Yield the lowercase, alphanumeric, non-stopword, length≥3 terms from `text`.
 ///
 /// Single source of truth for tokenization across sparse-vector indexing,
@@ -85,6 +76,15 @@ fn iter_terms(text: &str) -> impl Iterator<Item = String> + '_ {
         })
 }
 
+/// Compute a BM42-style sparse vector for `text`.
+///
+/// TF weight = `ln(1 + raw_count)`. Qdrant applies IDF server-side.
+/// Terms shorter than 3 bytes or in STOP_WORDS are excluded.
+///
+/// When `text` yields no indexable terms (non-ASCII / all-stopword / all-short)
+/// returns an empty `SparseVector` and emits a `tracing::warn!` with a coarse
+/// character profile so operators can see when hybrid silently degrades to
+/// dense-only.
 pub fn compute_sparse_vector(text: &str) -> SparseVector {
     let mut bucket_tf: HashMap<u32, u32> = HashMap::with_capacity(64);
     let mut scanned: usize = 0;
