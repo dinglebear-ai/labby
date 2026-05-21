@@ -831,7 +831,23 @@ impl ServerHandler for LabMcpServer {
 
         match json {
             Ok(value) => {
-                let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                let text = match serde_json::to_string_pretty(&value) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!(
+                            surface = "mcp",
+                            service = "labby",
+                            action = "read_resource",
+                            subject,
+                            error = %e,
+                            "failed to serialize resource"
+                        );
+                        return Err(ErrorData::internal_error(
+                            format!("failed to serialize resource: {e}"),
+                            None,
+                        ));
+                    }
+                };
                 let elapsed_ms = start.elapsed().as_millis();
                 tracing::info!(
                     surface = "mcp",
