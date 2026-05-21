@@ -41,8 +41,34 @@ pub enum GatewayCommand {
     Discover(GatewayDiscoverArgs),
     /// Import discovered MCP servers into the gateway (disabled by default)
     Import(GatewayImportArgs),
+    /// Manage pending discovered servers waiting for approval
+    Pending(GatewayPendingArgs),
     /// Show resolved public URL configuration (app and MCP gateway)
     PublicUrls,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayPendingArgs {
+    #[command(subcommand)]
+    pub command: GatewayPendingCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GatewayPendingCommand {
+    /// List discovered servers waiting for approval
+    List,
+    /// Approve a pending server and add it to the gateway (disabled by default)
+    Approve(GatewayPendingNameArgs),
+    /// Reject a pending server and tombstone it so it never re-appears
+    Reject(GatewayPendingNameArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayPendingNameArgs {
+    pub name: String,
+    /// Skip the destructive-action confirmation prompt.
+    #[arg(short = 'y', long, alias = "no-confirm")]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -611,6 +637,25 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
                         }),
                     )
                 }
+                GatewayCommand::Pending(args) => match args.command {
+                    GatewayPendingCommand::List => {
+                        ("gateway.import_pending.list".to_string(), json!({}))
+                    }
+                    GatewayPendingCommand::Approve(name_args) => {
+                        confirmed = name_args.yes;
+                        (
+                            "gateway.import_pending.approve".to_string(),
+                            json!({ "name": name_args.name }),
+                        )
+                    }
+                    GatewayPendingCommand::Reject(name_args) => {
+                        confirmed = name_args.yes;
+                        (
+                            "gateway.import_pending.reject".to_string(),
+                            json!({ "name": name_args.name }),
+                        )
+                    }
+                },
                 GatewayCommand::PublicUrls => ("gateway.public_urls.get".to_string(), json!({})),
                 GatewayCommand::Mcp(_) => unreachable!("handled above"),
             };

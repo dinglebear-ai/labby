@@ -43,8 +43,8 @@ use super::service_catalog::service_meta;
 use super::types::{
     CatalogChangeNotifier, GatewayCatalogDiff, GatewayRuntimeView, GatewayToolExposureRowView,
     GatewayView, ImportErrorView, ImportResultView, ImportSkipReason, ImportSkipView,
-    ImportTombstoneView, McpClientConfigView, McpClientTransportType, ServiceConfigView,
-    VirtualServerMcpPolicyView,
+    ImportTombstoneView, McpClientConfigView, McpClientTransportType, PendingDiscoveryOutcome,
+    PendingImportView, ServiceConfigView, VirtualServerMcpPolicyView,
 };
 use super::view_models::ServerView;
 
@@ -854,6 +854,170 @@ impl GatewayManager {
         );
 
         Ok(result)
+    }
+
+    /// Scan external MCP configs and add newly discovered servers to the
+    /// `upstream_pending` queue without applying them.
+    pub async fn discover_into_pending(&self) -> Result<PendingDiscoveryOutcome, ToolError> {
+        let Some(home) = super::discovery::home_dir() else {
+            return Ok(PendingDiscoveryOutcome::default());
+        };
+
+        let discovered =
+            tokio::task::spawn_blocking(move || super::discovery::discover_all(&home))
+                .await
+                .map_err(|e| ToolError::internal_message(format!("discovery task panicked: {e}")))?;
+
+        let _mutation_guard = self.config_mutation.lock().await;
+        let mut cfg = self.config.read().await.clone();
+
+        let mut queued = 0usize;
+        let mut skipped = 0usize;
+
+        for server in discovered {
+            // Skip tombstoned.
+            if super::manager::discovered_is_tombstoned(&cfg, &server) {
+                skipped += 1;
+                continue;
+            }
+            // Skip already in upstreams.
+            if cfg.upstream.iter().any(|u| u.name == server.name) {
+                skipped += 1;
+                continue;
+            }
+            // Skip already pending.
+            if cfg.upstream_pending.iter().any(|u| u.name == server.name) {
+                skipped += 1;
+                continue;
+            }
+            cfg.upstream_pending.push(server.spec);
+            queued += 1;
+        }
+
+        if queued > 0 {
+            let path = self.path.clone();
+        let cfg_clone = cfg.clone();
+        tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
+            .await
+            .map_err(|e| ToolError::internal_message(format!("config write task failed: {e}")))??;
+            *self.config.write().await = cfg;
+        }
+
+        Ok(PendingDiscoveryOutcome { queued, skipped })
+    }
+
+    /// List the `upstream_pending` queue.
+    pub async fn list_pending_imports(&self) -> Vec<PendingImportView> {
+        let cfg = self.config.read().await;
+        cfg.upstream_pending
+            .iter()
+            .map(|u| PendingImportView {
+                name: u.name.clone(),
+                url: u.url.clone(),
+                command: u.command.clone(),
+                source_client: u
+                    .imported_from
+                    .as_ref()
+                    .map(|s| s.client.clone())
+                    .unwrap_or_default(),
+                source_path: u
+                    .imported_from
+                    .as_ref()
+                    .map(|s| s.path.clone())
+                    .unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    /// Approve a pending import by name: move from `upstream_pending` into `upstream`
+    /// with `enabled = false` (same as auto-import — operator must explicitly enable).
+    pub async fn approve_pending_import(&self, name: &str) -> Result<PendingImportView, ToolError> {
+        let _mutation_guard = self.config_mutation.lock().await;
+        let mut cfg = self.config.read().await.clone();
+
+        let idx = cfg
+            .upstream_pending
+            .iter()
+            .position(|u| u.name == name)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".into(),
+                message: format!("pending import `{name}` not found"),
+            })?;
+
+        let mut spec = cfg.upstream_pending.remove(idx);
+        let view = PendingImportView {
+            name: spec.name.clone(),
+            url: spec.url.clone(),
+            command: spec.command.clone(),
+            source_client: spec
+                .imported_from
+                .as_ref()
+                .map(|s| s.client.clone())
+                .unwrap_or_default(),
+            source_path: spec
+                .imported_from
+                .as_ref()
+                .map(|s| s.path.clone())
+                .unwrap_or_default(),
+        };
+
+        spec.enabled = false;
+        cfg.upstream.push(spec);
+        let path = self.path.clone();
+        let cfg_clone = cfg.clone();
+        tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
+            .await
+            .map_err(|e| ToolError::internal_message(format!("config write task failed: {e}")))??;
+        *self.config.write().await = cfg;
+
+        Ok(view)
+    }
+
+    /// Reject a pending import by name: tombstone it so it never re-appears.
+    pub async fn reject_pending_import(&self, name: &str) -> Result<PendingImportView, ToolError> {
+        let _mutation_guard = self.config_mutation.lock().await;
+        let mut cfg = self.config.read().await.clone();
+
+        let idx = cfg
+            .upstream_pending
+            .iter()
+            .position(|u| u.name == name)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".into(),
+                message: format!("pending import `{name}` not found"),
+            })?;
+
+        let spec = cfg.upstream_pending.remove(idx);
+        let view = PendingImportView {
+            name: spec.name.clone(),
+            url: spec.url.clone(),
+            command: spec.command.clone(),
+            source_client: spec
+                .imported_from
+                .as_ref()
+                .map(|s| s.client.clone())
+                .unwrap_or_default(),
+            source_path: spec
+                .imported_from
+                .as_ref()
+                .map(|s| s.path.clone())
+                .unwrap_or_default(),
+        };
+
+        // Create a tombstone so this server is never re-discovered.
+        if let Some(source) = spec.imported_from {
+            cfg.upstream_import_tombstones
+                .push(crate::config::UpstreamImportTombstone::now(spec.name, source));
+        }
+
+        let path = self.path.clone();
+        let cfg_clone = cfg.clone();
+        tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
+            .await
+            .map_err(|e| ToolError::internal_message(format!("config write task failed: {e}")))??;
+        *self.config.write().await = cfg;
+
+        Ok(view)
     }
 
     pub async fn list_import_tombstones(&self) -> Vec<ImportTombstoneView> {

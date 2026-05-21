@@ -135,6 +135,23 @@ pub struct ImportResultView {
     pub errors: Vec<ImportErrorView>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PendingDiscoveryOutcome {
+    pub queued: usize,
+    pub skipped: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingImportView {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub source_client: String,
+    pub source_path: String,
+}
+
 fn default_tool_search_top_k_default() -> usize {
     crate::config::ToolSearchConfig::default().top_k_default
 }
