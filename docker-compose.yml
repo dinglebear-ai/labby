@@ -30,6 +30,6 @@ volumes:
     driver: local
 
 networks:
-  jakenet:
-    name: jakenet
+  lab:
+    name: ${DOCKER_NETWORK:-lab}
     external: true

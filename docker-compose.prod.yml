@@ -114,7 +114,7 @@ services:
     # Even if the spawn-guard logic in the binary fails, the container's pid
     # namespace + these limits prevent a fork-bomb from reaching the host.
     networks:
-      - jakenet
+      - lab
     deploy:
       resources:
         limits:
@@ -126,6 +126,6 @@ volumes:
     driver: local
 
 networks:
-  jakenet:
-    name: jakenet
+  lab:
+    name: ${DOCKER_NETWORK:-lab}
     external: true
