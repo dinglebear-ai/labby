@@ -66,17 +66,26 @@ const PLUGIN_OPTION_MAP: &[(&str, &str)] = &[
     ("CLAUDE_PLUGIN_OPTION_API_TOKEN", "LAB_MCP_HTTP_TOKEN"),
     ("CLAUDE_PLUGIN_OPTION_AUTH_MODE", "LAB_AUTH_MODE"),
     ("CLAUDE_PLUGIN_OPTION_PUBLIC_URL", "LAB_PUBLIC_URL"),
-    ("CLAUDE_PLUGIN_OPTION_MCP_GATEWAY_URL", "LAB_MCP_GATEWAY_URL"),
+    (
+        "CLAUDE_PLUGIN_OPTION_MCP_GATEWAY_URL",
+        "LAB_MCP_GATEWAY_URL",
+    ),
     ("CLAUDE_PLUGIN_OPTION_ADMIN_ENABLED", "LAB_ADMIN_ENABLED"),
     ("CLAUDE_PLUGIN_OPTION_LOG_FILTER", "LAB_LOG"),
     ("CLAUDE_PLUGIN_OPTION_LOG_FORMAT", "LAB_LOG_FORMAT"),
     ("CLAUDE_PLUGIN_OPTION_CORS_ORIGINS", "LAB_CORS_ORIGINS"),
-    ("CLAUDE_PLUGIN_OPTION_GOOGLE_CLIENT_ID", "LAB_GOOGLE_CLIENT_ID"),
+    (
+        "CLAUDE_PLUGIN_OPTION_GOOGLE_CLIENT_ID",
+        "LAB_GOOGLE_CLIENT_ID",
+    ),
     (
         "CLAUDE_PLUGIN_OPTION_GOOGLE_CLIENT_SECRET",
         "LAB_GOOGLE_CLIENT_SECRET",
     ),
-    ("CLAUDE_PLUGIN_OPTION_AUTH_ADMIN_EMAIL", "LAB_AUTH_ADMIN_EMAIL"),
+    (
+        "CLAUDE_PLUGIN_OPTION_AUTH_ADMIN_EMAIL",
+        "LAB_AUTH_ADMIN_EMAIL",
+    ),
 ];
 
 /// Reverse map: LAB_* env var → plugin userConfig field name, for export.
@@ -273,8 +282,7 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
     let url = match server_url.filter(|s| !s.is_empty()) {
         Some(u) => u,
         None => {
-            url_owned = std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL")
-                .unwrap_or_default();
+            url_owned = std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL").unwrap_or_default();
             if url_owned.is_empty() {
                 "http://localhost:8765"
             } else {

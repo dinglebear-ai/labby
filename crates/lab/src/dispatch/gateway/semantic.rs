@@ -260,10 +260,7 @@ pub async fn index_tools(
 
     if tools.is_empty() {
         qdrant
-            .delete_by_filter(
-                TOOLS_COLLECTION,
-                upstream_filter(upstream_name, &[]),
-            )
+            .delete_by_filter(TOOLS_COLLECTION, upstream_filter(upstream_name, &[]))
             .await?;
         return Ok(());
     }
@@ -557,10 +554,7 @@ pub fn rrf_fuse(lexical: &[LexicalHit], semantic: &[SemanticHit], top_k: usize) 
                 // Inherit upstream priority from the lexical view — semantic-only
                 // hits on suppressed (priority=0) upstreams are dropped so the
                 // user-configured suppression survives fusion.
-                let priority = priority_by_upstream
-                    .get(upstream)
-                    .copied()
-                    .unwrap_or(1.0);
+                let priority = priority_by_upstream.get(upstream).copied().unwrap_or(1.0);
                 if priority == 0.0 {
                     return None;
                 }

@@ -863,10 +863,9 @@ impl GatewayManager {
             return Ok(PendingDiscoveryOutcome::default());
         };
 
-        let discovered =
-            tokio::task::spawn_blocking(move || super::discovery::discover_all(&home))
-                .await
-                .map_err(|e| ToolError::internal_message(format!("discovery task panicked: {e}")))?;
+        let discovered = tokio::task::spawn_blocking(move || super::discovery::discover_all(&home))
+            .await
+            .map_err(|e| ToolError::internal_message(format!("discovery task panicked: {e}")))?;
 
         let _mutation_guard = self.config_mutation.lock().await;
         let mut cfg = self.config.read().await.clone();
@@ -896,10 +895,12 @@ impl GatewayManager {
 
         if queued > 0 {
             let path = self.path.clone();
-        let cfg_clone = cfg.clone();
-        tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
-            .await
-            .map_err(|e| ToolError::internal_message(format!("config write task failed: {e}")))??;
+            let cfg_clone = cfg.clone();
+            tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
+                .await
+                .map_err(|e| {
+                    ToolError::internal_message(format!("config write task failed: {e}"))
+                })??;
             *self.config.write().await = cfg;
         }
 
@@ -1007,7 +1008,9 @@ impl GatewayManager {
         // Create a tombstone so this server is never re-discovered.
         if let Some(source) = spec.imported_from {
             cfg.upstream_import_tombstones
-                .push(crate::config::UpstreamImportTombstone::now(spec.name, source));
+                .push(crate::config::UpstreamImportTombstone::now(
+                    spec.name, source,
+                ));
         }
 
         let path = self.path.clone();

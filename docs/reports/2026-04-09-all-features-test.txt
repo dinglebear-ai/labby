@@ -1,0 +1,1050 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+warning: unreachable pattern
+  --> crates/lab-apis/src/sabnzbd.rs:77:13
+   |
+77 |             Err(e) => Ok(ServiceStatus::degraded(e.to_string())),
+   |             ^^^^^^ no value can reach this
+   |
+note: multiple earlier patterns match some of the same values
+  --> crates/lab-apis/src/sabnzbd.rs:77:13
+   |
+68 | ...   Err(SabnzbdError::Api(ApiError::Auth)) => Ok(ServiceStatus {
+   |       -------------------------------------- matches some of the same values
+...
+75 | ...   Err(SabnzbdError::Api(ApiError::Network(e))) => Ok(ServiceStatus::unreachable(e)),
+   |       -------------------------------------------- matches some of the same values
+76 | ...   Err(SabnzbdError::Api(e)) => Ok(ServiceStatus::degraded(e.to_string())),
+   |       ------------------------- matches some of the same values
+77 | ...   Err(e) => Ok(ServiceStatus::degraded(e.to_string())),
+   |       ^^^^^^ collectively making this unreachable
+   = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: `lab-apis` (lib) generated 1 warning
+   Compiling lab v0.2.2 (/home/jmagar/workspace/lab/crates/lab)
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/extract.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/extract.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/radarr.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/radarr.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/sonarr.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/sonarr.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/prowlarr.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/prowlarr.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/plex.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/plex.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/tautulli.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/tautulli.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/sabnzbd.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/sabnzbd.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/qbittorrent.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/qbittorrent.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/tailscale.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/tailscale.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/linkding.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/linkding.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/memos.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/memos.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/bytestash.rs:11:8
+   |
+11 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/bytestash.rs:15:10
+   |
+15 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/paperless.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/paperless.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/arcane.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/arcane.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/unraid.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/unraid.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/unifi.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/unifi.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/overseerr.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/overseerr.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/gotify.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/gotify.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/openai.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/openai.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/qdrant.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/qdrant.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/tei.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/tei.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `routes` is never used
+  --> crates/lab/src/api/services/apprise.rs:10:8
+   |
+10 | pub fn routes(_state: AppState) -> Router<AppState> {
+   |        ^^^^^^
+
+warning: function `handle` is never used
+  --> crates/lab/src/api/services/apprise.rs:14:10
+   |
+14 | async fn handle(
+   |          ^^^^^^
+
+warning: function `scan_instances` is never used
+   --> crates/lab/src/config.rs:168:8
+    |
+168 | pub fn scan_instances(prefix: &str) -> HashMap<String, HashMap<String, InstanceValue>> {
+    |        ^^^^^^^^^^^^^^
+
+warning: struct `ToolEnvelope` is never constructed
+  --> crates/lab/src/mcp/envelope.rs:14:12
+   |
+14 | pub struct ToolEnvelope<T> {
+   |            ^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> crates/lab/src/mcp/envelope.rs:21:18
+   |
+19 | impl<T> ToolEnvelope<T> {
+   | ----------------------- associated function in this implementation
+20 |     /// Wrap a value in an envelope.
+21 |     pub const fn new(data: T) -> Self {
+   |                  ^^^
+
+warning: function `unknown_action` is never used
+ --> crates/lab/src/mcp/error.rs:9:8
+  |
+9 | pub fn unknown_action(service: &str, action: &str, valid: Vec<String>) -> ToolError {
+  |        ^^^^^^^^^^^^^^
+
+warning: function `missing_param` is never used
+  --> crates/lab/src/mcp/error.rs:19:8
+   |
+19 | pub fn missing_param(param: &str) -> ToolError {
+   |        ^^^^^^^^^^^^^
+
+warning: function `invalid_param` is never used
+  --> crates/lab/src/mcp/error.rs:28:8
+   |
+28 | pub fn invalid_param(param: &str, reason: &str) -> ToolError {
+   |        ^^^^^^^^^^^^^
+
+warning: function `unknown_instance` is never used
+  --> crates/lab/src/mcp/error.rs:37:8
+   |
+37 | pub fn unknown_instance(label: &str, valid: Vec<String>) -> ToolError {
+   |        ^^^^^^^^^^^^^^^^
+
+warning: associated functions `unknown_action`, `missing_param`, `invalid_param`, `unknown_instance`, and `sdk` are never used
+   --> crates/lab/src/mcp/error.rs:75:12
+    |
+ 72 | impl DispatchError {
+    | ------------------ associated functions in this implementation
+...
+ 75 |     pub fn unknown_action(service: &str, action: &str, valid: Vec<String>) -> Self {
+    |            ^^^^^^^^^^^^^^
+...
+ 87 |     pub fn missing_param(param: &'static str) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+ 99 |     pub fn invalid_param(param: &'static str, reason: &str) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+111 |     pub fn unknown_instance(label: &str, valid: Vec<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+123 |     pub fn sdk(kind: &'static str, message: impl std::fmt::Display) -> Self {
+    |            ^^^
+
+warning: function `help` is never used
+  --> crates/lab/src/mcp/meta.rs:18:8
+   |
+18 | pub fn help(registry: &ToolRegistry) -> Result<ToolEnvelope<Catalog>, ToolError> {
+   |        ^^^^
+
+warning: function `catalog_json` is never used
+  --> crates/lab/src/mcp/resources.rs:13:8
+   |
+13 | pub fn catalog_json(registry: &ToolRegistry) -> Result<Value> {
+   |        ^^^^^^^^^^^^
+
+warning: function `service_actions_json` is never used
+  --> crates/lab/src/mcp/resources.rs:19:8
+   |
+19 | pub fn service_actions_json(registry: &ToolRegistry, service: &str) -> Result<Value> {
+   |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `dispatch` is never used
+  --> crates/lab/src/mcp/services/bytestash.rs:15:14
+   |
+15 | pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
+   |              ^^^^^^^^
+
+warning: function `client_from_env` is never used
+  --> crates/lab/src/mcp/services/unifi.rs:13:8
+   |
+13 | pub fn client_from_env() -> Option<UnifiClient> {
+   |        ^^^^^^^^^^^^^^^
+
+warning: function `dispatch` is never used
+  --> crates/lab/src/mcp/services/unifi.rs:21:14
+   |
+21 | pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
+   |              ^^^^^^^^
+
+warning: function `print_table` is never used
+  --> crates/lab/src/output.rs:50:8
+   |
+50 | pub fn print_table(table: &tabled::Table) {
+   |        ^^^^^^^^^^^
+
+warning: function `require_u32` is never used
+  --> crates/lab/src/dispatch/unifi/params.rs:32:8
+   |
+32 | pub fn require_u32(params: &Value, key: &str) -> Result<u32, ToolError> {
+   |        ^^^^^^^^^^^
+
+warning: struct `PluginRef` is never constructed
+  --> crates/lab/src/tui/ecosystem.rs:63:12
+   |
+63 | pub struct PluginRef<'a> {
+   |            ^^^^^^^^^
+
+warning: method `full_id` is never used
+  --> crates/lab/src/tui/ecosystem.rs:76:8
+   |
+74 | impl PluginRef<'_> {
+   | ------------------ method in this implementation
+75 |     /// Canonical `marketplace/plugin` form used in CLI arguments and progress labels.
+76 |     fn full_id(&self) -> String {
+   |        ^^^^^^^
+
+warning: function `install` is never used
+  --> crates/lab/src/tui/ecosystem.rs:89:14
+   |
+89 | pub async fn install(
+   |              ^^^^^^^
+
+warning: function `install_claude` is never used
+   --> crates/lab/src/tui/ecosystem.rs:207:10
+    |
+207 | async fn install_claude(
+    |          ^^^^^^^^^^^^^^
+
+warning: function `install_codex` is never used
+   --> crates/lab/src/tui/ecosystem.rs:256:10
+    |
+256 | async fn install_codex(
+    |          ^^^^^^^^^^^^^
+
+warning: function `codex_config_add` is never used
+   --> crates/lab/src/tui/ecosystem.rs:327:10
+    |
+327 | async fn codex_config_add(
+    |          ^^^^^^^^^^^^^^^^
+
+warning: function `install_gemini` is never used
+   --> crates/lab/src/tui/ecosystem.rs:396:10
+    |
+396 | async fn install_gemini(
+    |          ^^^^^^^^^^^^^^
+
+warning: fields `plugin_id` and `line` are never read
+  --> crates/lab/src/tui/events.rs:11:20
+   |
+11 |     ProgressLine { plugin_id: String, line: String },
+   |     ------------   ^^^^^^^^^          ^^^^
+   |     |
+   |     fields in this variant
+   |
+   = note: `AppEvent` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `kind` is never read
+  --> crates/lab/src/tui/events.rs:13:16
+   |
+13 |     TaskDone { kind: String },
+   |     --------   ^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `AppEvent` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `kind` is never read
+  --> crates/lab/src/tui/events.rs:15:17
+   |
+15 |     TaskError { kind: String, message: String },
+   |     ---------   ^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `AppEvent` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: variants `MarketplaceLoaded`, `UpdateCheckDone`, `PreviewReady`, and `HealthChecksDone` are never constructed
+  --> crates/lab/src/tui/events.rs:17:5
+   |
+ 5 | pub enum AppEvent {
+   |          -------- variants in this enum
+...
+17 |     MarketplaceLoaded(Vec<crate::tui::marketplace::MarketplacePlugin>),
+   |     ^^^^^^^^^^^^^^^^^
+18 |     /// Self-update check completed.
+19 |     UpdateCheckDone {
+   |     ^^^^^^^^^^^^^^^
+...
+24 |     PreviewReady(crate::tui::preview::PreviewReady),
+   |     ^^^^^^^^^^^^
+25 |     /// Health check results for all enabled services.
+26 |     HealthChecksDone(Vec<ServiceHealth>),
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `AppEvent` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `service` is never read
+  --> crates/lab/src/tui/events.rs:32:9
+   |
+31 | pub struct ServiceHealth {
+   |            ------------- field in this struct
+32 |     pub service: String,
+   |         ^^^^^^^
+   |
+   = note: `ServiceHealth` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `plugin_id` is never read
+  --> crates/lab/src/tui/install.rs:14:9
+   |
+12 | pub struct PluginInstallState {
+   |            ------------------ field in this struct
+13 |     /// Canonical plugin identifier (e.g. `"owner/plugin-name"`).
+14 |     pub plugin_id: String,
+   |         ^^^^^^^^^
+
+warning: method `render` is never used
+  --> crates/lab/src/tui/install.rs:59:12
+   |
+23 | impl PluginInstallState {
+   | ----------------------- method in this implementation
+...
+59 |     pub fn render(&self, f: &mut Frame<'_>, area: Rect) {
+   |            ^^^^^^
+
+warning: variant `UpdateAvailable` is never constructed
+  --> crates/lab/src/tui/marketplace.rs:72:5
+   |
+69 | pub enum InstallState {
+   |          ------------ variant in this enum
+...
+72 |     UpdateAvailable,
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `InstallState` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `CliPresence` is never constructed
+   --> crates/lab/src/tui/marketplace.rs:109:12
+    |
+109 | pub struct CliPresence {
+    |            ^^^^^^^^^^^
+
+warning: associated function `detect` is never used
+   --> crates/lab/src/tui/marketplace.rs:116:12
+    |
+114 | impl CliPresence {
+    | ---------------- associated function in this implementation
+115 |     /// Probe PATH for `claude` and `gemini` binaries using `which` via std::process::Command.
+116 |     pub fn detect() -> Self {
+    |            ^^^^^^
+
+warning: struct `ClaudeMarketplaceIndex` is never constructed
+   --> crates/lab/src/tui/marketplace.rs:239:8
+    |
+239 | struct ClaudeMarketplaceIndex {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `ClaudePluginManifest` is never constructed
+   --> crates/lab/src/tui/marketplace.rs:245:8
+    |
+245 | struct ClaudePluginManifest {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `CodexMarketplaceEntry` is never constructed
+   --> crates/lab/src/tui/marketplace.rs:252:8
+    |
+252 | struct CodexMarketplaceEntry {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `GeminiExtensionManifest` is never constructed
+   --> crates/lab/src/tui/marketplace.rs:259:8
+    |
+259 | struct GeminiExtensionManifest {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MarketplaceLoader` is never constructed
+   --> crates/lab/src/tui/marketplace.rs:268:12
+    |
+268 | pub struct MarketplaceLoader;
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: associated functions `load_all`, `installed_claude`, `installed_codex`, and `installed_gemini` are never used
+   --> crates/lab/src/tui/marketplace.rs:274:18
+    |
+270 | impl MarketplaceLoader {
+    | ---------------------- associated functions in this implementation
+...
+274 |     pub async fn load_all(cli: &CliPresence) -> Vec<MarketplacePlugin> {
+    |                  ^^^^^^^^
+...
+358 |     fn installed_claude() -> IndexSet<PluginId> {
+    |        ^^^^^^^^^^^^^^^^
+...
+370 |     fn installed_codex() -> IndexSet<PluginId> {
+    |        ^^^^^^^^^^^^^^^
+...
+386 |     fn installed_gemini() -> IndexSet<PluginId> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `load_claude_plugins` is never used
+   --> crates/lab/src/tui/marketplace.rs:402:10
+    |
+402 | async fn load_claude_plugins() -> Vec<(MarketplacePlugin, bool)> {
+    |          ^^^^^^^^^^^^^^^^^^^
+
+warning: function `load_codex_plugins` is never used
+   --> crates/lab/src/tui/marketplace.rs:440:10
+    |
+440 | async fn load_codex_plugins() -> Vec<(MarketplacePlugin, bool)> {
+    |          ^^^^^^^^^^^^^^^^^^
+
+warning: function `load_codex_catalog` is never used
+   --> crates/lab/src/tui/marketplace.rs:456:10
+    |
+456 | async fn load_codex_catalog(path: &PathBuf) -> Vec<(MarketplacePlugin, bool)> {
+    |          ^^^^^^^^^^^^^^^^^^
+
+warning: function `load_gemini_plugins` is never used
+   --> crates/lab/src/tui/marketplace.rs:483:10
+    |
+483 | async fn load_gemini_plugins() -> Vec<(MarketplacePlugin, bool)> {
+    |          ^^^^^^^^^^^^^^^^^^^
+
+warning: function `home_dir` is never used
+   --> crates/lab/src/tui/marketplace.rs:524:4
+    |
+524 | fn home_dir() -> PathBuf {
+    |    ^^^^^^^^
+
+warning: function `check_all_services` is never used
+  --> crates/lab/src/tui/metadata.rs:29:14
+   |
+29 | pub async fn check_all_services(env: &std::path::Path) -> Vec<ServiceHealth> {
+   |              ^^^^^^^^^^^^^^^^^^
+
+warning: field `plugin` is never read
+  --> crates/lab/src/tui/preview.rs:35:13
+   |
+35 |     Ready { plugin: MarketplacePlugin },
+   |     -----   ^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `PreviewState` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Idle`, `Detecting`, `PromptEcosystem`, `Fetching`, and `Error` are never constructed
+  --> crates/lab/src/tui/preview.rs:31:5
+   |
+30 | pub enum PreviewState {
+   |          ------------ variants in this enum
+31 |     Idle,
+   |     ^^^^
+32 |     Detecting { url: String },
+   |     ^^^^^^^^^
+33 |     PromptEcosystem { url: String, detected: Vec<Ecosystem> },
+   |     ^^^^^^^^^^^^^^^
+34 |     Fetching { url: String, ecosystem: Ecosystem },
+   |     ^^^^^^^^
+35 |     Ready { plugin: MarketplacePlugin },
+36 |     Error { message: String },
+   |     ^^^^^
+   |
+   = note: `PreviewState` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `commit_sha`, `ecosystem`, and `source_url` are never read
+  --> crates/lab/src/tui/preview.rs:46:9
+   |
+43 | pub struct PreviewReady {
+   |            ------------ fields in this struct
+...
+46 |     pub commit_sha: String,
+   |         ^^^^^^^^^^
+47 |     pub ecosystem: Ecosystem,
+   |         ^^^^^^^^^
+48 |     pub source_url: String,
+   |         ^^^^^^^^^^
+   |
+   = note: `PreviewReady` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `GitHubRepo` is never constructed
+   --> crates/lab/src/tui/preview.rs:178:8
+    |
+178 | struct GitHubRepo {
+    |        ^^^^^^^^^^
+
+warning: struct `GitHubCommit` is never constructed
+   --> crates/lab/src/tui/preview.rs:183:8
+    |
+183 | struct GitHubCommit {
+    |        ^^^^^^^^^^^^
+
+warning: constant `CACHE_TTL` is never used
+   --> crates/lab/src/tui/preview.rs:189:7
+    |
+189 | const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+    |       ^^^^^^^^^
+
+warning: function `cache_path` is never used
+   --> crates/lab/src/tui/preview.rs:191:4
+    |
+191 | fn cache_path(url: &str) -> PathBuf {
+    |    ^^^^^^^^^^
+
+warning: function `dirs_cache_root` is never used
+   --> crates/lab/src/tui/preview.rs:200:4
+    |
+200 | fn dirs_cache_root() -> PathBuf {
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `read_cache` is never used
+   --> crates/lab/src/tui/preview.rs:208:4
+    |
+208 | fn read_cache(path: &PathBuf) -> Option<Vec<u8>> {
+    |    ^^^^^^^^^^
+
+warning: function `write_cache` is never used
+   --> crates/lab/src/tui/preview.rs:223:4
+    |
+223 | fn write_cache(path: &PathBuf, data: &[u8]) {
+    |    ^^^^^^^^^^^
+
+warning: function `build_github_client` is never used
+   --> crates/lab/src/tui/preview.rs:238:4
+    |
+238 | fn build_github_client() -> reqwest::Client {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `gh_get` is never used
+   --> crates/lab/src/tui/preview.rs:247:10
+    |
+247 | async fn gh_get(client: &reqwest::Client, url: &str) -> anyhow::Result<(u16, Vec<u8>)> {
+    |          ^^^^^^
+
+warning: function `fetch_preview` is never used
+   --> crates/lab/src/tui/preview.rs:262:14
+    |
+262 | pub async fn fetch_preview(
+    |              ^^^^^^^^^^^^^
+
+warning: function `is_github_url` is never used
+   --> crates/lab/src/tui/preview.rs:288:4
+    |
+288 | fn is_github_url(url: &str) -> bool {
+    |    ^^^^^^^^^^^^^
+
+warning: function `fetch_github_preview` is never used
+   --> crates/lab/src/tui/preview.rs:310:10
+    |
+310 | async fn fetch_github_preview(
+    |          ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `manifest_paths_for` is never used
+   --> crates/lab/src/tui/preview.rs:402:4
+    |
+402 | fn manifest_paths_for(ecosystem: Ecosystem) -> Vec<&'static str> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `should_synthesize` is never used
+   --> crates/lab/src/tui/preview.rs:415:4
+    |
+415 | fn should_synthesize(ecosystem: Ecosystem, paths: &[&str]) -> bool {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `fetch_sparse_clone_preview` is never used
+   --> crates/lab/src/tui/preview.rs:499:10
+    |
+499 | async fn fetch_sparse_clone_preview(
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `read_head_sha` is never used
+   --> crates/lab/src/tui/preview.rs:536:4
+    |
+536 | fn read_head_sha(root: &std::path::Path) -> String {
+    |    ^^^^^^^^^^^^^
+
+warning: function `should_synthesize_from_files` is never used
+   --> crates/lab/src/tui/preview.rs:544:4
+    |
+544 | fn should_synthesize_from_files(ecosystem: Ecosystem, root: &std::path::Path) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `sparse_clone` is never used
+   --> crates/lab/src/tui/preview.rs:562:10
+    |
+562 | async fn sparse_clone(
+    |          ^^^^^^^^^^^^
+
+warning: function `run_git_cmd` is never used
+   --> crates/lab/src/tui/preview.rs:634:10
+    |
+634 | async fn run_git_cmd(
+    |          ^^^^^^^^^^^
+
+warning: method `render` is never used
+   --> crates/lab/src/tui/preview.rs:680:12
+    |
+678 | impl PreviewState {
+    | ----------------- method in this implementation
+679 |     /// Render the current preview state into the given terminal area.
+680 |     pub fn render(&self, f: &mut Frame<'_>, area: Rect) {
+    |            ^^^^^^
+
+warning: field `mcp_json_path` is never read
+  --> crates/lab/src/tui/services.rs:64:9
+   |
+56 | pub struct LabServicesState {
+   |            ---------------- field in this struct
+...
+64 |     pub mcp_json_path: Option<PathBuf>,
+   |         ^^^^^^^^^^^^^
+
+warning: associated items `toggle_reveal`, `update_health`, `toggle_enabled`, and `open_env_editor` are never used
+   --> crates/lab/src/tui/services.rs:120:12
+    |
+102 | impl LabServicesState {
+    | --------------------- associated items in this implementation
+...
+120 |     pub fn toggle_reveal(&mut self) {
+    |            ^^^^^^^^^^^^^
+...
+125 |     pub fn update_health(&mut self, results: Vec<ServiceHealth>) {
+    |            ^^^^^^^^^^^^^
+...
+132 |     pub fn toggle_enabled(&mut self) -> anyhow::Result<()> {
+    |            ^^^^^^^^^^^^^^
+...
+156 |     pub fn open_env_editor() -> anyhow::Result<()> {
+    |            ^^^^^^^^^^^^^^^
+
+warning: struct `GhRelease` is never constructed
+  --> crates/lab/src/tui/update.rs:31:8
+   |
+31 | struct GhRelease {
+   |        ^^^^^^^^^
+
+warning: struct `GhAsset` is never constructed
+  --> crates/lab/src/tui/update.rs:37:8
+   |
+37 | struct GhAsset {
+   |        ^^^^^^^
+
+warning: function `platform_asset_prefix` is never used
+  --> crates/lab/src/tui/update.rs:48:4
+   |
+48 | fn platform_asset_prefix() -> &'static str {
+   |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `check_for_update` is never used
+  --> crates/lab/src/tui/update.rs:66:14
+   |
+66 | pub async fn check_for_update() -> anyhow::Result<(String, String)> {
+   |              ^^^^^^^^^^^^^^^^
+
+warning: function `perform_update` is never used
+  --> crates/lab/src/tui/update.rs:81:14
+   |
+81 | pub async fn perform_update(
+   |              ^^^^^^^^^^^^^^
+
+warning: function `fetch_latest_release` is never used
+   --> crates/lab/src/tui/update.rs:280:10
+    |
+280 | async fn fetch_latest_release() -> anyhow::Result<GhRelease> {
+    |          ^^^^^^^^^^^^^^^^^^^^
+
+warning: non-binding let on a type that has a destructor
+   --> crates/lab/src/tui/update.rs:453:13
+    |
+453 |             let _ = format!("{state:?}");
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W let-underscore-drop`
+help: consider binding to an unused variable to avoid immediately dropping the value
+    |
+453 |             let _unused = format!("{state:?}");
+    |                  ++++++
+help: consider immediately dropping the value
+   --> /home/jmagar/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/macros.rs:107:9
+    |
+107 -         $crate::__export::must_use({
+108 -             $crate::fmt::format($crate::__export::format_args!($($arg)*))
+109 -         })
+107 +         drop()
+    |
+
+warning: non-binding let on a type that has a destructor
+   --> crates/lab/src/tui/update.rs:454:13
+    |
+454 |             let _ = state.clone();
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider binding to an unused variable to avoid immediately dropping the value
+    |
+454 |             let _unused = state.clone();
+    |                  ++++++
+help: consider immediately dropping the value
+    |
+454 -             let _ = state.clone();
+454 +             drop(state.clone());
+    |
+
+warning: `lab` (bin "lab" test) generated 122 warnings (run `cargo fix --bin "lab" -p lab --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.81s
+     Running unittests src/main.rs (target/debug/deps/lab-f0d28880a2737656)
+
+running 137 tests
+test api::services::helpers::tests::destructive_with_confirm_dispatch_error_preserves_kind ... ok
+test api::services::helpers::tests::confirm_key_stripped_from_params_before_dispatch ... ok
+test api::services::helpers::tests::destructive_with_confirm_false_returns_confirmation_required ... ok
+test api::services::helpers::tests::destructive_with_confirm_true_proceeds_to_dispatch ... ok
+test api::services::helpers::tests::empty_actions_rejects_everything ... ok
+test api::services::helpers::tests::destructive_without_confirm_returns_confirmation_required ... ok
+test api::services::helpers::tests::unknown_action_returns_unknown_action_and_dispatch_not_called ... ok
+test api::services::helpers::tests::destructive_with_confirm_string_true_does_not_pass ... ok
+test api::services::helpers::tests::dispatch_logs_http_surface_and_request_id ... ok
+test cli::doctor::tests::radarr_in_checks_when_feature_enabled ... ok
+test cli::doctor::tests::extract_is_always_in_checks ... ok
+test api::services::helpers::tests::success_path_returns_json_value ... ok
+test api::services::helpers::tests::error_path_preserves_tool_error_kind ... ok
+test api::services::helpers::tests::non_destructive_action_proceeds_without_confirm ... ok
+test cli::helpers::tests::action_command_logs_cli_failure_kind ... ok
+test cli::params::tests::boolean_case_insensitive ... ok
+test cli::helpers::tests::action_command_logs_cli_success_shape ... ok
+test cli::params::tests::coerce_preserves_leading_zeros_as_strings ... ok
+test cli::params::tests::empty_key_yields_empty_string_key ... ok
+test cli::params::tests::empty_value_yields_empty_string ... ok
+test cli::params::tests::nan_inf_stay_as_strings ... ok
+test cli::params::tests::parse_kv_params_coerces_scalars ... ok
+test api::router::tests::actions_known_service_returns_200 ... ok
+test api::router::tests::actions_unknown_service_returns_404 ... ok
+test cli::params::tests::parse_kv_params_empty_returns_empty_object ... ok
+test cli::params::tests::parse_kv_params_rejects_duplicate_keys ... ok
+test cli::params::tests::parse_kv_params_rejects_missing_equals ... ok
+test config::tests::default_instance_parsed ... ok
+test config::tests::named_instance_parsed ... ok
+test config::tests::secret_debug_redacts ... ok
+test cli::params::tests::value_containing_equals_uses_split_once ... ok
+test config::tests::suffix_collision_longest_wins ... ok
+test config::tests::unrelated_vars_ignored ... ok
+test config::tests::username_is_plain_not_secret ... ok
+test dispatch::bytestash::tests::actions_catalog_includes_core_actions ... ok
+test dispatch::bytestash::tests::client_from_vars_rejects_empty_token ... ok
+test dispatch::bytestash::tests::client_from_vars_rejects_empty_url ... ok
+test dispatch::bytestash::tests::client_from_vars_rejects_missing ... ok
+test dispatch::bytestash::tests::auth_register_is_destructive ... ok
+test dispatch::bytestash::tests::dispatch_unknown_action_returns_error ... ok
+test dispatch::context::tests::dispatch_context_api_surface ... ok
+test dispatch::context::tests::dispatch_context_with_instance ... ok
+test dispatch::context::tests::dispatch_context_without_instance ... ok
+test dispatch::radarr::tests::action_count_preserved ... ok
+test dispatch::radarr::tests::sdk_error_from_api_auth ... ok
+test dispatch::radarr::tests::no_duplicate_action_names ... ok
+test dispatch::bytestash::tests::help_returns_action_list ... ok
+test dispatch::radarr::tests::sdk_error_from_api_not_found ... ok
+test dispatch::radarr::tests::sdk_error_from_network ... ok
+test dispatch::radarr::tests::sdk_error_from_radarr_not_found ... ok
+test dispatch::unifi::tests::action_count_matches_original ... ok
+test dispatch::radarr::tests::unknown_action_includes_valid_list ... ok
+test dispatch::unifi::tests::devices_list_is_routed_by_service_layer ... ok
+test dispatch::unifi::tests::firewall_zones_list_is_routed_by_service_layer ... ok
+test dispatch::unifi::tests::no_duplicate_action_names ... ok
+test mcp::envelope::tests::display_is_valid_json ... ok
+test mcp::envelope::tests::display_sdk_has_correct_kind ... ok
+test mcp::envelope::tests::error_envelope_shape ... ok
+test mcp::envelope::tests::error_extra_merges_valid_list ... ok
+test dispatch::unifi::tests::unknown_action_includes_valid_list ... ok
+test mcp::envelope::tests::error_has_no_data_key ... ok
+test mcp::envelope::tests::json_missing_param_shape ... ok
+test mcp::envelope::tests::json_sdk_not_found ... ok
+test mcp::envelope::tests::json_sdk_promotes_sdk_kind_to_kind ... ok
+test mcp::envelope::tests::kind_invalid_param ... ok
+test mcp::envelope::tests::json_unknown_action_shape ... ok
+test mcp::envelope::tests::kind_missing_param ... ok
+test mcp::envelope::tests::kind_sdk_uses_sdk_kind_value ... ok
+test mcp::envelope::tests::kind_unknown_action ... ok
+test mcp::envelope::tests::kind_unknown_instance ... ok
+test mcp::envelope::tests::success_envelope_shape ... ok
+test mcp::envelope::tests::success_has_no_error_key ... ok
+test mcp::envelope::tests::wire_kind_matches_programmatic_kind_for_all_variants ... ok
+test mcp::registry::tests::all_features_registers_all_services ... ok
+test mcp::registry::tests::extract_is_always_registered ... ok
+test mcp::services::bytestash::tests::help_includes_core_read_only_actions ... ok
+test mcp::registry::tests::dispatch_fn_round_trips ... ok
+test dispatch::unifi::tests::unifi_service_help_lists_core_actions ... ok
+test mcp::services::radarr::tests::help_includes_core_read_only_actions ... ok
+test mcp::services::unifi::tests::action_count_matches_service_layer ... ok
+test mcp::services::unifi::tests::help_lists_read_only_actions ... ok
+test output::tests::from_json_flag ... ok
+test output::tests::formats_differ ... ok
+test output::tests::human_format_is_pretty ... ok
+test output::tests::json_format_is_compact ... ok
+test tui::ecosystem::tests::ansi_strip_removes_escape_sequences ... ok
+test tui::ecosystem::tests::ecosystem_dispatch_exhaustive ... ok
+test tui::ecosystem::tests::identifier_accepts_max_length ... ok
+test tui::ecosystem::tests::identifier_accepts_valid ... ok
+test tui::ecosystem::tests::identifier_rejects_ampersand_injection ... ok
+test tui::ecosystem::tests::identifier_rejects_semicolon_injection ... ok
+test tui::ecosystem::tests::identifier_rejects_too_long ... ok
+test tui::ecosystem::tests::safe_join_accepts_valid ... ok
+test tui::ecosystem::tests::identifier_rejects_unicode ... ok
+test tui::ecosystem::tests::remove_without_confirm_returns_err ... ok
+test tui::ecosystem::tests::safe_join_rejects_traversal ... ok
+test tui::install::tests::mark_done_clears_error ... ok
+test tui::install::tests::mark_error_clears_done ... ok
+test tui::marketplace::tests::ecosystem_enum_exhaustive ... ok
+test tui::install::tests::line_cap_evicts_oldest ... ok
+test tui::marketplace::tests::ansi_injection_stripped ... ok
+test tui::marketplace::tests::id_normalization_matches_across_formats ... ok
+test tui::marketplace::tests::install_state_cross_reference ... ok
+test tui::marketplace::tests::plugin_id_collapses_consecutive_separators ... ok
+test tui::marketplace::tests::plugin_id_trims_leading_trailing_dashes ... ok
+test tui::mcp_patch::tests::creates_file_when_missing ... ok
+test tui::mcp_patch::tests::service_name_validation_rejects_unknown ... ok
+test tui::mcp_patch::tests::service_name_validation_rejects_traversal ... ok
+test tui::preview::tests::accept_git_ssh_url ... ok
+test tui::mcp_patch::tests::dedupe_on_write ... ok
+test tui::preview::tests::accept_https_url ... ok
+test tui::mcp_patch::tests::enable_service_appends ... ok
+test tui::preview::tests::cache_miss_when_file_missing ... ok
+test tui::preview::tests::ansi_injection_stripped_in_manifest ... ok
+test tui::mcp_patch::tests::disable_service_removes ... ok
+test tui::mcp_patch::tests::refuse_invalid_json ... ok
+test tui::preview::tests::detect_claude_marketplace ... ok
+test tui::preview::tests::detect_claude_single_entry ... ok
+test tui::preview::tests::detect_codex_marketplace ... ok
+test tui::preview::tests::detect_codex_single_entry ... ok
+test tui::preview::tests::detect_multiple_ecosystems ... ok
+test tui::preview::tests::detect_no_ecosystem_returns_error ... ok
+test tui::preview::tests::detect_gemini ... ok
+test tui::preview::tests::git_command_env_scrub ... ok
+test tui::preview::tests::parse_github_url_basic ... ok
+test tui::preview::tests::parse_github_url_strips_git_suffix ... ok
+test tui::preview::tests::parse_github_url_trailing_slash ... ok
+test tui::preview::tests::reject_empty_url ... ok
+test tui::preview::tests::reject_ext_remote_helper ... ok
+test tui::preview::tests::reject_file_url ... ok
+test tui::preview::tests::rate_limit_fallback_reads_stale_cache ... ok
+test tui::preview::tests::reject_option_injection ... ok
+test tui::preview::tests::single_entry_synthesis_claude ... ok
+test tui::update::tests::sha256_mismatch_returns_error ... ok
+test tui::update::tests::tempfile_same_dir_as_exe ... ok
+test tui::update::tests::update_state_transitions_no_panic ... ok
+test dispatch::bytestash::tests::client_from_vars_accepts_valid ... ok
+
+test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

@@ -110,8 +110,7 @@ async fn plugin_hook_action(params: &Value) -> Result<Value, ToolError> {
         None
     };
     let server_url = std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL").ok();
-    let connectivity =
-        super::plugin_hook::validate_connectivity(server_url.as_deref()).await;
+    let connectivity = super::plugin_hook::validate_connectivity(server_url.as_deref()).await;
     to_json(super::plugin_hook::PluginHookReport {
         setup,
         sync,
@@ -132,8 +131,7 @@ async fn plugin_connectivity_action(params: &Value) -> Result<Value, ToolError> 
         .get("server_url")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let outcome =
-        super::plugin_hook::validate_connectivity(server_url.as_deref()).await;
+    let outcome = super::plugin_hook::validate_connectivity(server_url.as_deref()).await;
     to_json(outcome)
 }
 
@@ -628,7 +626,12 @@ fn log_outcome(
 ) {
     if matches!(
         action,
-        "plugin_hook" | "plugin_sync" | "plugin_export" | "plugin_connectivity" | "check" | "repair"
+        "plugin_hook"
+            | "plugin_sync"
+            | "plugin_export"
+            | "plugin_connectivity"
+            | "check"
+            | "repair"
     ) {
         return;
     }
