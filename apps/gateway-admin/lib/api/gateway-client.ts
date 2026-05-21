@@ -317,12 +317,17 @@ export const gatewayApi = {
   async importExternalConfigs(names?: string[], signal?: AbortSignal): Promise<GatewayImportResult> {
     // Empty array is a no-op — caller must pass undefined/null to mean "import all"
     if (names !== undefined && names !== null && names.length === 0) {
-      return { imported: [] }
+      return { imported: [], skipped: [], errors: [] }
     }
     const params = names && names.length > 0
       ? { names }
       : { all: true }
-    return gatewayAction<GatewayImportResult>('gateway.import', confirmGatewayParams(params), signal)
+    const raw = await gatewayAction<GatewayImportResult>('gateway.import', confirmGatewayParams(params), signal)
+    return {
+      imported: raw.imported,
+      skipped: raw.skipped ?? [],
+      errors: raw.errors ?? [],
+    }
   },
 
   async clearImportTombstone(server: DiscoveredMcpServer, signal?: AbortSignal): Promise<GatewayImportTombstone[]> {

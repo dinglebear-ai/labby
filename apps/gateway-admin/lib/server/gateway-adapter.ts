@@ -3,6 +3,7 @@ import type {
   ExposurePolicy,
   ExposurePolicyPreview,
   Gateway,
+  GatewayImportSource,
   GatewayWarning,
   ServiceAction,
   TransportType,
@@ -64,11 +65,13 @@ export interface BackendGatewayConfigView {
   command?: string | null
   args?: string[]
   bearer_token_env?: string | null
+  oauth_enabled?: boolean
   proxy_resources?: boolean
   proxy_prompts?: boolean
   expose_tools?: string[] | null
   expose_resources?: string[] | null
   expose_prompts?: string[] | null
+  imported_from?: GatewayImportSource | null
 }
 
 export interface BackendGatewayRuntimeView {
@@ -529,11 +532,13 @@ export function normalizeGateway(
       command: config.command ?? undefined,
       args: normalizeArgs(config.args),
       bearer_token_env: config.bearer_token_env ?? undefined,
+      oauth_enabled: config.oauth_enabled ?? false,
       proxy_resources: config.proxy_resources ?? false,
       proxy_prompts: config.proxy_prompts ?? true,
       expose_tools: exposePatterns ?? undefined,
       expose_resources: config.expose_resources ?? undefined,
       expose_prompts: config.expose_prompts ?? undefined,
+      imported_from: config.imported_from ?? undefined,
     },
     status: {
       healthy: (config.enabled ?? true) && probe.healthy,
