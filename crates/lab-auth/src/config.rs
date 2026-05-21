@@ -178,10 +178,7 @@ impl Default for AuthConfig {
             // need destructive operations can request the elevated scope at
             // /authorize. Allowed-emails users also receive `:admin` implicitly
             // (see `authorize::elevate_scope_for_allowed_user`).
-            scopes_supported: vec![
-                DEFAULT_SCOPE.to_string(),
-                format!("{DEFAULT_SCOPE}:admin"),
-            ],
+            scopes_supported: vec![DEFAULT_SCOPE.to_string(), format!("{DEFAULT_SCOPE}:admin")],
             resource_path: DEFAULT_RESOURCE_PATH.to_string(),
             default_scope: DEFAULT_SCOPE.to_string(),
             static_token_scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
@@ -314,10 +311,7 @@ impl AuthConfigBuilder {
             env_prefix: DEFAULT_ENV_PREFIX.to_string(),
             default_data_dir: None,
             session_cookie_name: DEFAULT_SESSION_COOKIE_NAME.to_string(),
-            scopes_supported: vec![
-                DEFAULT_SCOPE.to_string(),
-                format!("{DEFAULT_SCOPE}:admin"),
-            ],
+            scopes_supported: vec![DEFAULT_SCOPE.to_string(), format!("{DEFAULT_SCOPE}:admin")],
             resource_path: DEFAULT_RESOURCE_PATH.to_string(),
             default_scope: DEFAULT_SCOPE.to_string(),
             static_token_scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
