@@ -390,6 +390,37 @@ pub const ACTIONS: &[ActionSpec] = &[
         ],
     },
     ActionSpec {
+        name: "gateway.import_pending.list",
+        description: "List MCP servers discovered but waiting for operator approval (gateway_import_mode=pending)",
+        destructive: false,
+        returns: "PendingImportView[]",
+        params: &[],
+    },
+    ActionSpec {
+        name: "gateway.import_pending.approve",
+        description: "Approve a pending discovered server and add it to the gateway config as disabled-by-default",
+        destructive: true,
+        returns: "PendingImportView",
+        params: &[ParamSpec {
+            name: "name",
+            ty: "string",
+            required: true,
+            description: "Name of the pending server to approve",
+        }],
+    },
+    ActionSpec {
+        name: "gateway.import_pending.reject",
+        description: "Reject a pending discovered server and tombstone it so it never re-appears",
+        destructive: true,
+        returns: "PendingImportView",
+        params: &[ParamSpec {
+            name: "name",
+            ty: "string",
+            required: true,
+            description: "Name of the pending server to reject",
+        }],
+    },
+    ActionSpec {
         name: "gateway.import_tombstones.list",
         description: "List operator-deleted imported MCP servers that are suppressed from automatic re-import",
         destructive: false,

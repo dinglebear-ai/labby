@@ -15,5 +15,88 @@
     "mcp",
     "gateway",
     "marketplace"
-  ]
+  ],
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills",
+  "userConfig": {
+    "server_url": {
+      "type": "string",
+      "title": "Server URL",
+      "description": "Base URL of the lab MCP HTTP server (labby serve). Default http://localhost:8765 for local access. Set to http://<hostname>:8765 when connecting from a remote machine or through a reverse proxy. Do NOT include a trailing /mcp — the plugin appends it.",
+      "required": true,
+      "default": "http://localhost:8765"
+    },
+    "api_token": {
+      "type": "string",
+      "title": "API token",
+      "description": "Bearer token for MCP HTTP authentication. Matches LAB_MCP_HTTP_TOKEN on the server. Required when auth_mode is bearer. Generate with: openssl rand -hex 32 or just mcp-token in the lab Justfile.",
+      "sensitive": true,
+      "required": false
+    },
+    "auth_mode": {
+      "type": "string",
+      "title": "Auth mode",
+      "description": "Authentication mode the lab server is running. bearer: static token auth (default, requires api_token). oauth: Google OAuth via the lab auth server (requires public_url and Google OAuth credentials on the server). Maps to LAB_AUTH_MODE on the server.",
+      "required": true,
+      "default": "bearer"
+    },
+    "public_url": {
+      "type": "string",
+      "title": "Public URL",
+      "description": "Public base URL of the lab server, e.g. https://lab.example.com. Required when auth_mode is oauth — used as the OAuth issuer and resource metadata base. Maps to LAB_PUBLIC_URL on the server.",
+      "default": ""
+    },
+    "mcp_gateway_url": {
+      "type": "string",
+      "title": "MCP gateway URL",
+      "description": "Separate public base URL for the MCP gateway when it runs on a different hostname from the lab UI, e.g. https://mcp.example.com. Leave empty when the app and gateway share a hostname (the common case). Maps to LAB_MCP_GATEWAY_URL on the server.",
+      "default": ""
+    },
+    "admin_enabled": {
+      "type": "boolean",
+      "title": "Enable admin tools",
+      "description": "Enable the lab_admin MCP tool for operator-level administration. Requires the lab-admin feature gate compiled in. Maps to LAB_ADMIN_ENABLED=1 on the server.",
+      "required": true,
+      "default": false
+    },
+    "log_filter": {
+      "type": "string",
+      "title": "Log filter",
+      "description": "Tracing filter directive for labby serve, e.g. labby=debug,lab_apis=info. Maps to LAB_LOG on the server. Default keeps lab at info and SDK at warn to reduce noise.",
+      "default": "labby=info,lab_apis=warn"
+    },
+    "log_format": {
+      "type": "string",
+      "title": "Log format",
+      "description": "Log output format for labby serve: text (human-readable with ANSI color when stderr is a TTY) or json (newline-delimited JSON for prod/CI). Maps to LAB_LOG_FORMAT on the server.",
+      "required": true,
+      "default": "text"
+    },
+    "cors_origins": {
+      "type": "string",
+      "title": "CORS origins",
+      "description": "Additional CORS origins allowed for the lab API, comma-separated, e.g. https://lab.example.com,https://mcp.example.com. Loopback origins (localhost, 127.0.0.1, [::1]) are always included and do not need to be listed here. Maps to LAB_CORS_ORIGINS on the server.",
+      "default": ""
+    },
+    "google_client_id": {
+      "type": "string",
+      "title": "Google OAuth client ID",
+      "description": "Google OAuth Web Application client ID. Required when auth_mode is oauth. Create a Web application OAuth client in Google Cloud Console. Maps to LAB_GOOGLE_CLIENT_ID on the server.",
+      "default": ""
+    },
+    "google_client_secret": {
+      "type": "string",
+      "title": "Google OAuth client secret",
+      "description": "Google OAuth client secret. Required when auth_mode is oauth. Maps to LAB_GOOGLE_CLIENT_SECRET on the server.",
+      "sensitive": true,
+      "default": ""
+    },
+    "auth_admin_email": {
+      "type": "string",
+      "title": "OAuth admin email",
+      "description": "Bootstrap allowed Google account for OAuth mode. The server refuses to start OAuth without an allowlisted account. Maps to LAB_AUTH_ADMIN_EMAIL on the server.",
+      "default": ""
+    }
+  }
 }

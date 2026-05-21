@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use super::{DiscoveredServer, scan_paths, xdg_config_home};
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+use super::xdg_config_home;
+use super::{DiscoveredServer, scan_paths};
 
 /// Scans VS Code MCP configs. Also covers GitHub Copilot, which uses VS Code's
 /// mcp.json when running as a VS Code extension.

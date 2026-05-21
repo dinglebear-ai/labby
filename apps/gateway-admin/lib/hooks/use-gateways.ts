@@ -311,6 +311,8 @@ export function useGatewayMutations() {
         imported: (names && names.length > 0 ? names : ['local-files']).map((name) => ({
           config: { name, enabled: false },
         })),
+        skipped: [],
+        errors: [],
       }
     }
     const result = await gatewayApi.importExternalConfigs(names)

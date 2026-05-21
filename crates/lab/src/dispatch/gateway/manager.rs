@@ -43,8 +43,8 @@ use super::service_catalog::service_meta;
 use super::types::{
     CatalogChangeNotifier, GatewayCatalogDiff, GatewayRuntimeView, GatewayToolExposureRowView,
     GatewayView, ImportErrorView, ImportResultView, ImportSkipReason, ImportSkipView,
-    ImportTombstoneView, McpClientConfigView, McpClientTransportType, ServiceConfigView,
-    VirtualServerMcpPolicyView,
+    ImportTombstoneView, McpClientConfigView, McpClientTransportType, PendingDiscoveryOutcome,
+    PendingImportView, ServiceConfigView, VirtualServerMcpPolicyView,
 };
 use super::view_models::ServerView;
 
@@ -854,6 +854,171 @@ impl GatewayManager {
         );
 
         Ok(result)
+    }
+
+    /// Scan external MCP configs and add newly discovered servers to the
+    /// `upstream_pending` queue without applying them.
+    pub async fn discover_into_pending(&self) -> Result<PendingDiscoveryOutcome, ToolError> {
+        let Some(home) = super::discovery::home_dir() else {
+            return Ok(PendingDiscoveryOutcome::default());
+        };
+
+        let discovered = tokio::task::spawn_blocking(move || super::discovery::discover_all(&home))
+            .await
+            .map_err(|e| ToolError::internal_message(format!("discovery task panicked: {e}")))?;
+
+        let _mutation_guard = self.config_mutation.lock().await;
+        let mut cfg = self.config.read().await.clone();
+
+        let mut queued = 0usize;
+        let mut skipped = 0usize;
+
+        for server in discovered {
+            // Skip tombstoned.
+            if discovered_is_tombstoned(&cfg, &server) {
+                skipped += 1;
+                continue;
+            }
+            // Skip already in upstreams.
+            if cfg.upstream.iter().any(|u| u.name == server.name) {
+                skipped += 1;
+                continue;
+            }
+            // Skip already pending.
+            if cfg.upstream_pending.iter().any(|u| u.name == server.name) {
+                skipped += 1;
+                continue;
+            }
+            cfg.upstream_pending.push(server.spec);
+            queued += 1;
+        }
+
+        if queued > 0 {
+            let path = self.path.clone();
+            let cfg_clone = cfg.clone();
+            tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
+                .await
+                .map_err(|e| {
+                    ToolError::internal_message(format!("config write task failed: {e}"))
+                })??;
+            *self.config.write().await = cfg;
+        }
+
+        Ok(PendingDiscoveryOutcome { queued, skipped })
+    }
+
+    /// List the `upstream_pending` queue.
+    pub async fn list_pending_imports(&self) -> Vec<PendingImportView> {
+        let cfg = self.config.read().await;
+        cfg.upstream_pending
+            .iter()
+            .map(|u| PendingImportView {
+                name: u.name.clone(),
+                url: u.url.clone(),
+                command: u.command.clone(),
+                source_client: u
+                    .imported_from
+                    .as_ref()
+                    .map(|s| s.client.clone())
+                    .unwrap_or_default(),
+                source_path: u
+                    .imported_from
+                    .as_ref()
+                    .map(|s| s.path.clone())
+                    .unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    /// Approve a pending import by name: move from `upstream_pending` into `upstream`
+    /// with `enabled = false` (same as auto-import — operator must explicitly enable).
+    pub async fn approve_pending_import(&self, name: &str) -> Result<PendingImportView, ToolError> {
+        let _mutation_guard = self.config_mutation.lock().await;
+        let mut cfg = self.config.read().await.clone();
+
+        let idx = cfg
+            .upstream_pending
+            .iter()
+            .position(|u| u.name == name)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".into(),
+                message: format!("pending import `{name}` not found"),
+            })?;
+
+        let mut spec = cfg.upstream_pending.remove(idx);
+        let view = PendingImportView {
+            name: spec.name.clone(),
+            url: spec.url.clone(),
+            command: spec.command.clone(),
+            source_client: spec
+                .imported_from
+                .as_ref()
+                .map(|s| s.client.clone())
+                .unwrap_or_default(),
+            source_path: spec
+                .imported_from
+                .as_ref()
+                .map(|s| s.path.clone())
+                .unwrap_or_default(),
+        };
+
+        spec.enabled = false;
+        cfg.upstream.push(spec);
+        let path = self.path.clone();
+        let cfg_clone = cfg.clone();
+        tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
+            .await
+            .map_err(|e| ToolError::internal_message(format!("config write task failed: {e}")))??;
+        *self.config.write().await = cfg;
+
+        Ok(view)
+    }
+
+    /// Reject a pending import by name: tombstone it so it never re-appears.
+    pub async fn reject_pending_import(&self, name: &str) -> Result<PendingImportView, ToolError> {
+        let _mutation_guard = self.config_mutation.lock().await;
+        let mut cfg = self.config.read().await.clone();
+
+        let idx = cfg
+            .upstream_pending
+            .iter()
+            .position(|u| u.name == name)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".into(),
+                message: format!("pending import `{name}` not found"),
+            })?;
+
+        let spec = cfg.upstream_pending.remove(idx);
+        let view = PendingImportView {
+            name: spec.name.clone(),
+            url: spec.url.clone(),
+            command: spec.command.clone(),
+            source_client: spec
+                .imported_from
+                .as_ref()
+                .map(|s| s.client.clone())
+                .unwrap_or_default(),
+            source_path: spec
+                .imported_from
+                .as_ref()
+                .map(|s| s.path.clone())
+                .unwrap_or_default(),
+        };
+
+        // Create a tombstone so this server is never re-discovered.
+        if let Some(source) = spec.imported_from {
+            cfg.upstream_import_tombstones
+                .push(UpstreamImportTombstone::now(spec.name, source));
+        }
+
+        let path = self.path.clone();
+        let cfg_clone = cfg.clone();
+        tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
+            .await
+            .map_err(|e| ToolError::internal_message(format!("config write task failed: {e}")))??;
+        *self.config.write().await = cfg;
+
+        Ok(view)
     }
 
     pub async fn list_import_tombstones(&self) -> Vec<ImportTombstoneView> {
@@ -1896,13 +2061,31 @@ impl GatewayManager {
 
         let requested = top_k.max(1).min(50);
         let tool_search_cfg = self.config.read().await.tool_search.clone();
-        let score_floor_fraction = tool_search_cfg.score_floor_fraction;
+        let semantic_enabled = tool_search_cfg.semantic_enabled();
+        // When semantic search is enabled, skip the lexical score-floor: the
+        // floor would otherwise drop low-lexical-score tools BEFORE semantic
+        // could rescue them via RRF. The post-fusion top_k truncation handles
+        // the floor naturally. Lexical-only mode keeps the original behavior.
+        let effective_floor = if semantic_enabled {
+            0.0
+        } else {
+            tool_search_cfg.score_floor_fraction
+        };
+
+        // When semantic is enabled, widen the lexical candidate window so RRF
+        // fusion has a richer set to draw from. The final truncation to
+        // `requested` happens after fusion.
+        let lexical_window = if semantic_enabled {
+            requested * 3
+        } else {
+            requested
+        };
 
         let mut hits: Vec<SearchHit> = self
             .tool_indexes
             .iter()
             .filter_map(|entry| entry.value().index.load_full())
-            .flat_map(|index| index.search(trimmed, requested, score_floor_fraction))
+            .flat_map(|index| index.search(trimmed, lexical_window, effective_floor))
             .collect();
 
         hits.sort_by(|a, b| {
@@ -1912,7 +2095,7 @@ impl GatewayManager {
                 .then_with(|| a.tool.name.cmp(&b.tool.name))
                 .then_with(|| a.tool.upstream_name.cmp(&b.tool.upstream_name))
         });
-        hits.truncate(requested);
+        hits.truncate(lexical_window);
 
         if hits.is_empty() && self.tool_search_warming().await {
             return Err(ToolError::Sdk {
@@ -1923,8 +2106,9 @@ impl GatewayManager {
 
         // Semantic hybrid search via Qdrant + TEI — fused with lexical hits via RRF.
         // Graceful degradation: if Qdrant/TEI are unavailable, log a WARN and return
-        // lexical results unchanged.
-        let hits = if tool_search_cfg.semantic_enabled() {
+        // lexical results unchanged. Every return path truncates to `requested` —
+        // the wider `lexical_window` is only a fusion-input convenience.
+        let mut hits = if tool_search_cfg.semantic_enabled() {
             let qdrant_url = tool_search_cfg
                 .resolved_qdrant_url()
                 .expect("checked above");
@@ -1953,6 +2137,7 @@ impl GatewayManager {
         } else {
             hits
         };
+        hits.truncate(requested);
 
         Ok(hits
             .into_iter()

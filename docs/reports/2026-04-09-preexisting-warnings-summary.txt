@@ -1,0 +1,144 @@
+# Warning Summary
+
+139
+
+## warning lines
+1:warning: unreachable pattern
+21:warning: `lab-apis` (lib) generated 1 warning
+22:warning: struct `ActionRequest` is never constructed
+30:warning: function `build_router` is never used
+36:warning: function `dispatch_service` is never used
+42:warning: function `service_actions` is never used
+48:warning: function `health` is never used
+54:warning: function `ready` is never used
+60:warning: function `handle_action` is never used
+66:warning: function `routes` is never used
+72:warning: function `handle` is never used
+78:warning: function `routes` is never used
+84:warning: function `handle` is never used
+90:warning: function `routes` is never used
+96:warning: function `handle` is never used
+102:warning: function `routes` is never used
+108:warning: function `handle` is never used
+114:warning: function `routes` is never used
+120:warning: function `handle` is never used
+126:warning: function `routes` is never used
+132:warning: function `handle` is never used
+138:warning: function `routes` is never used
+144:warning: function `handle` is never used
+150:warning: function `run_action_command` is never used
+156:warning: function `parse_kv_params` is never used
+162:warning: function `coerce_value` is never used
+168:warning: struct `Secret` is never constructed
+174:warning: associated items `new` and `expose` are never used
+186:warning: enum `InstanceValue` is never used
+192:warning: method `expose` is never used
+201:warning: constant `SECRET_SUFFIXES` is never used
+207:warning: function `scan_instances` is never used
+213:warning: function `scan_instances_from` is never used
+219:warning: struct `ToolEnvelope` is never constructed
+225:warning: associated function `new` is never used
+234:warning: function `unknown_action` is never used
+240:warning: function `missing_param` is never used
+246:warning: function `invalid_param` is never used
+252:warning: function `unknown_instance` is never used
+258:warning: associated functions `unknown_action`, `missing_param`, `invalid_param`, `unknown_instance`, and `sdk` are never used
+279:warning: function `help` is never used
+285:warning: function `catalog_json` is never used
+291:warning: function `service_actions_json` is never used
+297:warning: function `print_table` is never used
+303:warning: struct `DispatchContext` is never constructed
+309:warning: variants `InvalidParam` and `UnknownInstance` are never constructed
+323:warning: function `to_json` is never used
+329:warning: function `require_str` is never used
+335:warning: function `object_without` is never used
+341:warning: function `body_from_params` is never used
+347:warning: struct `PluginIdentifier` is never constructed
+353:warning: associated items `new` and `as_str` are never used
+365:warning: struct `PluginRef` is never constructed
+371:warning: method `full_id` is never used
+380:warning: function `install` is never used
+386:warning: function `remove` is never used
+392:warning: function `install_claude` is never used
+398:warning: function `remove_claude` is never used
+404:warning: function `home_dir` is never used
+410:warning: function `safe_join` is never used
+416:warning: function `install_codex` is never used
+422:warning: function `remove_codex` is never used
+428:warning: function `codex_config_add` is never used
+434:warning: function `codex_config_remove` is never used
+440:warning: function `install_gemini` is never used
+446:warning: function `remove_gemini` is never used
+452:warning: function `run_subprocess` is never used
+458:warning: multiple variants are never constructed
+487:warning: field `service` is never read
+497:warning: struct `PluginInstallState` is never constructed
+503:warning: associated items `new`, `push_line`, `mark_done`, `mark_error`, and `render` are never used
+524:warning: struct `PluginId` is never constructed
+530:warning: associated items `new` and `as_str` are never used
+542:warning: variants `Available`, `Installed`, and `UpdateAvailable` are never constructed
+556:warning: fields `id` and `version` are never read
+569:warning: struct `CliPresence` is never constructed
+575:warning: associated function `detect` is never used
+584:warning: struct `ClaudeMarketplaceIndex` is never constructed
+590:warning: struct `ClaudePluginManifest` is never constructed
+596:warning: struct `CodexMarketplaceEntry` is never constructed
+602:warning: struct `GeminiExtensionManifest` is never constructed
+608:warning: struct `MarketplaceLoader` is never constructed
+614:warning: associated functions `load_all`, `installed_claude`, `installed_codex`, and `installed_gemini` are never used
+632:warning: function `load_claude_plugins` is never used
+638:warning: function `load_codex_plugins` is never used
+644:warning: function `load_codex_catalog` is never used
+650:warning: function `load_gemini_plugins` is never used
+656:warning: function `home_dir` is never used
+662:warning: constant `VALID_SERVICE_NAMES` is never used
+668:warning: function `patch_mcp_json` is never used
+674:warning: function `patch_services_array` is never used
+680:warning: function `create_mcp_json` is never used
+686:warning: function `prune_backups` is never used
+692:warning: function `check_all_services` is never used
+698:warning: field `plugin` is never read
+708:warning: variants `Idle`, `Detecting`, `PromptEcosystem`, `Fetching`, and `Error` are never constructed
+727:warning: fields `commit_sha`, `ecosystem`, and `source_url` are never read
+742:warning: function `validate_url` is never used
+748:warning: struct `DetectedFiles` is never constructed
+754:warning: associated items `new` and `has` are never used
+765:warning: function `detect_ecosystems` is never used
+771:warning: struct `ClaudePluginJson` is never constructed
+777:warning: struct `CodexPluginJson` is never constructed
+783:warning: struct `GeminiExtensionJson` is never constructed
+789:warning: struct `GitHubRepo` is never constructed
+795:warning: struct `GitHubCommit` is never constructed
+801:warning: constant `CACHE_TTL` is never used
+807:warning: function `cache_path` is never used
+813:warning: function `dirs_cache_root` is never used
+819:warning: function `read_cache` is never used
+825:warning: function `read_cache_stale` is never used
+831:warning: function `write_cache` is never used
+837:warning: function `build_github_client` is never used
+843:warning: function `gh_get` is never used
+849:warning: function `fetch_preview` is never used
+855:warning: function `is_github_url` is never used
+861:warning: function `parse_github_owner_repo` is never used
+867:warning: function `fetch_github_preview` is never used
+873:warning: function `manifest_paths_for` is never used
+879:warning: function `should_synthesize` is never used
+885:warning: function `parse_manifest` is never used
+891:warning: function `fetch_sparse_clone_preview` is never used
+897:warning: function `read_head_sha` is never used
+903:warning: function `should_synthesize_from_files` is never used
+909:warning: function `sparse_clone` is never used
+915:warning: function `run_git_cmd` is never used
+921:warning: method `render` is never used
+930:warning: field `mcp_json_path` is never read
+939:warning: associated items `toggle_reveal`, `update_health`, `toggle_enabled`, and `open_env_editor` are never used
+957:warning: variants `ClaudeCode`, `Codex`, and `Gemini` are never constructed
+971:warning: associated items `as_str` and `ALL` are never used
+983:warning: variants `Checking`, `Downloading`, `Verifying`, and `Error` are never constructed
+1002:warning: struct `GhRelease` is never constructed
+1008:warning: struct `GhAsset` is never constructed
+1014:warning: function `platform_asset_prefix` is never used
+1020:warning: function `check_for_update` is never used
+1026:warning: function `perform_update` is never used
+1032:warning: function `fetch_latest_release` is never used
+1038:warning: `lab` (bin "lab") generated 136 warnings

@@ -75,12 +75,7 @@ __pycache__/
 
 # ── Documentation artifacts (session/plan docs, not reference) ───────────────
 .docs/
-docs/plans/
-docs/sessions/
-docs/reports/
-docs/research/
-docs/superpowers/
-specs/
+
 
 # ── Rust ─────────────────────────────────────────────────────────────────────
 /target/

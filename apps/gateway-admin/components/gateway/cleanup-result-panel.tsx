@@ -20,11 +20,11 @@ export function CleanupResultPanel({ result, onClose }: CleanupResultPanelProps)
   if (!result) return null
 
   const { gateway, result: cleanup } = result
-  const isPreview = cleanup.dry_run === true
+  const isPreview = cleanup.dry_run
   const totalMatched =
-    (cleanup.gateway_matched ?? cleanup.gateway_killed) +
-    (cleanup.local_matched ?? cleanup.local_killed) +
-    (cleanup.aggressive_matched ?? cleanup.aggressive_killed)
+    cleanup.gateway_matched +
+    cleanup.local_matched +
+    cleanup.aggressive_matched
   const totalKilled =
     cleanup.gateway_killed + cleanup.local_killed + cleanup.aggressive_killed
   const totalPrimary = isPreview ? totalMatched : totalKilled
@@ -32,9 +32,9 @@ export function CleanupResultPanel({ result, onClose }: CleanupResultPanelProps)
   const laneVerb = isPreview ? 'matched' : 'terminated'
   const renderMatches = (
     title: string,
-    matches: GatewayCleanupResult['gateway_matches'] | undefined,
+    matches: GatewayCleanupResult['gateway_matches'],
   ) => {
-    if (!matches || matches.length === 0) return null
+    if (matches.length === 0) return null
     return (
       <div className="space-y-2">
         <h5 className="text-xs font-medium uppercase tracking-wide text-aurora-text-muted">
@@ -111,22 +111,20 @@ export function CleanupResultPanel({ result, onClose }: CleanupResultPanelProps)
               <div className="flex items-center justify-between rounded-lg border px-4 py-3">
                 <span className="text-sm">Server runtime {laneLabel}</span>
                 <span className="text-sm font-medium tabular-nums">
-                  {isPreview ? (cleanup.gateway_matched ?? cleanup.gateway_killed) : cleanup.gateway_killed}
+                  {isPreview ? cleanup.gateway_matched : cleanup.gateway_killed}
                 </span>
               </div>
               <div className="flex items-center justify-between rounded-lg border px-4 py-3">
                 <span className="text-sm">Local client/session {laneLabel}</span>
                 <span className="text-sm font-medium tabular-nums">
-                  {isPreview ? (cleanup.local_matched ?? cleanup.local_killed) : cleanup.local_killed}
+                  {isPreview ? cleanup.local_matched : cleanup.local_killed}
                 </span>
               </div>
               {cleanup.aggressive && (
                 <div className="flex items-center justify-between rounded-lg border px-4 py-3">
                   <span className="text-sm">Aggressive fallback {laneLabel}</span>
                   <span className="text-sm font-medium tabular-nums">
-                    {isPreview
-                      ? (cleanup.aggressive_matched ?? cleanup.aggressive_killed)
-                      : cleanup.aggressive_killed}
+                    {isPreview ? cleanup.aggressive_matched : cleanup.aggressive_killed}
                   </span>
                 </div>
               )}
