@@ -967,6 +967,7 @@ fn derive_actor_key(
 }
 
 /// Build the `/v1` sub-router with all feature-gated service routes.
+#[cfg_attr(not(feature = "fs"), allow(unused_variables))]
 fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppState> {
     let is_master = state.is_master();
     let openapi_spec: Arc<String> = super::openapi::build_openapi_spec(state.registry.services())

@@ -87,19 +87,22 @@ fn iter_terms(text: &str) -> impl Iterator<Item = String> + '_ {
 /// dense-only.
 pub fn compute_sparse_vector(text: &str) -> SparseVector {
     let mut bucket_tf: HashMap<u32, u32> = HashMap::with_capacity(64);
-    let mut scanned: usize = 0;
-    for lower in iter_terms(text) {
-        if scanned >= MAX_TERMS_PER_VECTOR {
-            tracing::warn!(
-                target: "tool_search.sparse",
-                len = text.len(),
-                cap = MAX_TERMS_PER_VECTOR,
-                "compute_sparse_vector: term cap reached — truncating"
-            );
-            break;
+    let mut terms = iter_terms(text);
+    for _ in 0..MAX_TERMS_PER_VECTOR {
+        match terms.next() {
+            Some(lower) => {
+                *bucket_tf.entry(term_to_index(&lower)).or_insert(0) += 1;
+            }
+            None => break,
         }
-        scanned += 1;
-        *bucket_tf.entry(term_to_index(&lower)).or_insert(0) += 1;
+    }
+    if terms.next().is_some() {
+        tracing::warn!(
+            target: "tool_search.sparse",
+            len = text.len(),
+            cap = MAX_TERMS_PER_VECTOR,
+            "compute_sparse_vector: term cap reached — truncating"
+        );
     }
 
     if bucket_tf.is_empty() {

@@ -47,11 +47,11 @@ pub async fn dispatch_with_manager(
         "gateway.import" => handle_import(manager, params_value).await,
         "gateway.import_pending.list" => to_json(manager.list_pending_imports().await),
         "gateway.import_pending.approve" => {
-            let name = crate::dispatch::helpers::require_str(&params_value, "name")?;
+            let name = require_str(&params_value, "name")?;
             to_json(manager.approve_pending_import(name).await?)
         }
         "gateway.import_pending.reject" => {
-            let name = crate::dispatch::helpers::require_str(&params_value, "name")?;
+            let name = require_str(&params_value, "name")?;
             to_json(manager.reject_pending_import(name).await?)
         }
         "gateway.import_tombstones.list"

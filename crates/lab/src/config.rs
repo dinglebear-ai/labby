@@ -587,22 +587,17 @@ impl UpstreamImportTombstone {
 }
 
 /// Controls how external MCP config discovery behaves on gateway startup.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayImportMode {
     /// Discovery disabled. No external configs are scanned or imported (default).
+    #[default]
     Off,
     /// Scan on startup; queue discovered servers under `upstream_pending` for
     /// operator approval via `gateway.import_pending.approve`. Never auto-applies.
     Pending,
     /// Auto-import everything not tombstoned (legacy behavior).
     Auto,
-}
-
-impl Default for GatewayImportMode {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 fn default_upstream_priority() -> f32 {

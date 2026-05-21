@@ -28,8 +28,10 @@ pub mod dispatch;
 #[cfg(feature = "fs")]
 pub mod params;
 
-pub(crate) use client::not_configured_error;
 pub use client::resolve_workspace_root;
+
+#[cfg(feature = "fs")]
+pub(crate) use client::not_configured_error;
 
 #[cfg(feature = "fs")]
 pub use dispatch::{dispatch, dispatch_with_root, open_for_preview};

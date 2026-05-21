@@ -875,7 +875,7 @@ impl GatewayManager {
 
         for server in discovered {
             // Skip tombstoned.
-            if super::manager::discovered_is_tombstoned(&cfg, &server) {
+            if discovered_is_tombstoned(&cfg, &server) {
                 skipped += 1;
                 continue;
             }
@@ -1008,9 +1008,7 @@ impl GatewayManager {
         // Create a tombstone so this server is never re-discovered.
         if let Some(source) = spec.imported_from {
             cfg.upstream_import_tombstones
-                .push(crate::config::UpstreamImportTombstone::now(
-                    spec.name, source,
-                ));
+                .push(UpstreamImportTombstone::now(spec.name, source));
         }
 
         let path = self.path.clone();
