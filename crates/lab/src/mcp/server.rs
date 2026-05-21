@@ -648,8 +648,31 @@ impl ServerHandler for LabMcpServer {
                 "dispatch route selected"
             );
             let Some(pool) = self.current_upstream_pool().await else {
+                let elapsed_ms = start.elapsed().as_millis();
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "read_resource",
+                    subject,
+                    resource_uri = uri.as_str(),
+                    route = "gateway",
+                    elapsed_ms,
+                    kind = "unavailable",
+                    "upstream pool not configured"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "read_resource",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind: "unavailable",
+                    },
+                )
+                .await;
                 return Err(ErrorData::resource_not_found(
-                    format!("upstream pool not configured"),
+                    "upstream pool not configured".to_string(),
                     None,
                 ));
             };

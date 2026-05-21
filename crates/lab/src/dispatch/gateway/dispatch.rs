@@ -871,6 +871,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_schema_unknown_upstream_returns_not_found_envelope() {
+        let manager = test_manager();
+        let err = dispatch_with_manager(&manager, "gateway.schema", json!({"name": "nope"}))
+            .await
+            .expect_err("no pool configured");
+        let body = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(body["kind"], "not_found", "sdk_kind must be promoted to kind");
+    }
+
+    #[tokio::test]
     async fn gateway_dispatch_rejects_synthetic_tool_execution_actions() {
         let manager = test_manager();
 
