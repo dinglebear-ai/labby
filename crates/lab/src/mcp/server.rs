@@ -831,7 +831,23 @@ impl ServerHandler for LabMcpServer {
 
         match json {
             Ok(value) => {
-                let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                let text = match serde_json::to_string_pretty(&value) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!(
+                            surface = "mcp",
+                            service = "labby",
+                            action = "read_resource",
+                            subject,
+                            error = %e,
+                            "failed to serialize resource"
+                        );
+                        return Err(ErrorData::internal_error(
+                            format!("failed to serialize resource: {e}"),
+                            None,
+                        ));
+                    }
+                };
                 let elapsed_ms = start.elapsed().as_millis();
                 tracing::info!(
                     surface = "mcp",
@@ -930,7 +946,16 @@ impl ServerHandler for LabMcpServer {
             };
             tools.push(Tool::new(
                 TOOL_SEARCH_TOOL_NAME,
-                "Search Lab and proxied upstream tool catalogs",
+                "Search Lab and proxied upstream tool catalogs \
+                using 2-4 intent words (e.g. \"docker container restart\", \
+                \"send push notification\", \"unifi wifi clients\"). \
+                Use this before tool_execute to discover available tool names \
+                and their required arguments. Returns tool names, descriptions, \
+                and optionally full input schemas. \
+                Covers: Docker/containers (arcane), notifications (apprise/gotify), \
+                media (radarr/sonarr/plex), networking (unifi/tailscale), \
+                storage (unraid), home automation, AI/RAG (axon), \
+                and all other connected upstream MCP servers.",
                 tool_search_schema,
             ));
             gateway_tool_count += 1;
@@ -947,7 +972,14 @@ impl ServerHandler for LabMcpServer {
             };
             tools.push(Tool::new(
                 TOOL_EXECUTE_TOOL_NAME,
-                "Invoke one Lab or upstream tool discovered through tool_search",
+                "Invoke one Lab or upstream tool discovered through tool_search. \
+                Pass the exact tool name returned by tool_search and a JSON \
+                arguments object matching that tool's schema. \
+                Lab built-in tools take {\"action\": \"<name>\", \"params\": {...}}. \
+                Upstream tools use their own schema (retrieve with \
+                tool_search include_schema=true). \
+                When tool_search returns no match, call tool_search with \
+                different keywords before giving up.",
                 tool_execute_schema,
             ));
             gateway_tool_count += 1;

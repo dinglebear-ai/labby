@@ -126,6 +126,16 @@ pub struct LabConfig {
     /// so deleted external-config entries do not immediately return on restart.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upstream_import_tombstones: Vec<UpstreamImportTombstone>,
+    /// Discovered upstreams waiting for operator approval. Populated when
+    /// `gateway_import_mode = "pending"`. Empty when mode is `"off"` or `"auto"`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstream_pending: Vec<UpstreamConfig>,
+    /// Controls how external MCP config discovery behaves on startup.
+    /// - `"off"` (default): discovery is disabled; no auto-import.
+    /// - `"pending"`: discover on startup, queue for approval — never auto-apply.
+    /// - `"auto"`: auto-import everything not tombstoned (legacy behavior).
+    #[serde(default)]
+    pub gateway_import_mode: GatewayImportMode,
     /// Public HTTP MCP routes protected by Lab OAuth and proxied by Lab.
     ///
     /// These are intentionally separate from `upstream`: upstreams import tools
@@ -574,6 +584,20 @@ impl UpstreamImportTombstone {
             removed_at: jiff::Timestamp::now().to_string(),
         }
     }
+}
+
+/// Controls how external MCP config discovery behaves on gateway startup.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayImportMode {
+    /// Discovery disabled. No external configs are scanned or imported (default).
+    #[default]
+    Off,
+    /// Scan on startup; queue discovered servers under `upstream_pending` for
+    /// operator approval via `gateway.import_pending.approve`. Never auto-applies.
+    Pending,
+    /// Auto-import everything not tombstoned (legacy behavior).
+    Auto,
 }
 
 fn default_upstream_priority() -> f32 {

@@ -76,6 +76,16 @@ pub enum SetupCommand {
         #[arg(long)]
         no_repair: bool,
     },
+    /// Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.lab/.env as LAB_* vars.
+    PluginSync(PluginSyncArgs),
+    /// Read ~/.lab/.env and print current values keyed by userConfig field name.
+    PluginExport,
+    /// Validate connectivity to the lab MCP server.
+    PluginConnectivity {
+        /// Server URL to probe; defaults to CLAUDE_PLUGIN_OPTION_SERVER_URL or http://localhost:8765.
+        #[arg(long)]
+        server_url: Option<String>,
+    },
     /// Check local setup prerequisites without mutating the filesystem.
     Check,
     /// Repair missing local setup prerequisites without contacting external services.
@@ -84,6 +94,16 @@ pub enum SetupCommand {
     InstallPlugin(PluginMutationArgs),
     /// Uninstall the Claude Code plugin for a service.
     UninstallPlugin(PluginMutationArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PluginSyncArgs {
+    /// Skip confirmation for this destructive action.
+    #[arg(short = 'y', long, alias = "no-confirm")]
+    pub yes: bool,
+    /// Print what would be dispatched without executing.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -163,6 +183,40 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
                     .await?;
             print(&value, format)?;
         }
+        SetupCommand::PluginSync(args) => {
+            let params = json!({ "confirm": true });
+            if args.dry_run {
+                crate::cli::helpers::print_dry_run("setup", "plugin_sync", &params);
+                return Ok(ExitCode::SUCCESS);
+            }
+            // Route through the shared destructive-action helper so TTY users
+            // get the interactive confirm prompt and non-TTY callers get a
+            // structured refusal — matches the cli/CLAUDE.md contract.
+            return crate::cli::helpers::run_confirmable_action_command(
+                "setup",
+                crate::dispatch::setup::ACTIONS,
+                "plugin_sync".to_string(),
+                params,
+                args.yes,
+                format,
+                |action, params| async move {
+                    crate::dispatch::setup::dispatch(&action, params).await
+                },
+            )
+            .await;
+        }
+        SetupCommand::PluginExport => {
+            let value = crate::dispatch::setup::dispatch("plugin_export", json!({})).await?;
+            print(&value, format)?;
+        }
+        SetupCommand::PluginConnectivity { server_url } => {
+            let params = match server_url {
+                Some(url) => json!({ "server_url": url }),
+                None => json!({}),
+            };
+            let value = crate::dispatch::setup::dispatch("plugin_connectivity", params).await?;
+            print(&value, format)?;
+        }
         SetupCommand::Check => {
             let value = crate::dispatch::setup::dispatch("check", json!({})).await?;
             print(&value, format)?;
@@ -239,6 +293,40 @@ mod tests {
             panic!("expected plugin-hook subcommand");
         };
         assert!(no_repair);
+    }
+
+    #[test]
+    fn parses_plugin_sync_export_connectivity_subcommands() {
+        let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "plugin-sync"]).unwrap();
+        let crate::cli::Command::Setup(args) = cli.command else {
+            panic!("expected setup");
+        };
+        assert!(matches!(args.command, Some(SetupCommand::PluginSync(_))));
+
+        let cli = crate::cli::Cli::try_parse_from(["labby", "setup", "plugin-export"]).unwrap();
+        let crate::cli::Command::Setup(args) = cli.command else {
+            panic!("expected setup");
+        };
+        assert!(matches!(args.command, Some(SetupCommand::PluginExport)));
+
+        let cli = crate::cli::Cli::try_parse_from([
+            "labby",
+            "setup",
+            "plugin-connectivity",
+            "--server-url",
+            "http://dookie:8765",
+        ])
+        .unwrap();
+        let crate::cli::Command::Setup(args) = cli.command else {
+            panic!("expected setup");
+        };
+        let Some(SetupCommand::PluginConnectivity {
+            server_url: Some(url),
+        }) = args.command
+        else {
+            panic!("expected plugin-connectivity with url");
+        };
+        assert_eq!(url, "http://dookie:8765");
     }
 
     #[test]

@@ -95,6 +95,7 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
+#[cfg(not(target_os = "windows"))]
 pub(crate) fn xdg_config_home(home: &Path) -> PathBuf {
     std::env::var("XDG_CONFIG_HOME")
         .ok()

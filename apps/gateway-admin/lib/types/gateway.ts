@@ -15,6 +15,12 @@ export interface GatewayConfig {
   expose_prompts?: string[] | null
 }
 
+/** Read-side config returned by the API. Extends the write form with server-assigned, read-only fields. */
+export interface GatewayConfigView extends GatewayConfig {
+  /** Set when this server was imported from an external MCP config file; absent for manually added servers. */
+  imported_from?: GatewayImportSource
+}
+
 /** Extended config for create/update payloads only. `bearer_token_value` is write-only and never returned by the API. */
 export interface GatewayWriteConfig extends GatewayConfig {
   bearer_token_value?: string
@@ -106,12 +112,21 @@ export interface Gateway {
   configured?: boolean
   enabled?: boolean
   surfaces?: SurfaceStates
-  config: GatewayConfig
+  config: GatewayConfigView
   status: GatewayStatus
   discovery: GatewayDiscovery
   warnings: GatewayWarning[]
   created_at: string
   updated_at: string
+}
+
+/** Provenance record for a gateway imported from an external MCP config file. */
+export interface GatewayImportSource {
+  client: string
+  path: string
+  server_name?: string
+  transport_fingerprint?: string
+  imported_at: string
 }
 
 export type DiscoveredMcpServerTransport = 'http' | 'stdio'
@@ -126,7 +141,7 @@ export interface DiscoveredMcpServer {
   env_key_count: number
   already_configured: boolean
   transport_fingerprint?: string
-  tombstoned?: boolean
+  tombstoned: boolean
 }
 
 export interface GatewayImportTombstone {
@@ -152,11 +167,11 @@ export interface GatewayImportResult {
   imported: Array<{
     config: {
       name: string
-      enabled?: boolean
+      enabled: boolean
     }
   }>
-  skipped?: GatewayImportSkip[]
-  errors?: GatewayImportError[]
+  skipped: GatewayImportSkip[]
+  errors: GatewayImportError[]
 }
 
 export interface CreateGatewayInput {
@@ -193,16 +208,16 @@ export interface ReloadGatewayResult {
 export interface GatewayCleanupResult {
   upstream: string
   aggressive: boolean
-  dry_run?: boolean
-  gateway_matched?: number
-  local_matched?: number
-  aggressive_matched?: number
+  dry_run: boolean
+  gateway_matched: number
+  local_matched: number
+  aggressive_matched: number
   gateway_killed: number
   local_killed: number
   aggressive_killed: number
-  gateway_matches?: Array<{ pattern: string; pids: number[] }>
-  local_matches?: Array<{ pattern: string; pids: number[] }>
-  aggressive_matches?: Array<{ pattern: string; pids: number[] }>
+  gateway_matches: Array<{ pattern: string; pids: number[] }>
+  local_matches: Array<{ pattern: string; pids: number[] }>
+  aggressive_matches: Array<{ pattern: string; pids: number[] }>
 }
 
 export interface SupportedServiceField {

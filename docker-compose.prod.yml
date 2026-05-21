@@ -114,7 +114,7 @@ services:
     # Even if the spawn-guard logic in the binary fails, the container's pid
     # namespace + these limits prevent a fork-bomb from reaching the host.
     networks:
-      - jakenet
+      - lab
     deploy:
       resources:
         limits:
@@ -126,6 +126,9 @@ volumes:
     driver: local
 
 networks:
-  jakenet:
-    name: jakenet
-    external: true
+  # Compose creates and manages this network on first `up`. Override the name
+  # via the DOCKER_NETWORK env var to attach to an existing bridge shared with
+  # other compose stacks — Compose joins a pre-existing network of that name
+  # without re-creating it. The homelab `.env` sets `DOCKER_NETWORK=jakenet`.
+  lab:
+    name: ${DOCKER_NETWORK:-lab}

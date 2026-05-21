@@ -353,24 +353,57 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     gateway_manager.seed_config(config.clone()).await;
     if !stdio_mode {
         install_gateway_manager(Arc::clone(&gateway_manager));
-        match gateway_manager.auto_import_discovered_configs().await {
-            Ok(result) => {
+        match config.gateway_import_mode {
+            crate::config::GatewayImportMode::Off => {
                 tracing::info!(
                     subsystem = "gateway_client",
-                    phase = "auto_import.finish",
-                    imported = result.imported.len(),
-                    skipped = result.skipped.len(),
-                    errors = result.errors.len(),
-                    "external MCP configs auto-imported"
+                    phase = "auto_import.skipped",
+                    reason = "gateway_import_mode=off",
+                    "external MCP config auto-import disabled"
                 );
             }
-            Err(error) => {
-                tracing::warn!(
-                    subsystem = "gateway_client",
-                    phase = "auto_import.failed",
-                    error = %error,
-                    "external MCP config auto-import failed"
-                );
+            crate::config::GatewayImportMode::Pending => {
+                match gateway_manager.discover_into_pending().await {
+                    Ok(result) => {
+                        tracing::info!(
+                            subsystem = "gateway_client",
+                            phase = "auto_import.pending",
+                            queued = result.queued,
+                            skipped = result.skipped,
+                            "discovered servers queued for approval"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            subsystem = "gateway_client",
+                            phase = "auto_import.pending_failed",
+                            error = %error,
+                            "pending-mode discovery failed"
+                        );
+                    }
+                }
+            }
+            crate::config::GatewayImportMode::Auto => {
+                match gateway_manager.auto_import_discovered_configs().await {
+                    Ok(result) => {
+                        tracing::info!(
+                            subsystem = "gateway_client",
+                            phase = "auto_import.finish",
+                            imported = result.imported.len(),
+                            skipped = result.skipped.len(),
+                            errors = result.errors.len(),
+                            "external MCP configs auto-imported"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            subsystem = "gateway_client",
+                            phase = "auto_import.failed",
+                            error = %error,
+                            "external MCP config auto-import failed"
+                        );
+                    }
+                }
             }
         }
         tracing::info!(
