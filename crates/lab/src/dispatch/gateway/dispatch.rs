@@ -40,9 +40,10 @@ pub async fn dispatch_with_manager(
             let action_name = require_str(&params_value, "action")?;
             action_schema(ACTIONS, action_name)
         }
-        "gateway.tool_search.get" | "gateway.tool_search.set" => {
-            handle_tool_actions(manager, action, params_value).await
-        }
+        "gateway.scout.get"
+        | "gateway.scout.set"
+        | "gateway.tool_search.get"
+        | "gateway.tool_search.set" => handle_tool_actions(manager, action, params_value).await,
         "gateway.discover" => handle_discover(manager, params_value).await,
         "gateway.import" => handle_import(manager, params_value).await,
         "gateway.import_pending.list" => to_json(manager.list_pending_imports().await),
@@ -339,8 +340,10 @@ async fn handle_tool_actions(
     params_value: Value,
 ) -> Result<Value, ToolError> {
     match action {
-        "gateway.tool_search.get" => to_json(manager.tool_search_config().await),
-        "gateway.tool_search.set" => {
+        "gateway.scout.get" | "gateway.tool_search.get" => {
+            to_json(manager.tool_search_config().await)
+        }
+        "gateway.scout.set" | "gateway.tool_search.set" => {
             let params: ToolSearchSetParams = parse_params(params_value)?;
             let mut next = manager.tool_search_config().await;
             next.enabled = params.enabled;
@@ -891,7 +894,7 @@ mod tests {
     async fn gateway_dispatch_rejects_synthetic_tool_execution_actions() {
         let manager = test_manager();
 
-        for action in ["tool_execute", "tool_invoke", "tool_search"] {
+        for action in ["tool_execute", "tool_invoke", "tool_search", "scout", "invoke"] {
             let err = dispatch_with_manager(&manager, action, json!({}))
                 .await
                 .expect_err("synthetic top-level MCP tools are not gateway actions");

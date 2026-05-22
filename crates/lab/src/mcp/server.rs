@@ -25,7 +25,8 @@ use tokio::sync::RwLock;
 use crate::config::NodeRole;
 use crate::dispatch::gateway::manager::{GatewayManager, GatewayToolSearchResult};
 use crate::mcp::catalog::{
-    LEGACY_TOOL_INVOKE_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME,
+    LEGACY_TOOL_EXECUTE_TOOL_NAME, LEGACY_TOOL_INVOKE_TOOL_NAME, LEGACY_TOOL_SEARCH_TOOL_NAME,
+        TOOL_EXECUTE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME,
 };
 use crate::mcp::elicitation::{ElicitResult, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra, build_success};
@@ -1080,12 +1081,11 @@ impl ServerHandler for LabMcpServer {
                 "Search Lab and proxied upstream tool catalogs \
                 using 2-4 intent words (e.g. \"docker container restart\", \
                 \"send push notification\", \"unifi wifi clients\"). \
-                Use this before tool_execute to discover available tool names \
+                Use this before invoke to discover available tool names \
                 and their required arguments. Returns tool names, descriptions, \
                 and optionally full input schemas. \
                 Covers: Docker/containers (arcane), notifications (apprise/gotify), \
-                media (radarr/sonarr/plex), networking (unifi/tailscale), \
-                storage (unraid), home automation, AI/RAG (axon), \
+                networking (unifi/tailscale), storage (unraid), AI/RAG (axon), \
                 and all other connected upstream MCP servers.",
                 tool_search_schema,
             ));
@@ -1103,13 +1103,13 @@ impl ServerHandler for LabMcpServer {
             };
             tools.push(Tool::new(
                 TOOL_EXECUTE_TOOL_NAME,
-                "Invoke one Lab or upstream tool discovered through tool_search. \
-                Pass the exact tool name returned by tool_search and a JSON \
+                "Invoke one Lab or upstream tool discovered through scout. \
+                Pass the exact tool name returned by scout and a JSON \
                 arguments object matching that tool's schema. \
                 Lab built-in tools take {\"action\": \"<name>\", \"params\": {...}}. \
                 Upstream tools use their own schema (retrieve with \
-                tool_search include_schema=true). \
-                When tool_search returns no match, call tool_search with \
+                scout include_schema=true). \
+                When scout returns no match, call scout with \
                 different keywords before giving up.",
                 tool_execute_schema,
             ));
@@ -1212,7 +1212,7 @@ impl ServerHandler for LabMcpServer {
         let param_key_count = params.as_object().map_or(0, serde_json::Map::len);
 
         let svc = self.registry.services().iter().find(|s| s.name == service);
-        if service == TOOL_SEARCH_TOOL_NAME {
+        if service == TOOL_SEARCH_TOOL_NAME || service == LEGACY_TOOL_SEARCH_TOOL_NAME {
             let started = Instant::now();
             let subject = self.request_subject_log_tag(&context);
             let query = args
@@ -1336,7 +1336,9 @@ impl ServerHandler for LabMcpServer {
         }
         if matches!(
             service.as_str(),
-            TOOL_EXECUTE_TOOL_NAME | LEGACY_TOOL_INVOKE_TOOL_NAME
+            TOOL_EXECUTE_TOOL_NAME
+                | LEGACY_TOOL_EXECUTE_TOOL_NAME
+                | LEGACY_TOOL_INVOKE_TOOL_NAME
         ) {
             let started = Instant::now();
             let tool_name = args
@@ -3131,7 +3133,7 @@ mod tests {
 
         assert_eq!(
             snapshot.tools,
-            ["tool_execute".to_string(), "tool_search".to_string()]
+            ["invoke".to_string(), "scout".to_string()]
                 .into_iter()
                 .collect()
         );

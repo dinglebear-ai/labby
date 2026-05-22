@@ -35,29 +35,29 @@ pub const ACTIONS: &[ActionSpec] = &[
         params: &[],
     },
     ActionSpec {
-        name: "gateway.tool_search.get",
-        description: "Read the gateway-wide tool-search settings",
+        name: "gateway.scout.get",
+        description: "Read the gateway-wide scout (tool discovery) settings",
         destructive: false,
-        returns: "ToolSearchConfig",
+        returns: "ScoutConfig",
         params: &[],
     },
     ActionSpec {
-        name: "gateway.tool_search.set",
-        description: "Enable or disable gateway-wide tool-search mode for all exposed upstream tools",
+        name: "gateway.scout.set",
+        description: "Enable or disable gateway-wide scout/invoke mode for all exposed upstream tools",
         destructive: true,
-        returns: "ToolSearchConfig",
+        returns: "ScoutConfig",
         params: &[
             ParamSpec {
                 name: "enabled",
                 ty: "boolean",
                 required: true,
-                description: "Whether tool_search/tool_execute mode is enabled for the gateway",
+                description: "Whether scout/invoke mode is enabled for the gateway",
             },
             ParamSpec {
                 name: "top_k_default",
                 ty: "integer",
                 required: false,
-                description: "Default result count for tool_search when top_k is omitted",
+                description: "Default result count for scout when top_k is omitted",
             },
             ParamSpec {
                 name: "max_tools",
