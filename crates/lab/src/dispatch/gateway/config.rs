@@ -50,6 +50,7 @@ const KNOWN_LAB_CONFIG_KEYS: &[&str] = &[
     "services",
     "auth",
     "tool_search",
+    "scout",
     "upstream",
     "upstream_import_tombstones",
     "protected_mcp_routes",
@@ -233,7 +234,7 @@ pub fn update_upstream(
     if patch.tool_search.is_some() {
         return Err(ToolError::InvalidParam {
             message:
-                "tool_search is gateway-wide; use gateway.tool_search.set instead of gateway.update"
+                "scout config is gateway-wide; use gateway.scout.set instead of gateway.update"
                     .to_string(),
             param: "tool_search".to_string(),
         });
