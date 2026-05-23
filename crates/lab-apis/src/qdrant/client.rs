@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use super::error::QdrantError;
 use super::types::{QueryResponse, SearchHit, SparseVector, UpsertPoint};
+use crate::core::Auth;
+use reqwest::RequestBuilder;
 use serde::Serialize;
 use serde_json::json;
 
@@ -25,12 +27,18 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 
 pub struct QdrantClient {
     base_url: String,
+    auth: Auth,
 }
 
 impl QdrantClient {
     pub fn new(base_url: &str) -> Self {
+        Self::with_auth(base_url, Auth::None)
+    }
+
+    pub fn with_auth(base_url: &str, auth: Auth) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
+            auth,
         }
     }
 
@@ -46,6 +54,17 @@ impl QdrantClient {
         }
     }
 
+    fn apply_auth(&self, req: RequestBuilder) -> RequestBuilder {
+        match &self.auth {
+            Auth::None => req,
+            Auth::ApiKey { header, key } => req.header(header, key),
+            Auth::Token { token } => req.header("Authorization", format!("Token {token}")),
+            Auth::Bearer { token } => req.bearer_auth(token),
+            Auth::Basic { username, password } => req.basic_auth(username, Some(password)),
+            Auth::Session { cookie } => req.header("Cookie", cookie),
+        }
+    }
+
     /// Create the collection if it does not exist; no-op if it already exists.
     ///
     /// Schema: named `dense` (Cosine, `dense_dim`-dimensional) + named `bm42` sparse
@@ -57,7 +76,7 @@ impl QdrantClient {
     ) -> Result<(), QdrantError> {
         // Check if collection already exists.
         let check_url = self.collection_url(collection);
-        let resp = HTTP_CLIENT.get(&check_url).send().await?;
+        let resp = self.apply_auth(HTTP_CLIENT.get(&check_url)).send().await?;
         if resp.status().is_success() {
             return Ok(());
         }
@@ -78,7 +97,10 @@ impl QdrantClient {
             },
             "on_disk_payload": true
         });
-        let resp = HTTP_CLIENT.put(&create_url).json(&body).send().await?;
+        let resp = self
+            .apply_auth(HTTP_CLIENT.put(&create_url).json(&body))
+            .send()
+            .await?;
         // 409 = already exists (race-safe).
         if !resp.status().is_success() && resp.status().as_u16() != 409 {
             let status = resp.status().as_u16();
@@ -128,9 +150,8 @@ impl QdrantClient {
 
         // Qdrant upsert: PUT /collections/{name}/points?wait=true
         let url = format!("{}?wait=true", self.points_url(collection, ""));
-        let resp = HTTP_CLIENT
-            .put(&url)
-            .json(&json!({ "points": bodies }))
+        let resp = self
+            .apply_auth(HTTP_CLIENT.put(&url).json(&json!({ "points": bodies })))
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -176,7 +197,10 @@ impl QdrantClient {
             "with_payload": true,
             "with_vector": false
         });
-        let resp = HTTP_CLIENT.post(&url).json(&body).send().await?;
+        let resp = self
+            .apply_auth(HTTP_CLIENT.post(&url).json(&body))
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
@@ -208,7 +232,10 @@ impl QdrantClient {
                 "quantization": { "rescore": true, "oversampling": 1.5 }
             }
         });
-        let resp = HTTP_CLIENT.post(&url).json(&body).send().await?;
+        let resp = self
+            .apply_auth(HTTP_CLIENT.post(&url).json(&body))
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
@@ -235,7 +262,10 @@ impl QdrantClient {
                 "must": [{ "key": field, "match": { "value": value } }]
             }
         });
-        let resp = HTTP_CLIENT.post(&url).json(&body).send().await?;
+        let resp = self
+            .apply_auth(HTTP_CLIENT.post(&url).json(&body))
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
@@ -258,9 +288,8 @@ impl QdrantClient {
         filter: serde_json::Value,
     ) -> Result<(), QdrantError> {
         let url = format!("{}?wait=true", self.points_url(collection, "delete"));
-        let resp = HTTP_CLIENT
-            .post(&url)
-            .json(&json!({ "filter": filter }))
+        let resp = self
+            .apply_auth(HTTP_CLIENT.post(&url).json(&json!({ "filter": filter })))
             .send()
             .await?;
         if !resp.status().is_success() {

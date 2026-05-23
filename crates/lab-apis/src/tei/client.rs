@@ -4,6 +4,8 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use super::error::TeiError;
+use crate::core::Auth;
+use reqwest::RequestBuilder;
 
 /// Instruction prefix for Qwen3-Embedding asymmetric query encoding.
 ///
@@ -35,12 +37,29 @@ const BACKOFF_BASE_MS: u64 = 250;
 
 pub struct TeiClient {
     base_url: String,
+    auth: Auth,
 }
 
 impl TeiClient {
     pub fn new(base_url: &str) -> Self {
+        Self::with_auth(base_url, Auth::None)
+    }
+
+    pub fn with_auth(base_url: &str, auth: Auth) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
+            auth,
+        }
+    }
+
+    fn apply_auth(&self, req: RequestBuilder) -> RequestBuilder {
+        match &self.auth {
+            Auth::None => req,
+            Auth::ApiKey { header, key } => req.header(header, key),
+            Auth::Token { token } => req.header("Authorization", format!("Token {token}")),
+            Auth::Bearer { token } => req.bearer_auth(token),
+            Auth::Basic { username, password } => req.basic_auth(username, Some(password)),
+            Auth::Session { cookie } => req.header("Cookie", cookie),
         }
     }
 
@@ -54,7 +73,11 @@ impl TeiClient {
 
         let mut last_err: Option<TeiError> = None;
         for attempt in 0..MAX_ATTEMPTS {
-            match HTTP_CLIENT.post(&url).json(&body).send().await {
+            match self
+                .apply_auth(HTTP_CLIENT.post(&url).json(&body))
+                .send()
+                .await
+            {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() {

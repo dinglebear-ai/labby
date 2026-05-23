@@ -453,10 +453,16 @@ pub struct ToolSearchConfig {
     /// when neither this field nor the env var is set.
     #[serde(default)]
     pub qdrant_url: Option<String>,
+    /// Qdrant API key for semantic tool search. Prefer `QDRANT_API_KEY` in `.env`.
+    #[serde(default)]
+    pub qdrant_api_key: Option<Secret>,
     /// TEI base URL for embedding queries and documents (e.g. `http://localhost:52000`).
     /// Falls back to `TEI_URL` env var if absent.
     #[serde(default)]
     pub tei_url: Option<String>,
+    /// TEI API key for semantic tool search. Prefer `TEI_API_KEY` in `.env`.
+    #[serde(default)]
+    pub tei_api_key: Option<Secret>,
     /// Qdrant collection name for tool vectors. Default: `lab-tools`.
     #[serde(default = "default_tools_collection")]
     pub tools_collection: String,
@@ -470,7 +476,9 @@ impl Default for ToolSearchConfig {
             max_tools: default_tool_search_max_tools(),
             score_floor_fraction: default_score_floor_fraction(),
             qdrant_url: None,
+            qdrant_api_key: None,
             tei_url: None,
+            tei_api_key: None,
             tools_collection: default_tools_collection(),
         }
     }
@@ -485,12 +493,34 @@ impl ToolSearchConfig {
             .or_else(|| std::env::var("QDRANT_URL").ok().filter(|s| !s.is_empty()))
     }
 
+    /// Resolve Qdrant API key: config field → `QDRANT_API_KEY` env var → None.
+    pub fn resolved_qdrant_api_key(&self) -> Option<String> {
+        self.qdrant_api_key
+            .as_ref()
+            .map(|s| s.expose().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                std::env::var("QDRANT_API_KEY")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            })
+    }
+
     /// Resolve TEI URL: config field → `TEI_URL` env var → None.
     pub fn resolved_tei_url(&self) -> Option<String> {
         self.tei_url
             .clone()
             .filter(|s| !s.is_empty())
             .or_else(|| std::env::var("TEI_URL").ok().filter(|s| !s.is_empty()))
+    }
+
+    /// Resolve TEI API key: config field → `TEI_API_KEY` env var → None.
+    pub fn resolved_tei_api_key(&self) -> Option<String> {
+        self.tei_api_key
+            .as_ref()
+            .map(|s| s.expose().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("TEI_API_KEY").ok().filter(|s| !s.is_empty()))
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
