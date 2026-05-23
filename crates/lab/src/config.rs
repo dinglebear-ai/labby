@@ -493,11 +493,6 @@ impl ToolSearchConfig {
             .or_else(|| std::env::var("TEI_URL").ok().filter(|s| !s.is_empty()))
     }
 
-    /// Returns `true` when both Qdrant and TEI URLs can be resolved.
-    pub fn semantic_enabled(&self) -> bool {
-        self.resolved_qdrant_url().is_some() && self.resolved_tei_url().is_some()
-    }
-
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !(1..=50).contains(&self.top_k_default) {
             return Err(ConfigError::InvalidToolSearchTopKDefault {
