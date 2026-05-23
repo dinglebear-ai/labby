@@ -1064,6 +1064,8 @@ impl ServerHandler for LabMcpServer {
             }
         }
         if manager_tool_search_enabled {
+            // scout and invoke are gateway meta-tools with no shared dispatch layer equivalent.
+            // See mcp/CLAUDE.md for the exception rationale and dispatch/gateway/dispatch.rs guard.
             let tool_search_schema = match serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1215,6 +1217,26 @@ impl ServerHandler for LabMcpServer {
         if service == TOOL_SEARCH_TOOL_NAME || service == LEGACY_TOOL_SEARCH_TOOL_NAME {
             let started = Instant::now();
             let subject = self.request_subject_log_tag(&context);
+            let auth = auth_context_from_extensions(&context.extensions);
+            if !tool_search_scope_allowed(auth) {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = %service,
+                    action = "call_tool",
+                    subject,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    kind = "forbidden",
+                    "gateway tool search denied by scope"
+                );
+                let env = build_error_extra(
+                    &service,
+                    "call_tool",
+                    "forbidden",
+                    "scout requires one of scopes: lab:read, lab, lab:admin",
+                    &serde_json::json!({ "required_scopes": ["lab:read", "lab", "lab:admin"] }),
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
             let query = args
                 .get("query")
                 .and_then(Value::as_str)
@@ -1225,10 +1247,11 @@ impl ServerHandler for LabMcpServer {
                 .get("top_k")
                 .and_then(Value::as_u64)
                 .map(|value| value as usize);
-            let include_schema = args
+            let include_schema_requested = args
                 .get("include_schema")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let include_schema = tool_search_include_schema_allowed(auth, include_schema_requested);
             let Some(manager) = &self.gateway_manager else {
                 let envelope = build_error(
                     &service,
@@ -2550,6 +2573,26 @@ fn tool_execute_scope_allowed(auth: Option<&crate::api::oauth::AuthContext>) -> 
     })
 }
 
+fn tool_search_scope_allowed(auth: Option<&crate::api::oauth::AuthContext>) -> bool {
+    auth.is_none_or(|auth| {
+        auth.scopes
+            .iter()
+            .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin"))
+    })
+}
+
+fn tool_search_include_schema_allowed(
+    auth: Option<&crate::api::oauth::AuthContext>,
+    requested: bool,
+) -> bool {
+    requested
+        && auth.is_none_or(|auth| {
+            auth.scopes
+                .iter()
+                .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin"))
+        })
+}
+
 fn tool_execute_builtin_action_allowed(
     entry: &crate::registry::RegisteredService,
     action: &str,
@@ -3387,6 +3430,75 @@ mod tests {
             &entry,
             "gateway.import",
             None
+        ));
+    }
+
+    #[test]
+    fn tool_search_scope_allows_read_but_tool_execute_does_not() {
+        let base = crate::api::oauth::AuthContext {
+            sub: "alice".to_string(),
+            actor_key: None,
+            scopes: vec!["lab:read".to_string()],
+            issuer: "https://lab.example.com".to_string(),
+            via_session: true,
+            csrf_token: None,
+            email: None,
+        };
+        let lab = crate::api::oauth::AuthContext {
+            scopes: vec!["lab".to_string()],
+            ..base.clone()
+        };
+        let admin = crate::api::oauth::AuthContext {
+            scopes: vec!["lab:admin".to_string()],
+            ..base.clone()
+        };
+        let empty = crate::api::oauth::AuthContext {
+            scopes: Vec::new(),
+            ..base.clone()
+        };
+        let unrelated = crate::api::oauth::AuthContext {
+            scopes: vec!["profile".to_string()],
+            ..base.clone()
+        };
+
+        assert!(super::tool_search_scope_allowed(None));
+        assert!(super::tool_search_scope_allowed(Some(&base)));
+        assert!(super::tool_search_scope_allowed(Some(&lab)));
+        assert!(super::tool_search_scope_allowed(Some(&admin)));
+        assert!(!super::tool_search_scope_allowed(Some(&empty)));
+        assert!(!super::tool_search_scope_allowed(Some(&unrelated)));
+
+        assert!(
+            !super::tool_execute_scope_allowed(Some(&base)),
+            "lab:read can search but cannot invoke"
+        );
+    }
+
+    #[test]
+    fn tool_search_include_schema_is_suppressed_for_lab_read_scope() {
+        let read_only = crate::api::oauth::AuthContext {
+            sub: "alice".to_string(),
+            actor_key: None,
+            scopes: vec!["lab:read".to_string()],
+            issuer: "https://lab.example.com".to_string(),
+            via_session: true,
+            csrf_token: None,
+            email: None,
+        };
+        let admin = crate::api::oauth::AuthContext {
+            scopes: vec!["lab:admin".to_string()],
+            ..read_only.clone()
+        };
+
+        assert!(!super::tool_search_include_schema_allowed(
+            Some(&read_only),
+            true
+        ));
+        assert!(super::tool_search_include_schema_allowed(Some(&admin), true));
+        assert!(super::tool_search_include_schema_allowed(None, true));
+        assert!(!super::tool_search_include_schema_allowed(
+            Some(&admin),
+            false
         ));
     }
 
