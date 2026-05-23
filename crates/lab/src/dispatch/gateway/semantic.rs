@@ -506,7 +506,12 @@ fn union_by_best_rank(primary: Vec<SearchHit>, secondary: Vec<SearchHit>) -> Vec
 /// payload (name + upstream + description) so callers see them in results.
 /// Without this, the whole point of semantic search — rescuing tools the
 /// lexical scorer can't reach — is lost.
-pub fn rrf_fuse(lexical: &[LexicalHit], semantic: &[SemanticHit], top_k: usize) -> Vec<LexicalHit> {
+pub fn rrf_fuse(
+    lexical: &[LexicalHit],
+    semantic: &[SemanticHit],
+    upstream_priority: &HashMap<String, f32>,
+    top_k: usize,
+) -> Vec<LexicalHit> {
     const K: f32 = 60.0;
 
     let lexical_map: HashMap<(&str, &str), &LexicalHit> = lexical
@@ -521,16 +526,6 @@ pub fn rrf_fuse(lexical: &[LexicalHit], semantic: &[SemanticHit], top_k: usize) 
     let semantic_map: HashMap<(&str, &str), &SemanticHit> = semantic
         .iter()
         .map(|s| ((s.name.as_str(), s.upstream.as_str()), s))
-        .collect();
-
-    // Inherit upstream priority for semantic-only hits from any sibling lexical
-    // hit on the same upstream. Upstreams configured with priority=0 are
-    // suppressed and have NO lexical entries (the >0 filter at IndexedTool::search
-    // drops them), so a missing entry here means "either not suppressed, or
-    // semantic-indexed with no lexical view" — default to 1.0 (not suppressed).
-    let priority_by_upstream: HashMap<&str, f32> = lexical
-        .iter()
-        .map(|hit| (hit.tool.upstream_name.as_str(), hit.tool.priority))
         .collect();
 
     let mut rrf_scores: HashMap<(&str, &str), f32> = HashMap::new();
@@ -554,10 +549,11 @@ pub fn rrf_fuse(lexical: &[LexicalHit], semantic: &[SemanticHit], top_k: usize) 
                 Some((score, (*hit).clone()))
             } else if let Some(sem) = semantic_map.get(&(name, upstream)) {
                 // Semantic-only hit: synthesize an IndexedTool from the payload.
-                // Inherit upstream priority from the lexical view — semantic-only
-                // hits on suppressed (priority=0) upstreams are dropped so the
-                // user-configured suppression survives fusion.
-                let priority = priority_by_upstream.get(upstream).copied().unwrap_or(1.0);
+                // Use the caller's config snapshot instead of inferring from
+                // lexical hits. A priority=0 upstream has no lexical hits, so
+                // lexical-derived priority cannot distinguish "suppressed"
+                // from "healthy upstream with no keyword overlap".
+                let priority = upstream_priority.get(upstream).copied().unwrap_or(1.0);
                 if priority == 0.0 {
                     return None;
                 }
@@ -698,7 +694,8 @@ mod tests {
             },
         ];
 
-        let fused = rrf_fuse(&lexical, &semantic, 5);
+        let upstream_priority = HashMap::from([("lab".to_string(), 1.0)]);
+        let fused = rrf_fuse(&lexical, &semantic, &upstream_priority, 5);
         assert_eq!(fused[0].tool.name, "logs", "logs must rank first");
         // arcane is semantic-only — must now SURFACE, not be dropped.
         let arcane = fused.iter().find(|h| h.tool.name == "arcane");
@@ -708,5 +705,24 @@ mod tests {
         );
         assert_eq!(arcane.unwrap().tool.upstream_name, "lab");
         assert_eq!(arcane.unwrap().tool.description, "docker container manager");
+    }
+
+    #[test]
+    fn rrf_fuse_suppresses_semantic_only_hits_from_priority_zero_upstreams() {
+        let lexical = Vec::new();
+        let semantic = vec![SemanticHit {
+            name: "secret-tool".to_string(),
+            upstream: "suppressed".to_string(),
+            description: "must not surface through semantic-only search".to_string(),
+            rank: 0,
+        }];
+        let upstream_priority = HashMap::from([("suppressed".to_string(), 0.0)]);
+
+        let fused = rrf_fuse(&lexical, &semantic, &upstream_priority, 5);
+
+        assert!(
+            fused.is_empty(),
+            "priority=0 upstreams must not surface through semantic-only RRF hits"
+        );
     }
 }

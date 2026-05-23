@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -2060,7 +2060,16 @@ impl GatewayManager {
         top_k: usize,
         include_schema: bool,
     ) -> Result<Vec<GatewayToolSearchResult>, ToolError> {
-        if !self.config.read().await.tool_search.enabled {
+        let cfg = self.config.read().await;
+        let tool_search_cfg = cfg.tool_search.clone();
+        let upstream_priority: HashMap<String, f32> = cfg
+            .upstream
+            .iter()
+            .map(|upstream| (upstream.name.clone(), upstream.priority.max(0.0)))
+            .collect();
+        drop(cfg);
+
+        if !tool_search_cfg.enabled {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: "tool search is not enabled".to_string(),
@@ -2085,7 +2094,6 @@ impl GatewayManager {
             .await;
 
         let requested = top_k.max(1).min(50);
-        let tool_search_cfg = self.config.read().await.tool_search.clone();
         let semantic_enabled = tool_search_cfg.semantic_enabled();
         // When semantic search is enabled, skip the lexical score-floor: the
         // floor would otherwise drop low-lexical-score tools BEFORE semantic
@@ -2146,9 +2154,12 @@ impl GatewayManager {
             )
             .await
             {
-                Ok(semantic_hits) => {
-                    crate::dispatch::gateway::semantic::rrf_fuse(&hits, &semantic_hits, requested)
-                }
+                Ok(semantic_hits) => crate::dispatch::gateway::semantic::rrf_fuse(
+                    &hits,
+                    &semantic_hits,
+                    &upstream_priority,
+                    requested,
+                ),
                 Err(e) => {
                     tracing::warn!(
                         service = "tool_search",
@@ -2196,7 +2207,22 @@ impl GatewayManager {
             message: format!("tool `{name}` is not available"),
         })?;
 
-        let matches = pool.find_tool_candidates(name).await;
+        let priority_by_upstream: HashMap<String, f32> = self
+            .config
+            .read()
+            .await
+            .upstream
+            .iter()
+            .map(|upstream| (upstream.name.clone(), upstream.priority.max(0.0)))
+            .collect();
+        let matches: Vec<_> = pool
+            .find_tool_candidates(name)
+            .await
+            .into_iter()
+            .filter(|(upstream, _)| {
+                priority_by_upstream.get(upstream).copied().unwrap_or(1.0) > 0.0
+            })
+            .collect();
         if matches.is_empty() {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
@@ -2318,6 +2344,17 @@ impl GatewayManager {
             let pool = pool.clone();
             let max_tools = cfg.tool_search.max_tools;
             let semantic_cfg = cfg.tool_search.clone();
+            let semantic_urls = if semantic_cfg.semantic_enabled() {
+                match (
+                    semantic_cfg.resolved_qdrant_url(),
+                    semantic_cfg.resolved_tei_url(),
+                ) {
+                    (Some(qdrant_url), Some(tei_url)) => Some((qdrant_url, tei_url)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             state.warming.store(true, Ordering::Relaxed);
             let state_for_task = state.clone();
             tracing::info!(
@@ -2364,10 +2401,13 @@ impl GatewayManager {
                     }
                     // Async-index into Qdrant if semantic search is configured.
                     // Fire-and-forget: failures are logged but do not block the lexical index.
-                    if semantic_cfg.semantic_enabled() {
-                        let qdrant_url = semantic_cfg.resolved_qdrant_url().expect("checked");
-                        let tei_url = semantic_cfg.resolved_tei_url().expect("checked");
-                        let tools_to_index: Vec<_> = index.tools.clone();
+                    if let Some((qdrant_url, tei_url)) = semantic_urls.clone() {
+                        let tools_to_index: Vec<_> = index
+                            .tools
+                            .iter()
+                            .filter(|tool| tool.priority > 0.0)
+                            .cloned()
+                            .collect();
                         let upstream_for_sem = upstream_name.clone();
                         tokio::spawn(async move {
                             if let Err(e) =
@@ -2425,11 +2465,8 @@ impl GatewayManager {
                     // generation freshness. Run it anyway so that disabled or
                     // empty upstreams don't leave stale semantic entries that
                     // poison future searches.
-                    if semantic_cfg.semantic_enabled() && tool_count == 0 {
-                        if let (Some(qdrant_url), Some(tei_url)) = (
-                            semantic_cfg.resolved_qdrant_url(),
-                            semantic_cfg.resolved_tei_url(),
-                        ) {
+                    if tool_count == 0 {
+                        if let Some((qdrant_url, tei_url)) = semantic_urls.clone() {
                             let upstream_for_sem = upstream_name.clone();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -2449,8 +2486,12 @@ impl GatewayManager {
                                 )
                                 .await
                                 {
-                                    Ok(()) => tracing::info!(service = "scout", action = "semantic.sweep", upstream = %upstream_for_sem, "stale Qdrant entries purged for empty upstream"),
-                                    Err(e) => tracing::warn!(service = "scout", action = "semantic.sweep", upstream = %upstream_for_sem, error = %e, "stale-gen Qdrant sweep failed"),
+                                    Ok(()) => {
+                                        tracing::info!(service = "scout", action = "semantic.sweep", upstream = %upstream_for_sem, "stale Qdrant entries purged for empty upstream")
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(service = "scout", action = "semantic.sweep", upstream = %upstream_for_sem, error = %e, "stale-gen Qdrant sweep failed")
+                                    }
                                 }
                             });
                         }
@@ -3170,6 +3211,42 @@ mod tests {
         (manager, pool)
     }
 
+    fn healthy_entry_with_tool(
+        upstream: &str,
+        tool_name: &str,
+    ) -> crate::dispatch::upstream::types::UpstreamEntry {
+        let upstream_name: Arc<str> = Arc::from(upstream);
+        let schema = Arc::new(serde_json::Map::new());
+        let tool = rmcp::model::Tool::new(
+            tool_name.to_string(),
+            format!("{tool_name} description"),
+            schema,
+        );
+        let upstream_tool = crate::dispatch::upstream::types::UpstreamTool {
+            tool,
+            input_schema: None,
+            upstream_name: Arc::clone(&upstream_name),
+        };
+        crate::dispatch::upstream::types::UpstreamEntry {
+            name: Arc::clone(&upstream_name),
+            tools: HashMap::from([(tool_name.to_string(), upstream_tool)]),
+            exposure_policy: crate::dispatch::upstream::types::ToolExposurePolicy::All,
+            prompt_count: 0,
+            resource_count: 0,
+            prompt_names: Vec::new(),
+            resource_uris: Vec::new(),
+            tool_health: crate::dispatch::upstream::types::UpstreamHealth::Healthy,
+            prompt_health: crate::dispatch::upstream::types::UpstreamHealth::Healthy,
+            resource_health: crate::dispatch::upstream::types::UpstreamHealth::Healthy,
+            tool_unhealthy_since: None,
+            prompt_unhealthy_since: None,
+            resource_unhealthy_since: None,
+            tool_last_error: None,
+            prompt_last_error: None,
+            resource_last_error: None,
+        }
+    }
+
     #[tokio::test]
     async fn tool_search_empty_index_always_retries_regardless_of_ttl() {
         // Empty indexes bypass the TTL so a post-restart cold index does not
@@ -3207,6 +3284,28 @@ mod tests {
             second_attempt >= first_attempt,
             "empty-index reprobe must update the attempt timestamp on each search"
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_tool_execute_hides_priority_zero_upstreams() {
+        let mut upstream = fixture_http_upstream("suppressed");
+        upstream.priority = 0.0;
+        let (manager, pool) = tool_search_manager_with_pool(upstream).await;
+        pool.insert_entry_for_tests(
+            "suppressed",
+            healthy_entry_with_tool("suppressed", "secret-tool"),
+        )
+        .await;
+
+        let err = manager
+            .resolve_tool_execute("secret-tool")
+            .await
+            .expect_err("priority=0 upstream tools must not be invokable by known name");
+
+        match err {
+            ToolError::Sdk { sdk_kind, .. } => assert_eq!(sdk_kind, "unknown_tool"),
+            other => panic!("expected unknown_tool sdk error, got {other:?}"),
+        }
     }
 
     #[tokio::test]
