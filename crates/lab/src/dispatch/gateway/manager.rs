@@ -2094,7 +2094,14 @@ impl GatewayManager {
             .await;
 
         let requested = top_k.max(1).min(50);
-        let semantic_enabled = tool_search_cfg.semantic_enabled();
+        let semantic_urls = match (
+            tool_search_cfg.resolved_qdrant_url(),
+            tool_search_cfg.resolved_tei_url(),
+        ) {
+            (Some(qdrant_url), Some(tei_url)) => Some((qdrant_url, tei_url)),
+            _ => None,
+        };
+        let semantic_enabled = semantic_urls.is_some();
         // When semantic search is enabled, skip the lexical score-floor: the
         // floor would otherwise drop low-lexical-score tools BEFORE semantic
         // could rescue them via RRF. The post-fusion top_k truncation handles
@@ -2141,11 +2148,7 @@ impl GatewayManager {
         // Graceful degradation: if Qdrant/TEI are unavailable, log a WARN and return
         // lexical results unchanged. Every return path truncates to `requested` —
         // the wider `lexical_window` is only a fusion-input convenience.
-        let mut hits = if tool_search_cfg.semantic_enabled() {
-            let qdrant_url = tool_search_cfg
-                .resolved_qdrant_url()
-                .expect("checked above");
-            let tei_url = tool_search_cfg.resolved_tei_url().expect("checked above");
+        let mut hits = if let Some((qdrant_url, tei_url)) = semantic_urls {
             match crate::dispatch::gateway::semantic::search_semantic(
                 &qdrant_url,
                 &tei_url,
@@ -2344,16 +2347,12 @@ impl GatewayManager {
             let pool = pool.clone();
             let max_tools = cfg.tool_search.max_tools;
             let semantic_cfg = cfg.tool_search.clone();
-            let semantic_urls = if semantic_cfg.semantic_enabled() {
-                match (
-                    semantic_cfg.resolved_qdrant_url(),
-                    semantic_cfg.resolved_tei_url(),
-                ) {
-                    (Some(qdrant_url), Some(tei_url)) => Some((qdrant_url, tei_url)),
-                    _ => None,
-                }
-            } else {
-                None
+            let semantic_urls = match (
+                semantic_cfg.resolved_qdrant_url(),
+                semantic_cfg.resolved_tei_url(),
+            ) {
+                (Some(qdrant_url), Some(tei_url)) => Some((qdrant_url, tei_url)),
+                _ => None,
             };
             state.warming.store(true, Ordering::Relaxed);
             let state_for_task = state.clone();
