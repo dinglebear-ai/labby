@@ -2098,7 +2098,12 @@ impl GatewayManager {
             tool_search_cfg.resolved_qdrant_url(),
             tool_search_cfg.resolved_tei_url(),
         ) {
-            (Some(qdrant_url), Some(tei_url)) => Some((qdrant_url, tei_url)),
+            (Some(qdrant_url), Some(tei_url)) => Some((
+                qdrant_url,
+                tei_url,
+                tool_search_cfg.resolved_qdrant_api_key(),
+                tool_search_cfg.resolved_tei_api_key(),
+            )),
             _ => None,
         };
         let semantic_enabled = semantic_urls.is_some();
@@ -2148,34 +2153,37 @@ impl GatewayManager {
         // Graceful degradation: if Qdrant/TEI are unavailable, log a WARN and return
         // lexical results unchanged. Every return path truncates to `requested` —
         // the wider `lexical_window` is only a fusion-input convenience.
-        let mut hits = if let Some((qdrant_url, tei_url)) = semantic_urls {
-            match crate::dispatch::gateway::semantic::search_semantic(
-                &qdrant_url,
-                &tei_url,
-                trimmed,
-                requested * 3,
-            )
-            .await
-            {
-                Ok(semantic_hits) => crate::dispatch::gateway::semantic::rrf_fuse(
-                    &hits,
-                    &semantic_hits,
-                    &upstream_priority,
-                    requested,
-                ),
-                Err(e) => {
-                    tracing::warn!(
-                        service = "tool_search",
-                        action = "semantic_search",
-                        error = %e,
-                        "semantic search unavailable, falling back to lexical results"
-                    );
-                    hits
+        let mut hits =
+            if let Some((qdrant_url, tei_url, qdrant_api_key, tei_api_key)) = semantic_urls {
+                match crate::dispatch::gateway::semantic::search_semantic(
+                    &qdrant_url,
+                    &tei_url,
+                    qdrant_api_key.as_deref(),
+                    tei_api_key.as_deref(),
+                    trimmed,
+                    requested * 3,
+                )
+                .await
+                {
+                    Ok(semantic_hits) => crate::dispatch::gateway::semantic::rrf_fuse(
+                        &hits,
+                        &semantic_hits,
+                        &upstream_priority,
+                        requested,
+                    ),
+                    Err(e) => {
+                        tracing::warn!(
+                            service = "tool_search",
+                            action = "semantic_search",
+                            error = %e,
+                            "semantic search unavailable, falling back to lexical results"
+                        );
+                        hits
+                    }
                 }
-            }
-        } else {
-            hits
-        };
+            } else {
+                hits
+            };
         hits.truncate(requested);
 
         Ok(hits
@@ -2351,7 +2359,12 @@ impl GatewayManager {
                 semantic_cfg.resolved_qdrant_url(),
                 semantic_cfg.resolved_tei_url(),
             ) {
-                (Some(qdrant_url), Some(tei_url)) => Some((qdrant_url, tei_url)),
+                (Some(qdrant_url), Some(tei_url)) => Some((
+                    qdrant_url,
+                    tei_url,
+                    semantic_cfg.resolved_qdrant_api_key(),
+                    semantic_cfg.resolved_tei_api_key(),
+                )),
                 _ => None,
             };
             state.warming.store(true, Ordering::Relaxed);
@@ -2400,7 +2413,9 @@ impl GatewayManager {
                     }
                     // Async-index into Qdrant if semantic search is configured.
                     // Fire-and-forget: failures are logged but do not block the lexical index.
-                    if let Some((qdrant_url, tei_url)) = semantic_urls.clone() {
+                    if let Some((qdrant_url, tei_url, qdrant_api_key, tei_api_key)) =
+                        semantic_urls.clone()
+                    {
                         let tools_to_index: Vec<_> = index
                             .tools
                             .iter()
@@ -2412,6 +2427,7 @@ impl GatewayManager {
                             if let Err(e) =
                                 crate::dispatch::gateway::semantic::ensure_tools_collection(
                                     &qdrant_url,
+                                    qdrant_api_key.as_deref(),
                                 )
                                 .await
                             {
@@ -2421,6 +2437,8 @@ impl GatewayManager {
                             match crate::dispatch::gateway::semantic::index_tools(
                                 &qdrant_url,
                                 &tei_url,
+                                qdrant_api_key.as_deref(),
+                                tei_api_key.as_deref(),
                                 &upstream_for_sem,
                                 &tools_to_index,
                             )
@@ -2465,12 +2483,15 @@ impl GatewayManager {
                     // empty upstreams don't leave stale semantic entries that
                     // poison future searches.
                     if tool_count == 0 {
-                        if let Some((qdrant_url, tei_url)) = semantic_urls.clone() {
+                        if let Some((qdrant_url, tei_url, qdrant_api_key, tei_api_key)) =
+                            semantic_urls.clone()
+                        {
                             let upstream_for_sem = upstream_name.clone();
                             tokio::spawn(async move {
                                 if let Err(e) =
                                     crate::dispatch::gateway::semantic::ensure_tools_collection(
                                         &qdrant_url,
+                                        qdrant_api_key.as_deref(),
                                     )
                                     .await
                                 {
@@ -2480,6 +2501,8 @@ impl GatewayManager {
                                 match crate::dispatch::gateway::semantic::index_tools(
                                     &qdrant_url,
                                     &tei_url,
+                                    qdrant_api_key.as_deref(),
+                                    tei_api_key.as_deref(),
                                     &upstream_for_sem,
                                     &[],
                                 )

@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
+use lab_apis::core::Auth;
 use lab_apis::qdrant::{QdrantClient, QdrantError, SearchHit, SparseVector, UpsertPoint};
 use lab_apis::tei::{EmbedInput, TeiClient, TeiError};
 
@@ -189,6 +190,25 @@ pub(crate) fn tool_point_id(upstream: &str, name: &str) -> u64 {
 /// Qdrant collection for lab tool vectors.
 pub const TOOLS_COLLECTION: &str = "lab-tools";
 
+fn qdrant_auth(api_key: Option<&str>) -> Auth {
+    match api_key.filter(|key| !key.is_empty()) {
+        Some(key) => Auth::ApiKey {
+            header: "api-key".to_string(),
+            key: key.to_string(),
+        },
+        None => Auth::None,
+    }
+}
+
+fn tei_auth(api_key: Option<&str>) -> Auth {
+    match api_key.filter(|key| !key.is_empty()) {
+        Some(key) => Auth::Bearer {
+            token: key.to_string(),
+        },
+        None => Auth::None,
+    }
+}
+
 /// Dense embedding dimension (must match the TEI model output dimension).
 const DENSE_DIM: usize = 1024;
 
@@ -229,8 +249,11 @@ impl From<QdrantError> for SemanticError {
 // ── Collection setup ──────────────────────────────────────────────────────────
 
 /// Ensure the `lab-tools` collection exists with the named dense+bm42 schema.
-pub async fn ensure_tools_collection(qdrant_url: &str) -> Result<(), SemanticError> {
-    let client = QdrantClient::new(qdrant_url);
+pub async fn ensure_tools_collection(
+    qdrant_url: &str,
+    qdrant_api_key: Option<&str>,
+) -> Result<(), SemanticError> {
+    let client = QdrantClient::with_auth(qdrant_url, qdrant_auth(qdrant_api_key));
     client
         .ensure_named_collection(TOOLS_COLLECTION, DENSE_DIM)
         .await?;
@@ -255,11 +278,13 @@ fn tool_embed_text(name: &str, description: &str) -> String {
 pub async fn index_tools(
     qdrant_url: &str,
     tei_url: &str,
+    qdrant_api_key: Option<&str>,
+    tei_api_key: Option<&str>,
     upstream_name: &str,
     tools: &[IndexedTool],
 ) -> Result<(), SemanticError> {
-    let tei = TeiClient::new(tei_url);
-    let qdrant = QdrantClient::new(qdrant_url);
+    let tei = TeiClient::with_auth(tei_url, tei_auth(tei_api_key));
+    let qdrant = QdrantClient::with_auth(qdrant_url, qdrant_auth(qdrant_api_key));
 
     if tools.is_empty() {
         qdrant
@@ -351,11 +376,13 @@ pub struct SemanticHit {
 pub async fn search_semantic(
     qdrant_url: &str,
     tei_url: &str,
+    qdrant_api_key: Option<&str>,
+    tei_api_key: Option<&str>,
     query: &str,
     limit: usize,
 ) -> Result<Vec<SemanticHit>, SemanticError> {
-    let tei = TeiClient::new(tei_url);
-    let qdrant = QdrantClient::new(qdrant_url);
+    let tei = TeiClient::with_auth(tei_url, tei_auth(tei_api_key));
+    let qdrant = QdrantClient::with_auth(qdrant_url, qdrant_auth(qdrant_api_key));
 
     let keyword = keyword_form(query);
     let use_dual = should_dual_embed(&keyword);
