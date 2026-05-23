@@ -596,8 +596,35 @@ impl std::fmt::Debug for UpstreamConnection {
     }
 }
 
+/// Sync Drop: SIGTERM+SIGKILL the process group if any. Last-resort
+/// abandonment cleanup for stdio upstreams whose connect future was dropped
+/// without going through `shutdown()` — discovery timeouts, cancelled
+/// `buffer_unordered` futures, pool drops, `insert()` overwrites, etc.
+/// The async `shutdown()` graceful path zeroes `self.runtime.pgid` before
+/// its first `.await` so this Drop no-ops on the graceful path.
+#[cfg(unix)]
+impl Drop for UpstreamConnection {
+    fn drop(&mut self) {
+        if let Some(pgid) = self.runtime.pgid.take() {
+            // No sleep — Drop must not block. Kernel handles TERM/KILL race.
+            let _ = terminate_process_group_sigterm(pgid);
+            let _ = terminate_process_group_sigkill(pgid);
+        }
+        if let Some(handle) = self._server_task.take() {
+            handle.abort();
+        }
+    }
+}
+
 impl UpstreamConnection {
     async fn shutdown(mut self, upstream_name: &str, reason: &'static str) {
+        // INVARIANT: take pgid BEFORE any `.await` so the consuming Drop
+        // sees `None` and no-ops. This prevents double-kill on the graceful
+        // path. `runtime_pgid` carries the value through the function so the
+        // graceful TERM→sleep→KILL sequence below can still target the
+        // process group.
+        #[cfg(unix)]
+        let runtime_pgid = self.runtime.pgid.take();
         let runtime = self.runtime.clone();
         let started = Instant::now();
         let result = self
@@ -609,7 +636,7 @@ impl UpstreamConnection {
         }
 
         #[cfg(unix)]
-        if let (Some(pid), Some(pgid)) = (runtime.pid, runtime.pgid)
+        if let (Some(pid), Some(pgid)) = (runtime.pid, runtime_pgid)
             && pid_is_alive(pid)
         {
             let _ = terminate_process_group_sigterm(pgid);
@@ -3363,6 +3390,17 @@ async fn connect_stdio_upstream(
         action = "upstream.connect.start", command = %command, pid = ?pid,
         "upstream connect start",
     );
+
+    // INVARIANT: arm the process-group guard immediately after spawn. If any
+    // subsequent `?` propagates (serve fails, list_all_tools fails, the outer
+    // future is dropped on timeout), `Drop` on this guard SIGTERM+SIGKILLs
+    // the process group via `killpg`, reaping grandchildren (npx → node,
+    // sh -c → python) that rmcp's per-PID TokioChildProcess Drop would
+    // otherwise miss. With `ProcessGroup::leader()` the child is its own
+    // group leader, so pgid == pid.
+    #[cfg(unix)]
+    let pg_guard = pid.map(super::process_guard::ProcessGroupGuard::arm);
+
     let service: rmcp::service::RunningService<RoleClient, ()> = ().serve(process).await?;
     let peer = service.peer().clone();
 
@@ -3375,13 +3413,22 @@ async fn connect_stdio_upstream(
         "upstream connect finish",
     );
 
+    // INVARIANT: disarm the guard right before successful construction. The
+    // pgid is transferred to UpstreamConnection.runtime.pgid; its own Drop
+    // now owns cleanup. `shutdown()` will zero runtime.pgid before any
+    // `.await` so its Drop no-ops on the graceful path.
+    #[cfg(unix)]
+    let pgid_for_runtime = pg_guard.and_then(super::process_guard::ProcessGroupGuard::disarm);
+    #[cfg(not(unix))]
+    let pgid_for_runtime: Option<u32> = pid;
+
     let conn = UpstreamConnection {
         _client_service: service,
         _server_task: None,
         peer,
         runtime: UpstreamRuntimeMetadata {
             pid,
-            pgid: pid,
+            pgid: pgid_for_runtime,
             started_at: Some(std::time::SystemTime::now()),
             origin: runtime_origin_label(runtime_origin, runtime_owner),
             owner: runtime_owner.cloned(),

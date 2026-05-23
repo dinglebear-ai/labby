@@ -16,6 +16,8 @@ pub mod http_client;
 #[allow(dead_code)]
 pub mod pool;
 #[allow(dead_code)]
+pub mod process_guard;
+#[allow(dead_code)]
 pub mod transport;
 #[allow(dead_code)]
 pub mod types;
