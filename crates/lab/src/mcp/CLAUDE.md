@@ -22,6 +22,17 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
 - `deploy` sets the MCP elicitation context before calling shared deploy dispatch.
 - `fs` filters `fs.preview` out of MCP discovery and execution.
 - `nodes` owns MCP-only enrollment actions.
+- `scout` and `invoke` are registered directly in `mcp/server.rs` as
+  gateway meta-tools and bypass both `dispatch/` and `mcp/services/`.
+  They expose the upstream MCP proxy surface to clients. Parameter
+  shapes (`query`/`top_k`/`include_schema`; `name`/`arguments`) are
+  incompatible with the action+params contract. Business logic lives in
+  `GatewayManager::search_tools()` / `execute_tool()` in
+  `dispatch/gateway/manager.rs`, called directly. No CLI or HTTP
+  equivalent is planned. The rejection guard test in
+  `dispatch/gateway/dispatch.rs` enforces the non-dispatch boundary. Do
+  not add `dispatch/gateway-scout/` unless a second surface consumer is
+  confirmed.
 
 **No business logic anywhere in `mcp/`.** If you find yourself calling `reqwest`, parsing JSON beyond param extraction, or retrying, move it to `lab-apis/src/<service>/client.rs`.
 
