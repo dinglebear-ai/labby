@@ -30,6 +30,11 @@ use rmcp::model::{ClientJsonRpcMessage, JsonRpcMessage, ServerJsonRpcMessage};
 use rmcp::transport::common::http_header::{
     EVENT_STREAM_MIME_TYPE, HEADER_LAST_EVENT_ID, HEADER_SESSION_ID, JSON_MIME_TYPE,
 };
+use rmcp::transport::streamable_http_client::{
+    AuthRequiredError, InsufficientScopeError, SseError, StreamableHttpClient, StreamableHttpError,
+    StreamableHttpPostResponse,
+};
+use sse_stream::{Sse, SseStream};
 
 // rmcp 1.6 exposes the constants above but keeps `validate_custom_header` and
 // `extract_scope_from_header` as `pub(crate)`. Re-implementing them locally
@@ -76,11 +81,6 @@ fn extract_scope_from_header(header: &str) -> Option<String> {
     }
     None
 }
-use rmcp::transport::streamable_http_client::{
-    AuthRequiredError, InsufficientScopeError, SseError, StreamableHttpClient, StreamableHttpError,
-    StreamableHttpPostResponse,
-};
-use sse_stream::{Sse, SseStream};
 
 /// Wraps a [`reqwest::Client`] and enforces a per-response decoded-body
 /// size cap at the [`StreamableHttpClient`] trait layer.
@@ -265,7 +265,9 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Err(StreamableHttpError::ServerDoesNotSupportSse);
         }
-        let response = response.error_for_status().map_err(StreamableHttpError::Client)?;
+        let response = response
+            .error_for_status()
+            .map_err(StreamableHttpError::Client)?;
         match response.headers().get(reqwest::header::CONTENT_TYPE) {
             Some(ct) => {
                 if !ct.as_bytes().starts_with(EVENT_STREAM_MIME_TYPE.as_bytes())
@@ -305,7 +307,9 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             tracing::debug!("this server doesn't support deleting session");
             return Ok(());
         }
-        let _response = response.error_for_status().map_err(StreamableHttpError::Client)?;
+        let _response = response
+            .error_for_status()
+            .map_err(StreamableHttpError::Client)?;
         Ok(())
     }
 
@@ -439,10 +443,8 @@ mod tests {
     }
 
     fn jsonrpc_request() -> ClientJsonRpcMessage {
-        serde_json::from_str(
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
-        )
-        .expect("valid jsonrpc")
+        serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#)
+            .expect("valid jsonrpc")
     }
 
     #[tokio::test]
