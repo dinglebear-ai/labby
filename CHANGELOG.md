@@ -8,6 +8,27 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.17.1] - 2026-05-23
+
+### Highlights
+
+- **Scout access hardening**: `scout` now accepts read-only Lab scopes while keeping full schema visibility restricted to stronger Lab scopes.
+- **Stale service cleanup**: removed remaining Paperless plugin, docs, UI, env, and health-check references after the active service implementation was removed.
+
+| Commit | Change |
+|--------|--------|
+| *(this)* | fix: harden scout access and remove stale paperless remnants |
+| `217e89ce` | fix(scout): empty index bypasses TTL; stale Qdrant entries purged on superseded rebuild |
+| `8f4719f9` | feat(gateway): rename tool_search→scout, tool_execute→invoke |
+| `275b9298` | feat(gateway): expose lab://gateway/* synthetic MCP resources |
+
+### Version bumps
+
+- Rust workspace: `0.17.0 → 0.17.1`
+- Gateway admin package: `0.17.0 → 0.17.1`
+
+---
+
 ## [0.17.0] - 2026-05-21
 
 ### Highlights
