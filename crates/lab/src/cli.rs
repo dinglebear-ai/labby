@@ -12,6 +12,7 @@ pub mod gateway;
 pub mod health;
 pub mod help;
 pub mod helpers;
+pub mod internal;
 pub mod logs;
 pub mod marketplace;
 #[cfg(feature = "mcpregistry")]
@@ -100,6 +101,9 @@ pub enum Command {
     /// Deploy the local lab release binary to SSH targets.
     #[cfg(feature = "deploy")]
     Deploy(deploy::DeployArgs),
+    /// Hidden internal process helpers.
+    #[command(hide = true)]
+    Internal(internal::InternalArgs),
     // [lab-scaffold: cli-variants]
 }
 
@@ -127,6 +131,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Stash(args) => stash::run(args, format).await,
         #[cfg(feature = "deploy")]
         Command::Deploy(args) => dispatch_deploy(args, format, config.deploy.clone()).await,
+        Command::Internal(args) => internal::run(args),
         // [lab-scaffold: cli-dispatch]
     }
 }

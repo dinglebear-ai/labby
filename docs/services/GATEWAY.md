@@ -139,8 +139,8 @@ Invoke call shape on the MCP surface:
 { "name": "search_issues", "arguments": { "query": "repo:jmagar/lab tool_search" } }
 ```
 
-Code Mode is schema-first discovery, not execution. `code_search` returns stable ids
-for Lab actions and upstream tools:
+Code Mode is schema-first discovery plus opt-in sandboxed execution.
+`code_search` returns stable ids for Lab actions and upstream tools:
 
 ```json
 { "query": "github issues", "top_k": 10 }
@@ -177,15 +177,16 @@ timeout_ms = 5000
 max_tool_calls = 8
 ```
 
-The MVP executor accepts a constrained JavaScript/TypeScript-looking static
-batch of `callTool(id, params)` calls. It intentionally rejects control flow,
-function declarations, and arrow functions until a real sandboxed evaluator is
-wired in. `params` must be strict JSON so the gateway can validate and broker
-each call without granting the snippet ambient host access:
+Execution runs in a short-lived child process with an embedded JavaScript engine.
+The child gets an empty environment, a temporary working directory, no Node/Deno
+host APIs, and no direct access to the Lab runtime. The only host capability is
+the injected `callTool(id, params)` function, which sends each requested call
+back to the parent gateway for normal visibility, scope, destructive-action, and
+upstream exposure checks. `params` must be JSON-serializable:
 
 ```json
 {
-  "code": "await callTool(\"lab::radarr.movie.search\", {\"query\":\"Alien\"});"
+  "code": "const result = await callTool(\"lab::radarr.movie.search\", {\"query\":\"Alien\"});\nif (result.total > 0) {\n  await callTool(\"lab::radarr.queue.list\", {});\n}"
 }
 ```
 
@@ -200,6 +201,7 @@ Rules:
 - `code_search` is read-only discovery and accepts `lab:read`, `lab`, or `lab:admin`
 - `code_schema` exposes full schemas and requires `lab` or `lab:admin`
 - `code_execute` requires `lab` or `lab:admin`, is disabled unless `[code_mode].enabled = true`, and brokers calls through the same gateway visibility and destructive-action checks as `invoke`
+- `code_execute` enforces `timeout_ms` by killing the child process and enforces `max_tool_calls` in the parent before brokering each call
 - invalid Code Mode ids return `invalid_code_mode_id`
 - unavailable or overlarge upstream schemas return `schema_unavailable`
 - old `[[upstream]].tool_search` blocks are accepted only as migration input and are dropped on the next gateway config write

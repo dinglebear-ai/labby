@@ -33,6 +33,15 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
   `dispatch/gateway/dispatch.rs` enforces the non-dispatch boundary. Do
   not add `dispatch/gateway-scout/` unless a second surface consumer is
   confirmed.
+- `code_search`, `code_schema`, and `code_execute` are registered
+  directly in `mcp/server.rs` as gateway Code Mode meta-tools. They are
+  MCP-only because their protocol contract is schema-first tool
+  discovery plus a child-process JavaScript runner, not Lab's
+  action+params service shape. Keep reusable schema, id, runner, and
+  sandbox helpers in `dispatch/gateway/code_mode.rs`, and keep upstream
+  visibility policy in `GatewayManager`. If a second surface needs Code
+  Mode, move the orchestration out of `mcp/server.rs` before adding that
+  surface.
 
 **No business logic anywhere in `mcp/`.** If you find yourself calling `reqwest`, parsing JSON beyond param extraction, or retrying, move it to `lab-apis/src/<service>/client.rs`.
 

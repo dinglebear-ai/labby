@@ -58,6 +58,7 @@ Dispatch layers may add the following kinds on top of SDK errors:
 - `ambiguous_tool` — unqualified tool name resolved to multiple upstream gateway candidates; envelope carries `valid: Vec<String>` of fully-qualified `{upstream}::{tool}` names the caller must choose from. HTTP 409.
 - `invalid_code_mode_id` — Code Mode tool id parsing failed. Valid ids are `lab::<service>.<action>` and `upstream::<upstream-name>::<tool-name>`. HTTP 422.
 - `code_mode_disabled` — Code Mode execution was requested while `[code_mode].enabled` is false. Discovery and schema lookup can remain enabled without allowing execution. HTTP 403.
+- `code_execution_failed` — Code Mode child-process JavaScript evaluation failed before completing the runner protocol. HTTP 422.
 - `tool_call_limit_exceeded` — a Code Mode snippet attempted more host-brokered tool calls than `max_tool_calls` allows. HTTP 429.
 - `schema_unavailable` — Code Mode schema lookup found a tool, but its upstream schema was missing or exceeded the safe return size after sanitization. HTTP 422.
 - `queue_saturated` — bounded runtime queue is full; caller should retry after the current work drains. HTTP 429.

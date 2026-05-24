@@ -1,5 +1,14 @@
+use std::cell::RefCell;
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::process::ExitCode;
+
+use boa_engine::builtins::promise::PromiseState;
+use boa_engine::object::builtins::JsPromise;
+use boa_engine::{
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Source, js_string,
+};
 use lab_apis::core::action::{ActionSpec, ParamSpec};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::dispatch::error::ToolError;
@@ -140,12 +149,6 @@ pub struct CodeModeBindings {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct CodeModeInvocation {
-    pub id: String,
-    pub params: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CodeModeExecutionResponse {
     pub calls: Vec<CodeModeExecutedCall>,
 }
@@ -154,6 +157,45 @@ pub struct CodeModeExecutionResponse {
 pub struct CodeModeExecutedCall {
     pub id: String,
     pub result: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CodeModeRunnerInput {
+    Start {
+        code: String,
+    },
+    ToolResult {
+        seq: u64,
+        result: Value,
+    },
+    ToolError {
+        seq: u64,
+        kind: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CodeModeRunnerOutput {
+    ToolCall { seq: u64, id: String, params: Value },
+    Done,
+    Error { kind: String, message: String },
+}
+
+struct CodeModeRunnerState {
+    reader: BufReader<io::Stdin>,
+    writer: BufWriter<io::Stdout>,
+    next_seq: u64,
+}
+
+const CODE_MODE_LOOP_ITERATION_LIMIT: u64 = 1_000_000;
+const CODE_MODE_STACK_SIZE_LIMIT: usize = 16 * 1024;
+const CODE_MODE_RECURSION_LIMIT: usize = 256;
+
+thread_local! {
+    static RUNNER_STATE: RefCell<Option<CodeModeRunnerState>> = const { RefCell::new(None) };
 }
 
 impl CodeModeSchemaResponse {
@@ -208,281 +250,167 @@ pub fn invalid_code_mode_id(message: impl Into<String>) -> ToolError {
     }
 }
 
-pub fn extract_code_mode_invocations(
-    code: &str,
-    max_tool_calls: usize,
-) -> Result<Vec<CodeModeInvocation>, ToolError> {
-    reject_unsupported_code_mode_constructs(code)?;
-
-    let mut rest = code;
-    let mut calls = Vec::new();
-
-    while let Some(offset) = next_call_tool_offset(rest) {
-        rest = &rest[offset + "callTool".len()..];
-        let trimmed = rest.trim_start();
-        if !trimmed.starts_with('(') {
-            continue;
-        }
-        let (inside, after) = balanced_parenthesized(trimmed)?;
-        rest = after;
-        let (id, params) = parse_call_tool_arguments(inside)?;
-        calls.push(CodeModeInvocation { id, params });
-        if calls.len() > max_tool_calls {
-            return Err(ToolError::Sdk {
-                sdk_kind: "tool_call_limit_exceeded".to_string(),
-                message: format!("Code Mode execution exceeded max_tool_calls={max_tool_calls}"),
-            });
-        }
-    }
-
-    if calls.is_empty() {
-        return Err(ToolError::Sdk {
-            sdk_kind: "invalid_param".to_string(),
-            message: "Code Mode snippet must call callTool(id, params) at least once".to_string(),
+pub fn run_code_mode_runner_stdio() -> ExitCode {
+    RUNNER_STATE.with(|state| {
+        *state.borrow_mut() = Some(CodeModeRunnerState {
+            reader: BufReader::new(io::stdin()),
+            writer: BufWriter::new(io::stdout()),
+            next_seq: 0,
         });
+    });
+
+    let result = run_code_mode_runner();
+    if let Err(err) = result {
+        drop(runner_emit(CodeModeRunnerOutput::Error {
+            kind: "code_execution_failed".to_string(),
+            message: err,
+        }));
+        return ExitCode::from(1);
     }
-    Ok(calls)
+    ExitCode::SUCCESS
 }
 
-fn reject_unsupported_code_mode_constructs(input: &str) -> Result<(), ToolError> {
-    if let Some(keyword) = first_unsupported_keyword(input) {
-        return Err(ToolError::Sdk {
-            sdk_kind: "invalid_param".to_string(),
-            message: format!(
-                "Code Mode MVP only supports a static sequence of callTool(id, params) calls; unsupported construct `{keyword}`"
-            ),
-        });
-    }
-    Ok(())
-}
-
-fn first_unsupported_keyword(input: &str) -> Option<&'static str> {
-    const UNSUPPORTED: &[&str] = &["if", "for", "while", "switch", "function", "=>"];
-    let mut quote = None;
-    let mut escaped = false;
-    let mut line_comment = false;
-    let mut block_comment = false;
-    let mut iter = input.char_indices().peekable();
-
-    while let Some((index, ch)) = iter.next() {
-        if line_comment {
-            if ch == '\n' {
-                line_comment = false;
-            }
-            continue;
-        }
-        if block_comment {
-            if ch == '*'
-                && let Some((_, '/')) = iter.peek().copied()
-            {
-                iter.next();
-                block_comment = false;
-            }
-            continue;
-        }
-        if let Some(active_quote) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == active_quote {
-                quote = None;
-            }
-            continue;
-        }
-        match ch {
-            '"' | '\'' | '`' => quote = Some(ch),
-            '/' => match iter.peek().copied() {
-                Some((_, '/')) => {
-                    iter.next();
-                    line_comment = true;
-                }
-                Some((_, '*')) => {
-                    iter.next();
-                    block_comment = true;
-                }
-                _ => {}
-            },
-            _ => {
-                for keyword in UNSUPPORTED {
-                    if input[index..].starts_with(keyword) {
-                        let before = input[..index].chars().next_back();
-                        let after = input[index + keyword.len()..].chars().next();
-                        if keyword.chars().all(is_js_identifier_char) {
-                            if before.is_none_or(|ch| !is_js_identifier_char(ch))
-                                && after.is_none_or(|ch| !is_js_identifier_char(ch))
-                            {
-                                return Some(keyword);
-                            }
-                        } else {
-                            return Some(keyword);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn next_call_tool_offset(input: &str) -> Option<usize> {
-    let mut quote = None;
-    let mut escaped = false;
-    let mut line_comment = false;
-    let mut block_comment = false;
-    let mut iter = input.char_indices().peekable();
-
-    while let Some((index, ch)) = iter.next() {
-        if line_comment {
-            if ch == '\n' {
-                line_comment = false;
-            }
-            continue;
-        }
-        if block_comment {
-            if ch == '*'
-                && let Some((_, '/')) = iter.peek().copied()
-            {
-                iter.next();
-                block_comment = false;
-            }
-            continue;
-        }
-        if let Some(active_quote) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == active_quote {
-                quote = None;
-            }
-            continue;
-        }
-        match ch {
-            '"' | '\'' | '`' => quote = Some(ch),
-            '/' => match iter.peek().copied() {
-                Some((_, '/')) => {
-                    iter.next();
-                    line_comment = true;
-                }
-                Some((_, '*')) => {
-                    iter.next();
-                    block_comment = true;
-                }
-                _ => {}
-            },
-            'c' if input[index..].starts_with("callTool") => {
-                let before = input[..index].chars().next_back();
-                let after = input[index + "callTool".len()..].chars().next();
-                if before.is_none_or(|ch| !is_js_identifier_char(ch))
-                    && after.is_none_or(|ch| !is_js_identifier_char(ch))
-                {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn is_js_identifier_char(ch: char) -> bool {
-    ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
-}
-
-fn balanced_parenthesized(input: &str) -> Result<(&str, &str), ToolError> {
-    let mut depth = 0usize;
-    let mut quote = None;
-    let mut escaped = false;
-    for (index, ch) in input.char_indices() {
-        if let Some(active_quote) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == active_quote {
-                quote = None;
-            }
-            continue;
-        }
-        match ch {
-            '"' | '\'' => quote = Some(ch),
-            '(' => depth += 1,
-            ')' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Ok((&input[1..index], &input[index + 1..]));
-                }
-            }
-            _ => {}
-        }
-    }
-    Err(ToolError::Sdk {
-        sdk_kind: "invalid_param".to_string(),
-        message: "Code Mode snippet contains an unterminated callTool(...) expression".to_string(),
-    })
-}
-
-fn parse_call_tool_arguments(input: &str) -> Result<(String, Value), ToolError> {
-    let input = input.trim();
-    let (id, rest) = parse_string_literal(input)?;
-    let rest = rest.trim_start();
-    if rest.is_empty() {
-        return Ok((id, json!({})));
-    }
-    let rest = rest.strip_prefix(',').ok_or_else(|| ToolError::Sdk {
-        sdk_kind: "invalid_param".to_string(),
-        message: "callTool arguments must be callTool(id, params)".to_string(),
-    })?;
-    let rest = rest.trim();
-    if rest.is_empty() {
-        return Ok((id, json!({})));
-    }
-    let params: Value = serde_json::from_str(rest).map_err(|err| ToolError::Sdk {
-        sdk_kind: "invalid_param".to_string(),
-        message: format!("callTool params must be strict JSON: {err}"),
-    })?;
-    if !params.is_object() {
-        return Err(ToolError::Sdk {
-            sdk_kind: "invalid_param".to_string(),
-            message: "callTool params must be a JSON object".to_string(),
-        });
-    }
-    Ok((id, params))
-}
-
-fn parse_string_literal(input: &str) -> Result<(String, &str), ToolError> {
-    let Some(quote @ ('"' | '\'')) = input.chars().next() else {
-        return Err(ToolError::Sdk {
-            sdk_kind: "invalid_param".to_string(),
-            message: "callTool id must be a string literal".to_string(),
-        });
+fn run_code_mode_runner() -> Result<(), String> {
+    let CodeModeRunnerInput::Start { code } = runner_read_input()? else {
+        return Err("runner expected start message".to_string());
     };
-    let mut escaped = false;
-    for (index, ch) in input[1..].char_indices() {
-        let absolute = index + 1;
-        if escaped {
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == quote {
-            let raw = &input[..=absolute];
-            let rest = &input[absolute + 1..];
-            let id = if quote == '"' {
-                serde_json::from_str(raw).map_err(|err| ToolError::Sdk {
-                    sdk_kind: "invalid_param".to_string(),
-                    message: format!("callTool id string is invalid: {err}"),
-                })?
-            } else {
-                raw[1..raw.len() - 1].replace("\\'", "'")
-            };
-            return Ok((id, rest));
+
+    let mut context = Context::default();
+    configure_code_mode_runtime_limits(&mut context);
+    context
+        .register_global_builtin_callable(
+            js_string!("callTool"),
+            2,
+            NativeFunction::from_copy_closure(code_mode_call_tool_native),
+        )
+        .map_err(js_error_message)?;
+
+    let wrapped = format!("(async () => {{\n{code}\n}})()");
+    let value = context
+        .eval(Source::from_bytes(wrapped.as_bytes()))
+        .map_err(js_error_message)?;
+    context.run_jobs().map_err(js_error_message)?;
+
+    if let Some(object) = value.as_object() {
+        let promise = JsPromise::from_object(object.clone()).map_err(js_error_message)?;
+        match promise.state() {
+            PromiseState::Fulfilled(_) => {}
+            PromiseState::Rejected(reason) => return Err(js_value_message(&reason, &mut context)),
+            PromiseState::Pending => {
+                return Err("Code Mode script returned a pending promise".to_string());
+            }
         }
     }
-    Err(ToolError::Sdk {
-        sdk_kind: "invalid_param".to_string(),
-        message: "callTool id string is unterminated".to_string(),
+
+    runner_emit(CodeModeRunnerOutput::Done)
+}
+
+fn configure_code_mode_runtime_limits(context: &mut Context) {
+    let limits = context.runtime_limits_mut();
+    limits.set_loop_iteration_limit(CODE_MODE_LOOP_ITERATION_LIMIT);
+    limits.set_stack_size_limit(CODE_MODE_STACK_SIZE_LIMIT);
+    limits.set_recursion_limit(CODE_MODE_RECURSION_LIMIT);
+}
+
+fn code_mode_call_tool_native(
+    _this: &JsValue,
+    args: &[JsValue],
+    context: &mut Context,
+) -> JsResult<JsValue> {
+    let id = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    if id.trim().is_empty() {
+        return Err(js_type_error("callTool id must be a non-empty string"));
+    }
+
+    let params = args
+        .get(1)
+        .map(|value| value.to_json(context))
+        .transpose()?
+        .flatten()
+        .unwrap_or_else(|| json!({}));
+    if !params.is_object() {
+        return Err(js_type_error("callTool params must be a JSON object"));
+    }
+
+    let seq = RUNNER_STATE
+        .with(|state| {
+            let mut state = state.borrow_mut();
+            let state = state
+                .as_mut()
+                .ok_or_else(|| "runner state is not initialized".to_string())?;
+            let seq = state.next_seq;
+            state.next_seq += 1;
+            Ok::<_, String>(seq)
+        })
+        .map_err(js_type_error)?;
+
+    runner_emit(CodeModeRunnerOutput::ToolCall { seq, id, params }).map_err(js_type_error)?;
+
+    match runner_read_input().map_err(js_type_error)? {
+        CodeModeRunnerInput::ToolResult {
+            seq: response_seq,
+            result,
+        } if response_seq == seq => JsValue::from_json(&result, context),
+        CodeModeRunnerInput::ToolError {
+            seq: response_seq,
+            kind,
+            message,
+        } if response_seq == seq => Err(js_type_error(format!("{kind}: {message}"))),
+        _ => Err(js_type_error(
+            "runner received an out-of-order tool response",
+        )),
+    }
+}
+
+fn runner_emit(output: CodeModeRunnerOutput) -> Result<(), String> {
+    RUNNER_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state
+            .as_mut()
+            .ok_or_else(|| "runner state is not initialized".to_string())?;
+        serde_json::to_writer(&mut state.writer, &output).map_err(|err| err.to_string())?;
+        state
+            .writer
+            .write_all(b"\n")
+            .map_err(|err| err.to_string())?;
+        state.writer.flush().map_err(|err| err.to_string())
     })
+}
+
+fn runner_read_input() -> Result<CodeModeRunnerInput, String> {
+    RUNNER_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state
+            .as_mut()
+            .ok_or_else(|| "runner state is not initialized".to_string())?;
+        let mut line = String::new();
+        let read = state
+            .reader
+            .read_line(&mut line)
+            .map_err(|err| err.to_string())?;
+        if read == 0 {
+            return Err("runner input closed".to_string());
+        }
+        serde_json::from_str(&line).map_err(|err| err.to_string())
+    })
+}
+
+fn js_type_error(message: impl Into<String>) -> JsError {
+    JsNativeError::typ().with_message(message.into()).into()
+}
+
+fn js_error_message(error: JsError) -> String {
+    error.to_string()
+}
+
+fn js_value_message(value: &JsValue, context: &mut Context) -> String {
+    value
+        .to_string(context)
+        .map(|value| value.to_std_string_escaped())
+        .unwrap_or_else(|_| "promise rejected".to_string())
 }
 
 #[must_use]
@@ -653,11 +581,12 @@ fn typescript_property_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use boa_engine::{Context, Source};
     use serde_json::json;
 
     use super::{
         CodeModeSchemaResponse, CodeModeSearchCandidate, CodeModeToolId, CodeModeToolRef,
-        action_input_schema, extract_code_mode_invocations, sanitize_code_mode_schema,
+        action_input_schema, configure_code_mode_runtime_limits, sanitize_code_mode_schema,
     };
     use lab_apis::core::action::{ActionSpec, ParamSpec};
 
@@ -831,56 +760,14 @@ mod tests {
     }
 
     #[test]
-    fn extracts_constrained_call_tool_invocations() {
-        let calls = extract_code_mode_invocations(
-            r#"
-            await callTool("lab::radarr.movie.search", {"query":"Alien"});
-            await callTool('upstream::github::search_issues', {"query":"repo:jmagar/lab"});
-            "#,
-            4,
-        )
-        .unwrap();
+    fn configured_runtime_limits_reject_unbounded_loops() {
+        let mut context = Context::default();
+        configure_code_mode_runtime_limits(&mut context);
 
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].id, "lab::radarr.movie.search");
-        assert_eq!(calls[0].params.pointer("/query"), Some(&json!("Alien")));
-        assert_eq!(calls[1].id, "upstream::github::search_issues");
-    }
+        let error = context
+            .eval(Source::from_bytes(b"while (true) {}"))
+            .expect_err("loop limit should stop unbounded scripts");
 
-    #[test]
-    fn rejects_non_json_call_tool_params() {
-        let err = extract_code_mode_invocations(
-            r#"await callTool("lab::radarr.movie.search", {query:"Alien"})"#,
-            4,
-        )
-        .unwrap_err();
-        assert_eq!(err.kind(), "invalid_param");
-    }
-
-    #[test]
-    fn ignores_call_tool_text_inside_comments_and_strings() {
-        let calls = extract_code_mode_invocations(
-            r#"
-            // callTool("lab::radarr.movie.search", {"query":"comment"})
-            const text = "callTool(\"lab::radarr.movie.search\", {\"query\":\"string\"})";
-            await callTool("lab::radarr.movie.search", {"query":"real"});
-            "#,
-            4,
-        )
-        .unwrap();
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].params.pointer("/query"), Some(&json!("real")));
-    }
-
-    #[test]
-    fn rejects_control_flow_because_mvp_is_static_batch_only() {
-        let err = extract_code_mode_invocations(
-            r#"if (false) { await callTool("lab::radarr.movie.search", {"query":"hidden"}); }"#,
-            4,
-        )
-        .unwrap_err();
-
-        assert_eq!(err.kind(), "invalid_param");
+        assert!(error.to_string().contains("iteration limit"));
     }
 }
