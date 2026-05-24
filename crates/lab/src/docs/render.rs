@@ -205,6 +205,7 @@ fn write_cli_command(out: &mut String, command: &mut clap::Command, path: &str) 
 
     let subcommands = command
         .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
         .map(|subcommand| subcommand.get_name().to_string())
         .collect::<Vec<_>>();
     for name in subcommands {

@@ -130,7 +130,10 @@ fn init_tracing(
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    if matches!(cli.command, cli::Command::Docs(_)) {
+    if matches!(
+        cli.command,
+        cli::Command::Docs(_) | cli::Command::Internal(_)
+    ) {
         return match cli::dispatch(cli, config::LabConfig::default()).await {
             Ok(code) => code,
             Err(err) => {

@@ -41,6 +41,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 anyhow.workspace = true
 thiserror.workspace = true
 jiff.workspace = true
+boa_engine = "0.21.1"
 
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -87,12 +87,15 @@ Typical patch payloads:
 
 Gateway tool-search mode is a single gateway-wide switch. It is not configured per upstream server.
 
-When enabled, Lab hides raw proxied upstream tools from MCP `list_tools()` and exposes two synthetic tools instead:
+When enabled, Lab hides raw proxied upstream tools from MCP `list_tools()` and exposes synthetic gateway tools instead:
 
 | Tool | Purpose |
 |------|---------|
-| `tool_search` | Search healthy discovered upstream tools across the gateway. |
-| `tool_execute` | Invoke one tool returned by `tool_search`. |
+| `scout` | Search healthy discovered Lab and upstream tools across the gateway. Legacy alias: `tool_search`. |
+| `invoke` | Invoke one tool returned by `scout`. Legacy aliases: `tool_execute`, `tool_invoke`. |
+| `code_search` | Return Code Mode candidates with stable ids and schema availability. |
+| `code_schema` | Return the exact schema/contract for one `code_search` id. |
+| `code_execute` | Execute a constrained Code Mode snippet through the gateway broker when enabled. |
 
 This keeps the MCP catalog small while still allowing clients to reach every exposed upstream tool. Per-upstream `expose_tools` filters still apply before tools enter the searchable catalog.
 
@@ -136,12 +139,71 @@ Invoke call shape on the MCP surface:
 { "name": "search_issues", "arguments": { "query": "repo:jmagar/lab tool_search" } }
 ```
 
+Code Mode is schema-first discovery plus opt-in sandboxed execution.
+`code_search` returns stable ids for Lab actions and upstream tools:
+
+```json
+{ "query": "github issues", "top_k": 10 }
+```
+
+Example candidate ids:
+
+```json
+[
+  { "id": "lab::gateway.gateway.schema", "name": "gateway.schema", "upstream": "lab", "schema_available": true },
+  { "id": "upstream::github::search_issues", "name": "search_issues", "upstream": "github", "schema_available": true }
+]
+```
+
+`code_schema` then resolves one candidate id to the precise contract:
+
+```json
+{ "id": "lab::gateway.gateway.schema" }
+```
+
+Lab ids use `lab::<service>.<action>` and return an `ActionSpec`-derived
+contract (`schema_format: "lab_action_spec"`). Upstream ids use
+`upstream::<upstream-name>::<tool-name>` and return the upstream JSON Schema
+cached by the gateway (`schema_format: "json_schema"`). `code_schema` requires
+the same schema visibility scope as `scout include_schema=true`: `lab` or
+`lab:admin`.
+
+`code_execute` is disabled by default. Enable it explicitly with:
+
+```toml
+[code_mode]
+enabled = true
+timeout_ms = 5000
+max_tool_calls = 8
+```
+
+Execution runs in a short-lived child process with an embedded JavaScript engine.
+The child gets an empty environment, a temporary working directory, no Node/Deno
+host APIs, and no direct access to the Lab runtime. The only host capability is
+the injected `callTool(id, params)` function, which sends each requested call
+back to the parent gateway for normal visibility, scope, destructive-action, and
+upstream exposure checks. `params` must be JSON-serializable:
+
+```json
+{
+  "code": "const result = await callTool(\"lab::radarr.movie.search\", {\"query\":\"Alien\"});\nif (result.total > 0) {\n  await callTool(\"lab::radarr.queue.list\", {});\n}"
+}
+```
+
 Rules:
 
 - `top_k_default` is validated in the range `1..=50`
 - `max_tools` is validated in the range `1..=10000`
+- `code_mode.timeout_ms` is validated in the range `1..=60000`
+- `code_mode.max_tool_calls` is validated in the range `1..=50`
 - `query` must be non-empty and no longer than 500 characters
 - `include_schema` defaults to `false`; schemas are sanitized before return when requested
+- `code_search` is read-only discovery and accepts `lab:read`, `lab`, or `lab:admin`
+- `code_schema` exposes full schemas and requires `lab` or `lab:admin`
+- `code_execute` requires `lab` or `lab:admin`, is disabled unless `[code_mode].enabled = true`, and brokers calls through the same gateway visibility and destructive-action checks as `invoke`
+- `code_execute` enforces `timeout_ms` by killing the child process and enforces `max_tool_calls` in the parent before brokering each call
+- invalid Code Mode ids return `invalid_code_mode_id`
+- unavailable or overlarge upstream schemas return `schema_unavailable`
 - old `[[upstream]].tool_search` blocks are accepted only as migration input and are dropped on the next gateway config write
 - `gateway.update` rejects `patch.tool_search`; use `gateway.tool_search.set` instead
 
