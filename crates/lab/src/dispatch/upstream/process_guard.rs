@@ -114,8 +114,8 @@ mod tests {
         let observed_pgid = crate::process::unix::process_group_id(pid);
         if observed_pgid != Some(pid) {
             eprintln!("process_guard test skip: pid {pid} pgid {observed_pgid:?} (expected {pid})");
-            let _ = child.kill();
-            let _ = child.wait();
+            drop(child.kill());
+            drop(child.wait());
             return;
         }
         let guard = ProcessGroupGuard::arm(pid);
@@ -128,8 +128,8 @@ mod tests {
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
                         let still_alive = crate::process::unix::pid_is_alive(pid);
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        drop(child.kill());
+                        drop(child.wait());
                         panic!(
                             "guard drop did not exit pgid {pid} within 2s (pid_is_alive={still_alive})"
                         );
@@ -164,7 +164,7 @@ mod tests {
 
         // Cleanup.
         let _ = crate::process::unix::terminate_process_group_sigkill(pid);
-        let _ = child.kill();
-        let _ = child.wait();
+        drop(child.kill());
+        drop(child.wait());
     }
 }
