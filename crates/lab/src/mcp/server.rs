@@ -23,10 +23,15 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::config::NodeRole;
+use crate::dispatch::error::ToolError as DispatchToolError;
+use crate::dispatch::gateway::code_mode::{
+    CodeModeSchemaResponse, CodeModeSearchCandidate, CodeModeToolId, CodeModeToolRef,
+};
 use crate::dispatch::gateway::manager::{GatewayManager, GatewayToolSearchResult};
 use crate::mcp::catalog::{
-    LEGACY_TOOL_EXECUTE_TOOL_NAME, LEGACY_TOOL_INVOKE_TOOL_NAME, LEGACY_TOOL_SEARCH_TOOL_NAME,
-    TOOL_EXECUTE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME,
+    CODE_SCHEMA_TOOL_NAME, CODE_SEARCH_TOOL_NAME, LEGACY_TOOL_EXECUTE_TOOL_NAME,
+    LEGACY_TOOL_INVOKE_TOOL_NAME, LEGACY_TOOL_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME,
+    TOOL_SEARCH_TOOL_NAME,
 };
 use crate::mcp::elicitation::{ElicitResult, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra, build_success};
@@ -1064,7 +1069,7 @@ impl ServerHandler for LabMcpServer {
             }
         }
         if manager_tool_search_enabled {
-            // scout and invoke are gateway meta-tools with no shared dispatch layer equivalent.
+            // Gateway meta-tools have no shared dispatch layer equivalent.
             // See mcp/CLAUDE.md for the exception rationale and dispatch/gateway/dispatch.rs guard.
             let tool_search_schema = match serde_json::json!({
                 "type": "object",
@@ -1090,6 +1095,52 @@ impl ServerHandler for LabMcpServer {
                 networking (unifi/tailscale), storage (unraid), AI/RAG (axon), \
                 and all other connected upstream MCP servers.",
                 tool_search_schema,
+            ));
+            gateway_tool_count += 1;
+            let code_search_schema = match serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "maxLength": 500 },
+                    "top_k": { "type": "integer", "minimum": 1, "maximum": 50 },
+                    "detail": {
+                        "type": "string",
+                        "enum": ["brief", "detailed", "full"],
+                        "default": "brief"
+                    }
+                },
+                "required": ["query"]
+            }) {
+                Value::Object(map) => Arc::new(map),
+                _ => unreachable!("code_search schema must be an object"),
+            };
+            tools.push(Tool::new(
+                CODE_SEARCH_TOOL_NAME,
+                "Schema-first Code Mode discovery for Lab and proxied upstream tools. \
+                Returns stable tool ids, short descriptions, scores, and whether an \
+                exact schema is available. Use code_schema with the returned id before \
+                generating tool-call code.",
+                code_search_schema,
+            ));
+            gateway_tool_count += 1;
+            let code_schema_schema = match serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Stable id returned by code_search, e.g. lab::gateway.gateway.schema or upstream::github::search_issues"
+                    }
+                },
+                "required": ["id"]
+            }) {
+                Value::Object(map) => Arc::new(map),
+                _ => unreachable!("code_schema schema must be an object"),
+            };
+            tools.push(Tool::new(
+                CODE_SCHEMA_TOOL_NAME,
+                "Return the exact input contract for one Code Mode tool id. \
+                Lab ids return the ActionSpec-derived action contract; upstream ids \
+                return the upstream JSON Schema exposed by the gateway.",
+                code_schema_schema,
             ));
             gateway_tool_count += 1;
             let tool_execute_schema = match serde_json::json!({
@@ -1214,6 +1265,228 @@ impl ServerHandler for LabMcpServer {
         let param_key_count = params.as_object().map_or(0, serde_json::Map::len);
 
         let svc = self.registry.services().iter().find(|s| s.name == service);
+        if service == CODE_SEARCH_TOOL_NAME {
+            let started = Instant::now();
+            let subject = self.request_subject_log_tag(&context);
+            let auth = auth_context_from_extensions(&context.extensions);
+            if !tool_search_scope_allowed(auth) {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = %service,
+                    action = "call_tool",
+                    subject,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    kind = "forbidden",
+                    "gateway code search denied by scope"
+                );
+                let env = build_error_extra(
+                    &service,
+                    "call_tool",
+                    "forbidden",
+                    "code_search requires one of scopes: lab:read, lab, lab:admin",
+                    &serde_json::json!({ "required_scopes": ["lab:read", "lab", "lab:admin"] }),
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            let query = args
+                .get("query")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let query_hash = hash_arguments(&Value::String(query.clone()));
+            let requested_top_k = args
+                .get("top_k")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize);
+            let Some(manager) = &self.gateway_manager else {
+                let envelope = build_error(
+                    &service,
+                    "call_tool",
+                    "unknown_tool",
+                    "code search is not enabled",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(
+                    envelope.to_string(),
+                )]));
+            };
+            let top_k = match requested_top_k {
+                Some(value) => value,
+                None => manager.tool_search_config().await.top_k_default,
+            }
+            .max(1)
+            .min(50);
+            let score_floor_fraction = manager.tool_search_config().await.score_floor_fraction;
+            tracing::info!(
+                surface = "mcp",
+                service = "code_search",
+                action = "call_tool",
+                subject,
+                query_hash = %query_hash,
+                query_len = query.len(),
+                top_k,
+                "gateway code search start"
+            );
+            let mut candidates = self
+                .search_builtin_code_mode_candidates(&query, top_k, score_floor_fraction)
+                .await;
+            return match manager.search_tools(&query, top_k, true).await {
+                Ok(upstream_results) => {
+                    candidates.extend(upstream_results.into_iter().map(|result| {
+                        CodeModeSearchCandidate::upstream_tool(
+                            &result.upstream,
+                            &result.name,
+                            &result.description,
+                            result.score,
+                            result.input_schema,
+                        )
+                    }));
+                    candidates.sort_by(compare_code_mode_search_candidates);
+                    candidates.truncate(top_k);
+                    tracing::info!(
+                        surface = "mcp",
+                        service = "code_search",
+                        action = "call_tool",
+                        subject,
+                        query_hash = %query_hash,
+                        query_len = query.len(),
+                        top_k,
+                        result_count = candidates.len(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "gateway code search ok"
+                    );
+                    Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&candidates).unwrap_or_else(|_| "[]".to_string()),
+                    )]))
+                }
+                Err(err) => {
+                    let kind = err.kind();
+                    if kind == "index_warming" && !candidates.is_empty() {
+                        candidates.sort_by(compare_code_mode_search_candidates);
+                        candidates.truncate(top_k);
+                        tracing::info!(
+                            surface = "mcp",
+                            service = "code_search",
+                            action = "call_tool",
+                            subject,
+                            query_hash = %query_hash,
+                            query_len = query.len(),
+                            top_k,
+                            result_count = candidates.len(),
+                            elapsed_ms = started.elapsed().as_millis(),
+                            upstream_kind = kind,
+                            "gateway code search ok"
+                        );
+                        return Ok(CallToolResult::success(vec![Content::text(
+                            serde_json::to_string(&candidates).unwrap_or_else(|_| "[]".to_string()),
+                        )]));
+                    }
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "code_search",
+                        action = "call_tool",
+                        subject,
+                        query_hash = %query_hash,
+                        query_len = query.len(),
+                        top_k,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        kind,
+                        error = %err,
+                        "gateway code search failed"
+                    );
+                    let mut extra = serde_json::Map::new();
+                    if kind == "index_warming" {
+                        extra.insert("retry_after_ms".to_string(), serde_json::json!(2000));
+                    }
+                    if kind == "invalid_param" {
+                        extra.insert("param".to_string(), serde_json::json!("query"));
+                    }
+                    let env = build_error_extra(
+                        &service,
+                        "call_tool",
+                        kind,
+                        &err.to_string(),
+                        &Value::Object(extra),
+                    );
+                    Ok(CallToolResult::error(vec![Content::text(env.to_string())]))
+                }
+            };
+        }
+        if service == CODE_SCHEMA_TOOL_NAME {
+            let started = Instant::now();
+            let subject = self.request_subject_log_tag(&context);
+            let auth = auth_context_from_extensions(&context.extensions);
+            if !tool_search_include_schema_allowed(auth, true) {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = %service,
+                    action = "call_tool",
+                    subject,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    kind = "forbidden",
+                    "gateway code schema denied by scope"
+                );
+                let env = build_error_extra(
+                    &service,
+                    "call_tool",
+                    "forbidden",
+                    "code_schema requires one of scopes: lab, lab:admin",
+                    &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            if self.gateway_manager.is_none() {
+                let envelope = build_error(
+                    &service,
+                    "call_tool",
+                    "unknown_tool",
+                    "code schema is not enabled",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(
+                    envelope.to_string(),
+                )]));
+            }
+            let id = args
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let parsed = match CodeModeToolId::parse(&id) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    let env = tool_error_envelope(&service, "call_tool", &err);
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+            };
+            let id_hash = hash_arguments(&Value::String(parsed.raw.clone()));
+            tracing::info!(
+                surface = "mcp",
+                service = "code_schema",
+                action = "call_tool",
+                subject,
+                id_hash = %id_hash,
+                "gateway code schema start"
+            );
+            return match self.code_mode_schema_response(parsed).await {
+                Ok(response) => {
+                    tracing::info!(
+                        surface = "mcp",
+                        service = "code_schema",
+                        action = "call_tool",
+                        subject,
+                        id_hash = %id_hash,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "gateway code schema ok"
+                    );
+                    Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+                    )]))
+                }
+                Err(err) => {
+                    let env = tool_error_envelope(&service, "call_tool", &err);
+                    Ok(CallToolResult::error(vec![Content::text(env.to_string())]))
+                }
+            };
+        }
         if service == TOOL_SEARCH_TOOL_NAME || service == LEGACY_TOOL_SEARCH_TOOL_NAME {
             let started = Instant::now();
             let subject = self.request_subject_log_tag(&context);
@@ -2474,6 +2747,138 @@ impl LabMcpServer {
         results
     }
 
+    async fn search_builtin_code_mode_candidates(
+        &self,
+        query: &str,
+        top_k: usize,
+        score_floor_fraction: f32,
+    ) -> Vec<CodeModeSearchCandidate> {
+        let needle = query.trim().to_ascii_lowercase();
+        if needle.is_empty() || needle.len() > 500 {
+            return Vec::new();
+        }
+
+        let mut candidates = Vec::new();
+
+        for service in self.registry.services() {
+            if !self.service_visible_on_mcp(service.name).await {
+                continue;
+            }
+            for action in self.searchable_builtin_actions(service).await {
+                let haystack = format!(
+                    "{}\n{}\n{}\n{}",
+                    service.name, service.description, action.name, action.description
+                )
+                .to_ascii_lowercase();
+                let score = crate::dispatch::gateway::score_name_haystack(
+                    &needle,
+                    &action.name.to_ascii_lowercase(),
+                    &haystack,
+                );
+                if score > 0.0 {
+                    candidates.push(CodeModeSearchCandidate::lab_action(
+                        service.name,
+                        action.name,
+                        action.description,
+                        score,
+                    ));
+                }
+            }
+        }
+
+        candidates.sort_by(compare_code_mode_search_candidates);
+
+        if score_floor_fraction > 0.0 {
+            if let Some(top) = candidates.first() {
+                let floor = top.score * score_floor_fraction;
+                candidates.retain(|candidate| candidate.score >= floor);
+            }
+        }
+
+        candidates.truncate(top_k.max(1).min(50));
+        candidates
+    }
+
+    async fn code_mode_schema_for_lab_action(
+        &self,
+        id: &str,
+        service_name: &str,
+        action_name: &str,
+    ) -> Result<CodeModeSchemaResponse, DispatchToolError> {
+        let Some(entry) = self
+            .registry
+            .services()
+            .iter()
+            .find(|entry| entry.name == service_name)
+        else {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("Lab service `{service_name}` was not found"),
+            });
+        };
+        if !self.service_visible_on_mcp(entry.name).await
+            || !self.action_allowed_on_mcp(entry.name, action_name).await
+        {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!(
+                    "Lab action `{service_name}.{action_name}` is not exposed on the mcp surface"
+                ),
+            });
+        }
+        crate::dispatch::helpers::action_schema(entry.actions, action_name)
+            .map(|schema| CodeModeSchemaResponse::lab_action(id, action_name, schema))
+    }
+
+    async fn code_mode_schema_for_upstream_tool(
+        &self,
+        id: &str,
+        upstream: &str,
+        tool: &str,
+    ) -> Result<CodeModeSchemaResponse, DispatchToolError> {
+        let Some(pool) = self.current_upstream_pool().await else {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "upstream_error".to_string(),
+                message: "gateway upstream pool is unavailable".to_string(),
+            });
+        };
+        let upstream_tools = pool.healthy_tools_for_upstream(upstream).await;
+        let Some(candidate) = upstream_tools
+            .into_iter()
+            .find(|candidate| candidate.tool.name.as_ref() == tool)
+        else {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("upstream tool `{upstream}::{tool}` was not found"),
+            });
+        };
+        let schema = candidate.input_schema.unwrap_or_else(|| {
+            serde_json::json!({
+                "type": "object",
+                "properties": {}
+            })
+        });
+        Ok(CodeModeSchemaResponse::upstream_tool(
+            id, upstream, tool, schema,
+        ))
+    }
+
+    async fn code_mode_schema_response(
+        &self,
+        parsed: CodeModeToolId,
+    ) -> Result<CodeModeSchemaResponse, DispatchToolError> {
+        match parsed.reference {
+            CodeModeToolRef::LabAction { service, action } => {
+                self.code_mode_schema_for_lab_action(&parsed.raw, &service, &action)
+                    .await
+            }
+            CodeModeToolRef::UpstreamTool { upstream, tool } => {
+                self.code_mode_schema_for_upstream_tool(&parsed.raw, &upstream, &tool)
+                    .await
+            }
+        }
+    }
+
     async fn searchable_builtin_actions<'a>(
         &self,
         service: &'a crate::registry::RegisteredService,
@@ -2485,6 +2890,25 @@ impl LabMcpServer {
             actions.retain(|action| allowed_actions.iter().any(|allowed| allowed == action.name));
         }
         actions
+    }
+}
+
+fn compare_code_mode_search_candidates(
+    a: &CodeModeSearchCandidate,
+    b: &CodeModeSearchCandidate,
+) -> CmpOrdering {
+    b.score
+        .partial_cmp(&a.score)
+        .unwrap_or(CmpOrdering::Equal)
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+fn tool_error_envelope(service: &str, action: &str, err: &DispatchToolError) -> Value {
+    match err {
+        DispatchToolError::Sdk { sdk_kind, message } => {
+            build_error(service, action, sdk_kind, message)
+        }
+        other => build_error(service, action, other.kind(), &other.to_string()),
     }
 }
 
@@ -3154,6 +3578,35 @@ mod tests {
                 .is_some_and(|actions| actions.iter().any(|action| action == "movie.search")),
             "schema should expose Lab action choices"
         );
+    }
+
+    #[tokio::test]
+    async fn code_search_expands_builtin_matches_to_action_candidates() {
+        let server = super::LabMcpServer {
+            registry: std::sync::Arc::new(completion_test_registry()),
+            gateway_manager: None,
+            node_role: None,
+            peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                logging_level_rank(rmcp::model::LoggingLevel::Info),
+            )),
+        };
+
+        let results = server
+            .search_builtin_code_mode_candidates("movie.search", 10, 0.0)
+            .await;
+
+        assert!(
+            results
+                .iter()
+                .any(|result| result.id == "lab::radarr.movie.search")
+        );
+        assert_eq!(
+            results.first().map(|result| result.id.as_str()),
+            Some("lab::radarr.movie.search")
+        );
+        assert!(results.iter().all(|result| result.upstream == "lab"));
+        assert!(results.iter().all(|result| result.schema_available));
     }
 
     #[tokio::test]

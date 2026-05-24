@@ -9,6 +9,8 @@ use crate::mcp::prompts::list_all as list_builtin_prompts;
 
 pub(crate) const TOOL_SEARCH_TOOL_NAME: &str = "scout";
 pub(crate) const TOOL_EXECUTE_TOOL_NAME: &str = "invoke";
+pub(crate) const CODE_SEARCH_TOOL_NAME: &str = "code_search";
+pub(crate) const CODE_SCHEMA_TOOL_NAME: &str = "code_schema";
 pub(crate) const LEGACY_TOOL_INVOKE_TOOL_NAME: &str = "tool_invoke";
 pub(crate) const LEGACY_TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
 pub(crate) const LEGACY_TOOL_EXECUTE_TOOL_NAME: &str = "tool_execute";
