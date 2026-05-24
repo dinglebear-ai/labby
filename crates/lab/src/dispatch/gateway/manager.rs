@@ -2048,6 +2048,10 @@ impl GatewayManager {
         self.config.read().await.tool_search.enabled
     }
 
+    pub async fn code_mode_config(&self) -> crate::config::CodeModeConfig {
+        self.config.read().await.code_mode.clone()
+    }
+
     pub async fn tool_search_warming(&self) -> bool {
         self.tool_indexes
             .iter()

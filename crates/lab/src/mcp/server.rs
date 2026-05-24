@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering as CmpOrdering;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::http::{self, request::Parts};
 use rmcp::model::{
@@ -25,13 +25,15 @@ use tokio::sync::RwLock;
 use crate::config::NodeRole;
 use crate::dispatch::error::ToolError as DispatchToolError;
 use crate::dispatch::gateway::code_mode::{
-    CodeModeSchemaResponse, CodeModeSearchCandidate, CodeModeToolId, CodeModeToolRef,
+    CodeModeExecutedCall, CodeModeExecutionResponse, CodeModeSchemaResponse,
+    CodeModeSearchCandidate, CodeModeToolId, CodeModeToolRef, action_input_schema,
+    extract_code_mode_invocations, sanitize_code_mode_schema,
 };
 use crate::dispatch::gateway::manager::{GatewayManager, GatewayToolSearchResult};
 use crate::mcp::catalog::{
-    CODE_SCHEMA_TOOL_NAME, CODE_SEARCH_TOOL_NAME, LEGACY_TOOL_EXECUTE_TOOL_NAME,
-    LEGACY_TOOL_INVOKE_TOOL_NAME, LEGACY_TOOL_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME,
-    TOOL_SEARCH_TOOL_NAME,
+    CODE_EXECUTE_TOOL_NAME, CODE_SCHEMA_TOOL_NAME, CODE_SEARCH_TOOL_NAME,
+    LEGACY_TOOL_EXECUTE_TOOL_NAME, LEGACY_TOOL_INVOKE_TOOL_NAME, LEGACY_TOOL_SEARCH_TOOL_NAME,
+    TOOL_EXECUTE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME,
 };
 use crate::mcp::elicitation::{ElicitResult, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra, build_success};
@@ -1101,12 +1103,7 @@ impl ServerHandler for LabMcpServer {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "maxLength": 500 },
-                    "top_k": { "type": "integer", "minimum": 1, "maximum": 50 },
-                    "detail": {
-                        "type": "string",
-                        "enum": ["brief", "detailed", "full"],
-                        "default": "brief"
-                    }
+                    "top_k": { "type": "integer", "minimum": 1, "maximum": 50 }
                 },
                 "required": ["query"]
             }) {
@@ -1141,6 +1138,33 @@ impl ServerHandler for LabMcpServer {
                 Lab ids return the ActionSpec-derived action contract; upstream ids \
                 return the upstream JSON Schema exposed by the gateway.",
                 code_schema_schema,
+            ));
+            gateway_tool_count += 1;
+            let code_execute_schema = match serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "maxLength": 20000,
+                        "description": "Constrained JavaScript/TypeScript snippet containing callTool(id, params) calls with strict JSON params"
+                    },
+                    "max_tool_calls": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50
+                    }
+                },
+                "required": ["code"]
+            }) {
+                Value::Object(map) => Arc::new(map),
+                _ => unreachable!("code_execute schema must be an object"),
+            };
+            tools.push(Tool::new(
+                CODE_EXECUTE_TOOL_NAME,
+                "Execute a constrained Code Mode snippet through the Lab gateway broker. \
+                Disabled by default; enable [code_mode].enabled to allow execution. \
+                Snippets may call callTool(id, params) with ids returned by code_search.",
+                code_execute_schema,
             ));
             gateway_tool_count += 1;
             let tool_execute_schema = match serde_json::json!({
@@ -1265,7 +1289,7 @@ impl ServerHandler for LabMcpServer {
         let param_key_count = params.as_object().map_or(0, serde_json::Map::len);
 
         let svc = self.registry.services().iter().find(|s| s.name == service);
-        if service == CODE_SEARCH_TOOL_NAME {
+        if service == CODE_SEARCH_TOOL_NAME && self.gateway_code_mode_enabled().await {
             let started = Instant::now();
             let subject = self.request_subject_log_tag(&context);
             let auth = auth_context_from_extensions(&context.extensions);
@@ -1411,7 +1435,7 @@ impl ServerHandler for LabMcpServer {
                 }
             };
         }
-        if service == CODE_SCHEMA_TOOL_NAME {
+        if service == CODE_SCHEMA_TOOL_NAME && self.gateway_code_mode_enabled().await {
             let started = Instant::now();
             let subject = self.request_subject_log_tag(&context);
             let auth = auth_context_from_extensions(&context.extensions);
@@ -1486,6 +1510,130 @@ impl ServerHandler for LabMcpServer {
                     Ok(CallToolResult::error(vec![Content::text(env.to_string())]))
                 }
             };
+        }
+        if service == CODE_EXECUTE_TOOL_NAME && self.gateway_code_mode_enabled().await {
+            let started = Instant::now();
+            let subject = self.request_subject_log_tag(&context);
+            let auth = auth_context_from_extensions(&context.extensions);
+            if !tool_execute_scope_allowed(auth) {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = %service,
+                    action = "call_tool",
+                    subject,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    kind = "forbidden",
+                    "gateway code execute denied by scope"
+                );
+                let env = build_error_extra(
+                    &service,
+                    "call_tool",
+                    "forbidden",
+                    "code_execute requires one of scopes: lab, lab:admin",
+                    &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            let Some(manager) = &self.gateway_manager else {
+                let envelope = build_error(
+                    &service,
+                    "call_tool",
+                    "unknown_tool",
+                    "code execute is not enabled",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(
+                    envelope.to_string(),
+                )]));
+            };
+            let config = manager.code_mode_config().await;
+            if !config.enabled {
+                let env = build_error(
+                    &service,
+                    "call_tool",
+                    "code_mode_disabled",
+                    "Code Mode execution is disabled; set [code_mode].enabled = true to enable it",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
+            let requested_max_tool_calls = args
+                .get("max_tool_calls")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(config.max_tool_calls)
+                .max(1)
+                .min(config.max_tool_calls);
+            let code_hash = hash_arguments(&Value::String(code.to_string()));
+            let invocations = match extract_code_mode_invocations(code, requested_max_tool_calls) {
+                Ok(invocations) => invocations,
+                Err(err) => {
+                    let env = tool_error_envelope(&service, "call_tool", &err);
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+            };
+            tracing::info!(
+                surface = "mcp",
+                service = "code_execute",
+                action = "call_tool",
+                subject,
+                code_hash = %code_hash,
+                call_count = invocations.len(),
+                "gateway code execute start"
+            );
+            let subject_raw = self.request_subject(&context);
+            let execution = async {
+                let mut calls = Vec::with_capacity(invocations.len());
+                for invocation in invocations {
+                    let result = self
+                        .code_mode_call_tool_id(
+                            &invocation.id,
+                            invocation.params,
+                            auth,
+                            subject_raw,
+                        )
+                        .await?;
+                    calls.push(CodeModeExecutedCall {
+                        id: invocation.id,
+                        result,
+                    });
+                }
+                Ok::<_, DispatchToolError>(CodeModeExecutionResponse { calls })
+            };
+            let response =
+                match tokio::time::timeout(Duration::from_millis(config.timeout_ms), execution)
+                    .await
+                {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(err)) => {
+                        let env = tool_error_envelope(&service, "call_tool", &err);
+                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    }
+                    Err(_) => {
+                        let env = build_error(
+                            &service,
+                            "call_tool",
+                            "timeout",
+                            &format!(
+                                "Code Mode execution timed out after {}ms",
+                                config.timeout_ms
+                            ),
+                        );
+                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    }
+                };
+            tracing::info!(
+                surface = "mcp",
+                service = "code_execute",
+                action = "call_tool",
+                subject,
+                code_hash = %code_hash,
+                call_count = response.calls.len(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "gateway code execute ok"
+            );
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string()),
+            )]));
         }
         if service == TOOL_SEARCH_TOOL_NAME || service == LEGACY_TOOL_SEARCH_TOOL_NAME {
             let started = Instant::now();
@@ -2826,8 +2974,23 @@ impl LabMcpServer {
                 ),
             });
         }
-        crate::dispatch::helpers::action_schema(entry.actions, action_name)
-            .map(|schema| CodeModeSchemaResponse::lab_action(id, action_name, schema))
+        let action = entry
+            .actions
+            .iter()
+            .find(|action| action.name == action_name)
+            .ok_or_else(|| DispatchToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("Lab action `{service_name}.{action_name}` was not found"),
+            })?;
+        let input_schema = action_input_schema(action);
+        crate::dispatch::helpers::action_schema(entry.actions, action_name).map(|schema| {
+            CodeModeSchemaResponse::lab_action_with_input_schema(
+                id,
+                action_name,
+                schema,
+                input_schema,
+            )
+        })
     }
 
     async fn code_mode_schema_for_upstream_tool(
@@ -2852,12 +3015,14 @@ impl LabMcpServer {
                 message: format!("upstream tool `{upstream}::{tool}` was not found"),
             });
         };
-        let schema = candidate.input_schema.unwrap_or_else(|| {
-            serde_json::json!({
-                "type": "object",
-                "properties": {}
-            })
-        });
+        let Some(schema) = sanitize_code_mode_schema(candidate.input_schema) else {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "schema_unavailable".to_string(),
+                message: format!(
+                    "upstream tool `{upstream}::{tool}` schema is unavailable or exceeds the safe return size"
+                ),
+            });
+        };
         Ok(CodeModeSchemaResponse::upstream_tool(
             id, upstream, tool, schema,
         ))
@@ -2876,6 +3041,130 @@ impl LabMcpServer {
                 self.code_mode_schema_for_upstream_tool(&parsed.raw, &upstream, &tool)
                     .await
             }
+        }
+    }
+
+    async fn code_mode_call_tool_id(
+        &self,
+        id: &str,
+        params: Value,
+        auth: Option<&crate::api::oauth::AuthContext>,
+        subject: Option<&str>,
+    ) -> Result<Value, DispatchToolError> {
+        let parsed = CodeModeToolId::parse(id)?;
+        match parsed.reference {
+            CodeModeToolRef::LabAction { service, action } => {
+                self.code_mode_call_lab_action(&service, &action, params, auth, subject)
+                    .await
+            }
+            CodeModeToolRef::UpstreamTool { upstream, tool } => {
+                self.code_mode_call_upstream_tool(&upstream, &tool, params)
+                    .await
+            }
+        }
+    }
+
+    async fn code_mode_call_lab_action(
+        &self,
+        service_name: &str,
+        action_name: &str,
+        params: Value,
+        auth: Option<&crate::api::oauth::AuthContext>,
+        subject: Option<&str>,
+    ) -> Result<Value, DispatchToolError> {
+        let Some(entry) = self
+            .registry
+            .services()
+            .iter()
+            .find(|entry| entry.name == service_name)
+        else {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("Lab service `{service_name}` was not found"),
+            });
+        };
+        if !self.service_visible_on_mcp(entry.name).await
+            || !self.action_allowed_on_mcp(entry.name, action_name).await
+        {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!(
+                    "Lab action `{service_name}.{action_name}` is not exposed on the mcp surface"
+                ),
+            });
+        }
+        if !tool_execute_builtin_action_allowed(entry, action_name, auth) {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: format!(
+                    "action `{action_name}` for service `{}` requires `lab:admin` scope",
+                    entry.name
+                ),
+            });
+        }
+        let is_destructive = entry
+            .actions
+            .iter()
+            .any(|action| action.name == action_name && action.destructive);
+        if is_destructive && params.get("confirm").and_then(Value::as_bool) != Some(true) {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "confirmation_required".to_string(),
+                message: format!(
+                    "action `{action_name}` is destructive — pass {{\"confirm\":true}} in params"
+                ),
+            });
+        }
+        let params = if entry.name == "gateway" {
+            inject_gateway_origin_param(params, subject)
+        } else {
+            params
+        };
+        (entry.dispatch)(action_name.to_string(), params).await
+    }
+
+    async fn code_mode_call_upstream_tool(
+        &self,
+        upstream: &str,
+        tool: &str,
+        params: Value,
+    ) -> Result<Value, DispatchToolError> {
+        let Some(pool) = self.current_upstream_pool().await else {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "upstream_error".to_string(),
+                message: "gateway upstream pool is unavailable".to_string(),
+            });
+        };
+        let exposed = pool
+            .healthy_tools_for_upstream(upstream)
+            .await
+            .into_iter()
+            .any(|candidate| candidate.tool.name.as_ref() == tool);
+        if !exposed {
+            return Err(DispatchToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("upstream tool `{upstream}::{tool}` was not found"),
+            });
+        }
+        let mut upstream_params = CallToolRequestParams::new(tool.to_string());
+        upstream_params.arguments = Some(match params {
+            Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        });
+        match pool.call_tool(upstream, upstream_params).await {
+            Some(Ok(result)) => {
+                serde_json::to_value(result).map_err(|err| DispatchToolError::Sdk {
+                    sdk_kind: "serialization_error".to_string(),
+                    message: format!("failed to serialize upstream tool result: {err}"),
+                })
+            }
+            Some(Err(err)) => Err(DispatchToolError::Sdk {
+                sdk_kind: "upstream_error".to_string(),
+                message: err,
+            }),
+            None => Err(DispatchToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("upstream tool `{upstream}::{tool}` was not found"),
+            }),
         }
     }
 
@@ -3610,6 +3899,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn code_mode_brokers_lab_action_by_stable_id() {
+        let server = super::LabMcpServer {
+            registry: std::sync::Arc::new(completion_test_registry()),
+            gateway_manager: None,
+            node_role: None,
+            peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                logging_level_rank(rmcp::model::LoggingLevel::Info),
+            )),
+        };
+
+        let result = server
+            .code_mode_call_tool_id(
+                "lab::radarr.movie.search",
+                serde_json::json!({"query": "Alien"}),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, Value::Null);
+    }
+
+    #[tokio::test]
     async fn snapshot_catalog_hides_builtin_tools_when_tool_search_is_enabled() {
         let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
         let manager = std::sync::Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
@@ -3639,9 +3953,15 @@ mod tests {
 
         assert_eq!(
             snapshot.tools,
-            ["invoke".to_string(), "scout".to_string()]
-                .into_iter()
-                .collect()
+            [
+                "code_execute".to_string(),
+                "code_schema".to_string(),
+                "code_search".to_string(),
+                "invoke".to_string(),
+                "scout".to_string()
+            ]
+            .into_iter()
+            .collect()
         );
     }
 

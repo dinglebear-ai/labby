@@ -119,6 +119,9 @@ pub struct LabConfig {
     /// Gateway-wide tool-search mode for all exposed upstream tools.
     #[serde(default)]
     pub tool_search: ToolSearchConfig,
+    /// Gateway-wide Code Mode execution settings.
+    #[serde(default)]
+    pub code_mode: CodeModeConfig,
     /// Upstream MCP servers to proxy through the gateway.
     #[serde(default)]
     pub upstream: Vec<UpstreamConfig>,
@@ -362,6 +365,7 @@ impl LabConfig {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.tool_search.validate()?;
+        self.code_mode.validate()?;
         for upstream in &self.upstream {
             upstream.validate()?;
         }
@@ -481,6 +485,54 @@ impl Default for ToolSearchConfig {
             tei_api_key: None,
             tools_collection: default_tools_collection(),
         }
+    }
+}
+
+fn default_code_mode_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_code_mode_max_tool_calls() -> usize {
+    8
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeModeConfig {
+    /// Enable the constrained Code Mode executor. Discovery and schema lookup
+    /// can be enabled through `[tool_search]` without enabling execution.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum wall-clock time for one Code Mode execution.
+    #[serde(default = "default_code_mode_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Maximum host-brokered tool calls allowed in one Code Mode execution.
+    #[serde(default = "default_code_mode_max_tool_calls")]
+    pub max_tool_calls: usize,
+}
+
+impl Default for CodeModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_ms: default_code_mode_timeout_ms(),
+            max_tool_calls: default_code_mode_max_tool_calls(),
+        }
+    }
+}
+
+impl CodeModeConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !(1..=60_000).contains(&self.timeout_ms) {
+            return Err(ConfigError::InvalidCodeModeTimeout {
+                value: self.timeout_ms,
+            });
+        }
+        if !(1..=50).contains(&self.max_tool_calls) {
+            return Err(ConfigError::InvalidCodeModeMaxToolCalls {
+                value: self.max_tool_calls,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -879,6 +931,10 @@ pub enum ConfigError {
     InvalidToolSearchMaxTools { value: usize },
     #[error("gateway tool_search.score_floor_fraction={value} is invalid — expected 0.0..=1.0")]
     InvalidToolSearchScoreFloor { value: f32 },
+    #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=60000")]
+    InvalidCodeModeTimeout { value: u64 },
+    #[error("gateway code_mode.max_tool_calls={value} is invalid — expected 1..=50")]
+    InvalidCodeModeMaxToolCalls { value: usize },
     #[error("protected MCP route '{name}' has invalid {field}: {value}")]
     InvalidProtectedRoute {
         name: String,
@@ -2679,6 +2735,57 @@ url = "https://acme.example.com/mcp"
         assert_eq!(cfg.tool_search.top_k_default, 20);
         assert_eq!(cfg.tool_search.max_tools, 8000);
         cfg.validate().expect("root tool_search validates");
+    }
+
+    #[test]
+    fn code_mode_is_root_level_config_and_disabled_by_default() {
+        let default_cfg = LabConfig::default();
+        assert!(!default_cfg.code_mode.enabled);
+        assert_eq!(default_cfg.code_mode.timeout_ms, 5000);
+        assert_eq!(default_cfg.code_mode.max_tool_calls, 8);
+
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[code_mode]
+enabled = true
+timeout_ms = 2500
+max_tool_calls = 3
+"#,
+        )
+        .expect("root code_mode parses");
+
+        assert!(cfg.code_mode.enabled);
+        assert_eq!(cfg.code_mode.timeout_ms, 2500);
+        assert_eq!(cfg.code_mode.max_tool_calls, 3);
+    }
+
+    #[test]
+    fn code_mode_validation_rejects_unbounded_execution_settings() {
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[code_mode]
+timeout_ms = 0
+max_tool_calls = 8
+"#,
+        )
+        .expect("code_mode parses");
+        assert!(matches!(
+            cfg.validate(),
+            Err(ConfigError::InvalidCodeModeTimeout { value: 0 })
+        ));
+
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+[code_mode]
+timeout_ms = 5000
+max_tool_calls = 0
+"#,
+        )
+        .expect("code_mode parses");
+        assert!(matches!(
+            cfg.validate(),
+            Err(ConfigError::InvalidCodeModeMaxToolCalls { value: 0 })
+        ));
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub(crate) const TOOL_SEARCH_TOOL_NAME: &str = "scout";
 pub(crate) const TOOL_EXECUTE_TOOL_NAME: &str = "invoke";
 pub(crate) const CODE_SEARCH_TOOL_NAME: &str = "code_search";
 pub(crate) const CODE_SCHEMA_TOOL_NAME: &str = "code_schema";
+pub(crate) const CODE_EXECUTE_TOOL_NAME: &str = "code_execute";
 pub(crate) const LEGACY_TOOL_INVOKE_TOOL_NAME: &str = "tool_invoke";
 pub(crate) const LEGACY_TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
 pub(crate) const LEGACY_TOOL_EXECUTE_TOOL_NAME: &str = "tool_execute";
@@ -59,6 +60,13 @@ impl LabMcpServer {
         match &self.gateway_manager {
             Some(manager) => manager.current_pool().await,
             None => None,
+        }
+    }
+
+    pub(crate) async fn gateway_code_mode_enabled(&self) -> bool {
+        match &self.gateway_manager {
+            Some(manager) => manager.tool_search_enabled().await,
+            None => false,
         }
     }
 
@@ -192,6 +200,9 @@ impl LabMcpServer {
         let mut tools = BTreeSet::new();
         if visibility.exposes_synthetic_tools() {
             tools.insert(TOOL_SEARCH_TOOL_NAME.to_string());
+            tools.insert(CODE_SEARCH_TOOL_NAME.to_string());
+            tools.insert(CODE_SCHEMA_TOOL_NAME.to_string());
+            tools.insert(CODE_EXECUTE_TOOL_NAME.to_string());
             tools.insert(TOOL_EXECUTE_TOOL_NAME.to_string());
         } else {
             for svc in self.registry.services() {

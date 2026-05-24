@@ -95,6 +95,7 @@ When enabled, Lab hides raw proxied upstream tools from MCP `list_tools()` and e
 | `invoke` | Invoke one tool returned by `scout`. Legacy aliases: `tool_execute`, `tool_invoke`. |
 | `code_search` | Return Code Mode candidates with stable ids and schema availability. |
 | `code_schema` | Return the exact schema/contract for one `code_search` id. |
+| `code_execute` | Execute a constrained Code Mode snippet through the gateway broker when enabled. |
 
 This keeps the MCP catalog small while still allowing clients to reach every exposed upstream tool. Per-upstream `expose_tools` filters still apply before tools enter the searchable catalog.
 
@@ -142,7 +143,7 @@ Code Mode is schema-first discovery, not execution. `code_search` returns stable
 for Lab actions and upstream tools:
 
 ```json
-{ "query": "github issues", "top_k": 10, "detail": "brief" }
+{ "query": "github issues", "top_k": 10 }
 ```
 
 Example candidate ids:
@@ -167,15 +168,40 @@ cached by the gateway (`schema_format: "json_schema"`). `code_schema` requires
 the same schema visibility scope as `scout include_schema=true`: `lab` or
 `lab:admin`.
 
+`code_execute` is disabled by default. Enable it explicitly with:
+
+```toml
+[code_mode]
+enabled = true
+timeout_ms = 5000
+max_tool_calls = 8
+```
+
+The MVP executor accepts a constrained JavaScript/TypeScript-looking static
+batch of `callTool(id, params)` calls. It intentionally rejects control flow,
+function declarations, and arrow functions until a real sandboxed evaluator is
+wired in. `params` must be strict JSON so the gateway can validate and broker
+each call without granting the snippet ambient host access:
+
+```json
+{
+  "code": "await callTool(\"lab::radarr.movie.search\", {\"query\":\"Alien\"});"
+}
+```
+
 Rules:
 
 - `top_k_default` is validated in the range `1..=50`
 - `max_tools` is validated in the range `1..=10000`
+- `code_mode.timeout_ms` is validated in the range `1..=60000`
+- `code_mode.max_tool_calls` is validated in the range `1..=50`
 - `query` must be non-empty and no longer than 500 characters
 - `include_schema` defaults to `false`; schemas are sanitized before return when requested
 - `code_search` is read-only discovery and accepts `lab:read`, `lab`, or `lab:admin`
 - `code_schema` exposes full schemas and requires `lab` or `lab:admin`
+- `code_execute` requires `lab` or `lab:admin`, is disabled unless `[code_mode].enabled = true`, and brokers calls through the same gateway visibility and destructive-action checks as `invoke`
 - invalid Code Mode ids return `invalid_code_mode_id`
+- unavailable or overlarge upstream schemas return `schema_unavailable`
 - old `[[upstream]].tool_search` blocks are accepted only as migration input and are dropped on the next gateway config write
 - `gateway.update` rejects `patch.tool_search`; use `gateway.tool_search.set` instead
 
