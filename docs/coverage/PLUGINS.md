@@ -142,7 +142,7 @@ All plugins in `plugins/` with their registered components. Each plugin lives at
 | Type | Detail |
 |------|--------|
 | skill | `skills/dozzle/SKILL.md` |
-| .mcp.json | `dozzle` → `labby mcp --services dozzle` |
+| .mcp.json | `dozzle` → `${userConfig.dozzle_mcp_url}` (HTTP, Dozzle native `/api/mcp`) |
 
 ---
 

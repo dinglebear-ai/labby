@@ -4,6 +4,7 @@
 //! can share the same handler logic.
 
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::cmp::Ordering as CmpOrdering;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use tokio::sync::RwLock;
 
 use crate::config::NodeRole;
 use crate::dispatch::error::ToolError as DispatchToolError;
+use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::gateway::code_mode::{
     CodeModeExecutedCall, CodeModeExecutionResponse, CodeModeRunnerInput, CodeModeRunnerOutput,
     CodeModeSchemaResponse, CodeModeSearchCandidate, CodeModeToolId, CodeModeToolRef,
@@ -285,11 +287,14 @@ impl ServerHandler for LabMcpServer {
             let builtin_name_refs: Vec<&str> = builtin_names.iter().map(String::as_str).collect();
             let upstream_prompts = pool.list_upstream_prompts(&builtin_name_refs).await;
             prompts.extend(upstream_prompts);
-            if let Some(subject) = self.request_subject(&context) {
+            let auth = auth_context_from_extensions(&context.extensions);
+            if let Some(oauth_subject) =
+                oauth_upstream_subject_for_request(auth, self.request_subject(&context))
+            {
                 let scoped_prompts = pool
                     .subject_scoped_prompts(
                         &self.oauth_upstream_configs().await,
-                        subject,
+                        oauth_subject.as_ref(),
                         &builtin_name_refs,
                     )
                     .await;
@@ -462,12 +467,14 @@ impl ServerHandler for LabMcpServer {
             return outcome;
         }
 
-        if let Some(subject) = self.request_subject(&context)
+        let auth = auth_context_from_extensions(&context.extensions);
+        if let Some(oauth_subject) =
+            oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             && let Some(pool) = self.current_upstream_pool().await
         {
             let configs = self.oauth_upstream_configs().await;
             if let Some(upstream_name) = pool
-                .subject_scoped_prompt_owner(&configs, subject, &request.name)
+                .subject_scoped_prompt_owner(&configs, oauth_subject.as_ref(), &request.name)
                 .await
                 && let Some(config) = configs
                     .into_iter()
@@ -481,10 +488,11 @@ impl ServerHandler for LabMcpServer {
                     prompt = %prompt_name,
                     upstream = %config.name,
                     route = "subject_scoped",
+                    oauth_subject = %oauth_subject,
                     "dispatch route selected"
                 );
                 let outcome = match pool
-                    .subject_scoped_get_prompt(&config, subject, request)
+                    .subject_scoped_get_prompt(&config, oauth_subject.as_ref(), request)
                     .await
                 {
                     Ok(result) => {
@@ -494,6 +502,7 @@ impl ServerHandler for LabMcpServer {
                             service = "labby",
                             action = "get_prompt",
                             subject,
+                            oauth_subject = %oauth_subject,
                             prompt = %prompt_name,
                             upstream = %config.name,
                             elapsed_ms,
@@ -607,9 +616,15 @@ impl ServerHandler for LabMcpServer {
         if let Some(pool) = self.current_upstream_pool().await {
             resources.extend(pool.gateway_synthetic_resources().await);
             resources.extend(pool.list_upstream_resources().await);
-            if let Some(subject) = self.request_subject(&context) {
+            let auth = auth_context_from_extensions(&context.extensions);
+            if let Some(oauth_subject) =
+                oauth_upstream_subject_for_request(auth, self.request_subject(&context))
+            {
                 let configs = self.oauth_upstream_configs().await;
-                resources.extend(pool.subject_scoped_resources(&configs, subject).await);
+                resources.extend(
+                    pool.subject_scoped_resources(&configs, oauth_subject.as_ref())
+                        .await,
+                );
             }
         }
 
@@ -888,7 +903,9 @@ impl ServerHandler for LabMcpServer {
             return outcome;
         }
 
-        if let Some(subject) = self.request_subject(&context)
+        let auth = auth_context_from_extensions(&context.extensions);
+        if let Some(oauth_subject) =
+            oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             && let Some(pool) = self.current_upstream_pool().await
             && let Some(upstream_name) = uri
                 .strip_prefix("lab://upstream/")
@@ -902,10 +919,11 @@ impl ServerHandler for LabMcpServer {
                 resource_uri = crate::dispatch::upstream::pool::redact_resource_uri_for_logging(uri),
                 upstream = %config.name,
                 route = "subject_scoped",
+                oauth_subject = %oauth_subject,
                 "dispatch route selected"
             );
             let outcome = match pool
-                .subject_scoped_read_resource(&config, subject, uri)
+                .subject_scoped_read_resource(&config, oauth_subject.as_ref(), uri)
                 .await
             {
                 Ok(result) => {
@@ -915,6 +933,7 @@ impl ServerHandler for LabMcpServer {
                         service = "labby",
                         action = "read_resource",
                         subject,
+                        oauth_subject = %oauth_subject,
                         upstream = %config.name,
                         resource_uri = crate::dispatch::upstream::pool::redact_resource_uri_for_logging(uri),
                         elapsed_ms,
@@ -1177,6 +1196,10 @@ impl ServerHandler for LabMcpServer {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
+                    "upstream": {
+                        "type": "string",
+                        "description": "Optional upstream MCP server name. Equivalent to passing name as upstream::tool."
+                    },
                     "arguments": { "type": "object" }
                 },
                 "required": ["name", "arguments"]
@@ -1188,7 +1211,9 @@ impl ServerHandler for LabMcpServer {
                 TOOL_EXECUTE_TOOL_NAME,
                 "Invoke one Lab or upstream tool discovered through scout. \
                 Pass the exact tool name returned by scout and a JSON \
-                arguments object matching that tool's schema. \
+                arguments object matching that tool's schema. If scout returns \
+                duplicate tool names, pass either name as upstream::tool or set \
+                upstream to the returned upstream server name. \
                 Lab built-in tools take {\"action\": \"<name>\", \"params\": {...}}. \
                 Upstream tools use their own schema (retrieve with \
                 scout include_schema=true). \
@@ -1223,9 +1248,15 @@ impl ServerHandler for LabMcpServer {
                 tools.push(ut.tool);
                 upstream_tool_count += 1;
             }
-            if let Some(subject) = self.request_subject(&context) {
+            let auth = auth_context_from_extensions(&context.extensions);
+            if let Some(oauth_subject) =
+                oauth_upstream_subject_for_request(auth, self.request_subject(&context))
+            {
                 for (_upstream_name, upstream_tools) in pool
-                    .subject_scoped_tools(&self.oauth_upstream_configs().await, subject)
+                    .subject_scoped_tools(
+                        &self.oauth_upstream_configs().await,
+                        oauth_subject.as_ref(),
+                    )
                     .await
                 {
                     for ut in upstream_tools {
@@ -1783,6 +1814,12 @@ impl ServerHandler for LabMcpServer {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
+            let requested_upstream = args
+                .get("upstream")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
             let arguments = args
                 .get("arguments")
                 .cloned()
@@ -2042,8 +2079,10 @@ impl ServerHandler for LabMcpServer {
                 .await;
                 return Ok(result);
             }
-            let resolved = manager.resolve_tool_execute(&tool_name).await;
-            let (upstream_name, _) = match resolved {
+            let resolved = manager
+                .resolve_tool_execute_with_upstream(&tool_name, requested_upstream.as_deref())
+                .await;
+            let (upstream_name, upstream_tool) = match resolved {
                 Ok(value) => value,
                 Err(crate::dispatch::error::ToolError::AmbiguousTool { message, valid }) => {
                     tracing::warn!(
@@ -2052,6 +2091,7 @@ impl ServerHandler for LabMcpServer {
                         action = "call_tool",
                         subject,
                         upstream_tool = %tool_name,
+                        requested_upstream = requested_upstream.as_deref().unwrap_or(""),
                         arguments_hash = %arguments_hash,
                         elapsed_ms = started.elapsed().as_millis(),
                         kind = "ambiguous_tool",
@@ -2060,6 +2100,12 @@ impl ServerHandler for LabMcpServer {
                     );
                     let mut extra = serde_json::Map::new();
                     extra.insert("valid".to_string(), serde_json::json!(valid));
+                    extra.insert(
+                        "hint".to_string(),
+                        serde_json::json!(
+                            "Retry with one of the fully-qualified names in `valid`, or set `upstream` to the desired upstream server name and `name` to the raw tool name."
+                        ),
+                    );
                     let env = build_error_extra(
                         &service,
                         "call_tool",
@@ -2077,6 +2123,7 @@ impl ServerHandler for LabMcpServer {
                         action = "call_tool",
                         subject,
                         upstream_tool = %tool_name,
+                        requested_upstream = requested_upstream.as_deref().unwrap_or(""),
                         arguments_hash = %arguments_hash,
                         elapsed_ms = started.elapsed().as_millis(),
                         kind,
@@ -2087,7 +2134,9 @@ impl ServerHandler for LabMcpServer {
                     if kind == "unknown_tool" {
                         extra.insert(
                             "hint".to_string(),
-                            serde_json::json!("Call tool_search to discover available tools"),
+                            serde_json::json!(
+                                "Call scout to discover available tools. If scout returned duplicate tool names, retry with `upstream::tool` or set `upstream`."
+                            ),
                         );
                     }
                     let env = build_error_extra(
@@ -2100,6 +2149,7 @@ impl ServerHandler for LabMcpServer {
                     return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
             };
+            let upstream_tool_name = upstream_tool.tool.name.to_string();
             if let Some(pool) = self.current_upstream_pool().await {
                 tracing::info!(
                     surface = "mcp",
@@ -2107,11 +2157,11 @@ impl ServerHandler for LabMcpServer {
                     action = "call_tool",
                     subject,
                     upstream = %upstream_name,
-                    upstream_tool = %tool_name,
+                    upstream_tool = %upstream_tool_name,
                     arguments_hash = %arguments_hash,
                     "gateway tool execute start"
                 );
-                let mut upstream_params = CallToolRequestParams::new(tool_name.clone());
+                let mut upstream_params = CallToolRequestParams::new(upstream_tool_name.clone());
                 upstream_params.arguments = Some(match arguments {
                     Value::Object(map) => map,
                     _ => serde_json::Map::new(),
@@ -2124,7 +2174,7 @@ impl ServerHandler for LabMcpServer {
                             action = "call_tool",
                             subject,
                             upstream = %upstream_name,
-                            upstream_tool = %tool_name,
+                            upstream_tool = %upstream_tool_name,
                             arguments_hash = %arguments_hash,
                             elapsed_ms = started.elapsed().as_millis(),
                             "gateway tool execute ok"
@@ -2138,7 +2188,7 @@ impl ServerHandler for LabMcpServer {
                             action = "call_tool",
                             subject,
                             upstream = %upstream_name,
-                            upstream_tool = %tool_name,
+                            upstream_tool = %upstream_tool_name,
                             arguments_hash = %arguments_hash,
                             elapsed_ms = started.elapsed().as_millis(),
                             kind = "upstream_error",
@@ -2155,7 +2205,7 @@ impl ServerHandler for LabMcpServer {
                             action = "call_tool",
                             subject,
                             upstream = %upstream_name,
-                            upstream_tool = %tool_name,
+                            upstream_tool = %upstream_tool_name,
                             arguments_hash = %arguments_hash,
                             elapsed_ms = started.elapsed().as_millis(),
                             kind = "upstream_error",
@@ -2183,7 +2233,7 @@ impl ServerHandler for LabMcpServer {
                 action = "call_tool",
                 subject,
                 upstream = %upstream_name,
-                upstream_tool = %tool_name,
+                upstream_tool = %upstream_tool_name,
                 arguments_hash = %arguments_hash,
                 elapsed_ms = started.elapsed().as_millis(),
                 kind = "upstream_error",
@@ -2550,12 +2600,17 @@ impl ServerHandler for LabMcpServer {
             }
         }
 
-        if let Some(subject) = self.request_subject(&context)
+        let auth = auth_context_from_extensions(&context.extensions);
+        if let Some(oauth_subject) =
+            oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             && let Some(pool) = self.current_upstream_pool().await
         {
             let configs = self.oauth_upstream_configs().await;
             let mut owner = None;
-            for (upstream_name, tools) in pool.subject_scoped_tools(&configs, subject).await {
+            for (upstream_name, tools) in pool
+                .subject_scoped_tools(&configs, oauth_subject.as_ref())
+                .await
+            {
                 if tools.iter().any(|tool| tool.name.as_ref() == service) {
                     owner = Some(upstream_name);
                     break;
@@ -2574,12 +2629,13 @@ impl ServerHandler for LabMcpServer {
                     tool = %service,
                     upstream = %upstream_name,
                     route = "subject_scoped",
+                    oauth_subject = %oauth_subject,
                     "dispatch route selected"
                 );
                 let mut upstream_params = CallToolRequestParams::new(service.clone());
                 upstream_params.arguments = raw_arguments;
                 match pool
-                    .subject_scoped_call_tool(&config, subject, upstream_params)
+                    .subject_scoped_call_tool(&config, oauth_subject.as_ref(), upstream_params)
                     .await
                 {
                     Ok(result) => {
@@ -2597,6 +2653,7 @@ impl ServerHandler for LabMcpServer {
                                 operation = upstream_operation,
                                 subject_scoped = true,
                                 subject,
+                                oauth_subject = %oauth_subject,
                                 elapsed_ms,
                                 kind,
                                 "upstream dispatch error"
@@ -2620,6 +2677,7 @@ impl ServerHandler for LabMcpServer {
                                 operation = upstream_operation,
                                 subject_scoped = true,
                                 subject,
+                                oauth_subject = %oauth_subject,
                                 elapsed_ms,
                                 "upstream dispatch ok"
                             );
@@ -3509,6 +3567,19 @@ fn auth_context_from_extensions(
     parts.extensions.get::<crate::api::oauth::AuthContext>()
 }
 
+fn oauth_upstream_subject_for_request<'a>(
+    auth: Option<&crate::api::oauth::AuthContext>,
+    request_subject: Option<&'a str>,
+) -> Option<Cow<'a, str>> {
+    match auth {
+        None => Some(Cow::Borrowed(SHARED_GATEWAY_OAUTH_SUBJECT)),
+        Some(ctx) if ctx.scopes.iter().any(|scope| scope == "lab:admin") => {
+            Some(Cow::Borrowed(SHARED_GATEWAY_OAUTH_SUBJECT))
+        }
+        Some(_) => request_subject.map(Cow::Borrowed),
+    }
+}
+
 fn tool_execute_scope_allowed(auth: Option<&crate::api::oauth::AuthContext>) -> bool {
     auth.is_none_or(|auth| {
         auth.scopes
@@ -3539,14 +3610,6 @@ fn tool_search_include_schema_allowed(
                 .iter()
                 .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin"))
         })
-}
-
-/// Whether the caller is allowed to see full input schemas in scout (tool_search) responses.
-/// Thin wrapper over `tool_search_include_schema_allowed` for callers that don't carry the
-/// `requested` flag (it is always implicitly `true` at the test boundary).
-#[cfg(test)]
-fn tool_search_schema_visible(auth: Option<&crate::api::oauth::AuthContext>) -> bool {
-    tool_search_include_schema_allowed(auth, true)
 }
 
 fn tool_execute_builtin_action_allowed(
@@ -3801,9 +3864,10 @@ mod tests {
     use crate::mcp::error::{DispatchError, canonical_kind};
     use crate::registry::{RegisteredService, ToolRegistry};
     use lab_apis::core::action::ActionSpec;
-    use rmcp::ServerHandler;
-    use rmcp::model::{CallToolResult, Content};
+    use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+    use rmcp::{ServerHandler, ServiceExt};
     use serde_json::Value;
+    use std::collections::{BTreeMap, HashMap};
     use std::future::Future;
     use std::pin::Pin;
     use std::time::Duration;
@@ -4271,6 +4335,170 @@ mod tests {
         );
     }
 
+    fn gateway_test_upstream(name: &str) -> crate::config::UpstreamConfig {
+        crate::config::UpstreamConfig {
+            enabled: true,
+            name: name.to_string(),
+            url: Some("http://127.0.0.1:9/mcp".to_string()),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+            tool_search: crate::config::ToolSearchConfig::default(),
+        }
+    }
+
+    fn healthy_gateway_entry(
+        upstream: &str,
+        tool_name: &str,
+    ) -> crate::dispatch::upstream::types::UpstreamEntry {
+        let upstream_name: std::sync::Arc<str> = std::sync::Arc::from(upstream);
+        let schema = std::sync::Arc::new(serde_json::Map::new());
+        let tool = rmcp::model::Tool::new(
+            tool_name.to_string(),
+            format!("{tool_name} description"),
+            schema,
+        );
+        let upstream_tool = crate::dispatch::upstream::types::UpstreamTool {
+            tool,
+            input_schema: None,
+            upstream_name: std::sync::Arc::clone(&upstream_name),
+        };
+        crate::dispatch::upstream::types::UpstreamEntry {
+            name: std::sync::Arc::clone(&upstream_name),
+            tools: HashMap::from([(tool_name.to_string(), upstream_tool)]),
+            exposure_policy: crate::dispatch::upstream::types::ToolExposurePolicy::All,
+            prompt_count: 0,
+            resource_count: 0,
+            prompt_names: Vec::new(),
+            resource_uris: Vec::new(),
+            tool_health: crate::dispatch::upstream::types::UpstreamHealth::Healthy,
+            prompt_health: crate::dispatch::upstream::types::UpstreamHealth::Healthy,
+            resource_health: crate::dispatch::upstream::types::UpstreamHealth::Healthy,
+            tool_unhealthy_since: None,
+            prompt_unhealthy_since: None,
+            resource_unhealthy_since: None,
+            tool_last_error: None,
+            prompt_last_error: None,
+            resource_last_error: None,
+        }
+    }
+
+    fn tool_result_text(result: &CallToolResult) -> &str {
+        result
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .map(|text| text.text.as_str())
+            .expect("tool result should contain text content")
+    }
+
+    #[tokio::test]
+    async fn invoke_ambiguous_tool_error_envelope_guides_retry() {
+        let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+        let pool = std::sync::Arc::new(crate::dispatch::upstream::pool::UpstreamPool::new());
+        runtime.swap(Some(std::sync::Arc::clone(&pool))).await;
+
+        let manager = std::sync::Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
+            tempfile::tempdir()
+                .expect("tempdir")
+                .path()
+                .join("config.toml"),
+            runtime,
+        ));
+        manager
+            .seed_config(crate::config::LabConfig {
+                tool_search: crate::config::ToolSearchConfig {
+                    enabled: true,
+                    ..crate::config::ToolSearchConfig::default()
+                },
+                upstream: vec![
+                    gateway_test_upstream("agent-os_windows-mcp"),
+                    gateway_test_upstream("steamy-windows-mcp"),
+                ],
+                ..crate::config::LabConfig::default()
+            })
+            .await;
+        pool.insert_entry_for_tests(
+            "agent-os_windows-mcp",
+            healthy_gateway_entry("agent-os_windows-mcp", "PowerShell"),
+        )
+        .await;
+        pool.insert_entry_for_tests(
+            "steamy-windows-mcp",
+            healthy_gateway_entry("steamy-windows-mcp", "PowerShell"),
+        )
+        .await;
+
+        let server = super::LabMcpServer {
+            registry: std::sync::Arc::new(ToolRegistry::new()),
+            gateway_manager: Some(manager),
+            node_role: None,
+            peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                logging_level_rank(rmcp::model::LoggingLevel::Info),
+            )),
+        };
+        let (server_transport, client_transport) = tokio::io::duplex(65_536);
+        let server_task = tokio::spawn(async move {
+            let running = server.serve(server_transport).await.expect("server starts");
+            running.waiting().await.expect("server waits");
+        });
+        let client = ().serve(client_transport).await.expect("client starts");
+
+        let mut params = CallToolRequestParams::new("invoke".to_string());
+        params.arguments = Some(
+            serde_json::json!({
+                "name": "PowerShell",
+                "arguments": {}
+            })
+            .as_object()
+            .expect("arguments object")
+            .clone(),
+        );
+        let result = client
+            .call_tool(params)
+            .await
+            .expect("invoke returns result");
+
+        assert_eq!(result.is_error, Some(true));
+        let envelope: Value =
+            serde_json::from_str(tool_result_text(&result)).expect("error envelope is json");
+        let error = &envelope["error"];
+        assert_eq!(envelope["ok"], false);
+        assert_eq!(envelope["service"], "invoke");
+        assert_eq!(envelope["action"], "call_tool");
+        assert_eq!(error["kind"], "ambiguous_tool");
+        assert_eq!(
+            error["message"],
+            "tool `PowerShell` matched multiple upstream tools"
+        );
+        assert_eq!(
+            error["valid"],
+            serde_json::json!([
+                "agent-os_windows-mcp::PowerShell",
+                "steamy-windows-mcp::PowerShell"
+            ])
+        );
+        assert!(
+            error["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("set `upstream`")),
+            "hint should explain the explicit upstream retry path: {error}"
+        );
+
+        drop(client);
+        server_task.abort();
+    }
+
     #[tokio::test]
     async fn server_reads_current_pool_from_gateway_manager() {
         let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
@@ -4646,6 +4874,45 @@ mod tests {
     }
 
     #[test]
+    fn oauth_upstream_subject_uses_shared_gateway_for_admin_and_trusted_callers() {
+        assert_eq!(
+            super::oauth_upstream_subject_for_request(None, None).as_deref(),
+            Some(crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT)
+        );
+        assert_eq!(
+            super::oauth_upstream_subject_for_request(None, Some("stdio-subject")).as_deref(),
+            Some(crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT)
+        );
+
+        let admin = make_auth(&["lab:admin"]);
+        assert_eq!(
+            super::oauth_upstream_subject_for_request(Some(&admin), Some("google-subject"))
+                .as_deref(),
+            Some(crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT)
+        );
+    }
+
+    #[test]
+    fn oauth_upstream_subject_preserves_non_admin_request_subjects() {
+        let lab = make_auth(&["lab"]);
+        assert_eq!(
+            super::oauth_upstream_subject_for_request(Some(&lab), Some("user-subject")).as_deref(),
+            Some("user-subject")
+        );
+
+        let read_only = make_auth(&["lab:read"]);
+        assert_eq!(
+            super::oauth_upstream_subject_for_request(Some(&read_only), Some("reader-subject"))
+                .as_deref(),
+            Some("reader-subject")
+        );
+        assert!(
+            super::oauth_upstream_subject_for_request(Some(&read_only), None).is_none(),
+            "non-admin HTTP callers must not fall back to shared gateway credentials without a subject"
+        );
+    }
+
+    #[test]
     fn tool_search_scope_allowed_permits_all_expected_scopes() {
         // None = stdio transport → trusted (always permitted)
         assert!(super::tool_search_scope_allowed(None));
@@ -4698,26 +4965,26 @@ mod tests {
         // for admin-only built-in tools would reveal internal parameter shapes.
         let read_only = make_auth(&["lab:read"]);
         assert!(
-            !super::tool_search_schema_visible(Some(&read_only)),
+            !super::tool_search_include_schema_allowed(Some(&read_only), true),
             "lab:read-only caller must have schema suppressed"
         );
 
         // lab and lab:admin may see schemas
         let lab = make_auth(&["lab"]);
         assert!(
-            super::tool_search_schema_visible(Some(&lab)),
+            super::tool_search_include_schema_allowed(Some(&lab), true),
             "lab scope must see schemas"
         );
 
         let admin = make_auth(&["lab:admin"]);
         assert!(
-            super::tool_search_schema_visible(Some(&admin)),
+            super::tool_search_include_schema_allowed(Some(&admin), true),
             "lab:admin scope must see schemas"
         );
 
         // stdio (None) always sees schemas
         assert!(
-            super::tool_search_schema_visible(None),
+            super::tool_search_include_schema_allowed(None, true),
             "stdio (None auth) must see schemas"
         );
     }

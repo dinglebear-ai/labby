@@ -120,11 +120,11 @@ labby gateway tool-search disable
 HTTP/MCP gateway management actions:
 
 ```json
-{ "action": "gateway.tool_search.get", "params": {} }
+{ "action": "gateway.scout.get", "params": {} }
 ```
 
 ```json
-{ "action": "gateway.tool_search.set", "params": { "enabled": true, "top_k_default": 10, "max_tools": 5000 } }
+{ "action": "gateway.scout.set", "params": { "enabled": true, "top_k_default": 10, "max_tools": 5000 } }
 ```
 
 Search call shape on the MCP surface:
@@ -205,7 +205,7 @@ Rules:
 - invalid Code Mode ids return `invalid_code_mode_id`
 - unavailable or overlarge upstream schemas return `schema_unavailable`
 - old `[[upstream]].tool_search` blocks are accepted only as migration input and are dropped on the next gateway config write
-- `gateway.update` rejects `patch.tool_search`; use `gateway.tool_search.set` instead
+- `gateway.update` rejects `patch.tool_search`; use `gateway.scout.set` instead
 
 Tool-search observability:
 

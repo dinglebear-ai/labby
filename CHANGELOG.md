@@ -8,6 +8,66 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.17.4] - 2026-05-24
+
+### Highlights
+
+- **Stdio MCP gateway parity**: normal `labby mcp` startup now wires the same gateway manager, upstream discovery, upstream OAuth runtime, and auto-import path used by HTTP MCP.
+- **Recursive stdio guard**: `LAB_SPAWN_DEPTH` still suppresses upstream spawning for recursive Lab child processes without weakening the normal stdio tool/resource surface.
+- **Startup coverage**: focused tests pin the recursion-guard behavior and tolerate malformed spawn-depth environment values.
+
+| Commit | Change |
+|--------|--------|
+| *(this)* | fix: align stdio mcp gateway startup with http |
+
+### Version bumps
+
+- Rust workspace: `0.17.3 → 0.17.4`
+- Gateway admin package: `0.17.3 → 0.17.4`
+
+---
+
+## [0.17.3] - 2026-05-24
+
+### Highlights
+
+- **Gateway invoke disambiguation**: `invoke` now accepts fully-qualified `upstream::tool` names or a separate `upstream` selector when multiple upstream MCP servers expose the same tool name.
+- **Agent retry guidance**: ambiguous gateway tool errors now include a structured retry hint alongside valid qualified tool names.
+- **MCP boundary coverage**: focused tests cover the agent-visible ambiguity envelope and resolver behavior.
+
+| Commit | Change |
+|--------|--------|
+| *(this)* | fix: disambiguate gateway invoke upstream tools |
+| `3bc9faac` | docs: capture gateway oauth quick-push session |
+| `4e0570c5` | fix: route gateway oauth tool access |
+
+### Version bumps
+
+- Rust workspace: `0.17.2 → 0.17.3`
+- Gateway admin package: `0.17.2 → 0.17.3`
+
+---
+
+## [0.17.2] - 2026-05-24
+
+### Highlights
+
+- **Gateway OAuth tool routing**: admin and trusted MCP callers now route upstream OAuth tools, prompts, and resource discovery through the shared gateway credential subject while preserving non-admin subject isolation.
+- **Gateway CLI/docs polish**: gateway catalog/help output and the Lab CLI skill references were refreshed around upstream proxy and schema discovery behavior.
+- **Gateway admin OAuth coverage**: gateway admin adapter tests now cover OAuth config patch behavior.
+
+| Commit | Change |
+|--------|--------|
+| *(this)* | fix: route gateway oauth tool access |
+| `82a85762` | merge scout security fixes |
+
+### Version bumps
+
+- Rust workspace: `0.17.1 → 0.17.2`
+- Gateway admin package: `0.17.1 → 0.17.2`
+
+---
+
 ## [0.17.1] - 2026-05-23
 
 ### Highlights
