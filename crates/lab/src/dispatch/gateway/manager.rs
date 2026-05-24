@@ -18,7 +18,7 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::upstream::pool::{
     UpstreamCachedSummary, UpstreamPool, in_process_upstream_name,
 };
-use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
+use crate::dispatch::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use crate::oauth::upstream::cache::OauthClientCache;
 use crate::oauth::upstream::encryption::EncryptionKey;
 use crate::oauth::upstream::manager::UpstreamOauthManager;
@@ -2048,6 +2048,10 @@ impl GatewayManager {
         self.config.read().await.tool_search.enabled
     }
 
+    pub async fn code_mode_config(&self) -> crate::config::CodeModeConfig {
+        self.config.read().await.code_mode.clone()
+    }
+
     pub async fn tool_search_warming(&self) -> bool {
         self.tool_indexes
             .iter()
@@ -2205,7 +2209,7 @@ impl GatewayManager {
     pub async fn resolve_tool_execute(
         &self,
         name: &str,
-    ) -> Result<(String, crate::dispatch::upstream::types::UpstreamTool), ToolError> {
+    ) -> Result<(String, UpstreamTool), ToolError> {
         if !self.config.read().await.tool_search.enabled {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
@@ -2251,6 +2255,50 @@ impl GatewayManager {
             });
         }
         Ok(matches.into_iter().next().expect("checked len"))
+    }
+
+    pub async fn resolve_code_mode_upstream_tool(
+        &self,
+        upstream: &str,
+        tool: &str,
+    ) -> Result<UpstreamTool, ToolError> {
+        let cfg = self.config.read().await;
+        if !cfg.tool_search.enabled {
+            return Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message:
+                    "tool search is not enabled; code mode upstream tools require tool_search mode"
+                        .to_string(),
+            });
+        }
+        let priority = cfg
+            .upstream
+            .iter()
+            .find(|candidate| candidate.name == upstream)
+            .map(|candidate| candidate.priority.max(0.0))
+            .unwrap_or(1.0);
+        drop(cfg);
+
+        if priority <= 0.0 {
+            return Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: format!("upstream tool `{upstream}::{tool}` was not found"),
+            });
+        }
+
+        let pool = self.current_pool().await.ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "unknown_tool".to_string(),
+            message: format!("upstream tool `{upstream}::{tool}` was not found"),
+        })?;
+
+        pool.healthy_tools_for_upstream(upstream)
+            .await
+            .into_iter()
+            .find(|candidate| candidate.tool.name.as_ref() == tool)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: format!("upstream tool `{upstream}::{tool}` was not found"),
+            })
     }
 
     fn has_cached_tool_search_index(&self) -> bool {
@@ -3244,7 +3292,7 @@ mod tests {
             format!("{tool_name} description"),
             schema,
         );
-        let upstream_tool = crate::dispatch::upstream::types::UpstreamTool {
+        let upstream_tool = UpstreamTool {
             tool,
             input_schema: None,
             upstream_name: Arc::clone(&upstream_name),
@@ -3331,6 +3379,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_code_mode_upstream_tool_hides_priority_zero_upstreams() {
+        let mut upstream = fixture_http_upstream("suppressed");
+        upstream.priority = 0.0;
+        let (manager, pool) = tool_search_manager_with_pool(upstream).await;
+        pool.insert_entry_for_tests(
+            "suppressed",
+            healthy_entry_with_tool("suppressed", "secret-tool"),
+        )
+        .await;
+
+        let err = manager
+            .resolve_code_mode_upstream_tool("suppressed", "secret-tool")
+            .await
+            .expect_err("priority=0 upstream tools must not be invokable by code mode id");
+
+        match err {
+            ToolError::Sdk { sdk_kind, .. } => assert_eq!(sdk_kind, "unknown_tool"),
+            other => panic!("expected unknown_tool sdk error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn tool_search_returns_cached_results_while_stale_refresh_runs() {
         let upstream = fixture_http_upstream("cached-upstream");
         let (manager, _pool) = tool_search_manager_with_pool(upstream.clone()).await;
@@ -3343,7 +3413,7 @@ mod tests {
         );
         let index = ToolIndex::build_from_tools(
             &upstream,
-            vec![crate::dispatch::upstream::types::UpstreamTool {
+            vec![UpstreamTool {
                 tool,
                 input_schema: None,
                 upstream_name,
