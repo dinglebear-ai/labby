@@ -19,16 +19,16 @@ function run(id: string, status: ACPRun['status']): ACPRun {
   }
 }
 
-test('isHiddenState matches failed, closed, cancelled', () => {
+test('isHiddenState matches failed and closed only', () => {
   assert.equal(isHiddenState('failed'), true)
   assert.equal(isHiddenState('closed'), true)
-  assert.equal(isHiddenState('cancelled'), true)
+  assert.equal(isHiddenState('cancelled'), false)
   assert.equal(isHiddenState('idle'), false)
   assert.equal(isHiddenState('completed'), false)
   assert.equal(isHiddenState(undefined), false)
 })
 
-test('filterVisibleRuns hides failed/closed/cancelled by default', () => {
+test('filterVisibleRuns hides failed/closed by default', () => {
   const visible = filterVisibleRuns(
     [
       run('a', 'idle'),
@@ -41,7 +41,7 @@ test('filterVisibleRuns hides failed/closed/cancelled by default', () => {
   )
   assert.deepEqual(
     visible.map((r) => r.id),
-    ['a', 'd'],
+    ['a', 'd', 'e'],
   )
 })
 

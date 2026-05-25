@@ -666,7 +666,12 @@ export function ChatSessionProvider({
       body: JSON.stringify({
         action: 'session.bulk_close',
         params: {
-          selector: { states: ['failed', 'closed', 'cancelled'], max_count: 500 },
+          // Default sweep selector per lab-de6yc.1: failed/closed older than 7 days.
+          selector: {
+            states: ['failed', 'closed'],
+            max_age_days: 7,
+            max_count: 500,
+          },
         },
       }),
     })

@@ -212,8 +212,8 @@ export function SessionSidebar({
     setConfirm({
       title: `Delete ${hiddenRunCount} session${hiddenRunCount === 1 ? '' : 's'}?`,
       description:
-        'Sessions in state failed, closed, or cancelled will be permanently removed. This action cannot be undone.',
-      confirmLabel: `Delete ${hiddenRunCount}`,
+        'Sessions in state failed or closed, last active more than 7 days ago, will be permanently removed. This action cannot be undone.',
+      confirmLabel: `Delete ${hiddenRunCount} Session${hiddenRunCount === 1 ? '' : 's'}`,
       destructive: true,
       onConfirm: async () => {
         await onBulkCloseHidden()
@@ -278,8 +278,8 @@ export function SessionSidebar({
             className="hover:text-aurora-text-primary transition-colors"
           >
             {includeHiddenRuns
-              ? `Hide ${hiddenRunCount} inactive`
-              : `Show ${hiddenRunCount} inactive`}
+              ? `Hide ${hiddenRunCount} closed/failed`
+              : `Show ${hiddenRunCount} closed/failed`}
           </button>
           {onBulkCloseHidden && (
             <button
