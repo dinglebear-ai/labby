@@ -1,15 +1,18 @@
 use std::cell::RefCell;
+#[cfg(not(feature = "code_mode_wasm"))]
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::process::ExitCode;
 use std::process::Stdio;
 use std::time::Duration;
 
-use boa_engine::builtins::promise::{PromiseState, ResolvingFunctions};
+use boa_engine::builtins::promise::PromiseState;
+#[cfg(not(feature = "code_mode_wasm"))]
+use boa_engine::builtins::promise::ResolvingFunctions;
 use boa_engine::object::builtins::JsPromise;
-use boa_engine::{
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsValue, NativeFunction, Source, js_string,
-};
+use boa_engine::{Context, JsValue, Source};
+#[cfg(not(feature = "code_mode_wasm"))]
+use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, NativeFunction, js_string};
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use rmcp::model::CallToolRequestParams;
 use serde::{Deserialize, Serialize};
@@ -25,6 +28,8 @@ use crate::registry::ToolRegistry;
 const LAB_ACTION_UNKNOWN_TOOL_HINT: &str = "Code Mode handles upstream MCP tools only. For Lab actions, use the `tool_execute` MCP tool: \
      name=<service> (e.g. \"radarr\"), arguments={action: \"<dotted.action>\", params: {...}}. \
      Example: tool_execute(name=\"radarr\", arguments={action:\"movie.search\", params:{query:\"Matrix\"}}).";
+const CODE_SEARCH_CATALOG_SOFT_CAP_BYTES: usize = 256 * 1024;
+const CODE_SEARCH_CATALOG_HARD_CAP_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeModeToolId {
@@ -83,22 +88,25 @@ pub fn sanitize_code_mode_schema(schema: Option<Value>) -> Option<Value> {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct CodeModeSearchCandidate {
+pub struct CodeModeCatalogEntry {
     pub id: String,
     pub name: String,
     pub upstream: String,
     pub description: String,
-    pub score: f32,
-    pub schema_available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropped_count: Option<usize>,
 }
 
-impl CodeModeSearchCandidate {
+impl CodeModeCatalogEntry {
     #[must_use]
     pub fn upstream_tool(
         upstream: &str,
         tool: &str,
         description: &str,
-        score: f32,
         schema: Option<Value>,
     ) -> Self {
         Self {
@@ -106,27 +114,27 @@ impl CodeModeSearchCandidate {
             name: tool.to_string(),
             upstream: upstream.to_string(),
             description: description.to_string(),
-            score,
-            schema_available: schema.is_some(),
+            schema,
+            note: None,
+            dropped_count: None,
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct CodeModeSchemaResponse {
-    pub id: String,
-    pub kind: &'static str,
-    pub name: String,
-    pub upstream: String,
-    pub schema: Value,
-    pub schema_format: &'static str,
-    pub input_schema: Value,
-    pub bindings: CodeModeBindings,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CodeModeBindings {
-    pub typescript: String,
+    #[must_use]
+    pub fn truncation_sentinel(dropped_count: usize) -> Self {
+        Self {
+            id: "__truncated__".to_string(),
+            name: "__truncated__".to_string(),
+            upstream: "__catalog__".to_string(),
+            description: "Catalog entries were dropped to fit the Code Mode inline catalog budget"
+                .to_string(),
+            schema: None,
+            note: Some(
+                "Some entries were dropped to fit the 256KB inline catalog cap. Use scout for full RRF discovery.".to_string(),
+            ),
+            dropped_count: Some(dropped_count),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -189,11 +197,10 @@ impl<'a> CodeModeBroker<'a> {
 
     pub async fn search(
         &self,
-        query: &str,
-        top_k: usize,
+        code: &str,
         caller: CodeModeCaller,
         _surface: CodeModeSurface,
-    ) -> Result<Vec<CodeModeSearchCandidate>, ToolError> {
+    ) -> Result<Value, ToolError> {
         if !caller.can_read() {
             return Err(ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
@@ -202,53 +209,20 @@ impl<'a> CodeModeBroker<'a> {
         }
 
         let Some(manager) = self.gateway_manager else {
-            return Ok(Vec::new());
+            return Ok(Value::Array(Vec::new()));
         };
 
-        let top_k = top_k.max(1).min(50);
-        match manager.search_tools(query, top_k, true).await {
-            Ok(upstream_results) => Ok(upstream_results
-                .into_iter()
-                .map(|result| {
-                    CodeModeSearchCandidate::upstream_tool(
-                        &result.upstream,
-                        &result.name,
-                        &result.description,
-                        result.score,
-                        result.input_schema,
-                    )
-                })
-                .collect()),
-            Err(err) if err.kind() == "index_warming" => Ok(Vec::new()),
-            Err(err) => Err(err),
-        }
-    }
-
-    pub async fn schema(
-        &self,
-        id: &str,
-        caller: CodeModeCaller,
-        _surface: CodeModeSurface,
-    ) -> Result<CodeModeSchemaResponse, ToolError> {
-        if !caller.can_execute() {
-            return Err(ToolError::Sdk {
-                sdk_kind: "forbidden".to_string(),
-                message: "code_schema requires one of scopes: lab, lab:admin".to_string(),
-            });
-        }
-        let parsed = CodeModeToolId::parse(id)?;
-        let Some(manager) = self.gateway_manager else {
-            return Err(ToolError::Sdk {
-                sdk_kind: "unknown_tool".to_string(),
-                message: "no gateway manager configured".to_string(),
-            });
-        };
-        match parsed.reference {
-            CodeModeToolRef::UpstreamTool { upstream, tool } => {
-                self.schema_for_upstream_tool(manager, &parsed.raw, &upstream, &tool)
-                    .await
-            }
-        }
+        let (catalog, serialized_size, truncated) = self.code_search_catalog(manager).await?;
+        tracing::info!(
+            surface = "dispatch",
+            service = "code_search",
+            action = "catalog.build",
+            catalog_size_bytes = serialized_size,
+            entry_count = catalog.len(),
+            truncated,
+            "Code Mode search catalog ready"
+        );
+        evaluate_code_search(code, &catalog)
     }
 
     pub async fn execute(
@@ -273,37 +247,92 @@ impl<'a> CodeModeBroker<'a> {
                 message: "code_execute requires one of scopes: lab, lab:admin".to_string(),
             });
         }
-        self.execute_sandboxed(
-            code,
-            max_tool_calls.max(1).min(config.max_tool_calls.max(1)),
-            Duration::from_millis(config.timeout_ms.max(1)),
-            caller,
-            surface,
-        )
-        .await
+        let response = self
+            .execute_sandboxed(
+                code,
+                max_tool_calls.max(1).min(config.max_tool_calls.max(1)),
+                Duration::from_millis(config.timeout_ms.max(1)),
+                caller,
+                surface,
+            )
+            .await?;
+        Ok(truncate_execution_response(
+            response,
+            config.max_response_bytes,
+            config.max_response_tokens,
+        ))
     }
 
-    async fn schema_for_upstream_tool(
+    async fn code_search_catalog(
         &self,
         manager: &GatewayManager,
-        id: &str,
-        upstream: &str,
-        tool: &str,
-    ) -> Result<CodeModeSchemaResponse, ToolError> {
-        let candidate = manager
-            .resolve_code_mode_upstream_tool(upstream, tool)
-            .await?;
-        let Some(schema) = sanitize_code_mode_schema(candidate.input_schema) else {
+    ) -> Result<(Vec<CodeModeCatalogEntry>, usize, bool), ToolError> {
+        let Some(pool) = manager.current_pool().await else {
+            return Ok((Vec::new(), 2, false));
+        };
+
+        let mut entries = pool
+            .healthy_tools()
+            .await
+            .into_iter()
+            .map(|tool| {
+                let upstream = tool.upstream_name.to_string();
+                let name = tool.tool.name.to_string();
+                let description = tool
+                    .tool
+                    .description
+                    .as_ref()
+                    .map(|description| description.to_string())
+                    .unwrap_or_default();
+                CodeModeCatalogEntry::upstream_tool(
+                    &upstream,
+                    &name,
+                    &super::projection::sanitize_tool_text(&description, 2048),
+                    sanitize_code_mode_schema(tool.input_schema),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        entries.sort_by(|a, b| {
+            a.upstream
+                .cmp(&b.upstream)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+
+        let mut serialized_size = serialized_catalog_size(&entries)?;
+        if serialized_size > CODE_SEARCH_CATALOG_HARD_CAP_BYTES {
             return Err(ToolError::Sdk {
-                sdk_kind: "schema_unavailable".to_string(),
+                sdk_kind: "invalid_param".to_string(),
                 message: format!(
-                    "upstream tool `{upstream}::{tool}` schema is unavailable or exceeds the safe return size"
+                    "Code Mode inline catalog is {serialized_size} bytes, above the 512KB hard cap; use scout for full RRF discovery"
                 ),
             });
-        };
-        Ok(CodeModeSchemaResponse::upstream_tool(
-            id, upstream, tool, schema,
-        ))
+        }
+
+        let mut truncated = false;
+        if serialized_size > CODE_SEARCH_CATALOG_SOFT_CAP_BYTES {
+            truncated = true;
+            entries.sort_by(|a, b| {
+                (a.description.len() + a.name.len())
+                    .cmp(&(b.description.len() + b.name.len()))
+                    .then_with(|| a.upstream.cmp(&b.upstream))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            let original_len = entries.len();
+            while !entries.is_empty()
+                && serialized_catalog_size_with_sentinel(&entries, original_len - entries.len())?
+                    > CODE_SEARCH_CATALOG_SOFT_CAP_BYTES
+            {
+                entries.pop();
+            }
+            let dropped = original_len - entries.len();
+            if dropped > 0 {
+                entries.push(CodeModeCatalogEntry::truncation_sentinel(dropped));
+            }
+            serialized_size = serialized_catalog_size(&entries)?;
+        }
+
+        Ok((entries, serialized_size, truncated))
     }
 
     async fn execute_sandboxed(
@@ -637,6 +666,7 @@ struct CodeModeRunnerState {
     reader: BufReader<io::Stdin>,
     writer: BufWriter<io::Stdout>,
     next_seq: u64,
+    #[cfg(not(feature = "code_mode_wasm"))]
     pending_calls: HashMap<u64, ResolvingFunctions>,
 }
 
@@ -648,20 +678,49 @@ thread_local! {
     static RUNNER_STATE: RefCell<Option<CodeModeRunnerState>> = const { RefCell::new(None) };
 }
 
-impl CodeModeSchemaResponse {
-    #[must_use]
-    pub fn upstream_tool(id: &str, upstream: &str, tool: &str, schema: Value) -> Self {
-        Self {
-            id: id.to_string(),
-            kind: "upstream_tool",
-            name: tool.to_string(),
-            upstream: upstream.to_string(),
-            bindings: CodeModeBindings {
-                typescript: typescript_binding(id, "ToolArgs", &schema),
-            },
-            input_schema: schema.clone(),
-            schema,
-            schema_format: "json_schema",
+#[cfg(feature = "code_mode_wasm")]
+#[allow(dead_code)]
+mod wasm_runner {
+    use wasmtime::{Config, Engine, Instance, Module, Store, Trap};
+
+    pub const DEFAULT_SEARCH_FUEL: u64 = 10_000_000;
+    pub const DEFAULT_EXECUTE_FUEL: u64 = 50_000_000;
+
+    pub fn engine() -> Result<Engine, wasmtime::Error> {
+        let mut config = Config::new();
+        config.consume_fuel(true);
+        config.epoch_interruption(true);
+        Engine::new(&config)
+    }
+
+    pub fn run_wasm_i32_export_for_smoke(
+        wat: &str,
+        export_name: &str,
+        fuel: u64,
+    ) -> Result<i32, wasmtime::Error> {
+        let engine = engine()?;
+        let module = Module::new(&engine, wat)?;
+        let mut store = Store::new(&engine, ());
+        store.set_fuel(fuel)?;
+        store.set_epoch_deadline(u64::MAX);
+        let instance = Instance::new(&mut store, &module, &[])?;
+        let func = instance.get_typed_func::<(), i32>(&mut store, export_name)?;
+        func.call(&mut store, ())
+    }
+
+    pub fn trap_kind(error: &wasmtime::Error) -> Option<&'static str> {
+        let message = error.to_string();
+        if message.contains("fuel") {
+            return Some("code_mode_fuel_exhausted");
+        }
+        if message.contains("epoch") || message.contains("interrupt") {
+            return Some("code_mode_timeout");
+        }
+        let trap = error.downcast_ref::<Trap>()?;
+        match trap {
+            Trap::OutOfFuel => Some("code_mode_fuel_exhausted"),
+            Trap::Interrupt => Some("code_mode_timeout"),
+            _ => Some("code_execution_failed"),
         }
     }
 }
@@ -680,6 +739,143 @@ fn lab_action_unknown_tool() -> ToolError {
             "lab:: IDs are not supported by Code Mode. {LAB_ACTION_UNKNOWN_TOOL_HINT}"
         ),
     }
+}
+
+fn serialized_catalog_size(entries: &[CodeModeCatalogEntry]) -> Result<usize, ToolError> {
+    serde_json::to_vec(entries)
+        .map(|bytes| bytes.len())
+        .map_err(|err| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to serialize Code Mode catalog: {err}"),
+        })
+}
+
+fn serialized_catalog_size_with_sentinel(
+    entries: &[CodeModeCatalogEntry],
+    dropped_count: usize,
+) -> Result<usize, ToolError> {
+    let mut candidate = entries.to_vec();
+    if dropped_count > 0 {
+        candidate.push(CodeModeCatalogEntry::truncation_sentinel(dropped_count));
+    }
+    serialized_catalog_size(&candidate)
+}
+
+fn evaluate_code_search(code: &str, catalog: &[CodeModeCatalogEntry]) -> Result<Value, ToolError> {
+    let catalog_json = serde_json::to_string(catalog).map_err(|err| ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: format!("failed to encode Code Mode catalog: {err}"),
+    })?;
+    let wrapped = format!(
+        "const tools = {catalog_json};\n\
+         (async () => {{\n\
+           const __codeModeSearch = ({code});\n\
+           if (typeof __codeModeSearch !== 'function') {{\n\
+             throw new TypeError('code_search code must evaluate to a function');\n\
+           }}\n\
+           return await __codeModeSearch();\n\
+         }})()"
+    );
+
+    let mut context = Context::default();
+    configure_code_mode_runtime_limits(&mut context);
+    let value = context
+        .eval(Source::from_bytes(wrapped.as_bytes()))
+        .map_err(|err| ToolError::Sdk {
+            sdk_kind: "invalid_param".to_string(),
+            message: format!("Code Mode search JavaScript failed to evaluate: {err}"),
+        })?;
+    let object = value.as_object().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "invalid_param".to_string(),
+        message: "Code Mode search script did not return a promise".to_string(),
+    })?;
+    let promise = JsPromise::from_object(object.clone()).map_err(|err| ToolError::Sdk {
+        sdk_kind: "invalid_param".to_string(),
+        message: format!("Code Mode search script did not return a promise: {err}"),
+    })?;
+
+    for _ in 0..CODE_MODE_LOOP_ITERATION_LIMIT {
+        context.run_jobs().map_err(|err| ToolError::Sdk {
+            sdk_kind: "code_execution_failed".to_string(),
+            message: err.to_string(),
+        })?;
+        match promise.state() {
+            PromiseState::Fulfilled(value) => {
+                return value
+                    .to_json(&mut context)
+                    .map_err(|err| ToolError::Sdk {
+                        sdk_kind: "code_execution_failed".to_string(),
+                        message: format!("failed to serialize Code Mode search result: {err}"),
+                    })?
+                    .ok_or_else(|| ToolError::Sdk {
+                        sdk_kind: "code_execution_failed".to_string(),
+                        message: "Code Mode search result is not JSON-serializable".to_string(),
+                    });
+            }
+            PromiseState::Rejected(reason) => {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "code_execution_failed".to_string(),
+                    message: js_value_message(&reason, &mut context),
+                });
+            }
+            PromiseState::Pending => {}
+        }
+    }
+
+    Err(ToolError::Sdk {
+        sdk_kind: "code_execution_failed".to_string(),
+        message: "Code Mode search script did not settle before the iteration limit".to_string(),
+    })
+}
+
+fn truncate_execution_response(
+    mut response: CodeModeExecutionResponse,
+    max_response_bytes: usize,
+    max_response_tokens: usize,
+) -> CodeModeExecutionResponse {
+    if response_within_budget(&response, max_response_bytes, max_response_tokens) {
+        return response;
+    }
+
+    for idx in (0..response.calls.len()).rev() {
+        if response_within_budget(&response, max_response_bytes, max_response_tokens) {
+            break;
+        }
+        let marker = truncation_marker(&response.calls[idx].result);
+        response.calls[idx].result = marker;
+    }
+
+    response
+}
+
+fn response_within_budget(
+    response: &CodeModeExecutionResponse,
+    max_response_bytes: usize,
+    max_response_tokens: usize,
+) -> bool {
+    match serde_json::to_vec(response) {
+        Ok(bytes) => {
+            bytes.len() <= max_response_bytes
+                && estimated_tokens(bytes.len()) <= max_response_tokens.max(1)
+        }
+        Err(_) => false,
+    }
+}
+
+fn estimated_tokens(byte_len: usize) -> usize {
+    byte_len.div_ceil(4).max(1)
+}
+
+fn truncation_marker(value: &Value) -> Value {
+    let serialized = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+    let preview = serialized.chars().take(1024).collect::<String>();
+    json!({
+        "truncated": true,
+        "original_size": serialized.len(),
+        "original_tokens": estimated_tokens(serialized.len()),
+        "preview": preview,
+        "next_action": "Use a narrower query, request fewer fields, or split the work across multiple code_execute calls."
+    })
 }
 
 async fn write_runner_input(
@@ -724,6 +920,8 @@ fn code_mode_canonical_error_kind(s: &str) -> &'static str {
         "decode_error" => "decode_error",
         "internal_error" => "internal_error",
         "upstream_error" => "upstream_error",
+        "code_mode_timeout" => "code_mode_timeout",
+        "code_mode_fuel_exhausted" => "code_mode_fuel_exhausted",
         _ => "internal_error",
     }
 }
@@ -773,6 +971,7 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
             reader: BufReader::new(io::stdin()),
             writer: BufWriter::new(io::stdout()),
             next_seq: 0,
+            #[cfg(not(feature = "code_mode_wasm"))]
             pending_calls: HashMap::new(),
         });
     });
@@ -788,6 +987,97 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[cfg(feature = "code_mode_wasm")]
+fn run_code_mode_runner() -> Result<(), String> {
+    let CodeModeRunnerInput::Start { code } = runner_read_input()? else {
+        return Err("runner expected start message".to_string());
+    };
+
+    let mut config = javy::Config::default();
+    config
+        .redirect_stdout_to_stderr(true)
+        .memory_limit(64 * 1024 * 1024)
+        .max_stack_size(CODE_MODE_STACK_SIZE_LIMIT);
+    let runtime = javy::Runtime::new(config).map_err(|err| err.to_string())?;
+
+    runtime
+        .context()
+        .with(|cx| -> javy::quickjs::Result<()> {
+            let globals = cx.globals();
+            globals.set(
+                "__labEmitToolCall",
+                javy::quickjs::Function::new(
+                    cx.clone(),
+                    javy::quickjs::prelude::MutFn::new(|cx, args| {
+                        javy_emit_tool_call(javy::Args::hold(cx, args))
+                    }),
+                )?,
+            )?;
+            Ok(())
+        })
+        .map_err(javy_error_message)?;
+
+    let wrapped = format!(
+        r#"
+globalThis.__labPendingToolCalls = new Map();
+globalThis.callTool = (id, params = {{}}) => {{
+  if (typeof id !== "string" || id.trim() === "") {{
+    throw new TypeError("callTool id must be a non-empty string");
+  }}
+  if (params === null || typeof params !== "object" || Array.isArray(params)) {{
+    throw new TypeError("callTool params must be a JSON object");
+  }}
+  return new Promise((resolve, reject) => {{
+    const seq = globalThis.__labEmitToolCall(id, params);
+    globalThis.__labPendingToolCalls.set(seq, {{ resolve, reject }});
+  }});
+}};
+globalThis.__labSettleToolCall = (message) => {{
+  const input = JSON.parse(message);
+  const pending = globalThis.__labPendingToolCalls.get(input.seq);
+  if (!pending) {{
+    throw new Error("runner received a response for an unknown tool call");
+  }}
+  globalThis.__labPendingToolCalls.delete(input.seq);
+  if (input.type === "tool_result") {{
+    pending.resolve(input.result);
+    return;
+  }}
+  if (input.type === "tool_error") {{
+    pending.reject(new Error(`${{input.kind}}: ${{input.message}}`));
+    return;
+  }}
+  throw new Error("runner received unexpected protocol message");
+}};
+globalThis.__labMainPromise = (async () => {{
+{code}
+}})();
+"#
+    );
+
+    runtime
+        .context()
+        .with(|cx| cx.eval::<(), _>(wrapped))
+        .map_err(javy_error_message)?;
+
+    loop {
+        runtime
+            .resolve_pending_jobs()
+            .map_err(|err| err.to_string())?;
+        match javy_main_promise_state(&runtime)? {
+            JavyMainPromiseState::Resolved => break,
+            JavyMainPromiseState::Rejected(message) => return Err(message),
+            JavyMainPromiseState::Pending => {
+                let input = runner_read_input()?;
+                javy_settle_tool_promise(&runtime, &input)?;
+            }
+        }
+    }
+
+    runner_emit(CodeModeRunnerOutput::Done)
+}
+
+#[cfg(not(feature = "code_mode_wasm"))]
 fn run_code_mode_runner() -> Result<(), String> {
     let CodeModeRunnerInput::Start { code } = runner_read_input()? else {
         return Err("runner expected start message".to_string());
@@ -828,6 +1118,118 @@ fn run_code_mode_runner() -> Result<(), String> {
     runner_emit(CodeModeRunnerOutput::Done)
 }
 
+#[cfg(feature = "code_mode_wasm")]
+enum JavyMainPromiseState {
+    Pending,
+    Resolved,
+    Rejected(String),
+}
+
+#[cfg(feature = "code_mode_wasm")]
+fn javy_emit_tool_call(args: javy::Args<'_>) -> javy::quickjs::Result<u64> {
+    let (cx, args) = args.release();
+    let id_value = args
+        .0
+        .first()
+        .ok_or_else(|| javy_type_error(cx.clone(), "callTool id must be a non-empty string"))?;
+    let id = javy::val_to_string(&cx, id_value.clone())
+        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
+    if id.trim().is_empty() {
+        return Err(javy_type_error(
+            cx.clone(),
+            "callTool id must be a non-empty string",
+        ));
+    }
+
+    let params_json = args
+        .0
+        .get(1)
+        .map(|params| cx.json_stringify(params.clone()))
+        .transpose()?
+        .flatten()
+        .map(|params| params.to_string())
+        .transpose()?
+        .unwrap_or_else(|| "{}".to_string());
+    let params: Value = serde_json::from_str(&params_json).map_err(|err| {
+        javy_type_error(
+            cx.clone(),
+            format!("callTool params must be JSON-serializable: {err}"),
+        )
+    })?;
+    if !params.is_object() {
+        return Err(javy_type_error(
+            cx.clone(),
+            "callTool params must be a JSON object",
+        ));
+    }
+
+    let seq = RUNNER_STATE
+        .with(|state| {
+            let mut state = state.borrow_mut();
+            let state = state
+                .as_mut()
+                .ok_or_else(|| "runner state is not initialized".to_string())?;
+            let seq = state.next_seq;
+            state.next_seq += 1;
+            Ok::<_, String>(seq)
+        })
+        .map_err(|err| javy_type_error(cx.clone(), err))?;
+
+    runner_emit(CodeModeRunnerOutput::ToolCall { seq, id, params })
+        .map_err(|err| javy_type_error(cx, err))?;
+    Ok(seq)
+}
+
+#[cfg(feature = "code_mode_wasm")]
+fn javy_settle_tool_promise(
+    runtime: &javy::Runtime,
+    input: &CodeModeRunnerInput,
+) -> Result<(), String> {
+    let message = serde_json::to_string(input).map_err(|err| err.to_string())?;
+    runtime
+        .context()
+        .with(|cx| -> javy::quickjs::Result<()> {
+            let settle: javy::quickjs::Function<'_> = cx.globals().get("__labSettleToolCall")?;
+            settle.call::<_, ()>((message,))?;
+            Ok(())
+        })
+        .map_err(javy_error_message)?;
+    runtime
+        .resolve_pending_jobs()
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(feature = "code_mode_wasm")]
+fn javy_main_promise_state(runtime: &javy::Runtime) -> Result<JavyMainPromiseState, String> {
+    runtime
+        .context()
+        .with(|cx| -> javy::quickjs::Result<JavyMainPromiseState> {
+            let promise: javy::quickjs::Promise<'_> = cx.globals().get("__labMainPromise")?;
+            match promise.result::<javy::quickjs::Value<'_>>() {
+                None => Ok(JavyMainPromiseState::Pending),
+                Some(Ok(_)) => Ok(JavyMainPromiseState::Resolved),
+                Some(Err(err)) => {
+                    let message = javy::from_js_error(cx.clone(), err).to_string();
+                    Ok(JavyMainPromiseState::Rejected(message))
+                }
+            }
+        })
+        .map_err(javy_error_message)
+}
+
+#[cfg(feature = "code_mode_wasm")]
+fn javy_type_error(
+    message_context: javy::quickjs::Ctx<'_>,
+    message: impl Into<String>,
+) -> javy::quickjs::Error {
+    javy::to_js_error(message_context, anyhow::anyhow!(message.into()))
+}
+
+#[cfg(feature = "code_mode_wasm")]
+fn javy_error_message(error: javy::quickjs::Error) -> String {
+    error.to_string()
+}
+
 fn configure_code_mode_runtime_limits(context: &mut Context) {
     let limits = context.runtime_limits_mut();
     limits.set_loop_iteration_limit(CODE_MODE_LOOP_ITERATION_LIMIT);
@@ -835,6 +1237,7 @@ fn configure_code_mode_runtime_limits(context: &mut Context) {
     limits.set_recursion_limit(CODE_MODE_RECURSION_LIMIT);
 }
 
+#[cfg(not(feature = "code_mode_wasm"))]
 fn code_mode_call_tool_native(
     _this: &JsValue,
     args: &[JsValue],
@@ -876,6 +1279,7 @@ fn code_mode_call_tool_native(
     Ok(promise.into())
 }
 
+#[cfg(not(feature = "code_mode_wasm"))]
 fn settle_code_mode_tool_promise(
     input: CodeModeRunnerInput,
     context: &mut Context,
@@ -953,10 +1357,12 @@ fn runner_read_input() -> Result<CodeModeRunnerInput, String> {
     })
 }
 
+#[cfg(not(feature = "code_mode_wasm"))]
 fn js_type_error(message: impl Into<String>) -> JsError {
     JsNativeError::typ().with_message(message.into()).into()
 }
 
+#[cfg(not(feature = "code_mode_wasm"))]
 fn js_error_message(error: JsError) -> String {
     error.to_string()
 }
@@ -968,107 +1374,15 @@ fn js_value_message(value: &JsValue, context: &mut Context) -> String {
         .unwrap_or_else(|_| "promise rejected".to_string())
 }
 
-#[must_use]
-pub fn typescript_binding(id: &str, type_name: &str, schema: &Value) -> String {
-    let args_type = typescript_type(schema, 0);
-    format!(
-        "export type {type_name} = {args_type};\n\n\
-         export interface CodeModeToolCaller {{\n  callTool<T = unknown>(id: string, args: unknown): Promise<T>;\n}}\n\n\
-         export async function call(caller: CodeModeToolCaller, args: {type_name}): Promise<unknown> {{\n  return caller.callTool({id_literal}, args);\n}}\n",
-        id_literal = json!(id)
-    )
-}
-
-fn typescript_type(schema: &Value, indent: usize) -> String {
-    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
-        let literals = values
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|value| json!(value).to_string())
-            .collect::<Vec<_>>();
-        if !literals.is_empty() {
-            return literals.join(" | ");
-        }
-    }
-    if let Some(any_of) = schema.get("anyOf").and_then(Value::as_array) {
-        return any_of
-            .iter()
-            .map(|schema| typescript_type(schema, indent))
-            .collect::<Vec<_>>()
-            .join(" | ");
-    }
-    match schema.get("type").and_then(Value::as_str) {
-        Some("string") => "string".to_string(),
-        Some("integer" | "number") => "number".to_string(),
-        Some("boolean") => "boolean".to_string(),
-        Some("null") => "null".to_string(),
-        Some("array") => {
-            let item = schema
-                .get("items")
-                .map(|items| typescript_type(items, indent))
-                .unwrap_or_else(|| "unknown".to_string());
-            format!("{item}[]")
-        }
-        Some("object") => object_typescript_type(schema, indent),
-        _ => "unknown".to_string(),
-    }
-}
-
-fn object_typescript_type(schema: &Value, indent: usize) -> String {
-    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
-        return "Record<string, unknown>".to_string();
-    };
-    if properties.is_empty() {
-        return "Record<string, never>".to_string();
-    }
-    let required = schema
-        .get("required")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect::<std::collections::BTreeSet<_>>();
-    let pad = " ".repeat(indent);
-    let child_pad = " ".repeat(indent + 2);
-    let mut lines = vec!["{".to_string()];
-    for (name, property_schema) in properties {
-        let optional = if required.contains(name.as_str()) {
-            ""
-        } else {
-            "?"
-        };
-        lines.push(format!(
-            "{child_pad}{}{optional}: {};",
-            typescript_property_name(name),
-            typescript_type(property_schema, indent + 2)
-        ));
-    }
-    lines.push(format!("{pad}}}"));
-    lines.join("\n")
-}
-
-fn typescript_property_name(name: &str) -> String {
-    let mut chars = name.chars();
-    let valid_first = chars
-        .next()
-        .is_some_and(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphabetic());
-    let valid_rest = chars.all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric());
-    if valid_first && valid_rest {
-        name.to_string()
-    } else {
-        json!(name).to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use boa_engine::{Context, Source};
     use serde_json::json;
 
     use super::{
-        CodeModeSchemaResponse, CodeModeSearchCandidate, CodeModeToolId, CodeModeToolRef,
-        code_mode_upstream_error_info, configure_code_mode_runtime_limits,
-        sanitize_code_mode_schema,
+        CodeModeCatalogEntry, CodeModeExecutedCall, CodeModeExecutionResponse, CodeModeToolId,
+        CodeModeToolRef, code_mode_upstream_error_info, configure_code_mode_runtime_limits,
+        evaluate_code_search, sanitize_code_mode_schema, truncate_execution_response,
     };
 
     #[test]
@@ -1133,51 +1447,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema_rejects_lab_id() {
+    async fn code_search_without_manager_returns_empty_catalog_result() {
         let registry = super::ToolRegistry::new();
         let broker = super::CodeModeBroker::new(&registry, None);
 
-        let err = broker
-            .schema(
-                "lab::radarr.movie.search",
-                super::CodeModeCaller::TrustedLocal,
-                super::CodeModeSurface::Cli,
-            )
-            .await
-            .expect_err("schema should reject lab:: id");
-
-        match err {
-            super::ToolError::Sdk { sdk_kind, message } => {
-                assert_eq!(sdk_kind, "unknown_tool");
-                assert!(message.contains("tool_execute"));
-                assert!(message.contains("\"radarr\""));
-            }
-            other => panic!("expected unknown_tool, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn code_search_returns_only_upstream_candidates() {
-        let registry = super::ToolRegistry::new();
-        let broker = super::CodeModeBroker::new(&registry, None);
-
-        let results = broker
+        let result = broker
             .search(
-                "movie.search",
-                10,
+                "async () => tools",
                 super::CodeModeCaller::TrustedLocal,
                 super::CodeModeSurface::Cli,
             )
             .await
             .expect("search ok");
 
-        for candidate in &results {
-            assert!(
-                !candidate.id.starts_with("lab::"),
-                "found lab:: candidate after drop: {}",
-                candidate.id
-            );
-        }
+        assert_eq!(result, json!([]));
     }
 
     #[tokio::test]
@@ -1206,30 +1489,46 @@ mod tests {
     }
 
     #[test]
-    fn builds_search_candidate_for_upstream_tool() {
-        let candidate = CodeModeSearchCandidate::upstream_tool(
+    fn builds_catalog_entry_for_upstream_tool() {
+        let candidate = CodeModeCatalogEntry::upstream_tool(
             "github",
             "search_issues",
             "Search issues",
-            8.5,
             Some(json!({"type": "object"})),
         );
         assert_eq!(candidate.id, "upstream::github::search_issues");
         assert_eq!(candidate.upstream, "github");
         assert_eq!(candidate.name, "search_issues");
-        assert!(candidate.schema_available);
+        assert_eq!(candidate.schema, Some(json!({"type": "object"})));
     }
 
     #[test]
-    fn builds_upstream_schema_response() {
-        let response = CodeModeSchemaResponse::upstream_tool(
-            "upstream::github::search_issues",
-            "github",
-            "search_issues",
-            json!({"type": "object"}),
+    fn code_search_evaluates_filter_against_inline_catalog() {
+        let catalog = vec![
+            CodeModeCatalogEntry::upstream_tool(
+                "github",
+                "search_issues",
+                "Search GitHub issues",
+                Some(json!({"type": "object"})),
+            ),
+            CodeModeCatalogEntry::upstream_tool("docker", "logs", "Read container logs", None),
+        ];
+
+        let result = evaluate_code_search(
+            "async () => tools.filter(t => /github/i.test(t.id)).map(t => ({id: t.id, schema: t.schema}))",
+            &catalog,
+        )
+        .expect("search evaluates");
+
+        assert_eq!(
+            result,
+            json!([
+                {
+                    "id": "upstream::github::search_issues",
+                    "schema": {"type": "object"}
+                }
+            ])
         );
-        assert_eq!(response.kind, "upstream_tool");
-        assert_eq!(response.schema_format, "json_schema");
     }
 
     #[test]
@@ -1256,6 +1555,35 @@ mod tests {
     }
 
     #[test]
+    fn truncates_code_execute_response_with_per_call_marker() {
+        let response = CodeModeExecutionResponse {
+            calls: vec![
+                CodeModeExecutedCall {
+                    id: "upstream::github::search_issues".to_string(),
+                    result: json!({"items": ["small"]}),
+                },
+                CodeModeExecutedCall {
+                    id: "upstream::github::list_issues".to_string(),
+                    result: json!({"payload": "x".repeat(5000)}),
+                },
+            ],
+        };
+
+        let truncated = truncate_execution_response(response, 1400, 6000);
+
+        assert_eq!(truncated.calls[0].result, json!({"items": ["small"]}));
+        assert_eq!(truncated.calls[1].result["truncated"], json!(true));
+        assert!(truncated.calls[1].result["original_size"].as_u64().unwrap() > 5000);
+        assert!(
+            truncated.calls[1].result["next_action"]
+                .as_str()
+                .unwrap()
+                .contains("narrower")
+        );
+        assert!(serde_json::to_vec(&truncated).unwrap().len() <= 1400);
+    }
+
+    #[test]
     fn configured_runtime_limits_reject_unbounded_loops() {
         let mut context = Context::default();
         configure_code_mode_runtime_limits(&mut context);
@@ -1265,5 +1593,43 @@ mod tests {
             .expect_err("loop limit should stop unbounded scripts");
 
         assert!(error.to_string().contains("iteration limit"));
+    }
+
+    #[cfg(feature = "code_mode_wasm")]
+    #[test]
+    fn wasm_runner_returns_42() {
+        let result = super::wasm_runner::run_wasm_i32_export_for_smoke(
+            r#"
+            (module
+              (func (export "run") (result i32)
+                i32.const 42))
+            "#,
+            "run",
+            super::wasm_runner::DEFAULT_SEARCH_FUEL,
+        )
+        .expect("wasm smoke runs");
+
+        assert_eq!(result, 42);
+    }
+
+    #[cfg(feature = "code_mode_wasm")]
+    #[test]
+    fn wasm_runner_reports_fuel_exhaustion_kind() {
+        let err = super::wasm_runner::run_wasm_i32_export_for_smoke(
+            r#"
+            (module
+              (func (export "run") (result i32)
+                (loop br 0)
+                i32.const 0))
+            "#,
+            "run",
+            1,
+        )
+        .expect_err("fuel should be exhausted");
+
+        assert_eq!(
+            super::wasm_runner::trap_kind(&err),
+            Some("code_mode_fuel_exhausted")
+        );
     }
 }
