@@ -58,14 +58,13 @@ pub struct GatewayCodeArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GatewayCodeCommand {
-    /// Search Code Mode tool IDs by natural-language query
+    /// Filter the inlined Code Mode tool catalog with JavaScript
     Search {
-        query: String,
-        #[arg(long, default_value_t = 10)]
-        top_k: usize,
+        #[arg(long, conflicts_with = "file")]
+        code: Option<String>,
+        #[arg(long)]
+        file: Option<std::path::PathBuf>,
     },
-    /// Show the schema and generated bindings for one Code Mode tool ID
-    Schema { id: String },
     /// Execute a sandboxed JavaScript snippet that calls callTool(id, params)
     Exec {
         #[arg(long, conflicts_with = "file")]
@@ -734,29 +733,13 @@ async fn run_gateway_code(
     let surface = CodeModeSurface::Cli;
 
     match args.command {
-        GatewayCodeCommand::Search { query, top_k } => {
-            let candidates = broker.search(&query, top_k, caller, surface).await?;
-            crate::output::print(&candidates, format)?;
-        }
-        GatewayCodeCommand::Schema { id } => {
-            let schema = broker.schema(&id, caller, surface).await?;
-            crate::output::print(&schema, format)?;
+        GatewayCodeCommand::Search { code, file } => {
+            let code = read_code_mode_source(code, file, CODE_MODE_CLI_MAX_SOURCE_BYTES)?;
+            let response = broker.search(&code, caller, surface).await?;
+            crate::output::print(&response, format)?;
         }
         GatewayCodeCommand::Exec { code, file } => {
-            let code = match (code, file) {
-                (Some(code), None) => code,
-                (None, Some(path)) => {
-                    let metadata = std::fs::metadata(&path)?;
-                    if metadata.len() > CODE_MODE_CLI_MAX_SOURCE_BYTES {
-                        anyhow::bail!("Code Mode source file exceeds 20480 bytes");
-                    }
-                    std::fs::read_to_string(path)?
-                }
-                _ => anyhow::bail!("provide exactly one of --code or --file"),
-            };
-            if code.len() as u64 > CODE_MODE_CLI_MAX_SOURCE_BYTES {
-                anyhow::bail!("Code Mode source exceeds 20480 bytes");
-            }
+            let code = read_code_mode_source(code, file, CODE_MODE_CLI_MAX_SOURCE_BYTES)?;
             let config = manager.code_mode_config().await;
             let max_tool_calls = config.max_tool_calls;
             let response = broker
@@ -767,6 +750,28 @@ async fn run_gateway_code(
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn read_code_mode_source(
+    code: Option<String>,
+    file: Option<std::path::PathBuf>,
+    max_source_bytes: u64,
+) -> Result<String> {
+    let code = match (code, file) {
+        (Some(code), None) => code,
+        (None, Some(path)) => {
+            let metadata = std::fs::metadata(&path)?;
+            if metadata.len() > max_source_bytes {
+                anyhow::bail!("Code Mode source file exceeds {max_source_bytes} bytes");
+            }
+            std::fs::read_to_string(path)?
+        }
+        _ => anyhow::bail!("provide exactly one of --code or --file"),
+    };
+    if code.len() as u64 > max_source_bytes {
+        anyhow::bail!("Code Mode source exceeds {max_source_bytes} bytes");
+    }
+    Ok(code)
 }
 
 async fn run_gateway_oauth_start(
@@ -1175,16 +1180,37 @@ mod tests {
             ])
             .is_ok()
         );
-        assert!(Cli::try_parse_from(["lab", "gateway", "code", "search", "movie.search"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "code",
+                "search",
+                "--code",
+                "async () => tools.slice(0, 3)",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "code",
+                "search",
+                "--code",
+                "async () => tools.filter(t => /github/i.test(t.id)).slice(0, 3)",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "lab",
                 "gateway",
                 "code",
                 "schema",
-                "upstream::github::search_issues",
+                "upstream::github::search_issues"
             ])
-            .is_ok()
+            .is_err()
         );
         assert!(
             Cli::try_parse_from([
