@@ -4,6 +4,12 @@ FROM rust:1-slim AS builder
 
 WORKDIR /build
 
+# GitHub's container builder has less memory than the release-smoke runners.
+# Keep the container release binary optimized but avoid ThinLTO/codegen-units=1
+# peak memory during the final link.
+ENV CARGO_PROFILE_RELEASE_LTO=false \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+
 # System build deps:
 #   pkg-config     — lets -sys crates find system headers
 #   build-essential — C compiler for rusqlite's bundled SQLite + other -sys crates
