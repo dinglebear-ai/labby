@@ -541,15 +541,7 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     // resource should read `dispatch::fs::catalog::ACTIONS` directly, not via
     // this registry entry.
     #[cfg(feature = "fs")]
-    reg.register(RegisteredService {
-        name: "fs",
-        description: "Workspace filesystem browser (read-only, deny-listed)",
-        category: "bootstrap",
-        kind: RegisteredServiceKind::BootstrapOperator,
-        status: "available",
-        actions: crate::mcp::services::fs::ACTIONS,
-        dispatch: dispatch_fn!(crate::mcp::services::fs::dispatch),
-    });
+    reg.register(crate::workspace::WorkspaceRuntime::registered_service());
 
     reg
 }
@@ -906,6 +898,21 @@ mod tests {
             elapsed < Duration::from_millis(1),
             "empty-prefix action completion took {elapsed:?} for {expected} cached actions"
         );
+    }
+
+    #[cfg(feature = "fs")]
+    #[test]
+    fn default_registry_uses_workspace_runtime_fs_fragment() {
+        let registry = build_default_registry();
+        let fs = registry
+            .services()
+            .iter()
+            .find(|service| service.name == "fs")
+            .expect("fs registered");
+        let names: Vec<&str> = fs.actions.iter().map(|action| action.name).collect();
+
+        assert!(names.contains(&"fs.list"));
+        assert!(!names.contains(&"fs.preview"));
     }
 
     #[test]
