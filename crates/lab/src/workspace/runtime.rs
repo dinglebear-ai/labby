@@ -52,15 +52,7 @@ impl WorkspaceRuntime {
 
 fn resolve_workspace_root(config: &WorkspaceRuntimeConfig) -> std::io::Result<PathBuf> {
     let root = match &config.root {
-        Some(root) => {
-            let home = config.home.as_ref().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "HOME is not set and workspace.root uses home expansion",
-                )
-            })?;
-            expand_home_path(root, home)
-        }
+        Some(root) => expand_home_path(root, config.home.as_deref())?,
         None => {
             let home = config.home.as_ref().ok_or_else(|| {
                 std::io::Error::new(
@@ -74,15 +66,25 @@ fn resolve_workspace_root(config: &WorkspaceRuntimeConfig) -> std::io::Result<Pa
     canonicalize_workspace_dir(root)
 }
 
-fn expand_home_path(path: &Path, home: &Path) -> PathBuf {
+fn expand_home_path(path: &Path, home: Option<&Path>) -> std::io::Result<PathBuf> {
     let raw = path.as_os_str().to_string_lossy();
     if raw == "~" {
-        return home.to_path_buf();
+        return home.map(Path::to_path_buf).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "HOME is not set and workspace.root uses home expansion",
+            )
+        });
     }
     if let Some(rest) = raw.strip_prefix("~/") {
-        return home.join(rest);
+        return home.map(|home| home.join(rest)).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "HOME is not set and workspace.root uses home expansion",
+            )
+        });
     }
-    path.to_path_buf()
+    Ok(path.to_path_buf())
 }
 
 fn canonicalize_workspace_dir(path: PathBuf) -> std::io::Result<PathBuf> {
@@ -119,7 +121,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let config = WorkspaceRuntimeConfig {
             root: Some(temp.path().to_path_buf()),
-            home: Some(temp.path().to_path_buf()),
+            home: None,
         };
 
         let runtime = WorkspaceRuntimeBuilder::new(config).build();
