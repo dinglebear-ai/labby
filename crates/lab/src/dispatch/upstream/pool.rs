@@ -1509,6 +1509,38 @@ impl UpstreamPool {
         *self.resource_upstreams.write().await = resource_names;
     }
 
+    async fn ensure_lazy_upstream_entry(&self, config: &UpstreamConfig) {
+        if !config.enabled {
+            return;
+        }
+        if !upstream_name_is_uri_safe(&config.name) {
+            tracing::warn!(
+                upstream = %config.name,
+                "upstream name contains URI-unsafe characters (/, ?, #) — skipping"
+            );
+            return;
+        }
+        if let Err(msg) = validate_upstream_config(config) {
+            tracing::warn!(
+                upstream = %config.name,
+                "skipping upstream: {msg}"
+            );
+            return;
+        }
+        self.catalog
+            .write()
+            .await
+            .entry(config.name.clone())
+            .or_insert_with(|| lazy_upstream_entry(config, Arc::from(config.name.as_str())));
+        if config.proxy_resources {
+            let mut resource_upstreams = self.resource_upstreams.write().await;
+            if !resource_upstreams.iter().any(|name| name == &config.name) {
+                resource_upstreams.push(config.name.clone());
+                resource_upstreams.sort_unstable();
+            }
+        }
+    }
+
     /// Ensure one upstream has discovered tools, connecting it lazily when needed.
     pub async fn ensure_tools_for_upstream(
         &self,
@@ -1529,7 +1561,7 @@ impl UpstreamPool {
             return Ok(false);
         }
 
-        self.seed_lazy_upstreams(std::slice::from_ref(config)).await;
+        self.ensure_lazy_upstream_entry(config).await;
         let stale_connection = {
             let mut connections = self.connections.write().await;
             connections.remove(&config.name)
@@ -1543,23 +1575,37 @@ impl UpstreamPool {
         let started = Instant::now();
         let subject = config.oauth.as_ref().and(oauth_subject);
         let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());
-        let (conn, tools) = match connect_upstream(
-            config,
-            subject,
-            self.oauth_client_cache.as_ref(),
-            self.runtime_origin.as_deref(),
-            runtime_owner,
+        let connect_result = tokio::time::timeout(
+            DISCOVERY_TIMEOUT,
+            connect_upstream(
+                config,
+                subject,
+                self.oauth_client_cache.as_ref(),
+                self.runtime_origin.as_deref(),
+                runtime_owner,
+            ),
         )
-        .await
-        {
-            Ok(connected) => connected,
-            Err(error) => {
+        .await;
+        let (conn, tools) = match connect_result {
+            Ok(Ok(connected)) => connected,
+            Ok(Err(error)) => {
                 self.record_failure_for(
                     &config.name,
                     UpstreamCapability::Tools,
                     format!("lazy upstream connect failed: {error}"),
                 )
                 .await;
+                return Err(error);
+            }
+            Err(_) => {
+                let error = anyhow::anyhow!(
+                    "lazy upstream connect timed out after {}s waiting for {} MCP list_tools response from {}",
+                    DISCOVERY_TIMEOUT.as_secs(),
+                    upstream_transport(config),
+                    upstream_target_redacted(config)
+                );
+                self.record_failure_for(&config.name, UpstreamCapability::Tools, error.to_string())
+                    .await;
                 return Err(error);
             }
         };
@@ -1605,7 +1651,7 @@ impl UpstreamPool {
             return Ok(false);
         }
 
-        self.seed_lazy_upstreams(std::slice::from_ref(config)).await;
+        self.ensure_lazy_upstream_entry(config).await;
         let stale_connection = {
             let mut connections = self.connections.write().await;
             connections.remove(&config.name)
@@ -1641,7 +1687,7 @@ impl UpstreamPool {
         if self.has_healthy_tools_for_upstream(&config.name).await {
             return Ok(false);
         }
-        self.seed_lazy_upstreams(std::slice::from_ref(config)).await;
+        self.ensure_lazy_upstream_entry(config).await;
         self.replace_catalog_tools(config, tools).await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
@@ -4142,6 +4188,30 @@ mod tests {
             .await
             .expect("lazy failure is recorded");
         assert!(last_error.contains("lazy upstream connect failed"));
+    }
+
+    #[tokio::test]
+    async fn ensure_tools_for_upstream_preserves_other_resource_upstreams() {
+        let pool = UpstreamPool::new();
+        let mut alpha = named_test_upstream_config("alpha");
+        alpha.proxy_resources = true;
+        let mut beta = named_test_upstream_config("beta");
+        beta.proxy_resources = true;
+        pool.seed_lazy_upstreams(&[alpha.clone(), beta.clone()])
+            .await;
+
+        pool.ensure_tools_for_upstream_with_connector(
+            &alpha,
+            None,
+            Arc::new(|_config| Box::pin(async { Ok((None, vec![test_tool("ping")])) })),
+        )
+        .await
+        .expect("lazy connect succeeds");
+
+        assert_eq!(
+            *pool.resource_upstreams.read().await,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
     }
 
     #[test]
