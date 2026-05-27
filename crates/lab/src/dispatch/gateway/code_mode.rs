@@ -13,6 +13,10 @@ use boa_engine::object::builtins::JsPromise;
 use boa_engine::{Context, JsValue, Source};
 #[cfg(not(feature = "code_mode_wasm"))]
 use boa_engine::{JsArgs, JsError, JsNativeError, JsResult, JsValue, NativeFunction, js_string};
+#[cfg(not(feature = "code_mode_wasm"))]
+use boa_gc::{Finalize, Trace};
+#[cfg(not(feature = "code_mode_wasm"))]
+use boa_runtime::console::{ConsoleState, Logger};
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use rmcp::model::CallToolRequestParams;
 use serde::{Deserialize, Serialize};
@@ -444,6 +448,8 @@ impl<'a> CodeModeBroker<'a> {
                 Duration::from_millis(config.timeout_ms.max(1)),
                 caller,
                 surface,
+                config.max_log_entries,
+                config.max_log_bytes,
             )
             .await?;
         Ok(truncate_execution_response(
@@ -532,7 +538,43 @@ impl<'a> CodeModeBroker<'a> {
         timeout: Duration,
         caller: CodeModeCaller,
         surface: CodeModeSurface,
+        max_log_entries: usize,
+        max_log_bytes: usize,
     ) -> Result<CodeModeExecutionResponse, ToolError> {
+        // ── Build JS preamble from current catalog ────────────────────────
+        let preamble_code = if let Some(manager) = self.gateway_manager {
+            let allow_cold_connect = caller.can_execute();
+            let owner = caller.runtime_owner(surface);
+            let oauth_subject = caller.oauth_subject();
+            match manager
+                .code_mode_catalog_tools(allow_cold_connect, Some(&owner), oauth_subject)
+                .await
+            {
+                Ok(tools) => {
+                    let mut upstreams: Vec<String> = tools
+                        .iter()
+                        .map(|t| t.upstream_name.to_string())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    upstreams.sort();
+                    super::code_mode_preamble::generate_js_proxy(&tools, &upstreams)
+                }
+                Err(_) => {
+                    // If catalog fetch fails, inject minimal empty preamble so
+                    // the sandbox still runs — codemode will have no methods.
+                    super::code_mode_preamble::generate_js_proxy(&[], &[])
+                }
+            }
+        } else {
+            super::code_mode_preamble::generate_js_proxy(&[], &[])
+        };
+
+        // Prepend preamble to user code. The runner wraps everything in an
+        // async IIFE, so the preamble's `var codemode = ...` becomes
+        // function-local and is available to user code.
+        let code_with_preamble = format!("{preamble_code}\n{code}");
+
         let exe = std::env::current_exe().map_err(|err| ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
             message: format!("failed to locate current executable for Code Mode runner: {err}"),
@@ -548,7 +590,7 @@ impl<'a> CodeModeBroker<'a> {
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             // Make the child its own process group leader (pgid = pid) so that
             // killpg can reach grandchildren (e.g. any processes spawned by the
             // Boa/Javy runtime) and not just the immediate child.
@@ -570,10 +612,33 @@ impl<'a> CodeModeBroker<'a> {
             sdk_kind: "internal_error".to_string(),
             message: "Code Mode runner stdout was not available".to_string(),
         })?;
+
+        // Drain stderr continuously in a background task to prevent pipe-buffer
+        // deadlock when the runner emits more than ~64KB of console output.
+        // This covers the Javy path where console output goes to stderr.
+        // For the Boa path, stderr may be empty (logs go via CapturingLogger),
+        // but draining is still correct.
+        let stderr_lines = {
+            let stderr = child.stderr.take().ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: "Code Mode runner stderr was not available".to_string(),
+            })?;
+            let stderr_buf = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+            let stderr_buf_clone = stderr_buf.clone();
+            tokio::spawn(async move {
+                let mut lines = TokioBufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let mut buf = stderr_buf_clone.lock().await;
+                    buf.push(line);
+                }
+            });
+            stderr_buf
+        };
+
         write_runner_input(
             &mut stdin,
             &CodeModeRunnerInput::Start {
-                code: code.to_string(),
+                code: code_with_preamble,
             },
         )
         .await?;
@@ -672,10 +737,23 @@ impl<'a> CodeModeBroker<'a> {
                                 });
                             }
                             calls.sort_by_key(|(seq, _)| *seq);
-                            // sanitize_tool_text() is called here on every log entry
-                            // to redact secrets/control chars before the response leaves
-                            // the host. Confirmed per bead lab-y08q1.5.
-                            let sanitized_logs = logs
+                            // Merge stderr lines (Javy path: redirect_stdout_to_stderr)
+                            // with protocol-carried logs (Boa path: CapturingLogger).
+                            // For Boa, stderr is empty; for Javy, logs is empty.
+                            let mut all_logs = logs;
+                            {
+                                let stderr_captured = stderr_lines.lock().await;
+                                all_logs.extend(stderr_captured.iter().cloned());
+                            }
+
+                            // sanitize_tool_text() redacts secrets/control chars.
+                            // Apply log caps from config, appending a sentinel when truncated.
+                            let all_logs = apply_log_caps(
+                                all_logs,
+                                max_log_entries,
+                                max_log_bytes,
+                            );
+                            let sanitized_logs = all_logs
                                 .into_iter()
                                 .map(|line| {
                                     super::projection::sanitize_tool_text(&line, 4096)
@@ -912,8 +990,72 @@ const CODE_MODE_LOOP_ITERATION_LIMIT: u64 = 1_000_000;
 const CODE_MODE_STACK_SIZE_LIMIT: usize = 16 * 1024;
 const CODE_MODE_RECURSION_LIMIT: usize = 256;
 
+/// Backstop applied in the runner itself to prevent OOM before the parent's
+/// log caps are enforced. Parent enforces the config-driven caps afterward.
+#[cfg(not(feature = "code_mode_wasm"))]
+const RUNNER_LOG_HARD_CAP_ENTRIES: usize = 10_000;
+#[cfg(not(feature = "code_mode_wasm"))]
+const RUNNER_LOG_HARD_CAP_BYTES: usize = 1024 * 1024; // 1 MB
+
 thread_local! {
     static RUNNER_STATE: RefCell<Option<CodeModeRunnerState>> = const { RefCell::new(None) };
+    /// Captured console output lines for the current runner execution.
+    #[cfg(not(feature = "code_mode_wasm"))]
+    static RUNNER_LOGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A `boa_runtime` console logger that accumulates lines into `RUNNER_LOGS`.
+///
+/// Uses a unit struct + thread-local so that no GC-traced heap types are needed.
+/// Safety: `CapturingLogger` holds no Boa GC-managed pointers, so the empty
+/// `Trace` and `Finalize` implementations are correct.
+#[cfg(not(feature = "code_mode_wasm"))]
+#[derive(Debug)]
+struct CapturingLogger;
+
+#[cfg(not(feature = "code_mode_wasm"))]
+// SAFETY: CapturingLogger holds no Boa GC-managed pointers.
+unsafe impl Trace for CapturingLogger {
+    boa_gc::empty_trace!();
+}
+
+#[cfg(not(feature = "code_mode_wasm"))]
+impl Finalize for CapturingLogger {}
+
+#[cfg(not(feature = "code_mode_wasm"))]
+impl Logger for CapturingLogger {
+    fn log(&self, msg: String, _state: &ConsoleState, _context: &mut Context) -> boa_engine::JsResult<()> {
+        append_runner_log(msg);
+        Ok(())
+    }
+    fn info(&self, msg: String, state: &ConsoleState, context: &mut Context) -> boa_engine::JsResult<()> {
+        self.log(msg, state, context)
+    }
+    fn warn(&self, msg: String, state: &ConsoleState, context: &mut Context) -> boa_engine::JsResult<()> {
+        self.log(msg, state, context)
+    }
+    fn error(&self, msg: String, state: &ConsoleState, context: &mut Context) -> boa_engine::JsResult<()> {
+        self.log(msg, state, context)
+    }
+}
+
+/// Append a log line to the runner log buffer, respecting the hard backstop.
+#[cfg(not(feature = "code_mode_wasm"))]
+fn append_runner_log(line: String) {
+    RUNNER_LOGS.with(|logs| {
+        let mut logs = logs.borrow_mut();
+        let current_bytes: usize = logs.iter().map(|l| l.len()).sum();
+        if logs.len() >= RUNNER_LOG_HARD_CAP_ENTRIES || current_bytes >= RUNNER_LOG_HARD_CAP_BYTES {
+            return; // backstop reached — drop silently; parent will add sentinel
+        }
+        logs.push(line);
+    });
+}
+
+/// Drain the runner log buffer and return all accumulated lines.
+#[cfg(not(feature = "code_mode_wasm"))]
+fn drain_runner_logs() -> Vec<String> {
+    RUNNER_LOGS.with(|logs| std::mem::take(&mut *logs.borrow_mut()))
 }
 
 #[cfg(feature = "code_mode_wasm")]
@@ -1117,6 +1259,43 @@ fn truncation_marker(value: &Value, token_estimate_divisor: u32) -> Value {
         "preview": preview,
         "next_action": "Use a narrower query, request fewer fields, or split the work across multiple code_execute calls."
     })
+}
+
+/// Enforce `max_log_entries` and `max_log_bytes` caps on captured log lines.
+///
+/// Returns the capped list. If either cap trips, appends a single sentinel line
+/// `"[log output truncated at N lines / M bytes]"` as the last entry.
+fn apply_log_caps(mut logs: Vec<String>, max_entries: usize, max_bytes: usize) -> Vec<String> {
+    let max_entries = max_entries.max(1);
+    let max_bytes = max_bytes.max(1);
+
+    let mut total_bytes: usize = 0;
+    let mut kept = 0;
+    let mut truncated = false;
+
+    for (i, line) in logs.iter().enumerate() {
+        if i >= max_entries {
+            truncated = true;
+            break;
+        }
+        total_bytes += line.len();
+        if total_bytes > max_bytes {
+            truncated = true;
+            break;
+        }
+        kept = i + 1;
+    }
+
+    if truncated {
+        logs.truncate(kept);
+        logs.push(format!(
+            "[log output truncated at {} lines / {} bytes]",
+            kept,
+            total_bytes.min(max_bytes),
+        ));
+    }
+
+    logs
 }
 
 async fn write_runner_input(
@@ -1355,8 +1534,17 @@ fn run_code_mode_runner() -> Result<(), String> {
         return Err("runner expected start message".to_string());
     };
 
+    // Reset the log buffer for this execution.
+    RUNNER_LOGS.with(|logs| logs.borrow_mut().clear());
+
     let mut context = Context::default();
     configure_code_mode_runtime_limits(&mut context);
+
+    // Install the capturing console logger so console.log/warn/error lines are
+    // accumulated in RUNNER_LOGS and returned in the Done message.
+    boa_runtime::console::Console::register_with_logger(CapturingLogger, &mut context)
+        .map_err(js_error_message)?;
+
     context
         .register_global_builtin_callable(
             js_string!("callTool"),
@@ -1394,10 +1582,10 @@ fn run_code_mode_runner() -> Result<(), String> {
         }
     }
 
-    // logs field: populated in Bead 3 (boa_runtime console capture). Empty Vec for now.
+    let logs = drain_runner_logs();
     runner_emit(CodeModeRunnerOutput::Done {
         result: resolved_result,
-        logs: Vec::new(),
+        logs,
     })
 }
 

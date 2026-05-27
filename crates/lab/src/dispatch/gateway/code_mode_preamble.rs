@@ -334,6 +334,95 @@ fn build_jsdoc(description: &str, schema: Option<&Value>) -> String {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// JS proxy generation (runtime executable, not type declarations)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Build a mapping from `"{upstream}::{camelName}"` → `"{upstream}::{dotted.name}"`.
+///
+/// Used by the JS proxy so that `codemode.radarr.movieSearch(p)` can call
+/// `callTool("upstream::radarr::movie.search", p)`.
+#[allow(dead_code)]
+pub fn build_reverse_camel_map(tools: &[UpstreamTool]) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for tool in tools {
+        let camel = tool_name_to_camel(tool.tool.name.as_ref());
+        let upstream = tool.upstream_name.as_ref();
+        let dotted = tool.tool.name.as_ref();
+        let key = format!("{upstream}::{camel}");
+        let value = format!("{upstream}::{dotted}");
+        map.insert(key, value);
+    }
+    map
+}
+
+/// Generate a JavaScript preamble string that defines the `codemode` proxy
+/// namespace, `__catalog__`, and `__upstreams__` for use inside the sandbox.
+///
+/// The output is a JS snippet (not TypeScript) that is prepended to user code
+/// before being sent to the runner subprocess. It relies on `callTool` already
+/// being registered in the sandbox.
+///
+/// `tools` — the upstream tools to expose
+/// `upstreams` — sorted, deduplicated list of upstream names
+pub fn generate_js_proxy(tools: &[UpstreamTool], upstreams: &[String]) -> String {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    // Group tools by upstream name, sorted for deterministic output.
+    let mut by_upstream: BTreeMap<&str, Vec<&UpstreamTool>> = BTreeMap::new();
+    for tool in tools {
+        by_upstream
+            .entry(tool.upstream_name.as_ref())
+            .or_default()
+            .push(tool);
+    }
+
+    let mut parts = String::new();
+
+    // Emit per-upstream namespace objects.
+    for (upstream_name, upstream_tools) in &by_upstream {
+        // Build camelCase → dotted name mapping, last registration wins on collision.
+        let mut camel_to_dotted: BTreeMap<String, String> = BTreeMap::new();
+        let mut sorted_tools = upstream_tools.to_vec();
+        sorted_tools.sort_by(|a, b| a.tool.name.cmp(&b.tool.name));
+        for tool in &sorted_tools {
+            let camel = tool_name_to_camel(tool.tool.name.as_ref());
+            camel_to_dotted.insert(camel, tool.tool.name.to_string());
+        }
+
+        // Serialize the upstream name safely.
+        let upstream_json = serde_json::to_string(upstream_name)
+            .unwrap_or_else(|_| "\"unknown\"".to_string());
+
+        let mut method_defs = Vec::new();
+        for (camel, dotted) in &camel_to_dotted {
+            let tool_id = format!("upstream::{upstream_name}::{dotted}");
+            let tool_id_json = serde_json::to_string(&tool_id)
+                .unwrap_or_else(|_| "\"unknown\"".to_string());
+            method_defs.push(format!("    {camel}: function(p) {{ return callTool({tool_id_json}, p == null ? {{}} : p); }}"));
+        }
+
+        let methods = method_defs.join(",\n");
+        let _ = write!(
+            parts,
+            "codemode[{upstream_json}] = {{\n{methods}\n}};\n"
+        );
+    }
+
+    // Emit __meta__.upstreams value.
+    let upstreams_json = serde_json::to_string(upstreams)
+        .unwrap_or_else(|_| "[]".to_string());
+
+    format!(
+        "// Code Mode preamble — auto-generated\n\
+         var codemode = {{}};\n\
+         {parts}\
+         codemode.__meta__ = {{ upstreams: function() {{ return Promise.resolve({upstreams_json}); }} }};\n\
+         var __upstreams__ = {upstreams_json};\n"
+    )
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Preamble generation
 // ────────────────────────────────────────────────────────────────────────────
 
