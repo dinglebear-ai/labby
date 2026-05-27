@@ -549,6 +549,14 @@ fn default_token_estimate_divisor() -> u32 {
     4
 }
 
+fn default_max_log_entries() -> usize {
+    1000
+}
+
+fn default_max_log_bytes() -> usize {
+    65536
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeModeConfig {
     /// Enable the constrained Code Mode executor. Catalog search can be enabled
@@ -572,6 +580,14 @@ pub struct CodeModeConfig {
     /// fewer tools per execution.
     #[serde(default = "default_token_estimate_divisor")]
     pub token_estimate_divisor: u32,
+    /// Maximum number of console log lines captured per execution.
+    /// Excess lines are dropped and a sentinel appended.
+    #[serde(default = "default_max_log_entries")]
+    pub max_log_entries: usize,
+    /// Maximum total bytes of console log output captured per execution.
+    /// Excess bytes are dropped and a sentinel appended.
+    #[serde(default = "default_max_log_bytes")]
+    pub max_log_bytes: usize,
 }
 
 impl Default for CodeModeConfig {
@@ -583,6 +599,8 @@ impl Default for CodeModeConfig {
             max_response_bytes: default_code_mode_max_response_bytes(),
             max_response_tokens: default_code_mode_max_response_tokens(),
             token_estimate_divisor: default_token_estimate_divisor(),
+            max_log_entries: default_max_log_entries(),
+            max_log_bytes: default_max_log_bytes(),
         }
     }
 }
