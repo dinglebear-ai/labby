@@ -590,6 +590,17 @@ type InProcessConnector = Arc<
         + Sync,
 >;
 
+#[cfg(test)]
+type TestUpstreamConnector = Arc<
+    dyn Fn(
+            UpstreamConfig,
+        ) -> BoxFuture<
+            'static,
+            anyhow::Result<(Option<UpstreamConnection>, Vec<rmcp::model::Tool>)>,
+        > + Send
+        + Sync,
+>;
+
 impl std::fmt::Debug for UpstreamConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UpstreamConnection").finish_non_exhaustive()
@@ -1444,6 +1455,174 @@ impl UpstreamPool {
         Ok(true)
     }
 
+    /// Seed the upstream catalog from config without starting any upstream runtime.
+    pub async fn seed_lazy_upstreams(&self, configs: &[UpstreamConfig]) {
+        let mut catalog = self.catalog.write().await;
+        let mut resource_names = Vec::new();
+        let mut processed_names = std::collections::HashSet::new();
+
+        for config in configs {
+            if !config.enabled {
+                continue;
+            }
+            if !processed_names.insert(&config.name) {
+                continue;
+            }
+            if config.name.contains('/') || config.name.contains('?') || config.name.contains('#') {
+                tracing::warn!(
+                    upstream = %config.name,
+                    "upstream name contains URI-unsafe characters (/, ?, #) — skipping"
+                );
+                continue;
+            }
+            if let Err(msg) = validate_upstream_config(config) {
+                tracing::warn!(
+                    upstream = %config.name,
+                    "skipping upstream: {msg}"
+                );
+                continue;
+            }
+
+            let upstream_name: Arc<str> = Arc::from(config.name.as_str());
+            catalog
+                .entry(config.name.clone())
+                .or_insert_with(|| lazy_upstream_entry(config, Arc::clone(&upstream_name)));
+
+            if config.proxy_resources {
+                resource_names.push(config.name.clone());
+            }
+        }
+
+        resource_names.sort_unstable();
+        resource_names.dedup();
+        *self.resource_upstreams.write().await = resource_names;
+    }
+
+    /// Ensure one upstream has discovered tools, connecting it lazily when needed.
+    pub async fn ensure_tools_for_upstream(
+        &self,
+        config: &UpstreamConfig,
+        oauth_subject: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        if !config.enabled {
+            return Ok(false);
+        }
+        if !self
+            .healthy_tools_for_upstream(&config.name)
+            .await
+            .is_empty()
+        {
+            return Ok(false);
+        }
+
+        self.seed_lazy_upstreams(std::slice::from_ref(config)).await;
+        let stale_connection = {
+            let mut connections = self.connections.write().await;
+            connections.remove(&config.name)
+        };
+        if let Some(connection) = stale_connection {
+            connection
+                .shutdown(&config.name, "upstream.lazy.ensure.before_connect")
+                .await;
+        }
+
+        let started = Instant::now();
+        let subject = config.oauth.as_ref().and(oauth_subject);
+        let (conn, tools) = connect_upstream(
+            config,
+            subject,
+            self.oauth_client_cache.as_ref(),
+            self.runtime_origin.as_deref(),
+            self.runtime_owner.as_ref(),
+        )
+        .await?;
+        let tool_count = tools.len();
+        self.connections
+            .write()
+            .await
+            .insert(config.name.clone(), conn);
+        self.replace_catalog_tools(config, tools).await;
+        self.record_success_for(&config.name, UpstreamCapability::Tools)
+            .await;
+        tracing::info!(
+            surface = "dispatch",
+            service = "upstream.pool",
+            action = "upstream.lazy.ensure",
+            event = "finish",
+            operation = "connection.acquire",
+            upstream = %config.name,
+            tool_count,
+            elapsed_ms = started.elapsed().as_millis(),
+            "lazy upstream tools connected"
+        );
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    async fn ensure_tools_for_upstream_with_connector(
+        &self,
+        config: &UpstreamConfig,
+        _oauth_subject: Option<&str>,
+        connector: TestUpstreamConnector,
+    ) -> anyhow::Result<bool> {
+        if !config.enabled {
+            return Ok(false);
+        }
+        if !self
+            .healthy_tools_for_upstream(&config.name)
+            .await
+            .is_empty()
+        {
+            return Ok(false);
+        }
+
+        self.seed_lazy_upstreams(std::slice::from_ref(config)).await;
+        let stale_connection = {
+            let mut connections = self.connections.write().await;
+            connections.remove(&config.name)
+        };
+        if let Some(connection) = stale_connection {
+            connection
+                .shutdown(&config.name, "upstream.lazy.ensure.before_connect")
+                .await;
+        }
+
+        let (connection, tools) = connector(config.clone()).await?;
+        if let Some(connection) = connection {
+            self.connections
+                .write()
+                .await
+                .insert(config.name.clone(), connection);
+        }
+        self.replace_catalog_tools(config, tools).await;
+        self.record_success_for(&config.name, UpstreamCapability::Tools)
+            .await;
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub async fn install_test_tools_for_upstream(
+        &self,
+        config: &UpstreamConfig,
+        tools: Vec<rmcp::model::Tool>,
+    ) -> anyhow::Result<bool> {
+        if !config.enabled {
+            return Ok(false);
+        }
+        if !self
+            .healthy_tools_for_upstream(&config.name)
+            .await
+            .is_empty()
+        {
+            return Ok(false);
+        }
+        self.seed_lazy_upstreams(std::slice::from_ref(config)).await;
+        self.replace_catalog_tools(config, tools).await;
+        self.record_success_for(&config.name, UpstreamCapability::Tools)
+            .await;
+        Ok(true)
+    }
+
     pub async fn reprobe_tools_for_upstream(
         &self,
         config: &UpstreamConfig,
@@ -2274,6 +2453,11 @@ impl UpstreamPool {
     /// Get the number of connected upstreams.
     pub async fn upstream_count(&self) -> usize {
         self.catalog.read().await.len()
+    }
+
+    #[cfg(test)]
+    pub async fn connection_count_for_tests(&self) -> usize {
+        self.connections.read().await.len()
     }
 
     /// Get names of all registered upstreams with their tool health status.
@@ -3620,6 +3804,27 @@ fn health_str(health: UpstreamHealth) -> &'static str {
     }
 }
 
+fn lazy_upstream_entry(config: &UpstreamConfig, name: Arc<str>) -> UpstreamEntry {
+    UpstreamEntry {
+        name,
+        tools: HashMap::new(),
+        exposure_policy: resolve_exposure_policy(&config.name, config.expose_tools.clone()),
+        prompt_count: 0,
+        resource_count: 0,
+        prompt_names: Vec::new(),
+        resource_uris: Vec::new(),
+        tool_health: UpstreamHealth::Healthy,
+        prompt_health: UpstreamHealth::Healthy,
+        resource_health: UpstreamHealth::Healthy,
+        tool_unhealthy_since: None,
+        prompt_unhealthy_since: None,
+        resource_unhealthy_since: None,
+        tool_last_error: None,
+        prompt_last_error: None,
+        resource_last_error: None,
+    }
+}
+
 fn healthy_in_process_entry(name: Arc<str>, tools: HashMap<String, UpstreamTool>) -> UpstreamEntry {
     UpstreamEntry {
         name,
@@ -3741,6 +3946,82 @@ mod tests {
             priority: 1.0,
             tool_search: crate::config::ToolSearchConfig::default(),
         }
+    }
+
+    fn named_test_upstream_config(name: &str) -> UpstreamConfig {
+        UpstreamConfig {
+            name: name.to_string(),
+            command: Some("true".to_string()),
+            ..test_upstream_config()
+        }
+    }
+
+    fn named_disabled_test_upstream_config(name: &str) -> UpstreamConfig {
+        UpstreamConfig {
+            enabled: false,
+            ..named_test_upstream_config(name)
+        }
+    }
+
+    fn test_tool(name: &str) -> rmcp::model::Tool {
+        rmcp::model::Tool::new(name.to_string(), "", Arc::new(serde_json::Map::new()))
+    }
+
+    #[tokio::test]
+    async fn seed_lazy_upstreams_records_enabled_names_without_connections() {
+        let pool = UpstreamPool::new();
+        let configs = vec![
+            named_test_upstream_config("alpha"),
+            named_test_upstream_config("beta"),
+            named_disabled_test_upstream_config("disabled"),
+        ];
+
+        pool.seed_lazy_upstreams(&configs).await;
+
+        assert_eq!(pool.upstream_count().await, 2);
+        assert_eq!(pool.connection_count_for_tests().await, 0);
+        assert!(pool.cached_upstream_summary("alpha").await.is_some());
+        assert!(pool.cached_upstream_summary("beta").await.is_some());
+        assert!(pool.cached_upstream_summary("disabled").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn ensure_tools_for_upstream_connects_only_requested_upstream() {
+        let pool = UpstreamPool::new();
+        let configs = vec![
+            named_test_upstream_config("slow"),
+            named_test_upstream_config("fast"),
+        ];
+        pool.seed_lazy_upstreams(&configs).await;
+
+        let fast_seen = Arc::new(AtomicBool::new(false));
+        let slow_seen = Arc::new(AtomicBool::new(false));
+        let connector: TestUpstreamConnector = {
+            let fast_seen = Arc::clone(&fast_seen);
+            let slow_seen = Arc::clone(&slow_seen);
+            Arc::new(move |config| {
+                let fast_seen = Arc::clone(&fast_seen);
+                let slow_seen = Arc::clone(&slow_seen);
+                Box::pin(async move {
+                    match config.name.as_str() {
+                        "fast" => fast_seen.store(true, Ordering::Relaxed),
+                        "slow" => slow_seen.store(true, Ordering::Relaxed),
+                        other => panic!("unexpected upstream {other}"),
+                    }
+                    Ok((None, vec![test_tool("ping")]))
+                })
+            })
+        };
+
+        pool.ensure_tools_for_upstream_with_connector(&configs[1], None, connector)
+            .await
+            .expect("fast connects");
+
+        assert!(fast_seen.load(Ordering::Relaxed));
+        assert!(!slow_seen.load(Ordering::Relaxed));
+        assert_eq!(pool.connection_count_for_tests().await, 0);
+        assert_eq!(pool.healthy_tools_for_upstream("fast").await.len(), 1);
+        assert!(pool.healthy_tools_for_upstream("slow").await.is_empty());
     }
 
     #[test]

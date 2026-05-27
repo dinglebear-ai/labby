@@ -267,13 +267,9 @@ impl<'a> CodeModeBroker<'a> {
         &self,
         manager: &GatewayManager,
     ) -> Result<(Vec<CodeModeCatalogEntry>, usize, bool), ToolError> {
-        let Some(pool) = manager.current_pool().await else {
-            return Ok((Vec::new(), 2, false));
-        };
-
-        let mut entries = pool
-            .healthy_tools()
-            .await
+        let mut entries = manager
+            .code_mode_catalog_tools()
+            .await?
             .into_iter()
             .map(|tool| {
                 let upstream = tool.upstream_name.to_string();
@@ -1461,6 +1457,37 @@ mod tests {
             .expect("search ok");
 
         assert_eq!(result, json!([]));
+    }
+
+    #[tokio::test]
+    async fn code_search_uses_gateway_manager_catalog_api() {
+        let registry = super::ToolRegistry::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = super::GatewayManager::new(
+            dir.path().join("config.toml"),
+            super::super::runtime::GatewayRuntimeHandle::default(),
+        );
+        manager
+            .seed_config(crate::config::LabConfig {
+                tool_search: crate::config::ToolSearchConfig {
+                    enabled: true,
+                    ..crate::config::ToolSearchConfig::default()
+                },
+                ..crate::config::LabConfig::default()
+            })
+            .await;
+        let broker = super::CodeModeBroker::new(&registry, Some(&manager));
+
+        let result = broker
+            .search(
+                "async () => tools.length",
+                super::CodeModeCaller::TrustedLocal,
+                super::CodeModeSurface::Cli,
+            )
+            .await
+            .expect("code search succeeds");
+
+        assert_eq!(result, json!(0));
     }
 
     #[tokio::test]
