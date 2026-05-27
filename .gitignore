@@ -7,7 +7,7 @@
 !**/.env.example
 # Use /config.toml (root-anchored) so .cargo/config.toml is NOT excluded.
 /config.toml
-
+.broadcastr
 # ── Runtime artifacts ────────────────────────────────────────────────────────
 /logs/
 !apps/gateway-admin/app/(admin)/logs/

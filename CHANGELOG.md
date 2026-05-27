@@ -8,6 +8,23 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.18.1] - 2026-05-27
+
+### Highlights
+
+- **Local runtime ignore cleanup**: ignored Broadcastr local state so repo status stays focused on source changes.
+
+| Commit | Change |
+|--------|--------|
+| *(this)* | chore: ignore broadcastr local state |
+
+### Version bumps
+
+- Rust workspace: `0.18.0 -> 0.18.1`
+- Gateway admin package: `0.18.0 -> 0.18.1`
+
+---
+
 ## [0.18.0] - 2026-05-26
 
 ### Highlights
