@@ -360,6 +360,8 @@ pub struct GatewayManager {
     pub(super) oauth_redirect_uri: Option<Arc<String>>,
     tool_indexes: Arc<dashmap::DashMap<String, GatewayToolIndexState>>,
     protected_route_index: Arc<RwLock<ProtectedRouteIndex>>,
+    /// Cached TypeScript declaration preambles keyed on (aggregate_catalog_hash, ScopeTier).
+    pub(super) preamble_cache: Arc<crate::dispatch::gateway::code_mode_preamble::PreambleCache>,
 }
 
 impl GatewayManager {
@@ -382,6 +384,7 @@ impl GatewayManager {
             oauth_redirect_uri: None,
             tool_indexes: Arc::new(dashmap::DashMap::new()),
             protected_route_index: Arc::new(RwLock::new(ProtectedRouteIndex::default())),
+            preamble_cache: Arc::new(crate::dispatch::gateway::code_mode_preamble::PreambleCache::new()),
         }
     }
 
@@ -538,11 +541,23 @@ impl GatewayManager {
         self.notifier = Some(notifier);
     }
 
-    pub async fn seed_config(&self, config: LabConfig) {
+    pub async fn seed_config(&self, mut config: LabConfig) {
         // config.rs normalizes legacy tool_search before calling seed_config;
         // do not re-normalize here with false — that would incorrectly promote
         // legacy upstream config when the root [tool_search] is explicitly disabled.
+
+        // Startup dual-mode conflict: if both tool_search and code_mode are enabled,
+        // tool_search wins — silently disable code_mode and emit an error.
+        if config.tool_search.enabled && config.code_mode.enabled {
+            tracing::error!(
+                "code_mode and tool_search both enabled at startup -- tool_search takes priority. \
+                Disable one via config or env."
+            );
+            config.code_mode.enabled = false;
+        }
+
         crate::config::set_process_tool_search_enabled(config.tool_search.enabled);
+        crate::config::set_process_code_mode_enabled(config.code_mode.enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&config.protected_mcp_routes);
         let code_mode_enabled = config.code_mode.enabled;
@@ -1664,9 +1679,18 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<ToolSearchConfig, ToolError> {
+        // Field-level validation (ranges, etc.) runs before acquiring the lock —
+        // it is idempotent and does not read shared state.
         validate_tool_search(&next)?;
+        // Mutual-exclusion check MUST run inside the lock to prevent TOCTOU:
+        // read current code_mode.enabled from inside the lock, then validate.
         let _mutation_guard = self.config_mutation.lock().await;
         let mut cfg = self.config.read().await.clone();
+        crate::config::validate_mode_exclusive(next.enabled, cfg.code_mode.enabled)
+            .map_err(|e| ToolError::InvalidParam {
+                message: e.to_string(),
+                param: "tool_search/code_mode".to_string(),
+            })?;
         cfg.tool_search = next;
         self.persist_config(cfg).await?;
         self.reload_with_origin_unlocked(origin, owner).await?;
@@ -1679,9 +1703,17 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<crate::config::CodeModeConfig, ToolError> {
+        // Field-level validation (ranges, etc.) runs before acquiring the lock.
         validate_code_mode(&next)?;
+        // Mutual-exclusion check MUST run inside the lock to prevent TOCTOU:
+        // read current tool_search.enabled from inside the lock, then validate.
         let _mutation_guard = self.config_mutation.lock().await;
         let mut cfg = self.config.read().await.clone();
+        crate::config::validate_mode_exclusive(cfg.tool_search.enabled, next.enabled)
+            .map_err(|e| ToolError::InvalidParam {
+                message: e.to_string(),
+                param: "tool_search/code_mode".to_string(),
+            })?;
         // Capture whether we are transitioning from disabled → enabled before updating.
         let was_disabled = !cfg.code_mode.enabled;
         cfg.code_mode = next.clone();
@@ -1962,6 +1994,7 @@ impl GatewayManager {
             "gateway reconcile"
         );
         crate::config::set_process_tool_search_enabled(cfg.tool_search.enabled);
+        crate::config::set_process_code_mode_enabled(cfg.code_mode.enabled);
         let fresh_pool = {
             let base_pool = match &self.oauth_client_cache {
                 Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
@@ -2384,6 +2417,35 @@ impl GatewayManager {
             return Ok(Vec::new());
         };
         Ok(pool.healthy_tools().await)
+    }
+
+    /// Access the shared preamble cache for TypeScript declaration generation.
+    pub fn preamble_cache(&self) -> &crate::dispatch::gateway::code_mode_preamble::PreambleCache {
+        &self.preamble_cache
+    }
+
+    /// Cheaply read per-upstream catalog hashes from the cached tool indexes.
+    ///
+    /// Returns a vec of `UpstreamCatalogHash` for each upstream that has a
+    /// loaded index.  Used to compute an aggregate hash for the preamble cache
+    /// key before touching the upstream pool.
+    ///
+    /// On a cold pool with no loaded indexes this returns an empty vec, which
+    /// produces aggregate hash 0 and a guaranteed cache miss — callers fall
+    /// through to the normal catalog-fetch path.
+    pub fn per_upstream_catalog_hashes(&self) -> Vec<crate::dispatch::gateway::code_mode_preamble::UpstreamCatalogHash> {
+        self.tool_indexes
+            .iter()
+            .filter_map(|entry| {
+                let index = entry.value().index.load();
+                index.as_ref().map(|idx| {
+                    crate::dispatch::gateway::code_mode_preamble::UpstreamCatalogHash {
+                        upstream: entry.key().clone(),
+                        hash: idx.metadata.catalog_hash,
+                    }
+                })
+            })
+            .collect()
     }
 
     pub async fn resolve_tool_execute_with_upstream(
@@ -3774,6 +3836,7 @@ mod tests {
             tool,
             input_schema: None,
             upstream_name: Arc::clone(&upstream_name),
+            destructive: false,
         };
         fixture_upstream_entry(
             upstream,
@@ -4157,6 +4220,7 @@ mod tests {
                 tool,
                 input_schema: None,
                 upstream_name,
+                destructive: false,
             }],
             10,
         );
