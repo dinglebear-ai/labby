@@ -44,7 +44,7 @@
 **Files:**
 - Modify: `crates/lab/src/dispatch/upstream/pool.rs`
 
-- [ ] **Step 1: Write failing tests for cold seeded upstreams and one-upstream connection**
+- [ ] **Step 1: Write failing tests for cold-seeded upstreams and one-upstream connection**
 
 Add tests near the existing `register_in_process_service_list_with_connector` tests in `pool.rs`:
 
