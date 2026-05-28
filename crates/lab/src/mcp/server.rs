@@ -1332,17 +1332,10 @@ impl ServerHandler for LabMcpServer {
                 .unwrap_or_default()
                 .to_string();
             let code_hash = hash_arguments(&Value::String(code.clone()));
-            let Some(manager) = &self.gateway_manager else {
-                let envelope = build_error(
-                    &service,
-                    "call_tool",
-                    "unknown_tool",
-                    "code search is not enabled",
-                );
-                return Ok(CallToolResult::error(vec![Content::text(
-                    envelope.to_string(),
-                )]));
-            };
+            let manager = self
+                .gateway_manager
+                .as_ref()
+                .expect("exposes_synthetic_tools() is true only when gateway_manager is Some");
             tracing::info!(
                 surface = "mcp",
                 service = "search",
@@ -1431,17 +1424,10 @@ impl ServerHandler for LabMcpServer {
                 );
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             }
-            let Some(manager) = &self.gateway_manager else {
-                let envelope = build_error(
-                    &service,
-                    "call_tool",
-                    "unknown_tool",
-                    "code execute is not enabled",
-                );
-                return Ok(CallToolResult::error(vec![Content::text(
-                    envelope.to_string(),
-                )]));
-            };
+            let manager = self
+                .gateway_manager
+                .as_ref()
+                .expect("exposes_synthetic_tools() is true only when gateway_manager is Some");
             let config = manager.code_mode_config().await;
             let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
             if code.trim().is_empty() {
@@ -1510,6 +1496,19 @@ impl ServerHandler for LabMcpServer {
                 Err(err) => {
                     let after = self.snapshot_catalog().await;
                     self.notify_catalog_changes(&before, &after).await;
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "execute",
+                        action = "call_tool",
+                        subject,
+                        code_hash = %code_hash,
+                        max_tool_calls = requested_max_tool_calls,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        input_tokens,
+                        kind = err.kind(),
+                        error = %err,
+                        "gateway execute failed"
+                    );
                     let env = tool_error_envelope(&service, "call_tool", &err);
                     return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
