@@ -1170,7 +1170,7 @@ impl ServerHandler for LabMcpServer {
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "JavaScript async arrow function to execute. Use await callTool(id, params) with JSON-serializable params."
+                        "description": "JavaScript statements to execute inside an async function body. Use await callTool(id, params) with JSON-serializable params. Do NOT wrap in an arrow function — write the body directly."
                     }
                 },
                 "required": ["code"]
