@@ -3,28 +3,34 @@
 Code Mode exposes a **single** MCP tool — `code` — when `[code_mode] enabled = true` in
 `config.toml`. This is mutually exclusive with Tool Search mode (`search` + `execute`).
 
-The `code` tool uses an `action` discriminator:
+The `code` tool accepts a single required field:
 
-- `action: "search"` (scope: `lab:read`) — fetch the current upstream MCP tool catalog
-  as a typed TypeScript preamble. The server injects this preamble into the sandbox
-  before your code runs; you do not call it manually.
-- `action: "execute"` (scope: `lab` or `lab:admin`) — run a JavaScript snippet against
-  the sandbox. The typed `codemode.*` namespace (built from the catalog) is available.
-  Each `codemode.<helper>(params)` call dispatches to the real upstream server via
-  `callTool` under the hood.
+```json
+{ "code": "<JavaScript async arrow function body>" }
+```
 
-**Legacy aliases** (`code_search`, `code_execute`) remain callable for backward
-compatibility but are hidden from `list_tools` and emit a `tracing::warn!` with
-`legacy_alias` and `canonical` fields.
+The sandbox injects the typed `codemode.*` namespace (built from the upstream catalog)
+before your function runs. Each `codemode.<server>.<helper>(params)` call dispatches to the
+real upstream server via `callTool` under the hood. You can also call `callTool` directly
+using `upstream::<server>::<tool>` IDs.
+
+Required scope: `lab:read` to access the catalog; `lab` or `lab:admin` to execute code.
 
 Lab actions are intentionally not exposed through Code Mode. Use the normal
 `execute` (Tool Search mode) or CLI surface for Lab service actions.
 
 ## Catalog Budget
 
-The inline catalog has a 256KB soft cap and 512KB hard cap. Over the soft cap,
-the catalog is stably pruned and a `__truncated__` sentinel entry is appended.
-Over the hard cap, `code(search)` returns `invalid_param`.
+The inline catalog has a 256KB soft cap. Over the soft cap, the catalog is stably
+pruned and two overflow signals are emitted:
+
+- A `__truncated__` sentinel entry is appended to the catalog array (id and name both
+  `"__truncated__"`, upstream `"__catalog__"`), indicating how many tools were dropped.
+- The TypeScript preamble declares `__catalog__` as `string | undefined` (instead of
+  `undefined`) so sandbox code can detect the truncation and fall back to `callTool`.
+
+Use `callTool("upstream::<server>::<tool>", params)` as the escape hatch when tools are
+not listed in the catalog due to overflow.
 
 ## Execute Response Budget
 

@@ -2439,10 +2439,23 @@ impl GatewayManager {
             if cfg.code_mode.enabled && !cfg.tool_search.enabled {
                 // Exclusive code mode: `ensure_search_runtime_ready` gates on
                 // `tool_search.enabled` and is a no-op here.  Create the pool,
-                // then fire background connection tasks for all enabled upstreams
-                // so the catalog populates on the first or second call.
+                // fire background connection tasks for all enabled upstreams, then
+                // poll briefly so the first cold `code(search)` returns a non-empty
+                // catalog rather than racing ahead of the spawned tasks.
                 let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
-                self.spawn_code_mode_upstream_connections(pool, &cfg, owner, oauth_subject);
+                self.spawn_code_mode_upstream_connections(
+                    Arc::clone(&pool),
+                    &cfg,
+                    owner,
+                    oauth_subject,
+                );
+                // Wait up to 500 ms (10 × 50 ms) for at least one upstream to connect.
+                for _ in 0..10u8 {
+                    if !pool.healthy_tools().await.is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
             } else {
                 self.ensure_search_runtime_ready(true, owner, oauth_subject)
                     .await?;

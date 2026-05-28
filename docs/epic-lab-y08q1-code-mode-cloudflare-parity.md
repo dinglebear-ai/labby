@@ -543,10 +543,10 @@ Comprehensive test coverage for every feature. All tests include INVERSE asserti
 ### Test Inventory
 
 **Mode snapshot tests with INVERSE assertions (4 states required):**
-- `test_mode_ts_on_cm_off` — presence: "search" in list_tools; absence: "execute" NOT in list_tools
-- `test_mode_ts_off_cm_on` — presence: "execute" in list_tools; absence: "search" NOT in list_tools
+- `test_mode_ts_on_cm_off` — presence: "search" AND "execute" in list_tools; absence: "code" NOT in list_tools
+- `test_mode_ts_off_cm_on` — presence: "code" in list_tools; absence: "search" NOT in list_tools, "execute" NOT in list_tools
 - `test_mode_both_on_rejected_at_config_load` — `Err(ConfigError::DualModeConflict)` — never reaches runtime
-- `test_mode_both_off` — neither "search" nor "execute" in list_tools
+- `test_mode_both_off` — neither "search" nor "execute" nor "code" in list_tools
 
 **Regression tests:**
 - `test_gateway_code_mode_enabled_reads_code_mode_config_not_tool_search`

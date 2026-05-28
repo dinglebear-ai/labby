@@ -5,9 +5,9 @@ branch: bd-work/code-mode-cloudflare-parity
 head: f02f8341
 agent: Claude (claude-opus-4-7[1m])
 session id: 753808af-5d51-4cdc-ba6e-0ccd4c3bf199
-transcript: /home/jmagar/.claude/projects/-home-jmagar-workspace-lab/753808af-5d51-4cdc-ba6e-0ccd4c3bf199.jsonl
-working directory: /home/jmagar/workspace/lab
-worktree: /home/jmagar/workspace/lab-code-mode
+transcript: <workspace>/.claude/projects/lab/753808af-5d51-4cdc-ba6e-0ccd4c3bf199.jsonl
+working directory: <workspace>/lab
+worktree: <workspace>/lab-code-mode
 ---
 
 ## User Request
