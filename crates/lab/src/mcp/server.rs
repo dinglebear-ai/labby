@@ -1332,10 +1332,25 @@ impl ServerHandler for LabMcpServer {
                 .unwrap_or_default()
                 .to_string();
             let code_hash = hash_arguments(&Value::String(code.clone()));
-            let manager = self
-                .gateway_manager
-                .as_ref()
-                .expect("exposes_synthetic_tools() is true only when gateway_manager is Some");
+            debug_assert!(
+                self.gateway_manager.is_some(),
+                "exposes_synthetic_tools() is true only when gateway_manager is Some"
+            );
+            let Some(manager) = self.gateway_manager.as_ref() else {
+                tracing::error!(
+                    surface = "mcp",
+                    service = "search",
+                    action = "call_tool",
+                    "BUG: exposes_synthetic_tools() true but gateway_manager is None"
+                );
+                let env = build_error(
+                    &service,
+                    "call_tool",
+                    "internal_error",
+                    "gateway not available",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            };
             tracing::info!(
                 surface = "mcp",
                 service = "search",
@@ -1358,8 +1373,27 @@ impl ServerHandler for LabMcpServer {
                 .await
             {
                 Ok(response) => {
-                    let output =
-                        serde_json::to_string(&response).unwrap_or_else(|_| "null".to_string());
+                    let output = match serde_json::to_string(&response) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!(
+                                surface = "mcp",
+                                service = "search",
+                                action = "call_tool",
+                                subject,
+                                elapsed_ms = started.elapsed().as_millis(),
+                                error = %e,
+                                "failed to serialize search response"
+                            );
+                            let env = build_error(
+                                &service,
+                                "call_tool",
+                                "internal_error",
+                                "server failed to encode the search result",
+                            );
+                            return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                        }
+                    };
                     let output_tokens = estimate_tokens(&output);
                     tracing::info!(
                         surface = "mcp",
@@ -1424,13 +1458,39 @@ impl ServerHandler for LabMcpServer {
                 );
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             }
-            let manager = self
-                .gateway_manager
-                .as_ref()
-                .expect("exposes_synthetic_tools() is true only when gateway_manager is Some");
+            debug_assert!(
+                self.gateway_manager.is_some(),
+                "exposes_synthetic_tools() is true only when gateway_manager is Some"
+            );
+            let Some(manager) = self.gateway_manager.as_ref() else {
+                tracing::error!(
+                    surface = "mcp",
+                    service = "execute",
+                    action = "call_tool",
+                    "BUG: exposes_synthetic_tools() true but gateway_manager is None"
+                );
+                let env = build_error(
+                    &service,
+                    "call_tool",
+                    "internal_error",
+                    "gateway not available",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            };
             let config = manager.code_mode_config().await;
             let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
             if code.trim().is_empty() {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "execute",
+                    action = "call_tool",
+                    subject,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    input_tokens,
+                    kind = "invalid_param",
+                    param = "code",
+                    "execute rejected: code is empty"
+                );
                 let env = build_error_extra(
                     &service,
                     "call_tool",
@@ -1441,6 +1501,19 @@ impl ServerHandler for LabMcpServer {
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             }
             if code.len() > CODE_MODE_MAX_CODE_BYTES {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "execute",
+                    action = "call_tool",
+                    subject,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    input_tokens,
+                    kind = "invalid_param",
+                    param = "code",
+                    code_len = code.len(),
+                    max_len = CODE_MODE_MAX_CODE_BYTES,
+                    "execute rejected: code exceeds max length"
+                );
                 let env = build_error_extra(
                     &service,
                     "call_tool",
@@ -1513,7 +1586,28 @@ impl ServerHandler for LabMcpServer {
                     return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
             };
-            let output = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+            let output = match serde_json::to_string(&response) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(
+                        surface = "mcp",
+                        service = "execute",
+                        action = "call_tool",
+                        subject,
+                        code_hash = %code_hash,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        error = %e,
+                        "failed to serialize execute response"
+                    );
+                    let env = build_error(
+                        &service,
+                        "call_tool",
+                        "internal_error",
+                        "server failed to encode the execute result",
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+            };
             let output_tokens = estimate_tokens(&output);
             tracing::info!(
                 surface = "mcp",

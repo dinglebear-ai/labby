@@ -29,8 +29,8 @@ impl ToolSearchVisibility {
     pub(crate) fn mode_label(self) -> &'static str {
         match self {
             Self::Raw => "raw",
-            Self::RootSynthetic => "tool_search_root",
-            Self::InProcessPeer => "tool_search_in_process_peer",
+            Self::RootSynthetic => "code_mode_root",
+            Self::InProcessPeer => "code_mode_in_process_peer",
         }
     }
 }
