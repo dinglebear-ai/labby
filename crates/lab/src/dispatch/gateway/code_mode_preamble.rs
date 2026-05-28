@@ -108,8 +108,8 @@ impl PreambleCache {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        let capacity = NonZeroUsize::new(capacity.max(1))
-            .expect("capacity is non-zero after max(1)");
+        let capacity =
+            NonZeroUsize::new(capacity.max(1)).expect("capacity is non-zero after max(1)");
         Self {
             inner: Mutex::new(LruCache::new(capacity)),
         }
@@ -130,7 +130,13 @@ impl PreambleCache {
     /// capacity, the least-recently-used entry is evicted.
     pub fn insert(&self, aggregate: u64, tier: ScopeTier, preamble: String, tools_json: Value) {
         if let Ok(mut guard) = self.inner.lock() {
-            guard.put((aggregate, tier), CachedPreamble { preamble, tools_json });
+            guard.put(
+                (aggregate, tier),
+                CachedPreamble {
+                    preamble,
+                    tools_json,
+                },
+            );
         }
     }
 
@@ -278,7 +284,7 @@ pub fn schema_to_ts(schema: &Value, depth: usize) -> String {
     // type-based dispatch
     match obj.get("type").and_then(Value::as_str) {
         Some("string") => "string".to_string(),
-        Some("integer") | Some("number") => "number".to_string(),
+        Some("integer" | "number") => "number".to_string(),
         Some("boolean") => "boolean".to_string(),
         Some("null") => "null".to_string(),
         Some("array") => {
@@ -551,7 +557,7 @@ pub fn generate_preamble(tools: &[UpstreamTool], truncated: bool, dropped_count:
                 .output_schema
                 .as_ref()
                 .map(|s| {
-                    let value = serde_json::Value::Object((**s).clone());
+                    let value = Value::Object((**s).clone());
                     schema_to_ts(&value, 0)
                 })
                 .unwrap_or_else(|| "unknown".to_string());
@@ -805,17 +811,31 @@ mod tests {
         // PRESENCE: capacity is still 2 (bounded)
         assert_eq!(cache.len(), 2, "cache must not exceed capacity");
         // PRESENCE: most-recently-touched entry survives
-        assert!(cache.get(1, ScopeTier::Admin).is_some(), "MRU entry survives");
-        assert!(cache.get(3, ScopeTier::Admin).is_some(), "newest entry present");
+        assert!(
+            cache.get(1, ScopeTier::Admin).is_some(),
+            "MRU entry survives"
+        );
+        assert!(
+            cache.get(3, ScopeTier::Admin).is_some(),
+            "newest entry present"
+        );
         // ABSENCE: least-recently-used entry evicted
-        assert!(cache.get(2, ScopeTier::Admin).is_none(), "LRU entry evicted");
+        assert!(
+            cache.get(2, ScopeTier::Admin).is_none(),
+            "LRU entry evicted"
+        );
     }
 
     #[test]
     fn preamble_cache_separate_entries_per_tier() {
         let cache = PreambleCache::new();
         let empty = serde_json::json!([]);
-        cache.insert(1, ScopeTier::Admin, "admin-preamble".to_string(), empty.clone());
+        cache.insert(
+            1,
+            ScopeTier::Admin,
+            "admin-preamble".to_string(),
+            empty.clone(),
+        );
         cache.insert(1, ScopeTier::Read, "read-preamble".to_string(), empty);
 
         // PRESENCE: each tier has its own value
@@ -924,7 +944,10 @@ mod tests {
         // PRESENCE: forward-slashes and colons join with underscore
         assert_eq!(tool_name_to_snake("create/issue"), "create_issue");
         assert_eq!(tool_name_to_snake("list:repos"), "list_repos");
-        assert_eq!(tool_name_to_snake("repos/create/branch"), "repos_create_branch");
+        assert_eq!(
+            tool_name_to_snake("repos/create/branch"),
+            "repos_create_branch"
+        );
         // PRESENCE: already-snake input is preserved
         assert_eq!(tool_name_to_snake("create_issue"), "create_issue");
         // PRESENCE: leading digit gets prefixed with underscore
@@ -956,12 +979,24 @@ mod tests {
         let js = generate_js_proxy(&[tool], &["github".to_string()]);
 
         // PRESENCE: the upstream object must be present
-        assert!(js.contains("codemode[\"github\"]"), "upstream block missing");
+        assert!(
+            js.contains("codemode[\"github\"]"),
+            "upstream block missing"
+        );
         // PRESENCE: the tool key must appear as a quoted string (not unquoted)
-        assert!(js.contains("\"create_issue\""), "snake_case key must be quoted");
+        assert!(
+            js.contains("\"create_issue\""),
+            "snake_case key must be quoted"
+        );
         // ABSENCE: no unquoted slash-containing key that would break JS syntax
-        assert!(!js.contains("create/issue:"), "slash in unquoted key would break JS");
+        assert!(
+            !js.contains("create/issue:"),
+            "slash in unquoted key would break JS"
+        );
         // PRESENCE: callTool must be wired to the original dotted tool id
-        assert!(js.contains("upstream::github::create/issue"), "original tool id must be preserved");
+        assert!(
+            js.contains("upstream::github::create/issue"),
+            "original tool id must be preserved"
+        );
     }
 }

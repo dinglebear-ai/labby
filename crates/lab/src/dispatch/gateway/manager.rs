@@ -2461,7 +2461,7 @@ impl GatewayManager {
     /// in the pool so `healthy_tools()` is non-empty.
     fn spawn_code_mode_upstream_connections(
         &self,
-        pool: std::sync::Arc<crate::dispatch::upstream::pool::UpstreamPool>,
+        pool: Arc<UpstreamPool>,
         cfg: &LabConfig,
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,
@@ -2469,7 +2469,7 @@ impl GatewayManager {
         let owner = owner.cloned();
         let oauth_subject = oauth_subject.map(ToOwned::to_owned);
         for upstream in cfg.upstream.iter().filter(|u| u.enabled) {
-            let pool = std::sync::Arc::clone(&pool);
+            let pool = Arc::clone(&pool);
             let upstream = upstream.clone();
             let owner = owner.clone();
             let oauth_subject = oauth_subject.clone();

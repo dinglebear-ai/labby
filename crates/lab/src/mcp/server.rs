@@ -43,20 +43,29 @@ const CODE_MODE_MAX_CODE_BYTES: usize = 20_000;
 /// Source of truth: `docs/contracts/CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md`
 /// Full spec:       `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md`
 ///
-/// This description is what the model receives. Keep it under 8192 bytes.
-/// The contract doc is the canonical reference — if this and that doc diverge,
-/// update this string to match the contract doc.
+/// Cloudflare `createCodeTool` parity (`cloudflare/agents/packages/codemode/src/tool.ts`):
+/// the typed catalog of upstream MCP tools is injected into THIS description
+/// at `{{types}}` substitution time during `list_tools`. The model reads it
+/// once and writes a single `code` snippet — no discovery round-trip, no
+/// `action` discriminator, no separate "preamble" sub-tool.
+///
+/// `{{types}}` is replaced with the auto-generated `declare namespace codemode { ... }`
+/// block produced by `CodeModeBroker::preamble_string()`.
 const CODE_EXECUTE_DESCRIPTION: &str = "\
 Execute JavaScript in the Code Mode sandbox. Every upstream MCP tool is pre-declared \
-as a typed TypeScript helper in the `codemode` namespace — read the types, call the \
-functions. No separate discovery step required.
+as a typed TypeScript helper in the `codemode` namespace — read the types below, \
+call the functions. No separate discovery step.
 
 `Promise.all([...])` dispatches `callTool` requests in parallel — batch independent \
 reads instead of awaiting serially.
 
+The typed catalog of every upstream MCP tool currently connected to this gateway \
+follows. Read the namespace, write your async function against it.
+
 ```ts
-// codemode.<upstream>.<tool>() helpers are auto-generated from the live catalog.
-// Use them. callTool is the escape hatch for dynamic IDs or truncated catalogs.
+{{types}}
+
+// callTool is the escape hatch for dynamic ids or tools dropped by the catalog cap.
 declare function callTool<T = unknown>(
   id: `upstream::${string}::${string}`,
   params: Record<string, unknown>
@@ -89,6 +98,33 @@ Fuel budget:
 
 Lab actions (`lab::*` tool IDs) are not available in Code Mode. For Lab built-in \
 actions use the `execute` tool in Tool Search mode.";
+
+/// Total budget for the rendered description (template + injected types). MCP \
+/// clients vary, but most cap tool descriptions around 8–16 KB; 16 KB is safe.
+const CODE_DESCRIPTION_RENDER_MAX_BYTES: usize = 16 * 1024;
+
+/// **LOCKED CONTRACT** — the `code` tool's input schema is exactly this and
+/// nothing else. Pre-commit must fail if anything is added, removed, or
+/// reordered. See:
+/// - `cloudflare/agents/packages/codemode/src/tool.ts` — upstream parity
+/// - `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` — local spec
+/// - `crate::mcp::tests::code_tool_input_schema_is_locked` — guard test
+///
+/// If you genuinely need to change this, update Cloudflare parity rationale
+/// in the spec doc, then update the guard test, then this function. In that
+/// order. Do not skip steps.
+pub(crate) fn code_tool_input_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "JavaScript async arrow function to execute in the Code Mode sandbox."
+            }
+        },
+        "required": ["code"]
+    })
+}
 
 #[cfg(test)]
 use crate::mcp::peers::PeerNotifier;
@@ -1138,50 +1174,82 @@ impl ServerHandler for LabMcpServer {
         }
         if visibility.exposes_code_tool() {
             // ── Code Mode ── one advertised tool: `code`. ───────────────────────
-            // Discovery happens via typed TypeScript preamble injected into the
-            // sandbox, NOT via a separate advertised discovery tool.
-            // Legacy aliases (code_search, code_execute) are NOT advertised.
-            let code_tool_schema = match serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["search", "execute"],
-                        "description": "search — filter the injected typed catalog; execute — run code in the sandbox."
-                    },
-                    "code": {
-                        "type": "string",
-                        "maxLength": 20000,
-                        "description": "JavaScript/TypeScript snippet. In search: async arrow function over the catalog. In execute: async function calling codemode.<upstream>.<tool>() helpers."
-                    },
-                    "max_tool_calls": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 50
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Pass true to allow destructive upstream actions. Default false."
-                    }
-                },
-                "required": ["action", "code"]
-            }) {
+            //
+            // CLOUDFLARE-PARITY CONTRACT (locked by tests; see
+            // crates/lab/src/mcp/tests/code_tool_input_schema_is_locked.rs):
+            //   Input schema is EXACTLY { code: string } with code required.
+            //   No `action` discriminator. No `max_tool_calls`. No `confirm`.
+            //   Anything else is a spec violation per
+            //   docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md.
+            //
+            // The typed catalog is injected into the tool's DESCRIPTION at
+            // `{{types}}` substitution time — matching `createCodeTool` in
+            // `cloudflare/agents/packages/codemode/src/tool.ts`.
+            let code_tool_schema = match code_tool_input_schema() {
                 Value::Object(map) => Arc::new(map),
-                _ => unreachable!("code tool schema must be an object"),
+                _ => unreachable!("code_tool_input_schema must return an object"),
             };
-            debug_assert!(CODE_EXECUTE_DESCRIPTION.len() < 8192);
+
+            // Build the per-request description: substitute the typed namespace
+            // for `{{types}}`. On any preamble-generation error or oversized
+            // output, fall back to an empty namespace block — the model can
+            // still call `callTool` directly with raw upstream::server::tool ids.
+            let description = if self.gateway_code_mode_enabled().await {
+                let auth = auth_context_from_extensions(&context.extensions);
+                let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
+                    CodeModeCaller::Scoped {
+                        scopes: auth.scopes.clone(),
+                        sub: self.request_subject(&context).map(ToOwned::to_owned),
+                    }
+                });
+                let broker = CodeModeBroker::new(&self.registry, self.gateway_manager.as_deref());
+                match broker
+                    .preamble_string(caller, self.code_mode_surface(false))
+                    .await
+                {
+                    Ok(types) => {
+                        let rendered = CODE_EXECUTE_DESCRIPTION.replace("{{types}}", &types);
+                        if rendered.len() > CODE_DESCRIPTION_RENDER_MAX_BYTES {
+                            tracing::warn!(
+                                surface = "mcp",
+                                service = CODE_TOOL_NAME,
+                                action = "tool.describe",
+                                rendered_bytes = rendered.len(),
+                                cap_bytes = CODE_DESCRIPTION_RENDER_MAX_BYTES,
+                                "Code Mode rendered description exceeded cap; falling back to empty namespace block"
+                            );
+                            CODE_EXECUTE_DESCRIPTION
+                                .replace("{{types}}", "declare namespace codemode { /* catalog too large — use callTool with upstream::<server>::<tool> ids */ }")
+                        } else {
+                            rendered
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            surface = "mcp",
+                            service = CODE_TOOL_NAME,
+                            action = "tool.describe",
+                            kind = err.kind(),
+                            error = %err,
+                            "Code Mode preamble generation failed; advertising tool with empty namespace block"
+                        );
+                        CODE_EXECUTE_DESCRIPTION
+                            .replace("{{types}}", "declare namespace codemode { /* preamble unavailable — use callTool with upstream::<server>::<tool> ids */ }")
+                    }
+                }
+            } else {
+                CODE_EXECUTE_DESCRIPTION
+                    .replace("{{types}}", "declare namespace codemode { /* code mode is enabled but no upstreams are connected */ }")
+            };
+
             tracing::info!(
                 surface = "mcp",
                 service = CODE_TOOL_NAME,
                 action = "tool.describe",
-                description_bytes = CODE_EXECUTE_DESCRIPTION.len(),
+                description_bytes = description.len(),
                 "registered Code Mode tool description"
             );
-            tools.push(Tool::new(
-                CODE_TOOL_NAME,
-                CODE_EXECUTE_DESCRIPTION,
-                code_tool_schema,
-            ));
+            tools.push(Tool::new(CODE_TOOL_NAME, description, code_tool_schema));
             gateway_tool_count += 1;
         } else if visibility.exposes_synthetic_tools() {
             // ── Tool Search mode ── `search` + `execute` only. ───────────────
@@ -1355,10 +1423,6 @@ impl ServerHandler for LabMcpServer {
             let input_tokens = estimate_tokens_args(&args);
             let subject = self.request_subject_log_tag(&context);
             let auth = auth_context_from_extensions(&context.extensions);
-            let code_action = args
-                .get("action")
-                .and_then(Value::as_str)
-                .unwrap_or("execute");
             let Some(manager) = &self.gateway_manager else {
                 let envelope = build_error(
                     &service,
@@ -1370,308 +1434,121 @@ impl ServerHandler for LabMcpServer {
                     envelope.to_string(),
                 )]));
             };
-            match code_action {
-                "search" => {
-                    if !tool_search_scope_allowed(auth) {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = CODE_TOOL_NAME,
-                            action = "call_tool",
-                            subaction = "search",
-                            subject,
-                            elapsed_ms = started.elapsed().as_millis(),
-                            input_tokens,
-                            kind = "forbidden",
-                            "gateway code search denied by scope"
-                        );
-                        let env = build_error_extra(
-                            &service,
-                            "call_tool",
-                            "forbidden",
-                            "code(search) requires one of scopes: lab:read, lab, lab:admin",
-                            &serde_json::json!({ "required_scopes": ["lab:read", "lab", "lab:admin"] }),
-                        );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-                    }
-                    let code = args
-                        .get("code")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let code_hash = hash_arguments(&Value::String(code.clone()));
-                    tracing::info!(
-                        surface = "mcp",
-                        service = CODE_TOOL_NAME,
-                        action = "call_tool",
-                        subaction = "search",
-                        subject,
-                        code_hash = %code_hash,
-                        code_len = code.len(),
-                        input_tokens,
-                        "gateway code search start"
-                    );
-                    let broker = CodeModeBroker::new(&self.registry, Some(manager));
-                    let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
-                        CodeModeCaller::Scoped {
-                            scopes: auth.scopes.clone(),
-                            sub: self.request_subject(&context).map(ToOwned::to_owned),
-                        }
-                    });
-                    return match broker
-                        .search(&code, caller, self.code_mode_surface(false))
-                        .await
-                    {
-                        Ok(response) => {
-                            let output = serde_json::to_string(&response)
-                                .unwrap_or_else(|_| "null".to_string());
-                            let output_tokens = estimate_tokens(&output);
-                            tracing::info!(
-                                surface = "mcp",
-                                service = CODE_TOOL_NAME,
-                                action = "call_tool",
-                                subaction = "search",
-                                subject,
-                                code_hash = %code_hash,
-                                code_len = code.len(),
-                                elapsed_ms = started.elapsed().as_millis(),
-                                input_tokens,
-                                output_tokens,
-                                "gateway code search ok"
-                            );
-                            Ok(CallToolResult::success(vec![Content::text(output)]))
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                surface = "mcp",
-                                service = CODE_TOOL_NAME,
-                                action = "call_tool",
-                                subaction = "search",
-                                subject,
-                                code_hash = %code_hash,
-                                code_len = code.len(),
-                                elapsed_ms = started.elapsed().as_millis(),
-                                input_tokens,
-                                kind = err.kind(),
-                                error = %err,
-                                "gateway code search failed"
-                            );
-                            let env = tool_error_envelope(&service, "call_tool", &err);
-                            Ok(CallToolResult::error(vec![Content::text(env.to_string())]))
-                        }
-                    };
+            // Cloudflare-parity: the `code` tool takes only `{ code: string }`.
+            // There is no `action` discriminator and no `max_tool_calls` /
+            // `confirm` in the input — that pattern is the spec violation we
+            // removed. See `code_tool_input_schema()` above.
+            if !tool_execute_scope_allowed(auth) {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = CODE_TOOL_NAME,
+                    action = "call_tool",
+                    subject,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    input_tokens,
+                    kind = "forbidden",
+                    "gateway code execute denied by scope"
+                );
+                let env = build_error_extra(
+                    &service,
+                    "call_tool",
+                    "forbidden",
+                    "code requires one of scopes: lab, lab:admin",
+                    &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            let config = manager.code_mode_config().await;
+            if !config.enabled {
+                let env = build_error(
+                    &service,
+                    "call_tool",
+                    "internal_error",
+                    "Code Mode execution is disabled; set [code_mode].enabled = true to enable it",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
+            if code.trim().is_empty() {
+                let env = build_error_extra(
+                    &service,
+                    "call_tool",
+                    "invalid_param",
+                    "code must not be empty",
+                    &serde_json::json!({ "param": "code" }),
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            if code.len() > CODE_MODE_MAX_CODE_BYTES {
+                let env = build_error_extra(
+                    &service,
+                    "call_tool",
+                    "invalid_param",
+                    "code exceeds max length 20000 bytes",
+                    &serde_json::json!({ "param": "code" }),
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            // No per-call `max_tool_calls` or `confirm` in the input contract
+            // (Cloudflare parity). Use the configured defaults for both.
+            let max_tool_calls = config.max_tool_calls.max(1);
+            let allow_destructive_actions = false;
+            let code_hash = hash_arguments(&Value::String(code.to_string()));
+            tracing::info!(
+                surface = "mcp",
+                service = CODE_TOOL_NAME,
+                action = "call_tool",
+                subject,
+                code_hash = %code_hash,
+                max_tool_calls,
+                input_tokens,
+                "gateway code execute start"
+            );
+            let broker = CodeModeBroker::new(&self.registry, Some(manager));
+            let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
+                CodeModeCaller::Scoped {
+                    scopes: auth.scopes.clone(),
+                    sub: self.request_subject(&context).map(ToOwned::to_owned),
                 }
-                "preamble" => {
-                    if !tool_search_scope_allowed(auth) {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = CODE_TOOL_NAME,
-                            action = "call_tool",
-                            subaction = "preamble",
-                            subject,
-                            elapsed_ms = started.elapsed().as_millis(),
-                            input_tokens,
-                            kind = "forbidden",
-                            "gateway code preamble denied by scope"
-                        );
-                        let env = build_error_extra(
-                            &service,
-                            "call_tool",
-                            "forbidden",
-                            "code(preamble) requires one of scopes: lab:read, lab, lab:admin",
-                            &serde_json::json!({ "required_scopes": ["lab:read", "lab", "lab:admin"] }),
-                        );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-                    }
-                    let broker = CodeModeBroker::new(&self.registry, Some(manager));
-                    let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
-                        CodeModeCaller::Scoped {
-                            scopes: auth.scopes.clone(),
-                            sub: self.request_subject(&context).map(ToOwned::to_owned),
-                        }
-                    });
-                    return match broker
-                        .get_preamble(caller, self.code_mode_surface(false))
-                        .await
-                    {
-                        Ok(response) => {
-                            let output = serde_json::to_string(&response)
-                                .unwrap_or_else(|_| "null".to_string());
-                            let output_tokens = estimate_tokens(&output);
-                            tracing::info!(
-                                surface = "mcp",
-                                service = CODE_TOOL_NAME,
-                                action = "call_tool",
-                                subaction = "preamble",
-                                subject,
-                                elapsed_ms = started.elapsed().as_millis(),
-                                input_tokens,
-                                output_tokens,
-                                "gateway code preamble ok"
-                            );
-                            Ok(CallToolResult::success(vec![Content::text(output)]))
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                surface = "mcp",
-                                service = CODE_TOOL_NAME,
-                                action = "call_tool",
-                                subaction = "preamble",
-                                subject,
-                                elapsed_ms = started.elapsed().as_millis(),
-                                input_tokens,
-                                kind = err.kind(),
-                                error = %err,
-                                "gateway code preamble failed"
-                            );
-                            let env = tool_error_envelope(&service, "call_tool", &err);
-                            Ok(CallToolResult::error(vec![Content::text(env.to_string())]))
-                        }
-                    };
+            });
+            let before = self.snapshot_catalog().await;
+            let response = match broker
+                .execute(
+                    code,
+                    max_tool_calls,
+                    caller,
+                    self.code_mode_surface(allow_destructive_actions),
+                    config,
+                )
+                .await
+            {
+                Ok(response) => {
+                    let after = self.snapshot_catalog().await;
+                    self.notify_catalog_changes(&before, &after).await;
+                    response
                 }
-                "execute" => {
-                    if !tool_execute_scope_allowed(auth) {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = CODE_TOOL_NAME,
-                            action = "call_tool",
-                            subaction = "execute",
-                            subject,
-                            elapsed_ms = started.elapsed().as_millis(),
-                            input_tokens,
-                            kind = "forbidden",
-                            "gateway code execute denied by scope"
-                        );
-                        let env = build_error_extra(
-                            &service,
-                            "call_tool",
-                            "forbidden",
-                            "code(execute) requires one of scopes: lab, lab:admin",
-                            &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
-                        );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-                    }
-                    let config = manager.code_mode_config().await;
-                    if !config.enabled {
-                        let env = build_error(
-                            &service,
-                            "call_tool",
-                            "internal_error",
-                            "Code Mode execution is disabled; set [code_mode].enabled = true to enable it",
-                        );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-                    }
-                    let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
-                    if code.trim().is_empty() {
-                        let env = build_error_extra(
-                            &service,
-                            "call_tool",
-                            "invalid_param",
-                            "code must not be empty",
-                            &serde_json::json!({ "param": "code" }),
-                        );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-                    }
-                    if code.len() > CODE_MODE_MAX_CODE_BYTES {
-                        let env = build_error_extra(
-                            &service,
-                            "call_tool",
-                            "invalid_param",
-                            "code exceeds max length 20000 bytes",
-                            &serde_json::json!({ "param": "code" }),
-                        );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-                    }
-                    let requested_max_tool_calls = args
-                        .get("max_tool_calls")
-                        .and_then(Value::as_u64)
-                        .map(|value| value as usize)
-                        .unwrap_or(config.max_tool_calls)
-                        .max(1)
-                        .min(config.max_tool_calls);
-                    let allow_destructive_actions =
-                        args.get("confirm").and_then(Value::as_bool) == Some(true);
-                    let code_hash = hash_arguments(&Value::String(code.to_string()));
-                    tracing::info!(
-                        surface = "mcp",
-                        service = CODE_TOOL_NAME,
-                        action = "call_tool",
-                        subaction = "execute",
-                        subject,
-                        code_hash = %code_hash,
-                        max_tool_calls = requested_max_tool_calls,
-                        input_tokens,
-                        "gateway code execute start"
-                    );
-                    let broker = CodeModeBroker::new(&self.registry, Some(manager));
-                    let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
-                        CodeModeCaller::Scoped {
-                            scopes: auth.scopes.clone(),
-                            sub: self.request_subject(&context).map(ToOwned::to_owned),
-                        }
-                    });
-                    let before = self.snapshot_catalog().await;
-                    let response = match broker
-                        .execute(
-                            code,
-                            requested_max_tool_calls,
-                            caller,
-                            self.code_mode_surface(allow_destructive_actions),
-                            config,
-                        )
-                        .await
-                    {
-                        Ok(response) => {
-                            let after = self.snapshot_catalog().await;
-                            self.notify_catalog_changes(&before, &after).await;
-                            response
-                        }
-                        Err(err) => {
-                            let after = self.snapshot_catalog().await;
-                            self.notify_catalog_changes(&before, &after).await;
-                            let env = tool_error_envelope(&service, "call_tool", &err);
-                            return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-                        }
-                    };
-                    let output =
-                        serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
-                    let output_tokens = estimate_tokens(&output);
-                    tracing::info!(
-                        surface = "mcp",
-                        service = CODE_TOOL_NAME,
-                        action = "call_tool",
-                        subaction = "execute",
-                        subject,
-                        code_hash = %code_hash,
-                        call_count = response.calls.len(),
-                        elapsed_ms = started.elapsed().as_millis(),
-                        input_tokens,
-                        output_tokens,
-                        "gateway code execute ok"
-                    );
-                    return Ok(CallToolResult::success(vec![Content::text(output)]));
-                }
-                _ => {
-                    tracing::warn!(
-                        surface = "mcp",
-                        service = CODE_TOOL_NAME,
-                        action = "call_tool",
-                        subaction = %code_action,
-                        subject,
-                        elapsed_ms = started.elapsed().as_millis(),
-                        input_tokens,
-                        kind = "unknown_action",
-                        "gateway code unknown action"
-                    );
-                    let env = build_error_extra(
-                        &service,
-                        "call_tool",
-                        "unknown_action",
-                        &format!("unknown action '{code_action}' for tool 'code'"),
-                        &serde_json::json!({ "valid": ["search", "preamble", "execute"] }),
-                    );
+                Err(err) => {
+                    let after = self.snapshot_catalog().await;
+                    self.notify_catalog_changes(&before, &after).await;
+                    let env = tool_error_envelope(&service, "call_tool", &err);
                     return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
-            }
+            };
+            let output = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+            let output_tokens = estimate_tokens(&output);
+            tracing::info!(
+                surface = "mcp",
+                service = CODE_TOOL_NAME,
+                action = "call_tool",
+                subject,
+                code_hash = %code_hash,
+                call_count = response.calls.len(),
+                elapsed_ms = started.elapsed().as_millis(),
+                input_tokens,
+                output_tokens,
+                "gateway code execute ok"
+            );
+            return Ok(CallToolResult::success(vec![Content::text(output)]));
         }
 
         if service == TOOL_SEARCH_TOOL_NAME {
@@ -4676,6 +4553,94 @@ mod tests {
         assert!(
             super::tool_search_include_schema_allowed(None, true),
             "stdio (None auth) must see schemas"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // LOCKED CONTRACT: the `code` tool's input schema is EXACTLY
+    //   { "type": "object", "properties": { "code": { "type": "string" } },
+    //     "required": ["code"] }
+    //
+    // Pre-commit (`cargo clippy -- -D warnings` + `cargo nextest run`) MUST
+    // fail if anyone re-introduces an `action` discriminator, `max_tool_calls`,
+    // `confirm`, or any other top-level property. The Cloudflare reference
+    // is `cloudflare/agents/packages/codemode/src/tool.ts::codeSchema`:
+    //
+    //     const codeSchema = z.object({
+    //       code: z.string().describe("JavaScript async arrow function to execute")
+    //     });
+    //
+    // If you genuinely need to deviate, update
+    // `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` and
+    // `docs/contracts/CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md` FIRST, then
+    // update this test, then update `code_tool_input_schema()`. In that order.
+    // ──────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn code_tool_input_schema_is_locked_to_cloudflare_parity() {
+        let schema = super::code_tool_input_schema();
+
+        assert_eq!(
+            schema["type"],
+            serde_json::json!("object"),
+            "code tool input must be a JSON object"
+        );
+
+        let props = schema["properties"]
+            .as_object()
+            .expect("`properties` must be an object");
+        let prop_names: std::collections::BTreeSet<&str> =
+            props.keys().map(String::as_str).collect();
+        assert_eq!(
+            prop_names,
+            std::collections::BTreeSet::from(["code"]),
+            "code tool input must declare ONLY `code` (Cloudflare parity). \
+             Forbidden additions: action / max_tool_calls / confirm / anything else. \
+             See docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md."
+        );
+
+        assert_eq!(
+            props["code"]["type"],
+            serde_json::json!("string"),
+            "code property must be of type string"
+        );
+
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .expect("`required` must be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            required,
+            vec!["code"],
+            "code tool input must require exactly `code`"
+        );
+    }
+
+    #[test]
+    fn code_tool_input_schema_rejects_action_discriminator() {
+        let schema = super::code_tool_input_schema();
+        let props = schema["properties"].as_object().expect("properties object");
+        for forbidden in ["action", "max_tool_calls", "confirm", "params", "args"] {
+            assert!(
+                !props.contains_key(forbidden),
+                "input schema MUST NOT include `{forbidden}` (spec violation — see \
+                 docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md \
+                 \"Merge code_search + code_execute via action discriminator\")"
+            );
+        }
+    }
+
+    #[test]
+    fn code_tool_description_template_uses_types_placeholder() {
+        // The description carries the typed catalog via {{types}} substitution
+        // at list_tools time. Removing the placeholder breaks Cloudflare parity.
+        assert!(
+            super::CODE_EXECUTE_DESCRIPTION.contains("{{types}}"),
+            "CODE_EXECUTE_DESCRIPTION must contain the `{{{{types}}}}` placeholder \
+             — that is where the typed `declare namespace codemode {{ ... }}` block \
+             is substituted at list_tools time."
         );
     }
 }
