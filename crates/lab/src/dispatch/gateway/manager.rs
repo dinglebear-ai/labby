@@ -327,6 +327,7 @@ pub struct BatchAddOutcome {
     pub errors: Vec<(String, ToolError)>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GatewayToolSearchResult {
     pub name: String,
@@ -2077,12 +2078,14 @@ impl GatewayManager {
         self.config.read().await.code_mode.clone()
     }
 
+    #[allow(dead_code)]
     pub async fn tool_search_warming(&self) -> bool {
         self.tool_indexes
             .iter()
             .any(|entry| entry.value().warming.load(Ordering::Relaxed))
     }
 
+    #[allow(dead_code)]
     pub async fn search_tools(
         &self,
         query: &str,
@@ -2344,6 +2347,7 @@ impl GatewayManager {
         Ok(pool.healthy_tools().await)
     }
 
+    #[allow(dead_code)]
     pub async fn resolve_tool_execute_with_upstream(
         &self,
         name: &str,
