@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "lab-apis"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "base64",
  "futures",
@@ -2591,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "lab-auth"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "axum",
  "base64",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "labby"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
