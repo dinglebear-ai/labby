@@ -213,7 +213,7 @@ atomically inside a config mutation lock to prevent TOCTOU races:
 - Enabling `tool_search` while `code_mode.enabled = true` is rejected with `InvalidParam`.
 - Enabling `code_mode` while `tool_search.enabled = true` is rejected with `InvalidParam`.
 - Disabling either mode is always permitted regardless of the other mode's state.
-- If `config.toml` has both enabled at startup, Lab warns at `ERROR` level and `tool_search` wins.
+- If `config.toml` has both enabled at startup, Lab logs at `ERROR` level and `tool_search` wins.
 
 Advertised tools per active mode:
 

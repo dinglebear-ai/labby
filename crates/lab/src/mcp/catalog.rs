@@ -129,9 +129,6 @@ impl LabMcpServer {
         if manager_tool_search_enabled {
             return ToolSearchVisibility::RootSynthetic;
         }
-        if self.gateway_manager.is_none() && crate::config::is_code_mode_enabled() {
-            return ToolSearchVisibility::CodeMode;
-        }
         if self.gateway_manager.is_none() && crate::config::process_tool_search_enabled() {
             return ToolSearchVisibility::InProcessPeer;
         }

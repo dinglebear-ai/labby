@@ -76,24 +76,26 @@ pub struct CachedPreamble {
 /// Default bounded capacity for the preamble cache.
 ///
 /// Each entry holds one generated TypeScript preamble plus its tools JSON for
-/// a distinct `(aggregate_catalog_hash, ScopeTier)` pair. The number of
-/// distinct entries scales with upstream catalog churn (every upstream connect/
-/// disconnect/reload produces a new aggregate hash) × 3 scope tiers. 64 covers
-/// many turns of churn while bounding worst-case memory.
+/// a distinct `(aggregate_catalog_hash, ScopeTier, oauth_subject)` triple. The
+/// number of distinct entries scales with upstream catalog churn × scope tiers
+/// × active OAuth users. 64 covers typical homelab workloads while bounding
+/// worst-case memory.
 const DEFAULT_PREAMBLE_CACHE_CAPACITY: usize = 64;
 
 /// Thread-safe bounded-LRU cache for generated preamble strings and their
 /// associated tools JSON. Eviction is least-recently-used once capacity is
 /// reached, so memory cannot grow unbounded under catalog churn.
 ///
-/// Key: `(aggregate_catalog_hash, ScopeTier)`.
+/// Key: `(aggregate_catalog_hash, ScopeTier, Option<oauth_subject>)`.
+/// Including `oauth_subject` prevents one caller's scoped catalog from being
+/// served to a different OAuth user at the same scope tier.
 /// On a cold pool (aggregate == 0) callers get a cache miss and fall through to
 /// generate a minimal/empty preamble.
 ///
 /// `LruCache::get` mutates recency, so the wrapper uses `Mutex` (not `RwLock`).
 #[derive(Debug)]
 pub struct PreambleCache {
-    inner: Mutex<LruCache<(u64, ScopeTier), CachedPreamble>>,
+    inner: Mutex<LruCache<(u64, ScopeTier, Option<String>), CachedPreamble>>,
 }
 
 impl Default for PreambleCache {
@@ -119,19 +121,20 @@ impl PreambleCache {
     ///
     /// Returns `CachedPreamble` so cache hits avoid any pool fetch. A hit
     /// promotes the entry to most-recently-used.
-    pub fn get(&self, aggregate: u64, tier: ScopeTier) -> Option<CachedPreamble> {
+    pub fn get(&self, aggregate: u64, tier: ScopeTier, subject: Option<&str>) -> Option<CachedPreamble> {
+        let key = (aggregate, tier, subject.map(ToOwned::to_owned));
         self.inner
             .lock()
             .ok()
-            .and_then(|mut guard| guard.get(&(aggregate, tier)).cloned())
+            .and_then(|mut guard| guard.get(&key).cloned())
     }
 
     /// Insert a generated preamble and its tools JSON. If the cache is at
     /// capacity, the least-recently-used entry is evicted.
-    pub fn insert(&self, aggregate: u64, tier: ScopeTier, preamble: String, tools_json: Value) {
+    pub fn insert(&self, aggregate: u64, tier: ScopeTier, subject: Option<&str>, preamble: String, tools_json: Value) {
         if let Ok(mut guard) = self.inner.lock() {
             guard.put(
-                (aggregate, tier),
+                (aggregate, tier, subject.map(ToOwned::to_owned)),
                 CachedPreamble {
                     preamble,
                     tools_json,
@@ -758,37 +761,38 @@ mod tests {
 
         // Cold cache: must be None
         assert!(
-            cache.get(42, ScopeTier::Admin).is_none(),
+            cache.get(42, ScopeTier::Admin, None).is_none(),
             "fresh cache must return None"
         );
 
         cache.insert(
             42,
             ScopeTier::Admin,
+            None,
             "declare namespace codemode {}".to_string(),
             serde_json::json!([]),
         );
 
         // PRESENCE: inserted value is returned
         assert_eq!(
-            cache.get(42, ScopeTier::Admin).map(|c| c.preamble),
+            cache.get(42, ScopeTier::Admin, None).map(|c| c.preamble),
             Some("declare namespace codemode {}".to_string()),
             "cache must return inserted value"
         );
 
         // ABSENCE: different tier is a cache miss
         assert!(
-            cache.get(42, ScopeTier::Read).is_none(),
+            cache.get(42, ScopeTier::Read, None).is_none(),
             "different scope tier must be cache miss"
         );
         // ABSENCE: different hash is a cache miss
         assert!(
-            cache.get(99, ScopeTier::Admin).is_none(),
+            cache.get(99, ScopeTier::Admin, None).is_none(),
             "different hash must be cache miss"
         );
         // ABSENCE: execute tier is also a miss if not inserted
         assert!(
-            cache.get(42, ScopeTier::Execute).is_none(),
+            cache.get(42, ScopeTier::Execute, None).is_none(),
             "Execute tier must be distinct from Admin"
         );
     }
@@ -799,29 +803,29 @@ mod tests {
         let cache = PreambleCache::with_capacity(2);
         let empty = serde_json::json!([]);
 
-        cache.insert(1, ScopeTier::Admin, "p1".to_string(), empty.clone());
-        cache.insert(2, ScopeTier::Admin, "p2".to_string(), empty.clone());
+        cache.insert(1, ScopeTier::Admin, None, "p1".to_string(), empty.clone());
+        cache.insert(2, ScopeTier::Admin, None, "p2".to_string(), empty.clone());
         assert_eq!(cache.len(), 2);
 
         // Touch entry 1 so entry 2 becomes the LRU.
-        drop(cache.get(1, ScopeTier::Admin));
+        drop(cache.get(1, ScopeTier::Admin, None));
 
-        cache.insert(3, ScopeTier::Admin, "p3".to_string(), empty);
+        cache.insert(3, ScopeTier::Admin, None, "p3".to_string(), empty);
 
         // PRESENCE: capacity is still 2 (bounded)
         assert_eq!(cache.len(), 2, "cache must not exceed capacity");
         // PRESENCE: most-recently-touched entry survives
         assert!(
-            cache.get(1, ScopeTier::Admin).is_some(),
+            cache.get(1, ScopeTier::Admin, None).is_some(),
             "MRU entry survives"
         );
         assert!(
-            cache.get(3, ScopeTier::Admin).is_some(),
+            cache.get(3, ScopeTier::Admin, None).is_some(),
             "newest entry present"
         );
         // ABSENCE: least-recently-used entry evicted
         assert!(
-            cache.get(2, ScopeTier::Admin).is_none(),
+            cache.get(2, ScopeTier::Admin, None).is_none(),
             "LRU entry evicted"
         );
     }
@@ -833,24 +837,25 @@ mod tests {
         cache.insert(
             1,
             ScopeTier::Admin,
+            None,
             "admin-preamble".to_string(),
             empty.clone(),
         );
-        cache.insert(1, ScopeTier::Read, "read-preamble".to_string(), empty);
+        cache.insert(1, ScopeTier::Read, None, "read-preamble".to_string(), empty);
 
         // PRESENCE: each tier has its own value
         assert_eq!(
-            cache.get(1, ScopeTier::Admin).map(|c| c.preamble),
+            cache.get(1, ScopeTier::Admin, None).map(|c| c.preamble),
             Some("admin-preamble".to_string())
         );
         assert_eq!(
-            cache.get(1, ScopeTier::Read).map(|c| c.preamble),
+            cache.get(1, ScopeTier::Read, None).map(|c| c.preamble),
             Some("read-preamble".to_string())
         );
         // ABSENCE: values are not mixed up
         assert_ne!(
-            cache.get(1, ScopeTier::Admin).map(|c| c.preamble),
-            cache.get(1, ScopeTier::Read).map(|c| c.preamble),
+            cache.get(1, ScopeTier::Admin, None).map(|c| c.preamble),
+            cache.get(1, ScopeTier::Read, None).map(|c| c.preamble),
             "different tiers must return different values"
         );
     }

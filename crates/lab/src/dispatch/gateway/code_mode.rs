@@ -390,7 +390,7 @@ impl<'a> CodeModeBroker<'a> {
         let upstream_hashes = manager.per_upstream_catalog_hashes();
         let agg_hash = aggregate_catalog_hash(&upstream_hashes);
 
-        if let Some(cached) = manager.preamble_cache().get(agg_hash, scope_tier) {
+        if let Some(cached) = manager.preamble_cache().get(agg_hash, scope_tier, oauth_subject) {
             return Ok(serde_json::json!({
                 "tools": cached.tools_json,
                 "preamble": cached.preamble,
@@ -436,6 +436,7 @@ impl<'a> CodeModeBroker<'a> {
             manager.preamble_cache().insert(
                 agg_hash,
                 scope_tier,
+                oauth_subject,
                 preamble.clone(),
                 tools_json.clone(),
             );

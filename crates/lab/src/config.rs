@@ -627,6 +627,21 @@ impl CodeModeConfig {
                 value: self.max_response_tokens,
             });
         }
+        if !(1..=64).contains(&self.token_estimate_divisor) {
+            return Err(ConfigError::InvalidCodeModeTokenEstimateDivisor {
+                value: self.token_estimate_divisor,
+            });
+        }
+        if !(1..=100_000).contains(&self.max_log_entries) {
+            return Err(ConfigError::InvalidCodeModeMaxLogEntries {
+                value: self.max_log_entries,
+            });
+        }
+        if !(1..=100 * 1024 * 1024).contains(&self.max_log_bytes) {
+            return Err(ConfigError::InvalidCodeModeMaxLogBytes {
+                value: self.max_log_bytes,
+            });
+        }
         Ok(())
     }
 }
@@ -1085,6 +1100,12 @@ pub enum ConfigError {
     InvalidCodeModeMaxResponseBytes { value: usize },
     #[error("gateway code_mode.max_response_tokens={value} is invalid — expected 256..=256000")]
     InvalidCodeModeMaxResponseTokens { value: usize },
+    #[error("gateway code_mode.token_estimate_divisor={value} is invalid — expected 1..=64")]
+    InvalidCodeModeTokenEstimateDivisor { value: u32 },
+    #[error("gateway code_mode.max_log_entries={value} is invalid — expected 1..=100000")]
+    InvalidCodeModeMaxLogEntries { value: usize },
+    #[error("gateway code_mode.max_log_bytes={value} is invalid — expected 1..=104857600")]
+    InvalidCodeModeMaxLogBytes { value: usize },
     #[error("protected MCP route '{name}' has invalid {field}: {value}")]
     InvalidProtectedRoute {
         name: String,

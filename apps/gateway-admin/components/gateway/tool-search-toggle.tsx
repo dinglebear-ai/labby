@@ -40,9 +40,9 @@ export function ToolSearchTogglePanel() {
     isSavingRef.current = true
     setIsSaving(true)
     try {
-      // Mutual exclusion: if disabling tool search while code_mode is active,
-      // cascade-disable code_mode first before disabling tool_search.
-      if (!enabled && codeModeConfig?.enabled) {
+      // Mutual exclusion: if enabling tool search while code_mode is active,
+      // cascade-disable code_mode first before enabling tool_search.
+      if (enabled && codeModeConfig?.enabled) {
         await setCodeModeConfig({
           enabled: false,
           timeout_ms: codeModeConfig.timeout_ms,
