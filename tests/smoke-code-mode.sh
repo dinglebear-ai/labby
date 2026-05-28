@@ -21,34 +21,33 @@ VERBOSE=${VERBOSE:-0}
 NO_PREFLIGHT=${NO_PREFLIGHT:-1}   # code tool has complex nested schema; skip key preflight
 
 # ---- cases -------------------------------------------------------------------
-# Tests cover:
-#   1. code(search) — catalog is built; upstreams appear in results
-#   2. code(execute) via callTool() — broker protocol works end-to-end
-#   3. code(execute) via codemode proxy — validates the camelCase property-key
-#      fix: 'resolve-library-id' becomes resolveLibraryId (no more QuickJS SyntaxError)
-#   4. code with invalid action value — structured error returned
+# Tests cover the { code } only contract — no action discriminator.
+#   1. code(catalog) — pass a filter function; tools array injected into sandbox
+#   2. code(callTool) — direct callTool() broker call works end-to-end
+#   3. code(codemode proxy) — snake_case namespace proxy: resolve_library_id is valid JS
+#   4. code missing required field — MCP schema rejects empty object with invalid_param
 declare -a CASES=(
-  # Case 1: search returns an array of catalog entries (one per upstream tool).
-  # Filter function must evaluate to a function; '() => tools' returns all tools.
+  # Case 1: catalog is available via the injected `tools` variable.
+  # The function receives the full catalog; '() => tools' returns all entries.
   # Assert any upstream name is present in the serialized output.
-  "code|--args '{\"action\":\"search\",\"code\":\"() => tools\"}' |contains: upstream"
+  "code|--args '{\"code\":\"() => tools\"}' |contains: upstream"
 
-  # Case 2: execute via direct callTool call — verifies runner + broker loop.
+  # Case 2: direct callTool() — verifies runner + broker loop.
   # Uses context7 resolve-library-id (available in the pool without OAuth).
   # The raw callTool path bypasses the snake_case preamble — tests broker wiring.
-  # resolve-library-id requires both libraryName and query.
   # Assert 'context7.com' which appears in both success and quota-exceeded responses.
-  "code|--args '{\"action\":\"execute\",\"code\":\"return await callTool(\\\"upstream::context7::resolve-library-id\\\", {libraryName: \\\"react\\\", query: \\\"react hooks\\\"})\"}' |contains: context7.com"
+  "code|--args '{\"code\":\"return await callTool(\\\"upstream::context7::resolve-library-id\\\", {libraryName: \\\"react\\\", query: \\\"react hooks\\\"})\"}' |contains: context7.com"
 
-  # Case 3: execute via codemode proxy — validates the property-key quoting fix.
+  # Case 3: codemode proxy — validates the property-key quoting fix.
   # 'resolve-library-id' → resolve_library_id via tool_name_to_snake + serde_json::to_string.
   # Before the fix: QuickJS threw SyntaxError on the unquoted 'resolve-library-id:' key.
   # After the fix: the preamble uses \"resolve_library_id\": which is valid JS.
   # A response from context7 (even quota-exceeded) proves the snake_case proxy wired correctly.
-  "code|--args '{\"action\":\"execute\",\"code\":\"return await codemode.context7.resolve_library_id({libraryName: \\\"react\\\", query: \\\"react hooks\\\"})\"}' |contains: context7.com"
+  "code|--args '{\"code\":\"return await codemode.context7.resolve_library_id({libraryName: \\\"react\\\", query: \\\"react hooks\\\"})\"}' |contains: context7.com"
 
-  # Case 4: invalid action enum value → MCP schema validation error (invalid_param)
-  "code|--args '{\"action\":\"nope\",\"code\":\"1+1\"}' |error: invalid_param"
+  # Case 4: missing required 'code' field → MCP schema validation error (invalid_param).
+  # With the action discriminator removed, schema rejects {} as missing required field.
+  "code|--args '{}' |error: invalid_param"
 )
 # ------------------------------------------------------------------------------
 

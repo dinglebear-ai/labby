@@ -101,7 +101,7 @@ actions use the `execute` tool in Tool Search mode.";
 
 /// Total budget for the rendered description (template + injected types). MCP \
 /// clients vary, but most cap tool descriptions around 8–16 KB; 16 KB is safe.
-const CODE_DESCRIPTION_RENDER_MAX_BYTES: usize = 10 * 1024 * 1024;
+const CODE_DESCRIPTION_RENDER_MAX_BYTES: usize = 16 * 1024;
 
 /// **LOCKED CONTRACT** — the `code` tool's input schema is exactly this and
 /// nothing else. Pre-commit must fail if anything is added, removed, or
