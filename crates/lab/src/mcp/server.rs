@@ -1297,7 +1297,10 @@ impl ServerHandler for LabMcpServer {
 
         let svc = self.registry.services().iter().find(|s| s.name == service);
         if service == TOOL_SEARCH_TOOL_NAME
-            && self.tool_search_visibility().await.exposes_synthetic_tools()
+            && self
+                .tool_search_visibility()
+                .await
+                .exposes_synthetic_tools()
         {
             let started = Instant::now();
             let input_tokens = estimate_tokens_args(&args);
@@ -1399,7 +1402,10 @@ impl ServerHandler for LabMcpServer {
             };
         }
         if service == TOOL_EXECUTE_TOOL_NAME
-            && self.tool_search_visibility().await.exposes_synthetic_tools()
+            && self
+                .tool_search_visibility()
+                .await
+                .exposes_synthetic_tools()
         {
             let started = Instant::now();
             let input_tokens = estimate_tokens_args(&args);
