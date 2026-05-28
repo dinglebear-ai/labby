@@ -27,9 +27,8 @@ use crate::dispatch::gateway::manager::GatewayManager;
 use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
 use crate::registry::ToolRegistry;
 
-const LAB_ACTION_UNKNOWN_TOOL_HINT: &str = "Code Mode handles upstream MCP tools only. For Lab actions, use the `tool_execute` MCP tool: \
-     name=<service> (e.g. \"radarr\"), arguments={action: \"<dotted.action>\", params: {...}}. \
-     Example: tool_execute(name=\"radarr\", arguments={action:\"movie.search\", params:{query:\"Matrix\"}}).";
+const LAB_ACTION_UNKNOWN_TOOL_HINT: &str = "Code Mode handles upstream MCP tools only. \
+     Use search() to discover available tool ids, then execute() with callTool(id, params).";
 const CODE_SEARCH_CATALOG_SOFT_CAP_BYTES: usize = 256 * 1024;
 const CODE_SEARCH_CATALOG_HARD_CAP_BYTES: usize = 512 * 1024;
 
@@ -275,14 +274,6 @@ impl<'a> CodeModeBroker<'a> {
         surface: CodeModeSurface,
         config: crate::config::CodeModeConfig,
     ) -> Result<CodeModeExecutionResponse, ToolError> {
-        if !config.enabled {
-            return Err(ToolError::Sdk {
-                sdk_kind: "code_mode_disabled".to_string(),
-                message:
-                    "Code Mode execution is disabled; set [code_mode].enabled = true to enable it"
-                        .to_string(),
-            });
-        }
         if !caller.can_execute() {
             return Err(ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
@@ -1438,8 +1429,8 @@ mod tests {
             super::ToolError::Sdk { sdk_kind, message } => {
                 assert_eq!(sdk_kind, "unknown_tool");
                 assert!(message.contains("lab::"));
-                assert!(message.contains("tool_execute"));
-                assert!(message.contains("\"radarr\""));
+                assert!(message.contains("search()"));
+                assert!(message.contains("execute()"));
             }
             other => panic!("expected unknown_tool, got {other:?}"),
         }
@@ -1615,8 +1606,8 @@ mod tests {
         match err {
             super::ToolError::Sdk { sdk_kind, message } => {
                 assert_eq!(sdk_kind, "unknown_tool");
-                assert!(message.contains("tool_execute"));
-                assert!(message.contains("\"radarr\""));
+                assert!(message.contains("search()"));
+                assert!(message.contains("execute()"));
             }
             other => panic!("expected unknown_tool, got {other:?}"),
         }
