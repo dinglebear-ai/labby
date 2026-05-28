@@ -1317,6 +1317,14 @@ impl ServerHandler for LabMcpServer {
                     kind = "forbidden",
                     "gateway search denied by scope"
                 );
+                self.emit_dispatch_notification(
+                    &context,
+                    "search",
+                    "call_tool",
+                    started.elapsed().as_millis(),
+                    DispatchLogOutcome::Failure { level: LoggingLevel::Warning, kind: "forbidden" },
+                )
+                .await;
                 let env = build_error_extra(
                     &service,
                     "call_tool",
@@ -1343,6 +1351,14 @@ impl ServerHandler for LabMcpServer {
                     action = "call_tool",
                     "BUG: exposes_synthetic_tools() true but gateway_manager is None"
                 );
+                self.emit_dispatch_notification(
+                    &context,
+                    "search",
+                    "call_tool",
+                    started.elapsed().as_millis(),
+                    DispatchLogOutcome::Failure { level: LoggingLevel::Error, kind: "internal_error" },
+                )
+                .await;
                 let env = build_error(
                     &service,
                     "call_tool",
@@ -1368,7 +1384,7 @@ impl ServerHandler for LabMcpServer {
                     subject: self.request_subject(&context).map(ToOwned::to_owned),
                 }
             });
-            return match broker
+            match broker
                 .search(&code, caller, self.code_mode_surface(false))
                 .await
             {
@@ -1385,6 +1401,17 @@ impl ServerHandler for LabMcpServer {
                                 error = %e,
                                 "failed to serialize search response"
                             );
+                            self.emit_dispatch_notification(
+                                &context,
+                                "search",
+                                "call_tool",
+                                started.elapsed().as_millis(),
+                                DispatchLogOutcome::Failure {
+                                    level: LoggingLevel::Error,
+                                    kind: "internal_error",
+                                },
+                            )
+                            .await;
                             let env = build_error(
                                 &service,
                                 "call_tool",
@@ -1407,24 +1434,62 @@ impl ServerHandler for LabMcpServer {
                         output_tokens,
                         "gateway search ok"
                     );
-                    Ok(CallToolResult::success(vec![Content::text(output)]))
+                    self.emit_dispatch_notification(
+                        &context,
+                        "search",
+                        "call_tool",
+                        started.elapsed().as_millis(),
+                        DispatchLogOutcome::Success,
+                    )
+                    .await;
+                    return Ok(CallToolResult::success(vec![Content::text(output)]));
                 }
                 Err(err) => {
-                    tracing::warn!(
-                        surface = "mcp",
-                        service = "search",
-                        action = "call_tool",
-                        subject,
-                        code_hash = %code_hash,
-                        code_len = code.len(),
-                        elapsed_ms = started.elapsed().as_millis(),
-                        input_tokens,
-                        kind = err.kind(),
-                        error = %err,
-                        "gateway search failed"
-                    );
+                    let kind = canonical_kind(err.kind());
+                    if matches!(kind, "internal_error" | "server_error" | "decode_error") {
+                        tracing::error!(
+                            surface = "mcp",
+                            service = "search",
+                            action = "call_tool",
+                            subject,
+                            code_hash = %code_hash,
+                            code_len = code.len(),
+                            elapsed_ms = started.elapsed().as_millis(),
+                            input_tokens,
+                            kind,
+                            error = %err,
+                            "gateway search failed"
+                        );
+                    } else {
+                        tracing::warn!(
+                            surface = "mcp",
+                            service = "search",
+                            action = "call_tool",
+                            subject,
+                            code_hash = %code_hash,
+                            code_len = code.len(),
+                            elapsed_ms = started.elapsed().as_millis(),
+                            input_tokens,
+                            kind,
+                            error = %err,
+                            "gateway search failed"
+                        );
+                    }
+                    let failure_level = if matches!(kind, "internal_error" | "server_error" | "decode_error") {
+                        LoggingLevel::Error
+                    } else {
+                        LoggingLevel::Warning
+                    };
+                    self.emit_dispatch_notification(
+                        &context,
+                        "search",
+                        "call_tool",
+                        started.elapsed().as_millis(),
+                        DispatchLogOutcome::Failure { level: failure_level, kind },
+                    )
+                    .await;
                     let env = tool_error_envelope(&service, "call_tool", &err);
-                    Ok(CallToolResult::error(vec![Content::text(env.to_string())]))
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
             };
         }
@@ -1456,6 +1521,14 @@ impl ServerHandler for LabMcpServer {
                     "execute requires one of scopes: lab, lab:admin",
                     &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
                 );
+                self.emit_dispatch_notification(
+                    &context,
+                    "execute",
+                    "call_tool",
+                    started.elapsed().as_millis(),
+                    DispatchLogOutcome::Failure { level: LoggingLevel::Warning, kind: "forbidden" },
+                )
+                .await;
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             }
             debug_assert!(
@@ -1475,6 +1548,14 @@ impl ServerHandler for LabMcpServer {
                     "internal_error",
                     "gateway not available",
                 );
+                self.emit_dispatch_notification(
+                    &context,
+                    "execute",
+                    "call_tool",
+                    started.elapsed().as_millis(),
+                    DispatchLogOutcome::Failure { level: LoggingLevel::Error, kind: "internal_error" },
+                )
+                .await;
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             };
             let config = manager.code_mode_config().await;
@@ -1498,6 +1579,14 @@ impl ServerHandler for LabMcpServer {
                     "code must not be empty",
                     &serde_json::json!({ "param": "code" }),
                 );
+                self.emit_dispatch_notification(
+                    &context,
+                    "execute",
+                    "call_tool",
+                    started.elapsed().as_millis(),
+                    DispatchLogOutcome::Failure { level: LoggingLevel::Warning, kind: "invalid_param" },
+                )
+                .await;
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             }
             if code.len() > CODE_MODE_MAX_CODE_BYTES {
@@ -1521,6 +1610,14 @@ impl ServerHandler for LabMcpServer {
                     "code exceeds max length 20000 bytes",
                     &serde_json::json!({ "param": "code" }),
                 );
+                self.emit_dispatch_notification(
+                    &context,
+                    "execute",
+                    "call_tool",
+                    started.elapsed().as_millis(),
+                    DispatchLogOutcome::Failure { level: LoggingLevel::Warning, kind: "invalid_param" },
+                )
+                .await;
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             }
             let requested_max_tool_calls = args
@@ -1569,19 +1666,49 @@ impl ServerHandler for LabMcpServer {
                 Err(err) => {
                     let after = self.snapshot_catalog().await;
                     self.notify_catalog_changes(&before, &after).await;
-                    tracing::warn!(
-                        surface = "mcp",
-                        service = "execute",
-                        action = "call_tool",
-                        subject,
-                        code_hash = %code_hash,
-                        max_tool_calls = requested_max_tool_calls,
-                        elapsed_ms = started.elapsed().as_millis(),
-                        input_tokens,
-                        kind = err.kind(),
-                        error = %err,
-                        "gateway execute failed"
-                    );
+                    let kind = canonical_kind(err.kind());
+                    let failure_level = if matches!(kind, "internal_error" | "server_error" | "decode_error") {
+                        LoggingLevel::Error
+                    } else {
+                        LoggingLevel::Warning
+                    };
+                    if matches!(kind, "internal_error" | "server_error" | "decode_error") {
+                        tracing::error!(
+                            surface = "mcp",
+                            service = "execute",
+                            action = "call_tool",
+                            subject,
+                            code_hash = %code_hash,
+                            max_tool_calls = requested_max_tool_calls,
+                            elapsed_ms = started.elapsed().as_millis(),
+                            input_tokens,
+                            kind,
+                            error = %err,
+                            "gateway execute failed"
+                        );
+                    } else {
+                        tracing::warn!(
+                            surface = "mcp",
+                            service = "execute",
+                            action = "call_tool",
+                            subject,
+                            code_hash = %code_hash,
+                            max_tool_calls = requested_max_tool_calls,
+                            elapsed_ms = started.elapsed().as_millis(),
+                            input_tokens,
+                            kind,
+                            error = %err,
+                            "gateway execute failed"
+                        );
+                    }
+                    self.emit_dispatch_notification(
+                        &context,
+                        "execute",
+                        "call_tool",
+                        started.elapsed().as_millis(),
+                        DispatchLogOutcome::Failure { level: failure_level, kind },
+                    )
+                    .await;
                     let env = tool_error_envelope(&service, "call_tool", &err);
                     return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
@@ -1605,6 +1732,14 @@ impl ServerHandler for LabMcpServer {
                         "internal_error",
                         "server failed to encode the execute result",
                     );
+                    self.emit_dispatch_notification(
+                        &context,
+                        "execute",
+                        "call_tool",
+                        started.elapsed().as_millis(),
+                        DispatchLogOutcome::Failure { level: LoggingLevel::Error, kind: "internal_error" },
+                    )
+                    .await;
                     return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
             };
@@ -1621,6 +1756,14 @@ impl ServerHandler for LabMcpServer {
                 output_tokens,
                 "gateway execute ok"
             );
+            self.emit_dispatch_notification(
+                &context,
+                "execute",
+                "call_tool",
+                started.elapsed().as_millis(),
+                DispatchLogOutcome::Success,
+            )
+            .await;
             return Ok(CallToolResult::success(vec![Content::text(output)]));
         }
         if svc.is_some() && !self.service_visible_on_mcp(&service).await {
