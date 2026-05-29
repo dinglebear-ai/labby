@@ -465,7 +465,10 @@ fn default_code_mode_timeout_ms() -> u64 {
 }
 
 fn default_code_mode_max_tool_calls() -> usize {
-    8
+    // Cloudflare Code Mode parity: the 30s wall-clock timeout + fuel are the
+    // real bounds, not a small per-run call cap. This is a high safety ceiling
+    // that still stops a runaway loop without blocking legitimate fan-out.
+    1000
 }
 
 fn default_code_mode_max_response_bytes() -> usize {
@@ -538,7 +541,7 @@ impl CodeModeConfig {
                 value: self.timeout_ms,
             });
         }
-        if !(1..=50).contains(&self.max_tool_calls) {
+        if !(1..=100_000).contains(&self.max_tool_calls) {
             return Err(ConfigError::InvalidCodeModeMaxToolCalls {
                 value: self.max_tool_calls,
             });
@@ -931,7 +934,7 @@ pub enum ConfigError {
     InvalidToolSearchScoreFloor { value: f32 },
     #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=60000")]
     InvalidCodeModeTimeout { value: u64 },
-    #[error("gateway code_mode.max_tool_calls={value} is invalid — expected 1..=50")]
+    #[error("gateway code_mode.max_tool_calls={value} is invalid — expected 1..=100000")]
     InvalidCodeModeMaxToolCalls { value: usize },
     #[error("gateway code_mode.max_response_bytes={value} is invalid — expected 1024..=1048576")]
     InvalidCodeModeMaxResponseBytes { value: usize },
@@ -2744,7 +2747,7 @@ url = "https://acme.example.com/mcp"
     fn code_mode_is_root_level_config_with_default_limits() {
         let default_cfg = LabConfig::default();
         assert_eq!(default_cfg.code_mode.timeout_ms, 30_000);
-        assert_eq!(default_cfg.code_mode.max_tool_calls, 8);
+        assert_eq!(default_cfg.code_mode.max_tool_calls, 1000);
         assert_eq!(default_cfg.code_mode.max_response_bytes, 24 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_tokens, 6000);
 
@@ -3038,7 +3041,9 @@ service_scope = "user"
         assert!(config.max_response_tokens > 0);
         // ABSENCE: not wildly large (sanity bounds)
         assert!(config.timeout_ms <= 60_000);
-        assert!(config.max_tool_calls <= 50);
+        // High safety ceiling — the 30s wall-clock timeout is the meaningful
+        // bound, not a small per-run call cap (Cloudflare Code Mode parity).
+        assert!(config.max_tool_calls <= 100_000);
     }
 
     // ── Process-wide atomic flags ─────────────────────────────────────────────
