@@ -1081,7 +1081,13 @@ struct CodeModeRunnerState {
 }
 
 const CODE_MODE_LOOP_ITERATION_LIMIT: u64 = 1_000_000;
-const CODE_MODE_STACK_SIZE_LIMIT: usize = 16 * 1024;
+// Boa interprets this as the max operand-stack value count (default 10_240);
+// the Javy path interprets it as the native stack size in bytes. 16 KiB was far
+// too small once the runtime `codemode.*` proxy preamble (one method per upstream
+// tool, ~140+ across the gateway) is injected — even a single callTool overflowed
+// the operand stack. 256 KiB gives ample headroom for the preamble + await/Promise
+// machinery; the separate recursion limit still bounds genuine runaway recursion.
+const CODE_MODE_STACK_SIZE_LIMIT: usize = 256 * 1024;
 const CODE_MODE_RECURSION_LIMIT: usize = 256;
 
 /// Backstop applied in the runner itself to prevent OOM before the parent's
