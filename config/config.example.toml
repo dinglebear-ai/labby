@@ -147,13 +147,14 @@
 # ── Gateway Code Mode ────────────────────────────────────────────────────────
 
 [code_mode]
-# Code Mode: hides raw upstream tools; advertises a single `code` tool.
-# Discovery happens via typed TypeScript preamble injected into the sandbox.
-# MUTUALLY EXCLUSIVE with tool_search — enabling both is rejected with InvalidParam.
-# If both are set in config.toml, tool_search wins at startup with an ERROR log.
+# Execution limits for the gateway `search`/`execute` Code Mode sandbox.
+# `search` runs a JS arrow function over the upstream tool catalog; `execute`
+# runs a JS arrow function with `callTool(id, params)` and a typed
+# `codemode.<upstream>.<tool>(params)` runtime namespace generated from the
+# connected servers' inputSchemas. These knobs bound one `execute` run.
 # enabled = false                           # default: false
-# timeout_ms = 5000                         # valid range: 1..=60000
-# max_tool_calls = 8                        # valid range: 1..=50
+# timeout_ms = 30000                        # valid range: 1..=60000  (wall-clock budget)
+# max_tool_calls = 1000                     # valid range: 1..=10000  (safety ceiling; timeout is the real bound)
 # max_response_bytes = 24576                # valid range: 1024..=1048576
 # max_response_tokens = 6000                # valid range: 256..=256000
 
