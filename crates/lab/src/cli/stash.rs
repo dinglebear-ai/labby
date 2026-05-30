@@ -41,11 +41,7 @@ pub struct StashArgs {
 pub async fn run(args: StashArgs, format: OutputFormat) -> Result<ExitCode> {
     let params = parse_kv_params(args.params)?;
     if args.dry_run {
-        println!(
-            "[dry-run] would dispatch stash action `{}` with params: {}",
-            args.action,
-            serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string())
-        );
+        crate::cli::helpers::print_dry_run("stash", &args.action, &params, format);
         return Ok(ExitCode::SUCCESS);
     }
     run_confirmable_action_command(

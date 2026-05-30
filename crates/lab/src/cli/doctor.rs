@@ -18,6 +18,7 @@ use clap::{Args, Subcommand};
 use crate::dispatch::clients::ServiceClients;
 use crate::dispatch::doctor::{Finding, Report, Severity, run_auth_checks, run_system_checks};
 use crate::output::OutputFormat;
+use crate::output::theme::CliTheme;
 
 #[cfg(test)]
 pub use crate::dispatch::doctor::service_env_checks;
@@ -96,8 +97,9 @@ async fn run_full_audit(format: OutputFormat) -> Result<ExitCode> {
         println!("{}", serde_json::to_string_pretty(&report)?);
         Ok(exit_code(&report))
     } else {
+        let theme = CliTheme::from_context(format.render_context());
         while let Some(f) = rx.recv().await {
-            print_finding(&f);
+            print_finding(theme, &f);
             findings.push(f);
         }
         Ok(exit_code(&Report { findings }))
@@ -120,7 +122,8 @@ async fn run_auth(format: OutputFormat) -> Result<ExitCode> {
         return Ok(exit_code(&report));
     }
 
-    print_section("Auth / OAuth configuration");
+    let theme = CliTheme::from_context(format.render_context());
+    print_section(theme, "Auth / OAuth configuration");
 
     // Group and label findings by check category
     let groups: &[(&str, &str)] = &[
@@ -148,10 +151,10 @@ async fn run_auth(format: OutputFormat) -> Result<ExitCode> {
             if !last_group.is_empty() {
                 println!();
             }
-            println!("  {}:", group_label);
+            println!("  {}", theme.primary(&format!("{group_label}:")));
             last_group = group_label;
         }
-        print_finding_indented(f);
+        print_finding_indented(theme, f);
     }
     println!();
 
@@ -177,9 +180,10 @@ async fn run_proxy(args: DoctorProxyArgs, format: OutputFormat) -> Result<ExitCo
         return Ok(exit_code(&report));
     }
 
-    print_section("Reverse proxy checks");
+    let theme = CliTheme::from_context(format.render_context());
+    print_section(theme, "Reverse proxy checks");
     for finding in &report.findings {
-        print_finding_indented(finding);
+        print_finding_indented(theme, finding);
     }
     println!();
 
@@ -202,7 +206,8 @@ async fn run_system(format: OutputFormat) -> Result<ExitCode> {
         return Ok(exit_code(&report));
     }
 
-    print_section("System checks");
+    let theme = CliTheme::from_context(format.render_context());
+    print_section(theme, "System checks");
 
     // Group by check prefix (before ':')
     let groups: &[(&str, &str)] = &[
@@ -225,10 +230,10 @@ async fn run_system(format: OutputFormat) -> Result<ExitCode> {
             if !last_group.is_empty() {
                 println!();
             }
-            println!("  {}:", group_label);
+            println!("  {}", theme.primary(&format!("{group_label}:")));
             last_group = group_label;
         }
-        print_finding_indented(f);
+        print_finding_indented(theme, f);
     }
     println!();
 
@@ -253,8 +258,9 @@ async fn run_service(name: String, format: OutputFormat) -> Result<ExitCode> {
         return Ok(exit_code(&report));
     }
 
-    print_section(&format!("Service probe: {name}"));
-    print_finding_indented(&finding);
+    let theme = CliTheme::from_context(format.render_context());
+    print_section(theme, &format!("Service probe: {name}"));
+    print_finding_indented(theme, &finding);
     println!();
 
     let report = Report {
@@ -288,13 +294,14 @@ async fn run_services(format: OutputFormat) -> Result<ExitCode> {
         return Ok(exit_code(&report));
     }
 
-    print_section("Service probes");
+    let theme = CliTheme::from_context(format.render_context());
+    print_section(theme, "Service probes");
     while let Some(f) = rx.recv().await {
-        let icon = severity_icon(f.severity);
         println!(
-            "    {icon}  {service}: {msg}",
-            service = f.service,
-            msg = f.message
+            "    {badge}  {service}: {msg}",
+            badge = severity_badge(theme, f.severity),
+            service = theme.section(&f.service),
+            msg = theme.muted(&f.message),
         );
         findings.push(f);
     }
@@ -307,40 +314,43 @@ async fn run_services(format: OutputFormat) -> Result<ExitCode> {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-fn print_section(title: &str) {
-    let bar: String = "─".repeat(title.len() + 4);
-    println!("┌{}┐", bar);
-    println!("│  {}  │", title);
-    println!("└{}┘", bar);
+fn print_section(theme: CliTheme, title: &str) {
+    // Aurora section style: bold-cyan title over a muted underline divider.
+    println!("{}", theme.heading(title));
     println!();
 }
 
-fn print_finding(f: &Finding) {
-    let icon = severity_icon(f.severity);
+fn print_finding(theme: CliTheme, f: &Finding) {
     println!(
-        "{icon} [{service}] {check}: {msg}",
-        service = f.service,
-        check = f.check,
-        msg = f.message
+        "{badge} {service} {check}: {msg}",
+        badge = severity_badge(theme, f.severity),
+        service = theme.muted(format!("[{}]", f.service)),
+        check = theme.section(&f.check),
+        msg = theme.muted(&f.message),
     );
 }
 
-fn print_finding_indented(f: &Finding) {
-    let icon = severity_icon(f.severity);
+fn print_finding_indented(theme: CliTheme, f: &Finding) {
     // Strip the category prefix (auth:, docker:, etc.) from the check name for cleaner display
     let check_label = f
         .check
         .split_once(':')
         .map(|(_, rest)| rest)
         .unwrap_or(&f.check);
-    println!("    {icon}  {check_label}: {msg}", msg = f.message);
+    println!(
+        "    {badge}  {check}: {msg}",
+        badge = severity_badge(theme, f.severity),
+        check = theme.section(check_label),
+        msg = theme.muted(&f.message),
+    );
 }
 
-fn severity_icon(s: Severity) -> &'static str {
+/// Status glyph painted via the Aurora success/warn/error tokens, symbol-mode aware.
+fn severity_badge(theme: CliTheme, s: Severity) -> String {
     match s {
-        Severity::Ok => "✓",
-        Severity::Warn => "⚠",
-        Severity::Fail => "✗",
+        Severity::Ok => theme.ok_badge(),
+        Severity::Warn => theme.warn_badge(),
+        Severity::Fail => theme.error_badge(),
     }
 }
 

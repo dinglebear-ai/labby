@@ -32,6 +32,12 @@ pub struct ServerConfigSummaryView {
     pub transport: Option<String>,
     #[serde(default)]
     pub target: Option<String>,
+    /// Redacted executable for stdio transport (e.g. `uvx`, `npx`). `None` for HTTP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Redacted args for stdio transport (e.g. `["github-chat-mcp"]`). Empty for HTTP.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -63,4 +69,8 @@ pub struct ServerView {
     pub warnings: Vec<ServerWarningView>,
     #[serde(default)]
     pub config_summary: ServerConfigSummaryView,
+    /// OS process id of the spawned stdio child, when connected. `None` for HTTP
+    /// transports and for disconnected/disabled stdio servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }

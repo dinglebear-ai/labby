@@ -3,17 +3,34 @@ use std::io::IsTerminal;
 use clap::ValueEnum;
 
 // ---------------------------------------------------------------------------
-// Aurora palette — ANSI 256 constants shared by CliTheme and the log formatter.
-// The console crate (used in log_fmt) only supports ANSI 256, not truecolor,
-// so these ANSI 256 values are the single source of truth for both surfaces.
+// Aurora palette — single source of truth for the CLI.
+//
+// Each entry pairs an Aurora dark-mode design token (see
+// `aurora-design-system/registry/aurora/styles/aurora.css` →
+// `--aurora-*`) with its exact truecolor RGB and the closest ANSI-256 index.
+// `CliTheme` emits the truecolor triple on 24-bit terminals and falls back to
+// the ANSI-256 index otherwise; the log formatter (console crate, ANSI-256
+// only) consumes the same `aurora::*` indices so both surfaces stay in sync.
 // ---------------------------------------------------------------------------
 pub mod aurora {
-    pub const SERVICE_NAME: u8 = 211; // pink  (255,175,215)
-    pub const ACCENT_PRIMARY: u8 = 39; // bright blue (41,182,246)
-    pub const TEXT_MUTED: u8 = 250; // light grey (167,188,201)
-    pub const SUCCESS: u8 = 115; // teal (125,211,199)
-    pub const WARN: u8 = 180; // amber (198,163,107)
-    pub const ERROR: u8 = 174; // muted red (199,132,144)
+    // Text
+    pub const TEXT_PRIMARY: u8 = 255; // --aurora-text-primary  #e6f4fb (230,244,251)
+    pub const TEXT_MUTED: u8 = 250; // --aurora-text-muted    #a7bcc9 (167,188,201)
+    // Cyan accent (primary)
+    pub const ACCENT_PRIMARY: u8 = 39; // --aurora-accent-primary #29b6f6 (41,182,246)
+    pub const ACCENT_STRONG: u8 = 81; // --aurora-accent-strong  #67cbfa (103,203,250)
+    // Rose accent (secondary)
+    pub const SERVICE_NAME: u8 = 217; // --aurora-accent-pink    #f9a8c4 (249,168,196)
+    // Violet accent (AI / automation identity)
+    pub const VIOLET: u8 = 141; // --aurora-accent-violet  #a78bfa (167,139,250)
+    // Borders
+    pub const BORDER: u8 = 239; // --aurora-border-default #1d3d4e (29,61,78)
+    // Status families — muted, never neon
+    pub const INFO: u8 = 117; // --aurora-info          #72c8f5 (114,200,245)
+    pub const SUCCESS: u8 = 115; // --aurora-success       #7dd3c7 (125,211,199)
+    pub const WARN: u8 = 180; // --aurora-warn          #c6a36b (198,163,107)
+    pub const ERROR: u8 = 174; // --aurora-error         #c78490 (199,132,144)
+    pub const NEUTRAL: u8 = 109; // --aurora-neutral       #91a8b6 (145,168,182)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
@@ -197,54 +214,85 @@ impl CliTheme {
         self.accent(text)
     }
 
+    /// `--aurora-accent-primary` (cyan) — primary CTAs, selection, focus.
     #[must_use]
     pub fn accent(self, text: &str) -> String {
-        paint((41, 182, 246), 39, text, self.ctx)
+        paint((41, 182, 246), aurora::ACCENT_PRIMARY, text, self.ctx)
     }
 
+    /// `--aurora-accent-pink` (rose) — secondary/agent affordances, key labels.
     #[must_use]
     pub fn service_name(self, text: &str) -> String {
-        paint((255, 175, 215), 211, text, self.ctx)
+        paint((249, 168, 196), aurora::SERVICE_NAME, text, self.ctx)
     }
 
+    /// `--aurora-accent-violet` — AI / automation identity.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn violet(self, text: &str) -> String {
+        paint((167, 139, 250), aurora::VIOLET, text, self.ctx)
+    }
+
+    /// `--aurora-text-primary` — headings, body, control labels.
     #[must_use]
     pub fn primary(self, text: &str) -> String {
-        paint((230, 244, 251), 255, text, self.ctx)
+        paint((230, 244, 251), aurora::TEXT_PRIMARY, text, self.ctx)
     }
 
+    /// `--aurora-text-muted` — captions, meta, descriptions.
     #[must_use]
     pub fn secondary(self, text: &str) -> String {
-        paint((167, 188, 201), 250, text, self.ctx)
+        paint((167, 188, 201), aurora::TEXT_MUTED, text, self.ctx)
     }
 
+    /// `--aurora-accent-strong` — hover/active cyan emphasis.
     #[must_use]
     pub fn tertiary(self, text: &str) -> String {
-        paint((103, 203, 250), 81, text, self.ctx)
+        paint((103, 203, 250), aurora::ACCENT_STRONG, text, self.ctx)
     }
 
+    /// `--aurora-border-default` — resting separators, dividers, table rules.
     #[must_use]
     pub fn border(self, text: &str) -> String {
-        paint((29, 61, 78), 239, text, self.ctx)
+        paint((29, 61, 78), aurora::BORDER, text, self.ctx)
     }
 
+    /// `--aurora-text-muted` — captions, meta, descriptions, placeholders.
     #[must_use]
     pub fn muted<T: AsRef<str>>(self, text: T) -> String {
-        paint((167, 188, 201), 250, text.as_ref(), self.ctx)
+        paint((167, 188, 201), aurora::TEXT_MUTED, text.as_ref(), self.ctx)
     }
 
+    /// `--aurora-info` — informational status (muted cyan).
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn info(self, text: &str) -> String {
+        paint((114, 200, 245), aurora::INFO, text, self.ctx)
+    }
+
+    /// `--aurora-success` — success status (muted teal-mint).
     #[must_use]
     pub fn success(self, text: &str) -> String {
-        paint((125, 211, 199), 115, text, self.ctx)
+        paint((125, 211, 199), aurora::SUCCESS, text, self.ctx)
     }
 
+    /// `--aurora-warn` — warning status (warm sand).
     #[must_use]
     pub fn warn(self, text: &str) -> String {
-        paint((198, 163, 107), 180, text, self.ctx)
+        paint((198, 163, 107), aurora::WARN, text, self.ctx)
     }
 
+    /// `--aurora-error` — error status (rose-clay).
     #[must_use]
     pub fn error(self, text: &str) -> String {
-        paint((199, 132, 144), 174, text, self.ctx)
+        paint((199, 132, 144), aurora::ERROR, text, self.ctx)
+    }
+
+    /// `--aurora-neutral` — neutral/idle status (slate).
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn neutral(self, text: &str) -> String {
+        paint((145, 168, 182), aurora::NEUTRAL, text, self.ctx)
     }
 
     #[must_use]
@@ -507,6 +555,65 @@ mod tests {
             env(true, false, Some("xterm-256color"), Some("truecolor")),
         );
         assert_eq!(ctx.level, ColorLevel::Plain);
+    }
+
+    fn theme_at(level: ColorLevel) -> CliTheme {
+        CliTheme::from_context(RenderContext {
+            level,
+            symbols: SymbolMode::Unicode,
+        })
+    }
+
+    #[test]
+    fn accents_emit_aurora_truecolor_triples() {
+        // (method output, expected dark-mode Aurora RGB)
+        let t = theme_at(ColorLevel::TrueColor);
+        let cases = [
+            (t.accent("x"), "38;2;41;182;246"), // accent-primary #29b6f6
+            (t.service_name("x"), "38;2;249;168;196"), // accent-pink    #f9a8c4
+            (t.violet("x"), "38;2;167;139;250"), // accent-violet  #a78bfa
+            (t.info("x"), "38;2;114;200;245"),  // info           #72c8f5
+            (t.success("x"), "38;2;125;211;199"), // success        #7dd3c7
+            (t.warn("x"), "38;2;198;163;107"),  // warn           #c6a36b
+            (t.error("x"), "38;2;199;132;144"), // error          #c78490
+            (t.neutral("x"), "38;2;145;168;182"), // neutral        #91a8b6
+        ];
+        for (rendered, escape) in cases {
+            assert!(
+                rendered.contains(escape),
+                "expected truecolor escape {escape}, got: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accents_emit_aurora_ansi256_indices() {
+        let t = theme_at(ColorLevel::Ansi256);
+        let cases = [
+            (t.service_name("x"), aurora::SERVICE_NAME),
+            (t.violet("x"), aurora::VIOLET),
+            (t.info("x"), aurora::INFO),
+            (t.neutral("x"), aurora::NEUTRAL),
+        ];
+        for (rendered, idx) in cases {
+            assert!(
+                rendered.contains(&format!("38;5;{idx}")),
+                "expected ansi256 index {idx}, got: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_level_strips_all_accent_escapes() {
+        let t = theme_at(ColorLevel::Plain);
+        for rendered in [
+            t.violet("x"),
+            t.info("x"),
+            t.neutral("x"),
+            t.service_name("x"),
+        ] {
+            assert_eq!(rendered, "x", "plain mode must not emit escapes");
+        }
     }
 
     #[test]

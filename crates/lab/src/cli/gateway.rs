@@ -696,7 +696,7 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
             };
 
             if dry_run {
-                crate::cli::helpers::print_dry_run("gateway", &action, &params);
+                crate::cli::helpers::print_dry_run("gateway", &action, &params, format);
                 return Ok(ExitCode::SUCCESS);
             }
 
@@ -796,13 +796,19 @@ async fn run_gateway_oauth_start(
             anyhow::anyhow!("failed to decode gateway oauth start response: {error}")
         })?;
 
+    let theme = crate::output::theme::CliTheme::from_context(format.render_context());
+
     if args.open {
         open_in_browser(&start_view.authorization_url)?;
-        eprintln!("Opened authorization URL in your browser.");
+        eprintln!(
+            "{}",
+            theme.muted("Opened authorization URL in your browser.")
+        );
     } else {
         eprintln!(
-            "Open this URL to authorize:\n{}",
-            start_view.authorization_url
+            "{}\n{}",
+            theme.muted("Open this URL to authorize:"),
+            theme.accent(&start_view.authorization_url)
         );
     }
 
@@ -812,8 +818,11 @@ async fn run_gateway_oauth_start(
             .as_deref()
             .unwrap_or(SHARED_GATEWAY_OAUTH_SUBJECT);
         eprintln!(
-            "Waiting for OAuth completion for `{}` using shared subject `{}`...",
-            args.name, subject
+            "{}",
+            theme.muted(format!(
+                "Waiting for OAuth completion for `{}` using shared subject `{}`...",
+                args.name, subject
+            ))
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(args.wait_timeout_secs);
         loop {
@@ -835,15 +844,21 @@ async fn run_gateway_oauth_start(
                 })?;
             if status.authenticated {
                 eprintln!(
-                    "OAuth completed for `{}`. The existing callback route stored credentials for shared subject `{}`.",
-                    args.name, subject
+                    "{}",
+                    theme.success(&format!(
+                        "OAuth completed for `{}`. The existing callback route stored credentials for shared subject `{}`.",
+                        args.name, subject
+                    ))
                 );
                 break;
             }
             if std::time::Instant::now() >= deadline {
                 eprintln!(
-                    "Timed out waiting for OAuth completion for `{}` after {}s. The browser callback may still succeed later; re-run `labby gateway mcp auth status {}` to check.",
-                    args.name, args.wait_timeout_secs, args.name
+                    "{}",
+                    theme.warn(&format!(
+                        "Timed out waiting for OAuth completion for `{}` after {}s. The browser callback may still succeed later; re-run `labby gateway mcp auth status {}` to check.",
+                        args.name, args.wait_timeout_secs, args.name
+                    ))
                 );
                 break;
             }
@@ -1005,7 +1020,7 @@ fn render_gateway_list_human(
             let mut parts = Vec::new();
             if s.exposed_tool_count > 0 {
                 parts.push(format!(
-                    "{} {}",
+                    "🔧 {} {}",
                     s.exposed_tool_count,
                     if s.exposed_tool_count == 1 {
                         "tool"
@@ -1016,7 +1031,7 @@ fn render_gateway_list_human(
             }
             if s.exposed_prompt_count > 0 {
                 parts.push(format!(
-                    "{} {}",
+                    "💬 {} {}",
                     s.exposed_prompt_count,
                     if s.exposed_prompt_count == 1 {
                         "prompt"
@@ -1027,7 +1042,7 @@ fn render_gateway_list_human(
             }
             if s.exposed_resource_count > 0 {
                 parts.push(format!(
-                    "{} {}",
+                    "📦 {} {}",
                     s.exposed_resource_count,
                     if s.exposed_resource_count == 1 {
                         "resource"
@@ -1059,15 +1074,33 @@ fn render_gateway_list_human(
             theme.warn(&msg)
         };
 
-        let target = s
-            .config_summary
-            .target
-            .as_deref()
-            .filter(|t| !t.is_empty())
-            .map(|t| theme.muted(t))
-            .unwrap_or_default();
+        // For stdio transports show the full `command arg1 arg2` invocation
+        // (e.g. `uvx github-chat-mcp`); for HTTP fall back to the redacted URL.
+        let location_raw = match s.config_summary.command.as_deref() {
+            Some(command) if !command.is_empty() => {
+                let mut line = command.to_string();
+                if !s.config_summary.args.is_empty() {
+                    line.push(' ');
+                    line.push_str(&s.config_summary.args.join(" "));
+                }
+                Some(line)
+            }
+            _ => s
+                .config_summary
+                .target
+                .as_deref()
+                .filter(|t| !t.is_empty())
+                .map(str::to_string),
+        };
+        // Append the PID inline — it is only present for connected stdio children.
+        let tail = match (location_raw, s.pid) {
+            (Some(loc), Some(pid)) => theme.muted(format!("{loc} · pid {pid}")),
+            (Some(loc), None) => theme.muted(loc),
+            (None, Some(pid)) => theme.muted(format!("pid {pid}")),
+            (None, None) => String::new(),
+        };
 
-        println!("  {icon} {name}  {transport}  {status_detail}  {target}");
+        println!("  {icon} {name}  {transport}  {status_detail}  {tail}");
     }
 }
 

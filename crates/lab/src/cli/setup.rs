@@ -19,6 +19,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
+use crate::output::theme::CliTheme;
 use crate::output::{OutputFormat, print};
 
 #[derive(Debug, Args)]
@@ -126,9 +127,14 @@ pub async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
         return run_command(command, format).await;
     }
 
+    let theme = CliTheme::from_context(format.render_context());
+
     if std::env::var("LAB_SKIP_SETUP").as_deref() == Ok("1") || args.no_setup {
         eprintln!(
-            "setup skipped (LAB_SKIP_SETUP=1 or --no-setup); run `labby setup` manually when ready"
+            "{}",
+            theme.muted(
+                "setup skipped (LAB_SKIP_SETUP=1 or --no-setup); run `labby setup` manually when ready"
+            )
         );
         return Ok(ExitCode::SUCCESS);
     }
@@ -154,14 +160,24 @@ pub async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
     let url = format!("{DEFAULT_LAB_URL}{route}?mode={}", args.mode.as_str());
     eprintln!();
     if first_run {
-        eprintln!("Welcome to lab. First-run detected.");
+        eprintln!("{}", theme.section("Welcome to lab. First-run detected."));
     } else {
-        eprintln!("lab is already configured. Opening Settings.");
+        eprintln!(
+            "{}",
+            theme.section("lab is already configured. Opening Settings.")
+        );
     }
     eprintln!();
-    eprintln!("→ Run `labby serve` and visit: {url}");
+    eprintln!(
+        "{} Run `labby serve` and visit: {}",
+        theme.tertiary("→"),
+        theme.accent(&url)
+    );
     eprintln!();
-    eprintln!("Tip: set LAB_SKIP_SETUP=1 to suppress this message in CI.");
+    eprintln!(
+        "{}",
+        theme.muted("Tip: set LAB_SKIP_SETUP=1 to suppress this message in CI.")
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -186,7 +202,7 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         SetupCommand::PluginSync(args) => {
             let params = json!({ "confirm": true });
             if args.dry_run {
-                crate::cli::helpers::print_dry_run("setup", "plugin_sync", &params);
+                crate::cli::helpers::print_dry_run("setup", "plugin_sync", &params, format);
                 return Ok(ExitCode::SUCCESS);
             }
             // Route through the shared destructive-action helper so TTY users
@@ -245,7 +261,7 @@ async fn run_plugin_mutation(
         "confirm": true,
     });
     if args.dry_run {
-        crate::cli::helpers::print_dry_run("setup", action, &params);
+        crate::cli::helpers::print_dry_run("setup", action, &params, format);
         return Ok(());
     }
     if !args.yes {

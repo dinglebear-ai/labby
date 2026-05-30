@@ -11,12 +11,18 @@ use serde_json::Value;
 use lab_apis::core::action::ActionSpec;
 
 use crate::dispatch::error::ToolError;
+use crate::output::theme::CliTheme;
 /// Print the canonical `[dry-run]` line for a service/action/params triple.
 #[allow(clippy::print_stdout)]
-pub fn print_dry_run(service: &str, action: &str, params: &Value) {
+pub fn print_dry_run(service: &str, action: &str, params: &Value, format: OutputFormat) {
+    let theme = CliTheme::from_context(format.render_context());
     println!(
-        "[dry-run] would dispatch {service} action `{action}` with params: {}",
-        serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string())
+        "{} {}",
+        theme.warn("[dry-run]"),
+        theme.muted(format!(
+            "would dispatch {service} action `{action}` with params: {}",
+            serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string())
+        ))
     );
 }
 

@@ -111,7 +111,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Serve(args) => serve::run(args, &config).await,
         Command::Mcp(args) => serve::run_mcp(args, &config).await,
         Command::Doctor(args) => doctor::run(args, format).await,
-        Command::Docs(args) => docs::run(args),
+        Command::Docs(args) => docs::run(args, format),
         Command::Nodes(args) => nodes::run(args, format, &config).await,
         Command::Health => health::run(format).await,
         Command::Setup(args) => setup::run(args, format).await,

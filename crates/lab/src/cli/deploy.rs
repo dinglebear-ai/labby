@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 use crate::dispatch::deploy;
 use crate::dispatch::deploy::authz::McpContext;
+use crate::output::theme::CliTheme;
 use crate::output::{OutputFormat, print};
 
 #[derive(Debug, Args)]
@@ -106,12 +107,16 @@ impl DeployArgs {
 ///
 /// - On a TTY: prompts interactively; proceeds on `y`/`Y`.
 /// - Not on a TTY without `-y`: returns an error.
-fn confirm_destructive(yes: bool, label: &str) -> Result<()> {
+fn confirm_destructive(yes: bool, label: &str, theme: CliTheme) -> Result<()> {
     if yes {
         return Ok(());
     }
     if std::io::stdin().is_terminal() {
-        eprint!("{label} is destructive. Proceed? [y/N] ");
+        eprint!(
+            "{} {} ",
+            theme.warn(&format!("{label} is destructive. Proceed?")),
+            theme.muted("[y/N]")
+        );
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         if !input.trim().eq_ignore_ascii_case("y") {
@@ -145,6 +150,7 @@ pub async fn run(
         return Ok(());
     }
 
+    let theme = CliTheme::from_context(format.render_context());
     let (action, params) = match args.cmd {
         DeployCmd::ConfigList => ("config.list", json!({})),
         DeployCmd::Plan { targets } => ("plan", json!({ "targets": targets })),
@@ -158,7 +164,7 @@ pub async fn run(
             if dry_run {
                 ("plan", json!({ "targets": targets }))
             } else {
-                confirm_destructive(yes, "deploy run")?;
+                confirm_destructive(yes, "deploy run", theme)?;
                 (
                     "run",
                     json!({
@@ -178,7 +184,7 @@ pub async fn run(
             if dry_run {
                 ("plan", json!({ "targets": targets }))
             } else {
-                confirm_destructive(yes, "deploy rollback")?;
+                confirm_destructive(yes, "deploy rollback", theme)?;
                 ("rollback", json!({ "targets": targets, "confirm": true }))
             }
         }
