@@ -33,9 +33,20 @@ use crate::node::enrollment::store::EnrollmentStore;
 use crate::node::identity::{resolve_local_hostname, resolve_runtime_role_from_config};
 use crate::node::runtime::NodeRuntime;
 use crate::node::store::NodeStore;
+use crate::output::theme::{CliTheme, ColorPolicy, RenderContext, RenderEnv};
 #[cfg(target_os = "linux")]
 use crate::process::unix::{exe_path, terminate_sigterm};
 use crate::registry::{ToolRegistry, build_default_registry};
+
+/// Aurora theme for `serve` startup banners. These print before the CLI
+/// `--color` flag is in scope, so resolve styling from the environment
+/// (`NO_COLOR`, stderr TTY) with the default `Auto` policy.
+fn stderr_theme() -> CliTheme {
+    CliTheme::from_context(RenderContext::from_policy(
+        ColorPolicy::Auto,
+        RenderEnv::stderr(),
+    ))
+}
 
 /// Role override for `labby serve --role`.
 ///
@@ -523,7 +534,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                       ⚠  Any local process can read or modify your configuration.\n\
                       ⚠  Set up OAuth (LAB_AUTH_MODE=oauth) to secure the API.\n\
                       ==================================================================";
-        eprintln!("\n{banner}\n");
+        eprintln!("\n{}\n", stderr_theme().warn(banner));
         tracing::warn!(
             subsystem = "web_server",
             phase = "startup.banner",
@@ -967,9 +978,12 @@ async fn run_http(
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
                 eprintln!(
-                    "lab: another master instance is already running on this device \
-                     (lock: {}). Use 'labby mcp' for node/MCP-only mode.",
-                    lock_path.display()
+                    "{}",
+                    stderr_theme().error(&format!(
+                        "lab: another master instance is already running on this device \
+                         (lock: {}). Use 'labby mcp' for node/MCP-only mode.",
+                        lock_path.display()
+                    ))
                 );
                 std::process::exit(1);
             }

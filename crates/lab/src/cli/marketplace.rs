@@ -46,7 +46,9 @@ pub enum MarketplaceCommand {
 pub async fn run(args: MarketplaceArgs, format: OutputFormat) -> Result<ExitCode> {
     if let Some(command) = args.command {
         return match command {
-            MarketplaceCommand::Generate(generate_args) => generator::run_generate(generate_args),
+            MarketplaceCommand::Generate(generate_args) => {
+                generator::run_generate(generate_args, format)
+            }
         };
     }
     let params = args
@@ -56,7 +58,7 @@ pub async fn run(args: MarketplaceArgs, format: OutputFormat) -> Result<ExitCode
         .transpose()?
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     if args.dry_run {
-        print_dry_run("marketplace", &args.action, &params);
+        print_dry_run("marketplace", &args.action, &params, format);
         return Ok(ExitCode::SUCCESS);
     }
     run_confirmable_action_command(

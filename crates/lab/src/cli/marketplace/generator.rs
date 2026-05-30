@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use clap::Args;
 use serde_json::json;
 
+use crate::output::OutputFormat;
+use crate::output::theme::CliTheme;
 use crate::registry::{build_default_registry, service_meta};
 
 const DEFAULT_ORG: &str = match option_env!("LAB_PLUGIN_ORG") {
@@ -29,10 +31,15 @@ pub struct GenerateArgs {
     pub binary: Option<PathBuf>,
 }
 
-pub fn run_generate(args: GenerateArgs) -> Result<ExitCode> {
+pub fn run_generate(args: GenerateArgs, format: OutputFormat) -> Result<ExitCode> {
+    let theme = CliTheme::from_context(format.render_context());
     let binary = args.binary.unwrap_or_else(default_binary_path);
     generate_marketplace(&args.out, &args.org, &binary)?;
-    println!("generated marketplace at {}", args.out.display());
+    println!(
+        "{} {}",
+        theme.muted("generated marketplace at"),
+        theme.primary(&args.out.display().to_string())
+    );
     Ok(ExitCode::SUCCESS)
 }
 

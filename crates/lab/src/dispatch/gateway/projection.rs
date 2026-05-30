@@ -163,6 +163,24 @@ pub(super) fn format_redacted_gateway_command(command: &str, args: &[String]) ->
     redact_stdio_value(command)
 }
 
+/// Build the redacted (command, args) pair for stdio transports.
+///
+/// Each segment is individually scrubbed: `redact_stdio_value` / `redact_stdio_args`
+/// mask `KEY=value` env pairs and `--flag value` secret flags, then a second
+/// `redact_secret_like_segments` pass catches bare positional tokens (e.g. a raw
+/// `ghp_…` passed as an argument). Returns `(None, [])` for HTTP transports.
+pub(super) fn redacted_stdio_command(upstream: &UpstreamConfig) -> (Option<String>, Vec<String>) {
+    let Some(command) = upstream.command.as_deref() else {
+        return (None, Vec::new());
+    };
+    let command = redact_secret_like_segments(&redact_stdio_value(command));
+    let args = redact_stdio_args(&upstream.args)
+        .iter()
+        .map(|arg| redact_secret_like_segments(arg))
+        .collect();
+    (Some(command), args)
+}
+
 pub(super) fn empty_upstream_summary() -> UpstreamCachedSummary {
     UpstreamCachedSummary::default()
 }
@@ -233,6 +251,14 @@ pub(super) async fn server_view_from_upstream(
         || summary.exposed_resource_count > 0
         || summary.exposed_prompt_count > 0;
     let enabled = upstream.enabled;
+    let pid = match pool {
+        Some(pool) => pool
+            .upstream_runtime_metadata(&upstream.name)
+            .await
+            .and_then(|meta| meta.pid),
+        None => None,
+    };
+    let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
         id: upstream.name.clone(),
@@ -270,7 +296,10 @@ pub(super) async fn server_view_from_upstream(
                 "http".to_string()
             }),
             target: redacted_gateway_target(upstream),
+            command,
+            args,
         },
+        pid,
     }
 }
 
@@ -373,7 +402,10 @@ pub(super) fn server_view_from_virtual_server(
         config_summary: ServerConfigSummaryView {
             transport: Some("in_process".to_string()),
             target: Some(service),
+            command: None,
+            args: Vec::new(),
         },
+        pid: None,
     }
 }
 
@@ -452,6 +484,79 @@ pub(super) async fn runtime_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Stdio command projection ──────────────────────────────────────────────
+
+    fn upstream_fixture(command: Option<&str>, args: &[&str], url: Option<&str>) -> UpstreamConfig {
+        UpstreamConfig {
+            enabled: true,
+            name: "fixture".to_string(),
+            url: url.map(str::to_string),
+            bearer_token_env: None,
+            command: command.map(str::to_string),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+            tool_search: ToolSearchConfig::default(),
+        }
+    }
+
+    fn stdio_upstream(command: &str, args: &[&str]) -> UpstreamConfig {
+        upstream_fixture(Some(command), args, None)
+    }
+
+    #[test]
+    fn stdio_command_exposes_command_and_args() {
+        let (command, args) = redacted_stdio_command(&stdio_upstream("uvx", &["github-chat-mcp"]));
+        assert_eq!(command.as_deref(), Some("uvx"));
+        assert_eq!(args, vec!["github-chat-mcp".to_string()]);
+    }
+
+    #[test]
+    fn stdio_command_redacts_env_secret_pair() {
+        // `env GITHUB_TOKEN=abc npx foo` must mask the token value but keep the
+        // rest of the invocation visible.
+        let (command, args) = redacted_stdio_command(&stdio_upstream(
+            "env",
+            &["GITHUB_TOKEN=abc123", "npx", "foo"],
+        ));
+        assert_eq!(command.as_deref(), Some("env"));
+        assert_eq!(args[0], "GITHUB_TOKEN=[redacted]");
+        assert_eq!(&args[1..], &["npx".to_string(), "foo".to_string()]);
+        let rendered = args.join(" ");
+        assert!(
+            !rendered.contains("abc123"),
+            "secret value must not survive, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn stdio_command_redacts_bare_positional_token() {
+        // A raw token passed positionally (not KEY=value / --flag) is caught by
+        // the secret-pattern pass.
+        let token = ["ghp_", &"a".repeat(36)].concat();
+        let (_, args) = redacted_stdio_command(&stdio_upstream("npx", &["server", &token]));
+        let rendered = args.join(" ");
+        assert!(
+            rendered.contains("[REDACTED]") && !rendered.contains("ghp_"),
+            "bare positional token must be redacted, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn stdio_command_empty_for_http() {
+        let http = upstream_fixture(None, &[], Some("https://example.com/mcp"));
+        let (command, args) = redacted_stdio_command(&http);
+        assert!(command.is_none());
+        assert!(args.is_empty());
+    }
 
     // ── Secret redaction ──────────────────────────────────────────────────────
 
