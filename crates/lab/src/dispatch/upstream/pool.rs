@@ -21,10 +21,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::UpstreamConfig;
 use crate::oauth::upstream::cache::OauthClientCache;
-#[cfg(unix)]
-use crate::process::unix::{
-    pid_is_alive, terminate_process_group_sigkill, terminate_process_group_sigterm,
-};
 use crate::registry::{RegisteredService, ToolRegistry};
 
 use super::transport::websocket::{jitter_delay, reprobe_backoff};
@@ -36,8 +32,10 @@ use super::types::{
 
 mod connect;
 mod connect_stdio;
+mod connection;
 mod entries;
 mod helpers;
+mod lifecycle;
 mod logging;
 mod validate;
 
@@ -292,138 +290,6 @@ type TestUpstreamConnector = Arc<
         + Sync,
 >;
 
-impl std::fmt::Debug for UpstreamConnection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UpstreamConnection").finish_non_exhaustive()
-    }
-}
-
-/// Sync Drop: SIGTERM+SIGKILL the process group if any, then abort any
-/// in-process server task. Last-resort abandonment cleanup for stdio
-/// upstreams whose connect future was dropped without going through
-/// `shutdown()` — discovery timeouts, cancelled `buffer_unordered` futures,
-/// pool drops, `insert()` overwrites, etc.
-///
-/// The async `shutdown()` graceful path zeroes `self.runtime.pgid` and
-/// takes `_server_task` before its first `.await` so this Drop no-ops on
-/// the graceful path.
-///
-/// Process-group kill is `#[cfg(unix)]`-gated (no Windows equivalent in the
-/// same shape), but `_server_task.abort()` runs on all platforms — without
-/// it a dropped in-process upstream would leak the spawned tokio task.
-impl Drop for UpstreamConnection {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pgid) = self.runtime.pgid.take() {
-            // No sleep — Drop must not block. Kernel handles TERM/KILL race.
-            if let Err(error) = terminate_process_group_sigterm(pgid) {
-                tracing::warn!(
-                    target: "upstream.connection",
-                    pgid,
-                    ?error,
-                    "process group SIGTERM failed on drop"
-                );
-            }
-            if let Err(error) = terminate_process_group_sigkill(pgid) {
-                tracing::warn!(
-                    target: "upstream.connection",
-                    pgid,
-                    ?error,
-                    "process group SIGKILL failed on drop"
-                );
-            } else {
-                tracing::debug!(
-                    target: "upstream.connection",
-                    pgid,
-                    "process group reaped on connection drop"
-                );
-            }
-        }
-        if let Some(handle) = self._server_task.take() {
-            handle.abort();
-        }
-    }
-}
-
-impl UpstreamConnection {
-    async fn shutdown(mut self, upstream_name: &str, reason: &'static str) {
-        // Clone runtime BEFORE taking pgid so subsequent log lines surface
-        // the actual pgid (otherwise `runtime.pgid` reads as None after
-        // `.take()` clears it).
-        let runtime = self.runtime.clone();
-        // INVARIANT: take pgid BEFORE any `.await` so the consuming Drop
-        // sees `None` and no-ops. This prevents double-kill on the graceful
-        // path. `runtime_pgid` carries the value through the function so the
-        // graceful TERM→sleep→KILL sequence below can still target the
-        // process group.
-        #[cfg(unix)]
-        let runtime_pgid = self.runtime.pgid.take();
-        let started = Instant::now();
-        let result = self
-            ._client_service
-            .close_with_timeout(STDIO_SHUTDOWN_TIMEOUT)
-            .await;
-        if let Some(server_task) = self._server_task.take() {
-            server_task.abort();
-        }
-
-        #[cfg(unix)]
-        if let (Some(pid), Some(pgid)) = (runtime.pid, runtime_pgid)
-            && pid_is_alive(pid)
-        {
-            let _ = terminate_process_group_sigterm(pgid);
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            if pid_is_alive(pid) {
-                let _ = terminate_process_group_sigkill(pgid);
-            }
-        }
-
-        match result {
-            Ok(Some(_)) => tracing::debug!(
-                surface = "dispatch",
-                service = "upstream.pool",
-                action = "upstream.connection.shutdown",
-                event = "finish",
-                operation = "connection.shutdown",
-                upstream = upstream_name,
-                reason,
-                pid = ?runtime.pid,
-                pgid = ?runtime.pgid,
-                elapsed_ms = started.elapsed().as_millis(),
-                "upstream connection shutdown finished"
-            ),
-            Ok(None) => tracing::warn!(
-                surface = "dispatch",
-                service = "upstream.pool",
-                action = "upstream.connection.shutdown",
-                event = "timeout",
-                operation = "connection.shutdown",
-                upstream = upstream_name,
-                reason,
-                pid = ?runtime.pid,
-                pgid = ?runtime.pgid,
-                timeout_ms = STDIO_SHUTDOWN_TIMEOUT.as_millis(),
-                elapsed_ms = started.elapsed().as_millis(),
-                "upstream connection shutdown timed out"
-            ),
-            Err(error) => tracing::warn!(
-                surface = "dispatch",
-                service = "upstream.pool",
-                action = "upstream.connection.shutdown",
-                event = "error",
-                operation = "connection.shutdown",
-                upstream = upstream_name,
-                reason,
-                pid = ?runtime.pid,
-                pgid = ?runtime.pgid,
-                error = %error,
-                elapsed_ms = started.elapsed().as_millis(),
-                "upstream connection shutdown failed"
-            ),
-        }
-    }
-}
-
 impl UpstreamPool {
     /// Create a new empty pool.
     #[must_use]
@@ -467,125 +333,6 @@ impl UpstreamPool {
     fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
         self
-    }
-
-    async fn acquire_peer(
-        &self,
-        upstream_name: &str,
-        capability: UpstreamCapability,
-        requested_operation: &'static str,
-    ) -> Option<rmcp::service::Peer<RoleClient>> {
-        let acquire_started = Instant::now();
-        tracing::debug!(
-            surface = "dispatch",
-            service = "upstream.pool",
-            action = "upstream.acquire",
-            event = "start",
-            operation = "connection.acquire",
-            requested_operation,
-            upstream = %upstream_name,
-            capability = capability_name(capability),
-            "upstream pool acquire start"
-        );
-        let connections = self.connections.read().await;
-        let connection_count = connections.len();
-        let peer = connections.get(upstream_name).map(|conn| conn.peer.clone());
-        drop(connections);
-        let pool_size = self.catalog.read().await.len();
-        let elapsed_ms = acquire_started.elapsed().as_millis();
-        if peer.is_some() {
-            tracing::debug!(
-                surface = "dispatch",
-                service = "upstream.pool",
-                action = "upstream.acquire",
-                event = "finish",
-                operation = "connection.acquire",
-                requested_operation,
-                upstream = %upstream_name,
-                capability = capability_name(capability),
-                elapsed_ms,
-                pool_size,
-                connection_count,
-                "upstream pool acquire finish"
-            );
-        } else {
-            tracing::warn!(
-                surface = "dispatch",
-                service = "upstream.pool",
-                action = "upstream.acquire",
-                event = "empty",
-                operation = "connection.acquire",
-                requested_operation,
-                upstream = %upstream_name,
-                capability = capability_name(capability),
-                elapsed_ms,
-                kind = "upstream_not_connected",
-                pool_size,
-                connection_count,
-                "upstream pool acquire empty"
-            );
-        }
-        peer
-    }
-
-    pub async fn drain_for_swap(&self, reason: &'static str) {
-        let started = Instant::now();
-        let catalog_count = self.catalog.read().await.len();
-        let connection_count = self.connections.read().await.len();
-        let probe_task_count = self.probe_tasks.read().await.len();
-        tracing::info!(
-            surface = "dispatch",
-            service = "upstream.pool",
-            action = "upstream.pool.drain",
-            event = "start",
-            operation = "pool.drain",
-            reason,
-            pool_size = catalog_count,
-            connection_count,
-            probe_task_count,
-            "upstream pool drain start"
-        );
-
-        let cancelled_probe_count = {
-            let mut tasks = self.probe_tasks.write().await;
-            let count = tasks.len();
-            for cancel in tasks.values() {
-                cancel.cancel();
-            }
-            tasks.clear();
-            count
-        };
-        let drained_connection_count = {
-            let mut connections = self.connections.write().await;
-            let count = connections.len();
-            let drained = connections.drain().collect::<Vec<_>>();
-            drop(connections);
-            for (upstream_name, connection) in drained {
-                connection.shutdown(&upstream_name, reason).await;
-            }
-            count
-        };
-        let drained_catalog_count = {
-            let mut catalog = self.catalog.write().await;
-            let count = catalog.len();
-            catalog.clear();
-            count
-        };
-        self.resource_upstreams.write().await.clear();
-
-        tracing::info!(
-            surface = "dispatch",
-            service = "upstream.pool",
-            action = "upstream.pool.drain",
-            event = "finish",
-            operation = "pool.drain",
-            reason,
-            elapsed_ms = started.elapsed().as_millis(),
-            drained_catalog_count,
-            drained_connection_count,
-            cancelled_probe_count,
-            "upstream pool drain finish"
-        );
     }
 
     /// Connect to all configured upstreams and discover their tools.
