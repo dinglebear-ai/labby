@@ -241,7 +241,7 @@ fn tool_search_scope_allowed_permits_all_expected_scopes() {
 }
 
 #[test]
-fn scout_allows_lab_read_but_invoke_requires_lab() {
+fn tool_search_allows_lab_read_but_execute_requires_lab() {
     // Intentional asymmetry: tool_search is a read-only discovery operation and therefore
     // accepts lab:read in addition to the stronger lab / lab:admin.
     // tool_execute must NOT accept lab:read — it executes upstream tools
