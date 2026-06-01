@@ -1,0 +1,2 @@
+# broadcastr ships a compiled binary; track it via Git LFS (bitwarden/bin is a shell script, intentionally not LFS)
+plugins/broadcastr/bin/broadcastr filter=lfs diff=lfs merge=lfs -text
