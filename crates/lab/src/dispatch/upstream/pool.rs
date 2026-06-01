@@ -44,14 +44,18 @@ use super::types::{
     UpstreamRuntimeOwner, UpstreamTool, UpstreamToolExposureRow,
 };
 
+mod entries;
 mod helpers;
+mod logging;
 
 pub use helpers::{UpstreamCachedSummary, in_process_upstream_name};
 pub(crate) use helpers::{redact_resource_uri_for_logging, upstream_discovery_concurrency};
 // Leaf helpers used unqualified throughout the residual pool module and its
 // descendants. Glob-importing the child's `pub(super)` items keeps existing
-// call sites unchanged while the bodies live in `pool/helpers.rs`.
+// call sites unchanged while the bodies live in the child modules.
+use entries::*;
 use helpers::*;
+use logging::*;
 
 /// Collect upstream peers for a capability in deterministic name order.
 async fn routable_upstream_peers(
@@ -142,145 +146,6 @@ async fn routable_upstream_peers(
 /// Returns true if the error represents a capability the upstream simply doesn't support
 /// (method not found / not implemented). These are healthy — the upstream just doesn't
 /// expose that capability, which is fine.
-fn is_capability_unsupported(error: &rmcp::ServiceError) -> bool {
-    let msg = error.to_string();
-    msg.contains("Method not found")
-        || msg.contains("method_not_found")
-        || msg.contains("-32601")
-        || msg.contains("Not implemented")
-}
-
-fn capability_name(capability: UpstreamCapability) -> &'static str {
-    match capability {
-        UpstreamCapability::Tools => "tools",
-        UpstreamCapability::Prompts => "prompts",
-        UpstreamCapability::Resources => "resources",
-    }
-}
-
-#[derive(Clone, Copy)]
-struct UpstreamRequestLog<'a> {
-    upstream: &'a str,
-    capability: &'static str,
-    operation: &'static str,
-    subject_scoped: bool,
-    transport: Option<&'static str>,
-    item_kind: Option<&'static str>,
-    item: Option<&'a str>,
-}
-
-impl<'a> UpstreamRequestLog<'a> {
-    fn tool(upstream: &'a str, tool: &'a str, subject_scoped: bool) -> Self {
-        Self {
-            upstream,
-            capability: "tools",
-            operation: "tool.call",
-            subject_scoped,
-            transport: None,
-            item_kind: Some("tool"),
-            item: Some(tool),
-        }
-    }
-
-    fn resource(upstream: &'a str, resource_uri: &'a str, subject_scoped: bool) -> Self {
-        Self {
-            upstream,
-            capability: "resources",
-            operation: "resource.read",
-            subject_scoped,
-            transport: None,
-            item_kind: Some("resource_uri"),
-            item: Some(resource_uri),
-        }
-    }
-
-    fn prompt(upstream: &'a str, prompt: &'a str, subject_scoped: bool) -> Self {
-        Self {
-            upstream,
-            capability: "prompts",
-            operation: "prompt.get",
-            subject_scoped,
-            transport: None,
-            item_kind: Some("prompt"),
-            item: Some(prompt),
-        }
-    }
-
-    fn with_transport(mut self, transport: &'static str) -> Self {
-        self.transport = Some(transport);
-        self
-    }
-}
-
-fn log_upstream_request_start(event: UpstreamRequestLog<'_>) {
-    tracing::debug!(
-        surface = "dispatch",
-        service = "upstream.pool",
-        action = "upstream.request",
-        event = "start",
-        upstream = %event.upstream,
-        capability = event.capability,
-        operation = event.operation,
-        subject_scoped = event.subject_scoped,
-        transport = event.transport,
-        item_kind = event.item_kind,
-        item = event.item,
-        "upstream.request.start"
-    );
-}
-
-fn log_upstream_request_finish(
-    event: UpstreamRequestLog<'_>,
-    elapsed_ms: u128,
-    response_bytes: Option<usize>,
-) {
-    tracing::info!(
-        surface = "dispatch",
-        service = "upstream.pool",
-        action = "upstream.request",
-        event = "finish",
-        upstream = %event.upstream,
-        capability = event.capability,
-        operation = event.operation,
-        subject_scoped = event.subject_scoped,
-        transport = event.transport,
-        item_kind = event.item_kind,
-        item = event.item,
-        elapsed_ms,
-        response_bytes,
-        "upstream.request.finish"
-    );
-}
-
-fn log_upstream_request_error(
-    event: UpstreamRequestLog<'_>,
-    elapsed_ms: u128,
-    kind: &'static str,
-    error: Option<&dyn std::fmt::Display>,
-    response_bytes: Option<usize>,
-    max_bytes: Option<usize>,
-) {
-    tracing::warn!(
-        surface = "dispatch",
-        service = "upstream.pool",
-        action = "upstream.request",
-        event = "error",
-        upstream = %event.upstream,
-        capability = event.capability,
-        operation = event.operation,
-        subject_scoped = event.subject_scoped,
-        transport = event.transport,
-        item_kind = event.item_kind,
-        item = event.item,
-        elapsed_ms,
-        kind,
-        error = error.map(tracing::field::display),
-        response_bytes,
-        max_bytes,
-        "upstream.request.error"
-    );
-}
-
 async fn discover_capability_counts(
     name: &str,
     peer: &rmcp::service::Peer<RoleClient>,
@@ -3681,124 +3546,6 @@ async fn connect_in_process_service_peer(
     ))
 }
 
-fn health_str(health: UpstreamHealth) -> &'static str {
-    match health {
-        UpstreamHealth::Healthy => "healthy",
-        UpstreamHealth::Unhealthy {
-            consecutive_failures,
-        } if consecutive_failures >= types::CIRCUIT_BREAKER_THRESHOLD => "open",
-        UpstreamHealth::Unhealthy { .. } => "degraded",
-    }
-}
-
-fn lazy_upstream_entry(config: &UpstreamConfig, name: Arc<str>) -> UpstreamEntry {
-    UpstreamEntry {
-        name,
-        tools: HashMap::new(),
-        exposure_policy: resolve_exposure_policy(&config.name, config.expose_tools.clone()),
-        prompt_count: 0,
-        resource_count: 0,
-        prompt_names: Vec::new(),
-        resource_uris: Vec::new(),
-        tool_health: UpstreamHealth::Healthy,
-        prompt_health: UpstreamHealth::Healthy,
-        resource_health: UpstreamHealth::Healthy,
-        tool_unhealthy_since: None,
-        prompt_unhealthy_since: None,
-        resource_unhealthy_since: None,
-        tool_last_error: None,
-        prompt_last_error: None,
-        resource_last_error: None,
-    }
-}
-
-fn healthy_in_process_entry(name: Arc<str>, tools: HashMap<String, UpstreamTool>) -> UpstreamEntry {
-    UpstreamEntry {
-        name,
-        tools,
-        exposure_policy: ToolExposurePolicy::All,
-        prompt_count: 0,
-        resource_count: 0,
-        prompt_names: Vec::new(),
-        resource_uris: Vec::new(),
-        tool_health: UpstreamHealth::Healthy,
-        prompt_health: UpstreamHealth::Healthy,
-        resource_health: UpstreamHealth::Healthy,
-        tool_unhealthy_since: None,
-        prompt_unhealthy_since: None,
-        resource_unhealthy_since: None,
-        tool_last_error: None,
-        prompt_last_error: None,
-        resource_last_error: None,
-    }
-}
-
-fn failed_in_process_entry(name: Arc<str>, error_message: String) -> UpstreamEntry {
-    UpstreamEntry {
-        name,
-        tools: HashMap::new(),
-        exposure_policy: ToolExposurePolicy::All,
-        prompt_count: 0,
-        resource_count: 0,
-        prompt_names: Vec::new(),
-        resource_uris: Vec::new(),
-        tool_health: UpstreamHealth::Unhealthy {
-            consecutive_failures: 1,
-        },
-        prompt_health: UpstreamHealth::Unhealthy {
-            consecutive_failures: 1,
-        },
-        resource_health: UpstreamHealth::Unhealthy {
-            consecutive_failures: 1,
-        },
-        tool_unhealthy_since: Some(Instant::now()),
-        prompt_unhealthy_since: Some(Instant::now()),
-        resource_unhealthy_since: Some(Instant::now()),
-        tool_last_error: Some(error_message.clone()),
-        prompt_last_error: Some(error_message.clone()),
-        resource_last_error: Some(error_message),
-    }
-}
-
-fn failed_in_process_entry_from_existing(
-    mut existing: UpstreamEntry,
-    error_message: String,
-) -> UpstreamEntry {
-    existing.tool_health = UpstreamHealth::Unhealthy {
-        consecutive_failures: 1,
-    };
-    existing.prompt_health = UpstreamHealth::Unhealthy {
-        consecutive_failures: 1,
-    };
-    existing.resource_health = UpstreamHealth::Unhealthy {
-        consecutive_failures: 1,
-    };
-    existing.tool_unhealthy_since = Some(Instant::now());
-    existing.prompt_unhealthy_since = Some(Instant::now());
-    existing.resource_unhealthy_since = Some(Instant::now());
-    existing.tool_last_error = Some(error_message.clone());
-    existing.prompt_last_error = Some(error_message.clone());
-    existing.resource_last_error = Some(error_message);
-    existing
-}
-
-fn resolve_exposure_policy(
-    upstream_name: &str,
-    expose_tools: Option<Vec<String>>,
-) -> ToolExposurePolicy {
-    match ToolExposurePolicy::from_optional(expose_tools) {
-        Ok(policy) => policy,
-        Err(error) => {
-            tracing::warn!(
-                upstream = %upstream_name,
-                error = %error,
-                "invalid upstream exposure policy; hiding all upstream tools"
-            );
-            ToolExposurePolicy::AllowList(Vec::new())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4038,64 +3785,6 @@ mod tests {
 
         assert!(!result);
         assert!(pool.find_tool("anything").await.is_none());
-    }
-
-    #[test]
-    fn upstream_request_log_helpers_emit_documented_fields_and_inherit_request_id() {
-        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let buf = crate::test_support::SharedBuf::default();
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new("labby=debug"))
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_current_span(true)
-                    .with_writer(buf.clone())
-                    .with_ansi(false)
-                    .without_time(),
-            );
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let span = tracing::info_span!(
-            "dispatch",
-            surface = "api",
-            service = "gateway",
-            action = "call_tool",
-            request_id = "req-123"
-        );
-        let _entered = span.enter();
-
-        let event = UpstreamRequestLog::tool("github", "search_repos", false);
-        log_upstream_request_start(event);
-        log_upstream_request_finish(event, 7, Some(128));
-        log_upstream_request_error(event, 9, "upstream_error", Some(&"boom"), None, None);
-
-        drop(_entered);
-        drop(_guard);
-
-        let logs = crate::test_support::captured_logs(&buf);
-        for expected in [
-            "\"request_id\":\"req-123\"",
-            "\"surface\":\"dispatch\"",
-            "\"service\":\"upstream.pool\"",
-            "\"action\":\"upstream.request\"",
-            "\"upstream\":\"github\"",
-            "\"capability\":\"tools\"",
-            "\"operation\":\"tool.call\"",
-            "\"event\":\"start\"",
-            "\"event\":\"finish\"",
-            "\"event\":\"error\"",
-            "\"elapsed_ms\":\"7\"",
-            "\"elapsed_ms\":\"9\"",
-            "\"kind\":\"upstream_error\"",
-        ] {
-            assert!(
-                logs.contains(expected),
-                "missing upstream request log field `{expected}` in:\n{logs}"
-            );
-        }
     }
 
     #[test]
@@ -5137,15 +4826,27 @@ mod tests {
     }
 
     #[test]
-    fn invalid_exposure_policy_fails_closed() {
-        let policy = resolve_exposure_policy("github", Some(vec!["   ".to_string()]));
-        assert_eq!(policy, ToolExposurePolicy::AllowList(Vec::new()));
-        assert!(!policy.matches("search_repos"));
-    }
-
-    #[test]
     fn observability_source_covers_pool_acquire_reprobe_and_drain_events() {
-        let source = include_str!("pool.rs");
+        // The pool was split into `pool.rs` + the `pool/` child modules, so the
+        // observability instrumentation now lives across several files. Scan the
+        // whole upstream-pool source tree (pool.rs + every pool/*.rs) so this
+        // guard stays robust as code relocates between modules. A missing string
+        // here means a real dropped-instrumentation regression — never delete an
+        // assertion to make this test pass; add the file the string moved into.
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/dispatch/upstream");
+        let mut source =
+            std::fs::read_to_string(format!("{dir}/pool.rs")).expect("read pool.rs source");
+        let pool_dir = format!("{dir}/pool");
+        if let Ok(entries) = std::fs::read_dir(&pool_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    source.push_str(
+                        &std::fs::read_to_string(&path).expect("read pool child module source"),
+                    );
+                }
+            }
+        }
         for expected in [
             "action = \"upstream.acquire\"",
             "elapsed_ms",
