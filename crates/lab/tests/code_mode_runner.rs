@@ -922,3 +922,21 @@ fn normalized_export_default_plain_arrow_with_prologue_executes_end_to_end() {
     );
     assert_single_call_round_trip(&normalized, json!({"pong": true}));
 }
+
+/// The AST *function* arm with a prologue (`const tool = "...";
+/// export default async function() { ... }`) goes through `normalize_module_code`
+/// → `wrap_default_fn_as_iife` nested inside the prologue wrapper — a different
+/// shape (double IIFE) than the arrow arms. Run it to prove the prologue binding
+/// is in runtime scope for the exported function too. Non-vacuous: the function
+/// references the prologue `const tool`.
+#[test]
+fn normalized_export_default_function_with_prologue_executes_end_to_end() {
+    let body = "const tool = \"upstream::test::ping\";\n\
+                export default async function() { return await callTool(tool, {}); }";
+    let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);
+    assert!(
+        normalized.starts_with("async () =>") && !normalized.contains("export default"),
+        "normalize must emit executable script code without export syntax, got: {normalized}"
+    );
+    assert_single_call_round_trip(&normalized, json!({"pong": true}));
+}

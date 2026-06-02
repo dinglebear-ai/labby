@@ -144,7 +144,10 @@ fn normalize_user_code_wraps_export_default_plain_arrow_with_prologue() {
     let result = super::normalize_user_code("const n = 7;\nexport default () => n;");
     assert!(!result.contains("export default"), "got: {result}");
     assert!(result.starts_with("async () => {"), "got: {result}");
-    assert!(result.contains("const n = 7"), "prologue must be kept: {result}");
+    assert!(
+        result.contains("const n = 7"),
+        "prologue must be kept: {result}"
+    );
     // Boa reformats the arrow body (`() => n` → `() => { return n; }`), so assert
     // behavior, not exact shape: the prologue runs and the arrow (which returns n)
     // is invoked, not returned uncalled.
@@ -152,7 +155,10 @@ fn normalize_user_code_wraps_export_default_plain_arrow_with_prologue() {
         result.contains("return await ("),
         "the entry must be invoked: {result}"
     );
-    assert!(result.contains("return n"), "arrow body must reference n: {result}");
+    assert!(
+        result.contains("return n"),
+        "arrow body must reference n: {result}"
+    );
 }
 
 #[test]
@@ -182,6 +188,35 @@ fn normalize_user_code_export_default_arrow_with_trailing_comment_prologue() {
     assert!(result.starts_with("async () => {"), "got: {result}");
     assert!(result.contains("const x = 1"), "got: {result}");
     assert!(result.contains("(async () => x)()"), "got: {result}");
+}
+
+#[test]
+fn normalize_user_code_export_default_arrow_after_url_string_prologue() {
+    // Regression: a `//` inside a prologue string (e.g. a URL) must not corrupt
+    // the statement-boundary check. The prologue already ends at `;`, so the
+    // textual fallback must split rather than loose-wrap into invalid JS.
+    let result = super::normalize_user_code("const u = \"http://x\"; export default async () => u");
+    assert!(!result.contains("export default"), "got: {result}");
+    assert!(result.starts_with("async () => {"), "got: {result}");
+    assert!(
+        result.contains("http://x"),
+        "prologue string must be kept: {result}"
+    );
+    assert!(result.contains("(async () => u)()"), "got: {result}");
+}
+
+#[test]
+fn normalize_user_code_export_default_class_with_prologue() {
+    // The DefaultClassDeclaration AST arm is only reachable with a prologue (a
+    // bare class default is caught by the start-anchored strip). Prologue kept.
+    let result = super::normalize_user_code("const base = 1;\nexport default class Foo {}");
+    assert!(!result.contains("export default"), "got: {result}");
+    assert!(result.starts_with("async () => {"), "got: {result}");
+    assert!(
+        result.contains("base = 1"),
+        "prologue must be kept: {result}"
+    );
+    assert!(result.contains("class Foo"), "got: {result}");
 }
 
 #[test]
@@ -226,6 +261,14 @@ fn normalize_user_code_finds_export_default_after_prologue() {
         assert!(
             result.contains("base + 1"),
             "the default-export body must be preserved, got: {result}"
+        );
+        // Non-vacuous on the PR's core mechanism: the prologue `const base = 41`
+        // must survive (otherwise `base` is undefined at runtime). `base + 1`
+        // alone lives in the export body and would pass even if the prologue were
+        // dropped — this is the assertion that actually guards prologue scoping.
+        assert!(
+            result.contains("base = 41"),
+            "the prologue binding must be preserved, got: {result}"
         );
         assert!(
             result.trim_start().starts_with("async () =>") || result.trim_start().starts_with('('),

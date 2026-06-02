@@ -76,23 +76,29 @@ pub fn normalize_user_code(code: &str) -> String {
 /// default-export value, but only when `export default` appears at a statement
 /// boundary after a non-empty prologue (the prologue ends at a `;` or `}`).
 ///
-/// This is a conservative textual fallback used only after the AST-based
-/// normalizers fail — which happens for an arrow function in default-export
-/// position, since Boa's `parse_module` cannot parse that form. The boundary
-/// check keeps it from firing on an `export default` substring inside an
-/// expression. The start-anchored `export default` case is handled earlier in
-/// `normalize_user_code`, so this only fires when a real prologue is present.
+/// This is a conservative textual fallback. String-literal safety does NOT come
+/// from this function — it comes from the caller: this runs only after both the
+/// module and script parses fail, so any valid script that merely contains
+/// `; export default` inside a string parses as a script first and never reaches
+/// here (see `normalize_user_code` and the `..._inside_a_string` test). The
+/// start-anchored `export default` case is also handled earlier, so this only
+/// fires when a real prologue precedes an otherwise-unparseable arrow default.
 fn split_prologue_export_default(code: &str) -> Option<(&str, &str)> {
     const NEEDLE: &str = "export default ";
     let mut from = 0;
     while let Some(rel) = code[from..].find(NEEDLE) {
         let idx = from + rel;
         let before = code[..idx].trim_end();
-        // Skip a trailing line/block comment when checking the statement boundary
-        // so `const x = 1; // note\nexport default ...` still splits. The comment
-        // is kept in the returned prologue (harmless — it precedes the `return`).
-        let boundary = strip_trailing_comment(before).trim_end();
-        if !boundary.is_empty() && (boundary.ends_with(';') || boundary.ends_with('}')) {
+        // A real statement terminator wins as-is. Only when `before` does not
+        // already end at a boundary do we retry after stripping a trailing
+        // comment, so `const x = 1; // note\nexport default ...` still splits —
+        // without letting a `//` *inside* a prologue string (e.g. a "http://"
+        // URL) corrupt an otherwise-terminated prologue.
+        let ends_at_boundary = |s: &str| s.ends_with(';') || s.ends_with('}');
+        let comment_stripped = strip_trailing_comment(before).trim_end();
+        if (!before.is_empty() && ends_at_boundary(before))
+            || (!comment_stripped.is_empty() && ends_at_boundary(comment_stripped))
+        {
             return Some((before, &code[idx + NEEDLE.len()..]));
         }
         from = idx + NEEDLE.len();
@@ -187,7 +193,17 @@ fn normalize_module_code(source: &str) -> Option<String> {
 
 /// Wrap a rendered `export default` function declaration as an immediately
 /// invoked expression inside an async arrow wrapper.
+///
+/// Boa renders an *anonymous* `export default [async] function() {...}` with the
+/// synthesized name `default` (`async function default() {...}`). `default` is a
+/// reserved word, so that is a syntax error when used as an expression in the
+/// IIFE. Drop the synthesized name to recover a valid anonymous function
+/// expression. (A genuinely named `export default function foo() {}` keeps `foo`
+/// and is untouched.)
 fn wrap_default_fn_as_iife(rendered: &str) -> String {
+    let rendered = rendered
+        .replacen("function default(", "function(", 1)
+        .replacen("function default (", "function (", 1);
     format!("async () => {{\nreturn ({rendered})();\n}}")
 }
 
