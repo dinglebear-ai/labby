@@ -26,7 +26,8 @@ use boa_parser::{Parser, Source as ParserSource};
 ///    (`const x = 1; export default async () => x`) keeps the prologue and
 ///    invokes the default-export entry so it closes over those bindings —
 ///    handled via the AST when Boa can parse it, and via a textual fallback for
-///    the one form it cannot (an arrow in default-export position).
+///    the one form it cannot (an *async* arrow in default-export position; a
+///    plain arrow parses as a DefaultAssignmentExpression and uses the AST).
 ///
 /// Only `execute` normalizes the caller's code through this before handing it to
 /// the Javy runner. `search` passes its code to the runner *raw* (no
@@ -54,10 +55,12 @@ pub fn normalize_user_code(code: &str) -> String {
         return normalized;
     }
     // Reached only when the code parses as neither a module nor a script — i.e.
-    // an *arrow* function in `export default` position after a prologue
+    // an *async arrow* function in `export default` position after a prologue
     // (`const x = 1; export default async () => x`): Boa's parse_module cannot
-    // parse an arrow default export, and `export` is invalid in a script, so both
-    // parses above returned `None`. Recover textually here. This is safe against
+    // parse an *async* arrow default export (a plain arrow parses fine as a
+    // DefaultAssignmentExpression and takes the AST path), and `export` is invalid
+    // in a script, so both parses above returned `None`. Recover textually here.
+    // This is safe against
     // false positives: valid script code that merely contains the literal
     // "; export default " (e.g. inside a string) parses as a script above and
     // never reaches this point. Run the prologue first and invoke the no-prologue
@@ -224,10 +227,27 @@ fn normalize_module_code(source: &str) -> Option<String> {
 /// expression. (A genuinely named `export default function foo() {}` keeps `foo`
 /// and is untouched.)
 fn wrap_default_fn_as_iife(rendered: &str) -> String {
-    let rendered = rendered
-        .replacen("function default(", "function(", 1)
-        .replacen("function default (", "function (", 1);
+    let rendered = strip_synthesized_default_name(rendered);
     format!("async () => {{\nreturn ({rendered})();\n}}")
+}
+
+/// Remove Boa's synthesized `default` name from an anonymous default-export
+/// function (`[async] function default(...)`), anchored at the leading function
+/// keyword. Anchoring matters: an unanchored replace would also rewrite a
+/// `function default(` substring appearing *inside* the body (e.g. in a string
+/// literal of a genuinely-named default export), silently corrupting it.
+fn strip_synthesized_default_name(rendered: &str) -> String {
+    for (synthesized, anonymous) in [
+        ("async function default(", "async function("),
+        ("async function default (", "async function ("),
+        ("function default(", "function("),
+        ("function default (", "function ("),
+    ] {
+        if let Some(rest) = rendered.strip_prefix(synthesized) {
+            return format!("{anonymous}{rest}");
+        }
+    }
+    rendered.to_string()
 }
 
 fn normalize_script_code(source: &str) -> Option<String> {

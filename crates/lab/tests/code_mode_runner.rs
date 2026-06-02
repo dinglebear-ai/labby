@@ -940,3 +940,22 @@ fn normalized_export_default_function_with_prologue_executes_end_to_end() {
     );
     assert_single_call_round_trip(&normalized, json!({"pong": true}));
 }
+
+/// Multiple prologue statements — a function declaration the default closes over
+/// plus a `const` computed from it — must all land in runtime scope. Routes
+/// through the AST path (plain-arrow default → DefaultAssignmentExpression),
+/// exercising the `prologue.join("\n")` rendering rather than the single-`const`
+/// shape the other e2e tests use. Non-vacuous: a dropped prologue leaves `mk`/
+/// `tool` undefined, so no tool_call fires.
+#[test]
+fn normalized_export_default_multi_statement_prologue_executes_end_to_end() {
+    let body = "function mk() { return \"upstream::test::ping\"; }\n\
+                const tool = mk();\n\
+                export default () => callTool(tool, {});";
+    let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);
+    assert!(
+        normalized.starts_with("async () =>") && !normalized.contains("export default"),
+        "normalize must emit executable script code without export syntax, got: {normalized}"
+    );
+    assert_single_call_round_trip(&normalized, json!({"pong": true}));
+}

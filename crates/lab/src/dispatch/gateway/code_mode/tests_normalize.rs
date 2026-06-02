@@ -140,7 +140,10 @@ fn normalize_user_code_wraps_export_default_arrow_with_prologue() {
 
 #[test]
 fn normalize_user_code_wraps_export_default_plain_arrow_with_prologue() {
-    // Non-async arrow default export after a prologue — same parse limitation.
+    // A *plain* (non-async) arrow default export parses fine as a
+    // DefaultAssignmentExpression, so unlike the async arrow it goes through the
+    // AST path (normalize_module_code), not the textual fallback. The prologue
+    // must still be preserved and the arrow invoked.
     let result = super::normalize_user_code("const n = 7;\nexport default () => n;");
     assert!(!result.contains("export default"), "got: {result}");
     assert!(result.starts_with("async () => {"), "got: {result}");
@@ -236,6 +239,28 @@ fn normalize_user_code_export_default_with_trailing_named_export() {
     assert!(
         result.contains("const x = 1"),
         "prologue must be kept: {result}"
+    );
+}
+
+#[test]
+fn normalize_user_code_named_default_function_body_literal_not_corrupted() {
+    // wrap_default_fn_as_iife strips only Boa's synthesized leading `default`
+    // name. A genuinely-named default export whose body contains the literal
+    // `function default(` (here inside a string) must survive verbatim — an
+    // unanchored replace would corrupt it to `function(`. Needs a NAMED fn plus a
+    // prologue to route through the AST (a bare default takes the start-anchored
+    // strip path).
+    let result = super::normalize_user_code(
+        "const x = 1;\nexport default function named() { return \"function default(\"; }",
+    );
+    assert!(!result.contains("export default"), "got: {result}");
+    assert!(
+        result.contains("function named"),
+        "named function kept: {result}"
+    );
+    assert!(
+        result.contains("function default("),
+        "the string-literal body must survive verbatim, not be corrupted: {result}"
     );
 }
 
