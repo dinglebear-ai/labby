@@ -16,16 +16,19 @@
 //!
 //! This build script runs locally (never on the dist remote), reads the
 //! directory itself, and emits an **empty** asset set when the directory is
-//! missing — a valid state for backend-only work. The generated
-//! `EMBEDDED_WEB_FILES` slice is consumed by `crate::api::web`.
+//! missing — a valid state for backend-only work. A genuine filesystem error
+//! (permissions, mid-walk read failure) fails the build via `Err` rather than
+//! being masked as "missing" — but we never `panic!` (clippy bans it). The
+//! generated `EMBEDDED_WEB_FILES` slice is consumed by `crate::api::web`.
 
 use std::env;
+use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn main() {
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-    let out_dir = env::var("OUT_DIR").expect("OUT_DIR");
+fn main() -> Result<(), Box<dyn Error>> {
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR")?;
+    let out_dir = env::var("OUT_DIR")?;
     let assets_dir = Path::new(&manifest_dir).join("../../apps/gateway-admin/out");
     let dest = Path::new(&out_dir).join("embedded_web_assets.rs");
 
@@ -34,12 +37,29 @@ fn main() {
 
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     match fs::canonicalize(&assets_dir) {
-        Ok(base) if base.is_dir() => collect_files(&base, &base, &mut files),
-        _ => {
+        Ok(base) if base.is_dir() => collect_files(&base, &base, &mut files)?,
+        Ok(base) => {
+            return Err(format!(
+                "web assets path {} exists but is not a directory",
+                base.display()
+            )
+            .into());
+        }
+        // A missing bundle is a valid backend-only state: embed nothing.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             println!(
                 "cargo:warning=apps/gateway-admin/out not found — embedding empty web assets \
                  (run `pnpm --filter gateway-admin build` to populate the bundle)"
             );
+        }
+        // Any other error (permissions, I/O) is a real failure — fail the build
+        // rather than silently shipping a binary with no UI.
+        Err(error) => {
+            return Err(format!(
+                "failed to access web assets at {}: {error}",
+                assets_dir.display()
+            )
+            .into());
         }
     }
 
@@ -56,27 +76,32 @@ fn main() {
     }
     code.push_str("];\n");
 
-    fs::write(&dest, code).expect("write embedded_web_assets.rs");
+    fs::write(&dest, code)?;
+    Ok(())
 }
 
 /// Recursively collect every file under `dir`, keying it by its forward-slash
-/// path relative to `base`.
-fn collect_files(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) => {
-            println!(
-                "cargo:warning=failed to read web asset dir {}: {error}",
-                dir.display()
-            );
-            return;
-        }
-    };
+/// path relative to `base`. A read error (the directory or a single entry)
+/// propagates as `Err` so an incomplete bundle fails the build instead of
+/// silently embedding a partial asset set.
+fn collect_files(
+    base: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> Result<(), Box<dyn Error>> {
+    let entries = fs::read_dir(dir)
+        .map_err(|error| format!("failed to read web asset dir {}: {error}", dir.display()))?;
 
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read a web asset entry in {}: {error}",
+                dir.display()
+            )
+        })?;
         let path = entry.path();
         if path.is_dir() {
-            collect_files(base, &path, out);
+            collect_files(base, &path, out)?;
         } else if path.is_file() {
             // Content changes must retrigger the build.
             println!("cargo:rerun-if-changed={}", path.display());
@@ -88,4 +113,5 @@ fn collect_files(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
             out.push((rel, path));
         }
     }
+    Ok(())
 }
