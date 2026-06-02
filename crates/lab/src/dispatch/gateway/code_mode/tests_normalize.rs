@@ -144,8 +144,44 @@ fn normalize_user_code_wraps_export_default_plain_arrow_with_prologue() {
     let result = super::normalize_user_code("const n = 7;\nexport default () => n;");
     assert!(!result.contains("export default"), "got: {result}");
     assert!(result.starts_with("async () => {"), "got: {result}");
-    assert!(result.contains("const n = 7"), "got: {result}");
-    assert!(result.contains("(() => n)()"), "got: {result}");
+    assert!(result.contains("const n = 7"), "prologue must be kept: {result}");
+    // Boa reformats the arrow body (`() => n` → `() => { return n; }`), so assert
+    // behavior, not exact shape: the prologue runs and the arrow (which returns n)
+    // is invoked, not returned uncalled.
+    assert!(
+        result.contains("return await ("),
+        "the entry must be invoked: {result}"
+    );
+    assert!(result.contains("return n"), "arrow body must reference n: {result}");
+}
+
+#[test]
+fn normalize_user_code_does_not_split_export_default_inside_a_string() {
+    // A valid script whose string literal merely contains "; export default "
+    // must parse as a script (returning the trailing expression `s`), not be
+    // split textually into a broken module wrapper. The textual fallback only
+    // runs after both parses fail, so this never reaches it.
+    let result = super::normalize_user_code("const s = \"; export default \"; s");
+    assert!(
+        !result.contains("return await ("),
+        "a string literal must not be IIFE-wrapped as an export default: {result}"
+    );
+    assert!(result.contains("const s ="), "prologue kept: {result}");
+    assert!(
+        result.contains("return (s)"),
+        "the trailing expression must be returned: {result}"
+    );
+}
+
+#[test]
+fn normalize_user_code_export_default_arrow_with_trailing_comment_prologue() {
+    // A trailing line comment after the prologue's `;` must not defeat the
+    // statement-boundary check for the textual arrow-default fallback.
+    let result = super::normalize_user_code("const x = 1; // note\nexport default async () => x");
+    assert!(!result.contains("export default"), "got: {result}");
+    assert!(result.starts_with("async () => {"), "got: {result}");
+    assert!(result.contains("const x = 1"), "got: {result}");
+    assert!(result.contains("(async () => x)()"), "got: {result}");
 }
 
 #[test]

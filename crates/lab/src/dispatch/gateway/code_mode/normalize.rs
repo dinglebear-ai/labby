@@ -45,15 +45,18 @@ pub fn normalize_user_code(code: &str) -> String {
         }
         return normalize_user_code(inner);
     }
-    // `{prologue} export default <value>` — a `export default` after prologue
-    // statements. Boa's AST path either drops the prologue (its
-    // DefaultAssignmentExpression / function / class arms render only the export
-    // declaration) or cannot parse the form at all (an *arrow* in default-export
-    // position). Handle it textually instead: re-derive the no-prologue entry
-    // (reusing the start-anchored handling above), then run the prologue first and
-    // invoke that entry inside one wrapper so the entry closes over the prologue's
-    // bindings. The start-anchored case returned earlier, so this only fires when
-    // a real prologue precedes the export.
+    if let Some(normalized) = normalize_user_code_parsed(code) {
+        return normalized;
+    }
+    // Reached only when the code parses as neither a module nor a script — i.e.
+    // an *arrow* function in `export default` position after a prologue
+    // (`const x = 1; export default async () => x`): Boa's parse_module cannot
+    // parse an arrow default export, and `export` is invalid in a script, so both
+    // parses above returned `None`. Recover textually here. This is safe against
+    // false positives: valid script code that merely contains the literal
+    // "; export default " (e.g. inside a string) parses as a script above and
+    // never reaches this point. Run the prologue first and invoke the no-prologue
+    // entry inside one wrapper so it closes over the prologue's bindings.
     if let Some((prologue, value)) = split_prologue_export_default(code) {
         let value = value.trim().trim_end_matches(';').trim();
         if !value.is_empty() {
@@ -61,7 +64,7 @@ pub fn normalize_user_code(code: &str) -> String {
             return format!("async () => {{\n{prologue}\nreturn await ({entry})();\n}}");
         }
     }
-    normalize_user_code_parsed(code).unwrap_or_else(|| wrap_loose_code_as_async_arrow(code))
+    wrap_loose_code_as_async_arrow(code)
 }
 
 /// Split `{prologue} export default {value}` into the prologue and the
@@ -80,7 +83,11 @@ fn split_prologue_export_default(code: &str) -> Option<(&str, &str)> {
     while let Some(rel) = code[from..].find(NEEDLE) {
         let idx = from + rel;
         let before = code[..idx].trim_end();
-        if !before.is_empty() && (before.ends_with(';') || before.ends_with('}')) {
+        // Skip a trailing line/block comment when checking the statement boundary
+        // so `const x = 1; // note\nexport default ...` still splits. The comment
+        // is kept in the returned prologue (harmless — it precedes the `return`).
+        let boundary = strip_trailing_comment(before).trim_end();
+        if !boundary.is_empty() && (boundary.ends_with(';') || boundary.ends_with('}')) {
             return Some((before, &code[idx + NEEDLE.len()..]));
         }
         from = idx + NEEDLE.len();
@@ -132,32 +139,44 @@ fn normalize_module_code(source: &str) -> Option<String> {
     let module = parser
         .parse_module(&boa_ast::scope::Scope::new_global(), &mut interner)
         .ok()?;
-    // Find the `export default` declaration among the module items, ignoring any
-    // import/other prologue items. Requiring exactly one item made a module with
-    // a prologue (e.g. `const x = 1; export default async () => x`) fall through
-    // to the loose-wrap path and produce invalid wrapper JS.
-    let export = module.items().items().iter().find_map(|item| {
-        if let boa_ast::ModuleItem::ExportDeclaration(export) = item {
-            Some(export)
-        } else {
-            None
+    // Separate the `export default` declaration from any prologue statements, so a
+    // module with leading statements (`const x = 1; export default <X>`) keeps
+    // those bindings. Rendering only the export left the default's free variables
+    // undefined at runtime. Imports are skipped — the sandbox has no module loader.
+    let mut prologue: Vec<String> = Vec::new();
+    let mut export = None;
+    for item in module.items().items() {
+        match item {
+            boa_ast::ModuleItem::ExportDeclaration(decl) => export = Some(decl),
+            boa_ast::ModuleItem::ImportDeclaration(_) => {}
+            boa_ast::ModuleItem::StatementListItem(stmt) => {
+                prologue.push(stmt.to_indented_string(&interner, 0));
+            }
         }
-    })?;
-    match export.as_ref() {
+    }
+    let entry = match export?.as_ref() {
         boa_ast::declaration::ExportDeclaration::DefaultAssignmentExpression(expr) => {
-            Some(normalize_user_code(&expr.to_interned_string(&interner)))
+            normalize_user_code(&expr.to_interned_string(&interner))
         }
-        boa_ast::declaration::ExportDeclaration::DefaultFunctionDeclaration(function) => Some(
-            wrap_default_fn_as_iife(&function.to_indented_string(&interner, 0)),
-        ),
-        boa_ast::declaration::ExportDeclaration::DefaultAsyncFunctionDeclaration(function) => Some(
-            wrap_default_fn_as_iife(&function.to_indented_string(&interner, 0)),
-        ),
-        boa_ast::declaration::ExportDeclaration::DefaultClassDeclaration(class) => Some(format!(
+        boa_ast::declaration::ExportDeclaration::DefaultFunctionDeclaration(function) => {
+            wrap_default_fn_as_iife(&function.to_indented_string(&interner, 0))
+        }
+        boa_ast::declaration::ExportDeclaration::DefaultAsyncFunctionDeclaration(function) => {
+            wrap_default_fn_as_iife(&function.to_indented_string(&interner, 0))
+        }
+        boa_ast::declaration::ExportDeclaration::DefaultClassDeclaration(class) => format!(
             "async () => {{\nreturn ({});\n}}",
             class.to_indented_string(&interner, 0)
-        )),
-        _ => None,
+        ),
+        _ => return None,
+    };
+    if prologue.is_empty() {
+        Some(entry)
+    } else {
+        let prologue = prologue.join("\n");
+        Some(format!(
+            "async () => {{\n{prologue}\nreturn await ({entry})();\n}}"
+        ))
     }
 }
 
