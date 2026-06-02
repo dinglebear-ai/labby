@@ -112,6 +112,43 @@ fn normalize_user_code_wraps_export_default_sync_function_as_iife() {
 }
 
 #[test]
+fn normalize_user_code_wraps_export_default_arrow_with_prologue() {
+    // Boa's parse_module cannot parse an arrow in default-export position, so a
+    // module with a prologue (`const x = 1; export default async () => x`) used
+    // to fall through to loose-wrapping, which left `export default` inside the
+    // wrapper body and produced invalid JS. The prologue-aware fallback must turn
+    // it into a single valid function expression that runs the prologue and
+    // invokes the arrow (which closes over the prologue binding).
+    let result = super::normalize_user_code("const x = 1; export default async () => x");
+    assert!(
+        !result.contains("export default"),
+        "export default must be removed: {result}"
+    );
+    assert!(
+        result.starts_with("async () => {"),
+        "must be a bare async function expression: {result}"
+    );
+    assert!(
+        result.contains("const x = 1"),
+        "prologue must be kept: {result}"
+    );
+    assert!(
+        result.contains("(async () => x)()"),
+        "the arrow must be invoked so its result is returned: {result}"
+    );
+}
+
+#[test]
+fn normalize_user_code_wraps_export_default_plain_arrow_with_prologue() {
+    // Non-async arrow default export after a prologue — same parse limitation.
+    let result = super::normalize_user_code("const n = 7;\nexport default () => n;");
+    assert!(!result.contains("export default"), "got: {result}");
+    assert!(result.starts_with("async () => {"), "got: {result}");
+    assert!(result.contains("const n = 7"), "got: {result}");
+    assert!(result.contains("(() => n)()"), "got: {result}");
+}
+
+#[test]
 fn normalize_user_code_passthrough_for_plain_expressions() {
     let plain = "async () => callTool('lab::test', {})";
     let result = super::normalize_user_code(plain);

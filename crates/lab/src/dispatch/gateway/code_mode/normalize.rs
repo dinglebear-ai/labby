@@ -45,7 +45,47 @@ pub fn normalize_user_code(code: &str) -> String {
         }
         return normalize_user_code(inner);
     }
+    // `{prologue} export default <value>` — a `export default` after prologue
+    // statements. Boa's AST path either drops the prologue (its
+    // DefaultAssignmentExpression / function / class arms render only the export
+    // declaration) or cannot parse the form at all (an *arrow* in default-export
+    // position). Handle it textually instead: re-derive the no-prologue entry
+    // (reusing the start-anchored handling above), then run the prologue first and
+    // invoke that entry inside one wrapper so the entry closes over the prologue's
+    // bindings. The start-anchored case returned earlier, so this only fires when
+    // a real prologue precedes the export.
+    if let Some((prologue, value)) = split_prologue_export_default(code) {
+        let value = value.trim().trim_end_matches(';').trim();
+        if !value.is_empty() {
+            let entry = normalize_user_code(&format!("export default {value}"));
+            return format!("async () => {{\n{prologue}\nreturn await ({entry})();\n}}");
+        }
+    }
     normalize_user_code_parsed(code).unwrap_or_else(|| wrap_loose_code_as_async_arrow(code))
+}
+
+/// Split `{prologue} export default {value}` into the prologue and the
+/// default-export value, but only when `export default` appears at a statement
+/// boundary after a non-empty prologue (the prologue ends at a `;` or `}`).
+///
+/// This is a conservative textual fallback used only after the AST-based
+/// normalizers fail — which happens for an arrow function in default-export
+/// position, since Boa's `parse_module` cannot parse that form. The boundary
+/// check keeps it from firing on an `export default` substring inside an
+/// expression. The start-anchored `export default` case is handled earlier in
+/// `normalize_user_code`, so this only fires when a real prologue is present.
+fn split_prologue_export_default(code: &str) -> Option<(&str, &str)> {
+    const NEEDLE: &str = "export default ";
+    let mut from = 0;
+    while let Some(rel) = code[from..].find(NEEDLE) {
+        let idx = from + rel;
+        let before = code[..idx].trim_end();
+        if !before.is_empty() && (before.ends_with(';') || before.ends_with('}')) {
+            return Some((before, &code[idx + NEEDLE.len()..]));
+        }
+        from = idx + NEEDLE.len();
+    }
+    None
 }
 
 fn wrap_loose_code_as_async_arrow(code: &str) -> String {

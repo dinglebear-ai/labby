@@ -884,3 +884,22 @@ fn normalized_export_default_form_executes_end_to_end() {
     );
     assert_single_call_round_trip(&normalized, json!({"pong": true}));
 }
+
+/// An arrow function in `export default` position *with a prologue*
+/// (`const tool = "..."; export default async () => callTool(tool, {})`) must
+/// execute end-to-end. Boa's parse_module cannot parse an arrow default export,
+/// and its AST arms drop the prologue, so this used to loose-wrap into invalid JS
+/// (or lose `tool`). Non-vacuous: the arrow references the prologue binding
+/// `tool`, so if the prologue were dropped, `tool` would be undefined and no
+/// tool_call would fire (the round-trip helper would fail waiting for one).
+#[test]
+fn normalized_export_default_arrow_with_prologue_executes_end_to_end() {
+    let body = "const tool = \"upstream::test::ping\";\n\
+                export default async () => await callTool(tool, {});";
+    let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);
+    assert!(
+        normalized.starts_with("async () =>") && !normalized.contains("export default"),
+        "normalize must emit executable script code without export syntax, got: {normalized}"
+    );
+    assert_single_call_round_trip(&normalized, json!({"pong": true}));
+}
