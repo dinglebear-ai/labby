@@ -4,8 +4,6 @@
 //! public registry URL when the setting is absent.
 
 #[cfg(feature = "mcpregistry")]
-use lab_apis::core::Auth;
-#[cfg(feature = "mcpregistry")]
 use lab_apis::mcpregistry::client::McpRegistryClient;
 
 use crate::config;
@@ -15,7 +13,7 @@ use crate::dispatch::error::ToolError;
 #[cfg(feature = "mcpregistry")]
 pub fn require_mcp_client() -> Result<McpRegistryClient, ToolError> {
     let url = configured_registry_url()?;
-    McpRegistryClient::new(&url, Auth::None).map_err(|e| ToolError::Sdk {
+    McpRegistryClient::new(&url).map_err(|e| ToolError::Sdk {
         sdk_kind: "internal_error".to_string(),
         message: format!("McpRegistry client init failed: {e}"),
     })

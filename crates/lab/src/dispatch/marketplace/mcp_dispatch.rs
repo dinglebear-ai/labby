@@ -916,7 +916,6 @@ async fn dispatch_mcp_local(action: &str, params: Value) -> Result<Value, ToolEr
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use lab_apis::core::Auth;
     use lab_apis::mcpregistry::types::{
         EnvironmentVariable, Package, Transport as RegistryTransport,
     };
@@ -1068,7 +1067,7 @@ mod tests {
         let store = crate::dispatch::marketplace::store::RegistryStore::open(&db_path)
             .await
             .unwrap();
-        let client = McpRegistryClient::new("http://127.0.0.1:9", Auth::None).unwrap();
+        let client = McpRegistryClient::new("http://127.0.0.1:9").unwrap();
 
         let previous =
             crate::dispatch::marketplace::sync::SYNC_IN_PROGRESS.swap(true, Ordering::AcqRel);

@@ -14,24 +14,22 @@ pub const DEFAULT_BASE_URL: &str = "https://registry.modelcontextprotocol.io";
 
 /// Client for the official MCP Registry at <https://registry.modelcontextprotocol.io>.
 ///
-/// The registry requires no auth; pass `Auth::None` for normal use. A custom
-/// `reqwest::Client` with redirect following disabled is built internally to
-/// prevent SSRF via malicious registry entries that redirect to internal addresses.
+/// The registry is a public, unauthenticated API. A custom `reqwest::Client`
+/// with redirect following disabled is built internally to prevent SSRF via
+/// malicious registry entries that redirect to internal addresses.
 pub struct McpRegistryClient {
     http: HttpClient,
 }
 
 impl McpRegistryClient {
-    /// Build a client against `base_url` with the given auth strategy.
+    /// Build a client against `base_url`.
     ///
-    /// Pass `Auth::None` for the official public registry. Pass `Auth::Bearer`
-    /// or `Auth::Token` when targeting a private registry mirror that requires
-    /// authentication.
+    /// The MCP Registry is always unauthenticated; no auth parameter is accepted.
     ///
     /// # Errors
     /// Returns [`RegistryError::Api`] if the TLS backend or redirect policy
     /// fails to initialise.
-    pub fn new(base_url: &str, auth: Auth) -> Result<Self, RegistryError> {
+    pub fn new(base_url: &str) -> Result<Self, RegistryError> {
         let inner = reqwest::Client::builder()
             .user_agent(concat!("lab-apis/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(5))
@@ -43,7 +41,7 @@ impl McpRegistryClient {
             .map_err(|e| ApiError::Internal(format!("reqwest::Client::build: {e}")))?;
 
         Ok(Self {
-            http: HttpClient::from_parts(base_url, auth, inner),
+            http: HttpClient::from_parts(base_url, Auth::None, inner),
         })
     }
 
@@ -143,8 +141,7 @@ mod tests {
     use super::*;
 
     fn make_client() -> McpRegistryClient {
-        McpRegistryClient::new(DEFAULT_BASE_URL, Auth::None)
-            .expect("client construction should succeed")
+        McpRegistryClient::new(DEFAULT_BASE_URL).expect("client construction should succeed")
     }
 
     #[test]
