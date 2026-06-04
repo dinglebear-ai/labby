@@ -67,6 +67,10 @@ impl OauthClientCache {
     /// registration than the current `config`, the entry is evicted and
     /// rebuilt so stale `client_id`s never sign requests.
     ///
+    /// For `Dynamic` upstreams the fingerprint includes the stored
+    /// `client_id` (fetched from SQLite via the upstream manager) so a
+    /// re-registration cycle evicts the cached `AuthClient` (lab-77y5.13).
+    ///
     /// Concurrent first-request callers for the same key are serialised
     /// by a per-key mutex so only one token exchange runs.
     pub async fn get_or_build(
@@ -74,7 +78,30 @@ impl OauthClientCache {
         config: &UpstreamConfig,
         subject: &str,
     ) -> Result<Arc<AuthClient<reqwest::Client>>, OauthError> {
-        self.get_or_insert_with(config, subject, || async {
+        // For Dynamic upstreams, include the stored client_id in the
+        // fingerprint so a re-registration is detected (lab-77y5.13).
+        let dynamic_client_id: Option<String> =
+            if config
+                .oauth
+                .as_ref()
+                .is_some_and(|o| matches!(o.registration, UpstreamOauthRegistration::Dynamic))
+            {
+                self.managers
+                    .get(&config.name)
+                    .map(|r| r.clone())
+                    .ok_or_else(|| {
+                        OauthError::Internal(format!(
+                            "no oauth manager registered for upstream '{}'",
+                            config.name
+                        ))
+                    })?
+                    .stored_dynamic_client_id(subject)
+                    .await?
+            } else {
+                None
+            };
+
+        self.get_or_insert_with(config, subject, dynamic_client_id.as_deref(), || async {
             let manager = self
                 .managers
                 .get(&config.name)
@@ -95,13 +122,16 @@ impl OauthClientCache {
         &self,
         config: &UpstreamConfig,
         subject: &str,
+        // For `Dynamic` upstreams: the stored `client_id` to fold into the
+        // fingerprint. `None` for non-dynamic upstreams.
+        dynamic_client_id: Option<&str>,
         builder: F,
     ) -> Result<Arc<AuthClient<reqwest::Client>>, OauthError>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Arc<AuthClient<reqwest::Client>>, OauthError>>,
     {
-        let fingerprint = registration_fingerprint(config)?;
+        let fingerprint = registration_fingerprint(config, dynamic_client_id)?;
         let key = (config.name.clone(), subject.to_string());
 
         if let Some(entry) = self.clients.get(&key)
@@ -202,9 +232,12 @@ impl OauthClientCache {
 ///
 /// When the fingerprint changes, the cached `AuthClient` is discarded.
 /// `Preregistered` changes when `client_id` rotates; `ClientMetadataDocument`
-/// changes when its URL moves; `Dynamic` is treated as a single identity per
-/// upstream since the AS assigns the client_id at runtime.
-fn registration_fingerprint(config: &UpstreamConfig) -> Result<String, OauthError> {
+/// changes when its URL moves; `Dynamic` includes the stored per-subject
+/// `client_id` (lab-77y5.13) so a re-registration cycle evicts the stale entry.
+fn registration_fingerprint(
+    config: &UpstreamConfig,
+    dynamic_client_id: Option<&str>,
+) -> Result<String, OauthError> {
     let oauth = config
         .oauth
         .as_ref()
@@ -217,7 +250,13 @@ fn registration_fingerprint(config: &UpstreamConfig) -> Result<String, OauthErro
         UpstreamOauthRegistration::ClientMetadataDocument { url } => {
             format!("client_metadata_document:{url}")
         }
-        UpstreamOauthRegistration::Dynamic => "dynamic".to_string(),
+        UpstreamOauthRegistration::Dynamic => {
+            // Include the stored client_id so a re-registration evicts the
+            // stale cached AuthClient (lab-77y5.13). Fall back to "none" when
+            // no client_id has been persisted yet (first-time registration
+            // in-flight) so the initial build is not blocked.
+            format!("dynamic:{}", dynamic_client_id.unwrap_or("none"))
+        }
     })
 }
 
@@ -257,15 +296,15 @@ mod tests {
 
     #[test]
     fn fingerprint_differs_on_client_id_change() {
-        let a = registration_fingerprint(&cfg("acme", "id-1")).unwrap();
-        let b = registration_fingerprint(&cfg("acme", "id-2")).unwrap();
+        let a = registration_fingerprint(&cfg("acme", "id-1"), None).unwrap();
+        let b = registration_fingerprint(&cfg("acme", "id-2"), None).unwrap();
         assert_ne!(a, b);
     }
 
     #[test]
     fn fingerprint_stable_for_identical_config() {
-        let a = registration_fingerprint(&cfg("acme", "id-1")).unwrap();
-        let b = registration_fingerprint(&cfg("acme", "id-1")).unwrap();
+        let a = registration_fingerprint(&cfg("acme", "id-1"), None).unwrap();
+        let b = registration_fingerprint(&cfg("acme", "id-1"), None).unwrap();
         assert_eq!(a, b);
     }
 
@@ -295,7 +334,7 @@ mod tests {
             let builds = Arc::clone(&builds);
             tokio::spawn(async move {
                 cache
-                    .get_or_insert_with(&config, "alice", || {
+                    .get_or_insert_with(&config, "alice", None, || {
                         let builds = Arc::clone(&builds);
                         async move {
                             builds.fetch_add(1, Ordering::SeqCst);
@@ -313,7 +352,7 @@ mod tests {
             let builds = Arc::clone(&builds);
             tokio::spawn(async move {
                 cache
-                    .get_or_insert_with(&config, "alice", || {
+                    .get_or_insert_with(&config, "alice", None, || {
                         let builds = Arc::clone(&builds);
                         async move {
                             builds.fetch_add(1, Ordering::SeqCst);
@@ -337,12 +376,12 @@ mod tests {
         let cache = OauthClientCache::new(Arc::new(DashMap::new()));
         let old = cfg("acme", "id-1");
         let new = cfg("acme", "id-2");
-        let old_fingerprint = registration_fingerprint(&old).expect("old fingerprint");
+        let old_fingerprint = registration_fingerprint(&old, None).expect("old fingerprint");
         cache.insert_for_tests("acme", "alice", &old_fingerprint, dummy_auth_client().await);
 
         let rebuilt = Arc::new(AtomicUsize::new(0));
         let client = cache
-            .get_or_insert_with(&new, "alice", || {
+            .get_or_insert_with(&new, "alice", None, || {
                 let rebuilt = Arc::clone(&rebuilt);
                 async move {
                     rebuilt.fetch_add(1, Ordering::SeqCst);
@@ -358,7 +397,7 @@ mod tests {
             .clients
             .get(&(String::from("acme"), String::from("alice")))
             .expect("stored client");
-        assert_eq!(stored.fingerprint, registration_fingerprint(&new).unwrap());
+        assert_eq!(stored.fingerprint, registration_fingerprint(&new, None).unwrap());
         assert!(Arc::ptr_eq(&stored.client, &client));
     }
 
