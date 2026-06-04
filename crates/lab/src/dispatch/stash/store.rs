@@ -281,6 +281,110 @@ impl StashStore {
         remove_if_exists(&path)
     }
 
+    /// Fully delete a component and all its associated data from the store.
+    ///
+    /// Removes, in order:
+    /// 1. All revision directories and files for the component.
+    /// 2. The per-component revision index (`revisions/by-component/<id>.json`).
+    /// 3. All provider records belonging to the component.
+    /// 4. The per-component provider index (`providers/by-component/<id>.json`).
+    /// 5. The workspace directory (`workspaces/<id>/`).
+    /// 6. The component JSON record (`components/<id>.json`).
+    /// 7. The advisory lock file (`components/<id>.lock`).
+    /// 8. The deploy lock file (`components/<id>.deploy.lock`).
+    ///
+    /// All steps are best-effort after validation: a missing file or directory at
+    /// any step is treated as already gone, not an error. The operation runs inside
+    /// `with_component_lock` to serialise concurrent callers.
+    ///
+    /// **Callers must NOT hold the component lock before calling this method.**
+    pub fn delete_component(&self, id: &str) -> Result<(), ToolError> {
+        Self::validate_id(id)?;
+
+        self.with_component_lock(id, || {
+            // 1. Remove all revision dirs belonging to this component.
+            let rev_ids = self.revision_ids_for_component(id)?;
+            for rev_id in &rev_ids {
+                let rev_dir = self.revision_dir(rev_id);
+                remove_dir_all_if_exists(&rev_dir)?;
+            }
+
+            // 2. Remove the revision index for this component.
+            let rev_index = self.component_revision_index_path(id);
+            remove_if_exists(&rev_index)?;
+
+            // 3. Remove all provider records belonging to this component.
+            let providers = self.list_providers_for(id)?;
+            for prov in &providers {
+                let prov_path = self.provider_record_path(&prov.id);
+                remove_if_exists(&prov_path)?;
+            }
+
+            // 4. Remove the provider index for this component.
+            let prov_index = self.component_provider_index_path(id);
+            remove_if_exists(&prov_index)?;
+
+            // 5. Remove the workspace directory.
+            let workspace = self.workspace_dir(id);
+            remove_dir_all_if_exists(&workspace)?;
+
+            // 6. Remove the component JSON record.
+            let comp_path = self.component_record_path(id);
+            remove_if_exists(&comp_path)?;
+
+            Ok(())
+        })?;
+
+        // 7 & 8. Remove lock files AFTER releasing the lock (guard dropped above).
+        //        These are outside `with_component_lock` so we are not holding an
+        //        fd_lock guard on the file we are about to delete.
+        let lock_path = self.component_lock_path(id);
+        remove_if_exists(&lock_path)?;
+        let deploy_lock_path = self.component_deploy_lock_path(id);
+        remove_if_exists(&deploy_lock_path)?;
+
+        Ok(())
+    }
+
+    /// Return the list of revision IDs that belong to `component_id`.
+    ///
+    /// Uses the per-component index when available; falls back to a full
+    /// O(R) scan over `revisions/` when the index is absent or corrupt.
+    fn revision_ids_for_component(&self, component_id: &str) -> Result<Vec<String>, ToolError> {
+        let index_path = self.component_revision_index_path(component_id);
+        if index_path.exists() {
+            let bytes = std::fs::read(&index_path).map_err(io_internal)?;
+            if let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) {
+                return Ok(ids);
+            }
+            // Corrupt index — fall through to full scan.
+        }
+
+        // Full scan fallback.
+        let revisions_dir = self.root.join(DIR_REVISIONS);
+        if !revisions_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut ids = Vec::new();
+        for entry in std::fs::read_dir(&revisions_dir).map_err(io_internal)? {
+            let entry = entry.map_err(io_internal)?;
+            if entry.file_name() == "by-component" {
+                continue;
+            }
+            let meta_path = entry.path().join(FILE_META);
+            let bytes = match std::fs::read(&meta_path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(io_internal(e)),
+            };
+            let rev: StashRevision = serde_json::from_slice(&bytes).map_err(decode_error)?;
+            if rev.component_id == component_id {
+                ids.push(rev.id);
+            }
+        }
+        Ok(ids)
+    }
+
     // ── Revision meta I/O ────────────────────────────────────────────────────
 
     /// Read and deserialize a revision's `meta.json`, or `None` if absent.
@@ -762,6 +866,15 @@ fn list_json_records<T: serde::de::DeserializeOwned>(dir: &Path) -> Result<Vec<T
 /// Remove a file, treating `NotFound` as success.
 fn remove_if_exists(path: &Path) -> Result<(), ToolError> {
     match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_internal(e)),
+    }
+}
+
+/// Recursively remove a directory tree, treating `NotFound` as success.
+fn remove_dir_all_if_exists(path: &Path) -> Result<(), ToolError> {
+    match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(io_internal(e)),
@@ -1281,5 +1394,114 @@ mod tests {
             .list_providers_for("comp-01")
             .expect("fallback scan must succeed");
         assert_eq!(providers.len(), 2, "both providers found via fallback scan");
+    }
+
+    // ── delete_component (lab-3mjv) ──────────────────────────────────────────
+
+    /// delete_component removes the component record, all revisions, revision
+    /// index, all provider records, provider index, and workspace directory.
+    /// A second call on the now-absent component must be idempotent.
+    #[test]
+    fn delete_component_cleans_up_all_associated_data() {
+        let (store, _dir) = make_store();
+
+        // Set up: component, two revisions, two providers, workspace dir.
+        let comp = sample_component("comp-del");
+        store.write_component(&comp).expect("write comp");
+
+        let rev1 = sample_revision("rev-d1", "comp-del");
+        let rev2 = sample_revision("rev-d2", "comp-del");
+        store.write_revision_meta(&rev1).expect("write rev1");
+        store.write_revision_meta(&rev2).expect("write rev2");
+        // Create actual revision dirs to prove they are removed.
+        let rev1_dir = store.revision_dir("rev-d1");
+        let rev2_dir = store.revision_dir("rev-d2");
+        std::fs::create_dir_all(&rev1_dir).expect("create rev1 dir");
+        std::fs::create_dir_all(&rev2_dir).expect("create rev2 dir");
+
+        let prov1 = sample_provider("prov-d1", "comp-del");
+        let prov2 = sample_provider("prov-d2", "comp-del");
+        store.write_provider(&prov1).expect("write prov1");
+        store.write_provider(&prov2).expect("write prov2");
+
+        let workspace = store.workspace_dir("comp-del");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        // Verify everything exists before deletion.
+        assert!(
+            store.component_record_path("comp-del").exists(),
+            "comp record"
+        );
+        assert!(rev1_dir.exists(), "rev1 dir");
+        assert!(rev2_dir.exists(), "rev2 dir");
+        assert!(
+            store
+                .component_revision_index_path("comp-del")
+                .exists(),
+            "rev index"
+        );
+        assert!(
+            store.provider_record_path("prov-d1").exists(),
+            "prov1 record"
+        );
+        assert!(
+            store.provider_record_path("prov-d2").exists(),
+            "prov2 record"
+        );
+        assert!(
+            store
+                .component_provider_index_path("comp-del")
+                .exists(),
+            "prov index"
+        );
+        assert!(workspace.exists(), "workspace");
+
+        // Delete.
+        store
+            .delete_component("comp-del")
+            .expect("delete_component");
+
+        // Verify everything is gone.
+        assert!(
+            !store.component_record_path("comp-del").exists(),
+            "comp record gone"
+        );
+        assert!(!rev1_dir.exists(), "rev1 dir gone");
+        assert!(!rev2_dir.exists(), "rev2 dir gone");
+        assert!(
+            !store
+                .component_revision_index_path("comp-del")
+                .exists(),
+            "rev index gone"
+        );
+        assert!(
+            !store.provider_record_path("prov-d1").exists(),
+            "prov1 gone"
+        );
+        assert!(
+            !store.provider_record_path("prov-d2").exists(),
+            "prov2 gone"
+        );
+        assert!(
+            !store
+                .component_provider_index_path("comp-del")
+                .exists(),
+            "prov index gone"
+        );
+        assert!(!workspace.exists(), "workspace gone");
+
+        // A second delete must be idempotent.
+        store
+            .delete_component("comp-del")
+            .expect("idempotent second delete");
+    }
+
+    /// delete_component on a component with no data must succeed silently.
+    #[test]
+    fn delete_component_is_idempotent_for_nonexistent_component() {
+        let (store, _dir) = make_store();
+        store
+            .delete_component("ghost-comp")
+            .expect("delete of non-existent component must be idempotent");
     }
 }
