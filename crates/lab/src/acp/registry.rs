@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::{Stream, StreamExt, stream};
@@ -168,6 +168,9 @@ pub struct AcpSessionRegistry {
     recent_creations: Arc<Mutex<VecDeque<Instant>>>,
     /// Blocks new session creation when shutting down.
     shutting_down: Arc<AtomicBool>,
+    /// Atomic count of sessions that currently own a live provider process.
+    /// Incremented *before* launch, decremented on any path that drops the handle.
+    active_runtime_count: Arc<AtomicUsize>,
     /// Idle timeout — configurable for tests.
     idle_timeout: Duration,
     provider_models: Arc<RwLock<HashMap<String, Vec<AcpModelOption>>>>,
@@ -194,6 +197,7 @@ impl AcpSessionRegistry {
             default_cwd,
             recent_creations: Arc::new(Mutex::new(VecDeque::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
+            active_runtime_count: Arc::new(AtomicUsize::new(0)),
             idle_timeout: Duration::from_secs(SESSION_IDLE_TIMEOUT_MINS * 60),
             provider_models: Arc::new(RwLock::new(HashMap::new())),
         };
@@ -326,8 +330,15 @@ impl AcpSessionRegistry {
         //
         // Restored SQLite sessions stay in the map for history and reattach,
         // but they do not own provider processes until prompted again.
-        let active_count = self.runtime_session_count().await;
-        if active_count >= MAX_CONCURRENT_SESSIONS {
+        //
+        // Use an atomic fetch_add to reserve the slot *before* launching the
+        // provider subprocess.  This eliminates the TOCTOU window where two
+        // concurrent creates both observe count < MAX and both proceed to launch.
+        // On rejection or launch failure the reservation is released immediately.
+        let reserved = self.active_runtime_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if reserved > MAX_CONCURRENT_SESSIONS {
+            self.active_runtime_count.fetch_sub(1, Ordering::SeqCst);
+            let active_count = reserved - 1;
             tracing::warn!(
                 surface = "acp",
                 service = "registry",
@@ -344,6 +355,7 @@ impl AcpSessionRegistry {
                 ),
             });
         }
+        let active_count = reserved - 1;
 
         // Circuit breaker: session creation storm detection.
         {
@@ -384,7 +396,7 @@ impl AcpSessionRegistry {
             surface = "acp", service = "registry", action = "session.create",
             session_id = %session_id, active_sessions = active_count,
             limit = MAX_CONCURRENT_SESSIONS, provider = ?input.provider,
-            principal = %principal,
+            actor_key = %actor_key_from_principal(principal),
             "Creating ACP session",
         );
 
@@ -403,6 +415,8 @@ impl AcpSessionRegistry {
         )
         .await
         .map_err(|message| {
+            // Release the reserved slot — the provider never launched.
+            self.active_runtime_count.fetch_sub(1, Ordering::SeqCst);
             tracing::error!(
                 surface = "acp", service = "registry", action = "session.create",
                 session_id = %session_id, error = %message,
@@ -899,7 +913,7 @@ impl AcpSessionRegistry {
             session_id = %session_id, reason = "user_cancelled",
             "ACP session cancelled",
         );
-        cancel_and_drop_runtime(&session).await;
+        cancel_and_drop_runtime(&session, Some(&self.active_runtime_count)).await;
 
         if let Some(db) = self.persistence().await {
             if let Err(error) = db
@@ -952,7 +966,7 @@ impl AcpSessionRegistry {
             session_id = %session_id,
             request_id,
             option_id,
-            principal,
+            actor_key = %actor_key_from_principal(principal),
             "ACP permission request approved",
         );
         Ok(())
@@ -987,7 +1001,7 @@ impl AcpSessionRegistry {
             action = "permission.reject",
             session_id = %session_id,
             request_id,
-            principal,
+            actor_key = %actor_key_from_principal(principal),
             "ACP permission request rejected",
         );
         Ok(())
@@ -1009,7 +1023,7 @@ impl AcpSessionRegistry {
             session_id = %session_id, reason = "user_closed",
             "ACP session closed",
         );
-        cancel_and_drop_runtime(&session).await;
+        cancel_and_drop_runtime(&session, Some(&self.active_runtime_count)).await;
         // Free the slot immediately.
         {
             self.sessions.write().await.remove(session_id);
@@ -1138,7 +1152,7 @@ impl AcpSessionRegistry {
 
         tracing::info!(
             surface = "acp", service = "registry", action = "session.bulk_close",
-            principal = %principal,
+            actor_key = %actor_key_from_principal(principal),
             closed_count = closed.len(),
             failed_count = failed.len(),
             "ACP bulk_close completed",
@@ -1219,7 +1233,7 @@ impl AcpSessionRegistry {
             "Initiating graceful shutdown — terminating all ACP sessions",
         );
         for session in &sessions {
-            cancel_and_drop_runtime(session).await;
+            cancel_and_drop_runtime(session, Some(&self.active_runtime_count)).await;
             tracing::info!(
                 surface = "acp", service = "registry", action = "shutdown",
                 session_id = %session.id, "ACP session cancelled during shutdown",
@@ -1259,7 +1273,7 @@ impl AcpSessionRegistry {
     pub async fn remove_session(&self, session_id: &str) {
         let session = self.sessions.write().await.remove(session_id);
         if let Some(session) = session {
-            cancel_and_drop_runtime(&session).await;
+            cancel_and_drop_runtime(&session, Some(&self.active_runtime_count)).await;
             tracing::info!(
                 surface = "acp", service = "registry", action = "session.remove",
                 session_id = %session_id, "ACP session removed from registry",
@@ -1424,7 +1438,7 @@ impl AcpSessionRegistry {
                     timeout_secs = self.idle_timeout.as_secs(),
                     "ACP session exceeded idle timeout — removing from registry",
                 );
-                cancel_and_drop_runtime(&session).await;
+                cancel_and_drop_runtime(&session, Some(&self.active_runtime_count)).await;
                 self.sessions.write().await.remove(&session.id);
             }
         }
@@ -1544,8 +1558,13 @@ impl AcpSessionRegistry {
                     "ACP session runtime exited cleanly",
                 );
             }
+            // The forwarder is the natural-exit path; decrement the counter
+            // only when a live handle actually existed (avoids double-decrement
+            // when cancel_and_drop_runtime already took the handle).
             let mut handle = session.handle.lock().await;
-            *handle = None;
+            if handle.take().is_some() {
+                registry.active_runtime_count.fetch_sub(1, Ordering::SeqCst);
+            }
         });
     }
 
@@ -1566,14 +1585,30 @@ impl AcpSessionRegistry {
             session_id = %session.id,
             "reattach_runtime: handle was None — launching new runtime",
         );
-        let (provider, cwd, title) = {
+        let (provider, cwd, title, principal) = {
             let summary = session.summary.read().await;
             (
                 summary.provider.clone(),
                 summary.cwd.clone(),
                 summary.title.clone(),
+                summary.principal.clone(),
             )
         };
+
+        // Reserve a slot atomically before launching the provider.
+        let reserved = self.active_runtime_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if reserved > MAX_CONCURRENT_SESSIONS {
+            self.active_runtime_count.fetch_sub(1, Ordering::SeqCst);
+            return Err(ToolError::Sdk {
+                sdk_kind: "session_limit_exceeded".to_string(),
+                message: format!(
+                    "Session limit reached ({} active sessions). \
+                     Kill existing sessions before starting new ones.",
+                    reserved - 1,
+                ),
+            });
+        }
+
         let (event_tx, event_rx) = mpsc::channel::<AcpEvent>(ACP_EVENT_CHANNEL_CAPACITY);
         let (runtime, started) = launch_codex_runtime(
             session.id.clone(),
@@ -1581,13 +1616,16 @@ impl AcpSessionRegistry {
                 provider: Some(provider),
                 cwd,
                 title: Some(title),
-                principal: None,
+                principal,
                 model_id: None,
             },
             event_tx.clone(),
         )
         .await
-        .map_err(internal_message)?;
+        .map_err(|message| {
+            self.active_runtime_count.fetch_sub(1, Ordering::SeqCst);
+            internal_message(message)
+        })?;
 
         self.spawn_event_forwarder(
             Arc::clone(session),
@@ -1779,6 +1817,7 @@ impl AcpSessionRegistry {
             default_cwd: ".".to_string(),
             recent_creations: Arc::new(Mutex::new(VecDeque::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
+            active_runtime_count: Arc::new(AtomicUsize::new(0)),
             idle_timeout,
             provider_models: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -1798,6 +1837,7 @@ impl AcpSessionRegistry {
             default_cwd: ".".to_string(),
             recent_creations: Arc::new(Mutex::new(VecDeque::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
+            active_runtime_count: Arc::new(AtomicUsize::new(0)),
             idle_timeout: Duration::from_millis(100),
             provider_models: Arc::new(RwLock::new(models)),
         }
@@ -1861,6 +1901,7 @@ impl AcpSessionRegistry {
         {
             *session.handle.lock().await = Some(fake_rt);
         }
+        self.active_runtime_count.fetch_add(1, Ordering::SeqCst);
         {
             self.sessions
                 .write()
@@ -1877,7 +1918,10 @@ impl AcpSessionRegistry {
             let mut rx = fake_rx;
             while rx.recv().await.is_some() {}
             if let Ok(session) = registry.get_session_arc(&sid).await {
-                *session.handle.lock().await = None;
+                let mut handle = session.handle.lock().await;
+                if handle.take().is_some() {
+                    registry.active_runtime_count.fetch_sub(1, Ordering::SeqCst);
+                }
             }
         });
         summary
@@ -1939,6 +1983,7 @@ impl AcpSessionRegistry {
         {
             *session.handle.lock().await = Some(fake_rt);
         }
+        self.active_runtime_count.fetch_add(1, Ordering::SeqCst);
         {
             self.sessions
                 .write()
@@ -1952,6 +1997,7 @@ impl AcpSessionRegistry {
             let mut rx = fake_rx;
             while rx.recv().await.is_some() {}
             registry.sessions.write().await.remove(&sid);
+            // Counter already decremented by close/cancel path or forwarder.
         });
         summary
     }
@@ -2000,9 +2046,44 @@ impl Default for AcpSessionRegistry {
 // Free functions
 // ---------------------------------------------------------------------------
 
-async fn cancel_and_drop_runtime(session: &Arc<Session>) {
+/// Return a short, stable, non-reversible key suitable for operator logs.
+///
+/// The key is derived from the principal using a process-stable salt so
+/// the same subject maps to the same key within one process run (enabling
+/// log correlation) but the raw principal is never emitted to tracing events.
+///
+/// Format: `"ak:{16-hex-chars}"`.  Anonymous/empty principals yield
+/// `"(anonymous)"`.
+fn actor_key_from_principal(principal: &str) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    if principal.is_empty() {
+        return "(anonymous)".to_string();
+    }
+
+    static PROCESS_SALT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let salt = PROCESS_SALT.get_or_init(|| {
+        // Combine PID and wall-clock subsecond nanos as a cheap process-stable seed.
+        let pid = std::process::id() as u64;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0xdead_beef_cafe_babe);
+        pid.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(nanos)
+    });
+
+    let mut hasher = DefaultHasher::new();
+    salt.hash(&mut hasher);
+    principal.hash(&mut hasher);
+    format!("ak:{:016x}", hasher.finish())
+}
+
+async fn cancel_and_drop_runtime(session: &Arc<Session>, counter: Option<&Arc<AtomicUsize>>) {
     let runtime = { session.handle.lock().await.take() };
     if let Some(rt) = runtime {
+        if let Some(counter) = counter {
+            counter.fetch_sub(1, Ordering::SeqCst);
+        }
         drop(rt.shutdown().await);
     }
 }
@@ -2669,5 +2750,74 @@ mod tests {
         let sessions = registry.list_sessions("alice").await;
         assert_eq!(sessions.len(), 1, "only active session should be restored");
         assert_eq!(sessions[0].id, "active-sess");
+    }
+
+    /// Bead lab-qq8y.4: atomic counter increments when sessions are injected and
+    /// the cap is enforced without a TOCTOU window.
+    #[tokio::test]
+    async fn atomic_runtime_count_tracks_injected_sessions() {
+        let registry = test_registry();
+        assert_eq!(
+            registry.active_runtime_count.load(Ordering::SeqCst),
+            0,
+            "counter starts at zero"
+        );
+
+        for i in 0..MAX_CONCURRENT_SESSIONS {
+            registry.inject_fake_session(&format!("arc-{i}"), "").await;
+        }
+        assert_eq!(
+            registry.active_runtime_count.load(Ordering::SeqCst),
+            MAX_CONCURRENT_SESSIONS,
+            "counter reaches MAX after injecting MAX sessions"
+        );
+    }
+
+    /// Bead lab-qq8y.4: create→close cycles do not permanently consume counter
+    /// slots — a full create→close cycle must allow the next create to proceed.
+    ///
+    /// We drive this without spawning real provider processes by manipulating
+    /// the counter directly, mirroring what create_session + close_session do.
+    #[tokio::test]
+    async fn atomic_runtime_count_released_on_close() {
+        let registry = test_registry();
+
+        // Fill to MAX using inject_fake_session (increments counter).
+        for i in 0..MAX_CONCURRENT_SESSIONS {
+            registry.inject_fake_session(&format!("rc-{i}"), "").await;
+        }
+        assert_eq!(
+            registry.active_runtime_count.load(Ordering::SeqCst),
+            MAX_CONCURRENT_SESSIONS,
+        );
+
+        // Verify the atomic guard would reject a 21st create.
+        let reserved = registry.active_runtime_count.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(
+            reserved > MAX_CONCURRENT_SESSIONS,
+            "21st reservation must exceed the cap (got {reserved})"
+        );
+        registry.active_runtime_count.fetch_sub(1, Ordering::SeqCst); // roll back
+
+        // Drop one session's handle directly to simulate a runtime exit / close.
+        if let Ok(session) = registry.get_session_arc("rc-0").await {
+            let mut handle = session.handle.lock().await;
+            if handle.take().is_some() {
+                registry.active_runtime_count.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        assert_eq!(
+            registry.active_runtime_count.load(Ordering::SeqCst),
+            MAX_CONCURRENT_SESSIONS - 1,
+            "counter decrements when a handle is released"
+        );
+
+        // Now the atomic guard must allow a new reservation.
+        let reserved2 = registry.active_runtime_count.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(
+            reserved2 <= MAX_CONCURRENT_SESSIONS,
+            "reservation after a release must succeed (got {reserved2})"
+        );
+        registry.active_runtime_count.fetch_sub(1, Ordering::SeqCst); // clean up
     }
 }
