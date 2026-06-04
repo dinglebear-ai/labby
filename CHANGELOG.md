@@ -8,6 +8,38 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.22.0] - 2026-06-04
+
+### Highlights
+
+- **Stash export/service expanded** — new export capabilities and service layer additions (+224/+114 lines) covering additional export formats and service operations.
+- **Path safety hardened** — `path_safety.rs` significantly expanded (+263 lines) with additional canonicalization and rejection helpers for system path validation.
+- **Config loading simplified** — `config.rs` stripped down (-269 lines), removing dead branches and streamlining the load path.
+- **Gateway manager refactored** — `manager.rs` reworked (+181/-? lines) for cleaner state transitions and lifecycle handling.
+- **Gateway-admin code-mode toggle** — new `code-mode-toggle.tsx` component added to gateway-admin frontend; stale `tool-search-toggle.tsx` removed.
+- **ACP security hardening** — constant-time HMAC verification in `persistence.rs`; 5 IDOR principal-isolation tests added covering `session.get`, `session.events`, `session.prompt`, `session.cancel`, `session.subscribe_ticket`.
+- **Marketplace plugins updated** — nvidia-skills, qdrant-skills, redis-development, mcp-apps source corrections across Claude and Codex plugin manifests.
+
+| Commit | Change |
+|--------|--------|
+| `091b1c3d` | docs: save session log |
+| `ca834476` | test(acp): add principal-isolation (IDOR) tests for session actions |
+| `bb675cb8` | fix(plugins): clean up agent-os README and notebooklm SKILL.md |
+| `2c139784` | fix(acp): constant-time HMAC verify in persistence + rustfmt cleanup |
+| `5b2b3150` | Fix nvidia-skills, qdrant-skills, redis-development, mcp-apps with correct sources |
+| `b43d21fe` | Remove nvidia-skills, qdrant-skills, redis-development, mcp-apps — paths not found |
+| `5b778acc` | Add nvidia-skills, qdrant-skills, redis-development, mcp-apps, mcp-tunnels to marketplaces |
+| `4ae079d5` | docs: final skill quality fixes |
+| `21f7e1c0` | docs: update overseerr skill references |
+| `cad9cb67` | docs: normalize skill triggers |
+| `f6bf24d9` | docs: refresh plugin skills |
+| `88de5a1b` | Add beads, lavra, superpowers to Codex marketplace |
+| `c77017a4` | Add Codex plugin manifests |
+| `96cbda1c` | Allow no-auth HTTP gateway upstreams |
+| *(this)* | feat: stash export expansion, path_safety hardening, gateway-admin code-mode toggle, config simplification |
+
+---
+
 ## [0.21.3] - 2026-06-01
 
 ### Highlights
@@ -45,10 +77,10 @@ All notable changes to this project will be documented in this file.
   never enters model context, so it is now served complete and uncapped —
   matching Cloudflare's Code Mode design.
 - **Removed dead `scout` vocabulary** — deleted the `gateway.scout.get/set`
-  action aliases (exact duplicates of `gateway.tool_search.*`), the stale
+  action aliases (exact duplicates of `gateway.code_mode.*`), the stale
   `[scout]` config-key allowlist entry, the dead truncation hint strings, and
   `scout` mentions in live docs (`GATEWAY.md`, `CONFIG.md`, the using-lab-cli
-  catalog). No behavior change — the CLI now emits `gateway.tool_search.*`.
+  catalog). No behavior change — the CLI now emits `gateway.code_mode.*`.
 
 | Commit | Change |
 |--------|--------|
@@ -63,7 +95,7 @@ All notable changes to this project will be documented in this file.
 ### Highlights
 
 - **Trimmed gateway `search` tool description** — dropped the "No embedding
-  model, no vector DB" marketing filler from the `tool_search` description in
+  model, no vector DB" marketing filler from the Code Mode description in
   `mcp/server.rs` and the matching `code_mode.rs` doc comment.
 - **Code Mode admin callers share one gateway OAuth subject** — admin Code Mode
   callers collapse to a single shared gateway OAuth subject.
@@ -165,7 +197,7 @@ All notable changes to this project will be documented in this file.
 ### Highlights
 
 - **Cloudflare Code Mode parity**: tool names now normalize to snake_case (`movie.search` → `movie_search`) so models trained on Cloudflare examples call the right helpers.
-- **Removed legacy tool aliases**: `tool_search`, `tool_execute`, `code_search`, `code_execute`, `scout`, `invoke`, `tool_invoke` are no longer accepted — only `code`, `search`, `execute` remain (breaking for legacy clients).
+- **Removed legacy tool aliases**: old pre-Code-Mode aliases are no longer accepted — only `code`, `search`, `execute` remain (breaking for legacy clients).
 - **Typed return types in preamble**: `generate_preamble` now passes upstream `output_schema` through `schema_to_ts`, replacing `Promise<unknown>` with derived types when available.
 - **Bounded preamble cache**: `PreambleCache` is now a 64-entry LRU (was unbounded `DashMap`), preventing memory growth under upstream catalog churn.
 - **Canonical error kinds only**: removed non-contract `code_mode_disabled` and `code_execution_failed`; mapped to `internal_error` / `server_error` so agents switching on `err.kind` don't hit the default branch.
@@ -206,9 +238,9 @@ All notable changes to this project will be documented in this file.
 
 ### Highlights
 
-- **Gateway tool naming reset**: restored the primary MCP tools to `tool_search` and `tool_execute` while keeping `scout`, `invoke`, and `tool_invoke` as compatibility aliases.
-- **Gateway admin controls**: added Code Mode configuration support and a `/gateways` toggle that remains gated behind Tool Search.
-- **Gateway API parity**: exposed primary `gateway.tool_search.*` actions and new `gateway.code_mode.*` actions with validation and docs coverage.
+- **Gateway Code Mode reset**: restored the primary MCP tools to the Code Mode `search` and `execute` surface while keeping legacy aliases for that release.
+- **Gateway admin controls**: added Code Mode configuration support and a `/gateways` toggle.
+- **Gateway API parity**: exposed `gateway.code_mode.*` actions with validation and docs coverage.
 
 | Commit | Change |
 |--------|--------|
@@ -645,7 +677,7 @@ All notable changes to this project will be documented in this file.
 - **Stdio gateway admin ack** — `gateway.test`/`add`/`update` require explicit `allow_stdio: true` when the upstream spec uses stdio. Stdio specs spawn local subprocesses, so admin operations against them are gated through `ensure_stdio_admin_ack` to prevent silent process launches via remote dispatch. CLI mirrors with `--allow-stdio` flags; catalog publishes `allow_stdio` as a documented param.
 - **Provider prompt idle timeout (.19)** — operator-facing section in `docs/acp/README.md` documenting the 5 s default, `LAB_ACP_PROMPT_IDLE_TIMEOUT_MS` override, and the observable firing behavior (`session_state` Completed + `provider_info` `idle_completion`).
 - **ACP docs match landed first-class state (.16)** — README inventories the landed pieces (lab-apis::acp module, dispatch/acp/, registry registration, HTTP routes), enumerates landed protections, and lists remaining gaps (Bridge\* compat, typed CLI shim, provider workspace jail) without claiming deferred work.
-- **Pre-existing unreleased work** — earlier commits (`0221b23f` … `4ae40caf`) accumulated in the previous Unreleased section before the epic close-out and ride along with this release: tool-search config + settings UI for gateway-admin, MCP server install modal with gateway selection, marketplace and product docs expansion, dev review-finding fixes.
+- **Pre-existing unreleased work** — earlier commits (`0221b23f` … `4ae40caf`) accumulated in the previous Unreleased section before the epic close-out and ride along with this release: Code Mode config + settings UI for gateway-admin, MCP server install modal with gateway selection, marketplace and product docs expansion, dev review-finding fixes.
 
 ### Version bumps
 

@@ -128,22 +128,22 @@ Use the server-side OAuth status path when browser OAuth looks connected but
 runtime calls still fail. Code Mode admin/trusted paths use the shared gateway
 subject; non-admin scoped users may use their own subject.
 
-## Tool Search Surface
+## Code Mode Surface
 
-The gateway-wide tool-search setting exposes the synthetic public MCP tools
+The gateway-wide code-mode setting exposes the synthetic public MCP tools
 `search` and `execute` instead of raw upstream tools:
 
 ```bash
-labby gateway tool-search status --json
-labby gateway tool-search enable --top-k-default 10 --max-tools 5000 --json
-labby gateway tool-search disable --json
+labby gateway code-mode status --json
+labby gateway code-mode enable --top-k-default 10 --max-tools 5000 --json
+labby gateway code-mode disable --json
 ```
 
 In action dispatch:
 
 ```json
-{ "action": "gateway.tool_search.get", "params": {} }
-{ "action": "gateway.tool_search.set", "params": { "enabled": true } }
+{ "action": "gateway.code_mode.get", "params": {} }
+{ "action": "gateway.code_mode.set", "params": { "enabled": true } }
 ```
 
 ## Gateway Schema Resources

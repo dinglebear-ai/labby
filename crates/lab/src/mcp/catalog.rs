@@ -8,11 +8,11 @@ use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::mcp::prompts::list_all as list_builtin_prompts;
 
 /// Canonical (Cloudflare-parity) tool names for the gateway search and execute tools.
-pub(crate) const TOOL_SEARCH_TOOL_NAME: &str = "search";
+pub(crate) const CODE_MODE_SEARCH_TOOL_NAME: &str = "search";
 pub(crate) const TOOL_EXECUTE_TOOL_NAME: &str = "execute";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolSearchVisibility {
+pub(crate) enum CodeModeVisibility {
     Raw,
     /// Full gateway broker — advertises `search` + `execute`.
     RootSynthetic,
@@ -21,7 +21,7 @@ pub(crate) enum ToolSearchVisibility {
     InProcessPeer,
 }
 
-impl ToolSearchVisibility {
+impl CodeModeVisibility {
     pub(crate) fn hides_raw_tools(self) -> bool {
         !matches!(self, Self::Raw)
     }
@@ -35,8 +35,8 @@ impl ToolSearchVisibility {
     pub(crate) fn mode_label(self) -> &'static str {
         match self {
             Self::Raw => "raw",
-            Self::RootSynthetic => "tool_search_root",
-            Self::InProcessPeer => "tool_search_in_process_peer",
+            Self::RootSynthetic => "code_mode_root",
+            Self::InProcessPeer => "code_mode_in_process_peer",
         }
     }
 }
@@ -91,19 +91,19 @@ impl LabMcpServer {
         }
     }
 
-    pub(crate) async fn tool_search_visibility(&self) -> ToolSearchVisibility {
-        let manager_tool_search_enabled = if let Some(manager) = &self.gateway_manager {
-            manager.tool_search_enabled().await
+    pub(crate) async fn code_mode_visibility(&self) -> CodeModeVisibility {
+        let manager_code_mode_enabled = if let Some(manager) = &self.gateway_manager {
+            manager.code_mode_enabled().await
         } else {
             false
         };
-        if manager_tool_search_enabled {
-            return ToolSearchVisibility::RootSynthetic;
+        if manager_code_mode_enabled {
+            return CodeModeVisibility::RootSynthetic;
         }
-        if self.gateway_manager.is_none() && crate::config::process_tool_search_enabled() {
-            return ToolSearchVisibility::InProcessPeer;
+        if self.gateway_manager.is_none() && crate::config::process_code_mode_enabled() {
+            return CodeModeVisibility::InProcessPeer;
         }
-        ToolSearchVisibility::Raw
+        CodeModeVisibility::Raw
     }
 
     fn service_visible_by_env_or_gateway(&self, service: &str) -> bool {
@@ -189,11 +189,11 @@ impl LabMcpServer {
     }
 
     pub(crate) async fn snapshot_catalog(&self) -> CatalogSnapshot {
-        let visibility = self.tool_search_visibility().await;
+        let visibility = self.code_mode_visibility().await;
         let mut tools = BTreeSet::new();
         if visibility.exposes_synthetic_tools() {
             // Gateway mode — advertise `search` + `execute`.
-            tools.insert(TOOL_SEARCH_TOOL_NAME.to_string());
+            tools.insert(CODE_MODE_SEARCH_TOOL_NAME.to_string());
             tools.insert(TOOL_EXECUTE_TOOL_NAME.to_string());
         } else {
             for svc in self.registry.services() {
@@ -254,7 +254,7 @@ mod tests {
     fn canonical_tool_names_are_search_and_execute() {
         // PRESENCE: canonical names match expected Cloudflare-parity values
         assert_eq!(
-            TOOL_SEARCH_TOOL_NAME, "search",
+            CODE_MODE_SEARCH_TOOL_NAME, "search",
             "canonical search tool name must be 'search'"
         );
         assert_eq!(
@@ -264,15 +264,15 @@ mod tests {
     }
 
     #[test]
-    fn tool_search_visibility_methods() {
+    fn code_mode_visibility_methods() {
         // RootSynthetic exposes the gateway synthetic tools.
-        assert!(ToolSearchVisibility::RootSynthetic.exposes_synthetic_tools());
-        assert!(ToolSearchVisibility::RootSynthetic.hides_raw_tools());
+        assert!(CodeModeVisibility::RootSynthetic.exposes_synthetic_tools());
+        assert!(CodeModeVisibility::RootSynthetic.hides_raw_tools());
         // InProcessPeer is a synthetic-tools sub-variant.
-        assert!(ToolSearchVisibility::InProcessPeer.exposes_synthetic_tools());
-        assert!(ToolSearchVisibility::InProcessPeer.hides_raw_tools());
+        assert!(CodeModeVisibility::InProcessPeer.exposes_synthetic_tools());
+        assert!(CodeModeVisibility::InProcessPeer.hides_raw_tools());
         // Raw exposes neither and does not hide raw tools.
-        assert!(!ToolSearchVisibility::Raw.exposes_synthetic_tools());
-        assert!(!ToolSearchVisibility::Raw.hides_raw_tools());
+        assert!(!CodeModeVisibility::Raw.exposes_synthetic_tools());
+        assert!(!CodeModeVisibility::Raw.hides_raw_tools());
     }
 }

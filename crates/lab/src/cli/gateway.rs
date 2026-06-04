@@ -43,8 +43,6 @@ pub enum GatewayCommand {
     Quarantine(GatewayQuarantineArgs),
     /// Manage public MCP routes protected by Lab OAuth.
     ProtectedRoute(GatewayProtectedRouteArgs),
-    /// Configure gateway-wide tool_search/tool_execute mode.
-    ToolSearch(GatewayToolSearchArgs),
     /// Reload gateways from config and reconcile runtime state.
     Reload,
     /// Manage upstream MCP server lifecycle and OAuth.
@@ -69,10 +67,14 @@ pub struct GatewayCodeArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GatewayCodeCommand {
+    /// Read gateway-wide Code Mode settings.
+    Status,
+    /// Enable the gateway Code Mode search/execute MCP surface.
+    Enable,
+    /// Disable the gateway Code Mode search/execute MCP surface.
+    Disable,
     /// Execute a sandboxed JavaScript snippet that calls the typed
     /// `codemode.<upstream>.<tool>` helpers (or `callTool` directly).
-    /// Cloudflare-parity: the `code` MCP tool takes only `{ code }`, so the
-    /// CLI mirrors that — no separate `search` subcommand.
     Exec {
         #[arg(long, conflicts_with = "file")]
         code: Option<String>,
@@ -272,30 +274,6 @@ pub struct GatewayProtectedRouteUpsertArgs {
     pub scopes: Vec<String>,
     #[arg(long)]
     pub health_path: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct GatewayToolSearchArgs {
-    #[command(subcommand)]
-    pub command: GatewayToolSearchCommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum GatewayToolSearchCommand {
-    /// Read the gateway-wide tool_search settings.
-    Status,
-    /// Enable gateway-wide tool_search/tool_execute mode for all exposed upstream tools.
-    Enable(GatewayToolSearchSetArgs),
-    /// Disable gateway-wide tool_search/tool_execute mode.
-    Disable,
-}
-
-#[derive(Debug, Args)]
-pub struct GatewayToolSearchSetArgs {
-    #[arg(long)]
-    pub top_k_default: Option<usize>,
-    #[arg(long)]
-    pub max_tools: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -649,23 +627,6 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
                         json!({ "route": protected_route_from_args(args) }),
                     ),
                 },
-                GatewayCommand::ToolSearch(args) => match args.command {
-                    GatewayToolSearchCommand::Status => {
-                        ("gateway.tool_search.get".to_string(), json!({}))
-                    }
-                    GatewayToolSearchCommand::Enable(args) => (
-                        "gateway.tool_search.set".to_string(),
-                        json!({
-                            "enabled": true,
-                            "top_k_default": args.top_k_default,
-                            "max_tools": args.max_tools,
-                        }),
-                    ),
-                    GatewayToolSearchCommand::Disable => (
-                        "gateway.tool_search.set".to_string(),
-                        json!({ "enabled": false }),
-                    ),
-                },
                 GatewayCommand::Reload => (
                     "gateway.reload".to_string(),
                     json!({ "origin": cli_origin, "owner": cli_owner }),
@@ -748,6 +709,21 @@ async fn run_gateway_code(
     let surface = CodeModeSurface::Cli;
 
     match args.command {
+        GatewayCodeCommand::Status => {
+            crate::output::print(&manager.code_mode_config().await, format)?;
+        }
+        GatewayCodeCommand::Enable => {
+            let mut next = manager.code_mode_config().await;
+            next.enabled = true;
+            let updated = manager.set_code_mode_config(next, None, None).await?;
+            crate::output::print(&updated, format)?;
+        }
+        GatewayCodeCommand::Disable => {
+            let mut next = manager.code_mode_config().await;
+            next.enabled = false;
+            let updated = manager.set_code_mode_config(next, None, None).await?;
+            crate::output::print(&updated, format)?;
+        }
         GatewayCodeCommand::Exec { code, file } => {
             let code = read_code_mode_source(code, file, CODE_MODE_CLI_MAX_SOURCE_BYTES)?;
             let config = manager.code_mode_config().await;
@@ -1221,14 +1197,8 @@ mod tests {
             "`gateway code search` was removed per spec — only `gateway code exec` is supported"
         );
         assert!(
-            Cli::try_parse_from([
-                "lab",
-                "gateway",
-                "code",
-                "schema",
-                "upstream::github::search_issues"
-            ])
-            .is_err()
+            Cli::try_parse_from(["lab", "gateway", "code", "schema", "github::search_issues"])
+                .is_err()
         );
         assert!(
             Cli::try_parse_from([
@@ -1237,7 +1207,7 @@ mod tests {
                 "code",
                 "exec",
                 "--code",
-                "await callTool(\"upstream::github::search_issues\", {query:\"repo\"})",
+                "await callTool(\"github::search_issues\", {query:\"repo\"})",
             ])
             .is_ok()
         );

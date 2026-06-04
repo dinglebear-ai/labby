@@ -4,7 +4,7 @@
 //! through the Code Mode Start protocol and injected into the sandbox after
 //! `callTool` is defined. The proxy lets the agent call
 //! `codemode.<upstream>.<tool>(params)`, which routes to
-//! `callTool("upstream::<upstream>::<dotted.name>", params)`.
+//! `callTool("<upstream>::<dotted.name>", params)`.
 //!
 //! This is RUNTIME JS, not a TypeScript declaration: it never enters the
 //! model's context (unlike the deleted typed-preamble-in-tool-description
@@ -221,7 +221,7 @@ pub fn generate_js_proxy(tools: &[UpstreamTool], upstreams: &[String]) -> Result
                 ));
             }
             // callTool id uses the RAW upstream + RAW tool name.
-            let tool_id = format!("upstream::{upstream_name}::{dotted}");
+            let tool_id = super::types::upstream_tool_id(upstream_name, &dotted);
             let tool_id_json =
                 serde_json::to_string(&tool_id).unwrap_or_else(|_| "\"unknown\"".to_string());
             // Always use a JSON-quoted property key so that any residual special
@@ -347,7 +347,7 @@ mod tests {
         );
         // PRESENCE: callTool must be wired to the original dotted tool id
         assert!(
-            js.contains("upstream::github::create/issue"),
+            js.contains("github::create/issue"),
             "original tool id must be preserved"
         );
     }
@@ -368,7 +368,7 @@ mod tests {
         assert!(js.contains("var codemode = {}"), "must declare codemode");
         // PRESENCE: snake_case method routes to the dotted upstream id
         assert!(
-            js.contains("upstream::radarr::movie.search"),
+            js.contains("radarr::movie.search"),
             "method must route to dotted tool id"
         );
         // PRESENCE: __meta__.upstreams reflects the upstream list
@@ -413,7 +413,7 @@ mod tests {
         );
         // PRESENCE: callTool id keeps the RAW upstream name (routing correctness)
         assert!(
-            js.contains("upstream::arcane-mcp::arcane"),
+            js.contains("arcane-mcp::arcane"),
             "callTool id must keep the raw upstream name: {js}"
         );
     }

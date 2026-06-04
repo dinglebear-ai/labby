@@ -1137,15 +1137,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                  namespace   TEXT NOT NULL,
                  meta_json   TEXT NOT NULL,
                  updated_at  TEXT NOT NULL,
-                 updated_by  TEXT,
                  PRIMARY KEY (server_name, version, namespace)
              );
              CREATE INDEX IF NOT EXISTS idx_registry_server_meta_lookup
                  ON registry_server_meta(server_name, version, namespace);",
         )?;
         conn.pragma_update(None, "user_version", 2)?;
-    }
-    if version == 2 {
+    } else if version == 2 {
         conn.execute_batch("ALTER TABLE registry_server_meta ADD COLUMN updated_by TEXT;")?;
         conn.pragma_update(None, "user_version", 3)?;
     }

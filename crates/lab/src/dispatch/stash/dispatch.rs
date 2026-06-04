@@ -55,13 +55,22 @@ where
 ///
 /// Emits structured dispatch events — see module docs for field details.
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
+    dispatch_for_surface("mcp", action, params).await
+}
+
+/// Surface-aware entry point for adapters that need accurate dispatch logs.
+pub async fn dispatch_for_surface(
+    surface: &'static str,
+    action: &str,
+    params: Value,
+) -> Result<Value, ToolError> {
     let start = std::time::Instant::now();
     let result = dispatch_inner(action, params).await;
     let elapsed_ms = start.elapsed().as_millis();
 
     match &result {
         Ok(_) => tracing::info!(
-            surface = "mcp",
+            surface,
             service = "stash",
             action,
             elapsed_ms,
@@ -70,7 +79,7 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
         Err(err) => {
             if err.is_internal() {
                 tracing::error!(
-                    surface = "mcp",
+                    surface,
                     service = "stash",
                     action,
                     elapsed_ms,
@@ -79,7 +88,7 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
                 );
             } else {
                 tracing::warn!(
-                    surface = "mcp",
+                    surface,
                     service = "stash",
                     action,
                     elapsed_ms,
@@ -224,5 +233,50 @@ pub async fn dispatch_with_store(
             valid: ACTIONS.iter().map(|a| a.name.to_string()).collect(),
             hint: None,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    fn make_store() -> (StashStore, tempfile::TempDir) {
+        let dir = tempdir().expect("tempdir");
+        let store = StashStore::new(dir.path().to_path_buf());
+        store.ensure_dirs().expect("ensure_dirs");
+        (store, dir)
+    }
+
+    #[tokio::test]
+    async fn dispatch_import_accepts_operator_workspace_path() {
+        let (store, _stash_dir) = make_store();
+        let created = dispatch_with_store(
+            &store,
+            "component.create",
+            json!({"kind": "settings", "name": "operator-settings"}),
+        )
+        .await
+        .expect("create component");
+        let id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("component id");
+
+        let source_dir = tempdir().expect("source tempdir");
+        let source = source_dir.path().join("settings.json");
+        std::fs::write(&source, b"{}").expect("source file");
+
+        let imported = dispatch_with_store(
+            &store,
+            "component.import",
+            json!({"id": id, "source_path": source.display().to_string()}),
+        )
+        .await
+        .expect("import from operator path");
+
+        assert_eq!(imported.get("id").and_then(Value::as_str), Some(id));
+        assert!(store.workspace_dir(id).join("settings.json").is_file());
     }
 }

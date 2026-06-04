@@ -178,12 +178,22 @@ impl CodexMarketplaceBackend {
             .and_then(Value::as_str)
             .map(PathBuf::from);
         if let Some(path) = explicit {
-            let path = if path.is_absolute() {
-                path
-            } else {
-                base_dir.unwrap_or_else(|| Path::new(".")).join(path)
-            };
-            return Some(Self::absolute_path(path));
+            let root = base_dir.unwrap_or_else(|| Path::new("."));
+            let joined = if path.is_absolute() { path } else { root.join(path) };
+            // Reject traversal: the resolved path must stay within the catalog root.
+            let canonical = std::fs::canonicalize(&joined).ok()?;
+            let canonical_root = std::fs::canonicalize(root).ok()?;
+            if !canonical.starts_with(&canonical_root) {
+                tracing::warn!(
+                    service = "marketplace",
+                    event = "plugin.path.traversal_rejected",
+                    path = %joined.display(),
+                    root = %canonical_root.display(),
+                    "plugin path resolves outside catalog root; skipping"
+                );
+                return None;
+            }
+            return Some(canonical);
         }
         if marketplace == "codex-repo" || marketplace == "codex-compat" {
             if let Some(base_dir) = base_dir {
@@ -225,7 +235,13 @@ impl CodexMarketplaceBackend {
             .map(|e| e.path())
             .filter(|p| p.is_dir())
             .collect();
-        dirs.sort();
+        // Sort by parsed semantic version so "1.10.0" sorts after "1.9.0".
+        // Fall back to lexical order for non-semver names.
+        dirs.sort_by(|a, b| {
+            let va = a.file_name().and_then(|n| n.to_str()).map(parse_semver_key);
+            let vb = b.file_name().and_then(|n| n.to_str()).map(parse_semver_key);
+            va.cmp(&vb)
+        });
         dirs.pop().map(Self::absolute_path)
     }
 
@@ -377,6 +393,16 @@ impl MarketplaceBackend for CodexMarketplaceBackend {
         let plugin = self.find_plugin(id)?;
         Ok(plugin.components.unwrap_or_default())
     }
+}
+
+/// Parse a version string into a comparable tuple so that `1.10.0` sorts after
+/// `1.9.0`. Non-numeric components fall back to the raw string comparison.
+fn parse_semver_key(v: &str) -> (u64, u64, u64, &str) {
+    let mut parts = v.splitn(4, '.');
+    let major = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    (major, minor, patch, v)
 }
 
 #[cfg(test)]

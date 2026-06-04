@@ -2,9 +2,7 @@ use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::config::{
-    ProtectedMcpRouteConfig, ToolSearchConfig, UpstreamConfig, UpstreamOauthConfig,
-};
+use crate::config::{CodeModeConfig, ProtectedMcpRouteConfig, UpstreamConfig, UpstreamOauthConfig};
 use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -157,7 +155,7 @@ pub struct GatewayUpdatePatch {
     #[serde(default, deserialize_with = "deserialize_nullable")]
     pub oauth: Option<Option<UpstreamOauthConfig>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
-    pub tool_search: Option<Option<ToolSearchConfig>>,
+    pub code_mode: Option<Option<CodeModeConfig>>,
 }
 
 /// Distinguish absent from null for `Option<Option<T>>` patch fields.
@@ -233,16 +231,9 @@ pub struct GatewayOauthNameParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSearchSetParams {
-    pub enabled: bool,
-    #[serde(default)]
-    pub top_k_default: Option<usize>,
-    #[serde(default)]
-    pub max_tools: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeModeSetParams {
+    #[serde(default)]
+    pub enabled: Option<bool>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
     #[serde(default)]

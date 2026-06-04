@@ -30,7 +30,7 @@ impl CodeModeBroker<'_> {
         capability_filter: CodeModeCapabilityFilter,
     ) -> Result<CodeModeExecutionResponse, ToolError> {
         // `execute` is exposed only when the gateway search/execute surface is
-        // enabled (tool_search.enabled → RootSynthetic), and the MCP handler
+        // enabled (code_mode.enabled → RootSynthetic), and the MCP handler
         // gates on `exposes_synthetic_tools()` before reaching here. There is no
         // separate per-tool enable: when the surface is on, both `search` and
         // `execute` work (subject to scope), exactly like the Cloudflare blog.

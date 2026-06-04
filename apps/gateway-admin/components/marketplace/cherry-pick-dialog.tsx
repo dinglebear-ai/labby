@@ -256,6 +256,8 @@ export function CherryPickDialog({ pluginId, pluginName, open, onClose, componen
     const url = `${base}/marketplace/cherry-pick/progress?rpc_id=${encodeURIComponent(rpcId)}`
 
     const source = new EventSource(url, { withCredentials: true })
+    const totalDevices = selectedDevices.length
+    const finishedDevices = new Set<string>()
 
     source.onmessage = (ev) => {
       let event: InstallProgressEvent
@@ -273,10 +275,13 @@ export function CherryPickDialog({ pluginId, pluginName, open, onClose, componen
       })
 
       if (event.type === 'complete' || event.type === 'error') {
-        source.close()
-        sseCleanupRef.current = null
-        setLoading(false)
-        setPhase('done')
+        finishedDevices.add(event.device_id)
+        if (finishedDevices.size >= totalDevices) {
+          source.close()
+          sseCleanupRef.current = null
+          setLoading(false)
+          setPhase('done')
+        }
       }
     }
 

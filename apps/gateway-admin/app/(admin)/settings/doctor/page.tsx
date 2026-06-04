@@ -177,7 +177,7 @@ export default function SettingsPage() {
                   </Badge>
                 </div>
                 <div className="rounded-aurora-1 border border-aurora-border-strong border-dashed p-4 text-aurora-text-muted">
-                  Tool search mode is now managed on the Servers page. Other global defaults are still surfaced as effective posture until their backend write APIs exist.
+                  Code Mode mode is now managed on the Servers page. Other global defaults are still surfaced as effective posture until their backend write APIs exist.
                 </div>
               </div>
             )}

@@ -1,6 +1,6 @@
 ---
 name: quick-push
-description: Create the save-to-md session doc before staging, git add all, commit with Claude co-authorship trailer, and push to current/new feature branch — including version bump and changelog update. Use when the user says "quick push", "push my changes", "commit and push", "ship this", "push to a new branch", or any request to wrap up local work and get it on the remote. Accepts optional `--no-bump` argument to skip the version bump.
+description: Create the save-to-md session doc before staging, git add all, commit with Claude co-authorship trailer, and push to current/new feature branch — including project version bump and changelog update when applicable. Use when the user says "quick push", "push my changes", "commit and push", "ship this", "push to a new branch", or any request to wrap up local work and get it on the remote. Accepts optional `--no-bump` argument to skip the version bump.
 allowed-tools: Bash, Read, Edit, Write, TodoWrite
 argument-hint: [--no-bump]
 disable-model-invocation: true
@@ -39,8 +39,7 @@ Detect the project type and bump the version based on the nature of the changes 
    - `Cargo.toml` — `version = "X.Y.Z"` in `[package]` (or `[workspace.package]` for Rust workspaces)
    - every tracked `package.json` with a top-level `"version"` field, including app packages such as `apps/*/package.json`; skip dependency folders such as `node_modules`, build output, and vendored third-party packages
    - `pyproject.toml` — `version = "X.Y.Z"` in `[project]`
-   - `.claude-plugin/plugin.json` — `"version": "X.Y.Z"`
-   - `.codex-plugin/plugin.json` — `"version": "X.Y.Z"`
+   - Do not add or bump `.claude-plugin/plugin.json` or `.codex-plugin/plugin.json` `version` fields unless that specific repo documents a manifest-level version contract. Lab marketplace plugin identity is Git-SHA based, and these manifests normally omit `version`.
    - `README.md` version line/badge when present, for common forms like `Version: X.Y.Z`, `version-X.Y.Z`, or `vX.Y.Z`
 5. If a repo has a release checklist or other explicit version-sync contract, follow it before committing. Prefer repo-local tests/scripts for this if present.
 6. If Rust: run `cargo check` to update `Cargo.lock` (it records the version) — if `cargo check` fails, stop and report the error

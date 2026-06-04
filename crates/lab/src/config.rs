@@ -28,27 +28,27 @@ use std::{
 };
 
 // Gateway startup/reload writes this process-wide flag whenever root
-// `[tool_search]` changes. In-process peer MCP servers do not hold a
+// `[code_mode]` changes. In-process peer MCP servers do not hold a
 // GatewayManager, but they must still hide raw built-in tools when the root
-// server is operating in synthetic `tool_search`/`tool_execute` mode.
-static PROCESS_TOOL_SEARCH_ENABLED: AtomicBool = AtomicBool::new(false);
+// server is operating in Code Mode.
+static PROCESS_CODE_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn set_process_tool_search_enabled(enabled: bool) {
-    let previous = PROCESS_TOOL_SEARCH_ENABLED.swap(enabled, Ordering::AcqRel);
+pub(crate) fn set_process_code_mode_enabled(enabled: bool) {
+    let previous = PROCESS_CODE_MODE_ENABLED.swap(enabled, Ordering::AcqRel);
     if previous != enabled {
         tracing::info!(
             surface = "mcp",
-            service = "tool_search",
-            action = "tool_search.process_enablement",
+            service = "code_mode",
+            action = "code_mode.process_enablement",
             previous_enabled = previous,
             enabled,
-            "process-wide tool search enablement changed"
+            "process-wide code mode enablement changed"
         );
     }
 }
 
-pub(crate) fn process_tool_search_enabled() -> bool {
-    PROCESS_TOOL_SEARCH_ENABLED.load(Ordering::Acquire)
+pub(crate) fn process_code_mode_enabled() -> bool {
+    PROCESS_CODE_MODE_ENABLED.load(Ordering::Acquire)
 }
 
 use anyhow::{Context, Result};
@@ -115,10 +115,7 @@ pub struct LabConfig {
     /// HTTP auth mode preferences.
     #[serde(default)]
     pub auth: Option<AuthFileConfig>,
-    /// Gateway-wide tool-search mode for all exposed upstream tools.
-    #[serde(default)]
-    pub tool_search: ToolSearchConfig,
-    /// Gateway-wide Code Mode execution settings.
+    /// Gateway-wide Code Mode exposure and execution settings.
     #[serde(default)]
     pub code_mode: CodeModeConfig,
     /// Upstream MCP servers to proxy through the gateway.
@@ -328,42 +325,7 @@ pub struct ResolvedDeviceRuntime {
 }
 
 impl LabConfig {
-    pub fn normalize_legacy_tool_search(&mut self, root_tool_search_present: bool) {
-        if root_tool_search_present || self.tool_search.enabled {
-            return;
-        }
-
-        let enabled: Vec<_> = self
-            .upstream
-            .iter()
-            .filter(|u| u.tool_search.enabled)
-            .collect();
-
-        let Some(first) = enabled.first() else {
-            return;
-        };
-
-        self.tool_search = first.tool_search.clone();
-
-        let conflicting: Vec<&str> = enabled[1..]
-            .iter()
-            .filter(|u| u.tool_search != first.tool_search)
-            .map(|u| u.name.as_str())
-            .collect();
-
-        if !conflicting.is_empty() {
-            tracing::warn!(
-                promoted = first.name.as_str(),
-                discarded = ?conflicting,
-                "normalize_legacy_tool_search: multiple upstreams had different \
-                 tool_search configs; promoting first, discarding others — \
-                 add a root [tool_search] section to config.toml to pin the value"
-            );
-        }
-    }
-
     pub fn validate(&self) -> Result<(), ConfigError> {
-        self.tool_search.validate()?;
         self.code_mode.validate()?;
         for upstream in &self.upstream {
             upstream.validate()?;
@@ -407,57 +369,8 @@ impl LabConfig {
     }
 }
 
-pub(crate) fn root_tool_search_present(raw: &str) -> bool {
-    toml::from_str::<toml::Value>(raw)
-        .ok()
-        .and_then(|value| {
-            value
-                .as_table()
-                .map(|table| table.contains_key("tool_search"))
-        })
-        .unwrap_or(false)
-}
-
 fn default_true() -> bool {
     true
-}
-
-fn default_tool_search_top_k() -> usize {
-    10
-}
-
-fn default_tool_search_max_tools() -> usize {
-    5000
-}
-
-fn default_score_floor_fraction() -> f32 {
-    0.25
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolSearchConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_tool_search_top_k")]
-    pub top_k_default: usize,
-    #[serde(default = "default_tool_search_max_tools")]
-    pub max_tools: usize,
-    /// Drop results whose score is below this fraction of the top result's score.
-    /// 0.0 disables the floor (returns all positive-scoring results up to top_k).
-    /// Default 0.25 cuts the noise-floor pollution from incidental haystack matches.
-    #[serde(default = "default_score_floor_fraction")]
-    pub score_floor_fraction: f32,
-}
-
-impl Default for ToolSearchConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            top_k_default: default_tool_search_top_k(),
-            max_tools: default_tool_search_max_tools(),
-            score_floor_fraction: default_score_floor_fraction(),
-        }
-    }
 }
 
 fn default_code_mode_timeout_ms() -> u64 {
@@ -493,6 +406,9 @@ fn default_max_log_bytes() -> usize {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeModeConfig {
+    /// Whether the MCP gateway advertises Code Mode `search` and `execute`.
+    #[serde(default)]
+    pub enabled: bool,
     /// Maximum wall-clock time for one Code Mode execution.
     #[serde(default = "default_code_mode_timeout_ms")]
     pub timeout_ms: u64,
@@ -523,6 +439,7 @@ pub struct CodeModeConfig {
 impl Default for CodeModeConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             timeout_ms: default_code_mode_timeout_ms(),
             max_tool_calls: default_code_mode_max_tool_calls(),
             max_response_bytes: default_code_mode_max_response_bytes(),
@@ -569,27 +486,6 @@ impl CodeModeConfig {
         if !(1..=100 * 1024 * 1024).contains(&self.max_log_bytes) {
             return Err(ConfigError::InvalidCodeModeMaxLogBytes {
                 value: self.max_log_bytes,
-            });
-        }
-        Ok(())
-    }
-}
-
-impl ToolSearchConfig {
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if !(1..=50).contains(&self.top_k_default) {
-            return Err(ConfigError::InvalidToolSearchTopKDefault {
-                value: self.top_k_default,
-            });
-        }
-        if !(1..=10_000).contains(&self.max_tools) {
-            return Err(ConfigError::InvalidToolSearchMaxTools {
-                value: self.max_tools,
-            });
-        }
-        if !(0.0..=1.0).contains(&self.score_floor_fraction) {
-            return Err(ConfigError::InvalidToolSearchScoreFloor {
-                value: self.score_floor_fraction,
             });
         }
         Ok(())
@@ -736,10 +632,6 @@ pub struct UpstreamConfig {
     /// external MCP config rather than added manually. Omitted for manual entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_from: Option<ImportSource>,
-    /// Deprecated compatibility field. Tool search is gateway-wide via root
-    /// `[tool_search]`; this field is only read to migrate older configs.
-    #[serde(default, skip_serializing)]
-    pub tool_search: ToolSearchConfig,
 }
 
 /// Gateway-managed public MCP route protected by Lab OAuth.
@@ -926,12 +818,6 @@ pub enum ConfigError {
     InvalidUrl { name: String, url: String },
     #[error("upstream '{name}' has oauth configured but no url — oauth requires an HTTP url")]
     MissingOauthUrl { name: String },
-    #[error("gateway tool_search.top_k_default={value} is invalid — expected 1..=50")]
-    InvalidToolSearchTopKDefault { value: usize },
-    #[error("gateway tool_search.max_tools={value} is invalid — expected 1..=10000")]
-    InvalidToolSearchMaxTools { value: usize },
-    #[error("gateway tool_search.score_floor_fraction={value} is invalid — expected 0.0..=1.0")]
-    InvalidToolSearchScoreFloor { value: f32 },
     #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=60000")]
     InvalidCodeModeTimeout { value: u64 },
     #[error("gateway code_mode.max_tool_calls={value} is invalid — expected 1..=10000")]
@@ -1471,7 +1357,6 @@ pub fn load_toml(candidates: &[PathBuf]) -> Result<LabConfig> {
             Ok(raw) => {
                 let mut cfg = toml::from_str::<LabConfig>(&raw)
                     .with_context(|| format!("failed to parse {}", path.display()))?;
-                cfg.normalize_legacy_tool_search(root_tool_search_present(&raw));
                 cfg.normalize_protected_mcp_routes()
                     .with_context(|| format!("invalid config {}", path.display()))?;
                 // Validate all upstream configs eagerly at startup so that
@@ -1529,9 +1414,8 @@ pub fn patch_built_in_upstream_apis_enabled(path: &Path, enabled: bool) -> Resul
 
     document["services"]["built_in_upstream_apis_enabled"] = toml_edit::value(enabled);
     let patched = document.to_string();
-    let mut cfg = toml::from_str::<LabConfig>(&patched)
+    let cfg = toml::from_str::<LabConfig>(&patched)
         .with_context(|| format!("failed to parse patched {}", path.display()))?;
-    cfg.normalize_legacy_tool_search(root_tool_search_present(&patched));
     cfg.validate()
         .with_context(|| format!("invalid patched config {}", path.display()))?;
 
@@ -2722,25 +2606,25 @@ strategy = "dynamic"
     }
 
     #[test]
-    fn tool_search_is_root_level_config() {
+    fn code_mode_is_root_level_config() {
         let cfg = toml::from_str::<LabConfig>(
             r#"
-[tool_search]
+[code_mode]
 enabled = true
-top_k_default = 20
-max_tools = 8000
+timeout_ms = 2500
+max_tool_calls = 3
 
 [[upstream]]
 name = "acme"
 url = "https://acme.example.com/mcp"
 "#,
         )
-        .expect("root tool_search parses");
+        .expect("root code_mode parses");
 
-        assert!(cfg.tool_search.enabled);
-        assert_eq!(cfg.tool_search.top_k_default, 20);
-        assert_eq!(cfg.tool_search.max_tools, 8000);
-        cfg.validate().expect("root tool_search validates");
+        assert!(cfg.code_mode.enabled);
+        assert_eq!(cfg.code_mode.timeout_ms, 2500);
+        assert_eq!(cfg.code_mode.max_tool_calls, 3);
+        cfg.validate().expect("root code_mode validates");
     }
 
     #[test]
@@ -2876,100 +2760,6 @@ upstream = " syslog "
     }
 
     #[test]
-    fn legacy_upstream_tool_search_migrates_to_root() {
-        let mut cfg = toml::from_str::<LabConfig>(
-            r#"
-[[upstream]]
-name = "acme"
-url = "https://acme.example.com/mcp"
-
-[upstream.tool_search]
-enabled = true
-top_k_default = 15
-max_tools = 750
-"#,
-        )
-        .expect("legacy upstream tool_search parses");
-
-        cfg.normalize_legacy_tool_search(false);
-
-        assert!(cfg.tool_search.enabled);
-        assert_eq!(cfg.tool_search.top_k_default, 15);
-        assert_eq!(cfg.tool_search.max_tools, 750);
-    }
-
-    #[test]
-    fn explicit_root_tool_search_disable_blocks_legacy_migration() {
-        let raw = r#"
-[tool_search]
-enabled = false
-
-[[upstream]]
-name = "acme"
-url = "https://acme.example.com/mcp"
-
-[upstream.tool_search]
-enabled = true
-top_k_default = 15
-max_tools = 750
-"#;
-        let mut cfg = toml::from_str::<LabConfig>(raw)
-            .expect("explicit root and legacy upstream tool_search parse");
-
-        cfg.normalize_legacy_tool_search(root_tool_search_present(raw));
-
-        assert!(!cfg.tool_search.enabled);
-        assert_eq!(cfg.tool_search.top_k_default, 10);
-        assert_eq!(cfg.tool_search.max_tools, 5000);
-    }
-
-    #[test]
-    fn load_toml_preserves_explicit_root_tool_search_disable_with_legacy_upstream() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[tool_search]
-enabled = false
-
-[[upstream]]
-name = "acme"
-url = "https://acme.example.com/mcp"
-
-[upstream.tool_search]
-enabled = true
-top_k_default = 15
-max_tools = 750
-"#,
-        )
-        .unwrap();
-
-        let cfg = load_toml(&[path]).expect("config loads");
-
-        assert!(!cfg.tool_search.enabled);
-        assert_eq!(cfg.tool_search.top_k_default, 10);
-        assert_eq!(cfg.tool_search.max_tools, 5000);
-    }
-
-    #[test]
-    fn tool_search_validation_is_gateway_wide() {
-        let cfg = toml::from_str::<LabConfig>(
-            r"
-[tool_search]
-top_k_default = 0
-",
-        )
-        .expect("config parses; validation is a separate step");
-
-        let err = cfg.validate().expect_err("invalid top_k_default");
-        assert!(matches!(
-            err,
-            ConfigError::InvalidToolSearchTopKDefault { value: 0 }
-        ));
-    }
-
-    #[test]
     fn parses_deploy_defaults_and_host_overrides() {
         let raw = r#"
 [deploy.defaults]
@@ -3049,22 +2839,22 @@ service_scope = "user"
     // ── Process-wide atomic flags ─────────────────────────────────────────────
 
     #[test]
-    fn process_tool_search_flag_round_trips() {
-        let prev_ts = process_tool_search_enabled();
+    fn process_code_mode_flag_round_trips() {
+        let prev_ts = process_code_mode_enabled();
 
-        set_process_tool_search_enabled(true);
+        set_process_code_mode_enabled(true);
         assert!(
-            process_tool_search_enabled(),
-            "tool_search must be true after set_process_tool_search_enabled(true)"
+            process_code_mode_enabled(),
+            "code_mode must be true after set_process_code_mode_enabled(true)"
         );
 
-        set_process_tool_search_enabled(false);
+        set_process_code_mode_enabled(false);
         assert!(
-            !process_tool_search_enabled(),
-            "tool_search must be false after set_process_tool_search_enabled(false)"
+            !process_code_mode_enabled(),
+            "code_mode must be false after set_process_code_mode_enabled(false)"
         );
 
         // Restore
-        set_process_tool_search_enabled(prev_ts);
+        set_process_code_mode_enabled(prev_ts);
     }
 }

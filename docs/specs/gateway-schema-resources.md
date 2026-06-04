@@ -7,8 +7,8 @@ Surfaces: MCP, HTTP API
 ## Motivation
 
 The gateway proxies many upstream MCP servers behind two synthetic tools
-(`tool_search`, `tool_execute`). Today, an agent that already knows which
-upstream it wants must still issue a `tool_search` round-trip to recover
+(`code_mode`, `tool_execute`). Today, an agent that already knows which
+upstream it wants must still issue a `code_mode` round-trip to recover
 the tool's input schema before calling `tool_execute`.
 
 Exposing each upstream's cached tool catalog as an MCP **resource** removes
@@ -22,7 +22,7 @@ on-demand and cacheable on the client, which matches the access pattern.
   for one upstream in one read.
 - Honor the existing per-upstream `ToolExposurePolicy` — hidden tools never
   appear in the synthetic schema.
-- Keep the default `tools/list` and `tool_search` flow unchanged.
+- Keep the default `tools/list` and `code_mode` flow unchanged.
 
 ## Non-goals
 

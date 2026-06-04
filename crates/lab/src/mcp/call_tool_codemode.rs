@@ -25,7 +25,7 @@ use crate::dispatch::gateway::code_mode::{
     CodeModeBroker, CodeModeCaller, CodeModeCapabilityFilter,
 };
 use crate::mcp::context::{
-    auth_context_from_extensions, tool_execute_scope_allowed, tool_search_scope_allowed,
+    auth_context_from_extensions, code_mode_search_scope_allowed, tool_execute_scope_allowed,
 };
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::result_format::{
@@ -49,7 +49,7 @@ named from the live catalog — handy once `search` has told you the id).
 ```ts
 // code is an async arrow function; whatever it returns becomes `result`.
 async () => {
-  const issues = await callTool('upstream::github::search_issues', { q: 'bug' });
+  const issues = await callTool('github::search_issues', { q: 'bug' });
   return issues.items.length;
 }
 ```
@@ -62,7 +62,7 @@ reads instead of awaiting serially.
 // match the signatures returned by search.dts. callTool is the direct form and the
 // escape hatch for dynamic ids.
 declare function callTool<T = unknown>(
-  id: `upstream::${string}::${string}`,
+  id: `${string}::${string}`,
   params: Record<string, unknown>
 ): Promise<T>;
 ```
@@ -97,7 +97,7 @@ base overhead ~100K, ~2K per callTool boundary.
 local processing.
 
 Lab actions (`lab::*` tool IDs) are not available in Code Mode. For Lab built-in \
-actions use the `execute` tool in Tool Search mode.";
+actions use the `execute` tool in Code Mode mode.";
 
 pub(crate) fn string_array_arg(
     args: &serde_json::Map<String, Value>,
@@ -126,7 +126,7 @@ pub(crate) fn string_array_arg(
 
 impl LabMcpServer {
     /// `search` gateway meta-tool branch. Self-returns.
-    pub(crate) async fn call_tool_search_impl(
+    pub(crate) async fn call_code_mode_impl(
         &self,
         service: &str,
         args: &JsonObject,
@@ -136,7 +136,7 @@ impl LabMcpServer {
         let input_tokens = estimate_tokens_args(args);
         let subject = self.request_subject_log_tag(context);
         let auth = auth_context_from_extensions(&context.extensions);
-        if !tool_search_scope_allowed(auth) {
+        if !code_mode_search_scope_allowed(auth) {
             tracing::warn!(
                 surface = "mcp",
                 service = %service,

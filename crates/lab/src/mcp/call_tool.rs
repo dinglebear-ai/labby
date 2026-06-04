@@ -1,6 +1,6 @@
 //! `call_tool` dispatch entry: arg parse + service lookup, the gateway
 //! meta-tool routing (search/execute), the post-meta-tool gates
-//! (visibility / action-allowed / tool_search-hidden / admin-scope /
+//! (visibility / action-allowed / code_mode-hidden / admin-scope /
 //! destructive elicitation), the builtin dispatch branch, and the
 //! fall-through to the upstream proxy tail.
 //!
@@ -9,7 +9,7 @@
 //! `server.rs` keeps a one-line delegator.
 //!
 //! Preserves the exact early-return ordering (search → execute →
-//! visibility → action → tool_search-hidden → admin-scope → elicitation
+//! visibility → action → code_mode-hidden → admin-scope → elicitation
 //! → builtin → upstream tail). The codemode and upstream branches live in
 //! `call_tool_codemode.rs` / `call_tool_upstream.rs`. No behavior change.
 
@@ -21,7 +21,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
-use crate::mcp::catalog::{TOOL_EXECUTE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME};
+use crate::mcp::catalog::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
 use crate::mcp::context::{auth_context_from_extensions, tool_execute_builtin_action_allowed};
 use crate::mcp::elicitation::{ElicitResult, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra};
@@ -73,8 +73,8 @@ impl LabMcpServer {
         let svc = self.registry.services().iter().find(|s| s.name == service);
 
         // ── Gateway `search` tool: run caller's JS over the upstream catalog ──
-        if service == TOOL_SEARCH_TOOL_NAME {
-            return self.call_tool_search_impl(&service, &args, &context).await;
+        if service == CODE_MODE_SEARCH_TOOL_NAME {
+            return self.call_code_mode_impl(&service, &args, &context).await;
         }
 
         // ── Gateway `execute` tool: run caller's JS in the subprocess sandbox ─
@@ -114,12 +114,12 @@ impl LabMcpServer {
             )]));
         }
 
-        if self.tool_search_visibility().await.hides_raw_tools() {
+        if self.code_mode_visibility().await.hides_raw_tools() {
             let envelope = build_error(
                 &service,
                 &action,
                 "not_found",
-                &format!("tool `{service}` is hidden while tool_search mode is enabled"),
+                &format!("tool `{service}` is hidden while code_mode mode is enabled"),
             );
             return Ok(CallToolResult::error(vec![Content::text(
                 envelope.to_string(),

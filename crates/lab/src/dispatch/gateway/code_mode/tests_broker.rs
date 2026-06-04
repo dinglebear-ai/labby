@@ -76,9 +76,9 @@ async fn broker_search_exposes_typed_schema_metadata_from_live_catalog() {
     let manager = super::GatewayManager::new(dir.path().join("config.toml"), runtime);
     manager
         .seed_config(crate::config::LabConfig {
-            tool_search: crate::config::ToolSearchConfig {
+            code_mode: crate::config::CodeModeConfig {
                 enabled: true,
-                ..crate::config::ToolSearchConfig::default()
+                ..crate::config::CodeModeConfig::default()
             },
             ..crate::config::LabConfig::default()
         })
@@ -136,7 +136,7 @@ async fn broker_search_exposes_typed_schema_metadata_from_live_catalog() {
     let entries = result.as_array().expect("array");
     let entry = entries
         .iter()
-        .find(|entry| entry["id"] == "upstream::typed::lookup")
+        .find(|entry| entry["id"] == "typed::lookup")
         .expect("typed lookup entry");
     assert_eq!(entry["schema"]["required"], json!(["q"]));
     assert_eq!(
@@ -164,9 +164,9 @@ async fn broker_search_refreshes_read_only_catalog_after_upstream_tool_expansion
     let manager = super::GatewayManager::new(dir.path().join("config.toml"), runtime);
     manager
         .seed_config(crate::config::LabConfig {
-            tool_search: crate::config::ToolSearchConfig {
+            code_mode: crate::config::CodeModeConfig {
                 enabled: true,
-                ..crate::config::ToolSearchConfig::default()
+                ..crate::config::CodeModeConfig::default()
             },
             upstream: vec![crate::config::UpstreamConfig {
                 enabled: true,
@@ -184,7 +184,6 @@ async fn broker_search_refreshes_read_only_catalog_after_upstream_tool_expansion
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             }],
             ..crate::config::LabConfig::default()
         })
@@ -275,9 +274,9 @@ async fn broker_call_tool_validates_schema_before_upstream_dispatch() {
     let manager = super::GatewayManager::new(dir.path().join("config.toml"), runtime);
     manager
         .seed_config(crate::config::LabConfig {
-            tool_search: crate::config::ToolSearchConfig {
+            code_mode: crate::config::CodeModeConfig {
                 enabled: true,
-                ..crate::config::ToolSearchConfig::default()
+                ..crate::config::CodeModeConfig::default()
             },
             upstream: vec![crate::config::UpstreamConfig {
                 enabled: true,
@@ -295,7 +294,6 @@ async fn broker_call_tool_validates_schema_before_upstream_dispatch() {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             }],
             ..crate::config::LabConfig::default()
         })
@@ -328,7 +326,7 @@ async fn broker_call_tool_validates_schema_before_upstream_dispatch() {
     .await;
     let registry = super::ToolRegistry::new();
     let broker = super::CodeModeBroker::new(&registry, Some(&manager));
-    let tool_id = "upstream::fixture::needs_action";
+    let tool_id = "fixture::needs_action";
 
     let err = broker
         .call_tool_id(
@@ -370,7 +368,7 @@ async fn code_execute_call_tool_lab_id_returns_unknown_tool() {
     }
 }
 
-/// When the search/execute surface is enabled (`tool_search.enabled=true`),
+/// When the search/execute surface is enabled (`code_mode.enabled=true`),
 /// `resolve_code_mode_upstream_tool` must NOT reject calls with a surface guard.
 /// With a live (healthy) `testup` entry seeded in the pool, requesting a tool
 /// that entry does not expose must surface a genuine `unknown_tool` lookup miss
@@ -384,9 +382,9 @@ async fn resolve_upstream_tool_returns_unknown_tool_for_absent_tool() {
     let manager = super::GatewayManager::new(dir.path().join("config.toml"), runtime);
     manager
         .seed_config(crate::config::LabConfig {
-            tool_search: crate::config::ToolSearchConfig {
+            code_mode: crate::config::CodeModeConfig {
                 enabled: true,
-                ..crate::config::ToolSearchConfig::default()
+                ..crate::config::CodeModeConfig::default()
             },
             upstream: vec![crate::config::UpstreamConfig {
                 enabled: true,
@@ -404,7 +402,6 @@ async fn resolve_upstream_tool_returns_unknown_tool_for_absent_tool() {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             }],
             ..crate::config::LabConfig::default()
         })

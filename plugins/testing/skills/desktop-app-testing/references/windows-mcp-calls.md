@@ -8,7 +8,7 @@ Windows 11 VM (container `agent-os-win11`, `dockur/windows` on host `tootie`), d
 In a Code Mode session, call upstream tools from `mcp__plugin_lab_lab__execute`:
 ```js
 async () => {
-  const r = await callTool("upstream::agent-os_windows-mcp::Screenshot", {});
+  const r = await callTool("agent-os_windows-mcp::Screenshot", {});
   return (r?.content||[]).map(c => c.type==="text" ? c.text.slice(0,200) : {img:(c.data||"").length});
 }
 ```
@@ -54,7 +54,7 @@ Read-only tools (`Screenshot`, `Snapshot`) are never gated.
 - **Prefer PowerShell** to launch a build binary — `App {name}` (Start-menu) silently no-op'd in
   testing:
   ```js
-  callTool("upstream::agent-os_windows-mcp::PowerShell", {
+  callTool("agent-os_windows-mcp::PowerShell", {
     command: "Start-Process 'C:\\\\path\\\\app.exe'; Start-Sleep 2; (Get-Process app -ErrorAction SilentlyContinue|Select -First 1 -Expand Id)"
   })  // returns "Response: <pid>\nStatus Code: 0"
   ```

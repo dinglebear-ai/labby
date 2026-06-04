@@ -1,7 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { Code2, Search } from 'lucide-react'
+import { Code2 } from 'lucide-react'
 import { mutate } from 'swr'
 import { toast } from 'sonner'
 
@@ -11,35 +11,29 @@ import { Switch } from '@/components/ui/switch'
 import {
   useGatewayCodeModeConfig,
   useGatewayMutations,
-  useGatewayToolSearchConfig,
-  TOOL_SEARCH_CONFIG_KEY,
+  CODE_MODE_CONFIG_KEY,
 } from '@/lib/hooks/use-gateways'
 import { cn, getErrorMessage } from '@/lib/utils'
 
-export function ToolSearchTogglePanel() {
-  const { data: toolSearchConfig, isLoading, error } = useGatewayToolSearchConfig()
-  const { data: codeModeConfig, error: codeModeError } = useGatewayCodeModeConfig()
-  const { setToolSearchConfig } = useGatewayMutations()
+export function CodeModeTogglePanel() {
+  const { data: codeModeConfig, isLoading, error } = useGatewayCodeModeConfig()
+  const { setCodeModeConfig } = useGatewayMutations()
   const isSavingRef = useRef(false)
   const [isSaving, setIsSaving] = useState(false)
-  // Tool search can be toggled whenever it has data and is not already saving.
-  const canToggle = Boolean(toolSearchConfig) && !isLoading && !isSaving
+  // Code Mode can be toggled whenever it has data and is not already saving.
+  const canToggle = Boolean(codeModeConfig) && !isLoading && !isSaving
 
   async function handleToggle(enabled: boolean) {
-    if (!toolSearchConfig || isSavingRef.current) return
+    if (!codeModeConfig || isSavingRef.current) return
     isSavingRef.current = true
     setIsSaving(true)
     try {
-      await setToolSearchConfig({
-        enabled,
-        top_k_default: toolSearchConfig.top_k_default,
-        max_tools: toolSearchConfig.max_tools,
-      })
-      toast.success(enabled ? 'Tool search mode enabled.' : 'Tool search mode disabled.')
+      await setCodeModeConfig({ enabled })
+      toast.success(enabled ? 'Code Mode enabled.' : 'Code Mode disabled.')
     } catch (requestError) {
-      toast.error(getErrorMessage(requestError, 'Failed to update tool search mode'))
+      toast.error(getErrorMessage(requestError, 'Failed to update Code Mode'))
       // Re-fetch config so UI reflects actual server state after a failure.
-      await mutate(TOOL_SEARCH_CONFIG_KEY)
+      await mutate(CODE_MODE_CONFIG_KEY)
     } finally {
       isSavingRef.current = false
       setIsSaving(false)
@@ -52,9 +46,9 @@ export function ToolSearchTogglePanel() {
     >
       <div className="flex flex-col gap-3 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-start gap-3">
-          <Search className="mt-0.5 size-5 text-aurora-accent-primary" />
+          <Code2 className="mt-0.5 size-5 text-aurora-accent-primary" />
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-aurora-text-primary">Tool search mode</p>
+            <p className="text-sm font-semibold text-aurora-text-primary">Code Mode</p>
             <p className="mt-1 text-sm text-aurora-text-muted">
               Expose server-wide{' '}
               <code className="rounded bg-aurora-panel-strong px-1.5 py-0.5 text-aurora-text-primary">
@@ -70,20 +64,18 @@ export function ToolSearchTogglePanel() {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           {error ? (
-            <p className="text-xs text-aurora-error">Tool search settings unavailable.</p>
+            <p className="text-xs text-aurora-error">Code Mode settings unavailable.</p>
           ) : (
             <div className="flex flex-wrap gap-2">
-              <Badge variant="secondary" status={toolSearchConfig?.enabled ? 'success' : 'default'}>
-                {toolSearchConfig?.enabled ? 'Enabled' : 'Disabled'}
+              <Badge variant="secondary" status={codeModeConfig?.enabled ? 'success' : 'default'}>
+                {codeModeConfig?.enabled ? 'Enabled' : 'Disabled'}
               </Badge>
-              <Badge variant="outline">Top K {toolSearchConfig?.top_k_default ?? '-'}</Badge>
-              <Badge variant="outline">Max tools {toolSearchConfig?.max_tools ?? '-'}</Badge>
               {isSaving ? <Badge variant="outline">Saving</Badge> : null}
             </div>
           )}
           <Switch
-            aria-label="Tool search mode"
-            checked={toolSearchConfig?.enabled ?? false}
+            aria-label="Code Mode"
+            checked={codeModeConfig?.enabled ?? false}
             disabled={!canToggle}
             onCheckedChange={handleToggle}
           />
@@ -104,7 +96,7 @@ export function ToolSearchTogglePanel() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {codeModeError ? (
+          {error ? (
             <p className="text-xs text-aurora-error">Code execution limits unavailable.</p>
           ) : (
             <div className="flex flex-wrap gap-2">

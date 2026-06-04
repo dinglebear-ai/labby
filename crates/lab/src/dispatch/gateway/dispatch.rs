@@ -14,8 +14,8 @@ use super::params::{
     GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams, GatewayReloadParams,
     GatewayStatusParams, GatewayTestParams, GatewayUpdateParams, GatewayUpdatePatch,
     ProtectedRouteNameParams, ProtectedRouteSpecParams, ProtectedRouteUpdateParams,
-    ServiceConfigGetParams, ServiceConfigSetParams, ToolSearchSetParams,
-    VirtualServerMcpPolicyParams, VirtualServerNameParams, VirtualServerSurfaceParams,
+    ServiceConfigGetParams, ServiceConfigSetParams, VirtualServerMcpPolicyParams,
+    VirtualServerNameParams, VirtualServerSurfaceParams,
 };
 use super::types::{
     DiscoveredServerView, ImportErrorView, ImportSkipReason, ImportSkipView,
@@ -40,10 +40,9 @@ pub async fn dispatch_with_manager(
             let action_name = require_str(&params_value, "action")?;
             action_schema(ACTIONS, action_name)
         }
-        "gateway.tool_search.get"
-        | "gateway.tool_search.set"
-        | "gateway.code_mode.get"
-        | "gateway.code_mode.set" => handle_tool_actions(manager, action, params_value).await,
+        "gateway.code_mode.get" | "gateway.code_mode.set" => {
+            handle_tool_actions(manager, action, params_value).await
+        }
         "gateway.discover" => handle_discover(manager, params_value).await,
         "gateway.import" => handle_import(manager, params_value).await,
         "gateway.import_pending.list" => to_json(manager.list_pending_imports().await),
@@ -339,23 +338,13 @@ async fn handle_tool_actions(
     params_value: Value,
 ) -> Result<Value, ToolError> {
     match action {
-        "gateway.tool_search.get" => to_json(manager.tool_search_config().await),
-        "gateway.tool_search.set" => {
-            let params: ToolSearchSetParams = parse_params(params_value)?;
-            let mut next = manager.tool_search_config().await;
-            next.enabled = params.enabled;
-            if let Some(top_k_default) = params.top_k_default {
-                next.top_k_default = top_k_default;
-            }
-            if let Some(max_tools) = params.max_tools {
-                next.max_tools = max_tools;
-            }
-            to_json(manager.set_tool_search_config(next, None, None).await?)
-        }
         "gateway.code_mode.get" => to_json(manager.code_mode_config().await),
         "gateway.code_mode.set" => {
             let params: CodeModeSetParams = parse_params(params_value)?;
             let mut next = manager.code_mode_config().await;
+            if let Some(enabled) = params.enabled {
+                next.enabled = enabled;
+            }
             if let Some(timeout_ms) = params.timeout_ms {
                 next.timeout_ms = timeout_ms;
             }
@@ -771,7 +760,7 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::config::{ProtectedMcpRouteConfig, ToolSearchConfig, UpstreamConfig};
+    use crate::config::{ProtectedMcpRouteConfig, UpstreamConfig};
 
     use super::super::discovery::DiscoveredServer;
     use super::super::manager::GatewayRuntimeHandle;
@@ -916,7 +905,7 @@ mod tests {
     async fn gateway_dispatch_rejects_synthetic_tool_execution_actions() {
         let manager = test_manager();
 
-        for action in ["tool_execute", "tool_invoke", "tool_search", "invoke"] {
+        for action in ["tool_execute", "tool_invoke", "code_mode", "invoke"] {
             let err = dispatch_with_manager(&manager, action, json!({}))
                 .await
                 .expect_err("synthetic top-level MCP tools are not gateway actions");
@@ -944,7 +933,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -984,7 +972,6 @@ mod tests {
                     oauth: None,
                     imported_from: None,
                     priority: 1.0,
-                    tool_search: ToolSearchConfig::default(),
                 },
                 UpstreamConfig {
                     enabled: true,
@@ -1002,7 +989,6 @@ mod tests {
                     oauth: None,
                     imported_from: None,
                     priority: 1.0,
-                    tool_search: ToolSearchConfig::default(),
                 },
             ])
             .await;
@@ -1098,7 +1084,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -1135,7 +1120,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -1630,7 +1614,6 @@ mod tests {
                     oauth: None,
                     imported_from: None,
                     priority: 1.0,
-                    tool_search: ToolSearchConfig::default(),
                 },
                 UpstreamConfig {
                     enabled: true,
@@ -1648,7 +1631,6 @@ mod tests {
                     oauth: None,
                     imported_from: None,
                     priority: 1.0,
-                    tool_search: ToolSearchConfig::default(),
                 },
             ])
             .await;
@@ -1918,7 +1900,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -1976,7 +1957,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -2053,7 +2033,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -2127,7 +2106,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             },
             source_client: "cursor".to_string(),
             source_path: "/home/user/.cursor/mcp.json".to_string(),
@@ -2154,7 +2132,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             },
             source_client: "claude-code".to_string(),
             source_path: "/home/user/.claude/settings.json".to_string(),
@@ -2306,7 +2283,7 @@ mod tests {
 mod discovery_shape_tests {
     use std::collections::HashSet;
 
-    use crate::config::{ToolSearchConfig, UpstreamConfig};
+    use crate::config::UpstreamConfig;
     use crate::dispatch::gateway::discovery::DiscoveredServer;
     use crate::dispatch::gateway::params::GatewayDiscoverParams;
     use crate::dispatch::gateway::types::McpClientTransportType;
@@ -2334,7 +2311,6 @@ mod discovery_shape_tests {
             oauth: None,
             imported_from: None,
             priority: 1.0,
-            tool_search: ToolSearchConfig::default(),
         }
     }
 

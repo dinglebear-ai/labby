@@ -10,6 +10,9 @@ use futures::stream::{self, StreamExt};
 use lab_apis::stash::types::{StashComponentKind, StashExportOptions, StashWorkspaceShape};
 
 use crate::dispatch::error::ToolError;
+use crate::dispatch::path_safety::{
+    reject_existing_symlink_ancestors, reject_existing_symlinks_in_path,
+};
 use crate::dispatch::stash::store::StashStore;
 
 // ── Path containment helper ───────────────────────────────────────────────────
@@ -100,6 +103,10 @@ async fn read_revision_file(
 
 /// Export a component's head revision to `output_path`.
 ///
+/// Files are first materialized into a staged sibling directory and then moved
+/// into place. With `force=true`, an existing output path is renamed to a
+/// backup and restored if the staged replacement cannot be installed.
+///
 /// # Arguments
 /// * `store` — the stash store to read from
 /// * `component_id` — component to export
@@ -162,7 +169,16 @@ pub async fn export_component(
 
     // 4. Check output_path: non-empty directory + !force → error.
     let output_path = output_path.to_path_buf();
-    if output_path.is_dir() && !options.force {
+    if output_path.exists() && !options.force {
+        if !output_path.is_dir() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "export_target_not_empty".into(),
+                message: format!(
+                    "output path `{}` already exists and is not a directory; set force = true to overwrite",
+                    output_path.display()
+                ),
+            });
+        }
         let mut rd = std::fs::read_dir(&output_path).map_err(|e| ToolError::Sdk {
             sdk_kind: "internal_error".into(),
             message: format!("read_dir `{}`: {e}", output_path.display()),
@@ -234,21 +250,28 @@ pub async fn export_component(
     let unix_mode = revision.unix_mode;
     let output_path_clone = output_path.clone();
     let rev_id_clone = revision.id.clone();
+    let force = options.force;
 
-    // 7 & 8. Write files to output_path (blocking).
+    // 7 & 8. Write files to a staged sibling directory, then swap it into place.
     tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&output_path_clone).map_err(|e| ToolError::Sdk {
+        reject_existing_symlinks_in_path(&output_path_clone)?;
+        let stage_root = export_stage_path(&output_path_clone)?;
+        remove_path_if_exists(&stage_root)?;
+        reject_existing_symlinks_in_path(&stage_root)?;
+        std::fs::create_dir_all(&stage_root).map_err(|e| ToolError::Sdk {
             sdk_kind: "internal_error".into(),
-            message: format!("create_dir_all `{}`: {e}", output_path_clone.display()),
+            message: format!("create_dir_all `{}`: {e}", stage_root.display()),
         })?;
 
         for (rel, bytes) in &file_reads {
             let dst = if is_file_shaped {
                 // Single-file workspaces: materialize to output_root/<filename>
-                output_path_clone.join(rel.file_name().unwrap_or(rel.as_os_str()))
+                stage_root.join(rel.file_name().unwrap_or(rel.as_os_str()))
             } else {
-                output_path_clone.join(rel)
+                stage_root.join(rel)
             };
+
+            reject_existing_symlink_ancestors(&stage_root, &dst)?;
 
             // Create parent directory.
             if let Some(parent) = dst.parent() {
@@ -278,6 +301,7 @@ pub async fn export_component(
             }
         }
 
+        commit_export_stage(&stage_root, &output_path_clone, force)?;
         Ok::<_, ToolError>(())
     })
     .await
@@ -291,6 +315,101 @@ pub async fn export_component(
         revision_id: rev_id_clone,
         file_count,
     })
+}
+
+fn export_stage_path(output_path: &Path) -> Result<PathBuf, ToolError> {
+    let Some(parent) = output_path.parent() else {
+        return Err(ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: format!("output path `{}` has no parent", output_path.display()),
+        });
+    };
+    let name = output_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("export");
+    Ok(parent.join(format!(
+        ".{name}.export-stage-{}",
+        ulid::Ulid::new().to_string().to_lowercase()
+    )))
+}
+
+fn export_backup_path(output_path: &Path) -> Result<PathBuf, ToolError> {
+    let Some(parent) = output_path.parent() else {
+        return Err(ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: format!("output path `{}` has no parent", output_path.display()),
+        });
+    };
+    let name = output_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("export");
+    Ok(parent.join(format!(
+        ".{name}.export-backup-{}",
+        ulid::Ulid::new().to_string().to_lowercase()
+    )))
+}
+
+fn commit_export_stage(
+    stage_root: &Path,
+    output_path: &Path,
+    force: bool,
+) -> Result<(), ToolError> {
+    if output_path.exists() {
+        if !force {
+            remove_path_if_exists(output_path)?;
+            rename_path(stage_root, output_path)?;
+            return Ok(());
+        }
+
+        let backup = export_backup_path(output_path)?;
+        remove_path_if_exists(&backup)?;
+        rename_path(output_path, &backup)?;
+        match rename_path(stage_root, output_path) {
+            Ok(()) => {
+                remove_path_if_exists(&backup)?;
+                Ok(())
+            }
+            Err(err) => {
+                drop(rename_path(&backup, output_path));
+                Err(err)
+            }
+        }
+    } else {
+        rename_path(stage_root, output_path)
+    }
+}
+
+fn rename_path(src: &Path, dst: &Path) -> Result<(), ToolError> {
+    std::fs::rename(src, dst).map_err(|e| ToolError::Sdk {
+        sdk_kind: "internal_error".into(),
+        message: format!("rename `{}` → `{}`: {e}", src.display(), dst.display()),
+    })
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<(), ToolError> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(ToolError::Sdk {
+                sdk_kind: "internal_error".into(),
+                message: format!("symlink_metadata `{}`: {e}", path.display()),
+            });
+        }
+    };
+    if meta.file_type().is_dir() {
+        std::fs::remove_dir_all(path).map_err(|e| ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: format!("remove_dir_all `{}`: {e}", path.display()),
+        })
+    } else {
+        std::fs::remove_file(path).map_err(|e| ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: format!("remove_file `{}`: {e}", path.display()),
+        })
+    }
 }
 
 /// Collect relative paths of all files under `files_dir` (non-recursive walk).
@@ -571,6 +690,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn export_force_replaces_existing_output_from_stage() {
+        let (store, _dir) = make_store();
+        setup_dir_component_with_revision(
+            &store,
+            "comp-04b",
+            "rev-04b",
+            &[("main.ts", b"export const fresh = true;")],
+        );
+
+        let output = tempdir().unwrap();
+        std::fs::write(output.path().join("stale.txt"), b"old").unwrap();
+
+        let result = export_component(
+            &store,
+            "comp-04b",
+            output.path(),
+            StashExportOptions {
+                include_secrets: false,
+                force: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.file_count, 1);
+        assert!(output.path().join("main.ts").is_file());
+        assert!(
+            !output.path().join("stale.txt").exists(),
+            "forced staged export must replace stale output"
+        );
+    }
+
+    #[tokio::test]
     async fn export_not_found_component() {
         let (store, _dir) = make_store();
         let output = tempdir().unwrap();
@@ -615,5 +767,65 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.kind(), "not_found");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn export_stage_replaces_old_symlinked_output_without_following_it() {
+        let (store, _dir) = make_store();
+        let comp_id = "comp-06";
+        let rev_id = "rev-06";
+        let ws_dir = store.workspace_dir(comp_id);
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let rev_files_dir = store.revision_files_path(rev_id);
+        std::fs::create_dir_all(rev_files_dir.join("link")).unwrap();
+        std::fs::write(rev_files_dir.join("link").join("payload.txt"), b"secret").unwrap();
+
+        let rev = StashRevision {
+            id: rev_id.to_string(),
+            component_id: comp_id.to_string(),
+            label: None,
+            content_digest: "abc".to_string(),
+            created_at: "2026-04-26T12:00:00Z".to_string(),
+            file_count: 1,
+            unix_mode: None,
+        };
+        store.write_revision_meta(&rev).unwrap();
+
+        let comp = StashComponent {
+            id: comp_id.to_string(),
+            kind: StashComponentKind::Skill,
+            name: "test".to_string(),
+            label: None,
+            head_revision_id: Some(rev_id.to_string()),
+            origin: None,
+            workspace_root: ws_dir,
+            workspace_shape: StashWorkspaceShape::Directory,
+            unix_mode: None,
+            created_at: "2026-04-26T12:00:00Z".to_string(),
+            updated_at: "2026-04-26T12:00:00Z".to_string(),
+        };
+        store.write_component(&comp).unwrap();
+
+        let output = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), output.path().join("link")).unwrap();
+
+        let result = export_component(
+            &store,
+            comp_id,
+            output.path(),
+            StashExportOptions {
+                include_secrets: false,
+                force: true,
+            },
+        )
+        .await
+        .expect("staged export should replace old output without following symlinks");
+
+        assert_eq!(result.file_count, 1);
+        assert!(output.path().join("link").join("payload.txt").is_file());
+        assert!(!outside.path().join("payload.txt").exists());
     }
 }

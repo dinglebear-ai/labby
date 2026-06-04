@@ -303,7 +303,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             .count(),
         "preparing lazy upstream gateway catalog"
     );
-    crate::config::set_process_tool_search_enabled(config.tool_search.enabled);
+    crate::config::set_process_code_mode_enabled(config.code_mode.enabled);
     let mut pool_builder = crate::dispatch::upstream::pool::UpstreamPool::new();
     if let Some(rt) = &upstream_oauth_runtime {
         pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());
@@ -345,7 +345,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     }
     gateway_manager.set_notifier(CatalogChangeNotifier::new(notify_tx));
     let gateway_manager = Arc::new(gateway_manager);
-    // Seed config for both transports so MCP catalog visibility and tool-search
+    // Seed config for both transports so MCP catalog visibility and code-mode
     // settings match the persisted config. Normal stdio follows the same gateway
     // runtime path as HTTP; only recursive stdio children suppress upstream
     // spawning.

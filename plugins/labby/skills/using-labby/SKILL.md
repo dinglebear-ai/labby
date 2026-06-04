@@ -73,12 +73,12 @@ Use `execute` with JavaScript that evaluates to an async function:
 
 ```js
 async () => {
-  const result = await callTool("upstream::github::search_issues", { q: "bug" });
+  const result = await callTool("github::search_issues", { q: "bug" });
   return result.items?.length ?? 0;
 }
 ```
 
-Prefer `callTool("upstream::<upstream>::<tool>", params)` when dynamically selecting tools. Use `codemode.<upstream>.<tool>(params)` only after `search` confirms the helper name.
+Prefer `callTool("<upstream>::<tool>", params)` when dynamically selecting tools. Use `codemode.<upstream>.<tool>(params)` only after `search` confirms the helper name.
 
 Destructive upstream tools require top-level confirmation on the Labby `execute` call:
 

@@ -2,8 +2,8 @@
 //! Distributed from `server.rs` (bead `lab-kvji.24.1.6`).
 
 use super::{
-    actor_key_from_extensions, oauth_upstream_subject_for_request, subject_from_extensions,
-    tool_execute_builtin_action_allowed, tool_execute_scope_allowed, tool_search_scope_allowed,
+    actor_key_from_extensions, code_mode_search_scope_allowed, oauth_upstream_subject_for_request,
+    subject_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
 use crate::dispatch::error::ToolError;
 use crate::registry::RegisteredService;
@@ -98,7 +98,7 @@ fn gateway_builtin_actions_require_admin_scope() {
 }
 
 #[test]
-fn tool_search_scope_allows_read_but_tool_execute_does_not() {
+fn code_mode_scope_allows_read_but_tool_execute_does_not() {
     let base = crate::api::oauth::AuthContext {
         sub: "alice".to_string(),
         actor_key: None,
@@ -125,12 +125,12 @@ fn tool_search_scope_allows_read_but_tool_execute_does_not() {
         ..base.clone()
     };
 
-    assert!(tool_search_scope_allowed(None));
-    assert!(tool_search_scope_allowed(Some(&base)));
-    assert!(tool_search_scope_allowed(Some(&lab)));
-    assert!(tool_search_scope_allowed(Some(&admin)));
-    assert!(!tool_search_scope_allowed(Some(&empty)));
-    assert!(!tool_search_scope_allowed(Some(&unrelated)));
+    assert!(code_mode_search_scope_allowed(None));
+    assert!(code_mode_search_scope_allowed(Some(&base)));
+    assert!(code_mode_search_scope_allowed(Some(&lab)));
+    assert!(code_mode_search_scope_allowed(Some(&admin)));
+    assert!(!code_mode_search_scope_allowed(Some(&empty)));
+    assert!(!code_mode_search_scope_allowed(Some(&unrelated)));
 
     assert!(
         !tool_execute_scope_allowed(Some(&base)),
@@ -215,43 +215,43 @@ fn oauth_upstream_subject_preserves_non_admin_request_subjects() {
 }
 
 #[test]
-fn tool_search_scope_allowed_permits_all_expected_scopes() {
+fn code_mode_search_scope_allowed_permits_all_expected_scopes() {
     // None = stdio transport → trusted (always permitted)
-    assert!(tool_search_scope_allowed(None));
+    assert!(code_mode_search_scope_allowed(None));
 
-    // lab:read is the minimum acceptable scope for tool_search
+    // lab:read is the minimum acceptable scope for code_mode
     let read_only = make_auth(&["lab:read"]);
-    assert!(tool_search_scope_allowed(Some(&read_only)));
+    assert!(code_mode_search_scope_allowed(Some(&read_only)));
 
-    // bare lab must also pass tool_search
+    // bare lab must also pass code_mode
     let lab = make_auth(&["lab"]);
-    assert!(tool_search_scope_allowed(Some(&lab)));
+    assert!(code_mode_search_scope_allowed(Some(&lab)));
 
-    // lab:admin must pass tool_search (identified as a gap in the original review)
+    // lab:admin must pass code_mode (identified as a gap in the original review)
     let admin = make_auth(&["lab:admin"]);
-    assert!(tool_search_scope_allowed(Some(&admin)));
+    assert!(code_mode_search_scope_allowed(Some(&admin)));
 
     // empty scopes → denied
     let no_scopes = make_auth(&[]);
-    assert!(!tool_search_scope_allowed(Some(&no_scopes)));
+    assert!(!code_mode_search_scope_allowed(Some(&no_scopes)));
 
     // unrelated scope → denied
     let unrelated = make_auth(&["mcp:read"]);
-    assert!(!tool_search_scope_allowed(Some(&unrelated)));
+    assert!(!code_mode_search_scope_allowed(Some(&unrelated)));
 }
 
 #[test]
-fn tool_search_allows_lab_read_but_execute_requires_lab() {
-    // Intentional asymmetry: tool_search is a read-only discovery operation and therefore
+fn code_mode_allows_lab_read_but_execute_requires_lab() {
+    // Intentional asymmetry: code_mode is a read-only discovery operation and therefore
     // accepts lab:read in addition to the stronger lab / lab:admin.
     // tool_execute must NOT accept lab:read — it executes upstream tools
     // which may have side effects.
     let read_only = make_auth(&["lab:read"]);
 
-    // tool_search: lab:read is permitted
+    // code_mode: lab:read is permitted
     assert!(
-        tool_search_scope_allowed(Some(&read_only)),
-        "tool_search should accept lab:read"
+        code_mode_search_scope_allowed(Some(&read_only)),
+        "code_mode should accept lab:read"
     );
 
     // tool_execute: lab:read must NOT be sufficient

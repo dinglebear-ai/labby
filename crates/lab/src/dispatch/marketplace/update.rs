@@ -98,6 +98,10 @@ fn default_notify() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StashMeta {
+    // Preserve schema_version so write_stash_meta doesn't strip the field that
+    // stash_meta::read_stash_meta requires to recognise an initialised stash.
+    #[serde(default)]
+    schema_version: u8,
     plugin_id: String,
     #[serde(default)]
     forked: bool,

@@ -257,19 +257,8 @@ export interface ServiceAction {
   destructive: boolean
 }
 
-export interface ToolSearchConfig {
-  enabled: boolean
-  top_k_default: number
-  max_tools: number
-}
-
-export interface ToolSearchConfigInput {
-  enabled: boolean
-  top_k_default?: number
-  max_tools?: number
-}
-
 export interface CodeModeConfig {
+  enabled: boolean
   timeout_ms: number
   max_tool_calls: number
   max_response_bytes: number
@@ -277,6 +266,7 @@ export interface CodeModeConfig {
 }
 
 export interface CodeModeConfigInput {
+  enabled?: boolean
   timeout_ms?: number
   max_tool_calls?: number
   max_response_bytes?: number

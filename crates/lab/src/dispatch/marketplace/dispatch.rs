@@ -574,7 +574,8 @@ fn installed_target_for_plugin(id: &str) -> Result<Option<PathBuf>, ToolError> {
 
 fn copy_tree(source: &Path, dest: &Path) -> Result<(), ToolError> {
     let rd = std::fs::read_dir(source).map_err(io_internal)?;
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = entry.map_err(io_internal)?;
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();

@@ -4,9 +4,9 @@ Code Mode is the JavaScript execution surface behind the MCP `search` and `execu
 tools. It lets an agent discover upstream MCP tools with a small catalog query, then
 run one async JavaScript function in a sandbox that can call those upstream tools.
 
-Lab actions are intentionally not exposed through Code Mode. For Lab built-in actions,
-use the normal Tool Search `execute` shape with `name=<service>` and
-`arguments={ action, params }`.
+Lab actions are intentionally not exposed through Code Mode. Call Lab built-in
+service tools directly when raw tools are visible, or use the native gateway
+management/API surfaces for Lab actions.
 
 ## Surface
 
@@ -31,7 +31,7 @@ Example execute:
 
 ```ts
 async () => {
-  const issues = await callTool("upstream::github::search_issues", { q: "bug" });
+  const issues = await callTool("github::search_issues", { q: "bug" });
   return issues.items.length;
 }
 ```
@@ -45,14 +45,14 @@ success is useful.
 Upstream tool IDs use:
 
 ```text
-upstream::<upstream-name>::<tool-name>
+<upstream-name>::<tool-name>
 ```
 
 `execute` injects a runtime proxy generated from the live readable catalog, so
 `codemode.github.search_issues(params)` calls the same bridge as:
 
 ```ts
-callTool("upstream::github::search_issues", params)
+callTool("github::search_issues", params)
 ```
 
 Search entries include both raw JSON Schemas and generated TypeScript:
@@ -106,7 +106,7 @@ When search results do not match live execution, check the layers in order:
 3. Direct callability:
 
    ```ts
-   async () => callTool("upstream::agent-os_windows-mcp::PowerShell", {
+   async () => callTool("agent-os_windows-mcp::PowerShell", {
      command: "Write-Output MCP_OK"
    })
    ```
@@ -179,7 +179,7 @@ Tool errors reject with a JSON-encoded string that can be decoded in the sandbox
 
 ```ts
 try {
-  await callTool("upstream::github::search_issues", {});
+  await callTool("github::search_issues", {});
 } catch (e) {
   const env = JSON.parse(String(e.message));
   return env.kind;

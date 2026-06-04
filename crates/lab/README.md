@@ -136,7 +136,7 @@ All services also accept:
 - `{"action": "help"}` — list valid actions
 - `{"action": "schema", "params": {"action": "X"}}` — schema for action X
 
-See [`docs/MCP.md`](../docs/MCP.md) for error envelopes and elicitation.
+See [`docs/surfaces/MCP.md`](../../docs/surfaces/MCP.md) for error envelopes and elicitation.
 
 ## Development
 
@@ -159,17 +159,17 @@ just run            # cargo run --all-features -- <args>
 4. Register in `src/mcp/registry.rs`, `src/cli.rs`, and `src/catalog.rs`
 5. Add feature flag to `Cargo.toml`
 
-See [`docs/SERVICE_ONBOARDING.md`](../../docs/SERVICE_ONBOARDING.md) for the full checklist.
+See [`docs/dev/SERVICE_ONBOARDING.md`](../../docs/dev/SERVICE_ONBOARDING.md) for the full checklist.
 
 ## Documentation
 
 - **Architecture:** [`docs/ARCH.md`](../../docs/ARCH.md)
-- **Services:** [`docs/SERVICES.md`](../../docs/SERVICES.md)
-- **CLI:** [`docs/CLI.md`](../../docs/CLI.md)
-- **MCP:** [`docs/MCP.md`](../../docs/MCP.md)
-- **Config:** [`docs/CONFIG.md`](../../docs/CONFIG.md)
-- **Observability:** [`docs/OBSERVABILITY.md`](../../docs/OBSERVABILITY.md)
-- **Errors:** [`docs/ERRORS.md`](../../docs/ERRORS.md)
+- **Services:** [`docs/dev/SERVICES.md`](../../docs/dev/SERVICES.md)
+- **CLI:** [`docs/surfaces/CLI.md`](../../docs/surfaces/CLI.md)
+- **MCP:** [`docs/surfaces/MCP.md`](../../docs/surfaces/MCP.md)
+- **Config:** [`docs/runtime/CONFIG.md`](../../docs/runtime/CONFIG.md)
+- **Observability:** [`docs/dev/OBSERVABILITY.md`](../../docs/dev/OBSERVABILITY.md)
+- **Errors:** [`docs/dev/ERRORS.md`](../../docs/dev/ERRORS.md)
 - **Docs index:** [`docs/README.md`](../../docs/README.md)
 
 ## Features

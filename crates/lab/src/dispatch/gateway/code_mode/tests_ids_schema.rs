@@ -25,11 +25,11 @@ fn parse_rejects_lab_id() {
 
 #[test]
 fn parses_upstream_tool_id() {
-    let parsed = CodeModeToolId::parse("upstream::github::search_issues").unwrap();
+    let parsed = CodeModeToolId::parse("github::search_issues").unwrap();
     assert_eq!(
         parsed,
         CodeModeToolId {
-            raw: "upstream::github::search_issues".to_string(),
+            raw: "github::search_issues".to_string(),
             reference: CodeModeToolRef::UpstreamTool {
                 upstream: "github".to_string(),
                 tool: "search_issues".to_string(),
@@ -44,8 +44,9 @@ fn rejects_invalid_ids() {
         "",
         "gateway.gateway.schema",
         "lab::gateway",
-        "upstream::github",
-        "upstream::::tool",
+        "github",
+        "::tool",
+        "upstream::github::search_issues",
     ] {
         assert!(CodeModeToolId::parse(id).is_err(), "{id} should be invalid");
     }
@@ -55,7 +56,7 @@ fn rejects_invalid_ids() {
 fn capability_filter_allows_only_selected_upstreams_and_tools() {
     let filter = CodeModeCapabilityFilter::new(
         vec!["github".to_string()],
-        vec!["upstream::github::search_issues".to_string()],
+        vec!["github::search_issues".to_string()],
     );
 
     assert!(filter.allows("github", "search_issues"));
@@ -308,7 +309,7 @@ fn builds_catalog_entry_for_upstream_tool() {
             }
         })),
     );
-    assert_eq!(candidate.id, "upstream::github::search_issues");
+    assert_eq!(candidate.id, "github::search_issues");
     assert_eq!(candidate.upstream, "github");
     assert_eq!(candidate.name, "search_issues");
     assert_eq!(
@@ -342,7 +343,7 @@ fn builds_catalog_entry_for_upstream_tool() {
     assert!(
         candidate
             .dts
-            .contains("declare function callTool(id: \"upstream::github::search_issues\"")
+            .contains("declare function callTool(id: \"github::search_issues\"")
     );
 }
 

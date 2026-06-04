@@ -18,7 +18,7 @@ MCP tools:
 
 ```js
 async () => {
-  const issues = await callTool("upstream::github::search_issues", { q: "bug" });
+  const issues = await callTool("github::search_issues", { q: "bug" });
   return issues.items?.length ?? 0;
 }
 ```
@@ -32,7 +32,7 @@ Each `search` entry contains:
 
 | Field | Meaning |
 | --- | --- |
-| `id` | Canonical `upstream::<upstream>::<tool>` ID for `callTool`. |
+| `id` | Canonical `<upstream>::<tool>` ID for `callTool`. |
 | `upstream` | Upstream gateway name. |
 | `name` | Upstream tool name. |
 | `description` | Sanitized tool description. |
@@ -61,7 +61,7 @@ Top-level `execute` arguments:
 Only `code` is required. The rest are Labby `execute` arguments:
 
 - `upstreams`: allow only named upstreams for this run.
-- `tools`: allow only raw tool names or `upstream::<upstream>::<tool>` IDs.
+- `tools`: allow only raw tool names or `<upstream>::<tool>` IDs.
 - `max_tool_calls`: cap brokered tool calls for this execution; clamped by gateway config.
 - `confirm`: permit destructive upstream tools for this execution.
 
@@ -74,7 +74,7 @@ unclear:
 
 ```js
 async () => {
-  return await callTool("upstream::github::search_issues", { q: "fix" });
+  return await callTool("github::search_issues", { q: "fix" });
 }
 ```
 
@@ -94,8 +94,8 @@ Destructive upstream tools require top-level `confirm` on `execute`:
 
 ```json
 {
-  "code": "async () => { return await callTool(\"upstream::x::delete\", { id: \"1\" }); }",
-  "tools": ["upstream::x::delete"],
+  "code": "async () => { return await callTool(\"x::delete\", { id: \"1\" }); }",
+  "tools": ["x::delete"],
   "confirm": true
 }
 ```
@@ -116,7 +116,7 @@ Successful `execute` returns:
 {
   "result": {},
   "calls": [
-    { "id": "upstream::name::tool", "ok": true, "elapsed_ms": 12 }
+    { "id": "name::tool", "ok": true, "elapsed_ms": 12 }
   ],
   "logs": []
 }
@@ -140,8 +140,8 @@ run to continue:
 ```js
 async () => {
   const settled = await Promise.allSettled([
-    callTool("upstream::a::one", {}),
-    callTool("upstream::b::two", {})
+    callTool("a::one", {}),
+    callTool("b::two", {})
   ]);
   return settled.map(r => r.status === "fulfilled" ? r.value : JSON.parse(String(r.reason.message)));
 }
@@ -155,7 +155,7 @@ Common error kinds:
 | `invalid_param` | Fix type/shape against the schema. |
 | `validation_failed` | Fix nested schema validation errors. |
 | `confirmation_required` | Retry top-level `execute` with `"confirm": true`. |
-| `unknown_tool` | Rerun `search`; use `upstream::...` IDs only. |
+| `unknown_tool` | Rerun `search`; use `<upstream>::<tool>` IDs only. |
 | `tool_call_limit_exceeded` | Reduce fan-out or set top-level `max_tool_calls`. |
 | `timeout` | Split work into smaller executions. |
 | `oauth_needs_reauth` | Check `labby gateway mcp auth status <upstream> --json`. |

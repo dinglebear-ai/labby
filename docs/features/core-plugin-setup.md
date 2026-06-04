@@ -180,12 +180,17 @@ These extend the bg3e.4 wizard and bg3e.5 settings rail; they are not new pages.
 
 ```
 <out>/
-├── plugin-marketplace.json          # generated; lists every plugin
+├── .claude-plugin/
+│   └── marketplace.json             # generated; lists every Claude Code plugin
+├── .agents/
+│   └── plugins/
+│       └── marketplace.json         # generated; lists every Codex plugin when emitted
 ├── lab-core/
-│   ├── plugin.json
+│   ├── .claude-plugin/
+│   │   └── plugin.json
 │   ├── README.md
 │   ├── bin/
-│   │   └── lab                      # copied release binary
+│   │   └── labby                    # copied release binary
 │   ├── commands/
 │   │   └── setup-core.md            # /setup-core → "labby setup"
 │   └── skills/
@@ -193,7 +198,8 @@ These extend the bg3e.4 wizard and bg3e.5 settings rail; they are not new pages.
 │           ├── SKILL.md
 │           └── ...
 └── lab-<service>/                    # one per registered service
-    ├── plugin.json
+    ├── .claude-plugin/
+    │   └── plugin.json
     ├── README.md                    # required env from PluginMeta
     ├── .mcp.json                    # absolute path to core binary
     └── commands/
@@ -201,7 +207,8 @@ These extend the bg3e.4 wizard and bg3e.5 settings rail; they are not new pages.
 ```
 
 - [ ] The slash command bodies and READMEs are templated; templates live under `crates/lab/templates/marketplace/` and are embedded with `include_str!` so the binary is self-sufficient.
-- [ ] `plugin-marketplace.json` schema follows the Claude Code plugin marketplace spec; the generator validates against it before writing.
+- [ ] `.claude-plugin/marketplace.json` follows the Claude Code plugin marketplace spec and `.agents/plugins/marketplace.json` follows the Codex marketplace spec; the generator validates each before writing.
+- [ ] Plugin manifests omit `version` unless a plugin-specific contract explicitly requires manifest-level semver. Lab marketplace release identity is Git-SHA based.
 
 ### Config / env vars
 

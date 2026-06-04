@@ -2595,7 +2595,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             }],
             protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
                 name: "axon".to_string(),

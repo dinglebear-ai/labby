@@ -48,7 +48,7 @@ pub enum ToolError {
         valid: Vec<String>,
     },
     /// Tool name matched multiple upstream tools; caller must qualify it
-    /// with the upstream prefix (e.g. `upstream::tool_name`).
+    /// with the upstream-qualified name (e.g. `<upstream>::tool_name`).
     AmbiguousTool {
         /// Human-readable message.
         message: String,
