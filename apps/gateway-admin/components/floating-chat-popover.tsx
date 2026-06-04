@@ -15,6 +15,7 @@
  */
 
 import * as React from 'react'
+import { flushSync } from 'react-dom'
 import { X, GripHorizontal, Settings2, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
@@ -290,11 +291,16 @@ export function FloatingChatPopover({
 
     const clamped = clampPosition(dragRef.current.pendingX, dragRef.current.pendingY, size.w, size.h)
 
+    // Commit React state first via flushSync so the inline style is applied
+    // synchronously before we clear the imperative transform. Without this,
+    // clearing the transform and then calling setPosition leaves one frame where
+    // the panel has neither a transform nor a React-applied inline style → (0,0).
+    flushSync(() => {
+      setPosition(clamped)
+    })
     if (panelRef.current) {
       panelRef.current.style.transform = ''
     }
-
-    setPosition(clamped)
     patchPersistedState({ position: clamped })
 
     dragRef.current = null
@@ -345,13 +351,16 @@ export function FloatingChatPopover({
 
     const committed = clampSize(resizeRef.current.pendingW, resizeRef.current.pendingH)
 
+    // Commit React state first via flushSync so the inline style is applied
+    // synchronously before we clear the imperative width/height overrides.
+    flushSync(() => {
+      setSize(committed)
+    })
     // Clear direct style overrides so React's inline style prop takes over
     if (panelRef.current) {
       panelRef.current.style.width = ''
       panelRef.current.style.height = ''
     }
-
-    setSize(committed)
     patchPersistedState({ size: committed })
 
     resizeRef.current = null
