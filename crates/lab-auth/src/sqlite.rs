@@ -19,7 +19,7 @@ use crate::types::{
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
 /// Schema version for the `PRAGMA user_version` migration guard.
 /// Increment this whenever a migration step is added to `run_migrations`.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 use crate::util::{
     ensure_restrictive_permissions, fingerprint, now_unix, set_restrictive_permissions,
@@ -796,6 +796,64 @@ impl SqliteStore {
         .await
     }
 
+    /// Bind a dynamic OAuth `client_id` to a pending CSRF state row.
+    ///
+    /// Called by `begin_authorization` after generating the authorization URL
+    /// so that `complete_authorization_callback` can later look up which
+    /// `client_id` was used for this specific flow (lab-77y5.15).
+    pub async fn set_upstream_oauth_state_client_id(
+        &self,
+        upstream_name: &str,
+        csrf_token: &str,
+        client_id: &str,
+    ) -> Result<(), AuthError> {
+        let upstream_name = upstream_name.to_string();
+        let csrf_token = csrf_token.to_string();
+        let client_id = client_id.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE upstream_oauth_state
+                 SET dynamic_client_id = ?1
+                 WHERE upstream_name = ?2
+                   AND csrf_token = ?3",
+                params![client_id, upstream_name, csrf_token],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Retrieve the `dynamic_client_id` bound to a pending CSRF state row.
+    ///
+    /// Returns `None` when no row matches or the row has expired. Used by
+    /// `complete_authorization_callback` to recover the exact `client_id` that
+    /// was used when the authorization URL was generated (lab-77y5.15).
+    pub async fn get_upstream_oauth_state_client_id(
+        &self,
+        upstream_name: &str,
+        csrf_token: &str,
+        now: i64,
+    ) -> Result<Option<String>, AuthError> {
+        let upstream_name = upstream_name.to_string();
+        let csrf_token = csrf_token.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT dynamic_client_id
+                 FROM upstream_oauth_state
+                 WHERE upstream_name = ?1
+                   AND csrf_token = ?2
+                   AND expires_at > ?3",
+                params![upstream_name, csrf_token, now],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(|opt| opt.flatten())
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
     /// Atomic take-once via `DELETE ... RETURNING`.
     pub async fn take_upstream_oauth_state(
         &self,
@@ -1200,6 +1258,18 @@ fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
              ON refresh_tokens(refresh_token_hash);",
         )
         .map_err(sqlite_error)?;
+
+        conn.execute_batch("PRAGMA user_version = 1;")
+            .map_err(sqlite_error)?;
+    }
+
+    if current_version < 2 {
+        // Step 2: add `dynamic_client_id` column to `upstream_oauth_state`.
+        // This column binds the OAuth client_id used to begin a specific
+        // authorization flow to the CSRF state row so that concurrent
+        // `begin_authorization` calls for the same upstream+subject can each
+        // complete their own callback with the correct client_id (lab-77y5.15).
+        add_column_if_missing(conn, "upstream_oauth_state", "dynamic_client_id", "TEXT")?;
 
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(sqlite_error)?;

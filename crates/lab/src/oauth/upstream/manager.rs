@@ -531,6 +531,22 @@ impl UpstreamOauthManager {
             .map_err(|e| OauthError::Internal(e.to_string()))
     }
 
+    /// Look up the stored dynamic `client_id` for `subject`, if any.
+    ///
+    /// Returns `None` when the upstream is not `Dynamic` or when no registration
+    /// has been persisted yet. Used by `OauthClientCache` to include the
+    /// per-subject `client_id` in the fingerprint so a re-registration is
+    /// detected and the stale `AuthClient` is evicted (lab-77y5.13).
+    pub async fn stored_dynamic_client_id(
+        &self,
+        subject: &str,
+    ) -> Result<Option<String>, OauthError> {
+        self.sqlite
+            .find_dynamic_client_registration(&self.upstream.name, subject)
+            .await
+            .map_err(|e| OauthError::Internal(e.to_string()))
+    }
+
     // ---- private helpers ----
 
     async fn configured_authorization_manager(
