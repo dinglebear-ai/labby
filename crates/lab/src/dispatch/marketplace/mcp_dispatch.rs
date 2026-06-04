@@ -31,6 +31,18 @@ use crate::dispatch::node::send::send_rpc_to_node;
 ///
 /// Called from `marketplace/dispatch.rs` for any action with the `mcp.` prefix.
 pub async fn dispatch_mcp(action: &str, params: Value) -> Result<Value, ToolError> {
+    // help and schema are built-in discovery actions; serve them regardless of
+    // whether the mcpregistry feature is compiled in.
+    match action {
+        "help" => {
+            return Ok(crate::dispatch::helpers::help_payload("marketplace", MCP_ACTIONS));
+        }
+        "schema" => {
+            let a = crate::dispatch::helpers::require_str(&params, "action")?;
+            return crate::dispatch::helpers::action_schema(MCP_ACTIONS, a);
+        }
+        _ => {}
+    }
     #[cfg(feature = "mcpregistry")]
     {
         let client = mcp_client::require_mcp_client()?;

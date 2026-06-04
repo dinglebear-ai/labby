@@ -314,7 +314,20 @@ fn walk_artifacts_into(root: &Path, dir: &Path, out: &mut Vec<Artifact>) -> Resu
         sdk_kind: "internal_error".into(),
         message: format!("read_dir {}: {e}", dir.display()),
     })?;
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(error) => {
+                tracing::warn!(
+                    service = "marketplace",
+                    event = "artifact.read.entry_failed",
+                    dir = %dir.display(),
+                    error = %error,
+                    "read_dir entry error; skipping"
+                );
+                continue;
+            }
+        };
         if out.len() >= MAX_ARTIFACTS {
             break;
         }
@@ -507,10 +520,8 @@ fn installed_target_for_plugin(id: &str) -> Result<Option<PathBuf>, ToolError> {
     };
     let path = record.install_path;
     if path.as_os_str().is_empty() {
-        return Err(ToolError::InvalidParam {
-            param: "id".into(),
-            message: format!("install path for `{id}` is empty"),
-        });
+        // installPath missing from installed_plugins.json — treat as not installed.
+        return Ok(None);
     }
     let root = client::plugins_root()?;
     let canonical_root = std::fs::canonicalize(&root).map_err(io_internal)?;
