@@ -42,9 +42,7 @@ import {
   type ToolFilterState,
   type ToolsExposureFilter,
 } from './gateway-list-state'
-import { DisableGatewayDialog } from './disable-gateway-dialog'
 import { EmptyState } from './empty-state'
-import { DeleteGatewayDialog } from './delete-gateway-dialog'
 import { GatewayFilters } from './gateway-filters'
 import { GatewayFormDialog } from './gateway-form-dialog'
 import { GatewayTable } from './gateway-table'
@@ -152,8 +150,6 @@ export function GatewayListContent() {
 
   const [formOpen, setFormOpen] = useState(false)
   const [editingGateway, setEditingGateway] = useState<Gateway | null>(null)
-  const [deleteGateway, setDeleteGateway] = useState<Gateway | null>(null)
-  const [disableGatewayTarget, setDisableGatewayTarget] = useState<Gateway | null>(null)
   const [discoveredConfigs, setDiscoveredConfigs] = useState<DiscoveredMcpServer[] | null>(null)
   const [isDiscoveringConfigs, setIsDiscoveringConfigs] = useState(false)
   const [isImportingConfigs, setIsImportingConfigs] = useState(false)
@@ -377,18 +373,15 @@ export function GatewayListContent() {
     }
   }
 
-  const handleDelete = async () => {
-    if (!deleteGateway) return
-
+  const handleDelete = async (gateway: Gateway) => {
     try {
-      if (deleteGateway.source === 'in_process') {
-        await removeVirtualServer(deleteGateway.id)
+      if (gateway.source === 'in_process') {
+        await removeVirtualServer(gateway.id)
         toast.success('Stale service removed successfully')
       } else {
-        await removeGateway(deleteGateway.id)
+        await removeGateway(gateway.id)
         toast.success('Server removed successfully')
       }
-      setDeleteGateway(null)
     } catch (requestError) {
       toast.error(getErrorMessage(requestError, 'Failed to remove server'))
     }
@@ -457,7 +450,12 @@ export function GatewayListContent() {
 
   const handleToggleEnabled = async (gateway: Gateway) => {
     if (gateway.enabled ?? true) {
-      setDisableGatewayTarget(gateway)
+      try {
+        await disableGateway(gateway.id)
+        toast.success('Server disabled. Catalog change sent and runtime cleanup requested.')
+      } catch (requestError) {
+        toast.error(getErrorMessage(requestError, 'Failed to disable server'))
+      }
       return
     }
 
@@ -466,18 +464,6 @@ export function GatewayListContent() {
       toast.success('Server enabled. Catalog change sent to clients.')
     } catch (requestError) {
       toast.error(getErrorMessage(requestError, 'Failed to update server state'))
-    }
-  }
-
-  const handleDisableConfirm = async () => {
-    if (!disableGatewayTarget) return
-
-    try {
-      await disableGateway(disableGatewayTarget.id)
-      toast.success('Server disabled. Catalog change sent and runtime cleanup requested.')
-      setDisableGatewayTarget(null)
-    } catch (requestError) {
-      toast.error(getErrorMessage(requestError, 'Failed to disable server'))
     }
   }
 
@@ -534,7 +520,7 @@ export function GatewayListContent() {
         onCleanup={handleCleanup}
         onClearCleanupHistory={handleClearCleanupHistory}
         onToggleEnabled={handleToggleEnabled}
-        onDelete={setDeleteGateway}
+        onDelete={handleDelete}
       />
 
       <GatewayFormDialog
@@ -542,18 +528,6 @@ export function GatewayListContent() {
         onOpenChange={setFormOpen}
         gateway={editingGateway}
         onSave={handleSave}
-      />
-
-      <DeleteGatewayDialog
-        gateway={deleteGateway}
-        onOpenChange={(open) => !open && setDeleteGateway(null)}
-        onConfirm={handleDelete}
-      />
-
-      <DisableGatewayDialog
-        gateway={disableGatewayTarget}
-        onOpenChange={(open: boolean) => !open && setDisableGatewayTarget(null)}
-        onConfirm={handleDisableConfirm}
       />
 
       <TestResultPanel result={testResult} onClose={() => setTestResult(null)} />

@@ -18,7 +18,7 @@ description: >-
 ### Server (stdio — most common)
 ```toml
 [dependencies]
-rmcp = { version = "1.4", features = ["server", "transport-io"] }
+rmcp = { version = "1.6", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1.0"
@@ -30,7 +30,7 @@ anyhow = "1"
 ### Client (spawning a child-process server)
 ```toml
 [dependencies]
-rmcp = { version = "1.4", features = ["client", "transport-child-process"] }
+rmcp = { version = "1.6", features = ["client", "transport-child-process"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 ```

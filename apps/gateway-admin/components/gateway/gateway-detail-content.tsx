@@ -32,8 +32,6 @@ import { TransportBadge } from './transport-badge'
 import { ToolExposureTable } from './tool-exposure-table'
 import { PrimitiveExposureTable } from './primitive-exposure-table'
 import { GatewayFormDialog } from './gateway-form-dialog'
-import { DisableGatewayDialog } from './disable-gateway-dialog'
-import { DeleteGatewayDialog } from './delete-gateway-dialog'
 import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { useGateway, useGatewayMutations } from '@/lib/hooks/use-gateways'
@@ -120,8 +118,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [isAggressiveCleanup, setIsAggressiveCleanup] = useState(false)
   const [configCopied, setConfigCopied] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
-  const [deleteOpen, setDeleteOpen] = useState(false)
-  const [disableOpen, setDisableOpen] = useState(false)
   const [manageToolsMode, setManageToolsMode] = useState(false)
   const [draftSelectedToolNames, setDraftSelectedToolNames] = useState<string[]>([])
   const [selectedRowToolNames, setSelectedRowToolNames] = useState<string[]>([])
@@ -278,7 +274,16 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const handleEnabledToggle = async (enabled: boolean) => {
     if (!gateway) return
     if (!enabled) {
-      setDisableOpen(true)
+      try {
+        if (gateway.source === 'in_process') {
+          await disableVirtualServer(gateway.id)
+        } else {
+          await disableGateway(gateway.id)
+        }
+        toast.success('Server disabled. Catalog change sent and runtime cleanup requested.')
+      } catch (error) {
+        toast.error(getErrorMessage(error, 'Failed to update server state'))
+      }
       return
     }
 
@@ -289,21 +294,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
         await enableGateway(gateway.id)
       }
       toast.success('Server enabled. Catalog change sent to clients.')
-    } catch (error) {
-      toast.error(getErrorMessage(error, 'Failed to update server state'))
-    }
-  }
-
-  const handleDisableConfirm = async () => {
-    if (!gateway) return
-    try {
-      if (gateway.source === 'in_process') {
-        await disableVirtualServer(gateway.id)
-      } else {
-        await disableGateway(gateway.id)
-      }
-      toast.success('Server disabled. Catalog change sent and runtime cleanup requested.')
-      setDisableOpen(false)
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to update server state'))
     }
@@ -539,7 +529,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       <Button
         variant="outline"
         size="icon"
-        onClick={() => setDeleteOpen(true)}
+        onClick={() => void handleDelete()}
         aria-label="Remove server"
         title="Remove server"
       >
@@ -1174,18 +1164,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
         onOpenChange={setEditOpen}
         gateway={gateway}
         onSave={handleSave}
-      />
-
-      <DeleteGatewayDialog
-        gateway={deleteOpen ? gateway : null}
-        onOpenChange={(open) => setDeleteOpen(open)}
-        onConfirm={handleDelete}
-      />
-
-      <DisableGatewayDialog
-        gateway={disableOpen ? gateway : null}
-        onOpenChange={(open: boolean) => setDisableOpen(open)}
-        onConfirm={handleDisableConfirm}
       />
 
       <TestResultPanel

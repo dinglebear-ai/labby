@@ -148,7 +148,7 @@ When the user asks about media requests:
 To use multiple Overseerr instances, override environment variables:
 
 ```bash
-# Use default server (from .env)
+# Use default server (from plugin settings)
 node scripts/search.mjs "query"
 
 # Use alternative server (override with environment variables)

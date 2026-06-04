@@ -11,7 +11,6 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { formatTimeAgo } from './mock-data'
-import { ConfirmDialog, type ConfirmState } from '@/components/marketplace/confirm-dialog'
 import type { ACPProject, ACPRun, ACPRunStatus } from './types'
 
 interface SessionSidebarProps {
@@ -224,20 +223,10 @@ export function SessionSidebar({
   const activeProjectId = selectedProjectId
   const [search, setSearch] = React.useState('')
   const deferredSearch = React.useDeferredValue(search)
-  const [confirm, setConfirm] = React.useState<ConfirmState | null>(null)
 
   const handleCleanup = React.useCallback(() => {
     if (!onBulkCloseHidden || hiddenRunCount === 0) return
-    setConfirm({
-      title: `Delete ${hiddenRunCount} session${hiddenRunCount === 1 ? '' : 's'}?`,
-      description:
-        'Sessions in state failed or closed, last active more than 7 days ago, will be permanently removed. This action cannot be undone.',
-      confirmLabel: `Delete ${hiddenRunCount} Session${hiddenRunCount === 1 ? '' : 's'}`,
-      destructive: true,
-      onConfirm: async () => {
-        await onBulkCloseHidden()
-      },
-    })
+    void onBulkCloseHidden()
   }, [hiddenRunCount, onBulkCloseHidden])
 
   const visibleProjects = React.useMemo(() => {
@@ -329,13 +318,6 @@ export function SessionSidebar({
           ))}
         </div>
       </ScrollArea>
-
-      <ConfirmDialog
-        state={confirm}
-        onOpenChange={(open) => {
-          if (!open) setConfirm(null)
-        }}
-      />
     </div>
   )
 }

@@ -30,10 +30,6 @@ QBITTORRENT_USERNAME="admin"
 QBITTORRENT_PASSWORD="adminadmin"
 ```
 
-Set file permissions:
-```bash
-```
-
 ## Quick Reference
 
 ### List Torrents

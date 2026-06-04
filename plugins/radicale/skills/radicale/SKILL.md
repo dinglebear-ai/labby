@@ -264,50 +264,6 @@ When user mentions calendars or contacts:
 - "7PM" → "19:00:00"
 - "noon" → "12:00:00"
 
-## Bundled Resources
-
-### scripts/radicale-api.py
-
-Complete Python wrapper for CalDAV/CardDAV operations. Uses caldav library to connect to Radicale server and perform all calendar/contact operations.
-
-**Key features:**
-- Loads credentials from `.env` file
-- JSON output for all operations
-- Error handling with clear messages
-- Supports all CalDAV/CardDAV operations
-
-**Direct usage:** Can be called directly with command-line arguments (see examples above).
-
-### references/caldav-library.md
-
-In-depth guide to the Python caldav library including:
-- Authentication patterns
-- Calendar operations (create, read, update, delete)
-- Event operations with iCalendar format
-- Contact operations with vCard format
-- Error handling patterns
-- Best practices
-
-**When to reference:** When implementing custom operations beyond the wrapper script, or when debugging library-specific issues.
-
-### references/quick-reference.md
-
-Quick command examples for all operations with sample inputs and outputs.
-
-**When to reference:** When user needs examples or when uncertain about command syntax.
-
-### references/troubleshooting.md
-
-Common errors and solutions including:
-- Installation issues
-- Connection problems
-- Authentication failures
-- Calendar/contact not found errors
-- Date/time format issues
-- Permission problems
-
-**When to reference:** When operations fail or user reports errors.
-
 ## Error Handling
 
 All operations return JSON with status. Check for:
@@ -349,24 +305,20 @@ All operations return JSON with status. Check for:
 - API script never logs credentials
 - Connection uses HTTP basic auth (HTTPS recommended for production)
 
-## Reference Documentation
+## Reference
 
-**Bundled references (load as needed):**
-- `references/caldav-library.md` - Python caldav library guide
-- `references/quick-reference.md` - Command examples
-- `references/troubleshooting.md` - Error solutions
+Bundled references (load as needed):
+- `references/caldav-library.md` — Python caldav library guide (auth patterns, CalDAV/CardDAV operations, error handling)
+- `references/quick-reference.md` — command examples with sample outputs
+- `references/troubleshooting.md` — installation, connection, auth, and data errors
 
-**External documentation:**
+External:
 - [Radicale Documentation](https://radicale.org/v3.html)
 - [caldav Library Docs](https://caldav.readthedocs.io/)
-- [RFC 4791 - CalDAV](https://www.rfc-editor.org/rfc/rfc4791) (embedded in vector DB)
-- [RFC 6352 - CardDAV](https://www.rfc-editor.org/rfc/rfc6352) (embedded in vector DB)
 
----
+## Agent Tool Usage
 
-## 🔧 Agent Tool Usage
-
-Run this skill's scripts with the **Bash** tool directly:
+Run this skill's scripts with the Bash tool directly:
 
 ```bash
 python ./skills/radicale/scripts/radicale-api.py [args]

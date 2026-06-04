@@ -3,16 +3,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Loader2, Plus, Trash2, Users } from 'lucide-react'
 import { toast } from 'sonner'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { AURORA_STRONG_PANEL } from '@/components/aurora/tokens'
 import { cn, getErrorMessage } from '@/lib/utils'
 import {
@@ -30,8 +20,7 @@ export function AllowedUsersPanel() {
   const [isAdding, setIsAdding] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
 
-  const [pendingRemove, setPendingRemove] = useState<AllowedEmailEntry | null>(null)
-  const [isRemoving, setIsRemoving] = useState(false)
+  const [removingEmail, setRemovingEmail] = useState<string | null>(null)
 
   const loadEntries = useCallback(async () => {
     setIsLoading(true)
@@ -73,19 +62,16 @@ export function AllowedUsersPanel() {
     }
   }
 
-  async function handleRemoveConfirm() {
-    if (!pendingRemove) return
-
-    setIsRemoving(true)
+  async function handleRemove(entry: AllowedEmailEntry) {
+    setRemovingEmail(entry.email)
     try {
-      await authAdminApi.removeAllowedEmail(pendingRemove.email)
-      toast.success(`${pendingRemove.email} removed from the allowlist.`)
-      setPendingRemove(null)
+      await authAdminApi.removeAllowedEmail(entry.email)
+      toast.success(`${entry.email} removed from the allowlist.`)
       await loadEntries()
     } catch (err) {
       toast.error(getErrorMessage(err, 'Failed to remove email'))
     } finally {
-      setIsRemoving(false)
+      setRemovingEmail(null)
     }
   }
 
@@ -201,13 +187,18 @@ export function AllowedUsersPanel() {
                       <button
                         type="button"
                         aria-label={`Remove ${entry.email}`}
-                        onClick={() => setPendingRemove(entry)}
+                        onClick={() => void handleRemove(entry)}
+                        disabled={removingEmail === entry.email}
                         className={cn(
                           'inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-aurora-error',
-                          'hover:bg-aurora-error/10 focus:outline-none focus:ring-2 focus:ring-aurora-error/40',
+                          'hover:bg-aurora-error/10 focus:outline-none focus:ring-2 focus:ring-aurora-error/40 disabled:cursor-not-allowed disabled:opacity-50',
                         )}
                       >
-                        <Trash2 className="size-3.5" />
+                        {removingEmail === entry.email ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-3.5" />
+                        )}
                         Remove
                       </button>
                     </td>
@@ -219,31 +210,6 @@ export function AllowedUsersPanel() {
         )}
       </div>
 
-      {/* Remove confirm dialog */}
-      <AlertDialog open={!!pendingRemove} onOpenChange={(open) => { if (!open) setPendingRemove(null) }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove allowed user</AlertDialogTitle>
-            <AlertDialogDescription>
-              Remove <strong>{pendingRemove?.email}</strong> from the allowlist? They will no longer be able to sign in via OAuth.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isRemoving}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault()
-                void handleRemoveConfirm()
-              }}
-              disabled={isRemoving}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {isRemoving && <Loader2 className="mr-2 size-4 animate-spin" />}
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   )
 }

@@ -145,8 +145,6 @@ Same loop — URI is the `label`, `args` is empty:
 "file://docs/readme.md||regex: ^# "
 ```
 
-### Patterns worth keeping
-
 ## Common failure modes
 
 | Symptom | Likely cause | Fix |
@@ -173,3 +171,11 @@ mcporter generate-cli --server <s> --compile ./bin/<s>       # ship a binary
 - Don't rely on `--output json` for machine-parseable output in scripts — it emits Node util.inspect format, not valid JSON. Use `--output text` for assertions and `--output raw` for envelope inspection.
 - Don't run smoke scripts against production data without checking which side-effects each tool has; mcporter is just a transport, it has no idea what's destructive.
 - Don't commit `./config/mcporter.json` with personal tokens; use editor-imports or `--env`.
+
+## References
+
+- [`references/cli-commands.md`](references/cli-commands.md) — full flag tables for every subcommand (`list`, `call`, `auth`, `generate-cli`, `emit-ts`, `config`, `daemon`). Load when you need exact flag semantics beyond the quick reference above.
+- [`references/configuration.md`](references/configuration.md) — `mcporter.json` format, config resolution order, `allowedTools`/`blockedTools`, OAuth cache, and all environment variables.
+- [`references/tips-gotchas.md`](references/tips-gotchas.md) — real footguns in rough order of frequency: `--help` coverage gaps, function-call quoting, `generate-cli` input exclusivity, Bun requirement for `--compile`, daemon limitations, and `string`-field coercion.
+- [`references/typescript-api.md`](references/typescript-api.md) — `callOnce()`, `createRuntime()`, `createServerProxy()` API surface and when to use each. Load when the user wants a TypeScript client rather than a shell script.
+- [`scripts/smoke.sh`](scripts/smoke.sh) — the test harness template. Copy and populate `CASES=()` for a new server.

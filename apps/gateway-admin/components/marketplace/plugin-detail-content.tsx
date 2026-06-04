@@ -7,7 +7,6 @@ import { ArrowLeft, Download, GitFork, RefreshCw, Trash2 } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { CherryPickDialog } from './cherry-pick-dialog'
-import { ConfirmDialog, type ConfirmState } from './confirm-dialog'
 import { PluginFilesPanel } from './plugin-files-panel'
 import { PluginInfoPanel } from './plugin-info-panel'
 import { getArtifacts } from '@/lib/api/marketplace-client'
@@ -75,7 +74,6 @@ export function PluginDetailContent({ pluginId }: { pluginId: string }) {
 
   const [tab, setTab] = useState<DetailTab>('info')
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
-  const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [cherryPickOpen, setCherryPickOpen] = useState(false)
 
   const plugin = useMemo(() => plugins.find((candidate) => candidate.id === pluginId) ?? null, [pluginId, plugins])
@@ -190,16 +188,7 @@ export function PluginDetailContent({ pluginId }: { pluginId: string }) {
                     </Tooltip>
                   )}
                   <button
-                    onClick={() => setConfirm({
-                      title: `Remove ${plugin.name}?`,
-                      description: 'This runs `claude plugin uninstall` and removes the plugin from your Claude configuration.',
-                      confirmLabel: 'Remove',
-                      destructive: true,
-                      onConfirm: async () => {
-                        await uninstall(plugin.id, plugin.name)
-                        setConfirm(null)
-                      },
-                    })}
+                    onClick={() => void uninstall(plugin.id, plugin.name)}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--aurora-error)_30%,transparent)] bg-transparent px-[14px] py-1.5 text-[13px] font-semibold text-aurora-error transition-all duration-150 hover:bg-[color-mix(in_srgb,var(--aurora-error)_8%,transparent)]"
                   >
                     <Trash2 className="size-[14px]" />
@@ -247,8 +236,6 @@ export function PluginDetailContent({ pluginId }: { pluginId: string }) {
           )}
         </section>
       </div>
-
-      <ConfirmDialog state={confirm} onOpenChange={(open) => { if (!open) setConfirm(null) }} />
 
       <CherryPickDialog
         pluginId={plugin.id}

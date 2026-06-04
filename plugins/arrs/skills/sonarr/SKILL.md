@@ -119,7 +119,7 @@ Always include TVDB links when presenting search results:
 - Uses Sonarr API v3
 - The `search-json` command returns raw JSON; all other commands return formatted text.
 - Quality profile IDs vary by installation — use `config` to discover yours
-- The `SONARR_DEFAULT_QUALITY_PROFILE` from `.env` is used when adding shows (defaults to 1)
+- The `SONARR_DEFAULT_QUALITY_PROFILE` from plugin settings (`config.env`) is used when adding shows (defaults to 1)
 
 ## Reference
 

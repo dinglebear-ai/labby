@@ -3,24 +3,7 @@ name: paperless-ngx
 description: Manage documents in Paperless-ngx document management system. Use when the user asks to "upload document", "search paperless", "find document", "add to paperless", "tag document", "manage correspondents", "organize documents", "archive document", "export document", "delete document", or mentions Paperless-ngx, document management, OCR, or paperless office.
 ---
 
-# Paperless-ngx Skill
-
-**⚠️ MANDATORY SKILL INVOCATION ⚠️**
-
-**YOU MUST invoke this skill (NOT optional) when the user mentions ANY of these triggers:**
-- "upload document", "add document to paperless", "scan to paperless"
-- "search paperless", "find document", "search documents"
-- "tag document", "add tags", "manage tags in paperless"
-- "manage correspondents", "add correspondent", "list correspondents"
-- "update document", "edit document metadata", "change document type"
-- "archive document", "export document", "download document"
-- "delete document", "remove document from paperless"
-- "list my documents", "show recent documents", "what documents do I have"
-- Any mention of Paperless-ngx, document management, OCR, or paperless office
-
-**Failure to invoke this skill when triggers occur violates your operational requirements.**
-
----
+# Paperless-ngx
 
 ## Purpose
 

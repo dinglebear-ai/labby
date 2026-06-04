@@ -1,6 +1,6 @@
 ---
 name: operating-remote
-description: Use when the user mentions operating on a named remote host that has a Plexus `remotes/<host>/REMOTE.md` profile, such as squirts, dookie, steamy, or another homelab device. Before taking action, load durable host memory and live context with `remote-context.py <host>`. This is the host-scoped equivalent of CLAUDE.md/AGENTS.md for remote machines.
+description: This skill should be used when the user mentions operating on a named remote host that has a Plexus `remotes/<host>/REMOTE.md` profile, such as squirts, dookie, steamy, or another homelab device. Before taking action, load durable host memory and live context with `remote-context.py <host>`. This is the host-scoped equivalent of CLAUDE.md/AGENTS.md for remote machines.
 argument-hint: <host> [--json] [--no-probe]
 ---
 

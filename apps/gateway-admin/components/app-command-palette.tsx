@@ -36,7 +36,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
-import { ConfirmDialog } from '@/components/marketplace/confirm-dialog'
 import { cn } from '@/lib/utils'
 import {
   type AppCommandIconKey,
@@ -83,13 +82,11 @@ const OPEN_COMMAND_PALETTE_EVENT = 'labby:open-command-palette'
 type PaletteMode =
   | { kind: 'browse' }
   | { kind: 'param_prompt'; service: string; action: CatalogAction }
-  | { kind: 'confirmation'; service: string; action: CatalogAction; params: Record<string, unknown> }
   | { kind: 'result'; service: string; action: string; data: unknown }
 
 type PaletteAction =
   | { type: 'BROWSE' }
   | { type: 'PARAM_PROMPT'; service: string; action: CatalogAction }
-  | { type: 'CONFIRMATION'; service: string; action: CatalogAction; params: Record<string, unknown> }
   | { type: 'RESULT'; service: string; action: string; data: unknown }
 
 function paletteReducer(state: PaletteMode, action: PaletteAction): PaletteMode {
@@ -98,8 +95,6 @@ function paletteReducer(state: PaletteMode, action: PaletteAction): PaletteMode 
       return { kind: 'browse' }
     case 'PARAM_PROMPT':
       return { kind: 'param_prompt', service: action.service, action: action.action }
-    case 'CONFIRMATION':
-      return { kind: 'confirmation', service: action.service, action: action.action, params: action.params }
     case 'RESULT':
       return { kind: 'result', service: action.service, action: action.action, data: action.data }
   }
@@ -367,17 +362,10 @@ export function AppCommandPalette() {
     const requiredParams = action.params.filter((p) => p.required)
 
     if (requiredParams.length === 0) {
-      if (action.destructive) {
-        // Zero required params but destructive: show ConfirmDialog before dispatch
-        dispatch({ type: 'CONFIRMATION', service: svc.name, action, params: {} })
-      } else {
-        // Zero required params and non-destructive: dispatch immediately
-        void executeAction(svc.name, action, {})
-      }
+      void executeAction(svc.name, action, {})
       return
     }
 
-    // 1+ required params: show param prompt (destructive confirmation happens after form fill)
     dispatch({ type: 'PARAM_PROMPT', service: svc.name, action })
   }
 
@@ -422,40 +410,12 @@ export function AppCommandPalette() {
       return
     }
 
-    if (mode.action.destructive) {
-      dispatch({ type: 'CONFIRMATION', service: mode.service, action: mode.action, params })
-    } else {
-      void executeAction(mode.service, mode.action, params)
-    }
-  }
-
-  // ── Confirmation dialog handlers ───────────────────────────────────────────
-
-  function handleConfirmDialogChange(isOpen: boolean) {
-    if (!isOpen && mode.kind === 'confirmation') {
-      // Cancel returns to param_prompt
-      dispatch({ type: 'PARAM_PROMPT', service: mode.service, action: mode.action })
-    }
+    void executeAction(mode.service, mode.action, params)
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const showParamForm = mode.kind === 'param_prompt'
-
-  const confirmDialogState = mode.kind === 'confirmation'
-    ? {
-        title: `Confirm: ${mode.service} ${mode.action.action}`,
-        description: mode.action.description
-          ? `${mode.action.description} This action cannot be undone.`
-          : `This will execute ${mode.action.action} on ${mode.service}. This cannot be undone.`,
-        confirmLabel: 'Confirm',
-        destructive: true,
-        onConfirm: async () => {
-          if (mode.kind !== 'confirmation') return
-          await executeAction(mode.service, mode.action, mode.params)
-        },
-      }
-    : null
 
   const placeholder = currentPage
     ? `Search ${currentPage} actions...`
@@ -637,11 +597,6 @@ export function AppCommandPalette() {
         </DialogContent>
       </Dialog>
 
-      {/* Confirmation dialog — rendered alongside (not inside) Command to avoid modal focus-trap nesting */}
-      <ConfirmDialog
-        state={confirmDialogState}
-        onOpenChange={handleConfirmDialogChange}
-      />
     </>
   )
 }
