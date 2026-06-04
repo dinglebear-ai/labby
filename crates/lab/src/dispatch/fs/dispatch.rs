@@ -515,22 +515,177 @@ fn open_no_follow(root: &Path, rel: &Path) -> Result<std::fs::File, ToolError> {
     open_no_follow_fallback(root, rel)
 }
 
-/// Portable fallback when `openat2` is not available. Not atomic — retains
-/// two TOCTOU windows: (1) between the component walk below and the
-/// `canonicalize` call (an attacker with workspace write access can swap a
-/// regular file for a symlink mid-resolution), and (2) between
-/// `canonicalize` and `File::open`, narrowed by `symlink_metadata` on the
-/// canonical result. The proper fix is per-component `openat`+`O_NOFOLLOW`
-/// matching the kernel-atomic guarantee Linux gets via `openat2`. Tracked
-/// in lab-f1t2.34. Linux 5.6+ takes the openat2 path above and is unaffected.
+/// Portable fallback used when `openat2` returns `ENOSYS` (pre-5.6 Linux) or
+/// when running on a non-Linux Unix target (macOS, FreeBSD, etc.).
+///
+/// # Security model (lab-f1t2.34)
+///
+/// On Unix targets this replaces the old `canonicalize + starts_with + open`
+/// chain with a per-component `openat(O_NOFOLLOW)` walk that gives the same
+/// atomicity guarantee as `openat2(RESOLVE_NO_SYMLINKS)`:
+///
+/// - Opening each directory component with `O_NOFOLLOW | O_DIRECTORY` ensures
+///   no symlink is followed at any step of the resolution.
+/// - The final file open uses `O_RDONLY | O_NOFOLLOW | O_CLOEXEC`; if any
+///   component has been swapped to a symlink between steps the kernel rejects
+///   the open with `ELOOP` / `permission_denied`.
+/// - This closes the TOCTOU race where a stat-then-canonicalize chain could
+///   be defeated by swapping a regular file for an in-root symlink between
+///   the two calls.
+///
+/// On non-Unix targets (Windows) the old `canonicalize + starts_with +
+/// symlink_metadata` chain is retained as a best-effort guard; the Windows
+/// gap is tracked separately and does not worsen the existing posture.
+///
+/// Callers on Linux 5.6+ never reach this function — they take the
+/// `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)` path in `open_no_follow`.
 #[cfg(feature = "fs")]
 fn open_no_follow_fallback(root: &Path, rel: &Path) -> Result<std::fs::File, ToolError> {
-    // Walk each component of the relative path under `root` BEFORE canonicalizing,
-    // refusing if any prefix is a symlink. This closes the credential-exfil hole
-    // where a workspace-internal symlink (e.g. `readme.txt -> .env`) would survive
-    // canonicalize+starts_with — the canonicalized target is still inside root, but
-    // the symlink itself bypasses the deny-list check on the original rel string.
-    // Also catches intermediate symlinks (e.g. `subdir -> .ssh` then `subdir/id_rsa`).
+    #[cfg(unix)]
+    {
+        open_no_follow_unix(root, rel)
+    }
+    #[cfg(not(unix))]
+    {
+        open_no_follow_windows_fallback(root, rel)
+    }
+}
+
+/// Per-component `openat(O_NOFOLLOW)` walk for Unix targets without `openat2`.
+///
+/// Each directory intermediate is opened with `O_DIRECTORY | O_NOFOLLOW`; the
+/// final file is opened with `O_RDONLY | O_NOFOLLOW`. This makes the check
+/// atomic at each step, eliminating the TOCTOU window present in the old
+/// `stat-then-canonicalize` chain.
+#[cfg(all(feature = "fs", unix))]
+fn open_no_follow_unix(root: &Path, rel: &Path) -> Result<std::fs::File, ToolError> {
+    use rustix::fs::{Mode, OFlags, openat};
+    use std::os::unix::io::AsFd;
+
+    // Open the workspace root directory.
+    let root_dir = std::fs::File::open(root).map_err(|e| ToolError::Sdk {
+        sdk_kind: "internal_error".into(),
+        message: format!("open workspace root: {e}"),
+    })?;
+
+    let components: Vec<_> = rel.components().collect();
+    let n = components.len();
+    if n == 0 {
+        return Err(ToolError::Sdk {
+            sdk_kind: "not_found".into(),
+            message: format!("path not found: `{}`", rel.display()),
+        });
+    }
+
+    // Walk directory components with O_DIRECTORY | O_NOFOLLOW.
+    // The last component is the target file — handled separately below.
+    let mut current_dir = root_dir;
+    for component in &components[..n - 1] {
+        let name = component.as_os_str();
+        let result = openat(
+            current_dir.as_fd(),
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        current_dir = match result {
+            Ok(fd) => std::fs::File::from(fd),
+            Err(rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) => {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "permission_denied".into(),
+                    message: "symlinks are not followed for previews".into(),
+                });
+            }
+            Err(rustix::io::Errno::NOENT) => {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "not_found".into(),
+                    message: format!("path not found: `{}`", rel.display()),
+                });
+            }
+            Err(rustix::io::Errno::ACCESS | rustix::io::Errno::PERM) => {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "permission_denied".into(),
+                    message: "permission denied".into(),
+                });
+            }
+            Err(other) => {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "internal_error".into(),
+                    message: format!("openat dir component failed: {other}"),
+                });
+            }
+        };
+    }
+
+    // Open the final component as a regular file with O_NOFOLLOW.
+    let file_name = components[n - 1].as_os_str();
+    let file_result = openat(
+        current_dir.as_fd(),
+        file_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    );
+
+    match file_result {
+        Ok(fd) => {
+            let file = std::fs::File::from(fd);
+            // Verify it is a regular file (not a directory opened as O_RDONLY).
+            let meta = file.metadata().map_err(|e| ToolError::Sdk {
+                sdk_kind: "internal_error".into(),
+                message: e.to_string(),
+            })?;
+            if !meta.is_file() {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "not_found".into(),
+                    message: format!("path not found: `{}`", rel.display()),
+                });
+            }
+            // Re-validate the canonical relative path against the deny-list.
+            // The input `rel` was screened in `open_for_preview`, but the
+            // canonical form may differ on case-insensitive filesystems.
+            if let Ok(canonical) = std::fs::canonicalize(root.join(rel)) {
+                if let Ok(canonical_rel) = canonical.strip_prefix(root) {
+                    let s = canonical_rel.to_string_lossy();
+                    if deny_globset().is_match(s.as_ref()) {
+                        return Err(ToolError::Sdk {
+                            sdk_kind: "not_found".into(),
+                            message: format!("path not found: `{}`", rel.display()),
+                        });
+                    }
+                }
+            }
+            Ok(file)
+        }
+        Err(rustix::io::Errno::LOOP) => Err(ToolError::Sdk {
+            sdk_kind: "permission_denied".into(),
+            message: "symlinks are not followed for previews".into(),
+        }),
+        Err(rustix::io::Errno::NOENT) => Err(ToolError::Sdk {
+            sdk_kind: "not_found".into(),
+            message: format!("path not found: `{}`", rel.display()),
+        }),
+        Err(rustix::io::Errno::ACCESS | rustix::io::Errno::PERM) => Err(ToolError::Sdk {
+            sdk_kind: "permission_denied".into(),
+            message: "permission denied".into(),
+        }),
+        Err(rustix::io::Errno::ISDIR) => Err(ToolError::Sdk {
+            sdk_kind: "not_found".into(),
+            message: format!("path not found: `{}`", rel.display()),
+        }),
+        Err(other) => Err(ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: format!("openat file failed: {other}"),
+        }),
+    }
+}
+
+/// Best-effort fallback for non-Unix targets (Windows).
+///
+/// Uses `canonicalize + starts_with + symlink_metadata` — the same chain
+/// that was previously used everywhere. The TOCTOU window on Windows is
+/// tracked separately (see lab-f1t2 follow-up for Windows NtCreateFile).
+#[cfg(all(feature = "fs", not(unix)))]
+fn open_no_follow_windows_fallback(root: &Path, rel: &Path) -> Result<std::fs::File, ToolError> {
     let mut check = root.to_path_buf();
     for component in rel.components() {
         check.push(component);
@@ -577,13 +732,6 @@ fn open_no_follow_fallback(root: &Path, rel: &Path) -> Result<std::fs::File, Too
             message: "path escapes workspace root".into(),
         });
     }
-    // Re-validate the canonical relative path against the deny-list. The
-    // input `rel` was already screened in `open_for_preview`, but the
-    // canonical form may differ (case, redundant separators, unicode
-    // normalization, etc.) — without this check, an alias path like
-    // `Dot.env` on a case-insensitive filesystem could resolve to `.env`
-    // and bypass the original deny-list match. Surfaces as `not_found`
-    // to preserve the deny-list ambiguity.
     if let Ok(canonical_rel) = canonical.strip_prefix(root) {
         let canonical_rel_str = canonical_rel.to_string_lossy();
         if deny_globset().is_match(canonical_rel_str.as_ref()) {
@@ -1014,6 +1162,65 @@ mod tests {
 
         let err = open_no_follow_fallback(&root, Path::new("sub/id_rsa"))
             .expect_err("intermediate symlink must be refused");
+        match err {
+            ToolError::Sdk { sdk_kind, .. } => assert_eq!(sdk_kind, "permission_denied"),
+            other => panic!("expected Sdk permission_denied; got {other:?}"),
+        }
+    }
+
+    /// lab-f1t2.34: open_no_follow_unix (the O_NOFOLLOW per-component fallback)
+    /// must reject a symlink at the final path component — including the case
+    /// where the link points to a denied file that is lexically inside the root.
+    ///
+    /// This exercises the `open_no_follow_unix` path directly so that the
+    /// O_NOFOLLOW behaviour is verified independently of the Linux openat2 path.
+    #[cfg(unix)]
+    #[test]
+    fn open_no_follow_unix_rejects_symlink_at_final_component() {
+        let tmp = tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join(".env"), "SECRET=topsecret").unwrap();
+        // `notes.txt` is a symlink to `.env` inside the root.
+        unix_fs::symlink(root.join(".env"), root.join("notes.txt")).unwrap();
+
+        let err = open_no_follow_unix(&root, Path::new("notes.txt"))
+            .expect_err("final-component symlink must be refused by openat O_NOFOLLOW");
+        match err {
+            ToolError::Sdk { sdk_kind, .. } => assert_eq!(
+                sdk_kind,
+                "permission_denied",
+                "expected permission_denied, got: {sdk_kind}"
+            ),
+            other => panic!("expected Sdk permission_denied; got {other:?}"),
+        }
+    }
+
+    /// lab-f1t2.34: open_no_follow_unix must accept a legitimate regular file
+    /// (no symlinks anywhere in the path) — the happy path must still work.
+    #[cfg(unix)]
+    #[test]
+    fn open_no_follow_unix_accepts_regular_file() {
+        let tmp = tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("readme.txt"), "hello world").unwrap();
+
+        let _file = open_no_follow_unix(&root, Path::new("readme.txt"))
+            .expect("regular file must be openable via openat O_NOFOLLOW");
+    }
+
+    /// lab-f1t2.34: open_no_follow_unix must reject an intermediate directory
+    /// component that is a symlink — same semantics as the fallback.
+    #[cfg(unix)]
+    #[test]
+    fn open_no_follow_unix_rejects_intermediate_symlink_dir() {
+        let tmp = tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir_all(root.join(".ssh")).unwrap();
+        std::fs::write(root.join(".ssh/id_rsa"), "PRIVATE KEY").unwrap();
+        unix_fs::symlink(root.join(".ssh"), root.join("sub")).unwrap();
+
+        let err = open_no_follow_unix(&root, Path::new("sub/id_rsa"))
+            .expect_err("intermediate symlink dir must be refused");
         match err {
             ToolError::Sdk { sdk_kind, .. } => assert_eq!(sdk_kind, "permission_denied"),
             other => panic!("expected Sdk permission_denied; got {other:?}"),
