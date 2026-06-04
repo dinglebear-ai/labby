@@ -4,19 +4,37 @@
 //! public registry URL when the setting is absent.
 
 #[cfg(feature = "mcpregistry")]
+use std::sync::OnceLock;
+
+#[cfg(feature = "mcpregistry")]
 use lab_apis::mcpregistry::client::McpRegistryClient;
 
 use crate::config;
 use crate::dispatch::error::ToolError;
 
-/// Return a McpRegistry client using config.toml, or the official default URL.
+/// Process-wide singleton `McpRegistryClient`.
+///
+/// Initialized on the first call to `require_mcp_client`. Using a `OnceLock`
+/// avoids re-reading config and re-constructing a new HTTP client on every
+/// `mcp.*` dispatch (lab-77y5.12).
 #[cfg(feature = "mcpregistry")]
-pub fn require_mcp_client() -> Result<McpRegistryClient, ToolError> {
+static CLIENT: OnceLock<McpRegistryClient> = OnceLock::new();
+
+/// Return the singleton McpRegistry client, initializing it once from config.
+#[cfg(feature = "mcpregistry")]
+pub fn require_mcp_client() -> Result<&'static McpRegistryClient, ToolError> {
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
     let url = configured_registry_url()?;
-    McpRegistryClient::new(&url).map_err(|e| ToolError::Sdk {
+    let client = McpRegistryClient::new(&url).map_err(|e| ToolError::Sdk {
         sdk_kind: "internal_error".to_string(),
         message: format!("McpRegistry client init failed: {e}"),
-    })
+    })?;
+    // `OnceLock::get_or_init` is not fallible, so we use `set` and fall back to
+    // `get` if a concurrent initializer already won the race.
+    drop(CLIENT.set(client));
+    Ok(CLIENT.get().expect("OnceLock was just set"))
 }
 
 #[cfg(feature = "mcpregistry")]
