@@ -13,7 +13,7 @@
                 "source": "github",
                 "repo": "jmagar/lumen"
             },
-            "description": "Precise local semantic code search via MCP. Indexes your codebase with Go AST parsing and vector embeddings — Ollama, LM Studio, or HuggingFace TEI."
+            "description": "Precise local semantic code search via MCP. Indexes your codebase with Go AST parsing and vector embeddings \u2014 Ollama, LM Studio, or HuggingFace TEI."
         },
         {
             "name": "adguard",
@@ -121,7 +121,7 @@
                 "url": "https://github.com/jmagar/rtemplate-mcp.git",
                 "path": "plugins/rtemplate"
             },
-            "description": "Reference rmcp template/example MCP server — scaffold for building new Rust MCP servers."
+            "description": "Reference rmcp template/example MCP server \u2014 scaffold for building new Rust MCP servers."
         },
         {
             "name": "tailscale",
@@ -130,7 +130,7 @@
                 "url": "https://github.com/jmagar/rustscale.git",
                 "path": "plugins/tailscale"
             },
-            "description": "Tailscale network management via the rustscale MCP server — query devices, ACL, DNS, users, and API keys."
+            "description": "Tailscale network management via the rustscale MCP server \u2014 query devices, ACL, DNS, users, and API keys."
         },
         {
             "name": "gotify",
@@ -148,7 +148,7 @@
                 "url": "https://github.com/jmagar/rustifi.git",
                 "path": "plugins/unifi"
             },
-            "description": "UniFi network management via the rustifi MCP server — monitor devices, clients, health, alarms, events, and WLANs."
+            "description": "UniFi network management via the rustifi MCP server \u2014 monitor devices, clients, health, alarms, events, and WLANs."
         },
         {
             "name": "apprise",
@@ -157,7 +157,7 @@
                 "url": "https://github.com/jmagar/apprise-mcp.git",
                 "path": "plugins/apprise"
             },
-            "description": "Send push notifications via apprise-mcp — a Rust MCP bridge to the Apprise universal notification library."
+            "description": "Send push notifications via apprise-mcp \u2014 a Rust MCP bridge to the Apprise universal notification library."
         },
         {
             "name": "bitwarden",
@@ -215,7 +215,7 @@
         {
             "name": "arrs",
             "source": "./plugins/arrs",
-            "description": "The *arr / media-automation stack — Radarr, Sonarr, Prowlarr, Overseerr, SABnzbd, qBittorrent, Plex, Jellyfin, Tautulli, and Tracearr — each via its own REST API."
+            "description": "The *arr / media-automation stack \u2014 Radarr, Sonarr, Prowlarr, Overseerr, SABnzbd, qBittorrent, Plex, Jellyfin, Tautulli, and Tracearr \u2014 each via its own REST API."
         },
         {
             "name": "testing",
@@ -509,7 +509,7 @@
                 "ref": "main",
                 "sha": "e695a8397463bbb64d787b3cd88d3c58889be633"
             },
-            "description": "NVIDIA agent skills for accelerated-computing workflows — starting with cuOpt vehicle-routing optimization (VRP, TSP, PDP) via the cuOpt Python API."
+            "description": "NVIDIA agent skills for accelerated-computing workflows \u2014 starting with cuOpt vehicle-routing optimization (VRP, TSP, PDP) via the cuOpt Python API."
         },
         {
             "name": "qdrant-skills",
@@ -529,7 +529,7 @@
                 "ref": "main",
                 "sha": "5ca2e1a2d82a768221e8f71a02e3ca095a37d38e"
             },
-            "description": "Redis development best practices — data structures, query engine, vector search, caching, and performance optimization"
+            "description": "Redis development best practices \u2014 data structures, query engine, vector search, caching, and performance optimization"
         },
         {
             "name": "mcp-tunnels",
@@ -544,7 +544,7 @@
             "name": "ytdl-mcp",
             "source": {
                 "source": "github",
-                "repo": "jmagar/youtube-dl-mcp"
+                "repo": "jmagar/ytdl-mcp"
             },
             "description": "Download audio/video from any yt-dlp-supported site, embed metadata and cover art, organize by artist, and rsync to an SSH remote with separate audio/video destinations."
         }
