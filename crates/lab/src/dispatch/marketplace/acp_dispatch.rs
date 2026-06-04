@@ -632,7 +632,15 @@ fn install_executable_atomically(src: &Path, dest: &Path) -> Result<(), ToolErro
 fn fsync_parent_dir(parent: &Path) {
     #[cfg(unix)]
     if let Ok(dir) = File::open(parent) {
-        drop(dir.sync_all());
+        if let Err(e) = dir.sync_all() {
+            tracing::warn!(
+                service = "marketplace",
+                event = "agent.install.fsync_failed",
+                path = %parent.display(),
+                error = %e,
+                "directory fsync after binary install failed; durability not guaranteed"
+            );
+        }
     }
     #[cfg(not(unix))]
     let _ = parent;

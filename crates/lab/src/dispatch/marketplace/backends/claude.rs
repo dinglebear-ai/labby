@@ -88,33 +88,44 @@ impl ClaudeMarketplaceBackend {
             if !path.exists() {
                 continue;
             }
-            if let Ok(v) = Self::read_json(&path) {
-                let plugins = v
-                    .get("plugins")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let display_name = v
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string);
-                let owner_name = v
-                    .get("owner")
-                    .and_then(|o| o.get("name"))
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string);
-                let description = v
-                    .get("metadata")
-                    .and_then(|m| m.get("description"))
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string);
-                return Some(MarketplaceManifest {
-                    display_name,
-                    owner_name,
-                    description,
-                    plugins,
-                });
-            }
+            let v = match Self::read_json(&path) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        service = "marketplace",
+                        event = "manifest.parse_failed",
+                        path = %path.display(),
+                        error = %e,
+                        "marketplace.json parse error; skipping"
+                    );
+                    continue;
+                }
+            };
+            let plugins = v
+                .get("plugins")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let display_name = v
+                .get("name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let owner_name = v
+                .get("owner")
+                .and_then(|o| o.get("name"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let description = v
+                .get("metadata")
+                .and_then(|m| m.get("description"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            return Some(MarketplaceManifest {
+                display_name,
+                owner_name,
+                description,
+                plugins,
+            });
         }
         None
     }
