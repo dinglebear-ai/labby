@@ -1013,7 +1013,6 @@ Commands:
   remove           Remove a gateway and reconcile runtime state
   quarantine       Manage Lab-backed virtual servers quarantined during config migration
   protected-route  Manage public MCP routes protected by Lab OAuth
-  tool-search      Configure gateway-wide tool_search/tool_execute mode
   reload           Reload gateways from config and reconcile runtime state
   mcp              Manage upstream MCP server lifecycle and OAuth
   discover         Scan the machine for MCP server configs from known editors and tools (read-only)
@@ -1539,114 +1538,6 @@ Options:
 ```
 
 ## `labby gateway protected-route help`
-
-```text
-Print this message or the help of the given subcommand(s)
-
-Usage: help [COMMAND]...
-
-Arguments:
-  [COMMAND]...
-          Print help for the subcommand(s)
-```
-
-## `labby gateway tool-search`
-
-```text
-Configure gateway-wide tool_search/tool_execute mode
-
-Usage: tool-search [OPTIONS] <COMMAND>
-
-Commands:
-  status   Read the gateway-wide tool_search settings
-  enable   Enable gateway-wide tool_search/tool_execute mode for all exposed upstream tools
-  disable  Disable gateway-wide tool_search/tool_execute mode
-  help     Print this message or the help of the given subcommand(s)
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -h, --help
-          Print help
-```
-
-## `labby gateway tool-search status`
-
-```text
-Read the gateway-wide tool_search settings
-
-Usage: status [OPTIONS]
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -h, --help
-          Print help
-```
-
-## `labby gateway tool-search enable`
-
-```text
-Enable gateway-wide tool_search/tool_execute mode for all exposed upstream tools
-
-Usage: enable [OPTIONS]
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --top-k-default <TOP_K_DEFAULT>
-
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-      --max-tools <MAX_TOOLS>
-
-
-  -h, --help
-          Print help
-```
-
-## `labby gateway tool-search disable`
-
-```text
-Disable gateway-wide tool_search/tool_execute mode
-
-Usage: disable [OPTIONS]
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -h, --help
-          Print help
-```
-
-## `labby gateway tool-search help`
 
 ```text
 Print this message or the help of the given subcommand(s)
@@ -2233,8 +2124,74 @@ Search, inspect, and execute Code Mode snippets through dispatch
 Usage: code [OPTIONS] <COMMAND>
 
 Commands:
-  exec  Execute a sandboxed JavaScript snippet that calls the typed `codemode.<upstream>.<tool>` helpers (or `callTool` directly). Cloudflare-parity: the `code` MCP tool takes only `{ code }`, so the CLI mirrors that — no separate `search` subcommand
-  help  Print this message or the help of the given subcommand(s)
+  status   Read gateway-wide Code Mode settings
+  enable   Enable the gateway Code Mode search/execute MCP surface
+  disable  Disable the gateway Code Mode search/execute MCP surface
+  exec     Execute a sandboxed JavaScript snippet that calls the typed `codemode.<upstream>.<tool>` helpers (or `callTool` directly)
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway code status`
+
+```text
+Read gateway-wide Code Mode settings
+
+Usage: status [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway code enable`
+
+```text
+Enable the gateway Code Mode search/execute MCP surface
+
+Usage: enable [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway code disable`
+
+```text
+Disable the gateway Code Mode search/execute MCP surface
+
+Usage: disable [OPTIONS]
 
 Options:
       --json
@@ -2253,7 +2210,7 @@ Options:
 ## `labby gateway code exec`
 
 ```text
-Execute a sandboxed JavaScript snippet that calls the typed `codemode.<upstream>.<tool>` helpers (or `callTool` directly). Cloudflare-parity: the `code` MCP tool takes only `{ code }`, so the CLI mirrors that — no separate `search` subcommand
+Execute a sandboxed JavaScript snippet that calls the typed `codemode.<upstream>.<tool>` helpers (or `callTool` directly)
 
 Usage: exec [OPTIONS]
 

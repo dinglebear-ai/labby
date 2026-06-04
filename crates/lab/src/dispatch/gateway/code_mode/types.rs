@@ -34,13 +34,11 @@ impl CodeModeToolId {
             return Err(lab_action_unknown_tool());
         }
 
-        if let Some(rest) = raw.strip_prefix("upstream::") {
-            let (upstream, tool) = rest.split_once("::").ok_or_else(|| {
-                invalid_code_mode_id("upstream Code Mode ids must use upstream::<upstream>::<tool>")
-            })?;
+        let mut parts = raw.split("::");
+        if let (Some(upstream), Some(tool), None) = (parts.next(), parts.next(), parts.next()) {
             if upstream.trim().is_empty() || tool.trim().is_empty() {
                 return Err(invalid_code_mode_id(
-                    "upstream Code Mode ids must include upstream and tool",
+                    "Code Mode ids must include upstream and tool",
                 ));
             }
             return Ok(Self {
@@ -53,14 +51,14 @@ impl CodeModeToolId {
         }
 
         Err(invalid_code_mode_id(
-            "Code Mode ids must start with upstream::",
+            "Code Mode ids must use <upstream>::<tool>",
         ))
     }
 }
 
 #[must_use]
 pub fn upstream_tool_id(upstream: &str, tool: &str) -> String {
-    format!("upstream::{upstream}::{tool}")
+    format!("{upstream}::{tool}")
 }
 
 #[must_use]

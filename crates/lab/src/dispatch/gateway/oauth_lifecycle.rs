@@ -2,8 +2,7 @@ use rmcp::transport::AuthorizationManager;
 use url::Url;
 
 use crate::config::{
-    ToolSearchConfig, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode,
-    UpstreamOauthRegistration,
+    UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
 };
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
@@ -362,7 +361,6 @@ impl GatewayManager {
                         }),
                         imported_from: None,
                         priority: 1.0,
-                        tool_search: ToolSearchConfig::default(),
                     };
                     let manager = UpstreamOauthManager::new(
                         sqlite.clone(),

@@ -9,7 +9,7 @@ use lab_apis::stash::types::{StashComponent, StashComponentKind, limits};
 
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::reject_path_traversal;
-use crate::dispatch::path_safety::{canonicalize_and_reject_system_path, reject_symlink};
+use crate::dispatch::path_safety::{canonicalize_and_reject_read_path, reject_symlink};
 use crate::dispatch::stash::store::StashStore;
 
 // ── Kind detection ────────────────────────────────────────────────────────────
@@ -257,11 +257,11 @@ pub async fn import_component(
     // Check source is not a symlink.
     reject_symlink(source)?;
 
-    // Reject source paths that resolve into system directories.
+    // Reject source paths that resolve into sensitive system directories.
     // This prevents stash from being used as an arbitrary-file-read primitive:
     // an MCP caller cannot import /etc/shadow or /proc/self/environ and then
     // export the snapshot to an attacker-controlled path.
-    canonicalize_and_reject_system_path(source)?;
+    canonicalize_and_reject_read_path(source)?;
 
     // Capture source path, name, label for move into spawn_blocking.
     let id = id.to_string();

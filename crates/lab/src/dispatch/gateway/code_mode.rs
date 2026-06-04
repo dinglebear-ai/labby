@@ -5,7 +5,7 @@
 //! `gateway_manager` field) and re-exports the public surface consumed by the
 //! MCP/CLI adapters and integration tests.
 
-use crate::mcp::catalog::{TOOL_EXECUTE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME};
+use crate::mcp::catalog::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
 
 // Used in-crate by the `CodeModeBroker` struct/`new`; also re-exported so the
 // in-crate test modules can reach them via `super::` exactly as the old nested
@@ -79,7 +79,7 @@ pub(in crate::dispatch::gateway::code_mode) use types::destructive_permitted;
 pub(in crate::dispatch::gateway::code_mode) fn lab_action_unknown_tool_hint() -> String {
     format!(
         "Code Mode handles upstream MCP tools only. For Lab actions, use the `{TOOL_EXECUTE_TOOL_NAME}` MCP tool \
-         (use `{TOOL_SEARCH_TOOL_NAME}` first to discover available tools): \
+         (use `{CODE_MODE_SEARCH_TOOL_NAME}` first to discover available tools): \
          name=<service> (e.g. \"radarr\"), arguments={{action: \"<dotted.action>\", params: {{...}}}}. \
          Example: {TOOL_EXECUTE_TOOL_NAME}(name=\"radarr\", arguments={{action:\"movie.search\", params:{{query:\"Matrix\"}}}})."
     )

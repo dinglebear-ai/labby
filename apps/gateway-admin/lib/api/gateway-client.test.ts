@@ -360,54 +360,11 @@ test('gatewayApi.reload sends confirm=true with destructive gateway reloads', as
   )
 })
 
-test('gatewayApi.getToolSearchConfig reads gateway-wide tool search settings', async () => {
-  await withGatewayFetch(
-    {
-      'gateway.tool_search.get': () => ({
-        enabled: true,
-        top_k_default: 12,
-        max_tools: 8000,
-      }),
-    },
-    async (requests) => {
-      const config = await gatewayApi.getToolSearchConfig()
-
-      assert.deepEqual(config, {
-        enabled: true,
-        top_k_default: 12,
-        max_tools: 8000,
-      })
-      assert.equal(requests[0]?.action, 'gateway.tool_search.get')
-      assert.deepEqual(requests[0]?.params, {})
-    },
-  )
-})
-
-test('gatewayApi.setToolSearchConfig sends confirm=true for gateway-wide updates', async () => {
-  await withGatewayFetch(
-    {
-      'gateway.tool_search.set': (params) => params,
-    },
-    async (requests) => {
-      const config = await gatewayApi.setToolSearchConfig({
-        enabled: true,
-        top_k_default: 20,
-        max_tools: 10_000,
-      })
-
-      assert.equal(config.enabled, true)
-      assert.equal(config.top_k_default, 20)
-      assert.equal(config.max_tools, 10_000)
-      assert.equal(requests[0]?.action, 'gateway.tool_search.set')
-      assert.equal(requests[0]?.params.confirm, true)
-    },
-  )
-})
-
 test('gatewayApi.getCodeModeConfig reads gateway-wide code mode settings', async () => {
   await withGatewayFetch(
     {
       'gateway.code_mode.get': () => ({
+        enabled: true,
         timeout_ms: 2500,
         max_tool_calls: 3,
         max_response_bytes: 12000,
@@ -418,6 +375,7 @@ test('gatewayApi.getCodeModeConfig reads gateway-wide code mode settings', async
       const config = await gatewayApi.getCodeModeConfig()
 
       assert.deepEqual(config, {
+        enabled: true,
         timeout_ms: 2500,
         max_tool_calls: 3,
         max_response_bytes: 12000,
@@ -436,10 +394,12 @@ test('gatewayApi.setCodeModeConfig sends confirm=true for gateway-wide updates',
     },
     async (requests) => {
       const config = await gatewayApi.setCodeModeConfig({
+        enabled: true,
         timeout_ms: 2500,
         max_tool_calls: 3,
       })
 
+      assert.equal(config.enabled, true)
       assert.equal(config.timeout_ms, 2500)
       assert.equal(config.max_tool_calls, 3)
       assert.equal(requests[0]?.action, 'gateway.code_mode.set')

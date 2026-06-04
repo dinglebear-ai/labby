@@ -126,11 +126,13 @@ pub(crate) fn tool_execute_scope_allowed(auth: Option<&crate::api::oauth::AuthCo
     })
 }
 
-/// Returns `true` when the caller is allowed to invoke the tool_search tool.
+/// Returns `true` when the caller is allowed to invoke the code_mode tool.
 ///
-/// tool_search requires at least `lab:read`; tool_execute requires the stronger `lab` or `lab:admin`.
+/// code_mode requires at least `lab:read`; tool_execute requires the stronger `lab` or `lab:admin`.
 /// `None` auth means stdio transport — trusted by design (no per-request AuthContext).
-pub(crate) fn tool_search_scope_allowed(auth: Option<&crate::api::oauth::AuthContext>) -> bool {
+pub(crate) fn code_mode_search_scope_allowed(
+    auth: Option<&crate::api::oauth::AuthContext>,
+) -> bool {
     auth.is_none_or(|auth| {
         auth.scopes
             .iter()

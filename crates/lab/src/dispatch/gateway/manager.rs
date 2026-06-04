@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
 
 use crate::config::{
-    EnvCredential, LabConfig, ProtectedMcpRouteConfig, ToolSearchConfig, UpstreamConfig,
+    CodeModeConfig, EnvCredential, LabConfig, ProtectedMcpRouteConfig, UpstreamConfig,
     UpstreamImportTombstone, backup_env, env_is_up_to_date, write_env,
 };
 use crate::dispatch::clients::SharedServiceClients;
@@ -26,7 +26,7 @@ use super::config::{
     default_gateway_bearer_env_name, insert_protected_mcp_route, insert_upstream,
     load_gateway_config, remove_protected_mcp_route, remove_upstream, tombstone_removed_import,
     update_protected_mcp_route, update_upstream, validate_bearer_token_env_name,
-    validate_code_mode, validate_tool_search, write_gateway_config,
+    validate_code_mode, write_gateway_config,
 };
 use super::config_mutation::{read_env_values, values_to_service_creds};
 use super::params::GatewayUpdatePatch;
@@ -263,7 +263,7 @@ pub struct BatchAddOutcome {
 }
 
 #[derive(Debug, Clone)]
-struct ToolSearchReprobeFailure {
+struct CodeModeReprobeFailure {
     upstream: String,
     message: String,
 }
@@ -462,16 +462,16 @@ impl GatewayManager {
     }
 
     pub async fn seed_config(&self, config: LabConfig) {
-        // config.rs normalizes legacy tool_search before calling seed_config;
+        // config.rs normalizes legacy code_mode before calling seed_config;
         // do not re-normalize here with false — that would incorrectly promote
-        // legacy upstream config when the root [tool_search] is explicitly disabled.
+        // legacy upstream config when the root [code_mode] is explicitly disabled.
 
-        crate::config::set_process_tool_search_enabled(config.tool_search.enabled);
+        crate::config::set_process_code_mode_enabled(config.code_mode.enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&config.protected_mcp_routes);
         *self.config.write().await = config;
         // Cold-connect for the search/execute surface is handled lazily by the
-        // tool_search path (`ensure_search_runtime_ready`) on first call, so
+        // code_mode path (`ensure_search_runtime_ready`) on first call, so
         // seed_config does not eagerly connect upstreams here. This keeps startup
         // cheap and non-blocking.
     }
@@ -662,7 +662,7 @@ impl GatewayManager {
 
     pub async fn get(&self, name: &str) -> Result<GatewayView, ToolError> {
         let cfg = self.config.read().await;
-        let tool_search = cfg.tool_search.clone();
+        let code_mode = cfg.code_mode.clone();
         let upstream = cfg
             .upstream
             .iter()
@@ -675,7 +675,7 @@ impl GatewayManager {
         drop(cfg);
 
         Ok(GatewayView {
-            config: config_view(&upstream, &tool_search),
+            config: config_view(&upstream, &code_mode),
             runtime: runtime_view(
                 self.runtime.current_pool().await.as_deref(),
                 &upstream.name,
@@ -1508,7 +1508,7 @@ impl GatewayManager {
         );
         let _mutation_guard = self.config_mutation.lock().await;
         let mut cfg = self.config.read().await.clone();
-        let tool_search = cfg.tool_search.clone();
+        let code_mode = cfg.code_mode.clone();
         let removed = remove_upstream(&mut cfg, name)?;
         tombstone_removed_import(&mut cfg, &removed);
         self.persist_config(cfg).await?;
@@ -1528,7 +1528,7 @@ impl GatewayManager {
             "gateway reconcile"
         );
         Ok(GatewayView {
-            config: config_view(&removed, &tool_search),
+            config: config_view(&removed, &code_mode),
             runtime: GatewayRuntimeView {
                 name: removed.name,
                 ..GatewayRuntimeView::default()
@@ -1536,59 +1536,37 @@ impl GatewayManager {
         })
     }
 
-    pub async fn tool_search_config(&self) -> ToolSearchConfig {
-        self.config.read().await.tool_search.clone()
-    }
-
-    pub async fn set_tool_search_config(
-        &self,
-        next: ToolSearchConfig,
-        origin: Option<&str>,
-        owner: Option<UpstreamRuntimeOwner>,
-    ) -> Result<ToolSearchConfig, ToolError> {
-        // Field-level validation (ranges, etc.) runs before acquiring the lock —
-        // it is idempotent and does not read shared state.
-        validate_tool_search(&next)?;
-        let _mutation_guard = self.config_mutation.lock().await;
-        let mut cfg = self.config.read().await.clone();
-        let old_enabled = cfg.tool_search.enabled;
-        cfg.tool_search = next.clone();
-        self.persist_config(cfg).await?;
-        self.reload_with_origin_unlocked(origin, owner).await?;
-        tracing::info!(
-            surface = "dispatch",
-            service = "gateway",
-            action = "gateway.mode_change",
-            mode = "tool_search",
-            enabled = next.enabled,
-            previous = old_enabled,
-            "gateway mode changed"
-        );
-        Ok(self.tool_search_config().await)
+    pub async fn code_mode_config(&self) -> CodeModeConfig {
+        self.config.read().await.code_mode.clone()
     }
 
     pub async fn set_code_mode_config(
         &self,
-        next: crate::config::CodeModeConfig,
+        next: CodeModeConfig,
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
-    ) -> Result<crate::config::CodeModeConfig, ToolError> {
-        // Field-level validation (ranges, etc.) runs before acquiring the lock.
+    ) -> Result<CodeModeConfig, ToolError> {
+        // Field-level validation (ranges, etc.) runs before acquiring the lock —
+        // it is idempotent and does not read shared state.
         validate_code_mode(&next)?;
         let _mutation_guard = self.config_mutation.lock().await;
         let mut cfg = self.config.read().await.clone();
+        let old_enabled = cfg.code_mode.enabled;
         cfg.code_mode = next.clone();
         self.persist_config(cfg).await?;
         self.reload_with_origin_unlocked(origin, owner).await?;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
-            action = "gateway.code_mode_limits_change",
+            action = "gateway.mode_change",
+            mode = "code_mode",
+            enabled = next.enabled,
+            previous = old_enabled,
             timeout_ms = next.timeout_ms,
             max_tool_calls = next.max_tool_calls,
             max_response_bytes = next.max_response_bytes,
             max_response_tokens = next.max_response_tokens,
-            "gateway code execution limits updated"
+            "gateway mode changed"
         );
         Ok(self.code_mode_config().await)
     }
@@ -1851,7 +1829,7 @@ impl GatewayManager {
             upstream_count = cfg.upstream.len(),
             "gateway reconcile"
         );
-        crate::config::set_process_tool_search_enabled(cfg.tool_search.enabled);
+        crate::config::set_process_code_mode_enabled(cfg.code_mode.enabled);
         let fresh_pool = {
             let base_pool = match &self.oauth_client_cache {
                 Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
@@ -1996,16 +1974,12 @@ impl GatewayManager {
             })
     }
 
-    pub async fn tool_search_enabled(&self) -> bool {
-        self.config.read().await.tool_search.enabled
-    }
-
-    pub async fn code_mode_config(&self) -> crate::config::CodeModeConfig {
-        self.config.read().await.code_mode.clone()
+    pub async fn code_mode_enabled(&self) -> bool {
+        self.config.read().await.code_mode.enabled
     }
 
     /// Ensure the upstream pool is warm and every enabled upstream has its tool
-    /// list connected. Cloudflare-parity: there is no vector/lexical tool-search
+    /// list connected. Cloudflare-parity: there is no vector/lexical code-mode
     /// index to build — the `search` tool runs the caller's JS over the live
     /// catalog. When `wait_for_refresh` is set, connect upstreams synchronously
     /// so the first cold call sees a populated catalog; otherwise fire-and-forget.
@@ -2016,7 +1990,7 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
     ) -> Result<(), ToolError> {
         let cfg = self.config.read().await.clone();
-        if !cfg.tool_search.enabled {
+        if !cfg.code_mode.enabled {
             return Ok(());
         }
 
@@ -2029,7 +2003,7 @@ impl GatewayManager {
                     .ensure_tools_for_upstream(upstream, subject, owner)
                     .await
                 {
-                    failures.push(ToolSearchReprobeFailure {
+                    failures.push(CodeModeReprobeFailure {
                         upstream: upstream.name.clone(),
                         message: err.to_string(),
                     });
@@ -2043,7 +2017,7 @@ impl GatewayManager {
                     .join("; ");
                 return Err(ToolError::Sdk {
                     sdk_kind: "upstream_connect_error".to_string(),
-                    message: format!("failed to connect upstreams for tool search: {details}"),
+                    message: format!("failed to connect upstreams for code mode: {details}"),
                 });
             }
         } else {
@@ -2148,7 +2122,7 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
     ) -> Result<(), ToolError> {
         let cfg = self.config.read().await.clone();
-        if !cfg.tool_search.enabled {
+        if !cfg.code_mode.enabled {
             return Ok(());
         }
 
@@ -2160,7 +2134,7 @@ impl GatewayManager {
                 .reprobe_tools_for_upstream_as(upstream, subject, owner)
                 .await
             {
-                failures.push(ToolSearchReprobeFailure {
+                failures.push(CodeModeReprobeFailure {
                     upstream: upstream.name.clone(),
                     message: err.to_string(),
                 });
@@ -2184,7 +2158,7 @@ impl GatewayManager {
 
     /// Fire-and-forget: spawn per-upstream connection tasks for exclusive code mode.
     ///
-    /// Unlike `refresh_tool_search_indexes_if_stale` this does NOT build vector
+    /// Unlike `refresh_code_mode_indexes_if_stale` this does NOT build vector
     /// search indexes.  It only ensures each enabled upstream has its tool list
     /// in the pool so `healthy_tools()` is non-empty.
     fn spawn_code_mode_upstream_connections(
@@ -2238,15 +2212,15 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
     ) -> Result<UpstreamTool, ToolError> {
         let cfg = self.config.read().await;
-        // The gateway search/execute surface is gated by the single `tool_search.enabled`
+        // The gateway search/execute surface is gated by the single `code_mode.enabled`
         // toggle, which also exposes the tools. `execute` is only reachable when the
         // surface is exposed, so reject when it is off. This is the single-surface
         // (Cloudflare-parity) model: when search + execute are on, callTool resolution works.
-        if !cfg.tool_search.enabled {
+        if !cfg.code_mode.enabled {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: "the gateway search/execute surface is not enabled; \
-                    set [tool_search] enabled = true in config"
+                    set [code_mode] enabled = true in config"
                     .to_string(),
             });
         }
@@ -2639,7 +2613,7 @@ impl ToolExecuteSelector {
             if upstream_name.is_empty() || tool_name.is_empty() {
                 return Err(ToolError::Sdk {
                     sdk_kind: "invalid_param".to_string(),
-                    message: "qualified tool names must use `upstream::tool`".to_string(),
+                    message: "qualified tool names must use `<upstream>::<tool>`".to_string(),
                 });
             }
             return Ok(Self {
@@ -2779,7 +2753,6 @@ mod tests {
             oauth: None,
             imported_from: None,
             priority: 1.0,
-            tool_search: ToolSearchConfig::default(),
         }
     }
 
@@ -2800,7 +2773,6 @@ mod tests {
             oauth: None,
             imported_from: None,
             priority: 1.0,
-            tool_search: ToolSearchConfig::default(),
         }
     }
 
@@ -2941,13 +2913,13 @@ mod tests {
         upstream
     }
 
-    async fn tool_search_manager_with_pool(
+    async fn code_mode_manager_with_pool(
         upstream: UpstreamConfig,
     ) -> (GatewayManager, Arc<UpstreamPool>) {
-        tool_search_manager_with_upstreams(vec![upstream]).await
+        code_mode_manager_with_upstreams(vec![upstream]).await
     }
 
-    async fn tool_search_manager_with_upstreams(
+    async fn code_mode_manager_with_upstreams(
         upstream: Vec<UpstreamConfig>,
     ) -> (GatewayManager, Arc<UpstreamPool>) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2958,9 +2930,9 @@ mod tests {
         let manager = GatewayManager::new(path, runtime);
         manager
             .seed_config(LabConfig {
-                tool_search: ToolSearchConfig {
+                code_mode: CodeModeConfig {
                     enabled: true,
-                    ..ToolSearchConfig::default()
+                    ..CodeModeConfig::default()
                 },
                 upstream,
                 ..LabConfig::default()
@@ -3021,9 +2993,9 @@ mod tests {
         let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
         manager
             .seed_config(LabConfig {
-                tool_search: ToolSearchConfig {
+                code_mode: CodeModeConfig {
                     enabled: true,
-                    ..ToolSearchConfig::default()
+                    ..CodeModeConfig::default()
                 },
                 upstream: vec![fixture_http_upstream("alpha")],
                 ..LabConfig::default()
@@ -3049,9 +3021,9 @@ mod tests {
         write_gateway_config(
             &path,
             &LabConfig {
-                tool_search: ToolSearchConfig {
+                code_mode: CodeModeConfig {
                     enabled: true,
-                    ..ToolSearchConfig::default()
+                    ..CodeModeConfig::default()
                 },
                 upstream: vec![fixture_http_upstream("alpha")],
                 ..LabConfig::default()
@@ -3075,7 +3047,7 @@ mod tests {
     async fn resolve_code_mode_upstream_tool_hides_priority_zero_upstreams() {
         let mut upstream = fixture_http_upstream("suppressed");
         upstream.priority = 0.0;
-        let (manager, pool) = tool_search_manager_with_pool(upstream).await;
+        let (manager, pool) = code_mode_manager_with_pool(upstream).await;
         pool.insert_entry_for_tests(
             "suppressed",
             healthy_entry_with_tool("suppressed", "secret-tool"),
@@ -3096,7 +3068,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_code_mode_upstream_tool_resolves_requested_upstream() {
         // resolve_code_mode_upstream_tool requires the search/execute surface —
-        // gated solely by tool_search.enabled — to be active.
+        // gated solely by code_mode.enabled — to be active.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         let runtime = GatewayRuntimeHandle::default();
@@ -3105,9 +3077,9 @@ mod tests {
         let manager = GatewayManager::new(path, runtime);
         manager
             .seed_config(LabConfig {
-                tool_search: ToolSearchConfig {
+                code_mode: CodeModeConfig {
                     enabled: true,
-                    ..ToolSearchConfig::default()
+                    ..CodeModeConfig::default()
                 },
                 upstream: vec![fixture_http_upstream("alpha")],
                 ..LabConfig::default()
@@ -3125,14 +3097,14 @@ mod tests {
     }
 
     // Regression: the Cloudflare-parity surface exposes search+execute under
-    // `tool_search.enabled` (RootSynthetic). `execute`'s callTool must resolve
-    // upstream tools when `tool_search.enabled` is the active flag — the single
+    // `code_mode.enabled` (RootSynthetic). `execute`'s callTool must resolve
+    // upstream tools when `code_mode.enabled` is the active flag — the single
     // toggle that exposes the surface. A prior merge gated resolution on a
     // separate flag, so execute could never call a tool when the surface was
-    // exposed via tool_search (the only way it is exposed). The test suite did
+    // exposed via code_mode (the only way it is exposed). The test suite did
     // not cover this path, so it passed while the live server rejected callTool.
     #[tokio::test]
-    async fn resolve_upstream_tool_works_with_tool_search_enabled() {
+    async fn resolve_upstream_tool_works_with_code_mode_enabled() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         let runtime = GatewayRuntimeHandle::default();
@@ -3141,9 +3113,9 @@ mod tests {
         let manager = GatewayManager::new(path, runtime);
         manager
             .seed_config(LabConfig {
-                tool_search: ToolSearchConfig {
+                code_mode: CodeModeConfig {
                     enabled: true,
-                    ..ToolSearchConfig::default()
+                    ..CodeModeConfig::default()
                 },
                 upstream: vec![fixture_http_upstream("alpha")],
                 ..LabConfig::default()
@@ -3155,15 +3127,14 @@ mod tests {
         let tool = manager
             .resolve_code_mode_upstream_tool("alpha", "ping", None, None)
             .await
-            .expect("execute callTool must resolve when tool_search surface is enabled");
+            .expect("execute callTool must resolve when code_mode surface is enabled");
 
         assert_eq!(tool.tool.name.as_ref(), "ping");
     }
 
     #[tokio::test]
-    async fn resolve_raw_upstream_tool_resolves_cached_tool_without_tool_search() {
-        let mut upstream = fixture_http_upstream("alpha");
-        upstream.tool_search.enabled = false;
+    async fn resolve_raw_upstream_tool_resolves_cached_tool_without_code_mode() {
+        let upstream = fixture_http_upstream("alpha");
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         let runtime = GatewayRuntimeHandle::default();
@@ -3172,9 +3143,9 @@ mod tests {
         let manager = GatewayManager::new(path, runtime);
         manager
             .seed_config(LabConfig {
-                tool_search: ToolSearchConfig {
+                code_mode: CodeModeConfig {
                     enabled: false,
-                    ..ToolSearchConfig::default()
+                    ..CodeModeConfig::default()
                 },
                 upstream: vec![upstream],
                 ..LabConfig::default()
@@ -3186,7 +3157,7 @@ mod tests {
         let (upstream, tool) = manager
             .resolve_raw_upstream_tool("ping", None, None)
             .await
-            .expect("raw proxy resolution should not require tool_search");
+            .expect("raw proxy resolution should not require code_mode");
 
         assert_eq!(upstream, "alpha");
         assert_eq!(tool.tool.name.as_ref(), "ping");
@@ -3194,7 +3165,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_raw_upstream_tool_honors_qualified_upstream_name() {
-        let (manager, pool) = tool_search_manager_with_upstreams(vec![
+        let (manager, pool) = code_mode_manager_with_upstreams(vec![
             fixture_http_upstream("alpha"),
             fixture_http_upstream("beta"),
         ])
@@ -3292,7 +3263,6 @@ mod tests {
             oauth: None,
             imported_from: None,
             priority: 1.0,
-            tool_search: ToolSearchConfig::default(),
         };
 
         let patterns = upstream_cleanup_patterns(&upstream, false);
@@ -3347,7 +3317,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -3420,7 +3389,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -3459,7 +3427,6 @@ mod tests {
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: ToolSearchConfig::default(),
             }])
             .await;
 
@@ -3494,7 +3461,6 @@ mod tests {
             oauth: None,
             imported_from: None,
             priority: 1.0,
-            tool_search: ToolSearchConfig::default(),
         };
 
         let view = server_view_from_upstream(None, &upstream).await;
@@ -3523,7 +3489,6 @@ mod tests {
             oauth: None,
             imported_from: None,
             priority: 1.0,
-            tool_search: ToolSearchConfig::default(),
         };
 
         let view = server_view_from_upstream(None, &upstream).await;
@@ -3556,7 +3521,6 @@ mod tests {
             oauth: None,
             imported_from: None,
             priority: 1.0,
-            tool_search: ToolSearchConfig::default(),
         };
 
         let view = server_view_from_upstream(None, &upstream).await;
@@ -3862,7 +3826,6 @@ mod tests {
                     oauth: None,
                     imported_from: None,
                     priority: 1.0,
-                    tool_search: ToolSearchConfig::default(),
                 },
                 Some("ghp_secret".to_string()),
                 None,
@@ -3935,10 +3898,10 @@ mod tests {
         let root = manager.clone();
         let virtual_server = manager.clone();
         let (root_result, virtual_result) = tokio::join!(
-            root.set_tool_search_config(
-                ToolSearchConfig {
+            root.set_code_mode_config(
+                CodeModeConfig {
                     enabled: true,
-                    ..ToolSearchConfig::default()
+                    ..CodeModeConfig::default()
                 },
                 None,
                 None,
@@ -3946,11 +3909,11 @@ mod tests {
             virtual_server.set_virtual_server_surface("deploy", "mcp", true),
         );
 
-        root_result.expect("set root tool search config");
+        root_result.expect("set root code mode config");
         virtual_result.expect("set virtual server surface");
 
         let persisted = load_gateway_config(&path).expect("load persisted config");
-        assert!(persisted.tool_search.enabled);
+        assert!(persisted.code_mode.enabled);
         let plex = persisted
             .virtual_servers
             .iter()
@@ -4583,25 +4546,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_search_enabled_reads_tool_search_config() {
+    async fn code_mode_enabled_reads_code_mode_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
 
         manager
             .seed_config(LabConfig {
-                tool_search: ToolSearchConfig {
+                code_mode: CodeModeConfig {
                     enabled: true,
-                    ..ToolSearchConfig::default()
+                    ..CodeModeConfig::default()
                 },
                 ..LabConfig::default()
             })
             .await;
 
-        // PRESENCE: tool_search_enabled() reflects tool_search.enabled = true
+        // PRESENCE: code_mode_enabled() reflects code_mode.enabled = true
         assert!(
-            manager.tool_search_enabled().await,
-            "tool_search_enabled() must return true when tool_search.enabled = true"
+            manager.code_mode_enabled().await,
+            "code_mode_enabled() must return true when code_mode.enabled = true"
         );
     }
 

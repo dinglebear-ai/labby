@@ -28,8 +28,6 @@ import type {
   ServiceConfig,
   ServiceAction,
   SupportedService,
-  ToolSearchConfig,
-  ToolSearchConfigInput,
   CodeModeConfig,
   CodeModeConfigInput,
   ProtectedMcpRoute,
@@ -42,18 +40,13 @@ import { useCallback } from 'react'
 
 // Set NEXT_PUBLIC_MOCK_DATA=true to use mock data for development
 const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
-const DEFAULT_TOOL_SEARCH_CONFIG: ToolSearchConfig = {
-  enabled: false,
-  top_k_default: 10,
-  max_tools: 5000,
-}
 const DEFAULT_CODE_MODE_CONFIG: CodeModeConfig = {
+  enabled: false,
   timeout_ms: 5000,
   max_tool_calls: 8,
   max_response_bytes: 24 * 1024,
   max_response_tokens: 6000,
 }
-let mockToolSearchConfig: ToolSearchConfig = DEFAULT_TOOL_SEARCH_CONFIG
 let mockCodeModeConfig: CodeModeConfig = DEFAULT_CODE_MODE_CONFIG
 let mockProtectedRoutes: ProtectedMcpRoute[] = [
   {
@@ -149,14 +142,6 @@ const fetchServiceActions = async (service: string): Promise<ServiceAction[]> =>
   return gatewayApi.serviceActions(service)
 }
 
-const fetchToolSearchConfig = async (): Promise<ToolSearchConfig> => {
-  if (USE_MOCK_DATA) {
-    await mockDelay()
-    return mockToolSearchConfig
-  }
-  return gatewayApi.getToolSearchConfig()
-}
-
 const fetchCodeModeConfig = async (): Promise<CodeModeConfig> => {
   if (USE_MOCK_DATA) {
     await mockDelay()
@@ -180,7 +165,6 @@ export const exposurePolicyKey = (id: string) => `/gateways/${id}/exposure`
 export const SUPPORTED_SERVICES_KEY = '/gateway-supported-services'
 export const serviceConfigKey = (service: string) => `/gateway-service-config/${service}`
 export const serviceActionsKey = (service: string) => `/gateway-service-actions/${service}`
-export const TOOL_SEARCH_CONFIG_KEY = '/gateway-tool-search-config'
 export const CODE_MODE_CONFIG_KEY = '/gateway-code-mode-config'
 export const PROTECTED_MCP_ROUTES_KEY = '/gateway-protected-mcp-routes'
 
@@ -252,14 +236,6 @@ export function useServiceActions(service: string | null) {
       revalidateOnMount: !USE_MOCK_DATA,
     }
   )
-}
-
-export function useGatewayToolSearchConfig() {
-  return useSWR<ToolSearchConfig>(TOOL_SEARCH_CONFIG_KEY, fetchToolSearchConfig, {
-    revalidateOnFocus: false,
-    fallbackData: USE_MOCK_DATA ? DEFAULT_TOOL_SEARCH_CONFIG : undefined,
-    revalidateOnMount: !USE_MOCK_DATA,
-  })
 }
 
 export function useGatewayCodeModeConfig() {
@@ -569,22 +545,6 @@ export function useGatewayMutations() {
     return result
   }, [])
 
-  const setToolSearchConfig = useCallback(async (input: ToolSearchConfigInput): Promise<ToolSearchConfig> => {
-    if (USE_MOCK_DATA) {
-      await mockDelay()
-      mockToolSearchConfig = {
-        ...mockToolSearchConfig,
-        ...input,
-      }
-      await mutate(TOOL_SEARCH_CONFIG_KEY, mockToolSearchConfig, false)
-      return mockToolSearchConfig
-    }
-    const result = await gatewayApi.setToolSearchConfig(input)
-    await mutate(TOOL_SEARCH_CONFIG_KEY, result, false)
-    await mutate(GATEWAYS_KEY)
-    return result
-  }, [])
-
   const setCodeModeConfig = useCallback(async (input: CodeModeConfigInput): Promise<CodeModeConfig> => {
     if (USE_MOCK_DATA) {
       await mockDelay()
@@ -597,6 +557,7 @@ export function useGatewayMutations() {
     }
     const result = await gatewayApi.setCodeModeConfig(input)
     await mutate(CODE_MODE_CONFIG_KEY, result, false)
+    await mutate(GATEWAYS_KEY)
     return result
   }, [])
 
@@ -802,7 +763,6 @@ export function useGatewayMutations() {
     setExposurePolicy,
     previewExposurePolicy,
     saveServiceConfig,
-    setToolSearchConfig,
     setCodeModeConfig,
     addProtectedRoute,
     updateProtectedRoute,

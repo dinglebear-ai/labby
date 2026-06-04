@@ -10,8 +10,6 @@ import type {
   ServiceConfig,
   ServiceAction,
   SupportedService,
-  ToolSearchConfig,
-  ToolSearchConfigInput,
   CodeModeConfig,
   CodeModeConfigInput,
   ProtectedMcpRoute,
@@ -572,21 +570,6 @@ export const gatewayApi = {
 
   async serviceActions(service: string, signal?: AbortSignal): Promise<ServiceAction[]> {
     return gatewayAction<ServiceAction[]>('gateway.service_actions', { service }, signal)
-  },
-
-  async getToolSearchConfig(signal?: AbortSignal): Promise<ToolSearchConfig> {
-    return gatewayAction<ToolSearchConfig>('gateway.tool_search.get', {}, signal)
-  },
-
-  async setToolSearchConfig(
-    input: ToolSearchConfigInput,
-    signal?: AbortSignal,
-  ): Promise<ToolSearchConfig> {
-    return gatewayAction<ToolSearchConfig>(
-      'gateway.tool_search.set',
-      confirmGatewayParams(input),
-      signal,
-    )
   },
 
   async getCodeModeConfig(signal?: AbortSignal): Promise<CodeModeConfig> {

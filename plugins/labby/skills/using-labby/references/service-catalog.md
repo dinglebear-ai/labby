@@ -86,7 +86,7 @@ The public Code Mode MCP tools are `search` and `execute`.
 
 The search sandbox injects a fresh live `tools` array. Each entry includes:
 
-- `id`: canonical `upstream::<upstream>::<tool>` ID for `callTool`
+- `id`: canonical `<upstream>::<tool>` ID for `callTool`
 - `upstream`, `name`, `description`
 - `schema`, `output_schema`
 - `signature`, `dts`
@@ -112,7 +112,7 @@ Inside `code`, call upstream MCP tools either way:
 
 ```js
 async () => {
-  const a = await callTool("upstream::github::search_issues", { q: "bug" });
+  const a = await callTool("github::search_issues", { q: "bug" });
   const b = await codemode.github.search_issues({ q: "fix" });
   return { a, b };
 }
@@ -137,7 +137,7 @@ Error recovery:
 - `missing_param`, `invalid_param`, `validation_failed`: inspect the `search`
   schema and fix params.
 - `confirmation_required`: retry top-level `execute` with `"confirm": true`.
-- `unknown_tool`: rerun `search`; Code Mode only accepts `upstream::...` IDs,
+- `unknown_tool`: rerun `search`; Code Mode only accepts `<upstream>::<tool>` IDs,
   not `lab::...` action IDs.
 - `tool_call_limit_exceeded`: reduce fan-out or raise top-level
   `max_tool_calls` within gateway limits.

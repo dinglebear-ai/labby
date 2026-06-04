@@ -293,7 +293,6 @@ pub(crate) fn entry_to_upstream(
                 .with_transport_fingerprint(transport_fingerprint),
         ),
         priority: 1.0,
-        tool_search: Default::default(),
     })
 }
 

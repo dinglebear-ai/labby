@@ -7,10 +7,10 @@
 //!   where it was a private function.  Stash dispatch (and future modules that
 //!   walk user-supplied paths) import from here instead of duplicating the
 //!   logic.
-//! - `reject_system_path` — rejects paths inside well-known system directories
-//!   that stash must never read from or write to.  Used by both
-//!   `stash::import` (source validation) and `stash::service` (deploy target
-//!   and deploy destination validation).
+//! - `canonicalize_and_reject_read_path` / `canonicalize_and_reject_write_path`
+//!   — separate policy entry points for local filesystem reads and writes.
+//! - `reject_existing_symlink_ancestors` — rejects writes whose existing
+//!   destination root/parents contain symlinks before the final file is opened.
 //!
 //! # Intentionally omitted
 //!
@@ -27,90 +27,52 @@ use crate::dispatch::error::ToolError;
 
 // ── System-path denylist ──────────────────────────────────────────────────────
 
-/// Paths that stash must never read from or write to, regardless of operator
-/// configuration.  Checked after canonicalization so that symlinks and `..`
-/// traversals cannot bypass the list.
+/// Sensitive paths that stash must never read from or write to, regardless of
+/// operator configuration. Checked after canonicalization so that symlinks and
+/// `..` traversals cannot bypass the list.
 ///
-/// Extended beyond the minimal FHS list to include common container / k8s
-/// mount roots where the running process may have write access.
-pub const SYSTEM_PATH_DENYLIST: &[&str] = &[
+/// This intentionally does not include broad user/workspace roots like `/home`,
+/// `/tmp`, or `/workspace`: stash is meant to import and export operator-owned
+/// files from those locations. Symlink-aware destination checks protect write
+/// containment separately.
+pub const SENSITIVE_READ_PATH_DENYLIST: &[&str] = &[
     // Core FHS system directories
-    "/etc",
-    "/usr",
-    "/bin",
-    "/sbin",
-    "/lib",
-    "/lib64",
-    "/boot",
-    "/dev",
-    "/proc",
-    "/sys",
+    "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/dev", "/proc", "/sys",
     // Variable / runtime data — often writable, always sensitive
-    "/var",
-    "/run",
-    // Privileged user homes
-    "/root",
-    // Sensitive but user-writable
-    "/tmp",
-    // User home trees — a broad block; legitimate stash paths live under
-    // specific subdirectories, not at the tree root
-    "/home",
-    // Optional / mounted software
-    "/opt",
-    "/srv",
-    // Common container / k8s mount roots (not in standard FHS)
-    "/app",
-    "/workspace",
-    "/data",
-    "/config",
-    "/mnt",
-    "/media",
-    "/storage",
+    "/var", "/run",  // Privileged user homes
+    "/root", // Optional / mounted software and common privileged container mounts
+    "/opt", "/srv", "/app", "/data", "/config", "/mnt", "/media", "/storage",
 ];
 
-/// Reject a path that falls inside a known system directory.
-///
-/// `canonical` must be the result of `std::fs::canonicalize` (or a parent
-/// canonicalization + filename rejoin) — it must not be a lexically-only
-/// normalized path, because symlinks could otherwise bypass the check.
-///
-/// Returns `Ok(())` when the path is safe.
-/// Returns `Err(ToolError::Sdk { sdk_kind: "path_traversal" })` when the path
-/// is inside a system directory.
-pub fn reject_system_path(canonical: &Path, original: &Path) -> Result<(), ToolError> {
-    let canonical_str = canonical.to_string_lossy();
-    for &system in SYSTEM_PATH_DENYLIST {
-        if canonical_str == system || canonical_str.starts_with(&format!("{system}/")) {
-            return Err(ToolError::Sdk {
-                sdk_kind: "path_traversal".into(),
-                message: format!(
-                    "path `{}` resolves to a system directory (`{}`) and is not allowed",
-                    original.display(),
-                    system
-                ),
-            });
-        }
-    }
-    Ok(())
+/// Sensitive paths that stash must never write to. Kept separate from the read
+/// denylist so future read/write policy differences are explicit.
+pub const SENSITIVE_WRITE_PATH_DENYLIST: &[&str] = SENSITIVE_READ_PATH_DENYLIST;
+
+/// Canonicalize a local read source and reject sensitive roots.
+pub fn canonicalize_and_reject_read_path(path: &Path) -> Result<PathBuf, ToolError> {
+    let canonical = canonicalize_verifiable_path(path)?;
+    reject_path_against_denylist(&canonical, path, SENSITIVE_READ_PATH_DENYLIST)?;
+    Ok(canonical)
 }
 
-/// Canonicalize `path` and then call [`reject_system_path`].
-///
-/// Returns `Err(ToolError::Sdk { sdk_kind: "path_traversal" })` when
-/// canonicalization fails — the path cannot be verified safe if we cannot
-/// resolve it.  This prevents the silent-fallback vulnerability where an
-/// unreachable (or permission-denied) path bypasses the denylist.
-pub fn canonicalize_and_reject_system_path(path: &Path) -> Result<PathBuf, ToolError> {
+/// Canonicalize a local write destination and reject sensitive roots.
+pub fn canonicalize_and_reject_write_path(path: &Path) -> Result<PathBuf, ToolError> {
+    let canonical = canonicalize_verifiable_path(path)?;
+    reject_path_against_denylist(&canonical, path, SENSITIVE_WRITE_PATH_DENYLIST)?;
+    Ok(canonical)
+}
+
+fn canonicalize_verifiable_path(path: &Path) -> Result<PathBuf, ToolError> {
     // Canonicalize the path if it exists; otherwise canonicalize the nearest
     // existing ancestor and rejoin the remaining components.
-    let canonical = if path.exists() {
+    if path.exists() {
         std::fs::canonicalize(path).map_err(|e| ToolError::Sdk {
             sdk_kind: "path_traversal".into(),
             message: format!(
                 "cannot verify path `{}` is safe: canonicalize failed: {e}",
                 path.display()
             ),
-        })?
+        })
     } else if let Some(parent) = path.parent() {
         if parent == Path::new("") || !parent.exists() {
             // Cannot canonicalize — fail closed.
@@ -130,19 +92,37 @@ pub fn canonicalize_and_reject_system_path(path: &Path) -> Result<PathBuf, ToolE
             ),
         })?;
         let file_name = path.file_name().unwrap_or_default();
-        canonical_parent.join(file_name)
+        Ok(canonical_parent.join(file_name))
     } else {
-        return Err(ToolError::Sdk {
+        Err(ToolError::Sdk {
             sdk_kind: "path_traversal".into(),
             message: format!(
                 "cannot verify path `{}` is safe: no parent directory",
                 path.display()
             ),
-        });
-    };
+        })
+    }
+}
 
-    reject_system_path(&canonical, path)?;
-    Ok(canonical)
+fn reject_path_against_denylist(
+    canonical: &Path,
+    original: &Path,
+    denylist: &[&str],
+) -> Result<(), ToolError> {
+    let canonical_str = canonical.to_string_lossy();
+    for &system in denylist {
+        if canonical_str == system || canonical_str.starts_with(&format!("{system}/")) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "path_traversal".into(),
+                message: format!(
+                    "path `{}` resolves to a sensitive system path (`{}`) and is not allowed",
+                    original.display(),
+                    system
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Reject a path that exists on disk as a symlink.
@@ -179,6 +159,98 @@ pub fn reject_symlink(path: &Path) -> Result<(), ToolError> {
         });
     }
     Ok(())
+}
+
+/// Reject a write target when the destination root, any existing parent between
+/// `write_root` and `target`, or the existing target itself is a symlink.
+///
+/// Call this immediately before creating directories or writing files. It
+/// closes the gap where a lexical containment check passes but an existing
+/// symlinked parent redirects the actual write outside the intended root.
+pub fn reject_existing_symlink_ancestors(
+    write_root: &Path,
+    target: &Path,
+) -> Result<(), ToolError> {
+    let root = normalize_lexical(write_root);
+    let target = normalize_lexical(target);
+    if !target.starts_with(&root) {
+        return Err(ToolError::Sdk {
+            sdk_kind: "path_traversal".into(),
+            message: format!(
+                "target path `{}` escapes write root `{}`",
+                target.display(),
+                root.display()
+            ),
+        });
+    }
+
+    let mut current = root.clone();
+    reject_existing_symlink(&current)?;
+
+    let Ok(relative) = target.strip_prefix(&root) else {
+        return Err(ToolError::Sdk {
+            sdk_kind: "path_traversal".into(),
+            message: format!(
+                "target path `{}` escapes write root `{}`",
+                target.display(),
+                root.display()
+            ),
+        });
+    };
+
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        reject_existing_symlink(&current)?;
+    }
+
+    Ok(())
+}
+
+/// Reject a path if any existing component in the path is a symlink.
+///
+/// Use this before `create_dir_all(path)` when the path itself may not exist
+/// yet; checking the target against itself would otherwise miss a symlinked
+/// existing parent.
+pub fn reject_existing_symlinks_in_path(path: &Path) -> Result<(), ToolError> {
+    let path = normalize_lexical(path);
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        reject_existing_symlink(&current)?;
+    }
+    Ok(())
+}
+
+fn reject_existing_symlink(path: &Path) -> Result<(), ToolError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(ToolError::Sdk {
+            sdk_kind: "symlink_rejected".into(),
+            message: format!(
+                "refusing to write through symlinked path `{}`",
+                path.display()
+            ),
+        }),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: format!("lstat `{}` failed: {error}", path.display()),
+        }),
+    }
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -230,5 +302,38 @@ mod tests {
     #[test]
     fn reject_path_traversal_accepts_relative_normal() {
         assert!(reject_path_traversal("sub/path.txt").is_ok());
+    }
+
+    #[test]
+    fn system_path_check_allows_operator_workspace_paths() {
+        assert!(canonicalize_and_reject_write_path(Path::new("/workspace")).is_ok());
+        assert!(canonicalize_and_reject_write_path(Path::new("/home/stash-src")).is_ok());
+        assert!(canonicalize_and_reject_write_path(Path::new("/tmp/stash-src")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_ancestor_check_rejects_redirected_parent() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let root = dir.path().join("out");
+        std::fs::create_dir_all(&root).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        let err = reject_existing_symlink_ancestors(&root, &link.join("file.txt")).unwrap_err();
+        assert_eq!(err.kind(), "symlink_rejected");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_path_check_rejects_redirected_parent_before_root_exists() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        let err = reject_existing_symlinks_in_path(&link.join("out")).unwrap_err();
+        assert_eq!(err.kind(), "symlink_rejected");
     }
 }

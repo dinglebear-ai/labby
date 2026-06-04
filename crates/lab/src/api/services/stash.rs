@@ -65,7 +65,7 @@ async fn handle(
         req,
         ACTIONS,
         |action, params| async move {
-            crate::dispatch::stash::dispatch::dispatch(&action, params).await
+            crate::dispatch::stash::dispatch::dispatch_for_surface("api", &action, params).await
         },
     )
     .await

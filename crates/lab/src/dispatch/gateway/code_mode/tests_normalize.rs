@@ -61,7 +61,7 @@ fn normalize_user_code_wraps_loose_statement_block() {
 
 #[test]
 fn normalize_user_code_returns_trailing_expression() {
-    let loose = "const x = await callTool('upstream::github::search_issues', {});\nx.items";
+    let loose = "const x = await callTool('github::search_issues', {});\nx.items";
     let result = super::normalize_user_code(loose);
     assert!(result.starts_with("async () => {"), "got: {result}");
     assert!(result.contains("const x = await callTool"));

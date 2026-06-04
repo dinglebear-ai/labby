@@ -1,12 +1,12 @@
 # Monitors
 
-This document covers the Claude Code monitor definitions shipped by the `lab` plugin and the supporting `labby deploy monitor` CLI command.
+This document covers Claude Code monitor definitions shipped by Lab plugins and the supporting `labby deploy monitor` CLI command.
 
 ## What Monitors Are
 
 The Claude Code Monitor tool runs a long-lived shell command and turns each newline on stdout into an in-session event. Plugins declare their monitors in a manifest so users can enable them without copying commands by hand.
 
-The `lab` plugin manifest references its monitor file from `plugins/.claude-plugin/plugin.json`:
+Plugin manifests reference monitor files from each plugin's `.claude-plugin/plugin.json`:
 
 ```json
 "monitors": "./monitors/monitors.json"
@@ -14,7 +14,7 @@ The `lab` plugin manifest references its monitor file from `plugins/.claude-plug
 
 ## Manifest Schema
 
-`plugins/monitors/monitors.json` is a JSON array. Each entry has three required fields:
+`plugins/<name>/monitors/monitors.json` is a JSON array. Each entry has three required fields:
 
 | Field | Meaning |
 |-------|---------|
@@ -24,19 +24,14 @@ The `lab` plugin manifest references its monitor file from `plugins/.claude-plug
 
 User-configurable placeholders are declared under `userConfig` in `plugin.json` and substituted by Claude Code at launch.
 
-## Registered Monitors
+## Registered Monitor Files
 
-### deploy-host-monitor
+Current monitor files:
 
-```jsonc
-{
-  "name": "deploy-host-monitor",
-  "command": "labby deploy monitor ${user_config.deploy_targets} --interval 60",
-  "description": "SSH host reachability — notifies when a deployed host goes online or offline"
-}
-```
+- `plugins/broadcastr/monitors/monitors.json`
+- `plugins/vibin/monitors/monitors.json`
 
-`deploy_targets` is a space-separated list of SSH aliases (e.g. `tootie shart vivobook-wsl`) configured per user in the plugin settings UI.
+Run `jq '.[] | {name, command, description}' plugins/*/monitors/monitors.json` for the current registered monitor names and command payloads.
 
 ## `labby deploy monitor` Command
 
@@ -125,7 +120,7 @@ SIGINT triggers the clean exit path and removes the lock file. SIGTERM works too
 
 ## Adding a New Monitor
 
-1. Append an entry to `plugins/monitors/monitors.json`.
-2. If the command reads runtime config, declare any new `${user_config.*}` keys under `userConfig` in `plugins/.claude-plugin/plugin.json`.
+1. Append an entry to the owning plugin's `plugins/<name>/monitors/monitors.json`.
+2. If the command reads runtime config, declare any new `${user_config.*}` keys under `userConfig` in `plugins/<name>/.claude-plugin/plugin.json`.
 3. Long-running monitors that should be singletons must implement their own pidfile lock — there is no shared lock helper, but `crates/lab/src/dispatch/deploy/monitor.rs::LockGuard` is a small, copyable reference.
 4. Filter aggressively before printing. Each stdout line becomes a Monitor tool event; chatty commands generate noise. Prefer transition-only emit with a single startup snapshot, as `deploy-host-monitor` does.

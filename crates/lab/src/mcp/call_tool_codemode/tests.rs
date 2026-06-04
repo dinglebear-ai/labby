@@ -9,7 +9,7 @@ fn code_mode_filter_arg_rejects_malformed_values() {
     let mut args = serde_json::Map::new();
     args.insert(
         "tools".to_string(),
-        Value::String("upstream::github::search_issues".to_string()),
+        Value::String("github::search_issues".to_string()),
     );
     let err = string_array_arg(&args, "tools")
         .expect_err("string filter must not be treated as allow-all");

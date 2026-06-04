@@ -24,7 +24,7 @@ control plane.
 | MCP Registry aggregator | Serve Lab's local registry mirror on `/v0.1/*` as a drop-in replacement for the official MCP Registry API, while layering Lab-owned metadata such as featured/reviewed/recommended flags, tags, audit fields, and homelab-specific curation without mutating upstream registry data. |
 | ACP Registry agents | Search the ACP Registry for compatible agents, inspect agent details, and install or uninstall agent provider entries through the same marketplace service. ACP agent installs currently write controller-local provider config; remote ACP agent installation returns per-node errors until implemented. |
 | Upstream MCP proxy | Point MCP clients at Lab instead of every individual server. Lab connects to configured HTTP or stdio upstream MCP servers, discovers their tools, optionally proxies resources, normalizes errors, applies circuit-breaker health, and republishes the merged catalog behind Lab's authenticated `/mcp` endpoint. |
-| Gateway management | Add, test, reload, and remove upstream MCP servers without hand-editing config. Lab supports exposure filters, `tool_search`/`tool_invoke` helper paths, OAuth-backed upstream credentials, Gateway-managed protected MCP routes, and Labby/CLI/API controls for the proxy pool. |
+| Gateway management | Add, test, reload, and remove upstream MCP servers without hand-editing config. Lab supports exposure filters, legacy `code_mode`/`tool_execute` helper mode, Code Mode `search`/`execute`, OAuth-backed upstream credentials, Gateway-managed protected MCP routes, and Labby/CLI/API controls for the proxy pool. |
 | Virtual Lab servers | Expose configured Lab-backed services as virtual gateway servers, toggle CLI/API/MCP/Web UI surfaces, inspect service action metadata, and set MCP action allowlists per virtual server. |
 | Authentication and OAuth | Protect hosted HTTP, MCP, Labby, registry, and gateway-management routes with static bearer auth or Lab's Google-backed OAuth mode. Lab also supports browser sessions, CSRF-protected web UI calls, OAuth metadata/JWKS endpoints, upstream MCP OAuth credential storage, and local or node-started OAuth callback relays. |
 | Fleet nodes | Run `labby serve` on multiple machines, enroll non-controller nodes, approve or deny devices, inspect node inventory and MCP client config metadata, run the local OAuth relay on a node, and route status/log events back to the controller over the fleet WebSocket. |
@@ -32,7 +32,7 @@ control plane.
 | Labby web UI | Serve the admin UI from the same `labby serve` process as the API and MCP endpoint. The UI covers marketplace, gateway management, registry browsing, logs, setup, activity, settings, docs, and design-system/dev previews. |
 | Labby chat | Use the `/chat` web UI as a live ACP client: create/list/resume sessions, send prompts to configured providers, stream session events over SSE, inspect transcript and reasoning/activity lanes, and render tool calls, terminal output, file trees, diffs, code blocks, links, and web previews. |
 | TUI plugin manager | Run `lab plugins` to manage local service/plugin installation from a Ratatui interface that reads service metadata and patches `.mcp.json` entries without requiring hand-written MCP config. |
-| Generated API docs and catalogs | Use `lab help --json`, MCP `lab://catalog`, per-service action resources, `/v1/{service}/actions`, `/v1/openapi.json`, and `/v1/docs` to discover the exact enabled action surface programmatically. |
+| Generated API docs and catalogs | Use `labby help --json`, MCP `lab://catalog`, per-service action resources, `/v1/{service}/actions`, `/v1/openapi.json`, and `/v1/docs` to discover the exact enabled action surface programmatically. |
 | Composable feature set | Pick what Lab exposes at each layer: build only selected integrations with Cargo features, start only selected runtime services with `labby serve --services`, expose only chosen virtual-server surfaces/actions, and deploy only the plugin components you choose to selected devices. |
 | Workspace filesystem browser | Browse and preview files under the configured workspace root through the guarded `fs` service for Labby attachment and editor workflows. |
 | Setup and health audits | Use `labby init`, `labby doctor`, `labby health`, `labby scaffold service`, and `labby audit onboarding` to bootstrap config, validate service reachability/auth, and keep new integrations aligned with the repo contract. |
@@ -199,8 +199,8 @@ configuration contract.
 ## Runtime Commands
 
 ```bash
-lab help
-lab help --json
+labby help
+labby help --json
 labby serve
 labby serve --host 127.0.0.1 --port 8765
 labby serve --services radarr,sonarr,plex
@@ -291,12 +291,12 @@ Top-level commands are defined in [crates/lab/src/cli.rs](./crates/lab/src/cli.r
 | --- | --- |
 | `labby serve` | Start the hosted HTTP runtime |
 | `labby mcp` | Start the stdio MCP server for local MCP clients |
-| `lab help` | Print the generated service and action catalog |
+| `labby help` | Print the generated service and action catalog |
 | `labby doctor` | Run comprehensive health audits |
 | `labby health` | Run quick reachability checks |
 | `labby nodes` | Query nodes from the configured controller |
 | `labby logs` | Search fleet or local-master logs |
-| `lab plugins` | Open the Ratatui plugin manager |
+| `labby plugins` | Open the Ratatui plugin manager |
 | `labby marketplace` | Manage Claude Code, Codex, MCP Registry, and ACP Registry marketplace entries |
 | `labby gateway` | Manage proxied upstream MCP gateways |
 | `labby oauth` | Run local OAuth callback relay helpers |
@@ -304,10 +304,10 @@ Top-level commands are defined in [crates/lab/src/cli.rs](./crates/lab/src/cli.r
 | `labby scaffold` | Generate a new service onboarding scaffold |
 | `labby install` / `labby uninstall` | Patch `.mcp.json` service entries |
 | `labby init` | Run first-time setup |
-| `lab completions` | Generate shell completions |
+| `labby completions` | Generate shell completions |
 
-Feature-gated services also expose CLI subcommands such as `lab radarr`, `lab unifi`,
-`lab qdrant`, and `labby deploy`.
+Feature-gated services also expose CLI subcommands such as `labby radarr`, `labby unifi`,
+`labby qdrant`, and `labby deploy`.
 
 CLI output is human-readable by default. Use global `--json` for machine-readable output
 and `--color auto|always|never` for human output styling. See [docs/CLI.md](./docs/surfaces/CLI.md)
@@ -319,7 +319,8 @@ Destructive CLI operations require confirmation. Non-interactive callers use `-y
 ## MCP Server
 
 Core Lab services use one MCP tool per registered service. Gateway and upstream features
-can add healthy upstream tools plus optional `tool_search` and `tool_invoke` helpers.
+can add healthy upstream tools plus optional legacy `code_mode`/`tool_execute` helpers
+or Code Mode `search`/`execute`.
 Core service tool input is:
 
 ```json
@@ -344,8 +345,8 @@ proxying is configured.
 Destructive MCP actions use elicitation when the client supports it. Headless clients pass
 `"confirm": true` inside `params`; otherwise the tool returns `confirmation_required`.
 
-See [docs/MCP.md](./docs/surfaces/MCP.md), [docs/RMCP.md](./docs/surfaces/RMCP.md), and
-[docs/TRANSPORT.md](./docs/surfaces/TRANSPORT.md).
+See [docs/surfaces/MCP.md](./docs/surfaces/MCP.md), [docs/surfaces/RMCP.md](./docs/surfaces/RMCP.md), and
+[docs/surfaces/TRANSPORT.md](./docs/surfaces/TRANSPORT.md).
 
 ## HTTP API
 
@@ -401,8 +402,8 @@ Do not maintain action lists by hand in this README. The source-of-truth catalog
 from the registry and action specs:
 
 ```bash
-lab help --json
-lab help
+labby help --json
+labby help
 curl -H "Authorization: Bearer $LAB_MCP_HTTP_TOKEN" \
   http://127.0.0.1:8765/v1/radarr/actions
 ```
@@ -565,9 +566,9 @@ Start at [docs/README.md](./docs/README.md). Topic ownership:
 | [docs/CLI.md](./docs/surfaces/CLI.md) | CLI behavior, command rules, confirmations, operator commands |
 | [docs/design/CLI_DESIGN_SYSTEM.md](./docs/design/CLI_DESIGN_SYSTEM.md) | Human-readable CLI output language and color policy |
 | [docs/design/CLI_OUTPUT_THEME_API.md](./docs/design/CLI_OUTPUT_THEME_API.md) | Proposed Rust API for CLI semantic styling |
-| [docs/MCP.md](./docs/surfaces/MCP.md) | MCP transport model, one-tool-per-service design, discovery, envelopes |
-| [docs/RMCP.md](./docs/surfaces/RMCP.md) | RMCP SDK integration contract |
-| [docs/TRANSPORT.md](./docs/surfaces/TRANSPORT.md) | Stdio and streamable HTTP transport, sessions, CORS, DNS rebinding |
+| [docs/surfaces/MCP.md](./docs/surfaces/MCP.md) | MCP transport model, one-tool-per-service design, discovery, envelopes |
+| [docs/surfaces/RMCP.md](./docs/surfaces/RMCP.md) | RMCP SDK integration contract |
+| [docs/surfaces/TRANSPORT.md](./docs/surfaces/TRANSPORT.md) | Stdio and streamable HTTP transport, sessions, CORS, DNS rebinding |
 | [docs/OAUTH.md](./docs/runtime/OAUTH.md) | Bearer vs OAuth auth, Google flow, JWTs, JWKS, metadata, callback forwarding |
 | [docs/CONFIG.md](./docs/runtime/CONFIG.md) | Env/TOML ownership, load order, secrets, instance naming |
 | [docs/ENV.md](./docs/runtime/ENV.md) | Deployment-ready env examples and auth mode variables |

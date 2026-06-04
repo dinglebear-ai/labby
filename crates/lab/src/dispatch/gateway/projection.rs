@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::config::{ToolSearchConfig, UpstreamConfig};
+use crate::config::{CodeModeConfig, UpstreamConfig};
 use crate::dispatch::gateway::service_catalog::service_meta;
 use crate::dispatch::gateway::types::{
     GatewayConfigView, GatewayRuntimeView, ServiceConfigFieldView, ServiceConfigView,
@@ -27,7 +27,7 @@ const WARNING_UNKNOWN_SERVICE: &str = "unknown_service";
 
 pub(super) fn config_view(
     upstream: &UpstreamConfig,
-    tool_search: &ToolSearchConfig,
+    code_mode: &CodeModeConfig,
 ) -> GatewayConfigView {
     GatewayConfigView {
         name: upstream.name.clone(),
@@ -42,9 +42,7 @@ pub(super) fn config_view(
         expose_tools: upstream.expose_tools.clone(),
         expose_resources: upstream.expose_resources.clone(),
         expose_prompts: upstream.expose_prompts.clone(),
-        tool_search_enabled: tool_search.enabled,
-        tool_search_top_k_default: tool_search.top_k_default,
-        tool_search_max_tools: tool_search.max_tools,
+        code_mode_enabled: code_mode.enabled,
         imported_from: upstream.imported_from.clone(),
     }
 }
@@ -107,7 +105,7 @@ fn redact_secret_like_segments(input: &str) -> String {
         .into_owned()
 }
 
-/// Maximum serialized schema size returned in tool search results.
+/// Maximum serialized schema size returned in code mode results.
 ///
 /// Schemas over this limit are dropped entirely rather than truncated, since
 /// partial JSON schemas are invalid and could confuse callers.  Real-world
@@ -517,7 +515,6 @@ mod tests {
             oauth: None,
             imported_from: None,
             priority: 1.0,
-            tool_search: ToolSearchConfig::default(),
         }
     }
 

@@ -10,11 +10,15 @@ use serde_json::Value;
 
 use lab_apis::stash::{
     StashComponent, StashComponentKind, StashDeployTarget, StashExportOptions, StashWorkspaceShape,
+    limits,
 };
 
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::to_json;
-use crate::dispatch::path_safety::canonicalize_and_reject_system_path;
+use crate::dispatch::path_safety::{
+    canonicalize_and_reject_write_path, reject_existing_symlink_ancestors,
+    reject_existing_symlinks_in_path,
+};
 use crate::dispatch::stash::export;
 use crate::dispatch::stash::import;
 use crate::dispatch::stash::params::{
@@ -49,6 +53,8 @@ pub fn component_get(store: &StashStore, p: GetParams) -> Result<Value, ToolErro
 
 /// `component.create` — create an empty component with a new ULID id.
 pub fn component_create(store: &StashStore, p: CreateParams) -> Result<Value, ToolError> {
+    validate_component_name(&p.name)?;
+
     // Parse kind.
     let kind: StashComponentKind = serde_json::from_value(Value::String(p.kind.clone()))
         .map_err(|_| ToolError::InvalidParam {
@@ -109,6 +115,25 @@ pub fn component_create(store: &StashStore, p: CreateParams) -> Result<Value, To
     store.with_component_lock(&id, || store.write_component(&component))?;
 
     to_json(&component)
+}
+
+fn validate_component_name(name: &str) -> Result<(), ToolError> {
+    if name.is_empty() {
+        return Err(ToolError::InvalidParam {
+            param: "name".into(),
+            message: "name must not be empty".into(),
+        });
+    }
+    if name.len() > limits::MAX_COMPONENT_NAME_LEN {
+        return Err(ToolError::InvalidParam {
+            param: "name".into(),
+            message: format!(
+                "name must not exceed {} bytes",
+                limits::MAX_COMPONENT_NAME_LEN
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// `component.import` — import a local path into the stash as a new component.
@@ -249,16 +274,13 @@ fn component_deploy_blocking(store: &StashStore, p: DeployParams) -> Result<Valu
             let target_id = id.clone();
             let deploy_path = target_path.clone();
 
-            // Reject dangerous system paths — fail closed on canonicalize error.
+            // Reject dangerous write destinations — fail closed on canonicalize error.
             //
             // lab-n4fb: replaced the previous unwrap_or_else(normalize_path) fallback
             // that silently degraded to lexical normalization on EACCES/EIO/ELOOP.
-            // canonicalize_and_reject_system_path() returns Err on any canonicalize
+            // canonicalize_and_reject_write_path() returns Err on any canonicalize
             // failure — the denylist must never fail open.
-            //
-            // Uses the extended denylist in path_safety::SYSTEM_PATH_DENYLIST which
-            // covers FHS roots + container/k8s mount roots (/app, /workspace, /data, etc.).
-            canonicalize_and_reject_system_path(&deploy_path)?;
+            canonicalize_and_reject_write_path(&deploy_path)?;
 
             let files_dir = store.revision_files_path(&revision_id);
             let comp_id = component.id.clone();
@@ -286,6 +308,7 @@ fn component_deploy_blocking(store: &StashStore, p: DeployParams) -> Result<Valu
 /// lab-qz6a.21: canonicalizes `target_path` once here and threads it into
 /// `copy_dir_to` so that every destination path can be checked for containment.
 fn copy_revision_to_path(files_dir: &Path, target_path: &Path) -> Result<usize, ToolError> {
+    reject_existing_symlinks_in_path(target_path)?;
     std::fs::create_dir_all(target_path).map_err(|e| ToolError::Sdk {
         sdk_kind: "deploy_failed".into(),
         message: format!("create deploy target dir `{}`: {e}", target_path.display()),
@@ -355,6 +378,8 @@ fn copy_dir_to(
             });
         }
 
+        reject_existing_symlink_ancestors(dst, &dst_path)?;
+
         // Verify destination stays within canonical_target (defense-in-depth).
         // lab-n4fb: fail closed on canonicalize errors — do NOT fall back to
         // unchecked dst_path when the path exists but canonicalize returns an
@@ -382,7 +407,6 @@ fn copy_dir_to(
                 ),
             });
         }
-
         if entry_meta.file_type().is_dir() {
             std::fs::create_dir_all(&dst_path).map_err(|e| ToolError::Sdk {
                 sdk_kind: "deploy_failed".into(),
@@ -597,9 +621,9 @@ pub fn target_add(store: &StashStore, p: TargetAddParams) -> Result<Value, ToolE
                 message: "path is required for kind=local".into(),
             })?;
             // Validate at registration time — catches unsafe targets before any
-            // deploy attempt. canonicalize_and_reject_system_path fails closed on
-            // EACCES/EIO so symlinks to system dirs are also caught here.
-            canonicalize_and_reject_system_path(&path).map_err(|e| match e {
+            // deploy attempt. The write-path policy fails closed on EACCES/EIO
+            // so symlinks to system dirs are also caught here.
+            canonicalize_and_reject_write_path(&path).map_err(|e| match e {
                 ToolError::Sdk { message, .. } => ToolError::InvalidParam {
                     param: "path".into(),
                     message,
@@ -647,7 +671,7 @@ pub fn target_remove(store: &StashStore, p: TargetRemoveParams) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatch::path_safety::canonicalize_and_reject_system_path;
+    use crate::dispatch::path_safety::canonicalize_and_reject_write_path;
     use tempfile::tempdir;
 
     /// lab-n4fb: system-path rejection must use the extended denylist from path_safety.
@@ -659,7 +683,7 @@ mod tests {
             // check runs on the canonical or parent-canonical form regardless.
             // If it does exist, we expect path_traversal. If it doesn't, we
             // expect path_traversal (parent exists = /etc, /usr, etc. which are in denylist).
-            let result = canonicalize_and_reject_system_path(p);
+            let result = canonicalize_and_reject_write_path(p);
             assert!(
                 result.is_err(),
                 "expected system path `{path}` to be rejected"
@@ -673,12 +697,12 @@ mod tests {
         }
     }
 
-    /// lab-n4fb: container/k8s roots must also be rejected.
+    /// lab-n4fb: sensitive container/k8s-style roots must also be rejected.
     #[test]
     fn deploy_rejects_container_roots() {
-        for path in &["/app/config", "/workspace/.ssh", "/data/secrets"] {
+        for path in &["/app/config", "/config/secrets", "/data/secrets"] {
             let p = Path::new(path);
-            let result = canonicalize_and_reject_system_path(p);
+            let result = canonicalize_and_reject_write_path(p);
             assert!(
                 result.is_err(),
                 "expected container root `{path}` to be rejected"
@@ -697,7 +721,7 @@ mod tests {
             return; // Skip in environments where tempdir is in a denylisted prefix.
         }
         assert!(
-            canonicalize_and_reject_system_path(dir_path).is_ok(),
+            canonicalize_and_reject_write_path(dir_path).is_ok(),
             "user path `{}` should not be rejected",
             dir_path.display()
         );
@@ -727,7 +751,7 @@ mod tests {
         );
     }
 
-    /// lab-gxhk: target.add must reject container/k8s roots at registration time.
+    /// lab-gxhk: target.add must reject sensitive container/k8s roots at registration time.
     #[test]
     fn target_add_rejects_container_root_at_registration() {
         use crate::dispatch::stash::params::TargetAddParams;
@@ -737,7 +761,7 @@ mod tests {
         let store = StashStore::new(dir.path().to_path_buf());
         store.ensure_dirs().unwrap();
 
-        for bad_path in &["/app/data", "/workspace/secrets"] {
+        for bad_path in &["/app/data", "/config/secrets"] {
             let p = TargetAddParams {
                 name: "container-target".into(),
                 kind: "local".into(),
@@ -748,6 +772,58 @@ mod tests {
                 .expect_err(&format!("container root `{bad_path}` must be rejected"));
             assert_eq!(err.kind(), "invalid_param");
         }
+    }
+
+    #[test]
+    fn component_create_rejects_empty_name() {
+        let dir = tempdir().unwrap();
+        let store = StashStore::new(dir.path().to_path_buf());
+        store.ensure_dirs().unwrap();
+
+        let err = component_create(
+            &store,
+            CreateParams {
+                kind: "settings".into(),
+                name: String::new(),
+                label: None,
+            },
+        )
+        .expect_err("empty name must fail");
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[test]
+    fn component_create_rejects_overlong_name() {
+        let dir = tempdir().unwrap();
+        let store = StashStore::new(dir.path().to_path_buf());
+        store.ensure_dirs().unwrap();
+
+        let err = component_create(
+            &store,
+            CreateParams {
+                kind: "settings".into(),
+                name: "a".repeat(limits::MAX_COMPONENT_NAME_LEN + 1),
+                label: None,
+            },
+        )
+        .expect_err("overlong name must fail");
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deploy_rejects_symlinked_destination_parent() {
+        let src = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("link")).unwrap();
+        std::fs::write(src.path().join("link").join("payload.txt"), b"secret").unwrap();
+        std::os::unix::fs::symlink(outside.path(), target.path().join("link")).unwrap();
+
+        let err = copy_revision_to_path(src.path(), target.path())
+            .expect_err("deploy through symlinked parent must fail");
+        assert_eq!(err.kind(), "symlink_rejected");
+        assert!(!outside.path().join("payload.txt").exists());
     }
 }
 

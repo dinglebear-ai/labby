@@ -53,7 +53,7 @@ import { GatewayToolsTable } from './gateway-tools-table'
 import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { AURORA_GATEWAY_STAT, gatewayActionTone } from './gateway-theme'
-import { ToolSearchTogglePanel } from './tool-search-toggle'
+import { CodeModeTogglePanel } from './code-mode-toggle'
 
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'configured'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
@@ -768,7 +768,7 @@ export function GatewayListView({
             </div>
           </section>
 
-          <ToolSearchTogglePanel />
+          <CodeModeTogglePanel />
 
           <div className="grid gap-6 2xl:grid-cols-[280px_minmax(0,1fr)] 2xl:items-start">
             <GatewayFilters

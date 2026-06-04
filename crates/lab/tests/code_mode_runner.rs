@@ -335,7 +335,7 @@ fn code_mode_runner_preserves_binary_tool_args_and_results() {
         "{}",
         json!({
             "type": "start",
-            "code": "async () => { const bytes = await callTool('upstream::test::echo', { bytes: new Uint8Array([1, 2, 3]) }); return { isBytes: bytes instanceof Uint8Array, values: Array.from(bytes) }; }"
+            "code": "async () => { const bytes = await callTool('test::echo', { bytes: new Uint8Array([1, 2, 3]) }); return { isBytes: bytes instanceof Uint8Array, values: Array.from(bytes) }; }"
         })
     )
     .expect("write start");
@@ -398,7 +398,7 @@ fn code_mode_runner_round_trips_date_typed_array_and_array_buffer() {
     // Args carry a Date, an Int16Array([256, -1]), and an ArrayBuffer.
     let code = r#"async () => {
         const buf = new Uint8Array([9, 8, 7]).buffer;
-        const echoed = await callTool('upstream::test::echo', {
+        const echoed = await callTool('test::echo', {
           when: new Date(0),
           ints: new Int16Array([256, -1]),
           raw: buf
@@ -575,7 +575,7 @@ fn code_mode_runner_done_carries_return_value() {
 
     // The function fetches one tool result and returns it directly.
     let code = r#"async () => {
-        const result = await callTool("upstream::test::ping", {"msg": "hello"});
+        const result = await callTool("test::ping", {"msg": "hello"});
         return result;
     }"#;
 
@@ -586,7 +586,7 @@ fn code_mode_runner_done_carries_return_value() {
         json!({
             "type": "tool_call",
             "seq": 0,
-            "id": "upstream::test::ping",
+            "id": "test::ping",
             "params": {"msg": "hello"}
         })
     );
@@ -631,7 +631,7 @@ fn code_mode_runner_tool_error_produces_json_encoded_error() {
     // the function itself will error, causing Done to never appear.
     let code = r#"async () => {
         try {
-            await callTool("upstream::test::fail", {});
+            await callTool("test::fail", {});
         } catch (e) {
             const parsed = JSON.parse(String(e.message));
             return {caught: true, kind: parsed.kind, msg: parsed.message};
@@ -645,7 +645,7 @@ fn code_mode_runner_tool_error_produces_json_encoded_error() {
         json!({
             "type": "tool_call",
             "seq": 0,
-            "id": "upstream::test::fail",
+            "id": "test::fail",
             "params": {}
         })
     );
@@ -691,8 +691,8 @@ fn code_mode_runner_tool_error_does_not_abort_fan_out() {
 
     let code = r#"async () => {
         const settled = await Promise.allSettled([
-          callTool("upstream::test::fail", {}),
-          callTool("upstream::test::ok", {})
+          callTool("test::fail", {}),
+          callTool("test::ok", {})
         ]);
         return settled.map(s => {
           if (s.status === "rejected") {
@@ -789,7 +789,7 @@ fn assert_single_call_round_trip(code: &str, expected_result: Value) {
 /// named function before being piped to the runner, exactly as the broker does.
 #[test]
 fn normalized_function_main_form_executes_end_to_end() {
-    let body = "async function main() { return await callTool(\"upstream::test::ping\", {}); }";
+    let body = "async function main() { return await callTool(\"test::ping\", {}); }";
     let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);
     // Guard: normalize must produce a wrapper that invokes the named function,
     // otherwise this test would be vacuous (the raw form happens to wrap too).
@@ -801,7 +801,7 @@ fn normalized_function_main_form_executes_end_to_end() {
 }
 
 /// lab-12fm5: the runtime `codemode.*` proxy travels through the Start protocol
-/// and routes `codemode.demo.ping(...)` to `callTool("upstream::demo::ping", ...)`
+/// and routes `codemode.demo.ping(...)` to `callTool("demo::ping", ...)`
 /// end-to-end. The proxy here is the exact shape `generate_js_proxy` emits.
 /// Non-vacuous: with no proxy, `codemode` is undefined and the code would throw.
 #[test]
@@ -822,7 +822,7 @@ fn codemode_proxy_routes_through_call_tool() {
     // codemode["demo"] = { ping: function(p) { return callTool(...); } };).
     let proxy = "var codemode = {};\n\
         codemode[\"demo\"] = {\n\
-          \"ping\": function(p) { return callTool(\"upstream::demo::ping\", p == null ? {} : p); }\n\
+          \"ping\": function(p) { return callTool(\"demo::ping\", p == null ? {} : p); }\n\
         };\n";
     // Guard the in-sandbox `codemode` type, then route through the proxy.
     let code = "async () => { \
@@ -844,7 +844,7 @@ fn codemode_proxy_routes_through_call_tool() {
         "expected a tool_call, got: {call}"
     );
     assert_eq!(
-        call["id"], "upstream::demo::ping",
+        call["id"], "demo::ping",
         "proxy must route to the dotted upstream tool id"
     );
     assert_eq!(call["params"], json!({"x": 1}), "proxy must forward params");
@@ -873,8 +873,7 @@ fn codemode_proxy_routes_through_call_tool() {
 /// normalize now emits an async wrapper that invokes the exported function.
 #[test]
 fn normalized_export_default_form_executes_end_to_end() {
-    let body =
-        "export default async function() { return await callTool(\"upstream::test::ping\", {}); }";
+    let body = "export default async function() { return await callTool(\"test::ping\", {}); }";
     let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);
     assert!(
         normalized.starts_with("async () =>")
@@ -894,7 +893,7 @@ fn normalized_export_default_form_executes_end_to_end() {
 /// tool_call would fire (the round-trip helper would fail waiting for one).
 #[test]
 fn normalized_export_default_arrow_with_prologue_executes_end_to_end() {
-    let body = "const tool = \"upstream::test::ping\";\n\
+    let body = "const tool = \"test::ping\";\n\
                 export default async () => await callTool(tool, {});";
     let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);
     assert!(
@@ -913,7 +912,7 @@ fn normalized_export_default_arrow_with_prologue_executes_end_to_end() {
 /// `tool` undefined and emit no tool_call.
 #[test]
 fn normalized_export_default_plain_arrow_with_prologue_executes_end_to_end() {
-    let body = "const tool = \"upstream::test::ping\";\n\
+    let body = "const tool = \"test::ping\";\n\
                 export default () => callTool(tool, {});";
     let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);
     assert!(
@@ -931,7 +930,7 @@ fn normalized_export_default_plain_arrow_with_prologue_executes_end_to_end() {
 /// references the prologue `const tool`.
 #[test]
 fn normalized_export_default_function_with_prologue_executes_end_to_end() {
-    let body = "const tool = \"upstream::test::ping\";\n\
+    let body = "const tool = \"test::ping\";\n\
                 export default async function() { return await callTool(tool, {}); }";
     let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);
     assert!(
@@ -950,7 +949,7 @@ fn normalized_export_default_function_with_prologue_executes_end_to_end() {
 /// tool_call.
 #[test]
 fn normalized_async_arrow_default_with_named_export_executes_end_to_end() {
-    let body = "export const tool = \"upstream::test::ping\";\n\
+    let body = "export const tool = \"test::ping\";\n\
                 export default async () => await callTool(tool, {});";
     let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);
     assert!(
@@ -968,7 +967,7 @@ fn normalized_async_arrow_default_with_named_export_executes_end_to_end() {
 /// `tool` undefined, so no tool_call fires.
 #[test]
 fn normalized_export_default_multi_statement_prologue_executes_end_to_end() {
-    let body = "function mk() { return \"upstream::test::ping\"; }\n\
+    let body = "function mk() { return \"test::ping\"; }\n\
                 const tool = mk();\n\
                 export default () => callTool(tool, {});";
     let normalized = labby::dispatch::gateway::code_mode::normalize_user_code(body);

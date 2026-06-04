@@ -134,25 +134,15 @@
 # Override with LAB_LOCAL_LOGS_SUBSCRIBER_CAPACITY env var.
 # subscriber_capacity = 256              # default: 256
 
-# ── Gateway Tool Search ──────────────────────────────────────────────────────
-
-[tool_search]
-# Tool Search mode: hides raw upstream tools; advertises only `search` + `execute`.
-# MUTUALLY EXCLUSIVE with code_mode — dual-enabled is rejected at startup with
-# an ERROR log. Fix your config so only one is enabled.
-# enabled = false                           # default: false
-# top_k_default = 10                        # valid range: 1..=50
-# max_tools = 5000                          # valid range: 1..=10000
-
-# ── Gateway Code Mode ────────────────────────────────────────────────────────
+# ── Gateway Code Mode ──────────────────────────────────────────────────────
 
 [code_mode]
 # Execution limits for the gateway `search`/`execute` Code Mode sandbox.
+# enabled = false                         # default: false; advertises `search` + `execute`
 # `search` runs a JS arrow function over the upstream tool catalog; `execute`
 # runs a JS arrow function with `callTool(id, params)` and a typed
 # `codemode.<upstream>.<tool>(params)` runtime namespace generated from the
 # connected servers' inputSchemas. These knobs bound one `execute` run.
-# enabled = false                           # default: false
 # timeout_ms = 30000                        # valid range: 1..=60000  (wall-clock budget)
 # max_tool_calls = 1000                     # valid range: 1..=10000  (safety ceiling; timeout is the real bound)
 # max_response_bytes = 24576                # valid range: 1024..=1048576

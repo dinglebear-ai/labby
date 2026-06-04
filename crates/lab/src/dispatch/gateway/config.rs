@@ -17,7 +17,6 @@ pub fn load_gateway_config(path: &Path) -> Result<LabConfig, ToolError> {
                 sdk_kind: "internal_error".to_string(),
                 message: format!("failed to parse {}: {e}", path.display()),
             })?;
-            cfg.normalize_legacy_tool_search(crate::config::root_tool_search_present(&raw));
             cfg.normalize_protected_mcp_routes()
                 .map_err(|e| ToolError::Sdk {
                     sdk_kind: "internal_error".to_string(),
@@ -49,7 +48,7 @@ const KNOWN_LAB_CONFIG_KEYS: &[&str] = &[
     "admin",
     "services",
     "auth",
-    "tool_search",
+    "code_mode",
     "upstream",
     "upstream_import_tombstones",
     "protected_mcp_routes",
@@ -231,11 +230,11 @@ pub fn update_upstream(
     if let Some(oauth) = patch.oauth {
         cfg.upstream[index].oauth = oauth;
     }
-    if patch.tool_search.is_some() {
+    if patch.code_mode.is_some() {
         return Err(ToolError::InvalidParam {
-            message: "tool_search config is gateway-wide; use gateway.tool_search.set instead of gateway.update"
+            message: "code_mode config is gateway-wide; use gateway.code_mode.set instead of gateway.update"
                 .to_string(),
-            param: "tool_search".to_string(),
+            param: "code_mode".to_string(),
         });
     }
 
@@ -453,7 +452,6 @@ pub fn validate_protected_mcp_routes(routes: &[ProtectedMcpRouteConfig]) -> Resu
 }
 
 fn validate_config(cfg: &LabConfig) -> Result<(), ToolError> {
-    validate_tool_search(&cfg.tool_search)?;
     validate_code_mode(&cfg.code_mode)?;
     validate_upstreams(&cfg.upstream)?;
     validate_protected_mcp_routes(&cfg.protected_mcp_routes)
@@ -464,27 +462,6 @@ fn normalize_config(cfg: &mut LabConfig) -> Result<(), ToolError> {
         normalize_protected_mcp_route(route)?;
     }
     Ok(())
-}
-
-pub fn validate_tool_search(
-    tool_search: &crate::config::ToolSearchConfig,
-) -> Result<(), ToolError> {
-    tool_search.validate().map_err(|e| match e {
-        crate::config::ConfigError::InvalidToolSearchTopKDefault { .. } => {
-            ToolError::InvalidParam {
-                message: e.to_string(),
-                param: "tool_search.top_k_default".to_string(),
-            }
-        }
-        crate::config::ConfigError::InvalidToolSearchMaxTools { .. } => ToolError::InvalidParam {
-            message: e.to_string(),
-            param: "tool_search.max_tools".to_string(),
-        },
-        _ => ToolError::InvalidParam {
-            message: e.to_string(),
-            param: "tool_search".to_string(),
-        },
-    })
 }
 
 pub fn validate_code_mode(code_mode: &crate::config::CodeModeConfig) -> Result<(), ToolError> {
@@ -953,7 +930,6 @@ mod tests {
                     oauth: None,
                     imported_from: None,
                     priority: 1.0,
-                    tool_search: crate::config::ToolSearchConfig::default(),
                 },
                 UpstreamConfig {
                     enabled: true,
@@ -971,7 +947,6 @@ mod tests {
                     oauth: None,
                     imported_from: None,
                     priority: 1.0,
-                    tool_search: crate::config::ToolSearchConfig::default(),
                 },
             ],
             ..LabConfig::default()
@@ -1096,7 +1071,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect("insert");
@@ -1130,7 +1104,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect("insert");
@@ -1340,7 +1313,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: Some(source),
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect("insert");
@@ -1384,7 +1356,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: Some(source),
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect("insert");
@@ -1426,7 +1397,6 @@ url = "https://old.example.com/mcp"
                     .with_server_name("c"),
                 ),
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect("insert");
@@ -1540,7 +1510,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect_err("duplicate should fail");
@@ -1569,7 +1538,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             }],
             ..LabConfig::default()
         };
@@ -1599,7 +1567,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             }],
             ..LabConfig::default()
         };
@@ -1628,7 +1595,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect_err("invalid scheme");
@@ -1656,7 +1622,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect_err("bind-all should be rejected");
@@ -1684,7 +1649,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect_err("raw bearer token should be rejected");
@@ -1713,7 +1677,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect_err("name over 128 chars should be rejected");
@@ -1741,7 +1704,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect_err("control char in name should be rejected");
@@ -1770,7 +1732,6 @@ url = "https://old.example.com/mcp"
                 oauth: None,
                 imported_from: None,
                 priority: 1.0,
-                tool_search: crate::config::ToolSearchConfig::default(),
             },
         )
         .expect_err("bidi override in name should be rejected");
@@ -1802,7 +1763,6 @@ url = "https://old.example.com/mcp"
                     oauth: None,
                     imported_from: None,
                     priority: 1.0,
-                    tool_search: crate::config::ToolSearchConfig::default(),
                 },
             )
             .unwrap_or_else(|e| panic!("valid name '{name}' should be accepted: {e}"));

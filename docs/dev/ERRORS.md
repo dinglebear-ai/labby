@@ -56,7 +56,7 @@ Dispatch layers may add the following kinds on top of SDK errors:
 - `unknown_instance`
 - `conflict` — resource already exists with the given identifier; HTTP 409
 - `ambiguous_tool` — unqualified tool name resolved to multiple upstream gateway candidates; envelope carries `valid: Vec<String>` of fully-qualified `{upstream}::{tool}` names the caller must choose from, plus a `hint` explaining that callers may either pass `name = "{upstream}::{tool}"` or set `upstream` separately. HTTP 409.
-- `invalid_code_mode_id` — Code Mode tool id parsing failed. Valid ids are `upstream::<upstream-name>::<tool-name>` only; Lab actions use `tool_execute`/`invoke`. HTTP 422.
+- `invalid_code_mode_id` — Code Mode tool id parsing failed. Valid ids are `<upstream-name>::<tool-name>` only; Lab actions use `tool_execute`/`invoke`. HTTP 422.
 - `tool_call_limit_exceeded` — a Code Mode snippet attempted more host-brokered tool calls than `max_tool_calls` allows. HTTP 429.
 
 > Note: `code_mode_disabled` and `code_execution_failed` are removed from the contract.

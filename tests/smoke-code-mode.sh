@@ -36,7 +36,7 @@ declare -a CASES=(
   # Uses context7 resolve-library-id (available in the pool without OAuth).
   # The raw callTool path bypasses the snake_case preamble — tests broker wiring.
   # Assert 'context7.com' which appears in both success and quota-exceeded responses.
-  "code|--args '{\"code\":\"return await callTool(\\\"upstream::context7::resolve-library-id\\\", {libraryName: \\\"react\\\", query: \\\"react hooks\\\"})\"}' |contains: context7.com"
+  "code|--args '{\"code\":\"return await callTool(\\\"context7::resolve-library-id\\\", {libraryName: \\\"react\\\", query: \\\"react hooks\\\"})\"}' |contains: context7.com"
 
   # Case 3: codemode proxy — validates the property-key quoting fix.
   # 'resolve-library-id' → resolve_library_id via tool_name_to_snake + serde_json::to_string.

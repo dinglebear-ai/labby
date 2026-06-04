@@ -35,41 +35,8 @@ pub const ACTIONS: &[ActionSpec] = &[
         params: &[],
     },
     ActionSpec {
-        name: "gateway.tool_search.get",
-        description: "Read the gateway-wide tool_search settings",
-        destructive: false,
-        returns: "ToolSearchConfig",
-        params: &[],
-    },
-    ActionSpec {
-        name: "gateway.tool_search.set",
-        description: "Enable or disable gateway-wide tool_search/tool_execute mode for all exposed upstream tools",
-        destructive: true,
-        returns: "ToolSearchConfig",
-        params: &[
-            ParamSpec {
-                name: "enabled",
-                ty: "boolean",
-                required: true,
-                description: "Whether tool_search/tool_execute mode is enabled for the gateway",
-            },
-            ParamSpec {
-                name: "top_k_default",
-                ty: "integer",
-                required: false,
-                description: "Default result count for tool_search when top_k is omitted",
-            },
-            ParamSpec {
-                name: "max_tools",
-                ty: "integer",
-                required: false,
-                description: "Maximum number of tools to index per rebuild",
-            },
-        ],
-    },
-    ActionSpec {
         name: "gateway.code_mode.get",
-        description: "Read gateway-wide Code Mode execution settings",
+        description: "Read gateway-wide Code Mode exposure and execution settings",
         destructive: false,
         returns: "CodeModeConfig",
         params: &[],
@@ -80,6 +47,12 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: true,
         returns: "CodeModeConfig",
         params: &[
+            ParamSpec {
+                name: "enabled",
+                ty: "boolean",
+                required: false,
+                description: "Whether the gateway advertises Code Mode search and execute tools",
+            },
             ParamSpec {
                 name: "timeout_ms",
                 ty: "integer",
@@ -808,7 +781,7 @@ mod tests {
     fn gateway_read_actions_remain_non_destructive() {
         for action in [
             "gateway.list",
-            "gateway.tool_search.get",
+            "gateway.code_mode.get",
             "gateway.get",
             "gateway.status",
             "gateway.virtual_server.quarantine.list",
@@ -828,17 +801,17 @@ mod tests {
     }
 
     #[test]
-    fn gateway_tool_search_actions_are_primary_catalog_entries() {
+    fn gateway_code_mode_actions_are_primary_catalog_entries() {
         let get = ACTIONS
             .iter()
-            .find(|spec| spec.name == "gateway.tool_search.get")
-            .expect("gateway.tool_search.get catalog entry");
+            .find(|spec| spec.name == "gateway.code_mode.get")
+            .expect("gateway.code_mode.get catalog entry");
         assert!(!get.destructive);
 
         let set = ACTIONS
             .iter()
-            .find(|spec| spec.name == "gateway.tool_search.set")
-            .expect("gateway.tool_search.set catalog entry");
+            .find(|spec| spec.name == "gateway.code_mode.set")
+            .expect("gateway.code_mode.set catalog entry");
         assert!(set.destructive);
     }
 

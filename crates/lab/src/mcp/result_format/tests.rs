@@ -33,8 +33,8 @@ fn estimate_tokens_args_handles_empty_and_populated_maps() {
     assert_eq!(estimate_tokens_args(&empty), 1);
 
     let mut populated = serde_json::Map::new();
-    populated.insert("name".into(), Value::String("tool_search".into()));
-    // `{"name":"tool_search"}` is 22 chars → 6 tokens.
+    populated.insert("name".into(), Value::String("code_mode".into()));
+    // `{"name":"code_mode"}` is 22 chars → 6 tokens.
     assert_eq!(estimate_tokens_args(&populated), 6);
 }
 

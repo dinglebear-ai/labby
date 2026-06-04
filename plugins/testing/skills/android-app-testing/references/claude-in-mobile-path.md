@@ -24,7 +24,7 @@ Reached as upstream `claude-in-mobile` on the Lab gateway. Action-routed meta-to
 Through the Lab gateway. In a Code Mode session:
 ```js
 // mcp__plugin_lab_lab__execute
-async () => callTool("upstream::claude-in-mobile::device", { action: "list", platform: "android" })
+async () => callTool("claude-in-mobile::device", { action: "list", platform: "android" })
 ```
 (Outside Code Mode the same upstream may appear as direct `mcp__claude-in-mobile__*` tools.)
 

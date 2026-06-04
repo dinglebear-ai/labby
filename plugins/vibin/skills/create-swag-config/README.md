@@ -36,5 +36,5 @@ CHANGELOG.md                      — version history
 ## Related skills
 
 - `homelab-map` — for the broader squirts/dookie/tootie host inventory
-- `mcp-gateway-tools` — generic mechanics if you reach swag-mcp through the Lab gateway's `tool_search` / `tool_execute` pair instead of the direct registration
+- `mcp-gateway-tools` — generic mechanics if you reach swag-mcp through the Lab gateway's `code_mode` / `tool_execute` pair instead of the direct registration
 - `create-swag-config` does **not** overlap with `lab:lab-service-onboarding` (which adds Python services to the `lab` codebase) — different layer of the stack

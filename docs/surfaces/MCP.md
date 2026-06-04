@@ -434,6 +434,6 @@ Primary resource surfaces:
 - `lab://gateway/<name>/schema` — synthetic per-upstream tool catalog
   (name, description, input_schema, meta), filtered by the upstream's
   `ToolExposurePolicy`. Lets agents inspect a server's full schema in
-  one read without paying a `tool_search` round-trip.
+  one read without paying a `code_mode` round-trip.
 
 These are generated from the same catalog data as tool-based help, with upstream resources appended at runtime.

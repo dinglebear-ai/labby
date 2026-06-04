@@ -22,7 +22,7 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
 - `deploy` sets the MCP elicitation context before calling shared deploy dispatch.
 - `fs` filters `fs.preview` out of MCP discovery and execution.
 - `nodes` owns MCP-only enrollment actions.
-- `tool_search` and `tool_execute` are registered directly in `mcp/server.rs` as
+- `code_mode` and `tool_execute` are registered directly in `mcp/server.rs` as
   gateway meta-tools and bypass both `dispatch/` and `mcp/services/`.
   They expose the upstream MCP proxy surface to clients. Parameter
   shapes (`query`/`top_k`/`include_schema`; `name`/`arguments`) are
@@ -31,7 +31,7 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
   `dispatch/gateway/manager.rs`, called directly. No CLI or HTTP
   equivalent is planned. The rejection guard test in
   `dispatch/gateway/dispatch.rs` enforces the non-dispatch boundary. Do
-  not add `dispatch/gateway-tool-search/` unless a second surface consumer is
+  not add `dispatch/gateway-code-mode/` unless a second surface consumer is
   confirmed.
 - `code_search` and `code_execute` are registered directly in
   `mcp/server.rs` as gateway Code Mode meta-tools. MCP owns

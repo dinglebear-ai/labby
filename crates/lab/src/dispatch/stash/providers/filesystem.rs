@@ -105,8 +105,9 @@ impl StashProvider for FilesystemProvider {
             return Ok(None);
         }
 
-        // Collect remote revision IDs (directory names).
-        let remote_ids = list_subdirectory_names(&remote_dir)?;
+        // Collect valid remote revision IDs (directory names). Ignore stray
+        // directories so an arbitrary name cannot become "latest".
+        let remote_ids = list_valid_revision_directory_names(&remote_dir)?;
         if remote_ids.is_empty() {
             return Ok(None);
         }
@@ -160,7 +161,7 @@ impl StashProvider for FilesystemProvider {
         if !dir.exists() {
             return Ok(Vec::new());
         }
-        list_subdirectory_names(&dir)
+        list_valid_revision_directory_names(&dir)
     }
 }
 
@@ -244,4 +245,37 @@ fn list_subdirectory_names(dir: &Path) -> Result<Vec<String>, ToolError> {
         }
     }
     Ok(names)
+}
+
+fn list_valid_revision_directory_names(dir: &Path) -> Result<Vec<String>, ToolError> {
+    let mut names: Vec<String> = list_subdirectory_names(dir)?
+        .into_iter()
+        .filter(|name| is_valid_revision_id(name))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+fn is_valid_revision_id(name: &str) -> bool {
+    name.parse::<ulid::Ulid>().is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn list_valid_revision_directory_names_ignores_stray_dirs() {
+        let dir = tempdir().unwrap();
+        let valid_old = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let valid_new = "01BRZ3NDEKTSV4RRFFQ69G5FAV";
+        for name in [valid_new, "zzzz-not-a-ulid", "notes", valid_old] {
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+        }
+        std::fs::write(dir.path().join("01CRZ3NDEKTSV4RRFFQ69G5FAV"), b"not dir").unwrap();
+
+        let names = list_valid_revision_directory_names(dir.path()).unwrap();
+        assert_eq!(names, vec![valid_old.to_string(), valid_new.to_string()]);
+    }
 }

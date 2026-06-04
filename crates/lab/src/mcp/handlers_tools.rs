@@ -18,7 +18,7 @@ use rmcp::service::RequestContext;
 use serde_json::Value;
 
 use crate::mcp::call_tool_codemode::CODE_EXECUTE_DESCRIPTION;
-use crate::mcp::catalog::{TOOL_EXECUTE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME};
+use crate::mcp::catalog::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
 use crate::mcp::completion::action_schema;
 use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_for_request};
 use crate::mcp::logging::DispatchLogOutcome;
@@ -46,9 +46,9 @@ impl LabMcpServer {
         let mut subject_scoped_tool_count = 0usize;
         let mut gateway_tool_count = 0usize;
         let mut suppressed_builtin_tool_count = 0usize;
-        let visibility = self.tool_search_visibility().await;
-        let manager_tool_search_enabled = visibility.exposes_synthetic_tools();
-        let process_tool_search_enabled = crate::config::process_tool_search_enabled();
+        let visibility = self.code_mode_visibility().await;
+        let manager_code_mode_enabled = visibility.exposes_synthetic_tools();
+        let process_code_mode_enabled = crate::config::process_code_mode_enabled();
         let hide_raw_tools = visibility.hides_raw_tools();
         let visibility_mode = visibility.mode_label();
         for svc in self.registry.services() {
@@ -76,7 +76,7 @@ impl LabMcpServer {
                             name, description, schema, output_schema, signature, and dts. Return JSON-serializable results. \
                             Examples: \
                             `async () => tools.filter(t => /container.*log/i.test(t.description)).map(t => ({id:t.id, signature:t.signature, dts:t.dts}))`; \
-                            `async () => tools.find(t => t.id === \"upstream::github::search_issues\")`; \
+                            `async () => tools.find(t => t.id === \"github::search_issues\")`; \
                             `async () => tools.filter(t => t.upstream === \"github\").slice(0, 20)`."
                     }
                 },
@@ -86,7 +86,7 @@ impl LabMcpServer {
                 _ => unreachable!("search schema must be an object"),
             };
             tools.push(Tool::new(
-                TOOL_SEARCH_TOOL_NAME,
+                CODE_MODE_SEARCH_TOOL_NAME,
                 "Filter the upstream MCP tool catalog with JavaScript. Write an async arrow function \
                 that filters `const tools = [...]` (each entry: id, upstream, name, description, schema, output_schema, signature, dts) \
                 and returns what you need. Use before execute() to discover the right tool id.",
@@ -108,7 +108,7 @@ impl LabMcpServer {
                     "tools": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional tool allowlist for this execution. Accepts raw tool names or upstream::<name>::<tool> ids."
+                        "description": "Optional tool allowlist for this execution. Accepts raw tool names or <name>::<tool> ids."
                     }
                 },
                 "required": ["code"]
@@ -193,8 +193,8 @@ impl LabMcpServer {
             upstream_tool_count,
             subject_scoped_tool_count,
             suppressed_builtin_tool_count,
-            manager_tool_search_enabled,
-            process_tool_search_enabled,
+            manager_code_mode_enabled,
+            process_code_mode_enabled,
             hide_raw_tools,
             visibility_mode,
             total_tool_count = tools.len(),

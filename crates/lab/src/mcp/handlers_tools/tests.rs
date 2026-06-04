@@ -78,7 +78,7 @@ fn completion_test_registry() -> ToolRegistry {
 }
 
 #[tokio::test]
-async fn snapshot_catalog_hides_builtin_tools_when_tool_search_is_enabled() {
+async fn snapshot_catalog_hides_builtin_tools_when_code_mode_is_enabled() {
     let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
     let manager = std::sync::Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
         std::path::PathBuf::from("config.toml"),
@@ -86,9 +86,9 @@ async fn snapshot_catalog_hides_builtin_tools_when_tool_search_is_enabled() {
     ));
     manager
         .seed_config(crate::config::LabConfig {
-            tool_search: crate::config::ToolSearchConfig {
+            code_mode: crate::config::CodeModeConfig {
                 enabled: true,
-                ..crate::config::ToolSearchConfig::default()
+                ..crate::config::CodeModeConfig::default()
             },
             ..crate::config::LabConfig::default()
         })
@@ -105,7 +105,7 @@ async fn snapshot_catalog_hides_builtin_tools_when_tool_search_is_enabled() {
 
     let snapshot = server.snapshot_catalog().await;
 
-    // Tool Search mode: exactly `search` + `execute`. NO code_search, code_execute, or code.
+    // Code Mode mode: exactly `search` + `execute`. NO code_search, code_execute, or code.
     assert_eq!(
         snapshot.tools,
         ["execute".to_string(), "search".to_string()]
@@ -114,21 +114,21 @@ async fn snapshot_catalog_hides_builtin_tools_when_tool_search_is_enabled() {
     );
     assert!(
         !snapshot.tools.contains("code_search"),
-        "code_search must not appear in Tool Search mode"
+        "code_search must not appear in Code Mode mode"
     );
     assert!(
         !snapshot.tools.contains("code_execute"),
-        "code_execute must not appear in Tool Search mode"
+        "code_execute must not appear in Code Mode mode"
     );
     assert!(
         !snapshot.tools.contains("code"),
-        "code must not appear in Tool Search mode"
+        "code must not appear in Code Mode mode"
     );
 }
 
 #[tokio::test]
 async fn snapshot_catalog_shows_no_gateway_tools_when_surface_is_disabled() {
-    // When tool_search.enabled=false, none of the gateway meta-tools
+    // When code_mode.enabled=false, none of the gateway meta-tools
     // (search, execute, code, code_search, code_execute) should appear in
     // the snapshot.
     let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
@@ -138,9 +138,9 @@ async fn snapshot_catalog_shows_no_gateway_tools_when_surface_is_disabled() {
     ));
     manager
         .seed_config(crate::config::LabConfig {
-            tool_search: crate::config::ToolSearchConfig {
+            code_mode: crate::config::CodeModeConfig {
                 enabled: false,
-                ..crate::config::ToolSearchConfig::default()
+                ..crate::config::CodeModeConfig::default()
             },
             ..crate::config::LabConfig::default()
         })

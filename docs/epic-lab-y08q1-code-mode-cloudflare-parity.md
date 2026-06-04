@@ -59,14 +59,14 @@ One `code` tool. Typed TypeScript catalog injected into every execution. Model r
 - Per-subaction gating inside the code tool handler — NOT at tool boundary
 
 ### Mutual Exclusion (complete)
-- `gateway_code_mode_enabled()` delegation bug fixed (was calling `tool_search_enabled()`)
+- `gateway_code_mode_enabled()` delegation bug fixed (was calling `code_mode_enabled()`)
 - `validate_mode_exclusive()` shared helper in `dispatch/gateway/config.rs`
 - Enforcement in `LabConfig::validate()` + `validate_config()` + inside `config_mutation.lock()`
-- Startup conflict behavior: tool_search wins, ERROR log
+- Startup conflict behavior: code_mode wins, ERROR log
 - `ConfigError::DualModeConflict` variant
 
 ### Tool Rename (Cloudflare naming)
-- `tool_search` → `search`, `tool_execute` → `execute`
+- `code_mode` → `search`, `tool_execute` → `execute`
 - Legacy aliases hidden from `list_tools` with `tracing::warn!`
 - Scope guards on all alias arms
 
@@ -113,7 +113,7 @@ One `code` tool. Typed TypeScript catalog injected into every execution. Model r
 
 | Finding | Severity | Resolution |
 |---------|----------|------------|
-| `gateway_code_mode_enabled()` calls `tool_search_enabled()` — STOP CONDITION | CRITICAL | Fixed in Bead 1 |
+| `gateway_code_mode_enabled()` calls `code_mode_enabled()` — STOP CONDITION | CRITICAL | Fixed in Bead 1 |
 | Error rejection produces plain string not JSON — breaks contract error recovery | CRITICAL | Fixed in Bead 1 |
 | `CodeModeExecutionResponse` missing `result` and `logs` fields | CRITICAL | Fixed in Bead 1 |
 | `codemode` namespace not registered in either sandbox — `ReferenceError` | CRITICAL | Fixed in Bead 3 |
@@ -185,7 +185,7 @@ graph LR
 ### What (fixed four blocking issues)
 
 **1. gateway_code_mode_enabled() delegation bug (STOP CONDITION)**  
-`mcp/catalog.rs:65-69`: called `manager.tool_search_enabled()` instead of reading `cfg.code_mode.enabled`. Code Mode tool never appeared in catalog even when enabled. Fixed: reads `manager.code_mode_enabled()`.
+`mcp/catalog.rs:65-69`: called `manager.code_mode_enabled()` instead of reading `cfg.code_mode.enabled`. Code Mode tool never appeared in catalog even when enabled. Fixed: reads `manager.code_mode_enabled()`.
 
 **2. JSON error format bug**  
 `code_mode.rs:~1336`: sandbox error rejection produced plain string `"kind: message"`. Contract specifies `JSON.parse(e.message)` to parse a `CodeModeError` object. Both Boa and Javy paths now reject with `serde_json::to_string()` on a `{"kind":"...","message":"..."}` struct.
@@ -355,26 +355,26 @@ Complete mutual exclusion enforcement, rename MCP tools to Cloudflare-parity nam
 set_code_mode_config(incoming_enabled):
   1. Acquire config_mutation.lock()
   2. READ current cfg state from inside the lock
-  3. Call validate_mode_exclusive(tool_search_currently_enabled, incoming_enabled)
+  3. Call validate_mode_exclusive(code_mode_currently_enabled, incoming_enabled)
   4. If Err → release lock, return DualModeConflict
   5. If Ok → write new config, release lock
 ```
 
-**Startup conflict:** tool_search wins, `code_mode` silently disabled, `tracing::error!` emitted.
+**Startup conflict:** code_mode wins, `code_mode` silently disabled, `tracing::error!` emitted.
 
 **`ConfigError::DualModeConflict`:**
 ```rust
 DualModeConflict {
-    message: &'static str, // "tool_search and code_mode cannot both be enabled."
+    message: &'static str, // "code_mode and code_mode cannot both be enabled."
 }
 ```
 
 ### Tool Rename
 - Primary names: `GATEWAY_CODE_SEARCH_TOOL_NAME = "search"`, `GATEWAY_CODE_EXECUTE_TOOL_NAME = "execute"`
-- Legacy aliases: `"tool_search"`, `"tool_execute"` — still functional, hidden from `list_tools`, emit `tracing::warn!`
+- Legacy aliases: `"code_mode"`, `"tool_execute"` — still functional, hidden from `list_tools`, emit `tracing::warn!`
 
 ### `PROCESS_CODE_MODE_ENABLED` AtomicBool
-Mirrors `PROCESS_TOOL_SEARCH_ENABLED` pattern at `config.rs:34`. Updated whenever `code_mode` config changes.
+Mirrors `PROCESS_CODE_MODE_ENABLED` pattern at `config.rs:34`. Updated whenever `code_mode` config changes.
 
 ### Per-Caller Subject Attribution (MEDIUM security)
 - `CodeModeCaller::Scoped { sub: Option<String>, can_execute: bool }` — added `sub` field
@@ -386,7 +386,7 @@ Mirrors `PROCESS_TOOL_SEARCH_ENABLED` pattern at `config.rs:34`. Updated wheneve
 ### Files Changed
 - `crates/lab/src/config.rs` — `PROCESS_CODE_MODE_ENABLED` AtomicBool, `ConfigError::DualModeConflict`, `LabConfig::validate()` call
 - `crates/lab/src/dispatch/gateway/config.rs` — `validate_mode_exclusive()` helper, dual-mode check at load time
-- `crates/lab/src/dispatch/gateway/manager.rs` — TOCTOU fix in `set_tool_search_config()` and `set_code_mode_config()`
+- `crates/lab/src/dispatch/gateway/manager.rs` — TOCTOU fix in `set_code_mode_config()` and `set_code_mode_config()`
 - `crates/lab/src/dispatch/gateway/code_mode.rs` — `CodeModeCaller::Scoped` sub field, `oauth_subject()` update
 - `crates/lab/src/mcp/catalog.rs` — tool name constants rename, legacy alias constants
 - `crates/lab/src/mcp/server.rs` — legacy alias handler arms with `tracing::warn!`, hidden from `list_tools`
@@ -489,7 +489,7 @@ tracing::info!(
     "gateway mode changed"
 );
 ```
-Fields: `mode` (tool_search | code_mode), `enabled` (new state), `previous` (old state).
+Fields: `mode` (code_mode | code_mode), `enabled` (new state), `previous` (old state).
 
 ### Per-Execution Metrics — From CodeModeBroker Boundary
 ```rust
@@ -523,7 +523,7 @@ Three transforms only (mirrors Cloudflare's `normalize.ts`):
 ### Files Changed
 - `crates/lab/src/dispatch/gateway/code_mode.rs` — `normalize_user_code()`, catalog truncation warn, `LAB_ACTION_UNKNOWN_TOOL_HINT` fix
 - `crates/lab/src/dispatch/gateway/manager.rs` — mode-change tracing events
-- `apps/gateway-admin/components/gateway/tool-search-toggle.tsx` — handleToggle guard, SWR mutate
+- `apps/gateway-admin/components/gateway/code-mode-toggle.tsx` — handleToggle guard, SWR mutate
 - `docs/services/GATEWAY.md` — mutual exclusion docs, tool name updates
 - `config/config.example.toml` — mutual exclusion comments
 - `docs/specs/CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` — fuel references, limits, tool names, preamble delivery
@@ -549,11 +549,11 @@ Comprehensive test coverage for every feature. All tests include INVERSE asserti
 - `test_mode_both_off` — neither "search" nor "execute" nor "code" in list_tools
 
 **Regression tests:**
-- `test_gateway_code_mode_enabled_reads_code_mode_config_not_tool_search`
+- `test_gateway_code_mode_enabled_reads_code_mode_config_not_code_mode`
 - `test_mutual_exclusion_toctou_concurrent_enable`
 
 **Security tests:**
-- `test_code_tool_search_requires_lab_read_scope`
+- `test_code_code_mode_requires_lab_read_scope`
 - `test_code_tool_execute_requires_lab_scope`
 - `test_lab_read_catalog_excludes_destructive_tools`
 - `test_scope_tier_in_preamble_cache_key`
@@ -578,9 +578,9 @@ Comprehensive test coverage for every feature. All tests include INVERSE asserti
 - `test_preamble_cache_miss_on_changed_catalog_hash`
 
 **Other:**
-- `test_legacy_tool_search_alias_hidden_from_list_tools`
+- `test_legacy_code_mode_alias_hidden_from_list_tools`
 - `test_tool_call_result_truncation_sentinel`
-- `test_startup_dual_mode_conflict_tool_search_wins`
+- `test_startup_dual_mode_conflict_code_mode_wins`
 - `test_sandbox_error_rejection_is_json`
 - `test_process_group_cleanup_kills_grandchildren` (`#[cfg(unix)]`)
 - `test_cold_instance_lab_read_gets_nonempty_catalog`

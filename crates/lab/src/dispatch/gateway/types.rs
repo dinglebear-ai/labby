@@ -51,11 +51,7 @@ pub struct GatewayConfigView {
     #[serde(default)]
     pub expose_prompts: Option<Vec<String>>,
     #[serde(default)]
-    pub tool_search_enabled: bool,
-    #[serde(default = "default_tool_search_top_k_default")]
-    pub tool_search_top_k_default: usize,
-    #[serde(default = "default_tool_search_max_tools")]
-    pub tool_search_max_tools: usize,
+    pub code_mode_enabled: bool,
     /// Set when this server was imported from an external config; absent for manual entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_from: Option<ImportSource>,
@@ -150,14 +146,6 @@ pub struct PendingImportView {
     pub command: Option<String>,
     pub source_client: String,
     pub source_path: String,
-}
-
-fn default_tool_search_top_k_default() -> usize {
-    crate::config::ToolSearchConfig::default().top_k_default
-}
-
-fn default_tool_search_max_tools() -> usize {
-    crate::config::ToolSearchConfig::default().max_tools
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

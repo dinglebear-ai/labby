@@ -14,13 +14,13 @@ fn truncates_code_execute_final_result_when_oversized() {
         result: Some(json!({"payload": "x".repeat(5000)})),
         calls: vec![
             CodeModeExecutedCall {
-                id: "upstream::github::search_issues".to_string(),
+                id: "github::search_issues".to_string(),
                 ok: true,
                 elapsed_ms: 12,
                 error_kind: None,
             },
             CodeModeExecutedCall {
-                id: "upstream::github::list_issues".to_string(),
+                id: "github::list_issues".to_string(),
                 ok: false,
                 elapsed_ms: 7,
                 error_kind: Some("rate_limited".to_string()),
@@ -53,7 +53,7 @@ fn does_not_truncate_when_final_result_within_budget() {
     let response = CodeModeExecutionResponse {
         result: Some(json!({"items": ["small"]})),
         calls: vec![CodeModeExecutedCall {
-            id: "upstream::github::search_issues".to_string(),
+            id: "github::search_issues".to_string(),
             ok: true,
             elapsed_ms: 3,
             error_kind: None,
@@ -73,7 +73,7 @@ fn truncates_oversized_logs_after_result() {
     let response = CodeModeExecutionResponse {
         result: Some(json!({"ok": true})),
         calls: vec![CodeModeExecutedCall {
-            id: "upstream::test::ping".to_string(),
+            id: "test::ping".to_string(),
             ok: true,
             elapsed_ms: 2,
             error_kind: None,
@@ -113,7 +113,7 @@ fn log_trimming_terminates_when_budget_unreachable() {
         result: Some(json!({"ok": true})),
         calls: (0..200)
             .map(|i| CodeModeExecutedCall {
-                id: format!("upstream::test::tool_{i}"),
+                id: format!("test::tool_{i}"),
                 ok: true,
                 elapsed_ms: 1,
                 error_kind: None,
@@ -242,7 +242,7 @@ fn token_estimate_divisor_affects_truncation_decision() {
     let make_response = || CodeModeExecutionResponse {
         result: Some(json!({"payload": payload.clone()})),
         calls: vec![CodeModeExecutedCall {
-            id: "upstream::test::large".to_string(),
+            id: "test::large".to_string(),
             ok: true,
             elapsed_ms: 1,
             error_kind: None,

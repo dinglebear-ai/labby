@@ -139,7 +139,7 @@ export function sortToolRows(rows: ToolInventoryRow[]): ToolInventoryRow[] {
   return [...rows].sort((a, b) => a.toolName.localeCompare(b.toolName, undefined, { sensitivity: 'base' }))
 }
 
-export function gatewayMatchesToolSearch(gateway: Gateway, search: string): boolean {
+export function gatewayMatchesCodeModeSearch(gateway: Gateway, search: string): boolean {
   if (!search.trim()) return true
   return gateway.discovery.tools.some((tool) => toolMatchesSearch(tool, gateway, search))
 }
