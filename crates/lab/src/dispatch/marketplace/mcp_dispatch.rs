@@ -35,7 +35,10 @@ pub async fn dispatch_mcp(action: &str, params: Value) -> Result<Value, ToolErro
     // whether the mcpregistry feature is compiled in.
     match action {
         "help" => {
-            return Ok(crate::dispatch::helpers::help_payload("marketplace", MCP_ACTIONS));
+            return Ok(crate::dispatch::helpers::help_payload(
+                "marketplace",
+                MCP_ACTIONS,
+            ));
         }
         "schema" => {
             let a = crate::dispatch::helpers::require_str(&params, "action")?;
@@ -46,7 +49,7 @@ pub async fn dispatch_mcp(action: &str, params: Value) -> Result<Value, ToolErro
     #[cfg(feature = "mcpregistry")]
     {
         let client = mcp_client::require_mcp_client()?;
-        dispatch_mcp_with_client(&client, action, params).await
+        dispatch_mcp_with_client(client, action, params).await
     }
     #[cfg(not(feature = "mcpregistry"))]
     {
@@ -69,7 +72,8 @@ pub async fn dispatch_mcp_with_client(
         "mcp.list" => dispatch_mcp_list(client, &params).await,
         "mcp.get" => {
             let name = mcp_params::require_name(&params)?;
-            to_json(client.get_server(&name, "latest").await?)
+            let version = params["version"].as_str().unwrap_or("latest").to_string();
+            to_json(client.get_server(&name, &version).await?)
         }
         "mcp.versions" => {
             let name = mcp_params::require_name(&params)?;
