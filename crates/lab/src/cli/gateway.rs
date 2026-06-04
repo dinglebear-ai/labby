@@ -143,20 +143,26 @@ pub struct GatewayGetArgs {
 
 #[derive(Debug, Args)]
 pub struct GatewayTestArgs {
+    /// Name of a configured gateway to test (omit to test with inline --url/--command).
     #[arg(long)]
     pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct GatewayAddArgs {
+    /// Unique name for the gateway upstream.
     #[arg(long)]
     pub name: String,
+    /// HTTP(S) URL for a remote MCP server (mutually exclusive with --command).
     #[arg(long)]
     pub url: Option<String>,
+    /// Stdio command to launch for a local MCP server (mutually exclusive with --url).
     #[arg(long)]
     pub command: Option<String>,
+    /// Additional arguments passed to the stdio command (repeat for multiple).
     #[arg(long = "arg")]
     pub args: Vec<String>,
+    /// Environment variable name whose value is used as the upstream bearer token.
     #[arg(long)]
     pub bearer_token_env: Option<String>,
     #[arg(long, default_value_t = false)]
@@ -165,15 +171,21 @@ pub struct GatewayAddArgs {
 
 #[derive(Debug, Args)]
 pub struct GatewayUpdateArgs {
+    /// Name of the gateway upstream to update.
     pub name: String,
+    /// Rename the gateway upstream to this new name.
     #[arg(long)]
     pub new_name: Option<String>,
+    /// New HTTP(S) URL for a remote MCP server.
     #[arg(long)]
     pub url: Option<String>,
+    /// New stdio command for a local MCP server.
     #[arg(long)]
     pub command: Option<String>,
+    /// Replace all command arguments with these values (repeat for multiple).
     #[arg(long = "arg")]
     pub args: Vec<String>,
+    /// Environment variable name whose value is used as the upstream bearer token.
     #[arg(long)]
     pub bearer_token_env: Option<String>,
     #[arg(long)]

@@ -25,7 +25,14 @@ pub struct LogsArgs {
 #[derive(Debug, Subcommand)]
 pub enum LogsCommand {
     /// Search fleet logs for a device from the master control plane.
-    Search { device: String, query: String },
+    Search {
+        /// Device (node) ID to search logs for.
+        #[arg(value_name = "DEVICE")]
+        device: String,
+        /// Query string to search for.
+        #[arg(value_name = "QUERY")]
+        query: String,
+    },
     /// Search or inspect the local-master runtime log store.
     Local(LocalLogsArgs),
     /// Forward this node's syslog to the master log store (peer mode).
@@ -71,10 +78,16 @@ pub enum LocalLogsCommand {
 
 #[derive(Debug, Args, Default)]
 pub struct LocalSearchArgs {
-    #[arg(long)]
+    /// Text to search for in log messages (also accepted as a positional argument).
+    #[arg(long, value_name = "QUERY")]
     pub text: Option<String>,
+    /// Positional query shorthand — equivalent to `--text <QUERY>`.
+    #[arg(value_name = "QUERY", conflicts_with = "text")]
+    pub positional_query: Option<String>,
+    /// Only include events after this Unix timestamp (milliseconds).
     #[arg(long)]
     pub after_ts: Option<i64>,
+    /// Only include events before this Unix timestamp (milliseconds).
     #[arg(long)]
     pub before_ts: Option<i64>,
     #[arg(long = "level")]
@@ -83,24 +96,32 @@ pub struct LocalSearchArgs {
     pub subsystems: Vec<crate::dispatch::logs::types::Subsystem>,
     #[arg(long = "surface")]
     pub surfaces: Vec<crate::dispatch::logs::types::Surface>,
+    /// Filter by dispatch action name.
     #[arg(long)]
     pub action: Option<String>,
+    /// Filter by request ID (x-request-id header).
     #[arg(long)]
     pub request_id: Option<String>,
+    /// Filter by session ID.
     #[arg(long)]
     pub session_id: Option<String>,
+    /// Filter by correlation ID.
     #[arg(long)]
     pub correlation_id: Option<String>,
+    /// Maximum number of results to return.
     #[arg(long)]
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Args, Default)]
 pub struct LocalTailArgs {
+    /// Only include events after this Unix timestamp (milliseconds).
     #[arg(long)]
     pub after_ts: Option<i64>,
+    /// Resume from after this event ID (exclusive).
     #[arg(long)]
     pub since_event_id: Option<String>,
+    /// Maximum number of results to return.
     #[arg(long)]
     pub limit: Option<usize>,
 }
@@ -166,8 +187,10 @@ async fn local_log_system(config: &LabConfig) -> Result<Arc<LogSystem>> {
 }
 
 fn build_search_query(args: LocalSearchArgs) -> LogQuery {
+    // Merge positional shorthand into --text; positional_query conflicts_with text so only one is set.
+    let text = args.text.or(args.positional_query);
     LogQuery {
-        text: args.text,
+        text,
         after_ts: args.after_ts,
         before_ts: args.before_ts,
         levels: args.levels,

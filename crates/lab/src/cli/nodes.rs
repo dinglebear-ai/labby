@@ -18,7 +18,11 @@ pub enum NodesCommand {
     /// List all registered nodes visible from the controller.
     List,
     /// Get details for a specific node by `node_id`.
-    Get { node_id: String },
+    Get {
+        /// Node ID to retrieve.
+        #[arg(value_name = "NODE_ID")]
+        node_id: String,
+    },
     /// Build and roll out the local release binary to selected nodes.
     #[cfg(feature = "deploy")]
     Update(UpdateArgs),
