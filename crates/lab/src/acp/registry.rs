@@ -16,14 +16,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::{Stream, StreamExt, stream};
-use tokio::sync::{Mutex, OnceCell, RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 
 use lab_apis::acp::persistence::AcpPersistence;
 use lab_apis::acp::types::{
     AcpEvent, AcpModelOption, AcpProviderHealth, AcpSessionState, AcpSessionSummary,
 };
 
-use crate::dispatch::acp::params::BulkCloseSelector;
+use crate::acp::params::BulkCloseSelector;
 use crate::dispatch::acp::persistence::SqliteAcpPersistence;
 use crate::dispatch::error::ToolError;
 
@@ -160,9 +160,11 @@ pub struct StartAndPromptResult {
 }
 
 #[derive(Clone)]
-pub struct AcpSessionRegistry {
+pub struct AcpSessionRegistry<P = SqliteAcpPersistence> {
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
-    persistence: Arc<OnceCell<SqliteAcpPersistence>>,
+    /// Injected at construction time; `None` when persistence is disabled or
+    /// unavailable (e.g., in unit tests or when `LAB_ACP_DB` is unset).
+    persistence: Option<Arc<P>>,
     default_cwd: String,
     /// Storm detection: timestamps of recent session creations (sliding window).
     recent_creations: Arc<Mutex<VecDeque<Instant>>>,
@@ -179,7 +181,10 @@ pub struct PromptSessionOptions {
     pub continuity_mode: Option<String>,
 }
 
-impl AcpSessionRegistry {
+impl<P: AcpPersistence> AcpSessionRegistry<P> {
+    /// Construct a registry without persistence (e.g., for tests or builder patterns).
+    /// Call [`AcpSessionRegistry::new_with_persistence`] or
+    /// [`AcpSessionRegistry::<SqliteAcpPersistence>::from_env`] when persistence is needed.
     #[must_use]
     pub fn new() -> Self {
         crate::acp::runtime::warn_if_acp_provider_sandbox_is_incompatible();
@@ -190,7 +195,7 @@ impl AcpSessionRegistry {
         });
         let registry = Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            persistence: Arc::new(OnceCell::new()),
+            persistence: None,
             default_cwd,
             recent_creations: Arc::new(Mutex::new(VecDeque::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
@@ -202,18 +207,8 @@ impl AcpSessionRegistry {
         registry
     }
 
-    async fn persistence(&self) -> Option<&SqliteAcpPersistence> {
-        self.persistence
-            .get_or_try_init(|| async { SqliteAcpPersistence::from_env().await })
-            .await
-            .map_err(|error| {
-                tracing::error!(
-                    surface = "acp", service = "persistence", action = "init",
-                    kind = "internal_error", error = %error,
-                    "failed to open SQLite ACP database — registry will run without persistence",
-                );
-            })
-            .ok()
+    fn persistence(&self) -> Option<&P> {
+        self.persistence.as_deref()
     }
 
     async fn get_session_arc(&self, session_id: &str) -> Result<Arc<Session>, ToolError> {
@@ -472,7 +467,7 @@ impl AcpSessionRegistry {
             "ACP session created successfully",
         );
 
-        if let Some(db) = self.persistence().await {
+        if let Some(db) = self.persistence() {
             if let Err(error) = db.save_session(&summary).await {
                 tracing::warn!(
                     surface = "acp", service = "registry", action = "session.save",
@@ -509,7 +504,7 @@ impl AcpSessionRegistry {
         &self,
         session_id: &str,
         prompt: &str,
-        attachments: Vec<crate::dispatch::acp::params::LocalPromptAttachment>,
+        attachments: Vec<crate::acp::params::LocalPromptAttachment>,
         principal: &str,
         model_id: Option<&str>,
         options: PromptSessionOptions,
@@ -518,10 +513,10 @@ impl AcpSessionRegistry {
             .into_iter()
             .map(|attachment| {
                 let content = match attachment.content {
-                    crate::dispatch::acp::params::LocalAttachmentContent::Text { text } => {
+                    crate::acp::params::LocalAttachmentContent::Text { text } => {
                         PromptAttachmentContent::Text(text)
                     }
-                    crate::dispatch::acp::params::LocalAttachmentContent::Blob { base64 } => {
+                    crate::acp::params::LocalAttachmentContent::Blob { base64 } => {
                         PromptAttachmentContent::Blob(base64)
                     }
                 };
@@ -704,7 +699,7 @@ impl AcpSessionRegistry {
             .await
             .map_err(session_command_error)?;
 
-        if let Some(db) = self.persistence().await {
+        if let Some(db) = self.persistence() {
             let summary = session.summary.read().await;
             if let Err(error) = db.save_session(&summary).await {
                 tracing::warn!(
@@ -903,7 +898,7 @@ impl AcpSessionRegistry {
         );
         cancel_and_drop_runtime(&session).await;
 
-        if let Some(db) = self.persistence().await {
+        if let Some(db) = self.persistence() {
             if let Err(error) = db
                 .update_session_state(session_id, AcpSessionState::Cancelled)
                 .await
@@ -1017,7 +1012,7 @@ impl AcpSessionRegistry {
             self.sessions.write().await.remove(session_id);
         }
 
-        if let Some(db) = self.persistence().await {
+        if let Some(db) = self.persistence() {
             if let Err(error) = db
                 .update_session_state(session_id, AcpSessionState::Closed)
                 .await
@@ -1156,7 +1151,7 @@ impl AcpSessionRegistry {
         &self,
         input: StartSessionInput,
         prompt_text: &str,
-        prompt_attachments: Vec<crate::dispatch::acp::params::LocalPromptAttachment>,
+        prompt_attachments: Vec<crate::acp::params::LocalPromptAttachment>,
         principal: &str,
         prompt_options: PromptSessionOptions,
     ) -> Result<StartAndPromptResult, ToolError> {
@@ -1277,7 +1272,7 @@ impl AcpSessionRegistry {
     ) -> Result<Vec<AcpEvent>, ToolError> {
         let session = self.get_session_arc(session_id).await?;
         Self::check_principal(&session, principal)?;
-        if let Some(db) = self.persistence().await {
+        if let Some(db) = self.persistence() {
             match db.load_events_since(session_id, since_seq).await {
                 Ok(events) => return Ok(events),
                 Err(error) => {
@@ -1297,7 +1292,7 @@ impl AcpSessionRegistry {
         session_id: &str,
         since_seq: u64,
         principal: &str,
-    ) -> Result<impl Stream<Item = Arc<AcpEvent>> + use<>, ToolError> {
+    ) -> Result<impl Stream<Item = Arc<AcpEvent>> + use<P>, ToolError> {
         let session = self.get_session_arc(session_id).await?;
         Self::check_principal(&session, principal)?;
 
@@ -1316,7 +1311,7 @@ impl AcpSessionRegistry {
             subs.push(tx);
         }
 
-        let backlog: Vec<Arc<AcpEvent>> = if let Some(db) = self.persistence().await {
+        let backlog: Vec<Arc<AcpEvent>> = if let Some(db) = self.persistence() {
             match db
                 .load_events_since_capped(session_id, since_seq, BACKFILL_CAP)
                 .await
@@ -1390,7 +1385,7 @@ impl AcpSessionRegistry {
         });
     }
 
-    fn spawn_idle_reaper(registry: AcpSessionRegistry, interval_secs: u64) {
+    fn spawn_idle_reaper(registry: AcpSessionRegistry<P>, interval_secs: u64) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
             loop {
@@ -1635,7 +1630,7 @@ impl AcpSessionRegistry {
     ///   events written to both the in-memory buffer and SQLite so callers see
     ///   a clean terminal transition.
     pub async fn restore_from_db(&self) {
-        let Some(db) = self.persistence().await else {
+        let Some(db) = self.persistence() else {
             tracing::warn!(
                 surface = "acp",
                 service = "registry",
@@ -1770,7 +1765,7 @@ impl AcpSessionRegistry {
     pub fn new_for_tests(idle_timeout: Duration) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            persistence: Arc::new(OnceCell::new()),
+            persistence: None,
             default_cwd: ".".to_string(),
             recent_creations: Arc::new(Mutex::new(VecDeque::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
@@ -1789,7 +1784,7 @@ impl AcpSessionRegistry {
             .collect();
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            persistence: Arc::new(OnceCell::new()),
+            persistence: None,
             default_cwd: ".".to_string(),
             recent_creations: Arc::new(Mutex::new(VecDeque::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
@@ -2069,8 +2064,8 @@ async fn fanout_event(session: &Arc<Session>, event: Arc<AcpEvent>) -> usize {
     dropped
 }
 
-async fn persist_session_event(registry: &AcpSessionRegistry, event: &AcpEvent) {
-    if let Some(db) = registry.persistence().await {
+async fn persist_session_event<P: AcpPersistence>(registry: &AcpSessionRegistry<P>, event: &AcpEvent) {
+    if let Some(db) = registry.persistence() {
         if let Err(error) = db.append_event(event).await {
             tracing::warn!(
                 surface = "acp", service = "registry", action = "event.persist",
@@ -2245,6 +2240,49 @@ fn utf8_tail_by_bytes(value: &str, max_bytes: usize) -> &str {
         start += 1;
     }
     &value[start..]
+}
+
+// ---------------------------------------------------------------------------
+// Concrete SqliteAcpPersistence constructor
+// ---------------------------------------------------------------------------
+
+impl AcpSessionRegistry<SqliteAcpPersistence> {
+    /// Build a registry backed by `SqliteAcpPersistence`, initialising
+    /// persistence from the `LAB_ACP_DB` environment variable.
+    ///
+    /// If the env var is absent or the database cannot be opened, the registry
+    /// falls back to in-memory-only mode (no persistence) and logs a warning.
+    pub async fn from_env() -> Self {
+        crate::acp::runtime::warn_if_acp_provider_sandbox_is_incompatible();
+        let default_cwd = std::env::var("ACP_SESSION_CWD").unwrap_or_else(|_| {
+            std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| ".".to_string())
+        });
+        let persistence = match SqliteAcpPersistence::from_env().await {
+            Ok(db) => Some(Arc::new(db)),
+            Err(error) => {
+                tracing::error!(
+                    surface = "acp", service = "persistence", action = "init",
+                    kind = "internal_error", error = %error,
+                    "failed to open SQLite ACP database — registry will run without persistence",
+                );
+                None
+            }
+        };
+        let registry = Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            persistence,
+            default_cwd,
+            recent_creations: Arc::new(Mutex::new(VecDeque::new())),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            idle_timeout: Duration::from_secs(SESSION_IDLE_TIMEOUT_MINS * 60),
+            provider_models: Arc::new(RwLock::new(HashMap::new())),
+        };
+        Self::spawn_health_reporter(Arc::clone(&registry.sessions));
+        Self::spawn_idle_reaper(registry.clone(), IDLE_REAPER_INTERVAL_SECS);
+        registry
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2569,7 +2607,7 @@ mod tests {
 
     #[test]
     fn provider_healths_does_not_synthesize_current_or_default_model_from_order() {
-        let registry = AcpSessionRegistry::new_for_test_with_provider_models(vec![(
+        let registry: AcpSessionRegistry = AcpSessionRegistry::new_for_test_with_provider_models(vec![(
             "codex-acp".to_string(),
             vec![AcpModelOption {
                 id: "gpt-5-mini".to_string(),
