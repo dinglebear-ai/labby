@@ -69,7 +69,7 @@ mcpjam tools call --url http://127.0.0.1:8001/mcp --name axon_status_dashboard -
 For stdio Axon:
 
 ```bash
-mcpjam server doctor --command ./target/debug/axon --args mcp --cwd /home/jmagar/workspace/axon_rust
+mcpjam server doctor --command ./target/debug/axon --args mcp --cwd /home/jmagar/workspace/axon
 ```
 
 ## Debugging Failures

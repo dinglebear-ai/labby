@@ -8,6 +8,22 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.22.1] - 2026-06-04
+
+### Highlights
+
+- **Skill quality sweep** — systematic review and update of ~70 SKILL.md files across all lab plugins and 10 rmcp workspace repos; fixes include stale script paths, async-trait contradiction in acp/rust, wrong rmcp version in using-rmcp, coercive block removal from paperless-ngx, full rewrites of rarcane and rustarr skills, and description rewrites to third-person trigger form for all 9 cortex sub-skills.
+- **Gateway-admin dialog consolidation** — removed stale `delete-gateway-dialog.tsx`, `disable-gateway-dialog.tsx`, and `confirm-dialog.tsx`; refactored `gateway-detail-content`, `gateway-list-content`, `allowed-users-panel`, `app-command-palette`, `session-sidebar`, and `plugin-detail-content` components.
+- **Marketplace silent-error surfacing** — fixed `installPath` handling; surface silent errors in `acp_dispatch`, `claude`, `mcp_dispatch` backends.
+
+| Commit | Change |
+|--------|--------|
+| *(this)* | docs(skills): skill quality sweep — fix paths, descriptions, content gaps |
+| `40e2087e` | docs: save session log |
+| `c7db07a6` | fix(marketplace): surface silent errors and fix installPath handling |
+
+---
+
 ## [0.22.0] - 2026-06-04
 
 ### Highlights

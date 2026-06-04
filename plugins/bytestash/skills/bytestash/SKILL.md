@@ -18,7 +18,7 @@ ByteStash is a self-hosted code snippet management service with multi-file suppo
 
 **Authentication:** JWT via the `bytestashauth: bearer <token>` header.
 
-> ⚠️ **API keys do NOT work for snippet writes on ByteStash ≤ 1.0.0.** Its
+> **Warning: API keys do NOT work for snippet writes on ByteStash ≤ 1.0.0.** Its
 > `authenticateToken` middleware ignores `req.apiKey` and still demands a JWT, so
 > `x-api-key` returns `401 Authentication required` on `/api/snippets`. The wrapper
 > therefore authenticates with a JWT (login or a pre-minted token). API keys only
@@ -245,16 +245,10 @@ ByteStash supports snippets with multiple code fragments (files). Each fragment 
 
 ---
 
-## 🔧 Agent Tool Usage Requirements
+## Agent Tool Usage
 
-**CRITICAL:** When invoking scripts from this skill via the zsh-tool, **ALWAYS use `pty: true`**.
+Run this skill's scripts with the **Bash** tool. If using the zsh-tool instead, pass `pty: true` — without it, command output is not returned even though commands execute.
 
-Without PTY mode, command output will not be visible even though commands execute successfully.
-
-**Correct invocation pattern:**
-```typescript
-<invoke name="mcp__plugin_zsh-tool_zsh-tool__zsh">
-<parameter name="command">./skills/bytestash/scripts/bytestash-api.sh [args]</parameter>
-<parameter name="pty">true</parameter>
-</invoke>
+```bash
+./skills/bytestash/scripts/bytestash-api.sh [args]
 ```

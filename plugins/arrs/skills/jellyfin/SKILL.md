@@ -1,6 +1,6 @@
 ---
 name: jellyfin
-description: Use when working with Jellyfin media server management, libraries, users, playback, metadata, transcoding, server health, or homelab media workflows.
+description: "This skill should be used when the user asks about Jellyfin media server. Triggers include: \"check Jellyfin\", \"Jellyfin library\", \"who's watching on Jellyfin\", \"active Jellyfin sessions\", \"add a Jellyfin user\", \"Jellyfin metadata\", \"Jellyfin transcoding\", \"Jellyfin health\", \"Jellyfin scheduled tasks\", \"Jellyfin plugins\", or any mention of Jellyfin media server management."
 ---
 
 # Jellyfin

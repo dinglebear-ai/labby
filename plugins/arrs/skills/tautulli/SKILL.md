@@ -47,14 +47,14 @@ TAUTULLI_API_KEY="<your_tautulli_api_key>"
 
 All commands use the `tautulli-api.sh` wrapper script and return JSON output.
 
-The helper script is located at: `skills/tautulli/scripts/tautulli-api.sh`
+The helper script is located at: `scripts/tautulli-api.sh`
 
 ### Server Information
 
 Get server identity and version:
 
 ```bash
-./skills/tautulli/scripts/tautulli-api.sh server-info
+./scripts/tautulli-api.sh server-info
 ```
 
 ### Current Activity
@@ -63,10 +63,10 @@ Monitor active streams and current playback:
 
 ```bash
 # All active sessions
-./skills/tautulli/scripts/tautulli-api.sh activity
+./scripts/tautulli-api.sh activity
 
 # Activity with session details
-./skills/tautulli/scripts/tautulli-api.sh activity --details
+./scripts/tautulli-api.sh activity --details
 ```
 
 **Returns:** Current streams with user, media, player, bandwidth, transcode info
@@ -77,15 +77,15 @@ View historical playback data:
 
 ```bash
 # Recent history (default: 25 items)
-./skills/tautulli/scripts/tautulli-api.sh history
+./scripts/tautulli-api.sh history
 
 # History with filters
-./skills/tautulli/scripts/tautulli-api.sh history --user "username" --limit 50
-./skills/tautulli/scripts/tautulli-api.sh history --days 7 --media-type movie
-./skills/tautulli/scripts/tautulli-api.sh history --section-id 1 --limit 100
+./scripts/tautulli-api.sh history --user "username" --limit 50
+./scripts/tautulli-api.sh history --days 7 --media-type movie
+./scripts/tautulli-api.sh history --section-id 1 --limit 100
 
 # Search history
-./skills/tautulli/scripts/tautulli-api.sh history --search "Inception"
+./scripts/tautulli-api.sh history --search "Inception"
 ```
 
 **Parameters:**
@@ -102,13 +102,13 @@ Track user activity and viewing patterns:
 
 ```bash
 # All users watch stats
-./skills/tautulli/scripts/tautulli-api.sh user-stats
+./scripts/tautulli-api.sh user-stats
 
 # Specific user details
-./skills/tautulli/scripts/tautulli-api.sh user-stats --user "username"
+./scripts/tautulli-api.sh user-stats --user "username"
 
 # Top users by play count
-./skills/tautulli/scripts/tautulli-api.sh user-stats --sort-by plays --limit 10
+./scripts/tautulli-api.sh user-stats --sort-by plays --limit 10
 ```
 
 **Parameters:**
@@ -123,14 +123,14 @@ Analyze library usage and popular content:
 
 ```bash
 # All library sections
-./skills/tautulli/scripts/tautulli-api.sh libraries
+./scripts/tautulli-api.sh libraries
 
 # Specific library stats
-./skills/tautulli/scripts/tautulli-api.sh library-stats --section-id 1
+./scripts/tautulli-api.sh library-stats --section-id 1
 
 # Popular content in library
-./skills/tautulli/scripts/tautulli-api.sh popular --section-id 1 --limit 10
-./skills/tautulli/scripts/tautulli-api.sh popular --media-type movie --days 30
+./scripts/tautulli-api.sh popular --section-id 1 --limit 10
+./scripts/tautulli-api.sh popular --media-type movie --days 30
 ```
 
 **Parameters:**
@@ -145,11 +145,11 @@ View recently added media with rich metadata:
 
 ```bash
 # Recently added (default: 25 items)
-./skills/tautulli/scripts/tautulli-api.sh recent
+./scripts/tautulli-api.sh recent
 
 # Recent with filters
-./skills/tautulli/scripts/tautulli-api.sh recent --section-id 1 --limit 50
-./skills/tautulli/scripts/tautulli-api.sh recent --media-type movie --days 7
+./scripts/tautulli-api.sh recent --section-id 1 --limit 50
+./scripts/tautulli-api.sh recent --media-type movie --days 7
 ```
 
 ### Home Statistics
@@ -158,10 +158,10 @@ Get homepage dashboard statistics:
 
 ```bash
 # Overview stats (most popular, most active, etc.)
-./skills/tautulli/scripts/tautulli-api.sh home-stats
+./scripts/tautulli-api.sh home-stats
 
 # Stats for specific timeframe
-./skills/tautulli/scripts/tautulli-api.sh home-stats --days 30
+./scripts/tautulli-api.sh home-stats --days 30
 ```
 
 ### Stream Analytics
@@ -170,15 +170,15 @@ Analyze stream types and platform usage:
 
 ```bash
 # Plays by stream type (direct/transcode)
-./skills/tautulli/scripts/tautulli-api.sh plays-by-stream --days 30
+./scripts/tautulli-api.sh plays-by-stream --days 30
 
 # Plays by platform
-./skills/tautulli/scripts/tautulli-api.sh plays-by-platform --days 30
+./scripts/tautulli-api.sh plays-by-platform --days 30
 
 # Plays by date/time
-./skills/tautulli/scripts/tautulli-api.sh plays-by-date --days 30
-./skills/tautulli/scripts/tautulli-api.sh plays-by-hour --days 7
-./skills/tautulli/scripts/tautulli-api.sh plays-by-day --days 30
+./scripts/tautulli-api.sh plays-by-date --days 30
+./scripts/tautulli-api.sh plays-by-hour --days 7
+./scripts/tautulli-api.sh plays-by-day --days 30
 ```
 
 ### Concurrent Streams
@@ -187,10 +187,10 @@ Monitor concurrent stream patterns:
 
 ```bash
 # Concurrent stream history
-./skills/tautulli/scripts/tautulli-api.sh concurrent-streams --days 30
+./scripts/tautulli-api.sh concurrent-streams --days 30
 
 # Peak concurrent streams
-./skills/tautulli/scripts/tautulli-api.sh concurrent-streams --days 7 --peak
+./scripts/tautulli-api.sh concurrent-streams --days 7 --peak
 ```
 
 ### Media Metadata
@@ -199,10 +199,10 @@ Get detailed metadata for specific media:
 
 ```bash
 # By rating key
-./skills/tautulli/scripts/tautulli-api.sh metadata --rating-key 12345
+./scripts/tautulli-api.sh metadata --rating-key 12345
 
 # By GUID
-./skills/tautulli/scripts/tautulli-api.sh metadata --guid "plex://movie/5d776..."
+./scripts/tautulli-api.sh metadata --guid "plex://movie/5d776..."
 ```
 
 ## Workflow
@@ -252,10 +252,10 @@ Use `jq` to extract and format data:
 
 ```bash
 # Get just the data
-./skills/tautulli/scripts/tautulli-api.sh activity | jq '.response.data'
+./scripts/tautulli-api.sh activity | jq '.response.data'
 
 # Extract specific fields
-./skills/tautulli/scripts/tautulli-api.sh history | jq '.response.data.data[] | {user: .friendly_name, title: .full_title, date: .date}'
+./scripts/tautulli-api.sh history | jq '.response.data.data[] | {user: .friendly_name, title: .full_title, date: .date}'
 ```
 
 ## Notes
@@ -285,27 +285,7 @@ Use both together:
 
 ## Multiple Servers
 
-To use multiple Tautulli instances (monitoring different Plex servers):
-
-```bash
-# In ~/.config/lab-arrs/config.env
-TAUTULLI1_URL="http://server1:8181"
-TAUTULLI1_API_KEY="key1"
-
-TAUTULLI2_URL="http://server2:8181"
-TAUTULLI2_API_KEY="key2"
-```
-
-Then override environment variables:
-
-```bash
-# Use server 1 (default)
-./skills/tautulli/scripts/tautulli-api.sh activity
-
-# Use server 2
-TAUTULLI_URL="$TAUTULLI2_URL" TAUTULLI_API_KEY="$TAUTULLI2_API_KEY" \
-  ./skills/tautulli/scripts/tautulli-api.sh activity
-```
+The arrs plugin supports one Tautulli instance configured via plugin settings. To monitor a different Tautulli server, update the URL and API key in the arrs plugin settings.
 
 ## Reference
 

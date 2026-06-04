@@ -144,40 +144,6 @@ When the user asks about memos:
 4. **"Update my memo about Z"** → Search for memo, get ID, update content
 5. **"Delete that memo"** → Confirm with user, then delete by ID
 
-### Detailed Flow: Quick Capture
-
-```
-User: "Save this conversation about Docker networking to my memos"
-
-1. Extract key information from conversation
-2. Create memo with descriptive content
-3. Add relevant tags (e.g., "docker", "networking", "conversation")
-4. Confirm creation with memo ID
-5. Optionally ask if user wants to make it public/private
-```
-
-### Detailed Flow: Search and Retrieve
-
-```
-User: "What did I write about Kubernetes last month?"
-
-1. Search memos with query "kubernetes"
-2. Apply date filter (last 30 days)
-3. Present results with memo IDs and previews
-4. User can request full content of specific memos
-```
-
-### Detailed Flow: Organization
-
-```
-User: "Tag all my Docker memos with 'devops'"
-
-1. Search for memos containing "docker"
-2. For each result, update memo to add "devops" tag
-3. Report number of memos updated
-4. Show tag statistics
-```
-
 ## Notes
 
 ### API Details
@@ -211,32 +177,24 @@ Memos support full Markdown syntax:
 
 ### Common Errors
 
-**401 Unauthorized:**
-- Check API token in `.env`
-- Token may have expired (regenerate in Memos UI)
-
-**404 Not Found:**
-- Verify memo ID exists
-- Check MEMOS_URL is correct
-
-**Connection refused:**
-- Memos instance not running
-- Verify URL in `.env`
+For error diagnosis, see `references/troubleshooting.md`.
 
 ## Reference
 
-- **Official Docs:** https://usememos.com/docs
-- **API Reference:** https://usememos.com/docs/api
-- **Scripts:** `skills/memos/scripts/`
-- **Examples:** `skills/memos/examples/`
+Bundled references (load as needed):
+- `references/api-endpoints.md` — API endpoint details
+- `references/quick-reference.md` — command examples
+- `references/troubleshooting.md` — common errors and fixes
+- `examples/quick-capture.md`, `examples/tagging-workflow.md`, `examples/search-patterns.md` — worked examples
 
----
+External:
+- Official Docs: https://usememos.com/docs
+- API Reference: https://usememos.com/docs/api
 
-## 🔧 Agent Tool Usage
+## Agent Tool Usage
 
-Run this skill's scripts with the **Bash** tool directly:
+Run this skill's scripts with the Bash tool directly:
 
 ```bash
 ./skills/memos/scripts/memo-api.sh [args]
 ```
-- **Troubleshooting:** `skills/memos/references/troubleshooting.md`

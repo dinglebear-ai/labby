@@ -172,9 +172,16 @@ When the user asks about bookmarks:
 
 ---
 
-## 🔧 Agent Tool Usage
+## Reference
 
-Run this skill's scripts with the **Bash** tool directly:
+Bundled references (load as needed):
+- `references/api-endpoints.md` — REST API endpoint reference
+- `references/quick-reference.md` — command examples
+- `references/troubleshooting.md` — common errors and fixes
+
+## Agent Tool Usage
+
+Run this skill's scripts with the Bash tool directly:
 
 ```bash
 ./skills/linkding/scripts/linkding-api.sh [args]

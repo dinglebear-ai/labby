@@ -16,7 +16,7 @@ stdio:
 mcpjam server doctor \
   --command ./target/debug/axon \
   --args mcp \
-  --cwd /home/jmagar/workspace/axon_rust
+  --cwd /home/jmagar/workspace/axon
 ```
 
 ## MCP Apps Conformance

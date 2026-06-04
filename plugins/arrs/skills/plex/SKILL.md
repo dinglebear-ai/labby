@@ -42,13 +42,13 @@ PLEX_TOKEN="<your_plex_token>"
 
 All commands output JSON. Use `jq` for formatting or filtering.
 
-The `plex-api.sh` helper script simplifies API access. Located at: `skills/plex/scripts/plex-api.sh`
+The `plex-api.sh` helper script simplifies API access. Located at: `scripts/plex-api.sh`
 
 ### Server Info
 
 ```bash
 # Using helper script
-./skills/plex/scripts/plex-api.sh info
+./scripts/plex-api.sh info
 
 # Or raw curl
 curl -s "$PLEX_URL/" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: application/json"
@@ -60,7 +60,7 @@ List all library sections:
 
 ```bash
 # Using helper script
-./skills/plex/scripts/plex-api.sh libraries
+./scripts/plex-api.sh libraries
 
 # Or raw curl
 curl -s "$PLEX_URL/library/sections" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: application/json"
@@ -70,8 +70,8 @@ curl -s "$PLEX_URL/library/sections" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: 
 
 ```bash
 # Using helper script (replace 1 with your section key)
-./skills/plex/scripts/plex-api.sh library 1
-./skills/plex/scripts/plex-api.sh library 1 --limit 50 --offset 100
+./scripts/plex-api.sh library 1
+./scripts/plex-api.sh library 1 --limit 50 --offset 100
 
 # Or raw curl
 curl -s "$PLEX_URL/library/sections/1/all" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: application/json"
@@ -81,8 +81,8 @@ curl -s "$PLEX_URL/library/sections/1/all" -H "X-Plex-Token: $PLEX_TOKEN" -H "Ac
 
 ```bash
 # Using helper script
-./skills/plex/scripts/plex-api.sh search "Inception"
-./skills/plex/scripts/plex-api.sh search "Avengers" --limit 10
+./scripts/plex-api.sh search "Inception"
+./scripts/plex-api.sh search "Avengers" --limit 10
 
 # Or raw curl
 curl -s "$PLEX_URL/search?query=SEARCH_TERM" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: application/json"
@@ -92,8 +92,8 @@ curl -s "$PLEX_URL/search?query=SEARCH_TERM" -H "X-Plex-Token: $PLEX_TOKEN" -H "
 
 ```bash
 # Using helper script (default: 20 items)
-./skills/plex/scripts/plex-api.sh recent
-./skills/plex/scripts/plex-api.sh recent --limit 10
+./scripts/plex-api.sh recent
+./scripts/plex-api.sh recent --limit 10
 
 # Or raw curl
 curl -s "$PLEX_URL/library/recentlyAdded" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: application/json"
@@ -103,8 +103,8 @@ curl -s "$PLEX_URL/library/recentlyAdded" -H "X-Plex-Token: $PLEX_TOKEN" -H "Acc
 
 ```bash
 # Using helper script (default: 10 items)
-./skills/plex/scripts/plex-api.sh ondeck
-./skills/plex/scripts/plex-api.sh ondeck --limit 5
+./scripts/plex-api.sh ondeck
+./scripts/plex-api.sh ondeck --limit 5
 
 # Or raw curl
 curl -s "$PLEX_URL/library/onDeck" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: application/json"
@@ -114,7 +114,7 @@ curl -s "$PLEX_URL/library/onDeck" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: ap
 
 ```bash
 # Using helper script
-./skills/plex/scripts/plex-api.sh sessions
+./scripts/plex-api.sh sessions
 
 # Or raw curl
 curl -s "$PLEX_URL/status/sessions" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: application/json"
@@ -124,7 +124,7 @@ curl -s "$PLEX_URL/status/sessions" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: a
 
 ```bash
 # Using helper script
-./skills/plex/scripts/plex-api.sh clients
+./scripts/plex-api.sh clients
 
 # Or raw curl
 curl -s "$PLEX_URL/clients" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: application/json"
@@ -134,22 +134,22 @@ curl -s "$PLEX_URL/clients" -H "X-Plex-Token: $PLEX_TOKEN" -H "Accept: applicati
 
 ```bash
 # Server identity
-./skills/plex/scripts/plex-api.sh identity
+./scripts/plex-api.sh identity
 
 # Get metadata for specific item (by rating key)
-./skills/plex/scripts/plex-api.sh metadata 12345
+./scripts/plex-api.sh metadata 12345
 
 # Get children of item (e.g., seasons of a TV show)
-./skills/plex/scripts/plex-api.sh children 12345
+./scripts/plex-api.sh children 12345
 
 # List playlists
-./skills/plex/scripts/plex-api.sh playlists
+./scripts/plex-api.sh playlists
 
 # Refresh library section (scan for new media)
-./skills/plex/scripts/plex-api.sh refresh 1
+./scripts/plex-api.sh refresh 1
 
 # View all commands
-./skills/plex/scripts/plex-api.sh --help
+./scripts/plex-api.sh --help
 ```
 
 ## Workflow
