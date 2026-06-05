@@ -165,7 +165,7 @@ pub struct GatewayAddArgs {
     /// Environment variable name whose value is used as the upstream bearer token.
     #[arg(long)]
     pub bearer_token_env: Option<String>,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub proxy_resources: bool,
 }
 
@@ -1099,7 +1099,9 @@ mod tests {
     use clap::CommandFactory;
     use clap::Parser;
 
-    use crate::cli::Cli;
+    use crate::cli::{Cli, Command};
+
+    use super::GatewayCommand;
 
     #[test]
     fn gateway_cli_parser_accepts_expected_commands() {
@@ -1227,5 +1229,53 @@ mod tests {
             Cli::try_parse_from(["lab", "gateway", "code", "exec", "--file", "snippet.js",])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn gateway_add_defaults_resource_proxying_on() {
+        let cli = Cli::try_parse_from([
+            "lab",
+            "gateway",
+            "add",
+            "--name",
+            "fixture-http",
+            "--url",
+            "http://127.0.0.1:8791",
+        ])
+        .expect("gateway add parses");
+
+        let Command::Gateway(args) = cli.command else {
+            panic!("expected gateway command");
+        };
+        let GatewayCommand::Add(args) = args.command else {
+            panic!("expected gateway add command");
+        };
+
+        assert!(args.proxy_resources);
+    }
+
+    #[test]
+    fn gateway_add_allows_resource_proxying_opt_out() {
+        let cli = Cli::try_parse_from([
+            "lab",
+            "gateway",
+            "add",
+            "--name",
+            "fixture-http",
+            "--url",
+            "http://127.0.0.1:8791",
+            "--proxy-resources",
+            "false",
+        ])
+        .expect("gateway add parses");
+
+        let Command::Gateway(args) = cli.command else {
+            panic!("expected gateway command");
+        };
+        let GatewayCommand::Add(args) = args.command else {
+            panic!("expected gateway add command");
+        };
+
+        assert!(!args.proxy_resources);
     }
 }

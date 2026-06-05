@@ -10,6 +10,7 @@ import { MARKETPLACE_VIEW_MODE_STORAGE_KEY } from './marketplace-view-preference
 function installMarketplaceDom({ desktop = true } = {}) {
   const window = new Window()
   Object.defineProperty(globalThis, 'window', { configurable: true, value: window })
+  Object.defineProperty(globalThis, 'self', { configurable: true, value: window })
   Object.defineProperty(globalThis, 'document', { configurable: true, value: window.document })
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: window.navigator })
   Object.defineProperty(globalThis, 'DOMException', { configurable: true, value: window.DOMException })
@@ -164,6 +165,31 @@ test('marketplace persisted view preference controls rendered view and search ra
     assert.ok(firstRow)
     assert.match(firstRow.textContent ?? '', /Codex Helper/)
   })
+
+  await view.unmount()
+})
+
+test('marketplace plugin cards link to the full plugin detail page', async () => {
+  const window = installMarketplaceDom({ desktop: true })
+  installMarketplaceFetch()
+  const [{ SidebarProvider }, { MarketplaceListContent }] = await Promise.all([
+    import('@/components/ui/sidebar'),
+    import('./marketplace-list-content'),
+  ])
+  window.localStorage.setItem(MARKETPLACE_VIEW_MODE_STORAGE_KEY, 'cards')
+
+  const view = await renderClient(
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <SidebarProvider>
+        <MarketplaceListContent />
+      </SidebarProvider>
+    </SWRConfig>,
+  )
+
+  await waitFor(() => assert.match(view.container.textContent ?? '', /Codex Helper/))
+
+  const detailLink = view.container.querySelector('a[href="/marketplace/plugin?id=codex-helper"]')
+  assert.ok(detailLink, 'plugin card should navigate to the full plugin detail route')
 
   await view.unmount()
 })

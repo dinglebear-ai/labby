@@ -193,10 +193,7 @@ impl LabMcpServer {
                 sub: self.request_subject(context).map(ToOwned::to_owned),
             }
         });
-        match broker
-            .search(&code, caller, self.code_mode_surface(false))
-            .await
-        {
+        match broker.search(&code, caller, self.code_mode_surface()).await {
             Ok(response) => {
                 let output =
                     serde_json::to_string(&response).unwrap_or_else(|_| "null".to_string());
@@ -304,7 +301,6 @@ impl LabMcpServer {
             .unwrap_or(config.max_tool_calls)
             .max(1)
             .min(config.max_tool_calls.max(1));
-        let allow_destructive_actions = args.get("confirm").and_then(Value::as_bool) == Some(true);
         let capability_filter = match (
             string_array_arg(args, "upstreams"),
             string_array_arg(args, "tools"),
@@ -339,7 +335,7 @@ impl LabMcpServer {
                 code,
                 requested_max_tool_calls,
                 caller,
-                self.code_mode_surface(allow_destructive_actions),
+                self.code_mode_surface(),
                 config,
                 capability_filter,
             )

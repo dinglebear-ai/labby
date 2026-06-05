@@ -342,20 +342,20 @@ async fn refresh_token_grant(
         ));
     };
 
-    // TOCTOU fix: atomically claim the refresh token BEFORE calling Google.
-    // Two concurrent requests carrying the same token will both call
-    // find_refresh_token and both succeed, but only one will win the
-    // rotate_refresh_token DELETE.  The loser gets None here and is rejected
-    // as a replay.  If we lose the race we fail fast — no restore, no retry.
-    // If Google subsequently fails, the old token is already gone and the
-    // user must re-authenticate (acceptable: the window is tiny and retrying
-    // with a consumed token is safe to reject).
-    let new_refresh_token = random_token(24)?;
-    let new_expires_at = expires_at(
+    // Refresh upstream before consuming the local token. If Google or id-token
+    // verification fails, the client can retry the same local refresh token
+    // instead of being stranded with an unreturned replacement.
+    let google = state.google.refresh(&provider_refresh_token).await?;
+
+    let refreshed_expires_at = expires_at(
         now_unix(),
         state.config.refresh_token_ttl,
         "LAB_AUTH_REFRESH_TOKEN_TTL_SECS",
     )?;
+    let next_provider_refresh_token = google
+        .refresh_token
+        .clone()
+        .unwrap_or_else(|| provider_refresh_token.clone());
     // Re-apply admin elevation in case this refresh token was originally
     // issued before elevation was wired in, or before the user's email was
     // on the allowlist.  elevate_scope_for_allowed_user is idempotent — if
@@ -365,58 +365,19 @@ async fn refresh_token_grant(
         &state.config.default_scope,
     );
 
-    // Rotate with the stored subject and provider token (not yet refreshed).
-    // If Google returns a new provider refresh token we update below.
-    let rotated = state
+    state
         .store
-        .rotate_refresh_token(
-            &refresh_token,
-            RefreshTokenRow {
-                refresh_token: new_refresh_token.clone(),
-                client_id: stored.client_id.clone(),
-                subject: stored.subject.clone(),
-                resource: stored_resource.clone(),
-                scope: elevated_scope.clone(),
-                provider_refresh_token: Some(provider_refresh_token.clone()),
-                created_at: stored.created_at,
-                expires_at: new_expires_at,
-            },
-        )
+        .upsert_refresh_token(RefreshTokenRow {
+            refresh_token: refresh_token.clone(),
+            client_id: stored.client_id.clone(),
+            subject: google.subject.clone(),
+            resource: stored_resource.clone(),
+            scope: elevated_scope.clone(),
+            provider_refresh_token: Some(next_provider_refresh_token),
+            created_at: stored.created_at,
+            expires_at: refreshed_expires_at,
+        })
         .await?;
-    if rotated.is_none() {
-        // Old token not found or already expired — treat as replay.
-        warn!(
-            refresh_token_id = %refresh_token_id,
-            client_id = %stored.client_id,
-            "oauth token rejected: refresh token expired or already rotated (replay)"
-        );
-        return Err(AuthError::InvalidGrant(
-            "refresh token has already been used or has expired".to_string(),
-        ));
-    }
-
-    // Now call Google. If this fails the old token is already gone; the user
-    // must re-authenticate. This is the safe failure mode — a stolen token
-    // cannot be retried by a second caller.
-    let google = state.google.refresh(&provider_refresh_token).await?;
-
-    // If Google issued a new provider refresh token, update the newly-rotated
-    // row so future refreshes use the latest upstream token.
-    if let Some(new_provider_rt) = google.refresh_token {
-        state
-            .store
-            .upsert_refresh_token(RefreshTokenRow {
-                refresh_token: new_refresh_token.clone(),
-                client_id: stored.client_id.clone(),
-                subject: google.subject.clone(),
-                resource: stored_resource.clone(),
-                scope: elevated_scope.clone(),
-                provider_refresh_token: Some(new_provider_rt),
-                created_at: stored.created_at,
-                expires_at: new_expires_at,
-            })
-            .await?;
-    }
 
     info!(
         grant_type = "refresh_token",
@@ -425,7 +386,7 @@ async fn refresh_token_grant(
         subject_id = %fingerprint(&google.subject),
         resource = %stored_resource,
         scope = %elevated_scope,
-        "oauth refresh_token grant rotated refresh token and issued new access token"
+        "oauth refresh_token grant refreshed stable local token and issued new access token"
     );
 
     build_token_response(
@@ -434,7 +395,7 @@ async fn refresh_token_grant(
         google.subject,
         stored_resource,
         elevated_scope,
-        Some(new_refresh_token),
+        Some(refresh_token),
     )
 }
 
@@ -553,11 +514,45 @@ mod tests {
     use axum::http::{Request, StatusCode, header};
     use jsonwebtoken::dangerous::insecure_decode;
     use tower::util::ServiceExt;
+    use url::Url;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use crate::google::GoogleProvider;
     use crate::routes::router;
+    use crate::state::AuthState;
 
-    use super::super::authorize::tests::test_auth_state_with_mock_google;
-    use super::super::authorize::tests::test_auth_state_with_registered_client;
+    use super::super::authorize::tests::{
+        test_auth_state_with_mock_google, test_auth_state_with_registered_client,
+    };
+
+    async fn test_auth_state_with_failing_google_refresh() -> AuthState {
+        let state = test_auth_state_with_registered_client().await;
+        let server = Box::leak(Box::new(MockServer::start().await));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": "temporarily_unavailable"
+            })))
+            .mount(server)
+            .await;
+        let google = GoogleProvider::new(
+            "client-id".to_string(),
+            "client-secret".to_string(),
+            Url::parse("https://lab.example.com/auth/google/callback").unwrap(),
+        )
+        .unwrap()
+        .with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
+        );
+        AuthState::for_tests(
+            (*state.config).clone(),
+            state.store.clone(),
+            (*state.signing_keys).clone(),
+            google,
+        )
+    }
 
     #[tokio::test]
     async fn token_endpoint_mints_lab_jwt_and_refresh_token() {
@@ -877,7 +872,7 @@ mod tests {
             .expect("decode access token")
             .claims;
         assert_eq!(claims.aud, "https://mcp.example.com/syslog");
-        assert_eq!(claims.scope, "mcp:read mcp:write");
+        assert_eq!(claims.scope, "mcp:read mcp:write lab:admin");
     }
 
     #[tokio::test]
@@ -1035,11 +1030,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    async fn seed_authorization_code(state: &crate::state::AuthState) {
+    async fn seed_authorization_code(state: &AuthState) {
         seed_authorization_code_with_expiry(state, 4_102_444_800).await;
     }
 
-    async fn seed_authorization_code_without_provider_refresh(state: &crate::state::AuthState) {
+    async fn seed_authorization_code_without_provider_refresh(state: &AuthState) {
         state
             .store
             .insert_auth_code(crate::types::AuthorizationCodeRow {
@@ -1059,7 +1054,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn seed_authorization_code_with_expiry(state: &crate::state::AuthState, expires_at: i64) {
+    async fn seed_authorization_code_with_expiry(state: &AuthState, expires_at: i64) {
         state
             .store
             .insert_auth_code(crate::types::AuthorizationCodeRow {
@@ -1080,7 +1075,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_grant_rotates_token_on_success() {
+    async fn refresh_grant_preserves_local_token_on_success() {
         let state = test_auth_state_with_mock_google().await;
         state
             .store
@@ -1115,18 +1110,64 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let new_token = json["refresh_token"].as_str().expect("new refresh_token");
-        // The new token must differ from the original.
-        assert_ne!(new_token, "original-token", "token must rotate on use");
-        // The original token must no longer be valid.
+        let new_token = json["refresh_token"].as_str().expect("refresh_token");
+        assert_eq!(
+            new_token, "original-token",
+            "local token must remain stable"
+        );
         assert!(
             state
                 .store
                 .find_refresh_token("original-token")
                 .await
                 .unwrap()
-                .is_none(),
-            "old refresh token must be invalidated after rotation"
+                .is_some(),
+            "local refresh token must remain usable after successful refresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_grant_preserves_original_token_when_upstream_refresh_fails() {
+        let state = test_auth_state_with_failing_google_refresh().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "recoverable-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: String::new(),
+                scope: "lab".to_string(),
+                provider_refresh_token: Some("provider-refresh".to_string()),
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/token")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        "grant_type=refresh_token&refresh_token=recoverable-token&client_id=client",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(response.status(), StatusCode::OK);
+        assert!(
+            state
+                .store
+                .find_refresh_token("recoverable-token")
+                .await
+                .unwrap()
+                .is_some(),
+            "local refresh token must remain usable after upstream refresh failure"
         );
     }
 
@@ -1189,7 +1230,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_grant_rejects_replay_of_old_token() {
+    async fn refresh_grant_allows_reuse_of_stable_local_token() {
         let state = test_auth_state_with_mock_google().await;
         state
             .store
@@ -1206,7 +1247,6 @@ mod tests {
             .await
             .unwrap();
         let app = router(state);
-        // First use — succeeds and rotates.
         let first = app
             .clone()
             .oneshot(
@@ -1222,7 +1262,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
-        // Second use of the same token — must be rejected as a replay.
         let replay = app
             .oneshot(
                 Request::builder()
@@ -1238,8 +1277,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             replay.status(),
-            StatusCode::BAD_REQUEST,
-            "replayed refresh token must be rejected"
+            StatusCode::OK,
+            "same local refresh token must be reusable across client restarts"
         );
     }
 }

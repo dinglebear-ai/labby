@@ -511,7 +511,7 @@ export function normalizeGateway(
       args: normalizeArgs(config.args),
       bearer_token_env: config.bearer_token_env ?? undefined,
       oauth_enabled: config.oauth_enabled ?? false,
-      proxy_resources: config.proxy_resources ?? false,
+      proxy_resources: config.proxy_resources ?? true,
       proxy_prompts: config.proxy_prompts ?? true,
       expose_tools: exposePatterns ?? undefined,
       expose_resources: config.expose_resources ?? undefined,
@@ -556,8 +556,8 @@ export function normalizeGateway(
           uri,
           ...(typeof resource !== 'string' && resource.description ? { description: resource.description } : {}),
           exposed: typeof resource === 'string'
-            ? primitiveExposed(name, config.expose_resources, config.proxy_resources ?? false)
-            : resource.exposed ?? primitiveExposed(name, config.expose_resources, config.proxy_resources ?? false),
+            ? primitiveExposed(name, config.expose_resources, config.proxy_resources ?? true)
+            : resource.exposed ?? primitiveExposed(name, config.expose_resources, config.proxy_resources ?? true),
         }
       }),
       prompts: discovery.prompts.map((prompt) => {
@@ -612,7 +612,7 @@ export function gatewayInputToSpec(input: CreateGatewayInput) {
     args: input.transport === 'stdio' ? normalizeArgs(input.config.args) : [],
     ...(env ? { env } : {}),
     bearer_token_env: input.config.bearer_token_env ?? null,
-    proxy_resources: input.config.proxy_resources ?? false,
+    proxy_resources: input.config.proxy_resources ?? true,
     proxy_prompts: input.config.proxy_prompts ?? true,
     expose_tools: input.config.expose_tools ?? null,
     expose_resources: input.config.expose_resources ?? null,

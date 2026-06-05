@@ -7,7 +7,7 @@ use crate::api::ToolError;
 use crate::api::auth_helpers::{log_auth_dispatch, log_auth_dispatch_start, request_id};
 use crate::api::state::AppState;
 
-use lab_auth::session::{BROWSER_CSRF_HEADER_NAME, BROWSER_SESSION_COOKIE_NAME};
+use lab_auth::session::BROWSER_CSRF_HEADER_NAME;
 
 const DEV_SESSION_EXPIRES_AT: u64 = 253_402_300_799;
 
@@ -31,8 +31,8 @@ fn unauthenticated_session_response(login_available: bool) -> Response {
     }))
 }
 
-fn session_cookie(headers: &HeaderMap) -> Option<String> {
-    lab_auth::session::read_cookie(headers, BROWSER_SESSION_COOKIE_NAME)
+fn session_cookie(headers: &HeaderMap, auth_state: &lab_auth::state::AuthState) -> Option<String> {
+    lab_auth::session::read_cookie(headers, &auth_state.config.session_cookie_name)
 }
 
 fn actor_key_for_session(
@@ -51,7 +51,7 @@ async fn load_browser_session(
     headers: &HeaderMap,
 ) -> Result<Option<lab_auth::types::BrowserSessionRow>, lab_auth::error::AuthError> {
     let has_cookie_header = headers.contains_key(header::COOKIE);
-    let browser_session_cookie = session_cookie(headers);
+    let browser_session_cookie = session_cookie(headers, auth_state);
     let has_browser_session_cookie = browser_session_cookie.is_some();
     tracing::info!(
         has_cookie_header,
@@ -242,7 +242,7 @@ pub async fn auth_logout(State(state): State<AppState>, headers: HeaderMap) -> i
 
     let mut response = StatusCode::NO_CONTENT.into_response();
     let mut actor_key = None;
-    if let Some(session_id) = session_cookie(&headers) {
+    if let Some(session_id) = session_cookie(&headers, auth_state) {
         let csrf = headers
             .get(BROWSER_CSRF_HEADER_NAME)
             .and_then(|value| value.to_str().ok());
