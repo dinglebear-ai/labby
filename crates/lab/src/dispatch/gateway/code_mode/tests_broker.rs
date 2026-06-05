@@ -122,9 +122,7 @@ async fn broker_search_exposes_typed_schema_metadata_from_live_catalog() {
         scopes: vec!["lab:read".to_string()],
         sub: None,
     };
-    let surface = super::CodeModeSurface::Mcp {
-        allow_destructive_actions: false,
-    };
+    let surface = super::CodeModeSurface::Mcp;
     let owner = caller.runtime_owner(surface);
     let oauth_subject = caller.oauth_subject();
     let (entries, _size) = broker
@@ -211,9 +209,7 @@ async fn broker_search_refreshes_read_only_catalog_after_upstream_tool_expansion
         scopes: vec!["lab:read".to_string()],
         sub: None,
     };
-    let surface = super::CodeModeSurface::Mcp {
-        allow_destructive_actions: false,
-    };
+    let surface = super::CodeModeSurface::Mcp;
     // The catalog-refresh behavior under test is in-process (`code_search_catalog`
     // re-resolves the live catalog on each call). The JS name-filter `search`
     // previously applied is now an in-test projection: collect agent-os tool

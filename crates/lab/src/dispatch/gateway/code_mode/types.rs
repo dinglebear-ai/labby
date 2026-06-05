@@ -151,39 +151,22 @@ pub enum CodeModeCaller {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeModeSurface {
-    Mcp { allow_destructive_actions: bool },
+    Mcp,
     Cli,
 }
 
-impl CodeModeSurface {
-    /// Whether destructive upstream tools are permitted on this surface.
-    ///
-    /// CLI is operator-driven and always permits destructive actions.
-    /// MCP gates on the `allow_destructive_actions` field set at session time.
-    #[must_use]
-    pub fn allow_destructive_actions(self) -> bool {
-        match self {
-            Self::Mcp {
-                allow_destructive_actions,
-            } => allow_destructive_actions,
-            Self::Cli => true,
-        }
-    }
-}
-
-/// Whether a destructive upstream tool call is explicitly permitted for this
-/// `surface`.
-///
-/// Execute-capable scopes (`lab` / `lab:admin`) authorize running Code Mode, but
-/// they do not confirm destructive upstream effects. MCP callers must pass
-/// `confirm:true`; CLI is operator-driven and always permits destructive tools.
+/// Whether a destructive upstream tool call is permitted for this caller.
+/// Code Mode execution is already scope-gated; do not add a second host-side
+/// confirmation gate based on upstream catalog metadata.
 #[must_use]
 pub(in crate::dispatch::gateway::code_mode) fn destructive_permitted(
     surface: CodeModeSurface,
     caller: &CodeModeCaller,
 ) -> bool {
-    let _ = caller;
-    surface.allow_destructive_actions()
+    match surface {
+        CodeModeSurface::Cli => true,
+        CodeModeSurface::Mcp => caller.can_execute(),
+    }
 }
 
 impl CodeModeCaller {
@@ -210,7 +193,7 @@ impl CodeModeCaller {
     #[must_use]
     pub fn runtime_owner(&self, surface: CodeModeSurface) -> UpstreamRuntimeOwner {
         let surface = match surface {
-            CodeModeSurface::Mcp { .. } => "mcp",
+            CodeModeSurface::Mcp => "mcp",
             CodeModeSurface::Cli => "cli",
         };
         let subject = match self {

@@ -84,7 +84,7 @@ test('buildGatewayCreatePayload generates an auth env var when a bearer token is
       command: null,
       args: [],
       bearer_token_env: 'LAB_GW_GITHUB_AUTH_HEADER',
-      proxy_resources: false,
+      proxy_resources: true,
       proxy_prompts: true,
       expose_tools: null,
       expose_resources: null,
@@ -111,7 +111,7 @@ test('buildGatewayCreatePayload preserves no-auth HTTP upstreams', () => {
       command: null,
       args: [],
       bearer_token_env: null,
-      proxy_resources: false,
+      proxy_resources: true,
       proxy_prompts: true,
       expose_tools: null,
       expose_resources: null,
@@ -137,7 +137,7 @@ test('buildGatewayCreatePayload builds a stdio spec without any ack flag', () =>
     command: 'example-mcp-server',
     args: ['--stdio'],
     bearer_token_env: null,
-    proxy_resources: false,
+    proxy_resources: true,
     proxy_prompts: true,
     expose_tools: null,
     expose_resources: null,
@@ -163,12 +163,47 @@ test('buildGatewayCreatePayload includes stdio environment variables', () => {
     args: ['-y', 'mcp-searxng'],
     env: { SEARXNG_URL: 'https://s.tootie.tv' },
     bearer_token_env: null,
-    proxy_resources: false,
+    proxy_resources: true,
     proxy_prompts: true,
     expose_tools: null,
     expose_resources: null,
     expose_prompts: null,
   })
+})
+
+test('normalizeGateway defaults omitted resource proxying on', () => {
+  const gateway = normalizeGateway(
+    {
+      config: {
+        name: 'fixture-http',
+        url: 'http://127.0.0.1:9001/mcp',
+      },
+      runtime: {
+        name: 'fixture-http',
+        tool_count: 0,
+        resource_count: 1,
+        prompt_count: 0,
+      },
+    },
+    {
+      connected: true,
+      healthy: true,
+    },
+    {
+      tools: [],
+      resources: ['resource://one'],
+      prompts: [],
+    }
+  )
+
+  assert.equal(gateway.config.proxy_resources, true)
+  assert.deepEqual(gateway.discovery.resources, [
+    {
+      name: 'resource://one',
+      uri: 'resource://one',
+      exposed: true,
+    },
+  ])
 })
 
 test('buildGatewayUpdatePayload clears auth when bearer_token_env is blanked', () => {

@@ -1,4 +1,4 @@
-//! Tests: normalize_user_code shapes, surface/caller destructive gating, oauth subject.
+//! Tests: normalize_user_code shapes, caller capability gating, oauth subject.
 #![cfg(test)]
 
 #[test]
@@ -413,40 +413,7 @@ fn normalize_user_code_strips_trailing_line_comment_after_semicolon() {
     );
 }
 
-// ── CodeModeSurface allow_destructive_actions ─────────────────────────────
-
-#[test]
-fn code_mode_surface_mcp_gates_on_flag() {
-    let mcp_allow = super::CodeModeSurface::Mcp {
-        allow_destructive_actions: true,
-    };
-    let mcp_deny = super::CodeModeSurface::Mcp {
-        allow_destructive_actions: false,
-    };
-
-    // PRESENCE: true flag → allowed
-    assert!(
-        mcp_allow.allow_destructive_actions(),
-        "Mcp with allow_destructive_actions=true must return true"
-    );
-    // PRESENCE: false flag → denied
-    assert!(
-        !mcp_deny.allow_destructive_actions(),
-        "Mcp with allow_destructive_actions=false must return false"
-    );
-}
-
-#[test]
-fn code_mode_surface_cli_always_allows_destructive() {
-    let cli = super::CodeModeSurface::Cli;
-    // PRESENCE: CLI always permits
-    assert!(
-        cli.allow_destructive_actions(),
-        "CLI surface must always allow destructive actions"
-    );
-}
-
-// ── destructive_permitted: surface confirmation gate ─────────────────────
+// ── destructive_permitted: caller capability gate ─────────────────────────
 
 fn scoped(scopes: &[&str]) -> super::CodeModeCaller {
     super::CodeModeCaller::Scoped {
@@ -456,55 +423,35 @@ fn scoped(scopes: &[&str]) -> super::CodeModeCaller {
 }
 
 #[test]
-fn destructive_denied_for_execute_scope_on_mcp_deny_surface() {
-    let surface = super::CodeModeSurface::Mcp {
-        allow_destructive_actions: false,
-    };
+fn destructive_permitted_for_execute_capable_callers() {
+    let surface = super::CodeModeSurface::Mcp;
     assert!(
-        !super::destructive_permitted(surface, &scoped(&["lab:admin"])),
-        "lab:admin caller still needs explicit confirm for destructive MCP Code Mode calls"
+        super::destructive_permitted(surface, &scoped(&["lab:admin"])),
+        "lab:admin caller can execute Code Mode, so do not add a second destructive gate"
     );
     assert!(
-        !super::destructive_permitted(surface, &scoped(&["lab"])),
-        "lab caller still needs explicit confirm for destructive MCP Code Mode calls"
-    );
-}
-
-#[test]
-fn destructive_denied_for_read_scope_on_mcp_deny_surface() {
-    // PRESENCE: a read-only caller without confirm stays denied.
-    let surface = super::CodeModeSurface::Mcp {
-        allow_destructive_actions: false,
-    };
-    assert!(
-        !super::destructive_permitted(surface, &scoped(&["lab:read"])),
-        "lab:read caller must NOT be permitted destructive actions without confirm"
-    );
-}
-
-#[test]
-fn destructive_permitted_via_surface_flag_regardless_of_scope() {
-    // PRESENCE: confirm:true (or CLI) permits even a read-only caller —
-    // the surface flag is an independent allow path.
-    let mcp_allow = super::CodeModeSurface::Mcp {
-        allow_destructive_actions: true,
-    };
-    assert!(
-        super::destructive_permitted(mcp_allow, &scoped(&["lab:read"])),
-        "confirm:true surface must permit destructive actions for any caller"
+        super::destructive_permitted(surface, &scoped(&["lab"])),
+        "lab caller can execute Code Mode, so do not add a second destructive gate"
     );
     assert!(
         super::destructive_permitted(super::CodeModeSurface::Cli, &scoped(&["lab:read"])),
-        "CLI surface must permit destructive actions for any caller"
+        "CLI is trusted local execution and remains permitted"
     );
     assert!(
-        !super::destructive_permitted(
-            super::CodeModeSurface::Mcp {
-                allow_destructive_actions: false
-            },
-            &super::CodeModeCaller::TrustedLocal,
+        super::destructive_permitted(
+            super::CodeModeSurface::Mcp,
+            &super::CodeModeCaller::TrustedLocal
         ),
-        "TrustedLocal MCP caller must still provide destructive confirmation"
+        "TrustedLocal MCP callers are already trusted by the gateway"
+    );
+}
+
+#[test]
+fn destructive_denied_for_read_scope() {
+    let surface = super::CodeModeSurface::Mcp;
+    assert!(
+        !super::destructive_permitted(surface, &scoped(&["lab:read"])),
+        "lab:read caller cannot execute Code Mode tools"
     );
 }
 

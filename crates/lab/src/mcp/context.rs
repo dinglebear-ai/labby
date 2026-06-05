@@ -27,10 +27,8 @@ pub(crate) fn redact_subject_for_logging(subject: &str) -> String {
 }
 
 impl LabMcpServer {
-    pub(crate) fn code_mode_surface(&self, allow_destructive_actions: bool) -> CodeModeSurface {
-        CodeModeSurface::Mcp {
-            allow_destructive_actions,
-        }
+    pub(crate) fn code_mode_surface(&self) -> CodeModeSurface {
+        CodeModeSurface::Mcp
     }
 
     pub(crate) fn request_subject<'a>(

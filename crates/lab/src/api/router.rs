@@ -237,7 +237,12 @@ async fn auth_register(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     body: Json<lab_auth::types::ClientRegistrationRequest>,
 ) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(lab_auth::authorize::register_client(State(app_auth_state(&state)?), ConnectInfo(addr), body).await?)
+    Ok(lab_auth::authorize::register_client(
+        State(app_auth_state(&state)?),
+        ConnectInfo(addr),
+        body,
+    )
+    .await?)
 }
 
 async fn auth_authorize(
@@ -258,7 +263,14 @@ async fn auth_browser_login(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     query: Query<lab_auth::types::BrowserLoginQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(lab_auth::authorize::browser_login(State(app_auth_state(&state)?), ConnectInfo(addr), query).await?)
+    Ok(
+        lab_auth::authorize::browser_login(
+            State(app_auth_state(&state)?),
+            ConnectInfo(addr),
+            query,
+        )
+        .await?,
+    )
 }
 
 async fn auth_callback(
@@ -894,7 +906,7 @@ async fn authenticate_request(
         && let Some(auth_state) = auth_state.as_ref()
         && let Some(session_id) = lab_auth::session::read_cookie(
             request.headers(),
-            lab_auth::session::BROWSER_SESSION_COOKIE_NAME,
+            &auth_state.config.session_cookie_name,
         )
     {
         match auth_state.store.find_browser_session(&session_id).await {
@@ -2246,6 +2258,37 @@ mod tests {
         assert_eq!(json["authenticated"], true);
         assert_eq!(json["user"]["sub"], "browser-user");
         assert_eq!(json["csrf_token"], "csrf-123");
+    }
+
+    #[tokio::test]
+    async fn auth_session_uses_configured_browser_cookie_name() {
+        let mut auth_state = test_lab_auth_state().await;
+        Arc::make_mut(&mut auth_state.config).session_cookie_name = "custom_session".to_string();
+        let session = seed_browser_session(&auth_state).await;
+        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/auth/session")
+                    .header(
+                        header::COOKIE,
+                        format!("custom_session={}", session.session_id),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["authenticated"], true);
+        assert_eq!(json["user"]["sub"], "browser-user");
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import Link from 'next/link'
 import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Bot,
@@ -221,6 +222,7 @@ function CatalogIdentityMark({
 }
 
 function primaryActionLabel(item: MarketplaceCatalogItem, readOnlyPreview = false): string {
+  if (marketplaceDetailHref(item)) return isPluginComponentCatalogItem(item) ? 'Open plugin' : 'Open details'
   if (item.kind === 'source') return 'Filter source'
   if (item.installed) return item.hasUpdate ? 'Update' : 'Remove'
   if (item.kind === 'acp_agent') return readOnlyPreview ? 'Preview wiring' : 'Wire agent'
@@ -232,6 +234,19 @@ function primaryActionLabel(item: MarketplaceCatalogItem, readOnlyPreview = fals
 
 function canRunProductionMutation(item: MarketplaceCatalogItem | null): item is MarketplaceCatalogItem {
   return isPluginCatalogItem(item)
+}
+
+function marketplaceDetailHref(item: MarketplaceCatalogItem): string | null {
+  if (isPluginCatalogItem(item)) return `/marketplace/plugin?id=${encodeURIComponent(item.raw.id)}`
+  if (isPluginComponentCatalogItem(item)) return `/marketplace/plugin?id=${encodeURIComponent(item.raw.plugin.id)}`
+  return null
+}
+
+function itemDisplayTags(item: MarketplaceCatalogItem): string[] {
+  return [...new Set(
+    [item.ecosystem, item.distribution, item.sourceName, ...item.tags]
+      .filter((tag): tag is string => typeof tag === 'string' && tag.length > 0),
+  )].slice(0, 4)
 }
 
 function activeFilterLabels(filters: MarketplaceCatalogFilterState, sourceLabels: Map<string, string>): string[] {
@@ -270,16 +285,9 @@ function CatalogCard({
   item: MarketplaceCatalogItem
   onAction: (item: MarketplaceCatalogItem) => void
 }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onAction(item)}
-      className={cn(
-        AURORA_STRONG_PANEL,
-        'flex min-h-[214px] w-full min-w-0 overflow-hidden flex-col gap-3 p-4 text-left transition-[background-color,border-color,box-shadow,transform] hover:-translate-y-px hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/34',
-      )}
-      aria-label={`${primaryActionLabel(item)} ${item.name}`}
-    >
+  const detailHref = marketplaceDetailHref(item)
+  const content = (
+    <>
       <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-3 sm:grid-cols-[auto_minmax(0,1fr)_auto]">
         <CatalogIdentityMark item={item} />
         <div className="min-w-0">
@@ -292,7 +300,7 @@ function CatalogCard({
       </div>
       <p className="line-clamp-3 min-h-[60px] min-w-0 text-[13px] leading-[1.55] text-aurora-text-muted">{item.description || 'No description provided.'}</p>
       <div className="flex min-w-0 flex-wrap gap-1">
-        {[item.ecosystem, item.distribution, item.sourceName, ...item.tags].filter(Boolean).slice(0, 4).map((tag) => (
+        {itemDisplayTags(item).map((tag) => (
           <span key={tag} className={cn(AURORA_BADGE_LABEL, 'rounded-full border border-aurora-border-default bg-aurora-control-surface px-2 py-1 text-aurora-text-muted')}>
             {tag}
           </span>
@@ -306,6 +314,36 @@ function CatalogCard({
           {primaryActionLabel(item)}
         </span>
       </div>
+    </>
+  )
+  const className = cn(
+    AURORA_STRONG_PANEL,
+    'flex min-h-[214px] w-full min-w-0 overflow-hidden flex-col gap-3 p-4 text-left transition-[background-color,border-color,box-shadow,transform] hover:-translate-y-px hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/34',
+  )
+
+  if (detailHref) {
+    return (
+      <Link
+        href={detailHref}
+        className={cn(
+          className,
+          'cursor-pointer',
+        )}
+        aria-label={`${primaryActionLabel(item)} ${item.name}`}
+      >
+        {content}
+      </Link>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onAction(item)}
+      className={className}
+      aria-label={`${primaryActionLabel(item)} ${item.name}`}
+    >
+      {content}
     </button>
   )
 }
@@ -326,50 +364,61 @@ function CatalogTable({ items, onAction }: { items: MarketplaceCatalogItem[]; on
             </TableRow>
           </TableHeader>
           <TableBody>
-            {items.map((item) => (
-              <TableRow
-                key={item.id}
-                tabIndex={0}
-                role="button"
-                aria-label={`${primaryActionLabel(item)} ${item.name}`}
-                onClick={() => onAction(item)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    onAction(item)
-                  }
-                }}
-                className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/34"
-              >
-                <TableCell>
-                  <div className="flex max-w-[280px] items-center gap-2 sm:max-w-[320px] sm:gap-3">
-                    <CatalogIdentityMark item={item} size={32} />
-                    <div className="min-w-0">
-                      <p className="truncate font-semibold text-aurora-text-primary">{item.name}</p>
-                      <p className={cn(AURORA_DENSE_META, 'truncate text-aurora-text-muted')}>{item.description || item.subtitle}</p>
+            {items.map((item) => {
+              const detailHref = marketplaceDetailHref(item)
+              const activate = () => {
+                if (detailHref) {
+                  window.location.href = detailHref
+                  return
+                }
+                onAction(item)
+              }
+
+              return (
+                <TableRow
+                  key={item.id}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${primaryActionLabel(item)} ${item.name}`}
+                  onClick={activate}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      activate()
+                    }
+                  }}
+                  className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/34"
+                >
+                  <TableCell>
+                    <div className="flex max-w-[280px] items-center gap-2 sm:max-w-[320px] sm:gap-3">
+                      <CatalogIdentityMark item={item} size={32} />
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-aurora-text-primary">{item.name}</p>
+                        <p className={cn(AURORA_DENSE_META, 'truncate text-aurora-text-muted')}>{item.description || item.subtitle}</p>
+                      </div>
                     </div>
-                  </div>
-                </TableCell>
-                <TableCell className="hidden sm:table-cell">{kindLabel(item.kind)}</TableCell>
-                <TableCell className="hidden md:table-cell">{item.sourceName ?? item.subtitle}</TableCell>
-                <TableCell className="hidden sm:table-cell">{item.version ? `v${item.version}` : '-'}</TableCell>
-                <TableCell>{item.hasUpdate ? 'Update available' : item.installed ? 'Installed' : item.builtin ? 'Built-in' : 'Available'}</TableCell>
-                <TableCell className="text-right">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onAction(item)
-                    }}
-                    className={cn(gatewayActionTone(), 'h-8 px-3 text-aurora-text-primary hover:bg-aurora-hover-bg')}
-                  >
-                    {primaryActionLabel(item)}
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
+                  </TableCell>
+                  <TableCell className="hidden sm:table-cell">{kindLabel(item.kind)}</TableCell>
+                  <TableCell className="hidden md:table-cell">{item.sourceName ?? item.subtitle}</TableCell>
+                  <TableCell className="hidden sm:table-cell">{item.version ? `v${item.version}` : '-'}</TableCell>
+                  <TableCell>{item.hasUpdate ? 'Update available' : item.installed ? 'Installed' : item.builtin ? 'Built-in' : 'Available'}</TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        activate()
+                      }}
+                      className={cn(gatewayActionTone(), 'h-8 px-3 text-aurora-text-primary hover:bg-aurora-hover-bg')}
+                    >
+                      {primaryActionLabel(item)}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
           </TableBody>
         </Table>
       </div>

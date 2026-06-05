@@ -264,8 +264,8 @@ impl CodeModeBroker<'_> {
             .resolve_code_mode_upstream_tool(upstream, tool, Some(owner), oauth_subject)
             .await?;
 
-        // Host-side destructive action gate: block tools with destructive=true
-        // unless the action is permitted (see `destructive_permitted`).
+        // Host-side scope check: destructive upstream metadata does not add a
+        // second confirmation model, but read-only callers still cannot execute.
         if upstream_tool.destructive && !destructive_permitted(surface, caller) {
             tracing::warn!(
                 surface = "dispatch",
@@ -273,14 +273,13 @@ impl CodeModeBroker<'_> {
                 action = "code_execute",
                 upstream = upstream,
                 tool = tool,
-                kind = "confirmation_required",
-                "blocked destructive Code Mode tool call; allow_destructive_actions is not set"
+                kind = "forbidden",
+                "blocked destructive Code Mode tool call for non-execute caller"
             );
             return Err(ToolError::Sdk {
-                sdk_kind: "confirmation_required".to_string(),
+                sdk_kind: "forbidden".to_string(),
                 message: format!(
-                    "Tool `{upstream}::{tool}` has destructive=true. \
-                     Set allow_destructive_actions=true in the Code Mode surface to proceed."
+                    "Tool `{upstream}::{tool}` requires Code Mode execute permission."
                 ),
             });
         }
