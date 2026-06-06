@@ -425,6 +425,23 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
         })
     ) || matches!(&args.command, GatewayCommand::ProtectedRoute(_)));
     let manager = build_manager(config, discover_upstreams).await;
+    let result = dispatch_command(Arc::clone(&manager), args, format).await;
+    // INVARIANT: drain the upstream pool before the one-shot CLI exits. The
+    // manager is installed into a process-global (`install_gateway_manager`),
+    // so `UpstreamConnection` Drop never runs at process exit and spawned
+    // stdio upstream process groups (npx/uvx trees) would be orphaned —
+    // repeated invocations leak hundreds of child processes.
+    if let Some(pool) = manager.current_pool().await {
+        pool.drain_for_swap("gateway.cli.exit").await;
+    }
+    result
+}
+
+async fn dispatch_command(
+    manager: Arc<GatewayManager>,
+    args: GatewayArgs,
+    format: OutputFormat,
+) -> Result<ExitCode> {
     let cli_origin = format!("cli:{}", std::process::id());
     let cli_owner = json!({
         "surface": "cli",
