@@ -1,6 +1,7 @@
 # Changelog — desktop-app-testing
 
 ## 2026-06-06 — SSH-only fallback
+
 - Added `references/ssh-fallback-capture.md` and a `## Fallback` note in SKILL.md: when
   `agent-os_windows-mcp` isn't a connected upstream, run the whole pass over plain `ssh agent-os`.
 - Documents that SSH lands in session 0 (no window station) so a GUI `.exe` crashes there with

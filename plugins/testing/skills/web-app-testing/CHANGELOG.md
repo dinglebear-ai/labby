@@ -1,6 +1,7 @@
 # Changelog — web-app-testing
 
 ## 2026-06-06 — auth'd-backend prerequisite
+
 - Added a prerequisite note for the case where you spin up the app's **own** dev server against a
   token-protected backend: front it with a bearer-token-injecting proxy (browser never holds the
   token, CORS moot) and make the client use relative API paths. Points at the in-process-vite +
