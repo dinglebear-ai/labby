@@ -5,7 +5,10 @@
 //! `gateway_manager` field) and re-exports the public surface consumed by the
 //! MCP/CLI adapters and integration tests.
 
-use crate::mcp::catalog::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
+// Tool-name consts come from the layer-neutral `crate::tool_names` module, not
+// the MCP surface — the dispatch layer must not import `crate::mcp` (enforced by
+// tests/architecture_boundaries.rs).
+use crate::tool_names::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
 
 // Used in-crate by the `CodeModeBroker` struct/`new`; also re-exported so the
 // in-crate test modules can reach them via `super::` exactly as the old nested
@@ -13,6 +16,7 @@ use crate::mcp::catalog::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
 pub(crate) use crate::dispatch::gateway::manager::GatewayManager;
 pub(crate) use crate::registry::ToolRegistry;
 
+pub(crate) mod catalog_cache;
 mod execute;
 mod normalize;
 pub mod preamble;

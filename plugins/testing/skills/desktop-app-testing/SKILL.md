@@ -28,6 +28,7 @@ gateway predates the fix; rebuild + redeploy (see `references/windows-mcp-calls.
 `Screenshot`/`Snapshot` are never gated, so a UI/UX *review* works even if the gate isn't lifted.
 
 ## Fallback — Windows-MCP not reachable
+
 If `agent-os_windows-mcp` isn't a connected upstream (the Lab gateway is in code-mode and its
 `execute` interface isn't exposed to the session, or the server simply isn't wired in), you can
 still do the whole pass over plain `ssh agent-os`: launch + screenshot the **native** GUI via a
