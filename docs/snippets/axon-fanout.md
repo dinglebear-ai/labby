@@ -41,7 +41,13 @@ async () => {
       "Rust rmcp server with MCP Apps UI resources, concrete APIs, metadata keys, MIME types, and implementation steps",
     seedUrl: null,
     maxEvidenceUrls: 4,
-    includeAsk: false
+    includeAsk: false,
+    maxAnswerChars: 5000,
+    maxSourceSummaryChars: 900,
+    maxMarkdownChars: 12000,
+    includeFollowupSnippet: true,
+    includeSourceSummaries: false,
+    includeDebugFields: false
   };
 
   const axon = (args) => callTool("axon::axon", args);
@@ -54,6 +60,11 @@ async () => {
     } catch {
       return { raw: text };
     }
+  };
+  const truncateText = (text, maxChars) => {
+    if (typeof text !== "string") return text;
+    if (!Number.isFinite(maxChars) || maxChars <= 0 || text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars)}\n\n[truncated ${text.length - maxChars} chars]`;
   };
 
   const timed = async (label, args) => {
@@ -115,8 +126,13 @@ async () => {
   const firstPassResults = await Promise.all(firstPass.map(([label, args]) => timed(label, args)));
 
   const sourceCandidates = [];
+  const isUsableUrl = (url) =>
+    typeof url === "string" &&
+    /^https?:\/\//i.test(url) &&
+    !url.startsWith("<") &&
+    !url.includes("<string");
   const addUrl = (url, reason, quality = "unknown") => {
-    if (!url || sourceCandidates.some((candidate) => candidate.url === url)) return;
+    if (!isUsableUrl(url) || sourceCandidates.some((candidate) => candidate.url === url)) return;
     sourceCandidates.push({ url, reason, quality });
   };
 
@@ -207,7 +223,7 @@ async () => {
     .map((result) => ({
       label: result.label,
       url: result.args.url,
-      summary: result.key_fields.summary
+      summary: truncateText(result.key_fields.summary, input.maxSourceSummaryChars)
     }));
 
   const followupQueries = [
@@ -226,13 +242,6 @@ async () => {
       .slice(0, 4)
       .map((candidate) => candidate.url)
   ];
-
-  const slug = (value) =>
-    String(value)
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80) || "brief";
 
   const followupSnippet = `async () => {
   const input = ${JSON.stringify(
@@ -283,8 +292,13 @@ async () => {
   const discovery = await Promise.all(discoveryCalls.map(([label, args]) => timed(label, args)));
 
   const candidates = [];
+  const isUsableUrl = (url) =>
+    typeof url === "string" &&
+    /^https?:\/\//i.test(url) &&
+    !url.startsWith("<") &&
+    !url.includes("<string");
   const addCandidate = (url, reason) => {
-    if (!url || candidates.some((candidate) => candidate.url === url)) return;
+    if (!isUsableUrl(url) || candidates.some((candidate) => candidate.url === url)) return;
     candidates.push({ url, reason });
   };
 
@@ -364,6 +378,26 @@ async () => {
   };
 }`;
 
+  const researchSummary =
+    firstPassResults.find((result) => result.label === "research" && result.key_fields?.summary)
+      ?.key_fields.summary ?? "";
+  const askSummary =
+    firstPassResults.find((result) => result.label === "ask" && result.key_fields?.answer)
+      ?.key_fields.answer ?? "";
+  const primaryAnswer = truncateText(
+    askSummary || researchSummary || facts.map((fact) => fact.summary).join("\n\n"),
+    input.maxAnswerChars
+  );
+  const evidenceTable = evidenceUrls.map((candidate, index) => ({
+    n: index + 1,
+    url: candidate.url,
+    reason: candidate.reason,
+    score: candidate.score
+  }));
+  const followupCalls = followupQueries.map((query) => ({
+    action: "search/query",
+    query
+  }));
   const timings = [...firstPassResults, ...evidenceResults].map((result) => ({
     label: result.label,
     ok: result.ok,
@@ -371,80 +405,119 @@ async () => {
     artifact: result.artifact,
     error: result.error
   }));
-  const followupCalls = [
-    ...followupQueries.map((query) => ({ action: "search", query })),
-    ...followupSeedUrls.map((url) => ({ action: "scrape", url }))
-  ];
-  const gapsAndRisks = [
-    evidenceUrls.length === 0 ? "No follow-up evidence URLs were selected." : null,
-    facts.length === 0 ? "No source summaries were extracted from selected evidence." : null,
-    ...timings
-      .filter((timing) => !timing.ok)
-      .map((timing) => `${timing.label} failed: ${timing.error ?? "unknown error"}`)
-  ].filter(Boolean);
-  const brief =
-    facts
-      .slice(0, 3)
-      .map((fact) => `${fact.label}: ${fact.summary}`)
-      .join("\n\n") || "No source-backed summary was available from this run.";
-  const evidenceTable = facts
-    .map((fact) => `| ${fact.label} | ${fact.url} | ${String(fact.summary).replace(/\n/g, " ")} |`)
-    .join("\n");
-  const markdown = [
+  const markdown = truncateText([
     `# ${input.topic}`,
     "",
-    "## Brief",
-    brief,
+    "## Answer",
+    primaryAnswer || "No synthesized answer was returned. Inspect the evidence summaries and artifacts below.",
     "",
-    "## Evidence Table",
-    "| Label | URL | Summary |",
-    "|---|---|---|",
-    evidenceTable || "| n/a | n/a | No evidence summaries extracted. |",
+    "## Evidence",
+    evidenceTable.length
+      ? [
+          "| # | Source | Reason | Score |",
+          "| ---: | --- | --- | ---: |",
+          ...evidenceTable.map(
+            (source) => `| ${source.n} | ${source.url} | ${source.reason} | ${source.score} |`
+          )
+        ].join("\n")
+      : "No evidence URLs were selected.",
     "",
-    "## Selected Sources",
-    ...evidenceUrls.map(
-      (source) => `- ${source.url} — ${source.reason}; score=${source.score}`
-    ),
+    "## Source Summaries",
+    facts.length
+      ? facts
+          .map(
+            (fact, index) =>
+              `### ${index + 1}. ${fact.url}\n\n${fact.summary}`
+          )
+          .join("\n\n")
+      : "No source summaries were produced.",
     "",
     "## Gaps And Risks",
-    ...(gapsAndRisks.length ? gapsAndRisks.map((gap) => `- ${gap}`) : ["- None identified."]),
+    [
+      evidenceUrls.length < input.maxEvidenceUrls
+        ? `Only ${evidenceUrls.length} evidence URL(s) were selected.`
+        : null,
+      facts.length < evidenceUrls.length
+        ? "Some selected sources did not produce summaries."
+        : null,
+      "Verify code examples against the current crate versions before copying into production."
+    ]
+      .filter(Boolean)
+      .map((line) => `- ${line}`)
+      .join("\n"),
     "",
     "## Follow-Up Calls",
-    "```json",
-    JSON.stringify(followupCalls, null, 2),
-    "```",
+    followupCalls.map((call) => `- ${call.action}: ${call.query}`).join("\n"),
     "",
     "## Follow-Up Code Mode Snippet",
-    "```js",
-    followupSnippet,
-    "```",
+    input.includeFollowupSnippet
+      ? ["```js", followupSnippet, "```"].join("\n")
+      : "Set `includeFollowupSnippet: true` to include the executable follow-up snippet.",
     "",
     "## Timings",
-    "```json",
-    JSON.stringify(timings, null, 2),
-    "```"
-  ].join("\n");
+    [
+      "| Call | Status | Time | Artifact |",
+      "| --- | --- | ---: | --- |",
+      ...timings.map(
+        (timing) =>
+          `| ${timing.label} | ${timing.ok ? "ok" : "error"} | ${timing.ms}ms | ${timing.artifact ?? ""} |`
+      )
+    ].join("\n")
+  ].join("\n"), input.maxMarkdownChars);
 
+  const slug = (value) =>
+    String(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "brief";
+  // Artifact-first: write the (potentially large) brief to disk and return only
+  // the receipt, keeping the markdown out of the final response payload.
   const artifact = await writeArtifact(
     `axon/${slug(input.topic)}.md`,
     markdown,
     { contentType: "text/markdown" }
   );
 
+  const debugFields = input.includeDebugFields
+    ? {
+        evidence_table: evidenceTable,
+        gaps_and_risks: [
+          evidenceUrls.length < input.maxEvidenceUrls
+            ? `Only ${evidenceUrls.length} evidence URL(s) were selected.`
+            : null,
+          facts.length < evidenceUrls.length
+            ? "Some selected sources did not produce summaries."
+            : null,
+          "Verify code examples against the current crate versions before copying into production."
+        ].filter(Boolean),
+        followup_calls: followupCalls,
+        selected_sources: evidenceUrls,
+        timings,
+        source_summaries: input.includeSourceSummaries ? facts : null
+      }
+    : {};
+
   return {
-    workflow: "axon_fanout_topic",
-    topic: input.topic,
-    summary: brief,
+    workflow: "axon_research_brief",
+    total_ms: Date.now() - started,
+    input,
     artifact,
-    selected_sources: evidenceUrls.map((source) => ({
-      title: source.title,
-      url: source.url,
-      reason: source.reason,
-      score: source.score
-    })),
-    gaps_and_risks: gapsAndRisks,
-    followup_calls: followupCalls,
-    timings
+    followup_snippet: input.includeFollowupSnippet
+      ? {
+          purpose:
+            "Included in the markdown artifact under `Follow-Up Code Mode Snippet`."
+        }
+      : null,
+    ...debugFields,
+    output_format: [
+      "Answer",
+      "Implementation Recipe",
+      "Minimal Shape",
+      "Evidence Table",
+      "Gaps And Risks",
+      "Follow-Up Calls"
+    ]
   };
 }
 ```
@@ -459,7 +532,7 @@ Run snippet `axon_research_brief` with:
 - focus: {{focus}}
 - seedUrl: {{url}}
 
-Use the snippet output's `brief_material` and `output_format` to compose the final answer.
+Read the artifact named in the snippet output's `artifact` receipt (its `absolute_path`) as the primary answer. Use structured fields only for follow-up or verification.
 Do not add `extract` or `stats`.
 ```
 
