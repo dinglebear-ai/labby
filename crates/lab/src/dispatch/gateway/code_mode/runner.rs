@@ -136,59 +136,20 @@ fn run_code_mode_runner() -> Result<(), CodeModeRunnerError> {
                     }),
                 )?,
             )?;
+            globals.set(
+                "__labEmitArtifactWrite",
+                javy::quickjs::Function::new(
+                    cx.clone(),
+                    javy::quickjs::prelude::MutFn::new(|cx, args| {
+                        javy_emit_artifact_write(javy::Args::hold(cx, args))
+                    }),
+                )?,
+            )?;
             Ok(())
         })
         .map_err(javy_error_message)?;
 
-    // The execute wrapper body (assign → typeof check → invoke) is shared with
-    // the Boa path via `code_mode_main_invoker` so the contract cannot diverge.
-    // It is interpolated as a named arg (`{invoker}`) so its literal JS braces
-    // are substituted verbatim and need no `{{`/`}}` escaping.
-    let invoker = code_mode_main_invoker(&code);
-    let wrapped = format!(
-        r#"
-globalThis.__labPendingToolCalls = new Map();
-{codec}
-globalThis.callTool = (id, params = {{}}) => {{
-  if (typeof id !== "string" || id.trim() === "") {{
-    throw new TypeError("callTool id must be a non-empty string");
-  }}
-  if (params === null || typeof params !== "object" || Array.isArray(params)) {{
-    throw new TypeError("callTool params must be a JSON object");
-  }}
-  return new Promise((resolve, reject) => {{
-    const seq = globalThis.__labEmitToolCall(id, __labEncodeResult(params));
-    globalThis.__labPendingToolCalls.set(seq, {{ resolve, reject }});
-  }});
-}};
-globalThis.__labSettleToolCall = (message) => {{
-  const input = JSON.parse(message);
-  const pending = globalThis.__labPendingToolCalls.get(input.seq);
-  if (!pending) {{
-    throw new Error("runner received a response for an unknown tool call");
-  }}
-  globalThis.__labPendingToolCalls.delete(input.seq);
-  if (input.type === "tool_result") {{
-    pending.resolve(__labDecodeResult(input.result));
-    return;
-  }}
-  if (input.type === "tool_error") {{
-    // Reject with a JS string whose content is JSON-encoded CodeModeError so that
-    // JSON.parse(String(e.message)) in the sandbox recovers the structured error.
-    // Both the Javy and Boa paths had the same plain-string bug ("kind: message").
-    pending.reject(new Error(JSON.stringify({{kind: input.kind, message: input.message}})));
-    return;
-  }}
-  throw new Error("runner received unexpected protocol message");
-}};
-{proxy}
-globalThis.__labMainPromise = (async () => {{
-{invoker}}})();
-"#,
-        codec = CODE_MODE_VALUE_CODEC_JS,
-        invoker = invoker,
-        proxy = proxy,
-    );
+    let wrapped = wrap_code_mode(&code, &proxy);
 
     // A failure here is a parse/eval error in the caller's code (e.g. the
     // malformed `async () => {`), before the main promise is ever created. That
@@ -225,6 +186,82 @@ globalThis.__labMainPromise = (async () => {{
         logs: Vec::new(),
     })
     .map_err(CodeModeRunnerError::from)
+}
+
+fn wrap_code_mode(code: &str, proxy: &str) -> String {
+    // The execute wrapper body (assign → typeof check → invoke) is shared with
+    // the Boa path via `code_mode_main_invoker` so the contract cannot diverge.
+    // It is interpolated as a named arg (`{invoker}`) so its literal JS braces
+    // are substituted verbatim and need no `{{`/`}}` escaping.
+    let invoker = code_mode_main_invoker(code);
+    format!(
+        r#"
+globalThis.__labPendingToolCalls = new Map();
+{codec}
+globalThis.callTool = (id, params = {{}}) => {{
+  if (typeof id !== "string" || id.trim() === "") {{
+    throw new TypeError("callTool id must be a non-empty string");
+  }}
+  if (params === null || typeof params !== "object" || Array.isArray(params)) {{
+    throw new TypeError("callTool params must be a JSON object");
+  }}
+  return new Promise((resolve, reject) => {{
+    const seq = globalThis.__labEmitToolCall(id, __labEncodeResult(params));
+    globalThis.__labPendingToolCalls.set(seq, {{ resolve, reject }});
+  }});
+}};
+globalThis.writeArtifact = (path, content, options = {{}}) => {{
+  if (typeof path !== "string" || path.trim() === "") {{
+    throw new TypeError("writeArtifact path must be a non-empty string");
+  }}
+  if (typeof content !== "string") {{
+    throw new TypeError("writeArtifact content must be a string");
+  }}
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {{
+    throw new TypeError("writeArtifact options must be a JSON object");
+  }}
+  const contentType = typeof options.contentType === "string" ? options.contentType : null;
+  return new Promise((resolve, reject) => {{
+    const seq = globalThis.__labEmitArtifactWrite(path, content, contentType);
+    globalThis.__labPendingToolCalls.set(seq, {{ resolve, reject }});
+  }});
+}};
+globalThis.__labSettleToolCall = (message) => {{
+  const input = JSON.parse(message);
+  const pending = globalThis.__labPendingToolCalls.get(input.seq);
+  if (!pending) {{
+    throw new Error("runner received a response for an unknown tool call");
+  }}
+  globalThis.__labPendingToolCalls.delete(input.seq);
+  if (input.type === "tool_result") {{
+    pending.resolve(__labDecodeResult(input.result));
+    return;
+  }}
+  if (input.type === "tool_error") {{
+    // Reject with a JS string whose content is JSON-encoded CodeModeError so that
+    // JSON.parse(String(e.message)) in the sandbox recovers the structured error.
+    // Both the Javy and Boa paths had the same plain-string bug ("kind: message").
+    pending.reject(new Error(JSON.stringify({{kind: input.kind, message: input.message}})));
+    return;
+  }}
+  throw new Error("runner received unexpected protocol message");
+}};
+{proxy}
+globalThis.__labMainPromise = (async () => {{
+{invoker}}})();
+"#,
+        codec = CODE_MODE_VALUE_CODEC_JS,
+        invoker = invoker,
+        proxy = proxy,
+    )
+}
+
+#[cfg(test)]
+pub(in crate::dispatch::gateway::code_mode) fn wrap_code_mode_for_test(
+    code: &str,
+    proxy: &str,
+) -> String {
+    wrap_code_mode(code, proxy)
 }
 
 enum JavyMainPromiseState {
@@ -272,20 +309,51 @@ fn javy_emit_tool_call(args: javy::Args<'_>) -> javy::quickjs::Result<u64> {
         ));
     }
 
-    let seq = RUNNER_STATE
-        .with(|state| {
-            let mut state = state.borrow_mut();
-            let state = state
-                .as_mut()
-                .ok_or_else(|| "runner state is not initialized".to_string())?;
-            let seq = state.next_seq;
-            state.next_seq += 1;
-            Ok::<_, String>(seq)
-        })
-        .map_err(|err| javy_type_error(cx.clone(), err))?;
+    let seq = next_runner_seq(&cx)?;
 
     runner_emit(CodeModeRunnerOutput::ToolCall { seq, id, params })
         .map_err(|err| javy_type_error(cx, err))?;
+    Ok(seq)
+}
+
+fn javy_emit_artifact_write(args: javy::Args<'_>) -> javy::quickjs::Result<u64> {
+    let (cx, args) = args.release();
+    let path_value = args.0.first().ok_or_else(|| {
+        javy_type_error(cx.clone(), "writeArtifact path must be a non-empty string")
+    })?;
+    let path = javy::val_to_string(&cx, path_value.clone())
+        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
+    if path.trim().is_empty() {
+        return Err(javy_type_error(
+            cx.clone(),
+            "writeArtifact path must be a non-empty string",
+        ));
+    }
+
+    let content_value = args
+        .0
+        .get(1)
+        .ok_or_else(|| javy_type_error(cx.clone(), "writeArtifact content must be a string"))?;
+    let content = javy::val_to_string(&cx, content_value.clone())
+        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
+
+    let content_type = args
+        .0
+        .get(2)
+        .filter(|value| !value.is_null() && !value.is_undefined())
+        .map(|value| javy::val_to_string(&cx, value.clone()))
+        .transpose()
+        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
+
+    let seq = next_runner_seq(&cx)?;
+
+    runner_emit(CodeModeRunnerOutput::ArtifactWrite {
+        seq,
+        path,
+        content,
+        content_type,
+    })
+    .map_err(|err| javy_type_error(cx, err))?;
     Ok(seq)
 }
 
@@ -372,6 +440,20 @@ fn javy_type_error(
     message: impl Into<String>,
 ) -> javy::quickjs::Error {
     javy::to_js_error(message_context, anyhow::anyhow!(message.into()))
+}
+
+fn next_runner_seq(cx: &javy::quickjs::Ctx<'_>) -> javy::quickjs::Result<u64> {
+    RUNNER_STATE
+        .with(|state| {
+            let mut state = state.borrow_mut();
+            let state = state
+                .as_mut()
+                .ok_or_else(|| "runner state is not initialized".to_string())?;
+            let seq = state.next_seq;
+            state.next_seq = state.next_seq.saturating_add(1);
+            Ok::<_, String>(seq)
+        })
+        .map_err(|err| javy_type_error(cx.clone(), err))
 }
 
 fn javy_error_message(error: javy::quickjs::Error) -> String {

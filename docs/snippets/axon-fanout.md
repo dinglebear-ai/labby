@@ -465,6 +465,20 @@ async () => {
     ].join("\n")
   ].join("\n"), input.maxMarkdownChars);
 
+  const slug = (value) =>
+    String(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "brief";
+  // Artifact-first: write the (potentially large) brief to disk and return only
+  // the receipt, keeping the markdown out of the final response payload.
+  const artifact = await writeArtifact(
+    `axon/${slug(input.topic)}.md`,
+    markdown,
+    { contentType: "text/markdown" }
+  );
+
   const debugFields = input.includeDebugFields
     ? {
         evidence_table: evidenceTable,
@@ -488,11 +502,11 @@ async () => {
     workflow: "axon_research_brief",
     total_ms: Date.now() - started,
     input,
-    markdown,
+    artifact,
     followup_snippet: input.includeFollowupSnippet
       ? {
           purpose:
-            "Included in the markdown under `Follow-Up Code Mode Snippet`."
+            "Included in the markdown artifact under `Follow-Up Code Mode Snippet`."
         }
       : null,
     ...debugFields,
@@ -518,7 +532,7 @@ Run snippet `axon_research_brief` with:
 - focus: {{focus}}
 - seedUrl: {{url}}
 
-Return the snippet output's `markdown` field as the primary answer. Use structured fields only for follow-up or verification.
+Read the artifact named in the snippet output's `artifact` receipt (its `absolute_path`) as the primary answer. Use structured fields only for follow-up or verification.
 Do not add `extract` or `stats`.
 ```
 

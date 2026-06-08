@@ -42,6 +42,19 @@ pub enum CodeModeRunnerOutput {
         id: String,
         params: Value,
     },
+    /// The sandbox called `writeArtifact(path, content, options?)`. The host
+    /// validates `path`, writes `content` under the per-run artifact root, and
+    /// settles the matching promise with a receipt (or a structured error).
+    /// `#[serde(default)]` on `content_type` keeps the field optional so a
+    /// caller that omits `options.contentType` deserializes to `None` (the host
+    /// then defaults it to `text/plain`).
+    ArtifactWrite {
+        seq: u64,
+        path: String,
+        content: String,
+        #[serde(default)]
+        content_type: Option<String>,
+    },
     /// Runner completed successfully. `result` is the serialized return value of
     /// the async function (`Undefined` when the function returns undefined).
     /// `logs` carries captured console output (Boa path) or redirected stderr (Javy path).
@@ -66,7 +79,7 @@ impl CodeModeRunnerOutput {
     pub(in crate::dispatch::gateway::code_mode) fn result_for_response(&self) -> Option<Value> {
         match self {
             Self::Done { result, .. } => result.clone().into_response_result(),
-            Self::ToolCall { .. } | Self::Error { .. } => None,
+            Self::ToolCall { .. } | Self::ArtifactWrite { .. } | Self::Error { .. } => None,
         }
     }
 }

@@ -57,7 +57,9 @@ Dispatch layers may add the following kinds on top of SDK errors:
 - `conflict` — resource already exists with the given identifier; HTTP 409
 - `ambiguous_tool` — unqualified tool name resolved to multiple upstream gateway candidates; envelope carries `valid: Vec<String>` of fully-qualified `{upstream}::{tool}` names the caller must choose from, plus a `hint` explaining that callers may either pass `name = "{upstream}::{tool}"` or set `upstream` separately. HTTP 409.
 - `invalid_code_mode_id` — Code Mode tool id parsing failed. Valid ids are `<upstream-name>::<tool-name>` only; Lab actions use `tool_execute`/`invoke`. HTTP 422.
-- `tool_call_limit_exceeded` — a Code Mode snippet attempted more host-brokered tool calls than `max_tool_calls` allows. HTTP 429.
+- `tool_call_limit_exceeded` — a Code Mode snippet attempted more host-brokered tool calls than `max_tool_calls` allows (artifact writes count against the same budget). HTTP 429.
+
+> Note: Code Mode artifact writes (`writeArtifact(path, content, options?)`) reuse only kinds already defined in this contract — no artifact-specific kind is introduced. They emit `invalid_param` (empty/absolute/`..` path after `\`→`/` normalization, or content over the 1 MiB cap), `path_traversal`/`symlink_rejected` (the post-join containment check found the destination escaping the per-run root or resolving through a symlinked ancestor), or `internal_error` (a host-side filesystem write/flush failure).
 
 > Note: `code_mode_disabled` and `code_execution_failed` are removed from the contract.
 > Code Mode execution disabled → `internal_error`. Sandbox/runner JS evaluation failure
@@ -99,7 +101,7 @@ The following kinds are emitted by the `stash` dispatch service.
 - `sync_failed` — provider push or pull failed due to an I/O error on the provider's remote root. HTTP 502.
 - `workspace_too_large` — the component workspace exceeds `MAX_WORKSPACE_SIZE` (200 MiB) before a save or import. HTTP 413.
 - `file_too_large` — a single file inside the workspace exceeds `MAX_FILE_SIZE` (50 MiB). HTTP 413.
-- `path_traversal` — a path escapes the target root (re-uses global `path_traversal_rejected`; emitted during import and export). HTTP 422.
+- `path_traversal` — a path escapes the target root (re-uses global `path_traversal_rejected`; emitted during import and export, and by the Code Mode artifact containment check). HTTP 422.
 - `symlink_rejected` — a symlink was encountered during a workspace walk (re-uses global `symlink_rejected`; emitted during save, import, and export). HTTP 422.
 - `export_target_not_empty` — the output directory for `component.export` is non-empty and `force` is not set. HTTP 409.
 - `ambiguous_kind` — component kind could not be auto-detected from the source path and no `kind` override was provided. HTTP 422.

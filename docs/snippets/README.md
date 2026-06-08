@@ -58,6 +58,29 @@ The returned value must be JSON-serializable. The sandbox has `callTool` and, wh
 
 Successful upstream MCP results are unwrapped before reaching snippet code when possible. Structured content is returned as the value; all-text content is parsed as JSON when possible; mixed content keeps its MCP content shape.
 
+## Artifact-First Output
+
+Code Mode snippets should return compact execution receipts and write large composed outputs as artifacts.
+
+Use this pattern whenever a snippet creates markdown, source tables, screenshots, crawl manifests, or follow-up snippets:
+
+```js
+async () => {
+  const markdown = renderMarkdownReport(data);
+  const artifact = await writeArtifact("reports/example.md", markdown, {
+    contentType: "text/markdown"
+  });
+
+  return {
+    summary: "Generated report",
+    artifact,
+    timings
+  };
+}
+```
+
+The final return value is still subject to `[code_mode].max_response_bytes` and `[code_mode].max_response_tokens`. Each `writeArtifact` path is validated (non-empty, relative, no `..`, no symlinked-ancestor escape) and the content — capped at 1 MiB — is written into a per-run directory under `$LAB_HOME/code-mode-artifacts/<run_id>/`. The receipt includes the path, byte count, content type, and SHA-256 digest. Artifact writes count against `max_tool_calls`, and `contentType` defaults to `text/plain` when omitted.
+
 ## Basic Pattern
 
 Start every reusable snippet with an explicit input block, small helpers, and a bounded call plan.

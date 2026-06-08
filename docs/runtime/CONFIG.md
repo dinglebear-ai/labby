@@ -203,6 +203,49 @@ Operators can change the main execution limits without hand-editing TOML using
 fields listed above and validates them with the same ranges used for file
 configuration.
 
+#### Code Mode Artifacts
+
+`execute` exposes a sandbox helper for large outputs:
+
+```js
+const artifact = await writeArtifact("reports/brief.md", markdown, {
+  contentType: "text/markdown"
+});
+return { artifact, summary: "Brief generated" };
+```
+
+Artifacts are host-brokered writes, not direct sandbox filesystem access. The
+runner emits an artifact request and Labby validates the path before writing.
+The path must be a non-empty **relative** path with no `..` segments (checked
+after `\`→`/` normalization), and the joined destination is confirmed to stay
+within the per-run root — rejecting symlinked ancestors — before any write. The
+content is then written into a fresh per-run directory under
+`$LAB_HOME/code-mode-artifacts/<run_id>/` and Labby returns a receipt:
+
+```json
+{
+  "path": "reports/brief.md",
+  "absolute_path": "~/.lab/code-mode-artifacts/01J.../reports/brief.md",
+  "content_type": "text/markdown",
+  "bytes": 18342,
+  "sha256": "..."
+}
+```
+
+A single artifact is capped at **1 MiB**; oversized content is rejected with
+`invalid_param`. `options.contentType` defaults to `text/plain` when omitted or
+blank. Artifact writes do not bypass `timeout_ms`, `max_tool_calls`, or final
+response caps — each write counts against `max_tool_calls`. They are the
+preferred way to keep large markdown reports, source tables, crawl manifests,
+and follow-up snippets out of the final JSON response while still making them
+available on disk.
+
+The store is bounded: on the first artifact write of a run (never on search or
+no-write runs) Labby prunes old per-run directories, keeping the newest
+`LAB_CODE_MODE_ARTIFACT_RETENTION_RUNS` (default `200`). Only ULID-named run
+directories this feature created are ever pruned; set the value to `0` to
+disable pruning (unbounded growth).
+
 ### `[oauth.machines.<id>]`
 
 Named OAuth callback forwarding targets for `labby oauth relay-local`.

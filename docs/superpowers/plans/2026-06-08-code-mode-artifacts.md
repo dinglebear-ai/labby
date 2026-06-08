@@ -83,7 +83,7 @@ Returned receipt:
 
 ```json
 {
-  "path": "code-mode-artifacts/01J.../axon/axum-timeout.md",
+  "path": "axon/axum-timeout.md",
   "absolute_path": "~/.lab/code-mode-artifacts/01J.../axon/axum-timeout.md",
   "content_type": "text/markdown",
   "bytes": 18342,
@@ -91,11 +91,14 @@ Returned receipt:
 }
 ```
 
+(`path` is the run-root-relative path the caller passed; the run-id is reflected
+only in `absolute_path`.)
+
 Rules:
 
 - Artifact writes are host-brokered through the runner protocol; JavaScript does not get raw filesystem access.
 - Root is `$LAB_HOME/code-mode-artifacts/<run_id>/` or `$HOME/.lab/code-mode-artifacts/<run_id>/`.
-- `name` must be a non-empty relative path, cannot be absolute, and cannot contain `..`.
+- `path` must be a non-empty relative path: it cannot be absolute and cannot contain `..` (both checked after `\`→`/` normalization), and the joined destination must resolve within the per-run root (no symlinked-ancestor escape).
 - `content` must be a string.
 - `options.contentType` is optional and defaults to `text/plain`.
 - A single artifact maxes out at 1 MiB for this first implementation.
@@ -1414,7 +1417,7 @@ git commit -m "fix: finalize code mode artifacts"
 
 - `writeArtifact(path, content, options)` is available in Code Mode `execute`.
 - Artifact writes are routed through the host protocol, not raw sandbox filesystem access.
-- Invalid artifact paths are rejected with `invalid_param`.
+- Invalid artifact paths are rejected: empty/absolute/`..` paths (after `\`→`/` normalization) and over-cap content return `invalid_param`; a destination escaping the per-run root or resolving through a symlinked ancestor returns `path_traversal`/`symlink_rejected`.
 - Successful writes return a receipt with path, redacted absolute path, content type, bytes, and SHA-256.
 - `CodeModeExecutionResponse.artifacts` includes receipts for host-brokered artifact writes.
 - Existing final response truncation remains active.
