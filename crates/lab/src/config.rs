@@ -25,6 +25,7 @@ use std::{
     fs::OpenOptions,
     io::Write as _,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 // Gateway startup/reload writes this process-wide flag whenever root
@@ -59,6 +60,7 @@ use tempfile::NamedTempFile;
 pub const DEFAULT_MCPREGISTRY_URL: &str = "https://registry.modelcontextprotocol.io";
 pub const WEB_UI_AUTH_DISABLED_ENV: &str = "LAB_WEB_UI_AUTH_DISABLED";
 pub const WEB_UI_AUTH_DISABLED_LEGACY_ENV: &str = "LAB_WEB_UI_DISABLE_AUTH";
+const DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS: u64 = 30_000;
 
 #[cfg(test)]
 static TEST_CONFIG_TOML_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -118,6 +120,9 @@ pub struct LabConfig {
     /// Gateway-wide Code Mode exposure and execution settings.
     #[serde(default)]
     pub code_mode: CodeModeConfig,
+    /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_request_timeout_ms: Option<u64>,
     /// Upstream MCP servers to proxy through the gateway.
     #[serde(default)]
     pub upstream: Vec<UpstreamConfig>,
@@ -327,10 +332,22 @@ pub struct ResolvedDeviceRuntime {
 impl LabConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.code_mode.validate()?;
+        if let Some(value) = self.upstream_request_timeout_ms
+            && !(1..=300_000).contains(&value)
+        {
+            return Err(ConfigError::InvalidUpstreamRequestTimeout { value });
+        }
         for upstream in &self.upstream {
             upstream.validate()?;
         }
         Ok(())
+    }
+
+    pub fn upstream_request_timeout(&self) -> Duration {
+        Duration::from_millis(
+            self.upstream_request_timeout_ms
+                .unwrap_or(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS),
+        )
     }
 
     pub fn normalize_protected_mcp_routes(&mut self) -> Result<(), ConfigError> {
@@ -832,6 +849,8 @@ pub enum ConfigError {
     InvalidCodeModeMaxLogEntries { value: usize },
     #[error("gateway code_mode.max_log_bytes={value} is invalid — expected 1..=104857600")]
     InvalidCodeModeMaxLogBytes { value: usize },
+    #[error("gateway upstream_request_timeout_ms={value} is invalid — expected 1..=300000")]
+    InvalidUpstreamRequestTimeout { value: u64 },
     #[error("protected MCP route '{name}' has invalid {field}: {value}")]
     InvalidProtectedRoute {
         name: String,
@@ -2650,6 +2669,29 @@ max_response_tokens = 3000
         assert_eq!(cfg.code_mode.max_tool_calls, 3);
         assert_eq!(cfg.code_mode.max_response_bytes, 12000);
         assert_eq!(cfg.code_mode.max_response_tokens, 3000);
+    }
+
+    #[test]
+    fn upstream_request_timeout_is_root_level_config() {
+        let default_cfg = LabConfig::default();
+        assert_eq!(
+            default_cfg.upstream_request_timeout(),
+            Duration::from_millis(30_000)
+        );
+
+        let cfg = toml::from_str::<LabConfig>(
+            r#"
+upstream_request_timeout_ms = 60000
+"#,
+        )
+        .expect("root upstream request timeout parses");
+
+        assert_eq!(cfg.upstream_request_timeout_ms, Some(60_000));
+        assert_eq!(
+            cfg.upstream_request_timeout(),
+            Duration::from_millis(60_000)
+        );
+        cfg.validate().expect("timeout validates");
     }
 
     #[test]

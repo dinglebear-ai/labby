@@ -164,10 +164,14 @@ impl UpstreamPool {
         self
     }
 
-    #[cfg(test)]
-    pub(super) fn with_request_timeout(mut self, timeout: Duration) -> Self {
+    pub(crate) fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn request_timeout(&self) -> Duration {
+        self.request_timeout
     }
 }
 

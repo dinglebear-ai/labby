@@ -1,0 +1,447 @@
+# Axon Fan-Out Snippets
+
+Reusable Axon workflow snippets. Treat these as the source of truth. MCP prompts should only expose a snippet name, arguments, and output expectations.
+
+## `axon_research_brief`
+
+Purpose: turn a topic into a useful engineering brief by combining fresh web discovery, Axon's indexed knowledge, and targeted page summaries.
+
+Fast path:
+- `search` for fresh web results.
+- `research` for search + source synthesis.
+- `query` for indexed semantic matches.
+- optional seed `scrape` / `summarize` when a URL is provided.
+- targeted `scrape` / `summarize` for selected evidence URLs.
+
+Deferred / optional:
+- `ask` only when `includeAsk` is true.
+- `suggest` only as a follow-up.
+- no `stats`.
+- no `extract`; it is async and too slow for this workflow.
+
+Output contract:
+- concise answer
+- implementation recipe
+- minimal code/config shape when evidence supports it
+- evidence table
+- gaps and risks
+- follow-up Axon calls
+- generated follow-up Code Mode snippet for missing or weak evidence
+- timing by action
+
+### Code Mode Snippet
+
+Paste into Labby Code Mode `execute`. Edit the `input` object at the top.
+
+```js
+async () => {
+  const input = {
+    topic: "implementing mcp-ui in rust",
+    focus:
+      "Rust rmcp server with MCP Apps UI resources, concrete APIs, metadata keys, MIME types, and implementation steps",
+    seedUrl: null,
+    maxEvidenceUrls: 4,
+    includeAsk: false
+  };
+
+  const axon = (args) => callTool("axon::axon", args);
+
+  const parseTool = (result) => {
+    const text = result?.content?.[0]?.text;
+    if (typeof text !== "string") return result;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { raw: text };
+    }
+  };
+
+  const timed = async (label, args) => {
+    const started = Date.now();
+    try {
+      const result = await axon(args);
+      const parsed = parseTool(result);
+      return {
+        label,
+        ok: parsed?.ok ?? !result?.isError,
+        ms: Date.now() - started,
+        action: parsed?.action,
+        subaction: parsed?.subaction,
+        args,
+        key_fields: parsed?.data?.key_fields,
+        shape: parsed?.data?.shape,
+        artifact:
+          parsed?.data?.artifact?.path ??
+          parsed?.data?.artifact_handle?.path ??
+          parsed?.artifact?.path,
+        data: parsed?.data?.data,
+        error: parsed?.error?.message
+      };
+    } catch (error) {
+      return {
+        label,
+        ok: false,
+        ms: Date.now() - started,
+        args,
+        error: String(error)
+      };
+    }
+  };
+
+  const firstPass = [
+    ["search", { action: "search", query: input.topic }],
+    ["research", { action: "research", query: input.topic }],
+    ["query", { action: "query", query: input.topic }]
+  ];
+
+  if (input.seedUrl) {
+    firstPass.push(
+      ["seed.scrape", { action: "scrape", url: input.seedUrl }],
+      ["seed.summarize", { action: "summarize", url: input.seedUrl }]
+    );
+  }
+
+  if (input.includeAsk) {
+    firstPass.push([
+      "ask",
+      {
+        action: "ask",
+        query: `For ${input.topic}, what are the concrete APIs, crates, examples, compatibility constraints, and implementation steps? ${input.focus}`
+      }
+    ]);
+  }
+
+  const started = Date.now();
+  const firstPassResults = await Promise.all(firstPass.map(([label, args]) => timed(label, args)));
+
+  const sourceCandidates = [];
+  const addUrl = (url, reason, quality = "unknown") => {
+    if (!url || sourceCandidates.some((candidate) => candidate.url === url)) return;
+    sourceCandidates.push({ url, reason, quality });
+  };
+
+  for (const result of firstPassResults) {
+    const searchSamples = result.shape?.search_results?.sample ?? result.data?.results ?? [];
+    for (const item of searchSamples) {
+      addUrl(item.url, `${result.label} result: ${item.title ?? item.source ?? "untitled"}`);
+    }
+
+    const querySamples = result.shape?.results?.sample ?? [];
+    for (const item of querySamples) {
+      addUrl(item.url ?? item.source, `${result.label} indexed match`);
+    }
+
+    const researchSources = result.shape?.extractions?.sample ?? [];
+    for (const item of researchSources) {
+      addUrl(item.url, `${result.label} source: ${item.title ?? "untitled"}`, item.source_reputation);
+    }
+  }
+
+  const queryTerms = new Set(
+    `${input.topic} ${input.focus}`
+      .toLowerCase()
+      .split(/[^a-z0-9_:-]+/)
+      .filter((term) => term.length > 3)
+  );
+
+  const scoreEvidenceFit = (candidate) => {
+    const url = candidate.url.toLowerCase();
+    const reason = candidate.reason.toLowerCase();
+    let score = 0;
+
+    // Source quality: prefer official docs, SDK docs, examples, and package docs.
+    if (url.includes("modelcontextprotocol.io")) score += 100;
+    if (url.includes("github.com/modelcontextprotocol")) score += 95;
+    if (url.includes("github.com/") && url.includes("/examples")) score += 80;
+    if (url.includes("github.com/") && url.includes("/docs")) score += 75;
+    if (url.includes("docs.rs") || url.includes("crates.io")) score += 70;
+    if (url.includes("mcpui.dev")) score += 65;
+    if (url.includes("github.com/")) score += 55;
+
+    // Specificity: spend follow-up calls on pages whose URL/title matches the task.
+    for (const term of queryTerms) {
+      if (url.includes(term)) score += 12;
+      if (reason.includes(term)) score += 8;
+    }
+
+    // Broad pages are often useful for context but poor follow-up targets.
+    if (url.endsWith("/index.html")) score -= 20;
+    if (/github\.com\/[^/]+\/[^/]+\/?$/.test(url)) score -= 25;
+    if (url.includes("/latest/") && ![...queryTerms].some((term) => url.includes(term))) {
+      score -= 10;
+    }
+
+    // Avoid spending follow-up calls on personal mirrors, generated reference
+    // blobs, and line-fragment text dumps when public docs/examples exist.
+    if (/github\.com\/jmagar\//.test(url)) score -= 80;
+    if (url.includes("/docs/references/")) score -= 60;
+    if (url.includes(".txt#l")) score -= 50;
+    if (url.includes("llms.txt")) score -= 50;
+
+    if (url.includes("blog") || url.includes("medium.com")) score -= 20;
+    return score;
+  };
+
+  const evidenceUrls = sourceCandidates
+    .map((candidate) => ({ ...candidate, score: scoreEvidenceFit(candidate) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, input.maxEvidenceUrls);
+
+  const evidenceCalls = evidenceUrls.flatMap((candidate, index) => [
+    [
+      `evidence.${index + 1}.scrape`,
+      { action: "scrape", url: candidate.url }
+    ],
+    [
+      `evidence.${index + 1}.summarize`,
+      { action: "summarize", url: candidate.url }
+    ]
+  ]);
+
+  const evidenceResults = await Promise.all(
+    evidenceCalls.map(([label, args]) => timed(label, args))
+  );
+
+  const facts = evidenceResults
+    .filter((result) => result.ok && result.key_fields?.summary)
+    .map((result) => ({
+      label: result.label,
+      url: result.args.url,
+      summary: result.key_fields.summary
+    }));
+
+  const followupQueries = [
+    `${input.topic} ${input.focus}`,
+    `${input.topic} official docs examples`,
+    `${input.topic} API reference concrete code`,
+    `${input.topic} compatibility caveats`
+  ];
+
+  const followupSeedUrls = [
+    ...evidenceUrls.map((candidate) => candidate.url),
+    ...sourceCandidates
+      .map((candidate) => ({ ...candidate, score: scoreEvidenceFit(candidate) }))
+      .filter((candidate) => !evidenceUrls.some((selected) => selected.url === candidate.url))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 4)
+      .map((candidate) => candidate.url)
+  ];
+
+  const followupSnippet = `async () => {
+  const input = ${JSON.stringify(
+    {
+      topic: input.topic,
+      focus: input.focus,
+      queries: followupQueries,
+      seedUrls: followupSeedUrls,
+      maxEvidenceUrls: 5
+    },
+    null,
+    2
+  )};
+
+  const axon = (args) => callTool("axon::axon", args);
+  const parseTool = (result) => {
+    const text = result?.content?.[0]?.text;
+    if (typeof text !== "string") return result;
+    try { return JSON.parse(text); } catch { return { raw: text }; }
+  };
+  const timed = async (label, args) => {
+    const started = Date.now();
+    try {
+      const result = await axon(args);
+      const parsed = parseTool(result);
+      return {
+        label,
+        ok: parsed?.ok ?? !result?.isError,
+        ms: Date.now() - started,
+        args,
+        key_fields: parsed?.data?.key_fields,
+        shape: parsed?.data?.shape,
+        artifact: parsed?.data?.artifact?.path ?? parsed?.data?.artifact_handle?.path,
+        data: parsed?.data?.data,
+        error: parsed?.error?.message
+      };
+    } catch (error) {
+      return { label, ok: false, ms: Date.now() - started, args, error: String(error) };
+    }
+  };
+
+  const discoveryCalls = input.queries.flatMap((query, index) => [
+    ["search." + (index + 1), { action: "search", query }],
+    ["query." + (index + 1), { action: "query", query }]
+  ]);
+
+  const started = Date.now();
+  const discovery = await Promise.all(discoveryCalls.map(([label, args]) => timed(label, args)));
+
+  const candidates = [];
+  const addCandidate = (url, reason) => {
+    if (!url || candidates.some((candidate) => candidate.url === url)) return;
+    candidates.push({ url, reason });
+  };
+
+  for (const url of input.seedUrls) addCandidate(url, "seed URL from prior run");
+  for (const result of discovery) {
+    const searchSamples = result.shape?.search_results?.sample ?? result.data?.results ?? [];
+    for (const item of searchSamples) addCandidate(item.url, result.label + ": " + (item.title ?? item.source ?? "untitled"));
+
+    const querySamples = result.shape?.results?.sample ?? [];
+    for (const item of querySamples) addCandidate(item.url ?? item.source, result.label + ": indexed match");
+  }
+
+  const queryTerms = new Set(
+    (input.topic + " " + input.focus)
+      .toLowerCase()
+      .split(/[^a-z0-9_:-]+/)
+      .filter((term) => term.length > 3)
+  );
+
+  const scoreEvidenceFit = (candidate) => {
+    const url = candidate.url.toLowerCase();
+    const reason = candidate.reason.toLowerCase();
+    let score = 0;
+    if (url.includes("modelcontextprotocol.io")) score += 100;
+    if (url.includes("github.com/modelcontextprotocol")) score += 95;
+    if (url.includes("github.com/") && url.includes("/examples")) score += 80;
+    if (url.includes("github.com/") && url.includes("/docs")) score += 75;
+    if (url.includes("docs.rs") || url.includes("crates.io")) score += 70;
+    if (url.includes("mcpui.dev")) score += 65;
+    if (url.includes("github.com/")) score += 55;
+    for (const term of queryTerms) {
+      if (url.includes(term)) score += 12;
+      if (reason.includes(term)) score += 8;
+    }
+    if (url.endsWith("/index.html")) score -= 20;
+    if (/github\\.com\\/[^/]+\\/[^/]+\\/?$/.test(url)) score -= 25;
+    if (url.includes("/latest/") && ![...queryTerms].some((term) => url.includes(term))) score -= 10;
+    if (/github\\.com\\/jmagar\\//.test(url)) score -= 80;
+    if (url.includes("/docs/references/")) score -= 60;
+    if (url.includes(".txt#l")) score -= 50;
+    if (url.includes("llms.txt")) score -= 50;
+    if (url.includes("blog") || url.includes("medium.com")) score -= 20;
+    return score;
+  };
+
+  const selectedSources = candidates
+    .map((candidate) => ({ ...candidate, score: scoreEvidenceFit(candidate) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, input.maxEvidenceUrls);
+
+  const evidenceCalls = selectedSources.flatMap((candidate, index) => [
+    ["evidence." + (index + 1) + ".scrape", { action: "scrape", url: candidate.url }],
+    ["evidence." + (index + 1) + ".summarize", { action: "summarize", url: candidate.url }]
+  ]);
+
+  const evidence = await Promise.all(evidenceCalls.map(([label, args]) => timed(label, args)));
+
+  return {
+    workflow: "axon_research_brief_followup",
+    total_ms: Date.now() - started,
+    input,
+    selected_sources: selectedSources,
+    timings: [...discovery, ...evidence].map((result) => ({
+      label: result.label,
+      ok: result.ok,
+      ms: result.ms,
+      artifact: result.artifact,
+      error: result.error
+    })),
+    summaries: evidence
+      .filter((result) => result.ok && result.key_fields?.summary)
+      .map((result) => ({
+        label: result.label,
+        url: result.args.url,
+        summary: result.key_fields.summary
+      }))
+  };
+}`;
+
+  return {
+    workflow: "axon_research_brief",
+    total_ms: Date.now() - started,
+    input,
+    selected_sources: evidenceUrls,
+    timings: [...firstPassResults, ...evidenceResults].map((result) => ({
+      label: result.label,
+      ok: result.ok,
+      ms: result.ms,
+      artifact: result.artifact,
+      error: result.error
+    })),
+    brief_material: {
+      answer_instruction:
+        "Compose a concise engineering brief from the source summaries below. Prefer concrete crates, APIs, protocol fields, examples, MIME types, metadata keys, compatibility caveats, and next calls.",
+      topic: input.topic,
+      focus: input.focus,
+      first_pass: firstPassResults.map((result) => ({
+        label: result.label,
+        ok: result.ok,
+        artifact: result.artifact,
+        key_fields: result.key_fields,
+        shape: result.shape
+      })),
+      evidence_summaries: facts
+    },
+    followup_snippet: {
+      purpose:
+        "Run this when the brief has gaps, broad sources, weak citations, or missing implementation details. It expands queries and gathers another scrape/summarize evidence bundle.",
+      code: followupSnippet
+    },
+    output_format: [
+      "Answer",
+      "Implementation Recipe",
+      "Minimal Shape",
+      "Evidence Table",
+      "Gaps And Risks",
+      "Follow-Up Calls"
+    ]
+  };
+}
+```
+
+### MCP Prompt Wrapper
+
+An MCP prompt should not duplicate the workflow. It should expose this snippet by name:
+
+```text
+Run snippet `axon_research_brief` with:
+- topic: {{topic}}
+- focus: {{focus}}
+- seedUrl: {{url}}
+
+Use the snippet output's `brief_material` and `output_format` to compose the final answer.
+Do not add `extract` or `stats`.
+```
+
+## `axon_fanout_url`
+
+Purpose: gather broad intel about a single URL.
+
+Recommended calls:
+- `scrape`
+- `map`
+- `summarize`
+- `brand`
+- `screenshot`
+- `query`
+- optional `ask`
+- optional `crawl` when the user wants background indexing
+
+Avoid in the fast path:
+- `extract`
+- `stats`
+
+## `axon_health_snapshot`
+
+Purpose: quickly understand whether Axon is available and what it already knows.
+
+Recommended calls:
+- `help`
+- `status`
+- `doctor`
+- `domains`
+- `sources`
+
+Avoid unless debugging storage/index internals:
+- `stats`

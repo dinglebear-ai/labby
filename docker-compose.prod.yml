@@ -86,13 +86,13 @@ services:
       - ${HOME}/.config/Bitwarden CLI:/home/lab/.config/Bitwarden CLI
       - ${HOME}/.local/share/fnm/node-versions/v24.13.0/installation:${HOME}/.local/share/fnm/node-versions/v24.13.0/installation:ro
       - ${HOME}/.gemini:/home/lab/.gemini
-      # Open Design's MCP daemon is a local workspace service referenced by
-      # absolute path in Codex config.
-      - ${HOME}/workspace/open-design:${HOME}/workspace/open-design
-      # Synapse2 is a local workspace MCP referenced by Lab gateway config.
+      # Local stdio MCP gateways often use absolute host paths under the user's
+      # home directory. Mirror it so adding another local server does not
+      # require a new per-repo container mount.
+      - ${HOME}:${HOME}
+      # Keep the container-local Synapse alias for tools/scripts that expect it.
       - ${SYNAPSE2_WORKSPACE:-${HOME}/workspace/synapse2}:/workspace/synapse2
       - .:/workspace/lab
-      - .:${HOME}/workspace/lab
 
     environment:
       # Bind to all container interfaces so the port mapping works.

@@ -24,32 +24,44 @@ use super::helpers::{
     classify_upstream_error, upstream_transport,
 };
 
+#[cfg(test)]
+static PROBE_TASK_SCHEDULE_COUNTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 impl UpstreamPool {
-    pub(super) fn ensure_probe_task(&self, config: UpstreamConfig) {
+    pub(super) async fn ensure_probe_task(&self, config: UpstreamConfig) {
         if config.oauth.is_some() {
             return;
         }
 
+        let mut tasks = self.probe_tasks.write().await;
+        if tasks.contains_key(&config.name) {
+            return;
+        }
+        let cancel = CancellationToken::new();
+        tasks.insert(config.name.clone(), cancel.clone());
+        drop(tasks);
+        #[cfg(test)]
+        {
+            let mut counts = PROBE_TASK_SCHEDULE_COUNTS
+                .lock()
+                .expect("probe task schedule counts lock");
+            *counts.entry(config.name.clone()).or_default() += 1;
+        }
+        tracing::info!(
+            surface = "dispatch",
+            service = "upstream.pool",
+            action = "upstream.reprobe",
+            event = "scheduled",
+            operation = "health",
+            upstream = %config.name,
+            transport = upstream_transport(&config),
+            "upstream reprobe scheduled"
+        );
+
         let pool = self.clone();
         tokio::spawn(async move {
-            let mut tasks = pool.probe_tasks.write().await;
-            if tasks.contains_key(&config.name) {
-                return;
-            }
-            let cancel = CancellationToken::new();
-            tasks.insert(config.name.clone(), cancel.clone());
-            drop(tasks);
-            tracing::info!(
-                surface = "dispatch",
-                service = "upstream.pool",
-                action = "upstream.reprobe",
-                event = "scheduled",
-                operation = "health",
-                upstream = %config.name,
-                transport = upstream_transport(&config),
-                "upstream reprobe scheduled"
-            );
-
             let mut attempt = 0_u32;
             loop {
                 let base = reprobe_backoff(attempt);
@@ -145,6 +157,24 @@ impl UpstreamPool {
                 }
             }
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_probe_task_schedule_count_for_tests(upstream: &str) {
+        PROBE_TASK_SCHEDULE_COUNTS
+            .lock()
+            .expect("probe task schedule counts lock")
+            .remove(upstream);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn probe_task_schedule_count_for_tests(upstream: &str) -> usize {
+        PROBE_TASK_SCHEDULE_COUNTS
+            .lock()
+            .expect("probe task schedule counts lock")
+            .get(upstream)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub(super) async fn reprobe_upstream(
@@ -294,6 +324,24 @@ impl UpstreamPool {
 mod tests {
     use super::super::testsupport::*;
     use super::*;
+
+    #[tokio::test]
+    async fn ensure_probe_task_registers_before_returning() {
+        let pool = UpstreamPool::new();
+        let config = named_test_upstream_config("probe-race");
+        UpstreamPool::reset_probe_task_schedule_count_for_tests("probe-race");
+
+        pool.ensure_probe_task(config).await;
+
+        assert_eq!(
+            UpstreamPool::probe_task_schedule_count_for_tests("probe-race"),
+            1
+        );
+        assert_eq!(pool.probe_tasks.read().await.len(), 1);
+
+        pool.drain_for_swap("probe.registration.test").await;
+        assert!(pool.probe_tasks.read().await.is_empty());
+    }
 
     #[tokio::test]
     async fn disabled_upstream_reprobe_is_inert() {

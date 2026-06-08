@@ -32,6 +32,12 @@ use super::helpers::{
 use super::logging::capability_name;
 use super::validate::validate_upstream_config;
 
+#[derive(Clone, Copy)]
+enum DiscoveryLifecycle {
+    LongLived,
+    Ephemeral,
+}
+
 /// Collect upstream peers for a capability in deterministic name order.
 pub(super) async fn routable_upstream_peers(
     pool: &UpstreamPool,
@@ -125,7 +131,12 @@ impl UpstreamPool {
     /// upstream is marked unhealthy, but do not prevent other upstreams from
     /// connecting.
     #[allow(clippy::too_many_lines)]
-    async fn discover_all_inner(&self, configs: &[UpstreamConfig], oauth_subject: Option<&str>) {
+    async fn discover_all_inner(
+        &self,
+        configs: &[UpstreamConfig],
+        oauth_subject: Option<&str>,
+        lifecycle: DiscoveryLifecycle,
+    ) {
         if configs.is_empty() {
             return;
         }
@@ -389,8 +400,10 @@ impl UpstreamPool {
             }
         }
 
-        for config in probe_configs {
-            self.ensure_probe_task(config);
+        if matches!(lifecycle, DiscoveryLifecycle::LongLived) {
+            for config in probe_configs {
+                self.ensure_probe_task(config).await;
+            }
         }
     }
 
@@ -399,7 +412,8 @@ impl UpstreamPool {
     /// OAuth upstreams are intentionally skipped because they need a request or
     /// gateway subject to select the right upstream token set.
     pub async fn discover_all(&self, configs: &[UpstreamConfig]) {
-        self.discover_all_inner(configs, None).await;
+        self.discover_all_inner(configs, None, DiscoveryLifecycle::LongLived)
+            .await;
     }
 
     /// Connect to all configured upstreams, using `subject` for OAuth upstreams.
@@ -407,7 +421,17 @@ impl UpstreamPool {
     /// This is for gateway-owned discovery where the subject is an explicit
     /// shared identity, not for subject-less startup discovery.
     pub async fn discover_all_for_subject(&self, configs: &[UpstreamConfig], subject: &str) {
-        self.discover_all_inner(configs, Some(subject)).await;
+        self.discover_all_inner(configs, Some(subject), DiscoveryLifecycle::LongLived)
+            .await;
+    }
+
+    pub async fn discover_all_for_subject_ephemeral(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+    ) {
+        self.discover_all_inner(configs, Some(subject), DiscoveryLifecycle::Ephemeral)
+            .await;
     }
 
     pub async fn discover_all_with_in_process_peers(
@@ -426,6 +450,17 @@ impl UpstreamPool {
         registry: &ToolRegistry,
     ) {
         self.discover_all_for_subject(configs, subject).await;
+        self.register_in_process_service_peers(registry).await;
+    }
+
+    pub async fn discover_all_for_subject_ephemeral_with_in_process_peers(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        registry: &ToolRegistry,
+    ) {
+        self.discover_all_for_subject_ephemeral(configs, subject)
+            .await;
         self.register_in_process_service_peers(registry).await;
     }
 }

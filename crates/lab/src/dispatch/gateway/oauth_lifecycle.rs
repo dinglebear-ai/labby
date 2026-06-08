@@ -662,10 +662,12 @@ impl GatewayManager {
 
         if authenticated {
             discovery_checked = true;
+            let request_timeout = self.config.read().await.upstream_request_timeout();
             let pool = match &self.oauth_client_cache {
                 Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
                 None => UpstreamPool::new(),
-            };
+            }
+            .with_request_timeout(request_timeout);
             let upstream_config = manager.upstream_config().clone();
             pool.discover_all_for_subject(&[upstream_config], subject)
                 .await;

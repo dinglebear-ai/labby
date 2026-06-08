@@ -9,7 +9,9 @@ use serde_json::json;
 use tokio::time::sleep;
 
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
-use crate::config::{LabConfig, ProtectedMcpRouteConfig, config_toml_path};
+use crate::config::{
+    LabConfig, ProtectedMcpRouteConfig, config_toml_path, resolve_auth_for_config,
+};
 use crate::dispatch::clients::SharedServiceClients;
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::gateway::code_mode::{CodeModeBroker, CodeModeCaller, CodeModeSurface};
@@ -367,7 +369,26 @@ struct GatewayOauthStatusView {
     authenticated: bool,
 }
 
-async fn build_manager(config: &LabConfig, discover_upstreams: bool) -> Arc<GatewayManager> {
+async fn build_manager(
+    config: &LabConfig,
+    discover_upstreams: bool,
+) -> Result<Arc<GatewayManager>> {
+    let auth_config = resolve_auth_for_config(config)?;
+    let upstream_oauth_runtime =
+        crate::oauth::upstream::runtime::build_upstream_oauth_runtime(config, &auth_config).await?;
+    Ok(build_manager_with_upstream_oauth_runtime(
+        config,
+        discover_upstreams,
+        upstream_oauth_runtime,
+    )
+    .await)
+}
+
+async fn build_manager_with_upstream_oauth_runtime(
+    config: &LabConfig,
+    discover_upstreams: bool,
+    upstream_oauth_runtime: Option<crate::oauth::upstream::runtime::UpstreamOauthRuntime>,
+) -> Arc<GatewayManager> {
     let runtime = GatewayRuntimeHandle::default();
     let registry = filtered_builtin_service_registry(config);
     if discover_upstreams {
@@ -375,21 +396,30 @@ async fn build_manager(config: &LabConfig, discover_upstreams: bool) -> Arc<Gate
         // without spawning any upstream processes. Connections are made on
         // demand via the manager's `ensure_*_runtime_ready` paths, so one-shot
         // CLI commands only spawn the upstreams they actually touch.
-        let pool = Arc::new(
-            UpstreamPool::new().with_in_process_connector(crate::mcp::in_process_peer::connector()),
-        );
+        let mut pool_builder = UpstreamPool::new()
+            .with_request_timeout(config.upstream_request_timeout())
+            .with_in_process_connector(crate::mcp::in_process_peer::connector());
+        if let Some(rt) = &upstream_oauth_runtime {
+            pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());
+        }
+        let pool = Arc::new(pool_builder);
         pool.seed_lazy_upstreams(&config.upstream).await;
         runtime.swap(Some(pool)).await;
     }
 
-    let manager = Arc::new(
-        GatewayManager::new(
-            config_toml_path().unwrap_or_else(|| "config.toml".into()),
-            runtime,
-        )
-        .with_builtin_service_registry(registry)
-        .with_service_clients(SharedServiceClients::from_env()),
-    );
+    let mut manager = GatewayManager::new(
+        config_toml_path().unwrap_or_else(|| "config.toml".into()),
+        runtime,
+    )
+    .with_builtin_service_registry(registry)
+    .with_service_clients(SharedServiceClients::from_env());
+    if let Some(rt) = upstream_oauth_runtime {
+        manager = manager
+            .with_upstream_oauth_managers(rt.managers)
+            .with_oauth_client_cache(rt.cache)
+            .with_oauth_resources(rt.sqlite, rt.key, rt.redirect_uri);
+    }
+    let manager = Arc::new(manager);
     manager.seed_config(config.clone()).await;
     install_gateway_manager(Arc::clone(&manager));
     manager
@@ -429,7 +459,7 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
                 }),
         })
     ) || matches!(&args.command, GatewayCommand::ProtectedRoute(_)));
-    let manager = build_manager(config, discover_upstreams).await;
+    let manager = build_manager(config, discover_upstreams).await?;
     // Race the command against SIGINT/SIGTERM so the drain below also runs
     // when the invocation is killed externally (e.g. `timeout 100s labby
     // gateway code exec ...` SIGTERMs at the deadline). Without this the
@@ -1157,8 +1187,14 @@ mod tests {
     use clap::Parser;
 
     use crate::cli::{Cli, Command};
+    use crate::config::{
+        LabConfig, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode,
+        UpstreamOauthRegistration,
+    };
+    use crate::oauth::upstream::encryption::load_key;
+    use crate::oauth::upstream::runtime::build_upstream_oauth_runtime_from_parts;
 
-    use super::GatewayCommand;
+    use super::{GatewayCommand, build_manager_with_upstream_oauth_runtime};
 
     #[test]
     fn gateway_cli_parser_accepts_expected_commands() {
@@ -1334,5 +1370,58 @@ mod tests {
         };
 
         assert!(!args.proxy_resources);
+    }
+
+    #[tokio::test]
+    async fn gateway_cli_manager_wires_upstream_oauth_runtime() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = LabConfig {
+            upstream: vec![UpstreamConfig {
+                name: "axon".to_string(),
+                enabled: true,
+                priority: 1.0,
+                url: Some("https://axon.example.com/mcp".to_string()),
+                bearer_token_env: None,
+                command: None,
+                args: Vec::new(),
+                env: std::collections::BTreeMap::new(),
+                proxy_resources: true,
+                proxy_prompts: true,
+                expose_tools: None,
+                expose_resources: None,
+                expose_prompts: None,
+                oauth: Some(UpstreamOauthConfig {
+                    mode: UpstreamOauthMode::AuthorizationCodePkce,
+                    registration: UpstreamOauthRegistration::Dynamic,
+                    scopes: None,
+                }),
+                imported_from: None,
+            }],
+            ..LabConfig::default()
+        };
+        let sqlite = lab_auth::sqlite::SqliteStore::open(dir.path().join("auth.sqlite"))
+            .await
+            .expect("sqlite store");
+        let key_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [9_u8; 32]);
+        let key = load_key(&key_b64).expect("encryption key");
+        let oauth_runtime = build_upstream_oauth_runtime_from_parts(
+            &config,
+            sqlite,
+            key,
+            "https://lab.example.com/auth/upstream/callback".to_string(),
+        );
+
+        let manager =
+            build_manager_with_upstream_oauth_runtime(&config, true, Some(oauth_runtime)).await;
+
+        assert!(
+            manager.upstream_oauth_manager("axon").is_some(),
+            "gateway CLI manager must register OAuth managers for OAuth upstreams"
+        );
+        assert!(
+            manager.oauth_client_cache().is_some(),
+            "gateway CLI manager must install an OAuth client cache for Code Mode and upstream calls"
+        );
     }
 }

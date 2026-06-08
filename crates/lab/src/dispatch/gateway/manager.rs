@@ -1101,19 +1101,23 @@ impl GatewayManager {
             }
         };
 
+        let request_timeout = self.config.read().await.upstream_request_timeout();
         let pool = match &self.oauth_client_cache {
             Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
             None => UpstreamPool::new(),
-        };
+        }
+        .with_request_timeout(request_timeout);
         let registry = self.builtin_service_registry();
-        pool.discover_all_for_subject_with_in_process_peers(
+        pool.discover_all_for_subject_ephemeral_with_in_process_peers(
             &[upstream.clone()],
             SHARED_GATEWAY_OAUTH_SUBJECT,
             &registry,
         )
         .await;
 
-        Ok(runtime_view(Some(&pool), &upstream.name, None).await)
+        let view = runtime_view(Some(&pool), &upstream.name, None).await;
+        pool.drain_for_swap("gateway.test.ephemeral").await;
+        Ok(view)
     }
 
     pub async fn enable_virtual_server(&self, id: &str) -> Result<ServerView, ToolError> {
@@ -1849,7 +1853,8 @@ impl GatewayManager {
             let base_pool = match &self.oauth_client_cache {
                 Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
                 None => UpstreamPool::new(),
-            };
+            }
+            .with_request_timeout(cfg.upstream_request_timeout());
             let pool = Arc::new(
                 base_pool
                     .with_runtime_origin(runtime_origin_tag(origin))
@@ -2086,7 +2091,8 @@ impl GatewayManager {
             let mut base_pool = match &self.oauth_client_cache {
                 Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
                 None => UpstreamPool::new(),
-            };
+            }
+            .with_request_timeout(cfg.upstream_request_timeout());
             base_pool = base_pool.with_runtime_owner(Some(owner.cloned().unwrap_or_else(|| {
                 UpstreamRuntimeOwner {
                     surface: "dispatch".to_string(),
@@ -3138,6 +3144,54 @@ mod tests {
         assert!(pool.cached_upstream_summary("alpha").await.is_some());
         assert_eq!(pool.connection_count_for_tests().await, 0);
         assert!(pool.healthy_tools_for_upstream("alpha").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reload_applies_configured_upstream_request_timeout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        write_gateway_config(
+            &path,
+            &LabConfig {
+                upstream_request_timeout_ms: Some(60_000),
+                upstream: vec![fixture_http_upstream("alpha")],
+                ..LabConfig::default()
+            },
+        )
+        .expect("write config");
+
+        let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+        manager
+            .reload_with_origin(None, None)
+            .await
+            .expect("reload");
+
+        let pool = manager.current_pool().await.expect("pool installed");
+        assert_eq!(
+            pool.request_timeout(),
+            std::time::Duration::from_millis(60_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_test_does_not_schedule_background_reprobes() {
+        UpstreamPool::reset_probe_task_schedule_count_for_tests("ephemeral-stdio");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        );
+        let upstream = fixture_stdio_upstream("ephemeral-stdio");
+
+        let _runtime = manager
+            .test(Ok::<&UpstreamConfig, &str>(&upstream))
+            .await
+            .expect("gateway test returns a runtime view");
+
+        assert_eq!(
+            UpstreamPool::probe_task_schedule_count_for_tests("ephemeral-stdio"),
+            0
+        );
     }
 
     #[tokio::test]

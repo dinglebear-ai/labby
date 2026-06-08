@@ -291,7 +291,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         );
         None
     } else {
-        build_upstream_oauth_runtime(config, &auth_config).await?
+        crate::oauth::upstream::runtime::build_upstream_oauth_runtime(config, &auth_config).await?
     };
     tracing::info!(
         subsystem = "gateway_client",
@@ -306,6 +306,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     );
     crate::config::set_process_code_mode_enabled(config.code_mode.enabled);
     let mut pool_builder = crate::dispatch::upstream::pool::UpstreamPool::new()
+        .with_request_timeout(config.upstream_request_timeout())
         .with_in_process_connector(crate::mcp::in_process_peer::connector());
     if let Some(rt) = &upstream_oauth_runtime {
         pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());
@@ -732,91 +733,6 @@ fn workspace_runtime_home_from_env_values(
     home.filter(|value| !value.is_empty())
         .or_else(|| userprofile.filter(|value| !value.is_empty()))
         .map(PathBuf::from)
-}
-
-struct UpstreamOauthRuntime {
-    managers: Arc<dashmap::DashMap<String, crate::oauth::upstream::manager::UpstreamOauthManager>>,
-    cache: crate::oauth::upstream::cache::OauthClientCache,
-    sqlite: lab_auth::sqlite::SqliteStore,
-    key: crate::oauth::upstream::encryption::EncryptionKey,
-    redirect_uri: String,
-}
-
-async fn build_upstream_oauth_runtime(
-    config: &LabConfig,
-    auth_config: &lab_auth::config::AuthConfig,
-) -> Result<Option<UpstreamOauthRuntime>> {
-    let Some(public_url) = auth_config.public_url.as_ref() else {
-        tracing::info!(
-            subsystem = "gateway_client",
-            phase = "oauth.runtime.disabled",
-            "upstream oauth runtime disabled because no public url is configured"
-        );
-        return Ok(None);
-    };
-    let Ok(encryption_key_raw) = std::env::var("LAB_OAUTH_ENCRYPTION_KEY") else {
-        tracing::info!(
-            subsystem = "gateway_client",
-            phase = "oauth.runtime.disabled",
-            "upstream oauth runtime disabled because LAB_OAUTH_ENCRYPTION_KEY is unset"
-        );
-        return Ok(None);
-    };
-    anyhow::ensure!(
-        public_url.scheme() == "https",
-        "LAB_PUBLIC_URL must be absolute https:// when upstream oauth is configured"
-    );
-    let key = crate::oauth::upstream::encryption::load_key(&encryption_key_raw)
-        .map_err(|error| anyhow::anyhow!("invalid LAB_OAUTH_ENCRYPTION_KEY: {error}"))?;
-    let sqlite = lab_auth::sqlite::SqliteStore::open(auth_config.sqlite_path.clone())
-        .await
-        .context("open sqlite store for upstream oauth")?;
-    let redirect_uri = build_upstream_oauth_callback_uri(public_url)?;
-
-    let managers = Arc::new(dashmap::DashMap::new());
-    for upstream in config
-        .upstream
-        .iter()
-        .filter(|upstream| upstream.oauth.is_some())
-    {
-        managers.insert(
-            upstream.name.clone(),
-            crate::oauth::upstream::manager::UpstreamOauthManager::new(
-                sqlite.clone(),
-                key.clone(),
-                upstream.clone(),
-                redirect_uri.clone(),
-            ),
-        );
-    }
-    let cache = crate::oauth::upstream::cache::OauthClientCache::new(Arc::clone(&managers));
-    tracing::info!(
-        subsystem = "gateway_client",
-        phase = "oauth.runtime.ready",
-        oauth_upstream_count = managers.len(),
-        "upstream oauth runtime initialized"
-    );
-    Ok(Some(UpstreamOauthRuntime {
-        managers,
-        cache,
-        sqlite,
-        key,
-        redirect_uri,
-    }))
-}
-
-fn build_upstream_oauth_callback_uri(public_url: &url::Url) -> Result<String> {
-    let mut redirect_uri = public_url.clone();
-    let base_path = redirect_uri.path().trim_end_matches('/');
-    let next_path = if base_path.is_empty() {
-        "/auth/upstream/callback".to_string()
-    } else {
-        format!("{base_path}/auth/upstream/callback")
-    };
-    redirect_uri.set_path(&next_path);
-    redirect_uri.set_query(None);
-    redirect_uri.set_fragment(None);
-    Ok(redirect_uri.to_string())
 }
 
 fn resolve_web_assets_dir(web: &crate::config::WebPreferences) -> Option<PathBuf> {
