@@ -11,6 +11,7 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
 
+use super::artifacts::CodeModeArtifactReceipt;
 use super::util::{invalid_code_mode_id, lab_action_unknown_tool};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +125,8 @@ pub struct CodeModeExecutionResponse {
     /// returns no protocol-carried logs, so this is empty until console capture
     /// is wired through.
     pub logs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<CodeModeArtifactReceipt>,
 }
 
 /// Lightweight metadata for one host-brokered tool call. Cloudflare parity:

@@ -21,7 +21,7 @@ pub(in crate::dispatch::gateway::code_mode) struct CodeModeArtifactWrite {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(in crate::dispatch::gateway::code_mode) struct CodeModeArtifactReceipt {
+pub struct CodeModeArtifactReceipt {
     pub path: String,
     pub absolute_path: String,
     pub content_type: String,

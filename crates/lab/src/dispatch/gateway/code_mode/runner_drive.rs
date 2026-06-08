@@ -256,6 +256,7 @@ impl CodeModeBroker<'_> {
                                 result: result.into_response_result(),
                                 calls: calls.into_iter().map(|(_, call)| call).collect(),
                                 logs: sanitized_logs,
+                                artifacts: vec![],
                             });
                         }
                         CodeModeRunnerOutput::Error { kind, message } => {

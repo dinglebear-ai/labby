@@ -4,7 +4,9 @@
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use super::artifacts::{CodeModeArtifactWrite, write_code_mode_artifact};
+use super::artifacts::{
+    CodeModeArtifactReceipt, CodeModeArtifactWrite, write_code_mode_artifact,
+};
 use super::*;
 
 #[test]
@@ -31,6 +33,7 @@ fn truncates_code_execute_final_result_when_oversized() {
             },
         ],
         logs: Vec::new(),
+        artifacts: vec![],
     };
 
     let truncated = truncate_execution_response(response, 1400, 6000, 4);
@@ -64,6 +67,7 @@ fn does_not_truncate_when_final_result_within_budget() {
             error_kind: None,
         }],
         logs: Vec::new(),
+        artifacts: vec![],
     };
 
     let out = truncate_execution_response(response, 1400, 6000, 4);
@@ -87,6 +91,7 @@ fn truncates_oversized_logs_after_result() {
         logs: (0..50)
             .map(|i| format!("log line {i}: {}", "y".repeat(200)))
             .collect(),
+        artifacts: vec![],
     };
 
     // ~10 KB of logs against a 2 KB byte budget.
@@ -127,6 +132,7 @@ fn log_trimming_terminates_when_budget_unreachable() {
             })
             .collect(),
         logs: (0..20).map(|i| format!("line {i}")).collect(),
+        artifacts: vec![],
     };
 
     // Tiny budget that calls[] alone exceeds — unreachable by log trimming.
@@ -256,6 +262,7 @@ fn token_estimate_divisor_affects_truncation_decision() {
             error_kind: None,
         }],
         logs: Vec::new(),
+        artifacts: vec![],
     };
 
     // divisor=4: 4000 bytes / 4 = 1000 estimated tokens → within 2000 → NOT truncated
@@ -436,12 +443,14 @@ fn runner_protocol_preserves_null_distinct_from_undefined() {
         result: Some(Value::Null),
         calls: Vec::new(),
         logs: Vec::new(),
+        artifacts: vec![],
     })
     .unwrap();
     let undefined = serde_json::to_value(CodeModeExecutionResponse {
         result: None,
         calls: Vec::new(),
         logs: Vec::new(),
+        artifacts: vec![],
     })
     .unwrap();
     assert!(
@@ -475,6 +484,34 @@ fn code_mode_execution_error_carries_partial_calls() {
     assert_eq!(err.calls(), &[call]);
 }
 
+#[test]
+fn truncation_preserves_artifact_receipts() {
+    let response = CodeModeExecutionResponse {
+        result: Some(serde_json::json!({
+            "markdown": "x".repeat(10_000),
+            "artifact": {
+                "path": "code-mode-artifacts/run/brief.md"
+            }
+        })),
+        calls: vec![],
+        logs: vec![],
+        artifacts: vec![CodeModeArtifactReceipt {
+            path: "brief.md".to_string(),
+            absolute_path: "~/.lab/code-mode-artifacts/run/brief.md".to_string(),
+            content_type: "text/markdown".to_string(),
+            bytes: 10_000,
+            sha256: "a".repeat(64),
+        }],
+    };
+
+    let truncated = truncate_execution_response(response, 1400, 6000, 4);
+
+    assert_eq!(truncated.artifacts.len(), 1);
+    assert_eq!(truncated.artifacts[0].path, "brief.md");
+    let result = truncated.result.expect("truncated marker result");
+    assert_eq!(result["truncated"], true);
+    assert_eq!(result["artifacts"][0]["path"], "brief.md");
+}
 #[tokio::test]
 async fn write_code_mode_artifact_rejects_absolute_paths() {
     let root = TempDir::new().expect("temp root");

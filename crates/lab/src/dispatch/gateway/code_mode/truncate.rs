@@ -2,6 +2,7 @@
 
 use serde_json::{Value, json};
 
+use super::artifacts::CodeModeArtifactReceipt;
 use super::types::CodeModeExecutionResponse;
 
 pub(in crate::dispatch::gateway::code_mode) fn truncate_execution_response(
@@ -27,7 +28,7 @@ pub(in crate::dispatch::gateway::code_mode) fn truncate_execution_response(
     // must be left intact so log trimming can do the work.
     if let Some(result) = response.result.as_ref() {
         let original_len = serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
-        let marker = truncation_marker(result, token_estimate_divisor);
+        let marker = truncation_marker(result, token_estimate_divisor, &response.artifacts);
         let marker_len = serde_json::to_string(&marker).map(|s| s.len()).unwrap_or(0);
         if marker_len < original_len {
             response.result = Some(marker);
@@ -114,7 +115,11 @@ fn estimated_tokens(byte_len: usize, divisor: u32) -> usize {
     byte_len.div_ceil(divisor.max(1) as usize).max(1)
 }
 
-fn truncation_marker(value: &Value, token_estimate_divisor: u32) -> Value {
+fn truncation_marker(
+    value: &Value,
+    token_estimate_divisor: u32,
+    artifacts: &[CodeModeArtifactReceipt],
+) -> Value {
     let serialized = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
     let preview = serialized.chars().take(1024).collect::<String>();
     json!({
@@ -122,6 +127,7 @@ fn truncation_marker(value: &Value, token_estimate_divisor: u32) -> Value {
         "original_size": serialized.len(),
         "original_tokens": estimated_tokens(serialized.len(), token_estimate_divisor),
         "preview": preview,
+        "artifacts": artifacts,
         "next_action": "Use a narrower query, request fewer fields, or split the work across multiple code_execute calls."
     })
 }
