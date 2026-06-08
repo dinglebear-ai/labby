@@ -577,6 +577,209 @@ async fn write_code_mode_artifact_rejects_parent_dir_paths() {
 }
 
 #[tokio::test]
+async fn write_code_mode_artifact_rejects_backslash_relative_traversal() {
+    // Regression: on Linux a backslash is an ordinary filename byte, so the
+    // lexical guard must run AFTER `\`->`/` normalization. `a\..\..\escape.md`
+    // must be rejected, and nothing may be written outside `root`.
+    let root = TempDir::new().expect("temp root");
+    let outside = TempDir::new().expect("outside dir");
+    let request = CodeModeArtifactWrite {
+        path: format!(
+            "a\\..\\..\\..\\{}\\pwned.md",
+            outside.path().file_name().unwrap().to_str().unwrap()
+        ),
+        content: "# escaped".to_string(),
+        content_type: None,
+    };
+
+    let err = write_code_mode_artifact(root.path(), &request)
+        .await
+        .expect_err("backslash traversal must be rejected");
+
+    assert_eq!(err.kind(), "invalid_param");
+    assert!(
+        err.to_string().contains("path traversal"),
+        "error should mention traversal: {err}"
+    );
+}
+
+#[tokio::test]
+async fn write_code_mode_artifact_rejects_backslash_absolute_path() {
+    // Regression: `\etc\evil` is NOT absolute on Linux (no leading `/`), so the
+    // pre-normalization guard missed it; after `\`->`/` it becomes `/etc/evil`
+    // and `root.join` would discard the base entirely. Must be rejected.
+    let root = TempDir::new().expect("temp root");
+    let request = CodeModeArtifactWrite {
+        path: "\\etc\\cron.d\\evil".to_string(),
+        content: "# escaped".to_string(),
+        content_type: None,
+    };
+
+    let err = write_code_mode_artifact(root.path(), &request)
+        .await
+        .expect_err("backslash absolute path must be rejected");
+
+    assert_eq!(err.kind(), "invalid_param");
+    assert!(
+        err.to_string().contains("relative path"),
+        "error should explain relative path requirement: {err}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn write_code_mode_artifact_rejects_symlinked_ancestor() {
+    // Defense-in-depth: a pre-existing symlinked directory under the root must
+    // not be used to redirect the write outside the jail.
+    let root = TempDir::new().expect("temp root");
+    let outside = TempDir::new().expect("outside dir");
+    std::os::unix::fs::symlink(outside.path(), root.path().join("link")).expect("create symlink");
+    let request = CodeModeArtifactWrite {
+        path: "link/escape.md".to_string(),
+        content: "# escaped".to_string(),
+        content_type: None,
+    };
+
+    let err = write_code_mode_artifact(root.path(), &request)
+        .await
+        .expect_err("symlinked ancestor must be rejected");
+
+    assert_eq!(err.kind(), "symlink_rejected");
+    assert!(
+        !outside.path().join("escape.md").exists(),
+        "write must not land outside the jail through the symlink"
+    );
+}
+
+#[tokio::test]
+async fn write_code_mode_artifact_rejects_oversized_content() {
+    let root = TempDir::new().expect("temp root");
+    // Exactly 1 MiB succeeds; one byte over must be rejected as invalid_param.
+    let at_cap = "a".repeat(1024 * 1024);
+    let over_cap = "a".repeat(1024 * 1024 + 1);
+
+    let ok = write_code_mode_artifact(
+        root.path(),
+        &CodeModeArtifactWrite {
+            path: "ok.md".to_string(),
+            content: at_cap,
+            content_type: None,
+        },
+    )
+    .await
+    .expect("exactly 1 MiB must be accepted");
+    assert_eq!(ok.bytes, 1024 * 1024);
+
+    let err = write_code_mode_artifact(
+        root.path(),
+        &CodeModeArtifactWrite {
+            path: "too-big.md".to_string(),
+            content: over_cap,
+            content_type: Some("text/markdown".to_string()),
+        },
+    )
+    .await
+    .expect_err("over 1 MiB must be rejected");
+    assert_eq!(err.kind(), "invalid_param");
+    assert!(err.to_string().contains("maximum"), "error: {err}");
+}
+
+#[tokio::test]
+async fn write_code_mode_artifact_defaults_content_type_to_text_plain() {
+    let root = TempDir::new().expect("temp root");
+    for (idx, content_type) in [None, Some(String::new()), Some("   ".to_string())]
+        .into_iter()
+        .enumerate()
+    {
+        let receipt = write_code_mode_artifact(
+            root.path(),
+            &CodeModeArtifactWrite {
+                path: format!("note-{idx}.txt"),
+                content: "body".to_string(),
+                content_type,
+            },
+        )
+        .await
+        .expect("write succeeds");
+        assert_eq!(
+            receipt.content_type, "text/plain",
+            "absent/blank content type must default to text/plain"
+        );
+    }
+}
+
+#[tokio::test]
+async fn write_code_mode_artifact_maps_io_failure_to_internal_error() {
+    let root = TempDir::new().expect("temp root");
+    // Pre-create `a` as a regular file so `create_dir_all(root/a)` fails when
+    // writing `a/b.md`. The I/O failure must surface as a server-side kind.
+    tokio::fs::write(root.path().join("a"), b"blocker")
+        .await
+        .expect("seed blocking file");
+    let err = write_code_mode_artifact(
+        root.path(),
+        &CodeModeArtifactWrite {
+            path: "a/b.md".to_string(),
+            content: "# nope".to_string(),
+            content_type: None,
+        },
+    )
+    .await
+    .expect_err("write under a file must fail");
+
+    assert_eq!(err.kind(), "internal_error");
+}
+
+#[tokio::test]
+async fn prune_artifact_runs_keeps_newest_and_ignores_non_ulid_entries() {
+    let store = TempDir::new().expect("store root");
+    // Three valid ULID run dirs (sortable chronologically) plus an operator's
+    // stray non-ULID directory that must never be collected.
+    let mut run_ids: Vec<String> = (0..3).map(|_| ulid::Ulid::new().to_string()).collect();
+    run_ids.sort(); // ascending: oldest first
+    for id in &run_ids {
+        tokio::fs::create_dir_all(store.path().join(id))
+            .await
+            .unwrap();
+    }
+    tokio::fs::create_dir_all(store.path().join("operator-notes"))
+        .await
+        .unwrap();
+
+    artifacts::prune_artifact_runs_in(store.path(), 1).await;
+
+    // Oldest two run dirs pruned; newest retained.
+    assert!(!store.path().join(&run_ids[0]).exists());
+    assert!(!store.path().join(&run_ids[1]).exists());
+    assert!(store.path().join(&run_ids[2]).exists());
+    // Non-ULID directory is untouched.
+    assert!(store.path().join("operator-notes").exists());
+}
+
+#[tokio::test]
+async fn prune_artifact_runs_disabled_when_retain_zero() {
+    let store = TempDir::new().expect("store root");
+    let id = ulid::Ulid::new().to_string();
+    tokio::fs::create_dir_all(store.path().join(&id))
+        .await
+        .unwrap();
+
+    artifacts::prune_artifact_runs_in(store.path(), 0).await;
+
+    assert!(store.path().join(&id).exists(), "retain=0 disables pruning");
+}
+
+#[test]
+fn ensure_call_budget_blocks_at_limit() {
+    // Budget gate shared by tool calls AND artifact writes: below the cap is Ok,
+    // at/above the cap returns tool_call_limit_exceeded.
+    assert!(runner_drive::ensure_call_budget_for_test(2, 3).is_ok());
+    let err =
+        runner_drive::ensure_call_budget_for_test(3, 3).expect_err("at the cap must be rejected");
+    assert_eq!(err.kind(), "tool_call_limit_exceeded");
+}
+
+#[tokio::test]
 async fn write_code_mode_artifact_persists_content_and_returns_receipt() {
     let root = TempDir::new().expect("temp root");
     let request = CodeModeArtifactWrite {

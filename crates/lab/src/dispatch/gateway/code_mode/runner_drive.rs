@@ -145,6 +145,10 @@ impl CodeModeBroker<'_> {
         let artifact_run_id = Ulid::new().to_string();
         let artifact_root = code_mode_artifact_root(&artifact_run_id);
         let mut artifacts: Vec<CodeModeArtifactReceipt> = Vec::new();
+        // The store is pruned lazily on the first actual write (below), so runs
+        // that never call writeArtifact — including every search — leave
+        // `$LAB_HOME/code-mode-artifacts/` untouched.
+        let mut artifact_store_pruned = false;
 
         loop {
             tokio::select! {
@@ -218,6 +222,15 @@ impl CodeModeBroker<'_> {
                                 return Err(err);
                             }
                             started_tool_calls += 1;
+                            // Keep the on-disk store bounded — once per run, on the
+                            // first write that actually touches it.
+                            if !artifact_store_pruned {
+                                super::artifacts::prune_artifact_runs(
+                                    super::artifacts::artifact_retention_runs(),
+                                )
+                                .await;
+                                artifact_store_pruned = true;
+                            }
                             handle_artifact_write(
                                 &mut stdin,
                                 &artifact_root,
@@ -394,6 +407,16 @@ fn ensure_call_budget(
         },
         sorted_calls(calls),
     ))
+}
+
+/// Test seam for the shared budget gate (tool calls + artifact writes both go
+/// through `ensure_call_budget`). Keeps the trace argument out of the assertion.
+#[cfg(test)]
+pub(in crate::dispatch::gateway::code_mode) fn ensure_call_budget_for_test(
+    started_tool_calls: usize,
+    max_tool_calls: usize,
+) -> Result<(), CodeModeExecutionError> {
+    ensure_call_budget(started_tool_calls, max_tool_calls, &[])
 }
 
 async fn handle_artifact_write(

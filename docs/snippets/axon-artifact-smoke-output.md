@@ -1,5 +1,13 @@
 # Axon Fanout Smoke
 
+> Note: the `artifact` / `artifact_handle` objects below are **axon's own
+> upstream tool output** (fields like `display_path`, `relative_path`, `kind`,
+> `line_count`, `job_id`, `url`). They are **not** Labby's Code Mode
+> `writeArtifact` receipt, which has the shape
+> `{ path, absolute_path, content_type, bytes, sha256 }` (see
+> `docs/runtime/CONFIG.md` → Code Mode Artifacts). Both happen to carry a
+> `sha256`; don't conflate the two.
+
 ## Topic
 Axum request timeout middleware
 

@@ -42,6 +42,12 @@ pub enum CodeModeRunnerOutput {
         id: String,
         params: Value,
     },
+    /// The sandbox called `writeArtifact(path, content, options?)`. The host
+    /// validates `path`, writes `content` under the per-run artifact root, and
+    /// settles the matching promise with a receipt (or a structured error).
+    /// `#[serde(default)]` on `content_type` keeps the field optional so a
+    /// caller that omits `options.contentType` deserializes to `None` (the host
+    /// then defaults it to `text/plain`).
     ArtifactWrite {
         seq: u64,
         path: String,

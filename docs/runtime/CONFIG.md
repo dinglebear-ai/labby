@@ -215,8 +215,12 @@ return { artifact, summary: "Brief generated" };
 ```
 
 Artifacts are host-brokered writes, not direct sandbox filesystem access. The
-runner emits an artifact request, Labby validates the relative path, writes the
-content under `$LAB_HOME/code-mode-artifacts/<run_id>/`, and returns a receipt:
+runner emits an artifact request and Labby validates the path before writing.
+The path must be a non-empty **relative** path with no `..` segments (checked
+after `\`→`/` normalization), and the joined destination is confirmed to stay
+within the per-run root — rejecting symlinked ancestors — before any write. The
+content is then written into a fresh per-run directory under
+`$LAB_HOME/code-mode-artifacts/<run_id>/` and Labby returns a receipt:
 
 ```json
 {
@@ -228,10 +232,18 @@ content under `$LAB_HOME/code-mode-artifacts/<run_id>/`, and returns a receipt:
 }
 ```
 
-Artifact writes do not bypass `timeout_ms`, `max_tool_calls`, or final response
-caps. They are the preferred way to keep large markdown reports, source tables,
-crawl manifests, and follow-up snippets out of the final JSON response while
-still making them available on disk.
+A single artifact is capped at **1 MiB**; oversized content is rejected with
+`invalid_param`. `options.contentType` defaults to `text/plain` when omitted or
+blank. Artifact writes do not bypass `timeout_ms`, `max_tool_calls`, or final
+response caps — each write counts against `max_tool_calls`. They are the
+preferred way to keep large markdown reports, source tables, crawl manifests,
+and follow-up snippets out of the final JSON response while still making them
+available on disk.
+
+The store is bounded: on each run Labby prunes old per-run directories, keeping
+the newest `LAB_CODE_MODE_ARTIFACT_RETENTION_RUNS` (default `200`). Only
+ULID-named run directories this feature created are ever pruned; set the value
+to `0` to disable pruning (unbounded growth).
 
 ### `[oauth.machines.<id>]`
 

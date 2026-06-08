@@ -79,7 +79,7 @@ async () => {
 }
 ```
 
-The final return value is still subject to `[code_mode].max_response_bytes` and `[code_mode].max_response_tokens`. Artifacts are written under `$LAB_HOME/code-mode-artifacts/<run_id>/` and the receipt includes the path, byte count, content type, and SHA-256 digest.
+The final return value is still subject to `[code_mode].max_response_bytes` and `[code_mode].max_response_tokens`. Each `writeArtifact` path is validated (non-empty, relative, no `..`, no symlinked-ancestor escape) and the content — capped at 1 MiB — is written into a per-run directory under `$LAB_HOME/code-mode-artifacts/<run_id>/`. The receipt includes the path, byte count, content type, and SHA-256 digest. Artifact writes count against `max_tool_calls`, and `contentType` defaults to `text/plain` when omitted.
 
 ## Basic Pattern
 

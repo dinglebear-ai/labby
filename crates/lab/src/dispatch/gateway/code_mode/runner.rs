@@ -450,7 +450,7 @@ fn next_runner_seq(cx: &javy::quickjs::Ctx<'_>) -> javy::quickjs::Result<u64> {
                 .as_mut()
                 .ok_or_else(|| "runner state is not initialized".to_string())?;
             let seq = state.next_seq;
-            state.next_seq += 1;
+            state.next_seq = state.next_seq.saturating_add(1);
             Ok::<_, String>(seq)
         })
         .map_err(|err| javy_type_error(cx.clone(), err))
