@@ -201,6 +201,13 @@ impl CodeModeBroker<'_> {
                                 .boxed(),
                             );
                         }
+                        CodeModeRunnerOutput::ArtifactWrite { .. } => {
+                            terminate_code_mode_runner(&mut child, child_pid).await;
+                            return Err(ToolError::Sdk {
+                                sdk_kind: "internal_error".to_string(),
+                                message: "Code Mode artifact writes are not wired in the parent process".to_string(),
+                            });
+                        }
                         CodeModeRunnerOutput::Done { result, logs } => {
                             if !pending_tool_calls.is_empty() {
                                 terminate_code_mode_runner(&mut child, child_pid).await;

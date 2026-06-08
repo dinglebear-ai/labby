@@ -42,6 +42,13 @@ pub enum CodeModeRunnerOutput {
         id: String,
         params: Value,
     },
+    ArtifactWrite {
+        seq: u64,
+        path: String,
+        content: String,
+        #[serde(default)]
+        content_type: Option<String>,
+    },
     /// Runner completed successfully. `result` is the serialized return value of
     /// the async function (`Undefined` when the function returns undefined).
     /// `logs` carries captured console output (Boa path) or redirected stderr (Javy path).
