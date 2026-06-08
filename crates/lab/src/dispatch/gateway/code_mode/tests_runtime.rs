@@ -10,6 +10,19 @@ use super::artifacts::{
 use super::*;
 
 #[test]
+fn code_mode_runner_wrapper_exposes_write_artifact() {
+    let wrapped = super::runner::wrap_code_mode_for_test(
+        "async () => 'ok'",
+        "var codemode = {};",
+    );
+
+    assert!(wrapped.contains("globalThis.writeArtifact"));
+    assert!(wrapped.contains("__labEmitArtifactWrite"));
+    assert!(wrapped.contains("writeArtifact path must be a non-empty string"));
+    assert!(wrapped.contains("writeArtifact content must be a string"));
+}
+
+#[test]
 fn truncates_code_execute_final_result_when_oversized() {
     // calls[] carry lightweight metadata only — truncation caps the FINAL
     // result. An oversized final result is replaced with a truncation marker;
