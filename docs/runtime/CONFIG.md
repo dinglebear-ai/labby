@@ -203,6 +203,36 @@ Operators can change the main execution limits without hand-editing TOML using
 fields listed above and validates them with the same ranges used for file
 configuration.
 
+#### Code Mode Artifacts
+
+`execute` exposes a sandbox helper for large outputs:
+
+```js
+const artifact = await writeArtifact("reports/brief.md", markdown, {
+  contentType: "text/markdown"
+});
+return { artifact, summary: "Brief generated" };
+```
+
+Artifacts are host-brokered writes, not direct sandbox filesystem access. The
+runner emits an artifact request, Labby validates the relative path, writes the
+content under `$LAB_HOME/code-mode-artifacts/<run_id>/`, and returns a receipt:
+
+```json
+{
+  "path": "reports/brief.md",
+  "absolute_path": "~/.lab/code-mode-artifacts/01J.../reports/brief.md",
+  "content_type": "text/markdown",
+  "bytes": 18342,
+  "sha256": "..."
+}
+```
+
+Artifact writes do not bypass `timeout_ms`, `max_tool_calls`, or final response
+caps. They are the preferred way to keep large markdown reports, source tables,
+crawl manifests, and follow-up snippets out of the final JSON response while
+still making them available on disk.
+
 ### `[oauth.machines.<id>]`
 
 Named OAuth callback forwarding targets for `labby oauth relay-local`.
