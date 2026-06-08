@@ -34,6 +34,7 @@ impl CodeModeBroker<'_> {
         surface: CodeModeSurface,
         max_log_entries: usize,
         max_log_bytes: usize,
+        trace_params: bool,
         capability_filter: CodeModeCapabilityFilter,
     ) -> Result<CodeModeExecutionResponse, ToolError> {
         let exe = std::env::current_exe().map_err(|err| ToolError::Sdk {
@@ -181,6 +182,8 @@ impl CodeModeBroker<'_> {
                             }
                             started_tool_calls += 1;
                             let call_id = id.clone();
+                            let trace_params =
+                                super::trace::redact_trace_params(&params, trace_params);
                             let caller = caller.clone();
                             let capability_filter = capability_filter.clone();
                             pending_tool_calls.push(
@@ -193,7 +196,7 @@ impl CodeModeBroker<'_> {
                                         )
                                         .await;
                                     let elapsed_ms = call_start.elapsed().as_millis();
-                                    (seq, call_id, result, elapsed_ms)
+                                    (seq, call_id, trace_params, result, elapsed_ms)
                                 }
                                 .boxed(),
                             );
@@ -273,8 +276,8 @@ impl CodeModeBroker<'_> {
                     }
                 }
                 completed = pending_tool_calls.next(), if !pending_tool_calls.is_empty() => {
-                    let Some((seq, id, result, elapsed_ms)):
-                        Option<(u64, String, Result<Value, ToolError>, u128)> = completed
+                    let Some((seq, id, params, result, elapsed_ms)):
+                        Option<(u64, String, Option<Value>, Result<Value, ToolError>, u128)> = completed
                     else {
                         continue;
                     };
@@ -284,6 +287,7 @@ impl CodeModeBroker<'_> {
                                 id,
                                 ok: true,
                                 elapsed_ms,
+                                params,
                                 error_kind: None,
                             }));
                             write_runner_input(
@@ -324,6 +328,7 @@ impl CodeModeBroker<'_> {
                                 id,
                                 ok: false,
                                 elapsed_ms,
+                                params,
                                 error_kind: Some(kind),
                             }));
                         }

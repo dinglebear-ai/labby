@@ -73,6 +73,7 @@ impl CodeModeBroker<'_> {
                 surface,
                 0,
                 0,
+                false,
                 CodeModeCapabilityFilter::default(),
             )
             .await?;

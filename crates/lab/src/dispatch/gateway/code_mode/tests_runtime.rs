@@ -17,12 +17,14 @@ fn truncates_code_execute_final_result_when_oversized() {
                 id: "github::search_issues".to_string(),
                 ok: true,
                 elapsed_ms: 12,
+                params: None,
                 error_kind: None,
             },
             CodeModeExecutedCall {
                 id: "github::list_issues".to_string(),
                 ok: false,
                 elapsed_ms: 7,
+                params: None,
                 error_kind: Some("rate_limited".to_string()),
             },
         ],
@@ -56,6 +58,7 @@ fn does_not_truncate_when_final_result_within_budget() {
             id: "github::search_issues".to_string(),
             ok: true,
             elapsed_ms: 3,
+            params: None,
             error_kind: None,
         }],
         logs: Vec::new(),
@@ -76,6 +79,7 @@ fn truncates_oversized_logs_after_result() {
             id: "test::ping".to_string(),
             ok: true,
             elapsed_ms: 2,
+            params: None,
             error_kind: None,
         }],
         logs: (0..50)
@@ -116,6 +120,7 @@ fn log_trimming_terminates_when_budget_unreachable() {
                 id: format!("test::tool_{i}"),
                 ok: true,
                 elapsed_ms: 1,
+                params: None,
                 error_kind: None,
             })
             .collect(),
@@ -245,6 +250,7 @@ fn token_estimate_divisor_affects_truncation_decision() {
             id: "test::large".to_string(),
             ok: true,
             elapsed_ms: 1,
+            params: None,
             error_kind: None,
         }],
         logs: Vec::new(),
@@ -277,5 +283,70 @@ fn token_estimate_divisor_affects_truncation_decision() {
     assert!(
         truncated_result.get("payload").is_none(),
         "truncation marker must not keep original payload key"
+    );
+}
+
+#[test]
+fn code_mode_history_bounds_entries_and_keeps_redacted_params_only() {
+    let mut history = CodeModeHistory::new(2, 100_000);
+    for idx in 0..3 {
+        history.push(CodeModeHistoryEntry {
+            seq: 0,
+            kind: CodeModeHistoryKind::Execute,
+            ok: true,
+            elapsed_ms: idx,
+            error_kind: None,
+            calls: vec![CodeModeExecutedCall {
+                id: format!("test::tool_{idx}"),
+                ok: true,
+                elapsed_ms: 1,
+                params: trace::redact_trace_params(
+                    &json!({"query": idx, "token": "raw-secret-token"}),
+                    true,
+                ),
+                error_kind: None,
+            }],
+            match_count: None,
+        });
+    }
+
+    let snapshot = history.snapshot();
+    assert_eq!(snapshot.len(), 2);
+    assert_eq!(snapshot[0].seq, 2);
+    assert_eq!(snapshot[1].seq, 3);
+    let serialized = serde_json::to_string(&snapshot).unwrap();
+    assert!(serialized.contains("[redacted]"));
+    assert!(!serialized.contains("raw-secret-token"));
+}
+
+#[test]
+fn code_mode_history_bounds_by_bytes() {
+    let mut history = CodeModeHistory::new(50, 1300);
+    for idx in 0..10 {
+        history.push(CodeModeHistoryEntry {
+            seq: 0,
+            kind: CodeModeHistoryKind::Search,
+            ok: true,
+            elapsed_ms: idx,
+            error_kind: None,
+            calls: vec![CodeModeExecutedCall {
+                id: format!("test::tool_{idx}"),
+                ok: true,
+                elapsed_ms: 1,
+                params: Some(json!({"safe": "x".repeat(250)})),
+                error_kind: None,
+            }],
+            match_count: Some(idx as usize),
+        });
+    }
+
+    let snapshot = history.snapshot();
+    assert!(
+        serde_json::to_vec(&snapshot).unwrap().len() <= 1300 || snapshot.len() == 1,
+        "history should drop oldest entries until under byte budget or one entry remains"
+    );
+    assert!(
+        snapshot.len() < 10,
+        "byte budget should have dropped old entries"
     );
 }

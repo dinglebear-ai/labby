@@ -1,7 +1,7 @@
 //! Core Code Mode value types: tool ids, catalog entries, execution responses,
 //! callers, surfaces, and the capability filter.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -131,8 +131,86 @@ pub struct CodeModeExecutedCall {
     pub id: String,
     pub ok: bool,
     pub elapsed_ms: u128,
+    /// Redacted/capped params captured at the broker boundary. Raw params must
+    /// never be stored in this public trace type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeModeHistoryKind {
+    Search,
+    Execute,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CodeModeHistoryEntry {
+    pub seq: u64,
+    pub kind: CodeModeHistoryKind,
+    pub ok: bool,
+    pub elapsed_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<CodeModeExecutedCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_count: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeModeHistory {
+    entries: VecDeque<CodeModeHistoryEntry>,
+    max_entries: usize,
+    max_bytes: usize,
+    next_seq: u64,
+}
+
+impl Default for CodeModeHistory {
+    fn default() -> Self {
+        Self::new(50, 256 * 1024)
+    }
+}
+
+impl CodeModeHistory {
+    #[must_use]
+    pub fn new(max_entries: usize, max_bytes: usize) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            max_entries: max_entries.max(1),
+            max_bytes: max_bytes.max(1024),
+            next_seq: 1,
+        }
+    }
+
+    pub fn push(&mut self, mut entry: CodeModeHistoryEntry) {
+        entry.seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+        self.entries.push_back(entry);
+        self.trim();
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<CodeModeHistoryEntry> {
+        self.entries.iter().cloned().collect()
+    }
+
+    fn trim(&mut self) {
+        while self.entries.len() > self.max_entries {
+            self.entries.pop_front();
+        }
+        while self.serialized_size() > self.max_bytes && self.entries.len() > 1 {
+            self.entries.pop_front();
+        }
+    }
+
+    fn serialized_size(&self) -> usize {
+        serde_json::to_vec(&self.entries)
+            .map(|bytes| bytes.len())
+            .unwrap_or(usize::MAX)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

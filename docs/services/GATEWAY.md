@@ -94,6 +94,7 @@ Configuration lives at root `[code_mode]` in `config.toml`:
 ```toml
 [code_mode]
 enabled = true
+trace_params = true
 timeout_ms = 30000
 max_tool_calls = 1000
 max_response_bytes = 24576
@@ -116,7 +117,7 @@ HTTP/MCP gateway management actions:
 ```
 
 ```json
-{ "action": "gateway.code_mode.set", "params": { "enabled": true, "timeout_ms": 5000, "max_tool_calls": 8 } }
+{ "action": "gateway.code_mode.set", "params": { "enabled": true, "trace_params": true, "timeout_ms": 5000, "max_tool_calls": 8 } }
 ```
 
 MCP `search` call shape:
@@ -140,6 +141,38 @@ the injected `codemode.<upstream>.<tool>()` typed helpers and the escape-hatch
 `callTool(id, params)` function, which sends each requested call back to the
 parent gateway for normal visibility, scope, destructive-action, and upstream
 exposure checks. `params` must be JSON-serializable.
+
+### Code Mode Call Inspector
+
+When Code Mode is enabled, the synthetic MCP `search` and `execute` tools also
+advertise a read-only MCP App inspector through `_meta.ui.resourceUri`.
+
+- `search` attaches `ui://lab/code-mode/search`
+- `execute` attaches `ui://lab/code-mode/execute`
+- recent in-memory history is available at `ui://lab/code-mode/history`
+
+The inspector is passive observability only. It renders tool-result
+`structuredContent` and bounded server-injected history snapshots; it does not
+initiate tool calls, call Lab HTTP APIs, or execute app-originated operations in
+v1. The `ui://` resource body is self-contained HTML so MCP hosts do not need to
+resolve exported Next.js chunk assets from the resource body. The Next route in
+`apps/gateway-admin/app/mcp/code-mode/` remains available for browser/static
+build verification.
+
+The trace shapes are intentionally different:
+
+- `search` emits a catalog trace (`code_mode_search_trace`) with matched
+  upstream/tool metadata and result shape. It is inferred from the filtered
+  catalog, not broker-observed runtime telemetry.
+- `execute` emits a runtime trace (`code_mode_execute_trace`) from the broker's
+  actual upstream calls, including upstream, tool, status, elapsed time, error
+  kind, compact result shape, and optional params.
+
+Trace params are redacted and capped before leaving the broker boundary. Raw
+params are consumed only for upstream dispatch; they must not enter public
+response structs, structured content, history, resources, logs, UI state, or
+tests. Set `code_mode.trace_params = false` to omit params from traces entirely.
+History is process-local, memory-only, bounded, and cleared on restart.
 
 Code Mode execution handles upstream MCP tools only. Lab actions are not callable
 from inside the Code Mode sandbox. Upstream ids use

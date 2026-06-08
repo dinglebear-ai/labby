@@ -16,14 +16,94 @@ use std::time::Instant;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
-    AnnotateAble, ListResourcesResult, LoggingLevel, PaginatedRequestParams, RawResource,
+    AnnotateAble, ListResourcesResult, LoggingLevel, Meta, PaginatedRequestParams, RawResource,
     ReadResourceRequestParams, ReadResourceResult, ResourceContents,
 };
 use rmcp::service::RequestContext;
+use serde_json::{Value, json};
 
 use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_for_request};
 use crate::mcp::logging::DispatchLogOutcome;
 use crate::mcp::server::LabMcpServer;
+
+pub(crate) const CODE_MODE_APP_MIME: &str = "text/html;profile=mcp-app";
+pub(crate) const CODE_MODE_SEARCH_APP_URI: &str = "ui://lab/code-mode/search";
+pub(crate) const CODE_MODE_EXECUTE_APP_URI: &str = "ui://lab/code-mode/execute";
+pub(crate) const CODE_MODE_HISTORY_APP_URI: &str = "ui://lab/code-mode/history";
+
+const CODE_MODE_APP_FALLBACK_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lab Code Mode Inspector</title>
+<style>
+:root{color-scheme:dark;background:#07131c;color:#e6f4fb;font-family:Inter,system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;padding:14px;background:#07131c;color:#e6f4fb}
+main{display:grid;gap:12px}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;border-bottom:1px solid #1d3d4e;padding-bottom:10px}
+h1{font-size:16px;line-height:1.25;margin:0;font-weight:700}
+.sub{color:#a7bcc9;font-size:12px;margin-top:3px}
+.badge{border:1px solid #1d3d4e;border-radius:999px;padding:3px 8px;color:#72c8f5;font-size:11px;white-space:nowrap}
+.grid{display:grid;gap:8px}
+.card{border:1px solid #1d3d4e;border-radius:8px;background:#102330;padding:10px}
+.row{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.name{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:12px;color:#e6f4fb;overflow-wrap:anywhere}
+.meta{font-size:11px;color:#a7bcc9}
+.ok{color:#7dd3c7}.err{color:#c78490}.info{color:#72c8f5}
+details{margin-top:8px}
+summary{cursor:pointer;color:#67cbfa;font-size:12px}
+pre{margin:8px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #1d3d4e;border-radius:6px;background:#07131c;padding:8px;color:#e6f4fb;font-size:11px}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div><h1>Code Mode Inspector</h1><div class="sub" id="summary">Waiting for a tool result</div></div>
+<div class="badge" id="state">read only</div>
+</header>
+<section class="grid" id="content"></section>
+</main>
+<script>window.__LAB_CODE_MODE_INITIAL_TRACE__ = null;</script>
+<script>
+const content=document.getElementById("content");
+const summary=document.getElementById("summary");
+const state=document.getElementById("state");
+function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
+function json(value){try{return JSON.stringify(value,null,2)}catch{return String(value)}}
+function shape(s){if(!s)return"";return [s.type,s.key_count&&`${s.key_count} keys`,s.array_len&&`${s.array_len} items`].filter(Boolean).join(" / ")}
+function card(body){return `<article class="card">${body}</article>`}
+function callRow(call){
+  const cls=call.status==="ok"?"ok":"err";
+  const params=call.params?`<details><summary>Params</summary><pre>${esc(json(call.params))}</pre></details>`:"";
+  return card(`<div class="row"><div class="name">${esc(call.upstream||"upstream")} / ${esc(call.tool||"tool")}</div><div class="${cls}">${esc(call.status||"")}</div></div><div class="meta">${esc(call.elapsed_ms??0)} ms ${call.error_kind?` / ${esc(call.error_kind)}`:""}</div>${call.result_shape?`<div class="meta">${esc(shape(call.result_shape))}</div>`:""}${params}`);
+}
+function matchRow(match){return card(`<div class="row"><div class="name">${esc(match.id||match.name||"match")}</div><div class="info">${esc(match.upstream||"")}</div></div><div class="meta">${esc(match.description||"")}</div>`)}
+function historyRow(entry){
+  const count=Array.isArray(entry.calls)?entry.calls.length:0;
+  return card(`<div class="row"><div class="name">${esc(entry.kind||"entry")} / ${esc(entry.action||"")}</div><div class="${entry.status==="ok"?"ok":"err"}">${esc(entry.status||"")}</div></div><div class="meta">${esc(entry.elapsed_ms??0)} ms / ${count} calls / ${esc(entry.recorded_at||"")}</div>`);
+}
+function render(trace){
+  const t=trace&&trace.structuredContent?trace.structuredContent:trace;
+  if(!t||!t.kind){content.innerHTML=card('<div class="meta">Run Code Mode search or execute to populate the inspector.</div>');return;}
+  if(t.kind==="code_mode_execute_trace"){summary.textContent=`${t.call_count||0} broker calls captured`;content.innerHTML=(t.calls||[]).map(callRow).join("")||card('<div class="meta">No broker calls were made.</div>');return;}
+  if(t.kind==="code_mode_search_trace"){summary.textContent=`${t.match_count||0} catalog matches`;content.innerHTML=(t.matches||[]).map(matchRow).join("")||card('<div class="meta">No matches.</div>');return;}
+  if(t.kind==="code_mode_history"){summary.textContent=`${(t.entries||[]).length} bounded history entries`;content.innerHTML=(t.entries||[]).map(historyRow).join("")||card('<div class="meta">History is empty.</div>');return;}
+  content.innerHTML=card(`<pre>${esc(json(t))}</pre>`);
+}
+render(window.__LAB_CODE_MODE_INITIAL_TRACE__);
+const Host=window.ExtApps&&window.ExtApps.App;
+if(Host){
+  try{
+    const app=new Host();
+    app.ontoolresult=(result)=>render(result&&result.structuredContent?result.structuredContent:result);
+    Promise.resolve(app.connect&&app.connect()).then(()=>{state.textContent="connected"}).catch(()=>{state.textContent="read only"});
+  }catch{state.textContent="read only";}
+}
+</script>
+</body>
+</html>"#;
 
 impl LabMcpServer {
     pub(crate) async fn list_resources_impl(
@@ -45,6 +125,9 @@ impl LabMcpServer {
                 .with_description("Full discovery document for all services")
                 .with_mime_type("application/json")
                 .no_annotation(),
+            code_mode_app_resource(CODE_MODE_SEARCH_APP_URI, "code-mode/search"),
+            code_mode_app_resource(CODE_MODE_EXECUTE_APP_URI, "code-mode/execute"),
+            code_mode_app_resource(CODE_MODE_HISTORY_APP_URI, "code-mode/history"),
         ];
 
         for svc in self.registry.services() {
@@ -112,6 +195,14 @@ impl LabMcpServer {
             resource_uri = crate::dispatch::upstream::pool::redact_resource_uri_for_logging(uri),
             "dispatch start"
         );
+
+        // Branch 0: MCP Apps UI resources. This must precede all lab://
+        // fallbacks so ui:// has its own exact lookup semantics.
+        if uri.starts_with("ui://") {
+            return self
+                .read_code_mode_app_resource_impl(uri, &subject, start, &context)
+                .await;
+        }
 
         // Branch 1: gateway-synthetic resources.
         if uri.starts_with("lab://gateway/") {
@@ -231,5 +322,149 @@ impl LabMcpServer {
                 Err(ErrorData::internal_error(e.to_string(), None))
             }
         }
+    }
+
+    async fn read_code_mode_app_resource_impl(
+        &self,
+        uri: &str,
+        subject: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        let history = if uri == CODE_MODE_HISTORY_APP_URI {
+            match &self.gateway_manager {
+                Some(manager) => Some(json!({
+                    "kind": "code_mode_history",
+                    "entries": manager.code_mode_history_snapshot().await,
+                })),
+                None => Some(json!({ "kind": "code_mode_history", "entries": [] })),
+            }
+        } else {
+            None
+        };
+        let html = code_mode_app_html(uri, history.as_ref())
+            .map_err(|message| ErrorData::resource_not_found(message, None))?;
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            elapsed_ms,
+            resource_uri = uri,
+            "code mode app resource read ok"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "read_resource",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(html, uri.to_string())
+                .with_mime_type(CODE_MODE_APP_MIME)
+                .with_meta(code_mode_app_resource_meta(uri)),
+        ]))
+    }
+}
+
+fn code_mode_app_html(uri: &str, history: Option<&Value>) -> Result<String, String> {
+    if !matches!(
+        uri,
+        CODE_MODE_SEARCH_APP_URI | CODE_MODE_EXECUTE_APP_URI | CODE_MODE_HISTORY_APP_URI
+    ) {
+        return Err(format!("unknown UI resource: {uri}"));
+    }
+
+    let mut html = CODE_MODE_APP_FALLBACK_HTML.to_string();
+    if let Some(snapshot) = history {
+        let injected = format!(
+            "window.__LAB_CODE_MODE_INITIAL_TRACE__ = {};",
+            snapshot.to_string().replace('<', "\\u003c")
+        );
+        html = html.replace("window.__LAB_CODE_MODE_INITIAL_TRACE__ = null;", &injected);
+    }
+    Ok(html)
+}
+
+fn code_mode_app_resource(uri: &str, name: &str) -> rmcp::model::Resource {
+    RawResource::new(uri.to_string(), name.to_string())
+        .with_description("Read-only MCP App for Code Mode call traces")
+        .with_mime_type(CODE_MODE_APP_MIME)
+        .with_meta(code_mode_app_resource_meta(uri))
+        .no_annotation()
+}
+
+pub(crate) fn code_mode_app_resource_meta(uri: &str) -> Meta {
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "ui".to_string(),
+        json!({
+            "resourceUri": uri,
+            "mimeTypes": [CODE_MODE_APP_MIME],
+        }),
+    );
+    meta.insert(
+        "csp".to_string(),
+        json!({
+            "connectDomains": [],
+            "resourceDomains": [],
+            "frameDomains": [],
+        }),
+    );
+    meta.insert("prefersBorder".to_string(), Value::Bool(false));
+    Meta(meta)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_mode_app_resource_meta_uses_mcp_app_mime_and_csp() {
+        let meta = code_mode_app_resource_meta(CODE_MODE_SEARCH_APP_URI);
+        assert_eq!(
+            meta.0["ui"]["resourceUri"].as_str(),
+            Some(CODE_MODE_SEARCH_APP_URI)
+        );
+        assert_eq!(
+            meta.0["ui"]["mimeTypes"][0].as_str(),
+            Some(CODE_MODE_APP_MIME)
+        );
+        assert_eq!(
+            meta.0["csp"]["connectDomains"]
+                .as_array()
+                .expect("connect domains")
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn code_mode_app_html_accepts_known_ui_resources_and_rejects_unknown() {
+        let html = code_mode_app_html(CODE_MODE_EXECUTE_APP_URI, None).expect("known resource");
+        assert!(html.contains("Lab Code Mode Inspector"));
+
+        let err = code_mode_app_html("ui://lab/code-mode/nope", None).expect_err("unknown");
+        assert!(err.contains("unknown UI resource"));
+    }
+
+    #[test]
+    fn code_mode_history_html_injects_escaped_snapshot() {
+        let html = code_mode_app_html(
+            CODE_MODE_HISTORY_APP_URI,
+            Some(&json!({
+                "kind": "code_mode_history",
+                "entries": [{"seq": 1, "kind": "execute", "ok": true, "elapsed_ms": 1, "calls": [{"params": {"note": "</script>"}}]}],
+            })),
+        )
+        .expect("history resource");
+
+        assert!(html.contains("code_mode_history"));
+        assert!(!html.contains("</script>\""));
+        assert!(html.contains("\\u003c/script>"));
     }
 }

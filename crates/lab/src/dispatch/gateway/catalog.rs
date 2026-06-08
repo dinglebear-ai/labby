@@ -54,6 +54,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Whether the gateway advertises Code Mode search and execute tools",
             },
             ParamSpec {
+                name: "trace_params",
+                ty: "boolean",
+                required: false,
+                description: "Whether call traces include redacted and capped upstream tool params",
+            },
+            ParamSpec {
                 name: "timeout_ms",
                 ty: "integer",
                 required: false,

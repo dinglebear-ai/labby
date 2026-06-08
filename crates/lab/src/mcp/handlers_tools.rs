@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{ListToolsResult, PaginatedRequestParams, Tool};
+use rmcp::model::{ListToolsResult, Meta, PaginatedRequestParams, Tool};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
@@ -21,6 +21,7 @@ use crate::mcp::call_tool_codemode::CODE_EXECUTE_DESCRIPTION;
 use crate::mcp::catalog::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
 use crate::mcp::completion::action_schema;
 use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_for_request};
+use crate::mcp::handlers_resources::{CODE_MODE_EXECUTE_APP_URI, CODE_MODE_SEARCH_APP_URI};
 use crate::mcp::logging::DispatchLogOutcome;
 use crate::mcp::server::LabMcpServer;
 
@@ -91,7 +92,7 @@ impl LabMcpServer {
                 that filters `const tools = [...]` (each entry: id, upstream, name, description, schema, output_schema, signature, dts) \
                 and returns what you need. Use before execute() to discover the right tool id.",
                 search_schema,
-            ));
+            ).with_meta(code_mode_tool_meta(CODE_MODE_SEARCH_APP_URI)));
             gateway_tool_count += 1;
             let execute_schema = match serde_json::json!({
                 "type": "object",
@@ -124,11 +125,14 @@ impl LabMcpServer {
                 description_bytes = CODE_EXECUTE_DESCRIPTION.len(),
                 "registered Code Mode execute description"
             );
-            tools.push(Tool::new(
-                TOOL_EXECUTE_TOOL_NAME,
-                CODE_EXECUTE_DESCRIPTION,
-                execute_schema,
-            ));
+            tools.push(
+                Tool::new(
+                    TOOL_EXECUTE_TOOL_NAME,
+                    CODE_EXECUTE_DESCRIPTION,
+                    execute_schema,
+                )
+                .with_meta(code_mode_tool_meta(CODE_MODE_EXECUTE_APP_URI)),
+            );
             gateway_tool_count += 1;
         }
 
@@ -211,6 +215,17 @@ impl LabMcpServer {
 
         Ok(ListToolsResult::with_all_items(tools))
     }
+}
+
+fn code_mode_tool_meta(resource_uri: &str) -> Meta {
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "ui".to_string(),
+        serde_json::json!({
+            "resourceUri": resource_uri,
+        }),
+    );
+    Meta(meta)
 }
 
 #[cfg(test)]

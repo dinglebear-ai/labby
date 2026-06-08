@@ -235,6 +235,8 @@ pub struct CodeModeSetParams {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
+    pub trace_params: Option<bool>,
+    #[serde(default)]
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub max_tool_calls: Option<usize>,

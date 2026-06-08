@@ -1386,6 +1386,9 @@
           },
           "timeout_ms": {
             "type": "integer"
+          },
+          "trace_params": {
+            "type": "boolean"
           }
         }
       },

@@ -345,6 +345,9 @@ async fn handle_tool_actions(
             if let Some(enabled) = params.enabled {
                 next.enabled = enabled;
             }
+            if let Some(trace_params) = params.trace_params {
+                next.trace_params = trace_params;
+            }
             if let Some(timeout_ms) = params.timeout_ms {
                 next.timeout_ms = timeout_ms;
             }

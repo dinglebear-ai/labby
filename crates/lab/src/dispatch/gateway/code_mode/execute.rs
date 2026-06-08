@@ -50,6 +50,7 @@ impl CodeModeBroker<'_> {
                 surface,
                 config.max_log_entries,
                 config.max_log_bytes,
+                config.trace_params,
                 capability_filter,
             )
             .await?;
@@ -139,6 +140,7 @@ impl CodeModeBroker<'_> {
         surface: CodeModeSurface,
         max_log_entries: usize,
         max_log_bytes: usize,
+        trace_params: bool,
         capability_filter: CodeModeCapabilityFilter,
     ) -> Result<CodeModeExecutionResponse, ToolError> {
         // Cloudflare-parity: no typed TypeScript preamble is injected. The
@@ -187,6 +189,7 @@ impl CodeModeBroker<'_> {
             surface,
             max_log_entries,
             max_log_bytes,
+            trace_params,
             capability_filter,
         )
         .await

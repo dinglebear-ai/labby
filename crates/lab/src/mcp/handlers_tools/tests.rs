@@ -5,6 +5,8 @@
 //! guidance).
 
 use crate::dispatch::error::ToolError;
+use crate::mcp::handlers_resources::{CODE_MODE_EXECUTE_APP_URI, CODE_MODE_SEARCH_APP_URI};
+use crate::mcp::handlers_tools::code_mode_tool_meta;
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
 use crate::registry::{RegisteredService, ToolRegistry};
@@ -75,6 +77,25 @@ fn completion_test_registry() -> ToolRegistry {
         dispatch: noop_dispatch,
     });
     registry
+}
+
+#[test]
+fn code_mode_tool_meta_points_to_canonical_ui_resource() {
+    let search = code_mode_tool_meta(CODE_MODE_SEARCH_APP_URI);
+    let execute = code_mode_tool_meta(CODE_MODE_EXECUTE_APP_URI);
+
+    assert_eq!(
+        search.0["ui"]["resourceUri"].as_str(),
+        Some(CODE_MODE_SEARCH_APP_URI)
+    );
+    assert_eq!(
+        execute.0["ui"]["resourceUri"].as_str(),
+        Some(CODE_MODE_EXECUTE_APP_URI)
+    );
+    assert!(
+        search.0.get("openai/outputTemplate").is_none(),
+        "compat aliases should not be added without host evidence"
+    );
 }
 
 #[tokio::test]

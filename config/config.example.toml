@@ -139,6 +139,7 @@
 [code_mode]
 # Execution limits for the gateway `search`/`execute` Code Mode sandbox.
 # enabled = false                         # default: false; advertises `search` + `execute`
+# trace_params = true                     # default: true; stores only redacted/capped call params in traces/history
 # `search` runs a JS arrow function over the upstream tool catalog; `execute`
 # runs a JS arrow function with `callTool(id, params)` and a typed
 # `codemode.<upstream>.<tool>(params)` runtime namespace generated from the
