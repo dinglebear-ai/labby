@@ -10,9 +10,9 @@ use std::time::Instant;
 use axum::http;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, CompleteRequestParams, CompleteResult,
-    GetPromptRequestParams, GetPromptResult, ListPromptsResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-    ServerCapabilities, ServerInfo, SetLevelRequestParams,
+    ExtensionCapabilities, GetPromptRequestParams, GetPromptResult, ListPromptsResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
+    ReadResourceResult, ServerCapabilities, ServerInfo, SetLevelRequestParams,
 };
 use rmcp::service::{NotificationContext, Peer, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -67,6 +67,21 @@ pub fn verify_upstream_subject_resolution_support() -> anyhow::Result<()> {
     );
 }
 
+/// Advertise the MCP Apps UI extension (`io.modelcontextprotocol/ui`, SEP-1724)
+/// so hosts like Claude.ai know to render the Code Mode inspector widgets served
+/// at `ui://lab/code-mode/{search,execute,history}`. The `mimeTypes` value mirrors
+/// the MIME the widget resources are published with (`text/html;profile=mcp-app`).
+fn mcp_apps_ui_extension() -> ExtensionCapabilities {
+    let mut extensions = ExtensionCapabilities::new();
+    let mut ui_ext = serde_json::Map::new();
+    ui_ext.insert(
+        "mimeTypes".to_string(),
+        serde_json::json!([crate::mcp::handlers_resources::CODE_MODE_APP_MIME]),
+    );
+    extensions.insert("io.modelcontextprotocol/ui".to_string(), ui_ext);
+    extensions
+}
+
 impl ServerHandler for LabMcpServer {
     fn get_info(&self) -> ServerInfo {
         tracing::info!(
@@ -90,6 +105,7 @@ impl ServerHandler for LabMcpServer {
                 .enable_prompts_list_changed()
                 .enable_logging()
                 .enable_completions()
+                .enable_extensions_with(mcp_apps_ui_extension())
                 .build(),
         )
     }
@@ -360,6 +376,21 @@ mod tests {
         assert!(
             info.capabilities.completions.is_some(),
             "RMCP completion capability must be advertised"
+        );
+
+        // MCP Apps UI extension (SEP-1724) must be advertised so hosts render
+        // the Code Mode inspector widgets.
+        let extensions = info
+            .capabilities
+            .extensions
+            .expect("MCP Apps UI extension capability must be advertised");
+        let ui_ext = extensions
+            .get("io.modelcontextprotocol/ui")
+            .expect("io.modelcontextprotocol/ui extension must be present");
+        assert_eq!(
+            ui_ext.get("mimeTypes"),
+            Some(&serde_json::json!(["text/html;profile=mcp-app"])),
+            "UI extension must advertise the mcp-app widget MIME type"
         );
     }
 
