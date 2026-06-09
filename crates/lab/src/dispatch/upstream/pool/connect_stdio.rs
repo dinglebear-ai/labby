@@ -48,18 +48,36 @@ pub(super) async fn connect_stdio_upstream(
         cmd.env(env_name, &token);
     }
 
+    // A stdio MCP server logs to stderr (stdout is the JSON-RPC channel), so the
+    // child's stderr is the ONLY place its server-side diagnostics go. Capture
+    // it by default and forward into the gateway log; opt out per `LAB_GW_UPSTREAM_STDERR`.
+    let capture_stderr = upstream_stderr_capture_enabled();
+    let stderr_cfg = || {
+        if capture_stderr {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        }
+    };
+
     #[cfg(unix)]
-    let (process, _stderr) = {
+    let (process, child_stderr) = {
         let mut wrapped = CommandWrap::from(cmd);
         wrapped.wrap(ProcessGroup::leader());
         TokioChildProcess::builder(wrapped)
-            .stderr(Stdio::null())
+            .stderr(stderr_cfg())
             .spawn()?
     };
     #[cfg(not(unix))]
-    let (process, _stderr) = TokioChildProcess::builder(cmd)
-        .stderr(Stdio::null())
+    let (process, child_stderr) = TokioChildProcess::builder(cmd)
+        .stderr(stderr_cfg())
         .spawn()?;
+
+    // INVARIANT: a piped child stderr MUST be drained continuously. A chatty
+    // upstream (e.g. axon at INFO) fills the ~64 KB pipe buffer and then blocks
+    // on its next stderr write, hanging the upstream. The drain task reads to
+    // EOF so failures are recoverable from the gateway log instead of lost.
+    forward_upstream_stderr(child_stderr, config.name.clone());
 
     let pid = process.id();
     tracing::info!(
@@ -115,6 +133,58 @@ pub(super) async fn connect_stdio_upstream(
     };
 
     Ok((conn, tools))
+}
+
+/// Whether to capture spawned-upstream stderr and forward it into the gateway
+/// log. Default: enabled. Set `LAB_GW_UPSTREAM_STDERR` to `null`/`off`/`0` to
+/// discard it (the pre-capture behavior) for an extremely chatty upstream.
+fn upstream_stderr_capture_enabled() -> bool {
+    match std::env::var("LAB_GW_UPSTREAM_STDERR") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "null" | "off" | "0" | "none" | "discard" | "false"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Drain a piped child stderr to EOF, forwarding each non-empty line into the
+/// gateway log under the `labby::upstream_stderr` target (silence just this
+/// stream with `LAB_LOG=labby::upstream_stderr=warn`). Draining is mandatory:
+/// an unread pipe buffer fills and blocks the child's next stderr write.
+fn forward_upstream_stderr(stderr: Option<tokio::process::ChildStderr>, upstream: String) {
+    let Some(stderr) = stderr else { return };
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut lines = BufReader::new(stderr).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    tracing::info!(
+                        target: "labby::upstream_stderr",
+                        surface = "dispatch",
+                        service = "upstream.pool",
+                        upstream = %upstream,
+                        stream = "stderr",
+                        "{line}",
+                    );
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    tracing::debug!(
+                        target: "labby::upstream_stderr",
+                        upstream = %upstream,
+                        error = %error,
+                        "upstream stderr drain ended on read error",
+                    );
+                    break;
+                }
+            }
+        }
+    });
 }
 
 pub(super) async fn connect_in_process_service_peer(
