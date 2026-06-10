@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use crate::dispatch::error::ToolError;
+use crate::dispatch::gateway::code_mode::split_upstream_tool;
 use crate::dispatch::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 
 use super::GatewayManager;
@@ -29,15 +30,24 @@ impl GatewayManager {
                     .to_string(),
             });
         }
-        let priority = cfg
+        let upstream_config = cfg
             .upstream
             .iter()
             .find(|candidate| candidate.name == upstream)
-            .map(|candidate| candidate.priority.max(0.0))
-            .unwrap_or(1.0);
+            .cloned();
         drop(cfg);
 
-        if priority <= 0.0 {
+        let priority = upstream_config.as_ref().map(|c| c.priority).unwrap_or(1.0);
+        if !is_routable(priority) {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "code_mode.resolve_tool",
+                upstream = %upstream,
+                tool = %tool,
+                priority = priority,
+                "skipping tool resolution: upstream priority is non-positive (disabled)"
+            );
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: format!("upstream tool `{upstream}::{tool}` was not found"),
@@ -72,7 +82,7 @@ impl GatewayManager {
         let priority_by_upstream: HashMap<String, f32> = cfg
             .upstream
             .iter()
-            .map(|upstream| (upstream.name.clone(), upstream.priority.max(0.0)))
+            .map(|upstream| (upstream.name.clone(), upstream.priority))
             .collect();
 
         let Some(pool) = self.current_pool().await else {
@@ -83,12 +93,20 @@ impl GatewayManager {
         };
 
         if let Some(upstream_name) = selector.upstream.as_deref() {
-            if priority_by_upstream
+            let priority = priority_by_upstream
                 .get(upstream_name)
                 .copied()
-                .unwrap_or(1.0)
-                <= 0.0
-            {
+                .unwrap_or(1.0);
+            if !is_routable(priority) {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "tool_execute.resolve_tool",
+                    upstream = %upstream_name,
+                    tool = %selector.tool_name,
+                    priority = priority,
+                    "skipping tool resolution: upstream priority is non-positive (disabled)"
+                );
                 return Err(ToolError::Sdk {
                     sdk_kind: "unknown_tool".to_string(),
                     message: format!("unknown tool `{}`", selector.display_name()),
@@ -109,7 +127,7 @@ impl GatewayManager {
         }
 
         if let Some((upstream, tool)) = pool.find_tool(&selector.tool_name).await
-            && priority_by_upstream.get(&upstream).copied().unwrap_or(1.0) > 0.0
+            && is_routable(priority_by_upstream.get(&upstream).copied().unwrap_or(1.0))
         {
             return Ok((upstream, tool));
         }
@@ -118,7 +136,7 @@ impl GatewayManager {
         for upstream in cfg
             .upstream
             .iter()
-            .filter(|upstream| upstream.enabled && upstream.priority.max(0.0) > 0.0)
+            .filter(|upstream| upstream.enabled && is_routable(upstream.priority))
         {
             self.ensure_upstream_tool_runtime_ready(&upstream.name, owner, oauth_subject)
                 .await?;
@@ -161,6 +179,13 @@ struct ToolExecuteSelector {
 }
 
 impl ToolExecuteSelector {
+    /// Parse a tool selector of the form `[<upstream>::]<tool>` or a bare tool
+    /// name. When an explicit `upstream` hint is provided it takes precedence
+    /// over an embedded `<upstream>::` prefix in `name`.
+    ///
+    /// The `<upstream>::<tool>` splitting is delegated to
+    /// [`split_upstream_tool`] (from `code_mode::types`) so the two callers
+    /// share one implementation.
     fn parse(name: &str, upstream: Option<&str>) -> Result<Self, ToolError> {
         let explicit_upstream = upstream.map(str::trim).filter(|value| !value.is_empty());
         let trimmed_name = name.trim();
@@ -189,19 +214,20 @@ impl ToolExecuteSelector {
             });
         }
 
-        if let Some((upstream_name, tool_name)) = trimmed_name.split_once("::") {
-            let upstream_name = upstream_name.trim();
-            let tool_name = tool_name.trim();
-            if upstream_name.is_empty() || tool_name.is_empty() {
-                return Err(ToolError::Sdk {
+        // Use the shared `<upstream>::<tool>` splitter from `code_mode::types`
+        // instead of an inline `split_once("..")` so the two implementations
+        // stay in sync (e.g. both reject `a::b::c` and empty segments).
+        if trimmed_name.contains("::") {
+            return match split_upstream_tool(trimmed_name) {
+                Some((upstream_name, tool_name)) => Ok(Self {
+                    upstream: Some(upstream_name.to_string()),
+                    tool_name: tool_name.to_string(),
+                }),
+                None => Err(ToolError::Sdk {
                     sdk_kind: "invalid_param".to_string(),
                     message: "qualified tool names must use `<upstream>::<tool>`".to_string(),
-                });
-            }
-            return Ok(Self {
-                upstream: Some(upstream_name.to_string()),
-                tool_name: tool_name.to_string(),
-            });
+                }),
+            };
         }
 
         Ok(Self {
@@ -216,4 +242,16 @@ impl ToolExecuteSelector {
             None => self.tool_name.clone(),
         }
     }
+}
+
+/// Returns `true` when `priority` makes an upstream eligible for tool
+/// resolution.
+///
+/// A non-positive priority (`<= 0.0`) is the conventional way to disable an
+/// upstream without removing it from the config. The named predicate makes the
+/// intent explicit at every check site and avoids the subtle risk of a
+/// misread `> 0.0` / `<= 0.0` comparison.
+#[inline]
+fn is_routable(priority: f32) -> bool {
+    priority > 0.0
 }
