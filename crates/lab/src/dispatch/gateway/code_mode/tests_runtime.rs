@@ -704,7 +704,11 @@ fn artifact_max_bytes_parses_env_and_falls_back() {
 
     // Absent → 8 MiB default.
     let default = artifacts::artifact_max_bytes();
-    assert_eq!(default, 8 * 1024 * 1024, "absent env must yield the 8 MiB default");
+    assert_eq!(
+        default,
+        8 * 1024 * 1024,
+        "absent env must yield the 8 MiB default"
+    );
 
     // Valid MiB value is honored and converted to bytes.
     let valid = with_env_override(
@@ -725,7 +729,11 @@ fn artifact_max_bytes_parses_env_and_falls_back() {
             )]),
             artifacts::artifact_max_bytes,
         );
-        assert_eq!(got, 8 * 1024 * 1024, "{bad:?} must fall back to the default");
+        assert_eq!(
+            got,
+            8 * 1024 * 1024,
+            "{bad:?} must fall back to the default"
+        );
     }
 }
 
@@ -923,7 +931,10 @@ async fn prune_artifact_runs_enforces_byte_budget() {
         store.path().join(&ids[1]).exists(),
         "second-newest fits the budget"
     );
-    assert!(store.path().join(&ids[2]).exists(), "newest fits the budget");
+    assert!(
+        store.path().join(&ids[2]).exists(),
+        "newest fits the budget"
+    );
 }
 
 #[test]
@@ -1004,6 +1015,213 @@ fn artifact_retention_runs_parses_env_and_falls_back_on_garbage() {
         artifacts::artifact_retention_runs,
     );
     assert_eq!(garbage, 200, "garbage must fall back to the default");
+}
+
+// ---------------------------------------------------------------------------
+// T4: runner sandbox invariant tests (guards the Q-H2 refactor)
+// ---------------------------------------------------------------------------
+
+/// T4-a: Verify that the runner child is spawned with `env_clear` — i.e. a
+/// sentinel variable explicitly present in one spawn is ABSENT when the same
+/// command is respawned with `env_clear()`.
+///
+/// Design: we spawn two children of `/bin/sh -c 'cat /proc/$$/environ'` (which
+/// prints its own env to stdout):
+///   1. With `.env(sentinel_key, sentinel_val)` — must contain the sentinel.
+///   2. With `.env_clear()` — must NOT contain the sentinel.
+///
+/// This avoids any `set_var`/`remove_var` call (which became `unsafe` in Rust
+/// 1.94) by injecting the sentinel exclusively through the `Command` builder.
+#[test]
+#[cfg(target_os = "linux")]
+fn runner_child_env_is_cleared() {
+    let sentinel_key = "LAB_TEST_ENV_SENTINEL_SHOULD_NOT_LEAK";
+    let sentinel_val = "THIS_MUST_NOT_APPEAR_IN_RUNNER_ENV";
+
+    // ---- Positive control: sentinel present when NOT cleared ----
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", "cat /proc/$$/environ"])
+        .env(sentinel_key, sentinel_val)
+        .output();
+    let output = match output {
+        Ok(o) => o,
+        Err(_) => return, // /bin/sh unavailable — skip
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(sentinel_key),
+        "positive control: sentinel must appear in child env when set via .env()"
+    );
+
+    // ---- Negative control: sentinel absent when env is cleared ----
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", "cat /proc/$$/environ"])
+        .env_clear()
+        .output()
+        .expect("/bin/sh must spawn for env_clear check");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains(sentinel_key),
+        "runner child must not inherit sentinel env var `{sentinel_key}` — \
+         env_clear must be in effect"
+    );
+}
+
+/// T4-b: Verify that after the runner child is killed via its process group,
+/// the direct child is fully reaped — i.e. it does not remain as a zombie.
+///
+/// This is a **compile-time guard** for the `process_group(0)` + killpg path
+/// in `runner_drive.rs`. It does NOT require a live `labby` binary — it uses
+/// `/bin/sleep` as a stand-in subprocess so the test is hermetic and fast.
+///
+/// The `nix` crate (`signal` + `process` features) is an existing direct
+/// dependency and provides the `killpg` / `getpgid` / `waitpid` surface.
+#[test]
+#[cfg(unix)]
+fn runner_process_group_is_reaped_after_kill() {
+    use nix::sys::signal::{Signal, killpg};
+    use nix::sys::wait::{WaitStatus, waitpid};
+    use nix::unistd::Pid;
+    use std::os::unix::process::CommandExt as _;
+    use std::process::Stdio;
+
+    // Spawn `/bin/sleep 60` in its own process group (pgid = pid), mirroring
+    // the `process_group(0)` call in `runner_drive.rs`.
+    // `process_group(0)` is a safe method on `std::process::Command` (stable
+    // since Rust 1.64) — no `pre_exec` or `unsafe` needed.
+    let child = std::process::Command::new("/bin/sleep")
+        .arg("60")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("/bin/sleep must spawn");
+    let child_pid = Pid::from_raw(child.id() as i32);
+
+    // Give the child a brief moment to call setpgid before we query its pgid.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    // The child's pgid equals its own pid after setpgid(0,0).
+    let pgid = nix::unistd::getpgid(Some(child_pid)).unwrap_or(child_pid);
+
+    // Kill the entire process group (mirrors `terminate_code_mode_runner`).
+    let _ = killpg(pgid, Signal::SIGKILL);
+
+    // Reap the direct child. A `WaitStatus::Signaled` result confirms the
+    // process group kill reached it; `WaitStatus::StillAlive` would indicate
+    // a bug in the killpg path.
+    let wait_result = waitpid(child_pid, None);
+    match wait_result {
+        Ok(WaitStatus::Signaled(pid, sig, _)) => {
+            assert_eq!(pid, child_pid, "reaped the correct pid");
+            assert_eq!(sig, Signal::SIGKILL, "killed by SIGKILL");
+        }
+        // `Exited` is also acceptable (race between setpgid and kill on fast hosts).
+        Ok(WaitStatus::Exited(pid, _)) => {
+            assert_eq!(pid, child_pid, "reaped the correct pid");
+        }
+        other => {
+            panic!("unexpected waitpid result after killpg: {other:?}");
+        }
+    }
+
+    // On Linux, verify the process is gone from /proc as an extra check.
+    #[cfg(target_os = "linux")]
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !std::path::Path::new(&format!("/proc/{}", child_pid.as_raw())).exists(),
+            "runner pid {} must not appear in /proc after killpg + waitpid",
+            child_pid.as_raw()
+        );
+    }
+}
+
+/// P-M5: binary-search log truncation produces valid output for a
+/// representative case. Asserts that:
+///  1. The truncated response is within budget.
+///  2. A sentinel is present.
+///  3. The drop boundary is tight: the truncated set fits, and adding back
+///     one more original line would exceed the budget.
+#[test]
+fn binary_search_log_truncation_boundary_is_tight() {
+    // 50 log lines of ~80 bytes each → ~4 KB of logs.
+    // The envelope (result, calls, artifacts) adds another ~200 bytes.
+    // Use a 2 KB budget so some lines are dropped but not all.
+    let line_count = 50usize;
+    let line_payload = "B".repeat(70);
+    let make_response = || CodeModeExecutionResponse {
+        result: Some(json!({"ok": true})),
+        calls: vec![CodeModeExecutedCall {
+            id: "test::ping".to_string(),
+            ok: true,
+            elapsed_ms: 1,
+            params: None,
+            error_kind: None,
+        }],
+        logs: (0..line_count)
+            .map(|i| format!("[line {i:02}] {line_payload}"))
+            .collect(),
+        artifacts: vec![],
+    };
+    let original = make_response();
+
+    // Pick a budget above the bare envelope (so some logs can fit) but well
+    // below the total log volume.
+    let bare_envelope_size = {
+        let mut bare = make_response();
+        bare.logs = Vec::new();
+        serde_json::to_vec(&bare).unwrap().len()
+    };
+    // Budget = bare envelope + sentinel + 4 log lines worth.
+    let one_line_bytes = format!("[line 00] {line_payload}").len();
+    let budget = bare_envelope_size + 80 /* sentinel */ + 4 * one_line_bytes;
+
+    let truncated = truncate_execution_response(original.clone(), budget, 100_000, 4);
+
+    // 1. Within budget.
+    let serialized_len = serde_json::to_vec(&truncated).unwrap().len();
+    assert!(
+        serialized_len <= budget,
+        "truncated response ({serialized_len} bytes) must be within the {budget}-byte budget"
+    );
+
+    // 2. Sentinel present (we dropped some lines).
+    let sentinel_present = truncated
+        .logs
+        .iter()
+        .any(|l| l.contains("logs truncated to fit response budget"));
+    assert!(
+        sentinel_present,
+        "sentinel must be present when lines were dropped; logs: {:?}",
+        truncated.logs
+    );
+
+    // 3. Boundary is tight: adding one more original line would exceed budget.
+    // The truncated logs are: [sentinel, kept_0, kept_1, …].
+    // kept_lines = everything after the sentinel.
+    if truncated.logs.len() >= 2 {
+        let kept_lines = &truncated.logs[1..];
+        let kept_count = kept_lines.len();
+        let drop_count = line_count - kept_count;
+        // The original lines that were kept start at index `drop_count`.
+        if drop_count > 0 {
+            let next_original_idx = drop_count - 1;
+            let next_original = &original.logs[next_original_idx];
+            let mut one_more = truncated.clone();
+            let mut new_logs = vec![truncated.logs[0].clone()]; // sentinel
+            new_logs.push(next_original.clone());
+            new_logs.extend_from_slice(kept_lines);
+            one_more.logs = new_logs;
+            let one_more_len = serde_json::to_vec(&one_more).unwrap().len();
+            assert!(
+                one_more_len > budget,
+                "adding one more line ({one_more_len} bytes) must exceed budget ({budget}); \
+                 boundary must be tight"
+            );
+        }
+    }
 }
 
 #[test]

@@ -18,13 +18,42 @@ use super::super::types::{UpstreamCapability, UpstreamRuntimeOwner};
 #[cfg(test)]
 use super::TestUpstreamConnector;
 use super::UpstreamPool;
-use super::connect::connect_upstream;
+use super::connect::connect_upstream_with_client;
 use super::entries::{lazy_upstream_entry, resolve_exposure_policy};
 use super::helpers::{
     DISCOVERY_TIMEOUT, cached_upstream_tool, upstream_name_is_uri_safe, upstream_target_redacted,
     upstream_transport,
 };
 use super::validate::validate_upstream_config;
+
+/// Validate an upstream config entry and, if valid, return the catalog entry
+/// that should be inserted for it.
+///
+/// Returns `None` (and emits a `WARN`) when the config should be skipped:
+/// disabled, URI-unsafe name, or failing `validate_upstream_config`.
+///
+/// This helper removes the duplicated validation+entry-build logic that used to
+/// live in both `seed_lazy_upstreams` and `ensure_lazy_upstream_entry` (Q-M3).
+fn validated_lazy_entry(config: &UpstreamConfig) -> Option<super::super::types::UpstreamEntry> {
+    if !config.enabled {
+        return None;
+    }
+    if !upstream_name_is_uri_safe(&config.name) {
+        tracing::warn!(
+            upstream = %config.name,
+            "upstream name contains URI-unsafe characters (/, ?, #) — skipping"
+        );
+        return None;
+    }
+    if let Err(msg) = validate_upstream_config(config) {
+        tracing::warn!(
+            upstream = %config.name,
+            "skipping upstream: {msg}"
+        );
+        return None;
+    }
+    Some(lazy_upstream_entry(config, Arc::from(config.name.as_str())))
+}
 
 impl UpstreamPool {
     /// Seed the upstream catalog from config without starting any upstream runtime.
@@ -34,30 +63,14 @@ impl UpstreamPool {
         let mut processed_names = std::collections::HashSet::new();
 
         for config in configs {
-            if !config.enabled {
-                continue;
-            }
             if !processed_names.insert(&config.name) {
                 continue;
             }
-            if !upstream_name_is_uri_safe(&config.name) {
-                tracing::warn!(
-                    upstream = %config.name,
-                    "upstream name contains URI-unsafe characters (/, ?, #) — skipping"
-                );
+            let Some(entry) = validated_lazy_entry(config) else {
                 continue;
-            }
-            if let Err(msg) = validate_upstream_config(config) {
-                tracing::warn!(
-                    upstream = %config.name,
-                    "skipping upstream: {msg}"
-                );
-                continue;
-            }
+            };
 
-            catalog
-                .entry(config.name.clone())
-                .or_insert_with(|| lazy_upstream_entry(config, Arc::from(config.name.as_str())));
+            catalog.entry(config.name.clone()).or_insert(entry);
 
             if config.proxy_resources {
                 resource_names.push(config.name.clone());
@@ -70,28 +83,14 @@ impl UpstreamPool {
     }
 
     async fn ensure_lazy_upstream_entry(&self, config: &UpstreamConfig) {
-        if !config.enabled {
+        let Some(entry) = validated_lazy_entry(config) else {
             return;
-        }
-        if !upstream_name_is_uri_safe(&config.name) {
-            tracing::warn!(
-                upstream = %config.name,
-                "upstream name contains URI-unsafe characters (/, ?, #) — skipping"
-            );
-            return;
-        }
-        if let Err(msg) = validate_upstream_config(config) {
-            tracing::warn!(
-                upstream = %config.name,
-                "skipping upstream: {msg}"
-            );
-            return;
-        }
+        };
         self.catalog
             .write()
             .await
             .entry(config.name.clone())
-            .or_insert_with(|| lazy_upstream_entry(config, Arc::from(config.name.as_str())));
+            .or_insert(entry);
         if config.proxy_resources {
             let mut resource_upstreams = self.resource_upstreams.write().await;
             if !resource_upstreams.iter().any(|name| name == &config.name) {
@@ -137,12 +136,13 @@ impl UpstreamPool {
         let runtime_owner = runtime_owner.or(self.runtime_owner.as_ref());
         let connect_result = tokio::time::timeout(
             DISCOVERY_TIMEOUT,
-            connect_upstream(
+            connect_upstream_with_client(
                 config,
                 subject,
                 self.oauth_client_cache.as_ref(),
                 self.runtime_origin.as_deref(),
                 runtime_owner,
+                Some(&self.shared_http_client),
             ),
         )
         .await;

@@ -3,9 +3,6 @@
 //! `subject_scoped_prompts`/`subject_scoped_prompt_owner` discover prompts for
 //! OAuth upstreams under a subject; `get_prompt`/`subject_scoped_get_prompt`
 //! fetch a single prompt with a request timeout and structured logging.
-//!
-//! NO-TOUCH (plan §6): the `subject_scoped_*` methods retain their `subject`
-//! argument threading; bodies are moved byte-identical from `pool.rs`.
 
 use std::time::Instant;
 
@@ -17,17 +14,19 @@ use crate::config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::connect::connect_upstream;
+use super::capability_call::timed_capability_call;
 use super::helpers::{
     bare_upstream_prompt_name, merge_upstream_prompts, prefixed_upstream_prompt_name,
     upstream_transport,
 };
-use super::logging::{
-    UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish,
-    log_upstream_request_start,
-};
+use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
 
 impl UpstreamPool {
+    /// Discover prompts from all OAuth upstreams visible to `subject`.
+    ///
+    /// P-C1 fix: uses `acquire_or_connect_subject` so connections are cached;
+    /// the tools list from connect is not needed here but the cached peer is
+    /// used directly for `list_prompts`.
     pub async fn subject_scoped_prompts(
         &self,
         configs: &[UpstreamConfig],
@@ -35,31 +34,25 @@ impl UpstreamPool {
         builtin_names: &[&str],
     ) -> Vec<Prompt> {
         let mut futures = FuturesUnordered::new();
-        let oauth_client_cache = self.oauth_client_cache.clone();
         for config in configs.iter().filter(|config| config.oauth.is_some()) {
             let config = config.clone();
             let subject = subject.to_string();
-            let oauth_client_cache = oauth_client_cache.clone();
+            let pool = self.clone();
             futures.push(async move {
-                let result = connect_upstream(
-                    &config,
-                    Some(subject.as_str()),
-                    oauth_client_cache.as_ref(),
-                    None,
-                    None,
-                )
-                .await
-                .map(|(conn, _)| conn);
+                let result = pool
+                    .acquire_or_connect_subject(&config, &subject)
+                    .await
+                    .map(|(peer, _tools)| peer);
                 (config.name.clone(), result)
             });
         }
 
         let mut upstream_prompts = Vec::new();
         while let Some((name, result)) = futures.next().await {
-            let Ok(conn) = result else {
+            let Ok(peer) = result else {
                 continue;
             };
-            match conn.peer.list_prompts(None).await {
+            match peer.list_prompts(None).await {
                 Ok(result) => upstream_prompts.push((name, result.prompts)),
                 Err(error) => {
                     tracing::warn!(
@@ -75,6 +68,9 @@ impl UpstreamPool {
         prompts
     }
 
+    /// Find which upstream owns `prompt_name` for `subject`.
+    ///
+    /// P-C1 fix: uses `acquire_or_connect_subject` so connections are cached.
     pub async fn subject_scoped_prompt_owner(
         &self,
         configs: &[UpstreamConfig],
@@ -82,31 +78,25 @@ impl UpstreamPool {
         prompt_name: &str,
     ) -> Option<String> {
         let mut futures = FuturesUnordered::new();
-        let oauth_client_cache = self.oauth_client_cache.clone();
         for config in configs.iter().filter(|config| config.oauth.is_some()) {
             let config = config.clone();
             let subject = subject.to_string();
-            let oauth_client_cache = oauth_client_cache.clone();
+            let pool = self.clone();
             let target_prompt = prompt_name.to_string();
             futures.push(async move {
-                let result = connect_upstream(
-                    &config,
-                    Some(subject.as_str()),
-                    oauth_client_cache.as_ref(),
-                    None,
-                    None,
-                )
-                .await
-                .map(|(conn, _)| conn);
+                let result = pool
+                    .acquire_or_connect_subject(&config, &subject)
+                    .await
+                    .map(|(peer, _tools)| peer);
                 (config.name.clone(), target_prompt, result)
             });
         }
 
         while let Some((name, target_prompt, result)) = futures.next().await {
-            let Ok(conn) = result else {
+            let Ok(peer) = result else {
                 continue;
             };
-            if let Ok(result) = conn.peer.list_prompts(None).await
+            if let Ok(result) = peer.list_prompts(None).await
                 && result.prompts.iter().any(|prompt| {
                     // The requested name is namespaced as `{upstream}/{name}`;
                     // the upstream advertises the bare name, so compare against
@@ -139,54 +129,28 @@ impl UpstreamPool {
 
         log_upstream_request_start(event);
 
-        match tokio::time::timeout(self.request_timeout, peer.get_prompt(params)).await {
-            Ok(Ok(result)) => {
-                self.record_success_for(upstream_name, UpstreamCapability::Prompts)
-                    .await;
-                log_upstream_request_finish(event, start.elapsed().as_millis(), None);
-                Some(Ok(result))
-            }
-            Ok(Err(e)) => {
-                self.record_failure_for(
-                    upstream_name,
-                    UpstreamCapability::Prompts,
-                    format!("upstream prompt get failed: {e}"),
-                )
-                .await;
-                log_upstream_request_error(
-                    event,
-                    start.elapsed().as_millis(),
-                    "upstream_error",
-                    Some(&e),
-                    None,
-                    None,
-                );
-                Some(Err(format!("upstream prompt get failed: {e}")))
-            }
-            Err(_) => {
-                let message = format!(
-                    "upstream prompt get timed out after {}ms",
-                    self.request_timeout.as_millis()
-                );
-                self.record_failure_for(
-                    upstream_name,
-                    UpstreamCapability::Prompts,
-                    message.clone(),
-                )
-                .await;
-                log_upstream_request_error(
-                    event,
-                    start.elapsed().as_millis(),
-                    "timeout",
-                    None,
-                    None,
-                    None,
-                );
-                Some(Err(message))
-            }
-        }
+        let timeout_ms = self.request_timeout.as_millis();
+        Some(
+            timed_capability_call(
+                self,
+                upstream_name,
+                UpstreamCapability::Prompts,
+                event,
+                start,
+                peer.get_prompt(params),
+                |_result: &GetPromptResult| 0, // prompts have no size cap
+                None,
+                |e| format!("upstream prompt get failed: {e}"),
+                format!("upstream prompt get timed out after {timeout_ms}ms"),
+            )
+            .await,
+        )
     }
 
+    /// Get a prompt from an OAuth-subject-scoped upstream.
+    ///
+    /// P-C1 fix: uses `acquire_or_connect_subject` so the per-(upstream,subject)
+    /// connection is reused from cache rather than opened fresh each call.
     pub async fn subject_scoped_get_prompt(
         &self,
         config: &UpstreamConfig,
@@ -200,16 +164,9 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::prompt(&config.name, &prompt_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
-        let (conn, _) = match connect_upstream(
-            config,
-            Some(subject),
-            self.oauth_client_cache.as_ref(),
-            None,
-            None,
-        )
-        .await
-        {
-            Ok(conn) => conn,
+        // P-C1: reuse cached per-(upstream,subject) connection.
+        let (peer, _tools) = match self.acquire_or_connect_subject(config, subject).await {
+            Ok(pair) => pair,
             Err(error) => {
                 self.record_failure_for(
                     &config.name,
@@ -228,48 +185,20 @@ impl UpstreamPool {
                 return Err(error.to_string());
             }
         };
-        match tokio::time::timeout(self.request_timeout, conn.peer.get_prompt(params)).await {
-            Ok(Ok(result)) => {
-                self.record_success_for(&config.name, UpstreamCapability::Prompts)
-                    .await;
-                log_upstream_request_finish(event, start.elapsed().as_millis(), None);
-                Ok(result)
-            }
-            Ok(Err(error)) => {
-                self.record_failure_for(
-                    &config.name,
-                    UpstreamCapability::Prompts,
-                    format!("upstream prompt get failed: {error}"),
-                )
-                .await;
-                log_upstream_request_error(
-                    event,
-                    start.elapsed().as_millis(),
-                    "upstream_error",
-                    Some(&error),
-                    None,
-                    None,
-                );
-                Err(format!("upstream prompt get failed: {error}"))
-            }
-            Err(_) => {
-                let message = format!(
-                    "upstream prompt get timed out after {}ms",
-                    self.request_timeout.as_millis()
-                );
-                self.record_failure_for(&config.name, UpstreamCapability::Prompts, message.clone())
-                    .await;
-                log_upstream_request_error(
-                    event,
-                    start.elapsed().as_millis(),
-                    "timeout",
-                    None,
-                    None,
-                    None,
-                );
-                Err(message)
-            }
-        }
+        let timeout_ms = self.request_timeout.as_millis();
+        timed_capability_call(
+            self,
+            &config.name,
+            UpstreamCapability::Prompts,
+            event,
+            start,
+            peer.get_prompt(params),
+            |_result: &GetPromptResult| 0, // prompts have no size cap
+            Some(subject),
+            |e| format!("upstream prompt get failed: {e}"),
+            format!("upstream prompt get timed out after {timeout_ms}ms"),
+        )
+        .await
     }
 }
 

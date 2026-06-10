@@ -55,19 +55,8 @@ impl LabMcpServer {
         &self,
         context: &RequestContext<RoleServer>,
     ) -> UpstreamRuntimeOwner {
-        let subject = self.request_subject(context).map(ToOwned::to_owned);
-        let raw = subject
-            .as_ref()
-            .map(|subject| format!("mcp:{subject}"))
-            .unwrap_or_else(|| "mcp:anonymous".to_string());
-        UpstreamRuntimeOwner {
-            surface: "mcp".to_string(),
-            subject,
-            request_id: None,
-            session_id: None,
-            client_name: None,
-            raw: Some(raw),
-        }
+        let subject = self.request_subject(context);
+        crate::dispatch::gateway::shared::make_mcp_runtime_owner(subject)
     }
 
     pub(crate) async fn oauth_upstream_configs(&self) -> Vec<crate::config::UpstreamConfig> {
@@ -146,6 +135,15 @@ pub(crate) fn tool_execute_builtin_action_allowed(
     if !builtin_action_requires_admin(entry, action) {
         return true;
     }
+    // INTENTIONAL ASYMMETRY with the HTTP API gate (`api/services/gateway.rs`,
+    // which uses `is_some_and` — absent auth = DENIED). Here `is_none_or` means
+    // absent auth = ALLOWED. That is the stdio trust model: a `None` AuthContext
+    // on the MCP surface means a local stdio caller (trusted), not an anonymous
+    // network request. Remote MCP-over-HTTP cannot reach here unauthenticated
+    // because `cli/serve.rs` refuses to bind a non-loopback address without auth
+    // configured, and the `/mcp` route carries the bearer/OAuth layer when auth
+    // is configured. Do NOT "align" this to `is_some_and` without also proving
+    // every reachable transport injects an AuthContext for authenticated callers.
     auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"))
 }
 
@@ -153,11 +151,24 @@ pub(crate) fn builtin_action_requires_admin(
     entry: &crate::registry::RegisteredService,
     action: &str,
 ) -> bool {
+    // Gateway and setup use catalog-driven requires_admin / destructive metadata
+    // as the single source of truth (A-H2 / S5 fix: no bespoke match arms).
     if entry.name == "gateway" {
-        return !matches!(
-            action,
-            "help" | "schema" | "gateway.help" | "gateway.schema"
-        );
+        // The universal built-ins are never admin-gated, whether the caller
+        // passes them bare (`help`) or service-prefixed (`gateway.help`).  The
+        // catalog stores them bare, so strip any `gateway.` prefix before the
+        // discovery check.
+        let bare = action.strip_prefix("gateway.").unwrap_or(action);
+        if bare == "help" || bare == "schema" {
+            return false;
+        }
+        return entry
+            .actions
+            .iter()
+            .find(|spec| spec.name == action)
+            .map(|spec| spec.requires_admin)
+            // Unknown actions default to admin-required (fail-safe).
+            .unwrap_or(true);
     }
     entry.name == "setup"
         && entry

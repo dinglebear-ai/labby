@@ -1,12 +1,10 @@
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::time::sleep;
 
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
 use crate::config::{
@@ -16,7 +14,9 @@ use crate::dispatch::clients::SharedServiceClients;
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::gateway::code_mode::{CodeModeBroker, CodeModeCaller, CodeModeSurface};
 use crate::dispatch::gateway::install_gateway_manager;
-use crate::dispatch::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
+use crate::dispatch::gateway::manager::{
+    GatewayManager, GatewayManagerConfig, GatewayOauthConfig, GatewayRuntimeHandle,
+};
 use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::output::OutputFormat;
 use crate::registry::ToolRegistry;
@@ -364,11 +364,6 @@ struct GatewayOauthStartView {
     authorization_url: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct GatewayOauthStatusView {
-    authenticated: bool,
-}
-
 async fn build_manager(
     config: &LabConfig,
     discover_upstreams: bool,
@@ -407,18 +402,22 @@ async fn build_manager_with_upstream_oauth_runtime(
         runtime.swap(Some(pool)).await;
     }
 
-    let mut manager = GatewayManager::new(
-        config_toml_path().unwrap_or_else(|| "config.toml".into()),
+    let manager = GatewayManager::from_config(
+        GatewayManagerConfig {
+            config_path: config_toml_path().unwrap_or_else(|| "config.toml".into()),
+            registry,
+            service_clients: SharedServiceClients::from_env(),
+            in_process_connector: None,
+            oauth: upstream_oauth_runtime.map(|rt| GatewayOauthConfig {
+                managers: rt.managers,
+                cache: rt.cache,
+                sqlite: rt.sqlite,
+                key: rt.key,
+                redirect_uri: rt.redirect_uri,
+            }),
+        },
         runtime,
-    )
-    .with_builtin_service_registry(registry)
-    .with_service_clients(SharedServiceClients::from_env());
-    if let Some(rt) = upstream_oauth_runtime {
-        manager = manager
-            .with_upstream_oauth_managers(rt.managers)
-            .with_oauth_client_cache(rt.cache)
-            .with_oauth_resources(rt.sqlite, rt.key, rt.redirect_uri);
-    }
+    );
     let manager = Arc::new(manager);
     manager.seed_config(config.clone()).await;
     install_gateway_manager(Arc::clone(&manager));
@@ -849,21 +848,37 @@ fn read_code_mode_source(
     file: Option<std::path::PathBuf>,
     max_source_bytes: u64,
 ) -> Result<String> {
-    let code = match (code, file) {
-        (Some(code), None) => code,
+    match (code, file) {
+        (Some(code), None) => {
+            // Check the inline string length BEFORE any further buffering so we
+            // never allocate more than max_source_bytes for a too-large arg
+            // (Q-L7 fix: moved from post-allocation check).
+            if code.len() as u64 > max_source_bytes {
+                anyhow::bail!("Code Mode source exceeds {max_source_bytes} bytes");
+            }
+            Ok(code)
+        }
         (None, Some(path)) => {
+            // Check metadata BEFORE reading to avoid allocating the full file
+            // when it is already known to be too large (already correct; kept).
             let metadata = std::fs::metadata(&path)?;
             if metadata.len() > max_source_bytes {
                 anyhow::bail!("Code Mode source file exceeds {max_source_bytes} bytes");
             }
-            std::fs::read_to_string(path)?
+            // Use a capped reader so a file that grows between the stat and
+            // the read cannot exceed the budget by more than one byte.
+            use std::io::Read as _;
+            let mut buf = String::new();
+            std::fs::File::open(&path)?
+                .take(max_source_bytes + 1)
+                .read_to_string(&mut buf)?;
+            if buf.len() as u64 > max_source_bytes {
+                anyhow::bail!("Code Mode source file exceeds {max_source_bytes} bytes");
+            }
+            Ok(buf)
         }
         _ => anyhow::bail!("provide exactly one of --code or --file"),
-    };
-    if code.len() as u64 > max_source_bytes {
-        anyhow::bail!("Code Mode source exceeds {max_source_bytes} bytes");
     }
-    Ok(code)
 }
 
 async fn run_gateway_oauth_start(
@@ -914,6 +929,8 @@ async fn run_gateway_oauth_start(
     }
 
     if args.wait {
+        // Q-H3: delegate the poll loop to the shared dispatch layer via
+        // `gateway.oauth.wait` so all surfaces share the orchestration.
         let subject = args
             .subject
             .as_deref()
@@ -925,45 +942,44 @@ async fn run_gateway_oauth_start(
                 args.name, subject
             ))
         );
-        let deadline = std::time::Instant::now() + Duration::from_secs(args.wait_timeout_secs);
-        loop {
-            let status_value = crate::dispatch::gateway::dispatch_with_manager(
-                &manager,
-                "gateway.oauth.status",
-                json!({ "upstream": args.name, "subject": subject }),
+        let wait_value = crate::dispatch::gateway::dispatch_with_manager(
+            &manager,
+            "gateway.oauth.wait",
+            json!({
+                "upstream": args.name,
+                "subject": subject,
+                "timeout_secs": args.wait_timeout_secs,
+            }),
+        )
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{}",
+                serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
             )
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "{}",
-                    serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
-                )
-            })?;
-            let status: GatewayOauthStatusView =
-                serde_json::from_value(status_value).map_err(|error| {
-                    anyhow::anyhow!("failed to decode gateway oauth status response: {error}")
-                })?;
-            if status.authenticated {
-                eprintln!(
-                    "{}",
-                    theme.success(&format!(
-                        "OAuth completed for `{}`. The existing callback route stored credentials for shared subject `{}`.",
-                        args.name, subject
-                    ))
-                );
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                eprintln!(
-                    "{}",
-                    theme.warn(&format!(
-                        "Timed out waiting for OAuth completion for `{}` after {}s. The browser callback may still succeed later; re-run `labby gateway mcp auth status {}` to check.",
-                        args.name, args.wait_timeout_secs, args.name
-                    ))
-                );
-                break;
-            }
-            sleep(Duration::from_secs(1)).await;
+        })?;
+
+        let authenticated = wait_value
+            .get("authenticated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if authenticated {
+            eprintln!(
+                "{}",
+                theme.success(&format!(
+                    "OAuth completed for `{}`. The existing callback route stored credentials for shared subject `{}`.",
+                    args.name, subject
+                ))
+            );
+        } else {
+            eprintln!(
+                "{}",
+                theme.warn(&format!(
+                    "Timed out waiting for OAuth completion for `{}` after {}s. The browser callback may still succeed later; re-run `labby gateway mcp auth status {}` to check.",
+                    args.name, args.wait_timeout_secs, args.name
+                ))
+            );
         }
     }
 
@@ -1394,6 +1410,7 @@ mod tests {
                     mode: UpstreamOauthMode::AuthorizationCodePkce,
                     registration: UpstreamOauthRegistration::Dynamic,
                     scopes: None,
+                    prefer_client_metadata_document: None,
                 }),
                 imported_from: None,
             }],

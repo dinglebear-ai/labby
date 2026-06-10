@@ -1,0 +1,259 @@
+//! Pool bootstrap and reload: swap-and-drain reconciliation, catalog snapshot
+//! diffing, and quarantine of virtual servers with unregistered services.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use tokio::time::Instant;
+
+use crate::config::LabConfig;
+use crate::dispatch::error::ToolError;
+use crate::dispatch::gateway::config::load_gateway_config;
+use crate::dispatch::gateway::protected_routes::ProtectedRouteIndex;
+use crate::dispatch::gateway::runtime::runtime_origin_tag;
+use crate::dispatch::gateway::types::GatewayCatalogDiff;
+use crate::dispatch::upstream::pool::UpstreamPool;
+use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
+use crate::registry::ToolRegistry;
+
+use super::GatewayManager;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GatewayCatalogSnapshot {
+    pub tools: BTreeSet<String>,
+    pub resources: BTreeSet<String>,
+    pub prompts: BTreeSet<String>,
+}
+
+pub fn diff_catalogs(
+    before: &GatewayCatalogSnapshot,
+    after: &GatewayCatalogSnapshot,
+) -> GatewayCatalogDiff {
+    GatewayCatalogDiff {
+        tools_changed: before.tools != after.tools,
+        resources_changed: before.resources != after.resources,
+        prompts_changed: before.prompts != after.prompts,
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct VirtualServerMigration {
+    quarantined: Vec<String>,
+}
+
+impl VirtualServerMigration {
+    pub(super) fn changed(&self) -> bool {
+        !self.quarantined.is_empty()
+    }
+}
+
+impl GatewayManager {
+    pub async fn reload_with_origin(
+        &self,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+    ) -> Result<GatewayCatalogDiff, ToolError> {
+        let _mutation_guard = self.config_mutation.lock().await;
+        self.reload_with_origin_unlocked(origin, owner).await
+    }
+
+    pub(super) async fn reload_with_origin_unlocked(
+        &self,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+    ) -> Result<GatewayCatalogDiff, ToolError> {
+        let started = Instant::now();
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.reload",
+            event = "catalog.refresh.start",
+            phase = "config.load.start",
+            "gateway reconcile"
+        );
+        let path = self.path.clone();
+        let cfg = tokio::task::spawn_blocking(move || load_gateway_config(&path))
+            .await
+            .map_err(|e| ToolError::internal_message(format!("config read task failed: {e}")))??;
+        let registry = self.builtin_service_registry();
+        let (cfg, migration) = quarantine_unregistered_virtual_servers(cfg, &registry);
+        if migration.changed() {
+            tracing::warn!(
+                action = "gateway.config.migrate",
+                stale_virtual_server_count = migration.quarantined.len(),
+                stale_virtual_servers = ?migration.quarantined,
+                "quarantined virtual servers with unregistered backing services"
+            );
+            self.persist_config(cfg.clone()).await?;
+        }
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.reload",
+            event = "catalog.config.loaded",
+            phase = "config.load.finish",
+            upstream_count = cfg.upstream.len(),
+            virtual_server_count = cfg.virtual_servers.len(),
+            quarantined_virtual_server_count = cfg.quarantined_virtual_servers.len(),
+            "gateway reconcile"
+        );
+        self.reconcile_upstream_oauth_managers(&cfg);
+        let old_pool = self.runtime.current_pool().await;
+        let before = snapshot_from_pool(old_pool.clone()).await;
+        let old_pool_present = old_pool.is_some();
+        if let Some(old_pool) = old_pool {
+            tracing::info!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.reload",
+                event = "old_pool.drain.start",
+                phase = "pool.drain.start",
+                "gateway old upstream pool drain start"
+            );
+            self.runtime.swap(None).await;
+            old_pool.drain_for_swap("gateway.reload.before_build").await;
+            tracing::info!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.reload",
+                event = "old_pool.drain.finish",
+                phase = "pool.drain.finish",
+                "gateway old upstream pool drain finish"
+            );
+        }
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.reload",
+            event = "pool.seed.start",
+            operation = "lazy_runtime_seed",
+            phase = "pool.build.start",
+            upstream_count = cfg.upstream.len(),
+            "gateway reconcile"
+        );
+        crate::config::set_process_code_mode_enabled(cfg.code_mode.enabled);
+        let fresh_pool = {
+            let base_pool = self.new_base_pool(cfg.upstream_request_timeout());
+            let pool = Arc::new(
+                base_pool
+                    .with_runtime_origin(runtime_origin_tag(origin))
+                    .with_runtime_owner(owner),
+            );
+            pool.seed_lazy_upstreams(&cfg.upstream).await;
+            Some(pool)
+        };
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.reload",
+            event = "pool.seed.finish",
+            operation = "lazy_runtime_seed",
+            phase = "pool.build.finish",
+            elapsed_ms = started.elapsed().as_millis(),
+            "gateway reconcile"
+        );
+        let after = snapshot_from_pool(fresh_pool.clone()).await;
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.reload",
+            event = "pool.swap",
+            phase = "pool.swap",
+            old_pool_present,
+            "gateway reconcile"
+        );
+        self.runtime.swap(fresh_pool).await;
+        *self.protected_route_index.write().await =
+            ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
+        *self.config.write().await = cfg;
+        let current_cfg = self.config.read().await.clone();
+        let current_pool = self.runtime.current_pool().await;
+        self.reconcile_runtime_state(&current_cfg, current_pool.as_deref())
+            .await?;
+        let diff = diff_catalogs(&before, &after);
+        self.notify_catalog_changes(&diff);
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.reload",
+            event = "catalog.refresh.finish",
+            phase = "finish",
+            tools_changed = diff.tools_changed,
+            resources_changed = diff.resources_changed,
+            prompts_changed = diff.prompts_changed,
+            before_tool_count = before.tools.len(),
+            after_tool_count = after.tools.len(),
+            before_resource_count = before.resources.len(),
+            after_resource_count = after.resources.len(),
+            before_prompt_count = before.prompts.len(),
+            after_prompt_count = after.prompts.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "gateway reconcile"
+        );
+        Ok(diff)
+    }
+
+    fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff) {
+        if !diff.tools_changed && !diff.resources_changed && !diff.prompts_changed {
+            return;
+        }
+
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_catalog_changes(diff);
+        }
+    }
+}
+
+pub(super) fn quarantine_unregistered_virtual_servers(
+    mut cfg: LabConfig,
+    registry: &ToolRegistry,
+) -> (LabConfig, VirtualServerMigration) {
+    let mut migration = VirtualServerMigration::default();
+    let mut active = Vec::with_capacity(cfg.virtual_servers.len());
+
+    for virtual_server in std::mem::take(&mut cfg.virtual_servers) {
+        if registry.service(&virtual_server.service).is_some() {
+            active.push(virtual_server);
+            continue;
+        }
+
+        migration.quarantined.push(virtual_server.id.clone());
+        let already_quarantined = cfg
+            .quarantined_virtual_servers
+            .iter()
+            .any(|existing| existing.id == virtual_server.id);
+        if !already_quarantined {
+            cfg.quarantined_virtual_servers.push(virtual_server);
+        }
+    }
+
+    cfg.virtual_servers = active;
+    (cfg, migration)
+}
+
+async fn snapshot_from_pool(pool: Option<Arc<UpstreamPool>>) -> GatewayCatalogSnapshot {
+    let Some(pool) = pool else {
+        return GatewayCatalogSnapshot::default();
+    };
+
+    GatewayCatalogSnapshot {
+        tools: pool
+            .healthy_tools()
+            .await
+            .into_iter()
+            .map(|tool| tool.tool.name.to_string())
+            .collect(),
+        resources: pool
+            .routable_upstream_names(
+                crate::dispatch::upstream::types::UpstreamCapability::Resources,
+            )
+            .await
+            .into_iter()
+            .collect(),
+        prompts: pool
+            .routable_upstream_names(crate::dispatch::upstream::types::UpstreamCapability::Prompts)
+            .await
+            .into_iter()
+            .collect(),
+    }
+}

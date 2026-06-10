@@ -134,15 +134,28 @@ impl CatalogCache {
 /// upstreams do not clobber each other's entries (last-writer-wins per file,
 /// but each write carries the latest visible merge). Failed-to-probe upstreams
 /// must NOT be passed here — leaving them absent means the next run retries.
+///
+/// The write is offloaded to `tokio::task::spawn_blocking` so the async
+/// runtime thread is not stalled by multi-MB `std::fs` I/O. The write is
+/// also skipped entirely when no entry has changed (content-identical update).
 pub(crate) fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
     if updates.is_empty() {
         return;
     }
+    // Offload blocking I/O to the threadpool so the async runtime is not
+    // stalled by a multi-MB filesystem write.
+    tokio::task::spawn_blocking(move || {
+        merge_and_store_blocking(updates);
+    });
+}
+
+fn merge_and_store_blocking(updates: Vec<CatalogCacheUpdate>) {
     let mut cache = CatalogCache::load();
     cache.version = CACHE_VERSION;
     let saved_at_unix = now_unix();
+    let mut changed = false;
     for update in updates {
-        let tools = update
+        let tools: Vec<CachedTool> = update
             .tools
             .into_iter()
             .map(|tool| CachedTool {
@@ -152,6 +165,22 @@ pub(crate) fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
                 destructive: tool.destructive,
             })
             .collect();
+
+        // Skip this entry when the fingerprint and tool list are already
+        // identical to what is on disk — avoids redundant writes when the
+        // catalog has not changed since the last run.
+        let unchanged = cache
+            .upstreams
+            .get(&update.upstream_name)
+            .is_some_and(|existing| {
+                existing.fingerprint == update.fingerprint
+                    && tools_fingerprint_matches(existing, &tools)
+            });
+        if unchanged {
+            continue;
+        }
+
+        changed = true;
         cache.upstreams.insert(
             update.upstream_name,
             CachedUpstreamCatalog {
@@ -162,6 +191,10 @@ pub(crate) fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
         );
     }
 
+    if !changed {
+        return;
+    }
+
     let path = cache_path();
     if let Err(error) = persist_atomic(&path, &cache) {
         tracing::warn!(
@@ -170,6 +203,21 @@ pub(crate) fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
             "failed to persist code_mode catalog cache"
         );
     }
+}
+
+/// Returns `true` when the serialised tool list of `existing` matches `tools`.
+///
+/// Using serialised JSON as the comparison key is cheap enough for the small
+/// catalogs stored here and avoids a bespoke `PartialEq` impl on the rmcp
+/// `Tool` type.
+fn tools_fingerprint_matches(existing: &CachedUpstreamCatalog, tools: &[CachedTool]) -> bool {
+    if existing.tools.len() != tools.len() {
+        return false;
+    }
+    // Quick serialised-hash comparison: serialize both sides and compare bytes.
+    let existing_bytes = serde_json::to_vec(&existing.tools).unwrap_or_default();
+    let new_bytes = serde_json::to_vec(tools).unwrap_or_default();
+    existing_bytes == new_bytes
 }
 
 fn persist_atomic(path: &std::path::Path, cache: &CatalogCache) -> std::io::Result<()> {
