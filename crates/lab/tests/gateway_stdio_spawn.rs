@@ -234,9 +234,11 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
     // that WOULD be present in a typical labby process (like LAB_LOG) is NOT
     // visible to a child spawned with env_clear().
     //
-    // The test is self-contained: we spawn a child with `cat /dev/null`
-    // (exits immediately) with env_clear() applied (mirroring what
-    // connect_stdio_upstream does), then read /proc/<pid>/environ.
+    // The test is self-contained: we spawn `cat` reading piped stdin (so it
+    // BLOCKS until we close stdin, keeping /proc/<pid>/environ readable —
+    // a `cat /dev/null` child can exit before the read on fast machines)
+    // with env_clear() applied (mirroring what connect_stdio_upstream does),
+    // then read /proc/<pid>/environ.
     //
     // Any LAB_* var in the *parent* environment that is NOT in the
     // STDIO_ENV_ALLOWLIST must be absent from the child.
@@ -250,7 +252,6 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
     const ALLOWLIST: &[&str] = &["PATH", "HOME", "USER", "LANG", "TZ"];
 
     let mut cmd = std::process::Command::new("cat");
-    cmd.args(["/dev/null"]);
     cmd.env_clear();
     for key in ALLOWLIST {
         if let Ok(val) = std::env::var(key) {
@@ -258,21 +259,24 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
         }
     }
     // Explicitly do NOT set the canary — mirrors what connect_stdio_upstream does.
-    cmd.stdout(Stdio::piped());
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SKIP — could not spawn `cat /dev/null`: {e}");
+            eprintln!("SKIP — could not spawn `cat`: {e}");
             return;
         }
     };
     let pid = child.id();
 
-    // Read child environ from /proc while it's alive (cat exits fast, so
-    // use a short window; on failure just skip the assertion).
-    let env_bytes = std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
+    // The child blocks reading its piped stdin, so it is guaranteed alive
+    // here — a failed environ read is a real failure, not a race to tolerate.
+    let env_bytes = std::fs::read(format!("/proc/{pid}/environ"))
+        .expect("read /proc/<pid>/environ of blocked child");
+    drop(child.stdin.take()); // EOF → cat exits
     child.wait().ok();
 
     let env_str = String::from_utf8_lossy(&env_bytes);
