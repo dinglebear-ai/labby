@@ -46,7 +46,6 @@ Labby assets. It is a production build gate, not a TypeScript strictness gate:
 | Platform | Target |
 |----------|--------|
 | Linux x86_64 | `x86_64-unknown-linux-gnu` |
-| Linux aarch64 | `aarch64-unknown-linux-gnu` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` |
 
 Windows is a supported platform. Official Windows release artifacts are built
@@ -83,7 +82,7 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 
 - **Surface:** GitHub Releases
 - **Container surface:** GitHub Container Registry (`ghcr.io/jmagar/lab`)
-- **Artifacts per release:** one binary archive per supported target (Linux x86_64, Linux aarch64, Windows x86_64)
+- **Artifacts per release:** one binary archive per supported target (Linux x86_64, Windows x86_64; aarch64 removed — rquickjs-sys does not cross-compile, tracked in beads)
 - **Checksums:** every binary archive has a SHA-256 checksum file
 - **No package registry publishing** (crates.io, npm, etc.) unless explicitly decided
 

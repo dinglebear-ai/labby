@@ -52,11 +52,10 @@ jobs:
             use-cross: false
             binary: labby
             archive: lab-x86_64-unknown-linux-gnu.tar.gz
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            use-cross: true
-            binary: labby
-            archive: lab-aarch64-unknown-linux-gnu.tar.gz
+          # aarch64-unknown-linux-gnu removed: rquickjs-sys (Code Mode QuickJS
+          # bindings) fails to cross-compile in the cross container (clang
+          # cannot find stdbool.h for the target). No fleet host is aarch64.
+          # Tracked in beads (restore aarch64 release builds).
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             use-cross: false

@@ -45,12 +45,13 @@ matching tag refs.
 | Target | Runner | Tool |
 |--------|--------|------|
 | `x86_64-unknown-linux-gnu` | ubuntu-latest | cargo |
-| `aarch64-unknown-linux-gnu` | ubuntu-latest | `cross` |
 | `x86_64-pc-windows-msvc` | windows-latest | cargo |
 
-aarch64 uses `cross` for cross-compilation through `taiki-e/install-action@cross`.
 Windows uses the native GitHub-hosted Windows runner and the MSVC target.
 Linux-to-Windows GNU cross-builds are not the official support contract.
+aarch64 was removed from the matrix: rquickjs-sys (Code Mode QuickJS bindings)
+fails to cross-compile in the `cross` container (missing target stdbool.h) and
+no fleet host is aarch64 — restoring it is tracked in beads.
 
 Release builds use `--all-features`.
 
@@ -71,7 +72,6 @@ Release builds use `--all-features`.
 | Platform | Archive |
 |----------|---------|
 | Linux x86_64 | `lab-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux aarch64 | `lab-aarch64-unknown-linux-gnu.tar.gz` |
 | Windows x86_64 | `lab-x86_64-pc-windows-msvc.zip` |
 
 Each archive is accompanied by a `.sha256` checksum file. Tag releases also
