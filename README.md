@@ -151,6 +151,13 @@ for this platform (sha256-verified) into `~/.local/bin/labby`, falling back to
 curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh
 ```
 
+On Windows (PowerShell) — installs `labby.exe` into `%LOCALAPPDATA%\labby\bin`
+and adds it to the user PATH:
+
+```powershell
+irm https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.ps1 | iex
+```
+
 Release archives (`lab-x86_64-unknown-linux-gnu.tar.gz`,
 `lab-x86_64-pc-windows-msvc.zip`, each with a `.sha256` file) can also be
 downloaded directly from the [releases page](https://github.com/jmagar/lab/releases).
