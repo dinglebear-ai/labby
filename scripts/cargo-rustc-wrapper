@@ -89,9 +89,10 @@ case "$out" in
   *) exit 0 ;;
 esac
 
+# Sync the freshly built labby into PATH. The plugin deliberately does NOT
+# ship a binary (hosts install labby explicitly — see scripts/install.sh), so
+# there is no plugin-bundle copy here.
 local_bin="${LABBY_RUSTC_WRAPPER_LOCAL_BIN:-$HOME/.local/bin/labby}"
-plugin_bin="${LABBY_RUSTC_WRAPPER_PLUGIN_BIN:-$repo/plugins/labby/bin/labby}"
 
-mkdir -p "$(dirname "$local_bin")" "$(dirname "$plugin_bin")"
+mkdir -p "$(dirname "$local_bin")"
 cp -f "$out" "$local_bin"
-cp -f "$out" "$plugin_bin"

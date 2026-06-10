@@ -163,7 +163,6 @@ Plugin manifests intentionally omit `version`; marketplace release identity is G
 | Type | Detail |
 |------|--------|
 | manifest | `.claude-plugin/plugin.json` |
-| bin | `bin/labby` |
 | hook | `hooks/hooks.json` |
 | skill | `skills/using-labby/SKILL.md` |
 | .mcp.json | `lab` -> `${user_config.server_url}/mcp` |

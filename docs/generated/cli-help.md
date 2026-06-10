@@ -2672,9 +2672,6 @@ Options:
 
           [default: lab]
 
-      --binary <BINARY>
-          Release binary to copy into lab-core/bin/labby
-
   -h, --help
           Print help
 ```
