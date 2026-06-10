@@ -44,14 +44,15 @@ deny:
 build:
     cargo build --workspace --all-features
 
-# Build release binary with all features
+# Build release binary with all features.
+# bin/labby is the container bind-mount (docker-compose.yml); the plugin does
+# NOT ship a binary — hosts install labby via scripts/install.sh or cargo.
 build-release:
     cargo build --workspace --all-features --release
     install -D -m 755 target/release/labby bin/labby
-    install -D -m 755 target/release/labby plugins/labby/bin/labby
     just link-bin
 
-# Symlink the compiled release binary into PATH and all known plugin cache slots.
+# Symlink the compiled release binary into PATH.
 # Called automatically by `just build-release` and `just install`.
 link-bin:
     #!/usr/bin/env bash
@@ -67,17 +68,11 @@ link-bin:
     fi
     mkdir -p ~/.local/bin
     ln -sf "$LABBY_BIN" ~/.local/bin/labby
-    while IFS= read -r -d '' plugin_bin; do
-      ln -sf "$LABBY_BIN" "$plugin_bin"
-    done < <(find "${HOME}/.claude/plugins/cache/jmagar-lab/labby" -maxdepth 3 -name "labby" \( -type f -o -type l \) -print0 2>/dev/null)
     echo "labby → $LABBY_BIN"
-
-# Build the release binary and bundle it into the local plugin tree.
-build-plugin: build-release
 
 # Generate Claude Code marketplace tree from compiled service metadata
 marketplace: build-release
-    target/release/labby marketplace generate --out target/marketplace --binary target/release/labby
+    target/release/labby marketplace generate --out target/marketplace
 
 # Install release binary to ~/.local/bin/labby (updates the host CLI)
 install: build-release

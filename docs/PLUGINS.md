@@ -1,17 +1,44 @@
 # Lab Plugins
 
-`labby marketplace generate --out <dir>` builds a Claude Code plugin marketplace tree from the compiled service registry and each service `PluginMeta`.
+Lab plugins (the checked-in `plugins/labby` tree and the generated marketplace
+tree alike) ship **no binary**. Hosts install `labby` explicitly and the
+binary owns the setup flow from there:
 
-The generated tree contains:
+```bash
+curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh
+labby setup
+```
 
-- `lab-core/`: the copied release binary at `bin/labby`, setup commands, and an install-binary skill.
+`scripts/install.sh` downloads the latest GitHub release archive for the
+platform (sha256-verified) into `~/.local/bin/labby`, falling back to
+`cargo install --git` when no release asset exists. Its only job is bootstrap —
+everything after first contact (config, credentials, connectivity, repair) is
+owned by `labby setup`.
+
+## Checked-in plugin (`plugins/labby`)
+
+Skills and MCP configuration only. Its `.mcp.json` connects over HTTP to a
+running `labby serve` (`${user_config.server_url}/mcp`), so machines that
+install the plugin remotely never need a local binary at all. Hooks are
+advisory: SessionStart runs `labby setup plugin-hook --no-repair` when `labby`
+is on PATH and prints an install pointer when it is not; ConfigChange syncs
+plugin settings via `labby setup plugin-hook` (again only when installed).
+Nothing is auto-installed or auto-repaired at session start.
+
+## Generated marketplace tree
+
+`labby marketplace generate --out <dir>` builds a Claude Code plugin
+marketplace tree from the compiled service registry and each service
+`PluginMeta`:
+
+- `lab-core/`: setup commands and an `install-labby` skill (no binary).
 - `lab-<service>/`: one config-only service plugin per service with required env vars.
 - `.claude-plugin/marketplace.json` and/or `.agents/plugins/marketplace.json`: indexes for generated plugin marketplaces.
 
-Service plugins do not depend on `PATH`. Their `.mcp.json` points at:
+Service plugins invoke `labby` from `PATH`. Their `.mcp.json` points at:
 
 ```json
-"${HOME}/.claude/plugins/lab-core/bin/labby"
+{ "command": "labby", "args": ["mcp", "--services", "<service>"] }
 ```
 
 The core plugin provides:

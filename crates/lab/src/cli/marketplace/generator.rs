@@ -15,8 +15,13 @@ const DEFAULT_ORG: &str = match option_env!("LAB_PLUGIN_ORG") {
     None => "lab",
 };
 const CORE_PLUGIN: &str = "lab-core";
-const CORE_BINARY_NAME: &str = "labby";
-const CORE_BINARY_PATH: &str = "${HOME}/.claude/plugins/lab-core/bin/labby";
+/// Service plugins invoke labby from PATH. The plugin tree deliberately does
+/// NOT bundle the binary — hosts install labby explicitly (scripts/install.sh,
+/// a GitHub release archive, or `cargo install`) and `labby setup` owns the
+/// rest of the flow.
+const CORE_BINARY_COMMAND: &str = "labby";
+const INSTALL_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh";
 
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
@@ -26,15 +31,11 @@ pub struct GenerateArgs {
     /// Marketplace/org suffix used in plugin ids, for example `lab`.
     #[arg(long, default_value = DEFAULT_ORG)]
     pub org: String,
-    /// Release binary to copy into lab-core/bin/labby.
-    #[arg(long)]
-    pub binary: Option<PathBuf>,
 }
 
 pub fn run_generate(args: GenerateArgs, format: OutputFormat) -> Result<ExitCode> {
     let theme = CliTheme::from_context(format.render_context());
-    let binary = args.binary.unwrap_or_else(default_binary_path);
-    generate_marketplace(&args.out, &args.org, &binary)?;
+    generate_marketplace(&args.out, &args.org)?;
     println!(
         "{} {}",
         theme.muted("generated marketplace at"),
@@ -43,13 +44,7 @@ pub fn run_generate(args: GenerateArgs, format: OutputFormat) -> Result<ExitCode
     Ok(ExitCode::SUCCESS)
 }
 
-fn generate_marketplace(out: &Path, org: &str, binary: &Path) -> Result<()> {
-    if !binary.is_file() {
-        anyhow::bail!(
-            "release binary not found at {}; run `just build-release` or pass --binary",
-            binary.display()
-        );
-    }
+fn generate_marketplace(out: &Path, org: &str) -> Result<()> {
     fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
 
     let registry = build_default_registry();
@@ -60,7 +55,7 @@ fn generate_marketplace(out: &Path, org: &str, binary: &Path) -> Result<()> {
         .collect::<Vec<_>>();
     service_names.sort();
 
-    write_core_plugin(out, org, binary)?;
+    write_core_plugin(out, org)?;
     for service in &service_names {
         write_service_plugin(out, org, service)?;
     }
@@ -68,16 +63,15 @@ fn generate_marketplace(out: &Path, org: &str, binary: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_core_plugin(out: &Path, org: &str, binary: &Path) -> Result<()> {
+fn write_core_plugin(out: &Path, org: &str) -> Result<()> {
     let root = out.join(CORE_PLUGIN);
     fs::create_dir_all(root.join(".claude-plugin"))?;
-    fs::create_dir_all(root.join("bin"))?;
     fs::create_dir_all(root.join("commands"))?;
-    fs::create_dir_all(root.join("skills/install-binary"))?;
+    fs::create_dir_all(root.join("skills/install-labby"))?;
 
     let manifest = plugin_manifest(
         CORE_PLUGIN,
-        "Core Labby binary and setup commands for Claude Code service plugins.",
+        "Setup commands and skills for Claude Code Labby service plugins.",
         org,
         &["labby", "setup", "homelab", "mcp"],
     );
@@ -93,19 +87,9 @@ fn write_core_plugin(out: &Path, org: &str, binary: &Path) -> Result<()> {
         setup_core_command(true),
     )?;
     fs::write(
-        root.join("skills/install-binary/SKILL.md"),
-        install_binary_skill(),
+        root.join("skills/install-labby/SKILL.md"),
+        install_labby_skill(),
     )?;
-
-    let dest = root.join("bin").join(CORE_BINARY_NAME);
-    fs::copy(binary, &dest).with_context(|| {
-        format!(
-            "copy release binary from {} to {}",
-            binary.display(),
-            dest.display()
-        )
-    })?;
-    set_executable(&dest)?;
     Ok(())
 }
 
@@ -131,7 +115,7 @@ fn write_service_plugin(out: &Path, org: &str, service: &str) -> Result<()> {
         &json!({
             "mcpServers": {
                 service: {
-                    "command": CORE_BINARY_PATH,
+                    "command": CORE_BINARY_COMMAND,
                     "args": ["mcp", "--services", service]
                 }
             }
@@ -150,7 +134,7 @@ fn write_marketplace_manifest(out: &Path, org: &str, services: &[String]) -> Res
     plugins.push(json!({
         "name": CORE_PLUGIN,
         "source": format!("./{CORE_PLUGIN}"),
-        "description": "Core Labby binary and setup commands for Claude Code service plugins."
+        "description": "Setup commands and skills for Claude Code Labby service plugins."
     }));
     for service in services {
         let Some(meta) = service_meta(service) else {
@@ -204,7 +188,7 @@ fn plugin_manifest(
 
 fn core_readme(org: &str) -> String {
     format!(
-        "# lab-core\n\nCore Labby plugin for Claude Code.\n\nCommands:\n\n- `/setup-core` runs `labby setup --mode plugin` for the plugin-focused setup flow.\n- `/setup-core-advanced` runs `labby setup --mode full` for the full operator setup flow.\n\nThe bundled binary lives at `bin/labby`. Service plugins call it directly from `{CORE_BINARY_PATH}` so they do not depend on PATH.\n\nInstall service plugins as `lab-<service>@{org}` after installing this core plugin.\n"
+        "# lab-core\n\nCore Labby plugin for Claude Code.\n\nThis plugin does **not** bundle the `labby` binary. Install it first:\n\n```bash\ncurl -fsSL {INSTALL_SCRIPT_URL} | sh\n# or: cargo install --git https://github.com/jmagar/lab --bin labby --all-features\n```\n\nthen run `labby setup`.\n\nCommands:\n\n- `/setup-core` runs `labby setup --mode plugin` for the plugin-focused setup flow.\n- `/setup-core-advanced` runs `labby setup --mode full` for the full operator setup flow.\n\nService plugins invoke `labby` from PATH.\n\nInstall service plugins as `lab-<service>@{org}` after installing this core plugin.\n"
     )
 }
 
@@ -229,7 +213,7 @@ fn service_readme(service: &str, org: &str) -> String {
             .collect::<String>()
     };
     format!(
-        "# lab-{service}\n\n{}\n\nThis plugin starts Labby with only `{service}` enabled:\n\n```json\n{{ \"command\": \"{CORE_BINARY_PATH}\", \"args\": [\"mcp\", \"--services\", \"{service}\"] }}\n```\n\nRun `/setup-core` to fill in service credentials.\n\nIf `lab-core` is not installed, run:\n\n```bash\nclaude plugin install lab-core@{org}\n```\n\n## Required env vars\n\n{required}\n## Optional env vars\n\n{optional}",
+        "# lab-{service}\n\n{}\n\nThis plugin starts Labby with only `{service}` enabled:\n\n```json\n{{ \"command\": \"{CORE_BINARY_COMMAND}\", \"args\": [\"mcp\", \"--services\", \"{service}\"] }}\n```\n\n`labby` must be installed on PATH first:\n\n```bash\ncurl -fsSL {INSTALL_SCRIPT_URL} | sh\n```\n\nRun `/setup-core` to fill in service credentials.\n\nIf `lab-core` is not installed, run:\n\n```bash\nclaude plugin install lab-core@{org}\n```\n\n## Required env vars\n\n{required}\n## Optional env vars\n\n{optional}",
         meta.description
     )
 }
@@ -251,54 +235,32 @@ fn install_core_command(org: &str) -> String {
     )
 }
 
-fn install_binary_skill() -> &'static str {
-    r#"---
-name: install-binary
-description: Ensure the bundled labby binary is reachable from ~/.local/bin.
+fn install_labby_skill() -> &'static str {
+    r"---
+name: install-labby
+description: Install the labby binary onto PATH when a lab plugin reports it missing.
 ---
 
-# Install Binary
+# Install Labby
 
-If `~/.local/bin/labby` does not exist or does not point at `${CLAUDE_PLUGIN_ROOT}/bin/labby`, offer to create a symlink.
-
-Use:
+Lab plugins do not bundle the `labby` binary. If `command -v labby` fails, offer to install it:
 
 ```bash
-mkdir -p ~/.local/bin
-ln -sfn "${CLAUDE_PLUGIN_ROOT}/bin/labby" ~/.local/bin/labby
+curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh
 ```
 
-If symlink creation fails, tell the user that the core binary is still available at `${CLAUDE_PLUGIN_ROOT}/bin/labby`; service plugins use that absolute plugin path directly and do not require PATH.
+The script downloads the latest GitHub release for this platform (sha256-verified) into `~/.local/bin/labby`, falling back to `cargo install --git https://github.com/jmagar/lab --bin labby --all-features` when no release asset exists.
+
+After installation, run `labby setup` to start the first-run flow (config, credentials, connectivity). Never run `labby setup repair` without telling the user what it will change.
 
 Never install other plugins, edit Claude Code config, or restart services.
-"#
+"
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value)?;
     bytes.push(b'\n');
     fs::write(path, bytes).with_context(|| format!("write {}", path.display()))
-}
-
-fn default_binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("target/release/labby")
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(perms.mode() | 0o755);
-    fs::set_permissions(path, perms)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -327,10 +289,13 @@ mod tests {
     }
 
     #[test]
-    fn service_mcp_path_has_no_path_dependency() {
-        assert_eq!(
-            CORE_BINARY_PATH,
-            "${HOME}/.claude/plugins/lab-core/bin/labby"
-        );
+    fn service_mcp_command_resolves_labby_from_path() {
+        // The plugin tree deliberately ships NO binary: service plugins invoke
+        // `labby` from PATH and the install flow (scripts/install.sh →
+        // `labby setup`) is explicit, not plugin-driven.
+        assert_eq!(CORE_BINARY_COMMAND, "labby");
+        let readme = service_readme("deploy", "lab");
+        assert!(readme.contains("\"command\": \"labby\""));
+        assert!(!readme.contains(".claude/plugins/lab-core/bin"));
     }
 }

@@ -396,8 +396,10 @@ just test-integration
 - Never add `clap`, `rmcp`, `ratatui`, `anyhow`, or `tabled` to `lab-apis` — they belong in `lab` only
 - **No `mod.rs` files.** Modern Rust module style only: a module `foo` is declared in `foo.rs` sibling to its `foo/` directory, never in `foo/mod.rs`
 
-## Plugin setup hooks
+## Plugin setup hooks and install flow
 
-Plugin setup is owned by the binary. `labby setup check` is read-only, `labby setup repair` is idempotent, and `labby setup plugin-hook --no-repair` is audit mode. If a lab plugin hook is added later, keep it as a thin adapter that maps `CLAUDE_PLUGIN_OPTION_*` values to environment variables, prepares appdata, ensures `labby` is on `PATH`, and then calls `labby setup plugin-hook "$@"`.
+Plugin setup is owned by the binary. `labby setup check` is read-only, `labby setup repair` is idempotent, and `labby setup plugin-hook --no-repair` is audit mode.
+
+**The plugin ships no binary and never auto-installs.** Installation is explicit: `scripts/install.sh` (release download → `~/.local/bin/labby`, cargo fallback) or `cargo install`, then `labby setup` for the first-run flow. The checked-in `plugins/labby` hooks are advisory shims that resolve `labby` from `PATH`: SessionStart runs `labby setup plugin-hook --no-repair` (audit only) and prints an install pointer when labby is absent; ConfigChange runs `labby setup plugin-hook` to sync changed plugin settings. Keep hooks that shape — never re-bundle a binary into `plugins/labby/bin/`, reference `${CLAUDE_PLUGIN_ROOT}/bin/labby`, or make a hook install/repair anything at session start.
 
 Do not add Docker Compose, systemd, or service bootstrap logic to plugin hook scripts.

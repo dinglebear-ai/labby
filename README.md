@@ -141,8 +141,18 @@ belong in `lab`.
 
 ## Quick Start
 
-The workspace uses Rust 2024 and the root toolchain requirement currently resolves to
-Rust 1.90+.
+### Install
+
+Prebuilt binary — downloads the latest GitHub release for this platform
+(sha256-verified) into `~/.local/bin/labby`, falling back to
+`cargo install --git` when no release asset exists:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh
+```
+
+Or build from source. The workspace uses Rust 2024 and the root toolchain
+requirement currently resolves to Rust 1.90+:
 
 ```bash
 git clone git@github.com:jmagar/lab.git
@@ -150,6 +160,11 @@ cd lab
 cargo build --workspace --all-features
 cargo install --path crates/lab --bin labby --all-features
 ```
+
+Then run `labby setup` for the first-run flow. The Claude Code plugin
+(`plugins/labby`) ships skills and MCP config only — it does **not** bundle
+the binary or auto-install anything; its session hook just reports setup
+status when `labby` is on `PATH`.
 
 Secrets and endpoint URLs belong in `~/.lab/.env`. Preferences belong in
 `config.toml`, searched in this order: `./config.toml`, `~/.lab/config.toml`,
@@ -518,7 +533,7 @@ just test-integration # cargo nextest run --workspace --all-features -- --ignore
 just lint             # cargo clippy --workspace --all-features -- -D warnings; cargo fmt --all -- --check
 just deny             # cargo deny check
 just build            # cargo build --workspace --all-features
-just build-release    # cargo build --workspace --all-features --release; install bin/labby
+just build-release    # cargo build --workspace --all-features --release; install bin/labby (container bind-mount) + ~/.local/bin symlink
 just web-build        # cd apps/gateway-admin && pnpm build
 just web-watch        # rebuild Labby static assets on frontend changes
 just run -- help      # cargo run --all-features -- <args>
