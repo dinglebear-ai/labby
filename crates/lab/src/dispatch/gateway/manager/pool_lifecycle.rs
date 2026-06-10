@@ -133,11 +133,7 @@ impl GatewayManager {
         );
         crate::config::set_process_code_mode_enabled(cfg.code_mode.enabled);
         let fresh_pool = {
-            let base_pool = match &self.oauth_client_cache {
-                Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
-                None => UpstreamPool::new(),
-            }
-            .with_request_timeout(cfg.upstream_request_timeout());
+            let base_pool = self.new_base_pool(cfg.upstream_request_timeout());
             let pool = Arc::new(
                 base_pool
                     .with_runtime_origin(runtime_origin_tag(origin))

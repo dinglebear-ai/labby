@@ -199,6 +199,19 @@ impl GatewayManager {
         self.runtime.current_pool().await
     }
 
+    /// Build a base [`UpstreamPool`] wired with the manager's OAuth client
+    /// cache (when present) and the given upstream request timeout.
+    ///
+    /// Collapses the pool-construction skeleton previously duplicated across
+    /// `pool_lifecycle`, `views`, `code_mode_runtime`, and `oauth_lifecycle`.
+    pub(crate) fn new_base_pool(&self, request_timeout: std::time::Duration) -> UpstreamPool {
+        match &self.oauth_client_cache {
+            Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
+            None => UpstreamPool::new(),
+        }
+        .with_request_timeout(request_timeout)
+    }
+
     #[cfg(test)]
     pub async fn replace_config_for_tests(&self, upstream: Vec<crate::config::UpstreamConfig>) {
         self.seed_config(LabConfig {

@@ -8,7 +8,6 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::dispatch::gateway::oauth::{UpstreamOauthConnectionState, UpstreamOauthStatusView};
 use crate::dispatch::redact::redact_url;
-use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::oauth::upstream::manager::UpstreamOauthManager;
 use crate::oauth::upstream::types::{BeginAuthorization, OauthError};
 
@@ -663,11 +662,7 @@ impl GatewayManager {
         if authenticated {
             discovery_checked = true;
             let request_timeout = self.config.read().await.upstream_request_timeout();
-            let pool = match &self.oauth_client_cache {
-                Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
-                None => UpstreamPool::new(),
-            }
-            .with_request_timeout(request_timeout);
+            let pool = self.new_base_pool(request_timeout);
             let upstream_config = manager.upstream_config().clone();
             pool.discover_all_for_subject(&[upstream_config], subject)
                 .await;

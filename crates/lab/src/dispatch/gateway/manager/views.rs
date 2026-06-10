@@ -10,7 +10,7 @@ use crate::dispatch::gateway::types::{
     McpClientTransportType,
 };
 use crate::dispatch::gateway::view_models::ServerView;
-use crate::dispatch::upstream::pool::{UpstreamPool, in_process_upstream_name};
+use crate::dispatch::upstream::pool::in_process_upstream_name;
 
 use super::GatewayManager;
 use super::virtual_servers::find_virtual_server;
@@ -223,11 +223,7 @@ impl GatewayManager {
         };
 
         let request_timeout = self.config.read().await.upstream_request_timeout();
-        let pool = match &self.oauth_client_cache {
-            Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
-            None => UpstreamPool::new(),
-        }
-        .with_request_timeout(request_timeout);
+        let pool = self.new_base_pool(request_timeout);
         let registry = self.builtin_service_registry();
         pool.discover_all_for_subject_ephemeral_with_in_process_peers(
             &[upstream.clone()],

@@ -136,11 +136,7 @@ impl GatewayManager {
         let pool = if let Some(pool) = self.runtime.current_pool().await {
             pool
         } else {
-            let mut base_pool = match &self.oauth_client_cache {
-                Some(cache) => UpstreamPool::new().with_oauth_client_cache(cache.clone()),
-                None => UpstreamPool::new(),
-            }
-            .with_request_timeout(cfg.upstream_request_timeout());
+            let mut base_pool = self.new_base_pool(cfg.upstream_request_timeout());
             base_pool = base_pool.with_runtime_owner(Some(owner.cloned().unwrap_or_else(|| {
                 UpstreamRuntimeOwner {
                     surface: "dispatch".to_string(),
