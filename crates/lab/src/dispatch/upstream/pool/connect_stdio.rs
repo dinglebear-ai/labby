@@ -185,8 +185,14 @@ pub(super) async fn connect_stdio_upstream(
     #[cfg(unix)]
     let pgid_for_runtime =
         pg_guard.and_then(super::super::process_guard::ProcessGroupGuard::disarm);
-    #[cfg(not(unix))]
-    let pgid_for_runtime: Option<u32> = pid;
+    // On Windows pgid has no meaning — leave it None. The job_handle field
+    // (set below) is the Windows-only reaping resource.
+    #[cfg(windows)]
+    let pgid_for_runtime: Option<u32> = None;
+    // Non-Unix, non-Windows (hypothetical future target): no process-group
+    // reaping mechanism; pgid stays None.
+    #[cfg(all(not(unix), not(windows)))]
+    let pgid_for_runtime: Option<u32> = None;
 
     #[cfg(windows)]
     let job_handle_for_runtime = job_guard

@@ -61,13 +61,19 @@ pub struct UpstreamRuntimeOwner {
 /// is safe. The value is intentionally copied when we call `runtime.clone()`
 /// in `shutdown()` for logging — the original field is the authoritative owner
 /// and the copy is only used to read `pid` for log fields, never closed.
+///
+/// On Windows, `job_handle` zero-initialises to `0` via `#[derive(Default)]`.
+/// `close_job` treats both `0` and `INVALID_HANDLE_VALUE` as "no job" sentinels,
+/// so default-constructed instances (HTTP/WebSocket/in-process connections that
+/// never own a Job Object) are safe. Only stdio-spawned connections have a
+/// non-zero `job_handle`.
 #[derive(Debug, Clone, Default)]
 pub struct UpstreamRuntimeMetadata {
     pub pid: Option<u32>,
     pub pgid: Option<u32>,
-    /// Windows Job Object handle. Non-null only on Windows; `INVALID_HANDLE_VALUE`
-    /// (`usize::MAX` on 64-bit) means no job was created. Owned here; closed in
-    /// `UpstreamConnection::Drop` and `shutdown()`.
+    /// Windows Job Object handle. `0` (default) and `INVALID_HANDLE_VALUE`
+    /// both mean "no job". Non-zero only for stdio-spawned connections.
+    /// Owned here; closed in `UpstreamConnection::Drop` and `shutdown()`.
     #[cfg(windows)]
     pub job_handle: windows_sys::Win32::Foundation::HANDLE,
     pub started_at: Option<SystemTime>,

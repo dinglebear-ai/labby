@@ -24,8 +24,6 @@ tokio = { workspace = true, features = ["process"] }
 process-wrap = { version = "9.1.0", default-features = false, features = [
   "tokio1",
   "process-group",
-  "job-object",
-  "creation-flags",
 ] }
 nix = { version = "0.31", default-features = false, features = [
   "signal",

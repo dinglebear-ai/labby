@@ -22,6 +22,30 @@
 //! `OpenProcess`, assign it to a fresh job, set `KILL_ON_JOB_CLOSE`, then own
 //! just the job handle in the guard. Drop closes the handle and the OS reaps
 //! the whole tree.
+//!
+//! ## Spawn → assign race (accepted)
+//!
+//! Because we call `AssignProcessToJobObject` after the child has already been
+//! spawned (not `CREATE_SUSPENDED` + resume), there is a window in which the
+//! child can itself spawn grandchildren *before* the assignment completes. Any
+//! grandchild born in that window will NOT be in the job and therefore will not
+//! be reaped by `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
+//!
+//! This race is accepted for the following reasons:
+//! - The window is extremely short (nanoseconds between `spawn()` returning and
+//!   `OpenProcess` + `AssignProcessToJobObject` completing).
+//! - Typical upstream MCP servers (`npx`, `uvx`, shell wrappers) do not spawn
+//!   grandchildren synchronously in their first nanoseconds of execution.
+//! - Using `CREATE_SUSPENDED` requires re-implementing the spawn path around
+//!   `CreateProcess` directly, which is complex and would duplicate logic
+//!   already in Tokio's process spawner.
+//! - The Unix path has an analogous window between `spawn()` and the child's
+//!   call to `setsid()`/`setpgid()` in `process_wrap::ProcessGroup::leader()`.
+//!
+//! If a future use-case requires a truly race-free assignment, the correct
+//! approach is to use `JobObject` from `process-wrap` (which passes
+//! `CREATE_SUSPENDED` to `CreateProcess`) with a custom Tokio child-process
+//! wrapper that resumes the process after the job is assigned.
 
 #[cfg(windows)]
 use windows_sys::Win32::{
