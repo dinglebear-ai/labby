@@ -26,7 +26,20 @@ pub enum CodeModeToolRef {
 }
 
 impl CodeModeToolId {
+    /// Parse a raw `<upstream>::<tool>` string into a `CodeModeToolId`.
+    ///
+    /// This is an inherent shim over the `FromStr` impl so call sites that
+    /// already use `.parse(…)` or `CodeModeToolId::parse(…)` continue to
+    /// compile without churn.
     pub fn parse(raw: &str) -> Result<Self, ToolError> {
+        raw.parse()
+    }
+}
+
+impl std::str::FromStr for CodeModeToolId {
+    type Err = ToolError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
         let raw = raw.trim();
         if raw.is_empty() {
             return Err(invalid_code_mode_id("Code Mode tool id must not be empty"));
@@ -36,18 +49,13 @@ impl CodeModeToolId {
             return Err(lab_action_unknown_tool());
         }
 
-        let mut parts = raw.split("::");
-        if let (Some(upstream), Some(tool), None) = (parts.next(), parts.next(), parts.next()) {
-            if upstream.trim().is_empty() || tool.trim().is_empty() {
-                return Err(invalid_code_mode_id(
-                    "Code Mode ids must include upstream and tool",
-                ));
-            }
+        // Shared `<upstream>::<tool>` splitter — also used by `ToolExecuteSelector`.
+        if let Some((upstream, tool)) = split_upstream_tool(raw) {
             return Ok(Self {
                 raw: raw.to_string(),
                 reference: CodeModeToolRef::UpstreamTool {
-                    upstream: upstream.trim().to_string(),
-                    tool: tool.trim().to_string(),
+                    upstream: upstream.to_string(),
+                    tool: tool.to_string(),
                 },
             });
         }
@@ -56,6 +64,25 @@ impl CodeModeToolId {
             "Code Mode ids must use <upstream>::<tool>",
         ))
     }
+}
+
+/// Split a `<upstream>::<tool>` string into its two trimmed parts.
+///
+/// Returns `None` when the string has a wrong number of `::` separators or
+/// when either part is empty after trimming. Used by both `CodeModeToolId` and
+/// `ToolExecuteSelector` to avoid duplicating the splitting logic.
+pub(crate) fn split_upstream_tool(raw: &str) -> Option<(&str, &str)> {
+    let mut parts = raw.split("::");
+    let upstream = parts.next()?.trim();
+    let tool = parts.next()?.trim();
+    // Ensure there is no third segment (e.g. `a::b::c` is invalid).
+    if parts.next().is_some() {
+        return None;
+    }
+    if upstream.is_empty() || tool.is_empty() {
+        return None;
+    }
+    Some((upstream, tool))
 }
 
 #[must_use]
@@ -91,7 +118,7 @@ impl CodeModeCatalogEntry {
         schema: Option<Value>,
         output_schema: Option<Value>,
     ) -> Self {
-        let types = super::types_legacy::generate_tool_types(
+        let types = super::ts_signatures::generate_tool_types(
             upstream,
             tool,
             description,
@@ -235,6 +262,14 @@ pub struct CodeModeHistoryEntry {
 #[derive(Debug, Clone)]
 pub struct CodeModeHistory {
     entries: VecDeque<CodeModeHistoryEntry>,
+    /// Accumulated serialized byte estimate for all entries in `entries`.
+    ///
+    /// Maintained as a running total to avoid re-serializing the entire deque
+    /// on every push or eviction. Updated when entries are added or removed.
+    /// The estimate uses the serialized JSON size of each individual entry; the
+    /// VecDeque framing bytes (brackets, commas) are a constant ~2 bytes and are
+    /// ignored — acceptable given the ~1 KB min entry size and 256 KB default cap.
+    running_bytes: usize,
     max_entries: usize,
     max_bytes: usize,
     next_seq: u64,
@@ -251,6 +286,7 @@ impl CodeModeHistory {
     pub fn new(max_entries: usize, max_bytes: usize) -> Self {
         Self {
             entries: VecDeque::new(),
+            running_bytes: 0,
             max_entries: max_entries.max(1),
             max_bytes: max_bytes.max(1024),
             next_seq: 1,
@@ -260,7 +296,9 @@ impl CodeModeHistory {
     pub fn push(&mut self, mut entry: CodeModeHistoryEntry) {
         entry.seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
+        let entry_bytes = entry_serialized_size(&entry);
         self.entries.push_back(entry);
+        self.running_bytes = self.running_bytes.saturating_add(entry_bytes);
         self.trim();
     }
 
@@ -271,23 +309,31 @@ impl CodeModeHistory {
 
     fn trim(&mut self) {
         while self.entries.len() > self.max_entries {
-            self.entries.pop_front();
+            if let Some(evicted) = self.entries.pop_front() {
+                self.running_bytes = self
+                    .running_bytes
+                    .saturating_sub(entry_serialized_size(&evicted));
+            }
         }
-        while self.serialized_size() > self.max_bytes && self.entries.len() > 1 {
-            self.entries.pop_front();
+        while self.running_bytes > self.max_bytes && self.entries.len() > 1 {
+            if let Some(evicted) = self.entries.pop_front() {
+                self.running_bytes = self
+                    .running_bytes
+                    .saturating_sub(entry_serialized_size(&evicted));
+            }
         }
-        if self.serialized_size() > self.max_bytes
-            && let Some(entry) = self.entries.pop_back()
-        {
-            self.entries
-                .push_back(Self::oversized_entry_sentinel(entry.seq, entry.kind));
+        if self.running_bytes > self.max_bytes {
+            if let Some(entry) = self.entries.pop_back() {
+                let old_bytes = entry_serialized_size(&entry);
+                let sentinel = Self::oversized_entry_sentinel(entry.seq, entry.kind);
+                let sentinel_bytes = entry_serialized_size(&sentinel);
+                self.running_bytes = self
+                    .running_bytes
+                    .saturating_sub(old_bytes)
+                    .saturating_add(sentinel_bytes);
+                self.entries.push_back(sentinel);
+            }
         }
-    }
-
-    fn serialized_size(&self) -> usize {
-        serde_json::to_vec(&self.entries)
-            .map(|bytes| bytes.len())
-            .unwrap_or(usize::MAX)
     }
 
     fn oversized_entry_sentinel(seq: u64, kind: CodeModeHistoryKind) -> CodeModeHistoryEntry {
@@ -301,6 +347,18 @@ impl CodeModeHistory {
             match_count: None,
         }
     }
+}
+
+/// Serialized byte size of a single history entry.
+///
+/// Used to maintain the `running_bytes` counter without re-serializing the
+/// entire deque on every mutation. Falls back to `usize::MAX` on a (very
+/// unlikely) serialization error so the history is conservatively treated as
+/// over-budget rather than silently growing without bound.
+fn entry_serialized_size(entry: &CodeModeHistoryEntry) -> usize {
+    serde_json::to_vec(entry)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX / 2)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
