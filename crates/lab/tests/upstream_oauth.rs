@@ -356,6 +356,26 @@ async fn issuer_endpoint_host_mismatch_returns_issuer_mismatch() {
 }
 
 #[tokio::test]
+async fn google_split_token_endpoint_origin_is_allowed() {
+    let h = Harness::new().await;
+    h.mount_no_resource_metadata().await;
+    h.mount_metadata(
+        Some("https://accounts.google.com"),
+        Some(&["S256"]),
+        Some((
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://oauth2.googleapis.com/token",
+        )),
+    )
+    .await;
+    let m = h.manager(h.upstream_cfg(preregistered()));
+
+    m.begin_authorization("alice")
+        .await
+        .expect("google split token endpoint origin should be accepted");
+}
+
+#[tokio::test]
 async fn cimd_registration_uses_metadata_url_as_client_id() {
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;

@@ -832,7 +832,9 @@ impl UpstreamOauthManager {
                     "{label} `{endpoint}` is not a valid URL"
                 )));
             };
-            if origin != issuer_origin {
+            if origin != issuer_origin
+                && !is_known_split_endpoint_origin(issuer_origin.as_str(), origin.as_str())
+            {
                 return Err(OauthError::IssuerMismatch(format!(
                     "{label} origin `{origin}` does not match issuer origin `{issuer_origin}`"
                 )));
@@ -1129,6 +1131,11 @@ fn url_origin(s: &str) -> Option<String> {
         Some(port) => Some(format!("{scheme}://{host}:{port}")),
         None => Some(format!("{scheme}://{host}")),
     }
+}
+
+fn is_known_split_endpoint_origin(issuer_origin: &str, endpoint_origin: &str) -> bool {
+    issuer_origin == "https://accounts.google.com"
+        && endpoint_origin == "https://oauth2.googleapis.com"
 }
 
 fn extract_state_param(url: &str) -> Option<String> {
