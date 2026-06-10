@@ -18,6 +18,11 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # .cargo/config.toml sets rustc-wrapper = "scripts/cargo-rustc-wrapper" for
+  # local dev. The wrapper is a shell script: Windows runners cannot exec it
+  # (os error 193) and the cross/aarch64 container cannot either, so disable
+  # it for all release jobs (mirrors ci.yml).
+  RUSTC_WRAPPER: ""
 
 jobs:
   frontend-assets:
