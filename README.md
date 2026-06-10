@@ -143,13 +143,19 @@ belong in `lab`.
 
 ### Install
 
-Prebuilt binary — downloads the latest GitHub release for this platform
-(sha256-verified) into `~/.local/bin/labby`, falling back to
+Prebuilt binary — downloads the latest [GitHub release](https://github.com/jmagar/lab/releases)
+for this platform (sha256-verified) into `~/.local/bin/labby`, falling back to
 `cargo install --git` when no release asset exists:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh
 ```
+
+Release archives (`lab-x86_64-unknown-linux-gnu.tar.gz`,
+`lab-x86_64-pc-windows-msvc.zip`, each with a `.sha256` file) can also be
+downloaded directly from the [releases page](https://github.com/jmagar/lab/releases).
+Override the install script with `LAB_INSTALL_DIR`, `LAB_INSTALL_VERSION`
+(e.g. `v0.23.0`), or `LAB_INSTALL_REPO`.
 
 Or build from source. The workspace uses Rust 2024 and the root toolchain
 requirement currently resolves to Rust 1.90+:
@@ -543,9 +549,15 @@ just dev              # release rebuild + hot-swap binary into the dev container
 just dev-debug        # nightly+cranelift debug rebuild + hot-swap (3x faster compile)
 just fmt              # cargo fmt --all
 just clean            # cargo clean
-just release          # cargo release
+just install          # build-release + symlink ~/.local/bin/labby
+just prod-run         # build + run the prod image locally with prod-like env
 just mcp-token        # rotate LAB_MCP_HTTP_TOKEN in .env
 ```
+
+Releases are cut by pushing a `vX.Y.Z` tag (bump the workspace `version` in
+`Cargo.toml` and add a `CHANGELOG.md` entry first). The tag triggers
+`release.yml`, which builds the Linux/Windows archives, publishes the GitHub
+Release, and pushes `ghcr.io/jmagar/lab:<tag>` + `:latest`.
 
 The dev container (`docker-compose.yml`) pre-installs the three ACP adapters (`claude-agent-acp`, `codex-acp`, `gemini`) into the image at fixed versions, with an npm `overrides` entry floating `@anthropic-ai/claude-agent-sdk` forward of the version `claude-agent-acp` pins. This eliminates per-spawn `npx` overhead and avoids credential/binary-version mismatches that otherwise SIGILL the bundled Claude Code binary. Bumping any adapter version requires rebuilding the image (`docker compose build labby-master`); changing only the labby binary uses `just dev` or `just dev-debug` and is immediate.
 

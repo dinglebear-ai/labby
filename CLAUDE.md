@@ -313,9 +313,13 @@ just build-release  # cargo build --workspace --all-features --release
 just run        # cargo run --all-features -- <args>
 just fmt        # cargo fmt --all
 just clean      # cargo clean
-just release    # cargo release
 just mcp-token  # rotate the MCP bearer token in ~/.lab/.env
 ```
+
+Releases: push a `vX.Y.Z` tag (after bumping the workspace `version` in
+`Cargo.toml` and adding a CHANGELOG entry) — `release.yml` builds the
+Linux/Windows archives, publishes the GitHub Release, and pushes the GHCR
+image. There is no cargo-release config; the bump/tag is manual.
 
 Default verification targets the all-features build. If you run a reduced feature set for a narrow task, treat any warning cleanup decisions from that mode as provisional until they are checked again with `--all-features`.
 
