@@ -4,8 +4,9 @@
 //! Background — the gateway proxies upstream MCP servers over HTTP via
 //! rmcp's `StreamableHttpClientTransport`. Without a body cap, a hostile or
 //! buggy upstream can return a multi-GB response that OOMs the gateway
-//! before the post-hoc size check at `pool.rs:1748,2035,2532,2616` ever
-//! fires. This wrapper inserts the cap at the transport layer.
+//! before the post-hoc size checks in `pool/tools_call.rs`,
+//! `pool/resources_read.rs`, and `pool/prompts_get.rs` ever fire. This
+//! wrapper inserts the cap at the transport layer.
 //!
 //! Cap semantics:
 //! - `post_message` → `Json(_, _)`: cumulative cap on the buffered body.

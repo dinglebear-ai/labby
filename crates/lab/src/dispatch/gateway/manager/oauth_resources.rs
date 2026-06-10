@@ -131,6 +131,9 @@ impl GatewayManager {
         }
     }
 
+    // Only exercised by tests today (a CLI test reads it via the manager); the
+    // accessor is kept on the public surface for symmetry with the other oauth
+    // resource getters, so it is legitimately dead in the production build.
     #[allow(dead_code)]
     #[must_use]
     pub fn oauth_client_cache(&self) -> Option<OauthClientCache> {
@@ -153,7 +156,6 @@ impl GatewayManager {
             .and_then(|managers| managers.get(upstream).map(|entry| entry.clone()))
     }
 
-    #[allow(dead_code)]
     pub fn evict_upstream_clients(&self, upstream: &str) {
         if let Some(cache) = &self.oauth_client_cache {
             cache.evict_upstream(upstream);
