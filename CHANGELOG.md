@@ -8,6 +8,38 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.23.1] - 2026-06-10
+
+### Fixed
+
+- **Windows: Job Object reaping for stdio upstream children and Code Mode runner** ([lab-jouhb]).
+  Two spawn sites previously left grandchildren (`cmd → node`, `npx → python`, etc.) orphaned on
+  Windows when an upstream was killed or reloaded, because only the direct child PID was killed:
+
+  - `connect_stdio.rs` — a new `#[cfg(windows)]` `JobObjectGuard` is armed immediately after
+    spawn (mirroring the Unix `ProcessGroupGuard`), disarmed on successful `UpstreamConnection`
+    construction, and the raw Job Object `HANDLE` is stored in `UpstreamRuntimeMetadata.job_handle`.
+    `UpstreamConnection::Drop` and `shutdown()` close the handle, causing the OS to terminate the
+    entire descendant tree via `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
+
+  - `runner_drive.rs` — a `_runner_job_guard` (also `JobObjectGuard`) is held for the lifetime of
+    `run_in_runner_with_config`, covering all exit paths (completion, timeout, protocol error). The
+    existing `terminate_code_mode_runner` direct-child kill is retained as belt-and-suspenders.
+
+  The Unix path (`ProcessGroup::leader()` / `ProcessGroupGuard` / `killpg`) is byte-for-byte
+  unchanged. All new code is additive under `#[cfg(windows)]`. A `#[ignore]` integration test
+  (`tests/windows_job_object_reaping.rs`) is included for verification on the `windows-lab`
+  self-hosted CI runner.
+
+  The raw `windows-sys` Job Object FFI lives in a **new `lab-winjob` crate** — the sanctioned
+  unsafe boundary — which exposes a safe API (`create_job_for_pid`, `close_job`). This mirrors
+  how the Unix path routes its unsafe through the external `nix` crate: `lab` and `lab-apis`
+  keep the workspace-wide `unsafe_code = "forbid"` lint and contain zero `unsafe`. The job
+  handle is carried as `isize` (not `windows-sys 0.59`'s `!Send + !Sync` `HANDLE`) so storing
+  it in `AppState` does not break the axum router's `Send`/`Sync` bounds.
+
+---
+
 ## [0.23.0] - 2026-06-10
 
 ### Highlights

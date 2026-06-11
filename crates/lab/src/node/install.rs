@@ -902,6 +902,11 @@ mod tests {
         assert_eq!(root.file_name(), Some(std::ffi::OsStr::new(".claude")));
     }
 
+    // Unix-only: `/abs/path` is absolute on unix but RELATIVE on Windows (which
+    // needs a drive prefix like `C:\`), so the `.is_ok()` branch only holds on
+    // unix. Production `resolve_write_root` uses cross-platform
+    // `Path::is_absolute()`; only the unix-style fixture is platform-specific.
+    #[cfg(unix)]
     #[test]
     fn resolve_write_root_project_requires_absolute() {
         assert!(resolve_write_root(InstallScope::Project, Some("relative/path")).is_err());
@@ -922,15 +927,16 @@ mod tests {
         assert!(serde_json::from_str::<InstallScope>(r#""workspace""#).is_err());
     }
 
+    // Inherently unix-only: exercises symlink rejection. Whole-fn gated so no
+    // scaffolding (`link`) is orphaned on Windows under `-D warnings`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn reject_symlink_detects_symlinks() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let target = tempdir.path().join("real_file");
         tokio::fs::write(&target, b"hello").await.expect("write");
         let link = tempdir.path().join("symlink");
-        #[cfg(unix)]
         tokio::fs::symlink(&target, &link).await.expect("symlink");
-        #[cfg(unix)]
         assert!(
             reject_symlink(&link).await.is_err(),
             "should reject symlink"
@@ -1171,6 +1177,11 @@ command = "node"
         assert!(meta.file_type().is_file());
     }
 
+    // Inherently unix-only: plants a symlink to verify write_atomic replaces it
+    // rather than following it. Whole-fn gated so no scaffolding (`victim`,
+    // `target`) is orphaned and no unreachable code remains on Windows under
+    // `-D warnings`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn write_atomic_replaces_symlink_at_target_without_following() {
         // lab-zxx5.18 invariant: an attacker plants a symlink at `target`
@@ -1184,16 +1195,7 @@ command = "node"
             .unwrap();
         let target = dir.path().join("out.md");
 
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&victim, &target).unwrap();
-        }
-        #[cfg(not(unix))]
-        {
-            // Non-unix: skip; rename-based atomic still applies but we can't
-            // easily plant a symlink portably.
-            return;
-        }
+        std::os::unix::fs::symlink(&victim, &target).unwrap();
 
         write_atomic(&target, b"safe content").await.expect("write");
 

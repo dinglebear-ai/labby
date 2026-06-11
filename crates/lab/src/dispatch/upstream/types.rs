@@ -50,10 +50,39 @@ pub struct UpstreamRuntimeOwner {
 }
 
 /// Runtime metadata for process-backed upstream connections.
+///
+/// On Unix, `pgid` holds the process group id used for `killpg` reaping.
+/// On Windows, `job_handle` holds the raw value of a Windows Job Object
+/// `HANDLE` (stored as `isize`) with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+/// set; closing it terminates the entire descendant tree. Both fields serve
+/// the same role — each is only populated on its respective platform.
+///
+/// `job_handle` is `isize`, not `HANDLE`, deliberately: in `windows-sys 0.59`
+/// `HANDLE` is `*mut c_void` (`!Send + !Sync`). Storing it raw would poison
+/// `AppState`'s `Send`/`Sync` bounds and break the axum router (the cascade of
+/// `Router<AppState>` trait-bound errors). `isize` is `Copy + Send + Sync`, so
+/// the struct stays `Send + Sync` with no unsafe trait impls. The value is cast
+/// back to `HANDLE` only at the `CloseHandle` boundary inside `close_job`.
+///
+/// `#[derive(Clone)]` is safe because every field is `Clone` (and `isize` is
+/// `Copy`). The clone in `shutdown()` is used only to read `pid` for log fields;
+/// the original field remains the authoritative owner of the handle, and the
+/// handle is closed exactly once.
+///
+/// On Windows, `job_handle` zero-initialises to `0` via `#[derive(Default)]`.
+/// `close_job` treats `0` as the "no job" sentinel, so default-constructed
+/// instances (HTTP/WebSocket/in-process connections that never own a Job
+/// Object) are safe. Only stdio-spawned connections have a non-zero handle.
 #[derive(Debug, Clone, Default)]
 pub struct UpstreamRuntimeMetadata {
     pub pid: Option<u32>,
     pub pgid: Option<u32>,
+    /// Windows Job Object handle, stored as `isize` (Send/Sync-safe). `0`
+    /// (the `#[derive(Default)]` value) means "no job". Non-zero only for
+    /// stdio-spawned connections. Owned here; closed in
+    /// `UpstreamConnection::Drop` and `shutdown()` via `close_job`.
+    #[cfg(windows)]
+    pub job_handle: isize,
     pub started_at: Option<SystemTime>,
     pub origin: Option<String>,
     pub owner: Option<UpstreamRuntimeOwner>,

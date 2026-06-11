@@ -12,8 +12,13 @@
 //! On the happy path the guard is `.disarm()`'d and the pgid is transferred
 //! to `UpstreamConnection`, whose own `Drop` impl takes over the role.
 //!
-//! Non-Unix builds: this module is empty (no process-group concept on
-//! Windows in the same shape).
+//! On Windows, `JobObjectGuard` plays the same role using a Windows Job Object
+//! handle instead of a process group id. Closing the handle causes the OS to
+//! terminate all processes assigned to the job (including grandchildren) when
+//! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is set. The guard is armed immediately
+//! after spawn, disarmed on successful `UpstreamConnection` construction (the
+//! raw handle is stored in `UpstreamRuntimeMetadata.job_handle`), and the
+//! stored handle is closed in `UpstreamConnection::Drop` / `shutdown()`.
 
 /// RAII guard wrapping a process group id. On `Drop` the guard sends
 /// `SIGTERM` then `SIGKILL` to the group — synchronously, with no wait
@@ -75,6 +80,68 @@ impl Drop for ProcessGroupGuard {
                 "process group reaped on guard drop"
             );
         }
+    }
+}
+
+/// Windows Job Object RAII guard.
+///
+/// Arms immediately after `spawn()` by calling [`JobObjectGuard::arm`] with
+/// the child PID. On drop, the job handle is closed; because
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` was set, the OS terminates every
+/// process in the job (direct child + all descendants).
+///
+/// On the happy path, `.disarm()` returns the handle (as `isize`) for storage
+/// in `UpstreamRuntimeMetadata.job_handle`. `UpstreamConnection::Drop` and
+/// `shutdown()` close that handle, mirroring the Unix `killpg` path.
+///
+/// A failed `create_job_for_pid` (Win32 API error) returns `0`; the guard still
+/// arms with that sentinel value and `Drop` / `disarm` treat it as a no-op, so
+/// the connect path is never fatal due to a job-creation failure.
+///
+/// The handle is held as `isize` rather than `HANDLE` because `windows-sys
+/// 0.59`'s `HANDLE` (`*mut c_void`) is `!Send + !Sync`; `isize` keeps the guard
+/// (and any struct that stores its disarmed value) thread-safe with no unsafe
+/// trait impls. The cast back to `HANDLE` happens only inside `close_job`.
+#[cfg(windows)]
+pub struct JobObjectGuard {
+    /// Raw job handle value as `isize`. `0` means creation failed; treated as no-op.
+    job: isize,
+    /// PID of the process assigned to the job; used only for log messages.
+    pid: u32,
+}
+
+#[cfg(windows)]
+impl JobObjectGuard {
+    /// Arm the guard: create a Job Object, assign `pid` to it, and set
+    /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
+    #[must_use]
+    pub fn arm(pid: u32) -> Self {
+        // `lab_winjob::create_job_for_pid` is a SAFE wrapper (the unsafe FFI is
+        // encapsulated in the sanctioned `lab-winjob` crate). On any Win32
+        // failure it logs and returns the `0` sentinel.
+        let job = lab_winjob::create_job_for_pid(pid);
+        Self { job, pid }
+    }
+
+    /// Disarm the guard, returning the job handle as `isize`.
+    ///
+    /// After disarm the guard's `Drop` does nothing; the caller takes ownership
+    /// of the handle and is responsible for closing it (typically via
+    /// `UpstreamRuntimeMetadata.job_handle`).
+    pub fn disarm(mut self) -> isize {
+        let handle = self.job;
+        // Zero out so Drop no-ops.
+        self.job = 0;
+        handle
+    }
+}
+
+#[cfg(windows)]
+impl Drop for JobObjectGuard {
+    fn drop(&mut self) {
+        // `lab_winjob::close_job` is a SAFE wrapper that guards against the `0`
+        // sentinel; the `CloseHandle` FFI is encapsulated in `lab-winjob`.
+        lab_winjob::close_job(self.job, self.pid);
     }
 }
 

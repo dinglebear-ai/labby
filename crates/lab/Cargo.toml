@@ -127,6 +127,13 @@ toml_edit = "0.23"
 [target.'cfg(unix)'.dependencies]
 sd-notify = { version = "0.5", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+# Windows Job Object process-tree reaping. The raw `windows-sys` FFI lives in
+# `lab-winjob` (the sanctioned unsafe crate), so `lab` stays unsafe-free and
+# keeps the workspace `unsafe_code = "forbid"` lint. This mirrors how the Unix
+# path routes its unsafe through the external `nix` crate.
+lab-winjob = { path = "../lab-winjob" }
+
 [dev-dependencies]
 wiremock.workspace = true
 proptest = "1"

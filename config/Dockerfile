@@ -30,6 +30,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/lab/Cargo.toml      crates/lab/Cargo.toml
 COPY crates/lab-apis/Cargo.toml crates/lab-apis/Cargo.toml
 COPY crates/lab-auth/Cargo.toml crates/lab-auth/Cargo.toml
+COPY crates/lab-winjob/Cargo.toml crates/lab-winjob/Cargo.toml
 
 # Create stub source + test files so cargo can parse ALL manifests without error.
 #
@@ -48,6 +49,7 @@ RUN mkdir -p \
       crates/lab-apis/src \
       crates/lab-apis/tests \
       crates/lab-auth/src \
+      crates/lab-winjob/src \
       apps/gateway-admin/out \
  && echo 'fn main(){}' > crates/lab/src/main.rs \
  && touch \
@@ -58,10 +60,12 @@ RUN mkdir -p \
       crates/lab-apis/tests/openacp_client.rs \
       crates/lab-apis/tests/jellyfin_client.rs \
       crates/lab-auth/src/lib.rs \
+      crates/lab-winjob/src/lib.rs \
  && cargo build --workspace --all-features --release \
  && cargo clean -p labby \
  && cargo clean -p lab-apis \
  && cargo clean -p lab-auth \
+ && cargo clean -p lab-winjob \
  && rm -rf \
       crates/*/src \
       crates/lab-apis/tests \

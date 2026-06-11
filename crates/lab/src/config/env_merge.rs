@@ -943,23 +943,24 @@ mod tests {
         }
     }
 
+    // Inherently unix-only: asserts 0o600 mode bits. Whole-fn gated rather than
+    // wrapping the body in `#[cfg(unix)] { ... }` (which would compile to an
+    // empty test that still counts on Windows).
+    #[cfg(unix)]
     #[test]
     fn unix_perms_set_to_0600() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join(".env");
-            merge(
-                &path,
-                MergeRequest {
-                    entries: vec![EnvEntry::new("FOO", "bar")],
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "expected 0600, got {mode:o}");
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        merge(
+            &path,
+            MergeRequest {
+                entries: vec![EnvEntry::new("FOO", "bar")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600, got {mode:o}");
     }
 }
