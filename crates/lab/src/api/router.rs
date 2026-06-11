@@ -626,7 +626,11 @@ async fn protected_route_upstream_target(
                     error = %error,
                     "protected MCP route proxy failed: invalid backend_url"
                 );
-                StatusCode::BAD_GATEWAY.into_response()
+                ToolError::Sdk {
+                    sdk_kind: "bad_gateway".into(),
+                    message: format!("protected MCP route backend_url is invalid: {error}"),
+                }
+                .into_response()
             })?;
             return Ok((url, None, "backend_url".to_string()));
         }
@@ -2909,6 +2913,70 @@ mod tests {
         assert_eq!(
             String::from_utf8(body.to_vec()).unwrap(),
             r#"{"scoped":true}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn protected_route_invalid_backend_url_returns_structured_error() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
+            tempdir.path().join("gateway.toml"),
+            crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+        ));
+        let config = crate::config::LabConfig {
+            protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
+                name: "bad".to_string(),
+                enabled: true,
+                public_host: "mcp.tootie.tv".to_string(),
+                public_path: "/bad".to_string(),
+                upstream: None,
+                backend_url: "://not-a-url".to_string(),
+                backend_mcp_path: "/mcp".to_string(),
+                scopes: vec!["mcp:read".to_string()],
+                health_path: None,
+                target: None,
+            }],
+            ..crate::config::LabConfig::default()
+        };
+        manager.seed_config(config.clone()).await;
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager);
+        let auth_state = test_lab_auth_state().await;
+        let token = issue_test_token(&auth_state, "https://mcp.tootie.tv/bad", "mcp:read");
+        let app = build_router(
+            state,
+            Some("static-token".to_string()),
+            Some(auth_state),
+            None,
+            &[],
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bad")
+                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["kind"], "bad_gateway");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("backend_url is invalid")
         );
     }
 

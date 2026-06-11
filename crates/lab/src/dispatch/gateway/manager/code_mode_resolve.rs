@@ -201,6 +201,17 @@ impl GatewayManager {
                     message: format!("unknown tool `{}`", selector.display_name()),
                 });
             }
+            if cfg
+                .upstream
+                .iter()
+                .find(|candidate| candidate.name == upstream_name)
+                .is_some_and(|candidate| !is_routable(candidate.priority))
+            {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "unknown_tool".to_string(),
+                    message: format!("unknown tool `{}`", selector.display_name()),
+                });
+            }
             self.ensure_upstream_tool_runtime_ready(upstream_name, owner, oauth_subject)
                 .await?;
             return pool

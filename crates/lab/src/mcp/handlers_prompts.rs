@@ -58,12 +58,9 @@ impl LabMcpServer {
             if let Some(oauth_subject) =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             {
+                let configs = self.route_scoped_oauth_upstream_configs().await;
                 let scoped_prompts = pool
-                    .subject_scoped_prompts(
-                        &self.oauth_upstream_configs().await,
-                        oauth_subject.as_ref(),
-                        &builtin_name_refs,
-                    )
+                    .subject_scoped_prompts(&configs, oauth_subject.as_ref(), &builtin_name_refs)
                     .await;
                 prompts.extend(scoped_prompts.into_iter().filter(|prompt| {
                     prompt
@@ -246,11 +243,10 @@ impl LabMcpServer {
             oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             && let Some(pool) = self.current_upstream_pool().await
         {
-            let configs = self.oauth_upstream_configs().await;
+            let configs = self.route_scoped_oauth_upstream_configs().await;
             if let Some(upstream_name) = pool
                 .subject_scoped_prompt_owner(&configs, oauth_subject.as_ref(), &request.name)
                 .await
-                && self.route_scope.allows_upstream(&upstream_name)
                 && let Some(config) = configs
                     .into_iter()
                     .find(|config| config.name == upstream_name)

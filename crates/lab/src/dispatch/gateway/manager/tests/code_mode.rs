@@ -200,6 +200,26 @@ async fn resolve_raw_upstream_tool_honors_qualified_upstream_name() {
 }
 
 #[tokio::test]
+async fn resolve_raw_upstream_tool_scoped_hides_priority_zero_upstreams() {
+    let mut upstream = fixture_http_upstream("suppressed");
+    upstream.priority = 0.0;
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![upstream]).await;
+    pool.insert_entry_for_tests("suppressed", healthy_entry_with_tool("suppressed", "ping"))
+        .await;
+    let allowed = std::collections::BTreeSet::from(["suppressed".to_string()]);
+
+    let err = manager
+        .resolve_raw_upstream_tool_scoped("suppressed::ping", Some(&allowed), None, None)
+        .await
+        .expect_err("priority=0 upstream tools must not be invokable through scoped raw proxy");
+
+    match err {
+        ToolError::Sdk { sdk_kind, .. } => assert_eq!(sdk_kind, "unknown_tool"),
+        other => panic!("expected unknown_tool sdk error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn code_mode_enabled_reads_code_mode_config() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");

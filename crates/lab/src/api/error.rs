@@ -43,6 +43,7 @@ impl IntoResponse for ToolError {
                 StatusCode::BAD_REQUEST
             }
             "network_error"
+            | "bad_gateway"
             | "server_error"
             | "upstream_error"
             | "oauth_resource_mismatch"

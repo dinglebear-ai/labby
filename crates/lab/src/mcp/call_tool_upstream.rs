@@ -288,15 +288,12 @@ impl LabMcpServer {
             oauth_upstream_subject_for_request(auth, self.request_subject(context))
             && let Some(pool) = self.current_upstream_pool().await
         {
-            let configs = self.oauth_upstream_configs().await;
+            let configs = self.route_scoped_oauth_upstream_configs().await;
             let mut owner = None;
             for (upstream_name, tools) in pool
                 .subject_scoped_tools(&configs, oauth_subject.as_ref())
                 .await
             {
-                if !self.route_scope.allows_upstream(&upstream_name) {
-                    continue;
-                }
                 if tools.iter().any(|tool| tool.name.as_ref() == service) {
                     owner = Some(upstream_name);
                     break;

@@ -115,7 +115,7 @@ impl LabMcpServer {
             if let Some(oauth_subject) =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             {
-                let configs = self.oauth_upstream_configs().await;
+                let configs = self.route_scoped_oauth_upstream_configs().await;
                 let mut scoped_resources = pool
                     .subject_scoped_resources(&configs, oauth_subject.as_ref())
                     .await;

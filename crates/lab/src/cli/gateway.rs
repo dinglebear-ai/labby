@@ -455,16 +455,28 @@ fn filtered_builtin_service_registry(config: &LabConfig) -> ToolRegistry {
     )
 }
 
+fn protected_route_target_from_args(
+    gateway_subset: bool,
+    upstreams: Vec<String>,
+    services: Vec<String>,
+    expose_code_mode: bool,
+) -> Option<crate::config::ProtectedMcpRouteTarget> {
+    gateway_subset.then_some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
+        crate::config::ProtectedGatewaySubsetTarget {
+            upstreams,
+            services,
+            expose_code_mode,
+        },
+    ))
+}
+
 fn protected_route_from_args(args: GatewayProtectedRouteUpsertArgs) -> ProtectedMcpRouteConfig {
-    let target = args.gateway_subset.then_some({
-        crate::config::ProtectedMcpRouteTarget::GatewaySubset(
-            crate::config::ProtectedGatewaySubsetTarget {
-                upstreams: args.target_upstream,
-                services: args.target_service,
-                expose_code_mode: args.expose_code_mode,
-            },
-        )
-    });
+    let target = protected_route_target_from_args(
+        args.gateway_subset,
+        args.target_upstream,
+        args.target_service,
+        args.expose_code_mode,
+    );
     ProtectedMcpRouteConfig {
         name: args.name,
         enabled: args.enabled,
@@ -742,15 +754,12 @@ async fn dispatch_command(
                         json!({ "route": protected_route_from_args(args) }),
                     ),
                     GatewayProtectedRouteCommand::Update(args) => {
-                        let target = args.gateway_subset.then_some({
-                            crate::config::ProtectedMcpRouteTarget::GatewaySubset(
-                                crate::config::ProtectedGatewaySubsetTarget {
-                                    upstreams: args.target_upstream,
-                                    services: args.target_service,
-                                    expose_code_mode: args.expose_code_mode,
-                                },
-                            )
-                        });
+                        let target = protected_route_target_from_args(
+                            args.gateway_subset,
+                            args.target_upstream,
+                            args.target_service,
+                            args.expose_code_mode,
+                        );
                         (
                             "gateway.protected_route.update".to_string(),
                             json!({
