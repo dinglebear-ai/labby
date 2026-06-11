@@ -272,7 +272,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let spawn_depth = resolve_lab_spawn_depth(std::env::var("LAB_SPAWN_DEPTH").ok());
     let suppress_upstream_runtime = stdio_recursion_guard_active(stdio_mode, spawn_depth);
     let gateway_runtime = GatewayRuntimeHandle::default();
-    let bearer_token = http_token();
+    let mut bearer_token = http_token();
     let auth_config =
         resolve_auth_for_config(&config).context("invalid HTTP auth configuration")?;
     // SECURITY: Only log metadata — never resolved secret values.
@@ -490,6 +490,56 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
 
     crate::mcp::server::verify_upstream_subject_resolution_support()
         .context("verify upstream OAuth subject-resolution wiring")?;
+
+    // First-run self-bootstrap (setup-wizard consolidation): when no MCP token
+    // is configured and OAuth is not active, generate a token + minimal
+    // ~/.lab/.env so the server can start and the operator can reach /setup.
+    // Closes the headless bootstrap circularity. The freshly written file is
+    // re-loaded via dotenvy (the same crate config::load_dotenv() uses) so the
+    // token becomes visible process-wide — not just to the local bearer_token,
+    // but to every downstream LAB_MCP_HTTP_TOKEN reader (e.g. node master
+    // client, `logs`). dotenvy does not override already-set vars, and the
+    // token was absent on first run, so it loads fresh. We avoid `unsafe`
+    // std::env::set_var (the workspace forbids unsafe_code) by letting dotenvy
+    // — which encapsulates its own set_var — own the mutation.
+    if crate::dispatch::setup::should_bootstrap(
+        bearer_token.is_some(),
+        matches!(auth_config.mode, AuthMode::OAuth),
+    ) {
+        match crate::dispatch::setup::bootstrap() {
+            Ok(outcome)
+                if outcome.get("created").and_then(serde_json::Value::as_bool) == Some(true) =>
+            {
+                if let Some(env_file) = outcome.get("env_path").and_then(serde_json::Value::as_str)
+                {
+                    if let Err(error) = dotenvy::from_path(PathBuf::from(env_file)) {
+                        tracing::warn!(
+                            surface = "cli",
+                            service = "serve",
+                            error = %error,
+                            "failed to reload generated ~/.lab/.env into process env"
+                        );
+                    }
+                }
+                bearer_token = http_token();
+                tracing::warn!(
+                    surface = "cli",
+                    service = "serve",
+                    "first run: generated LAB_MCP_HTTP_TOKEN and wrote ~/.lab/.env"
+                );
+                if let Some(tok) = outcome.get("token").and_then(serde_json::Value::as_str) {
+                    eprintln!("\n  Lab first-run setup");
+                    eprintln!("  MCP bearer token: {tok}");
+                    eprintln!("  Open http://{host}:{port}/setup to finish configuration\n");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(surface = "cli", service = "serve", error = %error, "first-run bootstrap skipped");
+            }
+        }
+    }
+
     let auth_configured = bearer_token.is_some() || matches!(auth_config.mode, AuthMode::OAuth);
 
     // Safety gate: refuse to bind on a non-localhost address without
@@ -1541,6 +1591,17 @@ mod tests {
     use crate::config::{LabConfig, McpPreferences, WebPreferences};
     use crate::registry::{build_default_registry, filter_built_in_upstream_apis};
     use clap::Parser;
+
+    #[test]
+    fn first_run_gate_matches_token_and_oauth_state() {
+        use crate::dispatch::setup::should_bootstrap;
+        // No token, bearer mode → bootstrap.
+        assert!(should_bootstrap(false, false));
+        // Token already present → never bootstrap.
+        assert!(!should_bootstrap(true, false));
+        // OAuth mode → never bootstrap (OAuth needs no static token).
+        assert!(!should_bootstrap(false, true));
+    }
 
     #[test]
     fn transport_resolution_prefers_explicit_stdio_then_cli_then_http_default() {
