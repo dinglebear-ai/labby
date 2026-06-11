@@ -362,6 +362,7 @@ impl LabConfig {
         for upstream in &self.upstream {
             upstream.validate()?;
         }
+        validate_protected_mcp_routes_for_startup(self)?;
         Ok(())
     }
 
@@ -479,6 +480,172 @@ fn validate_gateway_subset_paths_are_unique(
         }
     }
     Ok(())
+}
+
+fn validate_protected_mcp_routes_for_startup(cfg: &LabConfig) -> Result<(), ConfigError> {
+    let mut names = std::collections::HashSet::new();
+    let mut enabled_keys = std::collections::HashSet::new();
+    let upstream_names: std::collections::HashSet<&str> = cfg
+        .upstream
+        .iter()
+        .map(|upstream| upstream.name.as_str())
+        .collect();
+    let registry = crate::registry::build_docs_registry();
+    let service_names: std::collections::HashSet<&str> = registry
+        .services()
+        .iter()
+        .map(|service| service.name)
+        .collect();
+
+    validate_gateway_subset_paths_are_unique(&cfg.protected_mcp_routes)?;
+    for route in &cfg.protected_mcp_routes {
+        validate_protected_mcp_route_for_startup(route, &upstream_names, &service_names)?;
+        if !names.insert(route.name.trim().to_string()) {
+            return Err(ConfigError::InvalidProtectedRoute {
+                name: route.name.clone(),
+                field: "name",
+                value: format!(
+                    "protected MCP route `{}` appears more than once",
+                    route.name
+                ),
+            });
+        }
+        if route.enabled {
+            let key = (
+                route.public_host.trim().to_ascii_lowercase(),
+                route.public_path.trim().to_string(),
+            );
+            if !enabled_keys.insert(key) {
+                return Err(ConfigError::InvalidProtectedRoute {
+                    name: route.name.clone(),
+                    field: "public_path",
+                    value: format!(
+                        "duplicate enabled protected MCP route for {}{}",
+                        route.public_host, route.public_path
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_protected_mcp_route_for_startup(
+    route: &ProtectedMcpRouteConfig,
+    upstream_names: &std::collections::HashSet<&str>,
+    service_names: &std::collections::HashSet<&str>,
+) -> Result<(), ConfigError> {
+    if route.name.trim().is_empty() {
+        return invalid_protected_route(
+            route,
+            "name",
+            "protected MCP route name must not be empty",
+        );
+    }
+    validate_protected_public_path_for_startup(route, route.public_path.trim())?;
+    if route.target.is_some() && (route.upstream.is_some() || !route.backend_url.trim().is_empty())
+    {
+        return invalid_protected_route(
+            route,
+            "target",
+            "protected MCP route target cannot be combined with upstream or backend_url",
+        );
+    }
+
+    if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &route.target {
+        if target.upstreams.is_empty() && target.services.is_empty() && !target.expose_code_mode {
+            return invalid_protected_route(
+                route,
+                "target",
+                "gateway_subset target must expose at least one upstream, service, or Code Mode",
+            );
+        }
+        for upstream in &target.upstreams {
+            if !upstream_names.contains(upstream.as_str()) {
+                return invalid_protected_route(
+                    route,
+                    "target.upstreams",
+                    format!("unknown gateway_subset upstream `{upstream}`"),
+                );
+            }
+        }
+        for service in &target.services {
+            if !service_names.contains(service.as_str()) {
+                return invalid_protected_route(
+                    route,
+                    "target.services",
+                    format!("unknown gateway_subset service `{service}`"),
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    match (
+        route.upstream.as_deref(),
+        route.backend_url.trim().is_empty(),
+    ) {
+        (Some(_), true) | (None, false) => Ok(()),
+        (Some(_), false) => invalid_protected_route(
+            route,
+            "upstream",
+            "protected MCP route must set either upstream or backend_url, not both",
+        ),
+        (None, true) => invalid_protected_route(
+            route,
+            "backend_url",
+            "protected MCP route must set upstream or backend_url",
+        ),
+    }
+}
+
+fn validate_protected_public_path_for_startup(
+    route: &ProtectedMcpRouteConfig,
+    path: &str,
+) -> Result<(), ConfigError> {
+    if path == "/" {
+        return invalid_protected_route(
+            route,
+            "public_path",
+            "public_path must include a service segment",
+        );
+    }
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with("/.well-known") || lower.starts_with("/v1") {
+        return invalid_protected_route(
+            route,
+            "public_path",
+            "public_path conflicts with Lab reserved routes",
+        );
+    }
+    if lower.contains("%2f")
+        || lower.contains("%5c")
+        || lower.contains("%2e")
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+        || path.contains("//")
+    {
+        return invalid_protected_route(
+            route,
+            "public_path",
+            "public_path contains unsafe or ambiguous path segments",
+        );
+    }
+    Ok(())
+}
+
+fn invalid_protected_route(
+    route: &ProtectedMcpRouteConfig,
+    field: &'static str,
+    value: impl Into<String>,
+) -> Result<(), ConfigError> {
+    Err(ConfigError::InvalidProtectedRoute {
+        name: route.name.clone(),
+        field,
+        value: value.into(),
+    })
 }
 
 fn default_true() -> bool {
@@ -3263,6 +3430,80 @@ upstreams = ["radarr"]
 
         assert!(err.to_string().contains("public_path"));
         assert!(err.to_string().contains("gateway_subset"));
+    }
+
+    #[test]
+    fn config_validation_rejects_reserved_protected_route_path() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "bad"
+public_host = "mcp.example.com"
+public_path = "/v1"
+backend_url = "http://10.0.0.2:3100/mcp"
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("normalization should not hide validation failure");
+        let err = cfg
+            .validate()
+            .expect_err("reserved protected route path must fail validation");
+
+        assert!(err.to_string().contains("public_path"));
+        assert!(err.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn config_validation_rejects_empty_gateway_subset_target() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "empty"
+public_host = "mcp.example.com"
+public_path = "/empty"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("normalization should not hide validation failure");
+        let err = cfg
+            .validate()
+            .expect_err("empty gateway_subset target must fail validation");
+
+        assert!(err.to_string().contains("gateway_subset target"));
+    }
+
+    #[test]
+    fn config_validation_rejects_unknown_gateway_subset_targets() {
+        let toml = r#"
+[[upstream]]
+name = "sonarr"
+url = "https://sonarr.example.com/mcp"
+
+[[protected_mcp_routes]]
+name = "media"
+public_host = "mcp.example.com"
+public_path = "/media"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["sonnar"]
+services = ["gateway", "nope"]
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("normalization should not hide validation failure");
+        let err = cfg
+            .validate()
+            .expect_err("unknown gateway_subset targets must fail validation");
+
+        assert!(
+            err.to_string().contains("sonnar") || err.to_string().contains("nope"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

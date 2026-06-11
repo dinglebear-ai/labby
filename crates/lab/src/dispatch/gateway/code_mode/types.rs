@@ -248,6 +248,7 @@ pub enum CodeModeHistoryKind {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CodeModeHistoryEntry {
     pub seq: u64,
+    pub route_scope: String,
     pub kind: CodeModeHistoryKind,
     pub ok: bool,
     pub elapsed_ms: u128,
@@ -307,6 +308,19 @@ impl CodeModeHistory {
         self.entries.iter().cloned().collect()
     }
 
+    #[must_use]
+    pub fn snapshot_for_route_scope(&self, route_scope: Option<&str>) -> Vec<CodeModeHistoryEntry> {
+        match route_scope {
+            None => self.snapshot(),
+            Some(route_scope) => self
+                .entries
+                .iter()
+                .filter(|entry| entry.route_scope == route_scope)
+                .cloned()
+                .collect(),
+        }
+    }
+
     fn trim(&mut self) {
         while self.entries.len() > self.max_entries {
             if let Some(evicted) = self.entries.pop_front() {
@@ -339,6 +353,7 @@ impl CodeModeHistory {
     fn oversized_entry_sentinel(seq: u64, kind: CodeModeHistoryKind) -> CodeModeHistoryEntry {
         CodeModeHistoryEntry {
             seq,
+            route_scope: "root".to_string(),
             kind,
             ok: false,
             elapsed_ms: 0,

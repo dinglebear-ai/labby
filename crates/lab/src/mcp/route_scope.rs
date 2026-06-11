@@ -58,6 +58,13 @@ impl McpRouteScope {
         }
     }
 
+    pub(crate) fn protected_history_label(&self) -> Option<String> {
+        match self {
+            Self::Root => None,
+            Self::ProtectedSubset { .. } => Some(self.label()),
+        }
+    }
+
     pub(crate) fn allows_service(&self, service: &str) -> bool {
         match self {
             Self::Root => true,

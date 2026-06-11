@@ -121,6 +121,43 @@ impl LabMcpServer {
             })
             .collect();
 
+        if let Some(service_name) = builtin_prompt_service_arg(&request.name, &args)
+            && !self.route_scope.allows_service(service_name)
+        {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "get_prompt",
+                subject,
+                prompt = %request.name,
+                requested_service = %service_name,
+                route_scope = %self.route_scope.label(),
+                elapsed_ms,
+                kind = "route_scope_denied",
+                "built-in prompt denied by protected route scope"
+            );
+            self.emit_dispatch_notification(
+                &context,
+                "lab",
+                "get_prompt",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind: "route_scope_denied",
+                },
+            )
+            .await;
+            return Err(ErrorData::invalid_params(
+                format!("service `{service_name}` is not exposed on this MCP route"),
+                Some(serde_json::json!({
+                    "kind": "route_scope_denied",
+                    "service": service_name,
+                    "prompt": request.name,
+                })),
+            ));
+        }
+
         if let Some(prompt) = crate::mcp::prompts::get(&self.registry, &request.name, &args) {
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
@@ -348,5 +385,108 @@ impl LabMcpServer {
             format!("unknown prompt: {}", request.name),
             None,
         ))
+    }
+}
+
+fn builtin_prompt_service_arg<'a>(
+    prompt_name: &str,
+    args: &'a std::collections::HashMap<String, String>,
+) -> Option<&'a str> {
+    match prompt_name {
+        "run-action" | "service-discover" => args.get("service").map(String::as_str),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU8;
+
+    use rmcp::model::{GetPromptRequestParams, NumberOrString};
+    use rmcp::service::RequestContext;
+
+    use super::*;
+    use crate::mcp::logging::logging_level_rank;
+    use crate::mcp::route_scope::McpRouteScope;
+    use crate::registry::build_default_registry;
+
+    fn prompt_test_server(route_scope: McpRouteScope) -> LabMcpServer {
+        LabMcpServer {
+            registry: Arc::new(build_default_registry()),
+            gateway_manager: None,
+            node_role: None,
+            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
+            route_scope,
+        }
+    }
+
+    fn request_context(peer: rmcp::service::Peer<RoleServer>) -> RequestContext<RoleServer> {
+        RequestContext::new(NumberOrString::Number(1), peer)
+    }
+
+    #[tokio::test]
+    async fn protected_scope_denies_builtin_prompt_for_disallowed_service() {
+        let server = prompt_test_server(McpRouteScope::protected_subset(
+            "media",
+            ["sonarr"],
+            ["gateway"],
+            false,
+        ));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let mut request = GetPromptRequestParams::new("service-discover");
+        request.arguments = Some(
+            [("service".to_string(), Value::String("deploy".to_string()))]
+                .into_iter()
+                .collect(),
+        );
+
+        let err = running
+            .service()
+            .get_prompt_impl(request, request_context(running.peer().clone()))
+            .await
+            .expect_err("disallowed built-in prompt service must be denied");
+
+        assert_eq!(
+            err.data.as_ref().expect("error data")["kind"],
+            serde_json::json!("route_scope_denied")
+        );
+    }
+
+    #[tokio::test]
+    async fn protected_scope_allows_builtin_prompt_for_allowed_service() {
+        let server = prompt_test_server(McpRouteScope::protected_subset(
+            "media",
+            ["sonarr"],
+            ["gateway"],
+            false,
+        ));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let mut request = GetPromptRequestParams::new("service-discover");
+        request.arguments = Some(
+            [("service".to_string(), Value::String("gateway".to_string()))]
+                .into_iter()
+                .collect(),
+        );
+
+        let prompt = running
+            .service()
+            .get_prompt_impl(request, request_context(running.peer().clone()))
+            .await
+            .expect("allowed built-in prompt service");
+
+        assert!(
+            prompt
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("gateway"))
+        );
     }
 }

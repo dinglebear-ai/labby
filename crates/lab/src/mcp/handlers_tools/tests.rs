@@ -271,7 +271,7 @@ async fn protected_scope_denies_direct_code_mode_calls_when_hidden() {
             ["radarr"],
             false,
         ),
-        rmcp::model::LoggingLevel::Info,
+        rmcp::model::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -283,11 +283,13 @@ async fn protected_scope_denies_direct_code_mode_calls_when_hidden() {
     );
 
     for tool_name in [CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME] {
-        let result = running
-            .service()
-            .call_tool_impl(CallToolRequestParams::new(tool_name), context.clone())
-            .await
-            .expect("call tool result");
+        let result = Box::pin(
+            running
+                .service()
+                .call_tool_impl(CallToolRequestParams::new(tool_name), context.clone()),
+        )
+        .await
+        .expect("call tool result");
         assert!(result.is_error.unwrap_or(false));
         let text = result.content[0].as_text().expect("text").text.as_str();
         assert!(

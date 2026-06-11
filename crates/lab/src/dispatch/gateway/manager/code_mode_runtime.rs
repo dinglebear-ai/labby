@@ -45,6 +45,16 @@ impl GatewayManager {
         self.code_mode_history.lock().await.snapshot()
     }
 
+    pub async fn code_mode_history_snapshot_for_route_scope(
+        &self,
+        route_scope: Option<&str>,
+    ) -> Vec<CodeModeHistoryEntry> {
+        self.code_mode_history
+            .lock()
+            .await
+            .snapshot_for_route_scope(route_scope)
+    }
+
     pub async fn code_mode_enabled(&self) -> bool {
         self.config.read().await.code_mode.enabled
     }

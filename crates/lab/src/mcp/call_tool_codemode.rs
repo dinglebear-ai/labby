@@ -244,6 +244,7 @@ impl LabMcpServer {
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
                         seq: 0,
+                        route_scope: self.route_scope.label(),
                         kind: CodeModeHistoryKind::Search,
                         ok: true,
                         elapsed_ms,
@@ -273,6 +274,7 @@ impl LabMcpServer {
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
                         seq: 0,
+                        route_scope: self.route_scope.label(),
                         kind: CodeModeHistoryKind::Search,
                         ok: false,
                         elapsed_ms,
@@ -421,6 +423,7 @@ impl LabMcpServer {
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
                         seq: 0,
+                        route_scope: self.route_scope.label(),
                         kind: CodeModeHistoryKind::Execute,
                         ok: false,
                         elapsed_ms: started.elapsed().as_millis(),
@@ -436,6 +439,7 @@ impl LabMcpServer {
         manager
             .record_code_mode_history(CodeModeHistoryEntry {
                 seq: 0,
+                route_scope: self.route_scope.label(),
                 kind: CodeModeHistoryKind::Execute,
                 ok: true,
                 elapsed_ms: started.elapsed().as_millis(),

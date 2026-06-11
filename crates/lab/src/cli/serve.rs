@@ -1880,4 +1880,60 @@ mod tests {
             .expect("response");
         assert_ne!(response.status(), StatusCode::NOT_FOUND);
     }
+
+    #[tokio::test]
+    async fn protected_gateway_subset_builder_mounts_scoped_mcp_service() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let manager = std::sync::Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
+            tempdir.path().join("gateway.toml"),
+            crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+        ));
+        let config = LabConfig {
+            protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
+                name: "media".to_string(),
+                enabled: true,
+                public_host: "mcp.tootie.tv".to_string(),
+                public_path: "/media".to_string(),
+                upstream: None,
+                backend_url: String::new(),
+                backend_mcp_path: "/mcp".to_string(),
+                scopes: vec!["mcp:media".to_string()],
+                health_path: None,
+                target: Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
+                    crate::config::ProtectedGatewaySubsetTarget {
+                        upstreams: vec!["sonarr".to_string()],
+                        services: vec!["gateway".to_string()],
+                        expose_code_mode: false,
+                    },
+                )),
+            }],
+            ..LabConfig::default()
+        };
+        manager.seed_config(config.clone()).await;
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager);
+        let router = super::build_protected_mcp_router(
+            &state,
+            &McpPreferences::default(),
+            PeerNotifier::default(),
+        )
+        .expect("protected mcp router")
+        .expect("gateway subset router");
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/media")
+                    .header("host", "mcp.tootie.tv")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping","id":1}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

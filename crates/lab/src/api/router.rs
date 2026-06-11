@@ -1477,8 +1477,7 @@ pub fn build_router(
     let actor_key_deriver_for_mcp = state.actor_key_deriver.clone();
     let resource_url_for_mcp = resource_url.clone();
     let mcp_protected = mcp_router.map(|mcp| {
-        let protected_manager_present = state.gateway_manager.is_some() && auth_state.is_some();
-        let mcp = if needs_auth {
+        if needs_auth {
             mcp.route_layer(axum::middleware::from_fn(
                 move |request: Request<Body>, next: Next| {
                     authenticate_request(
@@ -1491,14 +1490,6 @@ pub fn build_router(
                         false,
                     )
                 },
-            ))
-        } else {
-            mcp
-        };
-        if protected_manager_present {
-            mcp.route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                protected_mcp_intercept,
             ))
         } else {
             mcp

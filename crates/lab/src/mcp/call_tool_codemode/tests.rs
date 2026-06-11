@@ -2,7 +2,8 @@
 //! `server.rs` (bead `lab-kvji.24.1.6`).
 
 use super::{
-    CODE_EXECUTE_DESCRIPTION, code_mode_execute_trace, code_mode_search_trace, string_array_arg,
+    CODE_EXECUTE_DESCRIPTION, code_mode_execute_trace, code_mode_search_trace,
+    route_scoped_capability_filter, string_array_arg,
 };
 use crate::dispatch::gateway::code_mode::{CodeModeExecutedCall, CodeModeExecutionResponse};
 use serde_json::{Value, json};
@@ -39,6 +40,30 @@ fn code_mode_filter_arg_accepts_absent_and_string_arrays() {
         string_array_arg(&args, "tools").expect("array ok"),
         vec!["a".to_string(), "b".to_string()]
     );
+}
+
+#[test]
+fn scoped_capability_filter_rejects_disallowed_requested_upstreams() {
+    let mut args = serde_json::Map::new();
+    args.insert("upstreams".to_string(), json!(["beta"]));
+    let allowed = std::collections::BTreeSet::from(["alpha".to_string()]);
+
+    let err = route_scoped_capability_filter(&args, Some(&allowed))
+        .expect_err("disallowed explicit upstream must fail");
+
+    assert_eq!(err.kind(), "route_scope_denied");
+}
+
+#[test]
+fn scoped_capability_filter_defaults_to_route_allowed_upstreams() {
+    let args = serde_json::Map::new();
+    let allowed = std::collections::BTreeSet::from(["alpha".to_string()]);
+
+    let filter = route_scoped_capability_filter(&args, Some(&allowed))
+        .expect("omitted upstreams should default to route scope");
+
+    assert!(filter.allows("alpha", "search"));
+    assert!(!filter.allows("beta", "search"));
 }
 
 #[test]

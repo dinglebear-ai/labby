@@ -331,6 +331,7 @@ fn code_mode_history_bounds_entries_and_keeps_redacted_params_only() {
     for idx in 0..3 {
         history.push(CodeModeHistoryEntry {
             seq: 0,
+            route_scope: "root".to_string(),
             kind: CodeModeHistoryKind::Execute,
             ok: true,
             elapsed_ms: idx,
@@ -364,6 +365,7 @@ fn code_mode_history_bounds_by_bytes() {
     for idx in 0..10 {
         history.push(CodeModeHistoryEntry {
             seq: 0,
+            route_scope: "root".to_string(),
             kind: CodeModeHistoryKind::Search,
             ok: true,
             elapsed_ms: idx,
@@ -395,6 +397,7 @@ fn code_mode_history_replaces_single_oversized_entry_with_bounded_sentinel() {
     let mut history = CodeModeHistory::new(50, 1300);
     history.push(CodeModeHistoryEntry {
         seq: 0,
+        route_scope: "root".to_string(),
         kind: CodeModeHistoryKind::Execute,
         ok: false,
         elapsed_ms: 99,
