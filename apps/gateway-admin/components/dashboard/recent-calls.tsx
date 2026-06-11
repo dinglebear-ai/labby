@@ -1,4 +1,5 @@
 import { formatCompactNumber, formatDuration, formatRelativeTime } from '@/lib/dashboard/dashboard-metrics'
+import { surfaceLabel } from '@/lib/dashboard/surface-label'
 import type { CallOutcome, CallSurface, ToolCallRecord } from '@/lib/types/metrics'
 import { cn } from '@/lib/utils'
 
@@ -12,21 +13,6 @@ export function OutcomeDot({ outcome }: { outcome: CallOutcome }) {
       )}
     />
   )
-}
-
-const SURFACE_LABEL: Partial<Record<CallSurface, string>> = {
-  mcp: 'MCP',
-  api: 'API',
-  cli: 'CLI',
-  web: 'Web',
-  core_runtime: 'Core runtime',
-  acp: 'ACP',
-  dispatch: 'Dispatch',
-  node: 'Node',
-}
-
-function surfaceLabel(surface: CallSurface): string {
-  return SURFACE_LABEL[surface] ?? surface.replaceAll('_', ' ')
 }
 
 export function SurfaceTag({ surface }: { surface: CallSurface }) {

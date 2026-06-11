@@ -1133,21 +1133,14 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
                 services::auth_admin::routes(state.clone()),
             );
 
-        if api_auth_configured
-            && state
-                .registry
-                .services()
-                .iter()
-                .any(|service| service.name == "logs")
-        {
+        let has_logs_service = state
+            .registry
+            .services()
+            .iter()
+            .any(|service| service.name == "logs");
+        if api_auth_configured && has_logs_service {
             v1 = v1.nest("/logs", services::logs::routes(state.clone()));
-        } else if !api_auth_configured
-            && state
-                .registry
-                .services()
-                .iter()
-                .any(|service| service.name == "logs")
-        {
+        } else if !api_auth_configured && has_logs_service {
             tracing::warn!(
                 subsystem = "startup",
                 phase = "logs.mount.skipped",

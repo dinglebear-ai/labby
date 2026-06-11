@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::types::LogEvent;
 
@@ -278,6 +279,36 @@ fn str_field(v: Option<&Value>) -> Option<String> {
     v.and_then(Value::as_str).map(ToOwned::to_owned)
 }
 
+fn looks_sensitive_actor_label(value: &str) -> bool {
+    value.contains('@')
+}
+
+fn legacy_subject_actor_id(subject: &str) -> String {
+    let digest = Sha256::digest(subject.as_bytes());
+    let hex = hex::encode(digest);
+    format!("legacy-actor-{}", &hex[..12])
+}
+
+fn actor_identity(event: &LogEvent) -> Option<String> {
+    event.actor_key.clone().or_else(|| {
+        str_field(field(event, "subject")).map(|subject| legacy_subject_actor_id(&subject))
+    })
+}
+
+fn safe_actor_label(actor: &str, candidate: Option<String>, subject: Option<String>) -> String {
+    if let Some(label) = candidate
+        && subject.as_deref() != Some(label.as_str())
+        && !looks_sensitive_actor_label(&label)
+    {
+        return label;
+    }
+    if looks_sensitive_actor_label(actor) {
+        "unknown actor".to_string()
+    } else {
+        actor.to_string()
+    }
+}
+
 /// Is this a completed tool-call event? Completion logs carry both token
 /// fields; start events carry only `input_tokens`.
 fn extract_call(event: &LogEvent) -> Option<Call> {
@@ -285,6 +316,14 @@ fn extract_call(event: &LogEvent) -> Option<Call> {
     let output = field(event, "output_tokens")?;
     let service = str_field(field(event, "service")).or_else(|| str_field(field(event, "tool")))?;
     let ok = event.message.ends_with(" ok");
+    let actor = actor_identity(event);
+    let actor_label = actor.as_ref().map(|actor| {
+        safe_actor_label(
+            actor,
+            str_field(field(event, "actor_label")),
+            str_field(field(event, "subject")),
+        )
+    });
     Some(Call {
         ts: event.ts,
         service,
@@ -298,12 +337,8 @@ fn extract_call(event: &LogEvent) -> Option<Call> {
         output_tokens: num_u64(Some(output)),
         elapsed_ms: num_f64(field(event, "elapsed_ms")),
         surface: event.surface.as_str().to_string(),
-        actor: event
-            .actor_key
-            .clone()
-            .or_else(|| str_field(field(event, "subject"))),
-        actor_label: str_field(field(event, "actor_label"))
-            .or_else(|| str_field(field(event, "subject"))),
+        actor,
+        actor_label,
         agent_kind: str_field(field(event, "agent_kind"))
             .or_else(|| {
                 event
@@ -319,10 +354,6 @@ fn extract_call(event: &LogEvent) -> Option<Call> {
             .unwrap_or(false),
         artifact_writes: num_u64(field(event, "artifact_writes")),
     })
-}
-
-pub(crate) fn actor_id(event: &LogEvent) -> Option<String> {
-    extract_call(event).and_then(|call| call.actor)
 }
 
 fn percentile(sorted: &[u64], p: f64) -> u64 {
@@ -759,11 +790,7 @@ fn extract_record(event: &LogEvent) -> Option<ToolCallRecord> {
     field(event, "output_tokens")?;
     let tool = str_field(field(event, "service")).or_else(|| str_field(field(event, "tool")))?;
     let ok = event.message.ends_with(" ok");
-    let actor = event
-        .actor_key
-        .clone()
-        .or_else(|| str_field(field(event, "subject")))
-        .unwrap_or_else(|| "unknown".to_string());
+    let actor = actor_identity(event).unwrap_or_else(|| "unknown".to_string());
     let agent_kind = str_field(field(event, "agent_kind"))
         .or_else(|| {
             event
@@ -777,7 +804,11 @@ fn extract_record(event: &LogEvent) -> Option<ToolCallRecord> {
     } else {
         "agent"
     };
-    let actor_label = str_field(field(event, "actor_label")).unwrap_or_else(|| actor.clone());
+    let actor_label = safe_actor_label(
+        &actor,
+        str_field(field(event, "actor_label")),
+        str_field(field(event, "subject")),
+    );
     Some(ToolCallRecord {
         id: event.event_id.clone(),
         ts: event.ts,

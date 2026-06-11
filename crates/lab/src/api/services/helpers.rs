@@ -38,21 +38,10 @@ pub fn dispatch_meta_from_headers<'a>(
     ApiDispatchMeta {
         request_id: headers.get("x-request-id").and_then(|v| v.to_str().ok()),
         actor_key: auth.and_then(|ctx| ctx.actor_key.as_deref()),
-        actor_label: auth
-            .and_then(|ctx| ctx.actor_key.as_deref())
-            .map(non_pii_actor_label),
+        actor_label: None,
         agent_kind: auth.map(|ctx| if ctx.via_session { "device" } else { "agent" }),
-        ip: client_ip_from_headers(headers),
+        ip: None,
     }
-}
-
-fn client_ip_from_headers(headers: &HeaderMap) -> Option<&str> {
-    let _ = headers;
-    None
-}
-
-fn non_pii_actor_label(actor_key: &str) -> &str {
-    actor_key
 }
 
 /// Dispatch a service action request with unknown-action gate, confirmation gate, and logging.
@@ -841,7 +830,7 @@ mod tests {
         let meta = dispatch_meta_from_headers(&headers, Some(&auth));
 
         assert_eq!(meta.actor_key, Some("actor_123456"));
-        assert_eq!(meta.actor_label, Some("actor_123456"));
+        assert_eq!(meta.actor_label, None);
         assert_ne!(meta.actor_label, Some("person@example.com"));
         assert_ne!(meta.actor_label, Some("raw-subject@example.com"));
     }

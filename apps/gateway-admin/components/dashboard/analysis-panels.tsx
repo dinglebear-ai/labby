@@ -14,8 +14,8 @@ import { DashboardPanel } from './panel'
 import { MetricBarList, type MetricBarItem } from './metric-bars'
 import { DASH_METRIC_SM } from './ui'
 import { formatCompactNumber, formatDuration } from '@/lib/dashboard/dashboard-metrics'
+import { surfaceLabel } from '@/lib/dashboard/surface-label'
 import type {
-  CallSurface,
   DashboardMetrics,
   ErrorKindCount,
   SurfaceCount,
@@ -31,21 +31,6 @@ function StatCell({ value, label }: { value: ReactNode; label: string }) {
       <p className="mt-1 text-xs text-aurora-text-muted">{label}</p>
     </div>
   )
-}
-
-const SURFACE_LABEL: Partial<Record<CallSurface, string>> = {
-  mcp: 'MCP',
-  api: 'API',
-  cli: 'CLI',
-  web: 'Web',
-  core_runtime: 'Core runtime',
-  acp: 'ACP',
-  dispatch: 'Dispatch',
-  node: 'Node',
-}
-
-function surfaceLabel(surface: CallSurface): string {
-  return SURFACE_LABEL[surface] ?? surface.replaceAll('_', ' ')
 }
 
 function hourLabel(hour: number): string {

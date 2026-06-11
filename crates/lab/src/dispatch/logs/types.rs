@@ -485,8 +485,7 @@ impl LogSystem {
         &self,
         before_ts: i64,
     ) -> Result<BTreeSet<String>, ToolError> {
-        let events = self.store.completion_events(None, Some(before_ts)).await?;
-        Ok(events.iter().filter_map(super::metrics::actor_id).collect())
+        self.store.previous_completion_actor_ids(before_ts).await
     }
 
     /// Aggregate dispatch-completion events over a rolling window into the

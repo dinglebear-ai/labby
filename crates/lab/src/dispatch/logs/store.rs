@@ -145,6 +145,16 @@ impl LogStore {
         .await
     }
 
+    pub async fn previous_completion_actor_ids(
+        &self,
+        before_ts: i64,
+    ) -> Result<std::collections::BTreeSet<String>, ToolError> {
+        self.blocking_read("previous_completion_actor_ids", move |c| {
+            run_previous_completion_actor_ids(c, before_ts)
+        })
+        .await
+    }
+
     pub async fn tail(&self, req: LogTailRequest) -> Result<LogTailResult, ToolError> {
         self.blocking_read("tail", move |c| run_tail(c, &req)).await
     }
@@ -258,6 +268,20 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             to_version = 2,
             "applied log store SQLite migration",
         );
+        version = 2;
+    }
+    if version < 3 {
+        migrate_completion_kind(conn)?;
+        conn.pragma_update(None, "user_version", 3)?;
+        tracing::info!(
+            target: "labby::dispatch::logs",
+            surface = "logs",
+            service = "store",
+            action = "sqlite.migrate.apply",
+            from_version = version,
+            to_version = 3,
+            "applied log store SQLite migration",
+        );
     } else {
         tracing::debug!(
             target: "labby::dispatch::logs",
@@ -285,6 +309,31 @@ fn migrate_actor_key(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn migrate_completion_kind(conn: &Connection) -> rusqlite::Result<()> {
+    if !column_exists(conn, "log_events", "completion_kind")? {
+        conn.execute_batch(
+            "ALTER TABLE log_events ADD COLUMN completion_kind INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    conn.execute(
+        "UPDATE log_events
+         SET completion_kind = 1
+         WHERE completion_kind = 0
+           AND fields_json LIKE '%\"input_tokens\"%'
+           AND fields_json LIKE '%\"output_tokens\"%'",
+        [],
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_log_events_completion_ts
+            ON log_events(completion_kind, ts DESC, event_id DESC)
+            WHERE completion_kind = 1;
+         CREATE INDEX IF NOT EXISTS idx_log_events_completion_actor_ts
+            ON log_events(actor_key, ts DESC)
+            WHERE completion_kind = 1 AND actor_key IS NOT NULL;",
+    )?;
+    Ok(())
+}
+
 fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
@@ -299,13 +348,15 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Resu
 // ── Insert ────────────────────────────────────────────────────────────────────
 
 fn insert_event(conn: &Connection, event: &LogEvent) -> Result<(), rusqlite::Error> {
+    let completion_kind = i64::from(is_completion_event(&event.fields_json));
     conn.execute(
         "INSERT OR IGNORE INTO log_events (
             event_id, ts, level, subsystem, surface, action, message,
             request_id, session_id, correlation_id, trace_id, span_id,
             instance, auth_flow, outcome_kind, fields_json,
-            source_kind, source_node_id, source_device_id, actor_key, ingest_path, upstream_event_id
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            completion_kind, source_kind, source_node_id, source_device_id,
+            actor_key, ingest_path, upstream_event_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
             event.event_id,
             event.ts,
@@ -323,6 +374,7 @@ fn insert_event(conn: &Connection, event: &LogEvent) -> Result<(), rusqlite::Err
             event.auth_flow,
             event.outcome_kind,
             event.fields_json.to_string(),
+            completion_kind,
             event.source_kind,
             event.source_node_id,
             event.source_device_id,
@@ -332,6 +384,10 @@ fn insert_event(conn: &Connection, event: &LogEvent) -> Result<(), rusqlite::Err
         ],
     )?;
     Ok(())
+}
+
+fn is_completion_event(fields_json: &serde_json::Value) -> bool {
+    fields_json.get("input_tokens").is_some() && fields_json.get("output_tokens").is_some()
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
@@ -427,11 +483,7 @@ fn run_completion_events(
     after_ts: Option<i64>,
     before_ts: Option<i64>,
 ) -> Result<Vec<LogEvent>, rusqlite::Error> {
-    let mut sql = format!(
-        "SELECT {SELECT_COLS} FROM log_events
-         WHERE fields_json LIKE '%\"input_tokens\"%'
-           AND fields_json LIKE '%\"output_tokens\"%'"
-    );
+    let mut sql = format!("SELECT {SELECT_COLS} FROM log_events WHERE completion_kind = 1");
     let mut args: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(after) = after_ts {
         sql.push_str(" AND ts > ?");
@@ -445,6 +497,21 @@ fn run_completion_events(
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args.iter()), row_to_event)?;
+    rows.collect::<Result<_, _>>()
+}
+
+fn run_previous_completion_actor_ids(
+    conn: &Connection,
+    before_ts: i64,
+) -> Result<std::collections::BTreeSet<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT actor_key
+         FROM log_events
+         WHERE completion_kind = 1
+           AND actor_key IS NOT NULL
+           AND ts <= ?1",
+    )?;
+    let rows = stmt.query_map(params![before_ts], |row| row.get::<_, String>(0))?;
     rows.collect::<Result<_, _>>()
 }
 
@@ -650,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_schema_includes_actor_key_and_partial_index() {
+    fn fresh_schema_includes_actor_key_completion_kind_and_partial_indexes() {
         let conn = Connection::open_in_memory().expect("open db");
 
         migrate(&conn).expect("migrate");
@@ -658,19 +725,30 @@ mod tests {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("user_version");
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         assert!(column_names(&conn).iter().any(|name| name == "actor_key"));
+        assert!(
+            column_names(&conn)
+                .iter()
+                .any(|name| name == "completion_kind")
+        );
 
         let sql = index_sql(&conn, "idx_log_events_actor_key_ts");
         assert!(sql.contains("actor_key, ts DESC"));
         assert!(sql.contains("WHERE actor_key IS NOT NULL"));
+        let sql = index_sql(&conn, "idx_log_events_completion_ts");
+        assert!(sql.contains("completion_kind, ts DESC, event_id DESC"));
+        assert!(sql.contains("WHERE completion_kind = 1"));
+        let sql = index_sql(&conn, "idx_log_events_completion_actor_ts");
+        assert!(sql.contains("actor_key, ts DESC"));
+        assert!(sql.contains("completion_kind = 1"));
     }
 
     #[test]
-    fn v1_database_migrates_actor_key_without_backfilling_history() {
+    fn v1_database_migrates_actor_key_and_completion_kind() {
         let conn = Connection::open_in_memory().expect("open db");
         conn.execute_batch(
-            r"
+            r#"
             CREATE TABLE log_events (
                 event_id          TEXT PRIMARY KEY,
                 ts                INTEGER NOT NULL,
@@ -698,9 +776,12 @@ mod tests {
                 event_id, ts, level, subsystem, surface, message, fields_json
             ) VALUES (
                 'evt-history', 123, 'info', 'core_runtime', 'core_runtime', 'old row', '{}'
+            ), (
+                'evt-completion', 124, 'info', 'core_runtime', 'core_runtime', 'dispatch ok',
+                '{"service":"radarr","input_tokens":1,"output_tokens":2}'
             );
             PRAGMA user_version = 1;
-            ",
+            "#,
         )
         .expect("create v1 db");
 
@@ -709,8 +790,13 @@ mod tests {
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("user_version");
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         assert!(column_names(&conn).iter().any(|name| name == "actor_key"));
+        assert!(
+            column_names(&conn)
+                .iter()
+                .any(|name| name == "completion_kind")
+        );
 
         let actor_key: Option<String> = conn
             .query_row(
@@ -721,7 +807,92 @@ mod tests {
             .expect("historical actor_key");
         assert_eq!(actor_key, None);
 
+        let completion_kind: i64 = conn
+            .query_row(
+                "SELECT completion_kind FROM log_events WHERE event_id = 'evt-completion'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("historical completion kind");
+        assert_eq!(completion_kind, 1);
+
         let sql = index_sql(&conn, "idx_log_events_actor_key_ts");
         assert!(sql.contains("WHERE actor_key IS NOT NULL"));
+        let sql = index_sql(&conn, "idx_log_events_completion_ts");
+        assert!(sql.contains("WHERE completion_kind = 1"));
+    }
+
+    #[test]
+    fn v2_database_repairs_existing_completion_kind_column() {
+        let conn = Connection::open_in_memory().expect("open db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE log_events (
+                event_id          TEXT PRIMARY KEY,
+                ts                INTEGER NOT NULL,
+                level             TEXT NOT NULL,
+                subsystem         TEXT NOT NULL,
+                surface           TEXT NOT NULL,
+                action            TEXT,
+                message           TEXT NOT NULL,
+                request_id        TEXT,
+                session_id        TEXT,
+                correlation_id    TEXT,
+                trace_id          TEXT,
+                span_id           TEXT,
+                instance          TEXT,
+                auth_flow         TEXT,
+                outcome_kind      TEXT,
+                fields_json       TEXT NOT NULL DEFAULT '{}',
+                completion_kind   INTEGER NOT NULL DEFAULT 0,
+                source_kind       TEXT,
+                source_node_id    TEXT,
+                source_device_id  TEXT,
+                actor_key         TEXT,
+                ingest_path       TEXT,
+                upstream_event_id TEXT
+            );
+            INSERT INTO log_events (
+                event_id, ts, level, subsystem, surface, message, fields_json, actor_key
+            ) VALUES (
+                'evt-start', 123, 'info', 'core_runtime', 'core_runtime', 'dispatch start',
+                '{"service":"radarr","input_tokens":1}', 'start-agent'
+            ), (
+                'evt-completion', 124, 'info', 'core_runtime', 'core_runtime', 'dispatch ok',
+                '{"service":"radarr","input_tokens":1,"output_tokens":2}', 'completion-agent'
+            );
+            PRAGMA user_version = 2;
+            "#,
+        )
+        .expect("create partial v2 db");
+
+        migrate(&conn).expect("migrate");
+
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(version, 3);
+
+        let start_kind: i64 = conn
+            .query_row(
+                "SELECT completion_kind FROM log_events WHERE event_id = 'evt-start'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("start completion kind");
+        let completion_kind: i64 = conn
+            .query_row(
+                "SELECT completion_kind FROM log_events WHERE event_id = 'evt-completion'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("completion kind");
+        assert_eq!(start_kind, 0);
+        assert_eq!(completion_kind, 1);
+
+        let sql = index_sql(&conn, "idx_log_events_completion_ts");
+        assert!(sql.contains("WHERE completion_kind = 1"));
+        let sql = index_sql(&conn, "idx_log_events_completion_actor_ts");
+        assert!(sql.contains("completion_kind = 1"));
     }
 }

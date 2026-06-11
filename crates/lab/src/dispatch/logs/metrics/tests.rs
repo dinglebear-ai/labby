@@ -211,6 +211,44 @@ fn tool_call_facets_cover_full_unpaginated_input_and_skip_empty_ips() {
     assert!(!page.facets.ips.iter().any(|ip| ip.is_empty()));
 }
 
+#[test]
+fn historical_actor_labels_do_not_render_email_or_subject_values() {
+    let now = 1_000_000_000_000;
+    let mut event = call_event(now - 1000, "api", "radarr", true, 42, 1, 2);
+    event.actor_key = Some("actor-hash".to_string());
+    event.fields_json["subject"] = json!("person@example.com");
+    event.fields_json["actor_label"] = json!("person@example.com");
+
+    let page = tool_calls(&[event.clone()], &query(None, None, None));
+    assert_eq!(page.calls[0].agent_id, "actor-hash");
+    assert_eq!(page.calls[0].agent_label, "actor-hash");
+
+    let metrics = aggregate(&[event], MetricsWindow::H24, now);
+    assert_eq!(metrics.actors.agent.top[0].label, "actor-hash");
+}
+
+#[test]
+fn historical_actor_without_actor_key_uses_opaque_legacy_identity() {
+    let now = 1_000_000_000_000;
+    let mut event = call_event(now - 1000, "api", "radarr", true, 42, 1, 2);
+    event.actor_key = None;
+    event.fields_json["subject"] = json!("person@example.com");
+    event.fields_json["actor_label"] = json!("person@example.com");
+
+    let page = tool_calls(&[event.clone()], &query(None, None, None));
+    let record = &page.calls[0];
+    assert!(record.agent_id.starts_with("legacy-actor-"));
+    assert!(!record.agent_id.contains("person@example.com"));
+    assert_eq!(record.agent_label, record.agent_id);
+    assert_eq!(page.facets.agents[0].id, record.agent_id);
+    assert_eq!(page.facets.agents[0].label, record.agent_id);
+
+    let metrics = aggregate(&[event], MetricsWindow::H24, now);
+    let top = &metrics.actors.agent.top[0];
+    assert_eq!(top.id, record.agent_id);
+    assert_eq!(top.label, record.agent_id);
+}
+
 #[tokio::test]
 async fn completion_event_window_is_not_capped_at_ten_thousand_raw_rows() {
     let store = crate::dispatch::logs::store::open_store_for_test(LogRetention::default())
@@ -241,6 +279,69 @@ async fn completion_event_window_is_not_capped_at_ten_thousand_raw_rows() {
             .any(|event| event.event_id == old_completion.event_id),
         "older completion event must remain visible even when newer raw rows exceed 10k"
     );
+}
+
+#[tokio::test]
+async fn completion_kind_excludes_start_events_from_store_queries() {
+    let store = crate::dispatch::logs::store::open_store_for_test(LogRetention::default())
+        .await
+        .expect("open store");
+    let now = 1_000_000_000_000;
+
+    let mut completion = call_event(now - 4_000_000, "mcp", "radarr", true, 10, 1, 1);
+    completion.actor_key = Some("completion-agent".to_string());
+    store.insert(&completion).await.expect("insert completion");
+
+    let mut start = start_event(now - 4_000_001);
+    start.actor_key = Some("start-only-agent".to_string());
+    store.insert(&start).await.expect("insert start");
+
+    let events = store
+        .completion_events(Some(now - MetricsWindow::D7.ms()), Some(now))
+        .await
+        .expect("completion events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, completion.event_id);
+
+    let actors = store
+        .previous_completion_actor_ids(now - MetricsWindow::H1.ms())
+        .await
+        .expect("previous actors");
+    assert_eq!(actors, BTreeSet::from(["completion-agent".to_string()]));
+}
+
+#[tokio::test]
+async fn previous_completion_actor_ids_uses_distinct_actor_keys() {
+    let store = crate::dispatch::logs::store::open_store_for_test(LogRetention::default())
+        .await
+        .expect("open store");
+    let now = 1_000_000_000_000;
+
+    let mut older = call_event(now - 4_000_000, "mcp", "radarr", true, 10, 1, 1);
+    older.actor_key = Some("returning-agent".to_string());
+    store.insert(&older).await.expect("insert older call");
+
+    let mut duplicate = call_event(now - 3_900_000, "mcp", "sonarr", true, 10, 1, 1);
+    duplicate.event_id = "duplicate-returning-agent".to_string();
+    duplicate.actor_key = Some("returning-agent".to_string());
+    store
+        .insert(&duplicate)
+        .await
+        .expect("insert duplicate call");
+
+    let mut current_window = call_event(now - 1_000, "mcp", "cortex", true, 10, 1, 1);
+    current_window.actor_key = Some("current-window-agent".to_string());
+    store
+        .insert(&current_window)
+        .await
+        .expect("insert current-window call");
+
+    let actors = store
+        .previous_completion_actor_ids(now - MetricsWindow::H1.ms())
+        .await
+        .expect("previous actors");
+
+    assert_eq!(actors, BTreeSet::from(["returning-agent".to_string()]));
 }
 
 #[test]
