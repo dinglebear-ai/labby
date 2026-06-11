@@ -1275,8 +1275,10 @@ fn build_mcp_service_with_scope(
             .as_ref()
             .and_then(|cfg| cfg.public_url.as_ref().map(url::Url::as_str)),
     );
+    let mut seen_allowed_hosts: std::collections::HashSet<String> =
+        allowed_hosts.iter().cloned().collect();
     for host in extra_allowed_hosts {
-        if !allowed_hosts.contains(host) {
+        if seen_allowed_hosts.insert(host.clone()) {
             allowed_hosts.push(host.clone());
         }
     }
