@@ -105,12 +105,16 @@ fn redact_secret_like_segments(input: &str) -> String {
         .into_owned()
 }
 
-/// Maximum serialized schema size returned in code mode results.
+/// Pathological-input backstop for schemas carried in the Code Mode catalog.
 ///
-/// Schemas over this limit are dropped entirely rather than truncated, since
-/// partial JSON schemas are invalid and could confuse callers.  Real-world
-/// tool schemas rarely exceed a few kilobytes; 16 KB is a generous ceiling.
-const MAX_SCHEMA_BYTES: usize = 16_384;
+/// The catalog is injected into the Javy sandbox as `const tools` and never
+/// enters model context (see `code_mode/search.rs`), so schema size has no
+/// token cost. This ceiling only rejects absurd upstreams; normal large
+/// action-routed schemas (e.g. cortex, axon) MUST survive so that
+/// `generate_tool_types` can emit real `dts`/signatures instead of `unknown`.
+/// Raised from 16 KB, which silently dropped those schemas to `None` and
+/// collapsed their generated types to `unknown`.
+const MAX_SCHEMA_BYTES: usize = 524_288;
 
 pub(super) fn sanitize_schema(schema: Option<serde_json::Value>) -> Option<serde_json::Value> {
     fn recurse(value: &mut serde_json::Value) {
@@ -133,7 +137,7 @@ pub(super) fn sanitize_schema(schema: Option<serde_json::Value>) -> Option<serde
     }
 
     schema.and_then(|raw| {
-        // Reject oversized schemas before sanitizing to avoid unnecessary work.
+        // Reject only pathologically large schemas; normal large tool schemas must pass.
         if raw.to_string().len() > MAX_SCHEMA_BYTES {
             return None;
         }
