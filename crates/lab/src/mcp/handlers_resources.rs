@@ -105,15 +105,25 @@ impl LabMcpServer {
 
         if let Some(pool) = self.current_upstream_pool().await {
             resources.extend(pool.gateway_synthetic_resources().await);
-            resources.extend(pool.list_upstream_resources().await);
+            resources.extend(
+                pool.list_upstream_resources_allowed(self.route_scope.allowed_upstreams())
+                    .await,
+            );
             if let Some(oauth_subject) =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             {
                 let configs = self.oauth_upstream_configs().await;
-                resources.extend(
-                    pool.subject_scoped_resources(&configs, oauth_subject.as_ref())
-                        .await,
-                );
+                let mut scoped_resources = pool
+                    .subject_scoped_resources(&configs, oauth_subject.as_ref())
+                    .await;
+                scoped_resources.retain(|resource| {
+                    resource
+                        .uri
+                        .strip_prefix("lab://upstream/")
+                        .and_then(|rest| rest.split('/').next())
+                        .is_none_or(|upstream| self.route_scope.allows_upstream(upstream))
+                });
+                resources.extend(scoped_resources);
             }
         }
 
@@ -187,6 +197,7 @@ impl LabMcpServer {
             && let Some(upstream_name) = uri
                 .strip_prefix("lab://upstream/")
                 .and_then(|rest| rest.split('/').next())
+            && self.route_scope.allows_upstream(upstream_name)
             && let Some(config) = self.oauth_upstream_config(upstream_name).await
         {
             return self
@@ -462,6 +473,7 @@ mod tests {
             logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 crate::mcp::logging::logging_level_rank(LoggingLevel::Emergency),
             )),
+            route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         }
     }
 

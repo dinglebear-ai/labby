@@ -379,6 +379,26 @@ impl LabConfig {
                 .take()
                 .map(|name| name.trim().to_string())
                 .filter(|name| !name.is_empty());
+            if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+                normalize_string_list(&mut target.upstreams);
+                normalize_string_list(&mut target.services);
+            }
+            if route.target.is_some()
+                && (route.upstream.is_some() || !route.backend_url.trim().is_empty())
+            {
+                return Err(ConfigError::InvalidProtectedRoute {
+                    name: route.name.clone(),
+                    field: "target",
+                    value:
+                        "protected MCP route target cannot be combined with upstream or backend_url"
+                            .to_string(),
+                });
+            }
+            if route.target.is_some() {
+                route.backend_url = String::new();
+                route.backend_mcp_path = default_mcp_path();
+                continue;
+            }
             if route.upstream.is_some() && route.backend_url.trim().is_empty() {
                 route.backend_url = String::new();
             } else {
@@ -406,6 +426,17 @@ impl LabConfig {
                     .and_then(|prefs| prefs.master.as_deref())
             })
     }
+}
+
+fn normalize_string_list(values: &mut Vec<String>) {
+    let mut normalized = Vec::new();
+    for value in std::mem::take(values) {
+        let name = value.trim().to_string();
+        if !name.is_empty() && !normalized.contains(&name) {
+            normalized.push(name);
+        }
+    }
+    *values = normalized;
 }
 
 fn default_true() -> bool {
@@ -682,6 +713,29 @@ pub struct UpstreamConfig {
     pub imported_from: Option<ImportSource>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProtectedMcpRouteTarget {
+    GatewaySubset(ProtectedGatewaySubsetTarget),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProtectedGatewaySubsetTarget {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstreams: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
+    #[serde(default)]
+    pub expose_code_mode: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProtectedMcpRouteEffectiveTarget {
+    BackendUrl { url: String },
+    Upstream { name: String },
+    GatewaySubset(ProtectedGatewaySubsetTarget),
+}
+
 /// Gateway-managed public MCP route protected by Lab OAuth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtectedMcpRouteConfig {
@@ -716,12 +770,42 @@ pub struct ProtectedMcpRouteConfig {
     /// Optional backend health path used by route test actions.
     #[serde(default)]
     pub health_path: Option<String>,
+    /// Explicit route target. Omitted for legacy proxy routes that use
+    /// `backend_url` or `upstream`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<ProtectedMcpRouteTarget>,
 }
 
 impl ProtectedMcpRouteConfig {
     #[must_use]
     pub fn public_resource(&self) -> String {
         format!("https://{}{}", self.public_host, self.public_path)
+    }
+
+    #[must_use]
+    pub fn effective_target(&self) -> ProtectedMcpRouteEffectiveTarget {
+        if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &self.target {
+            return ProtectedMcpRouteEffectiveTarget::GatewaySubset(target.clone());
+        }
+        if let Some(name) = self.upstream.as_ref() {
+            return ProtectedMcpRouteEffectiveTarget::Upstream { name: name.clone() };
+        }
+        ProtectedMcpRouteEffectiveTarget::BackendUrl {
+            url: self.backend_url.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_gateway_subset(&self) -> bool {
+        matches!(self.target, Some(ProtectedMcpRouteTarget::GatewaySubset(_)))
+    }
+
+    #[must_use]
+    pub fn gateway_subset_target(&self) -> Option<&ProtectedGatewaySubsetTarget> {
+        match &self.target {
+            Some(ProtectedMcpRouteTarget::GatewaySubset(target)) => Some(target),
+            None => None,
+        }
     }
 }
 
@@ -3005,6 +3089,79 @@ upstream = " syslog "
         );
         assert_eq!(cfg.protected_mcp_routes[0].backend_url, "");
         assert_eq!(cfg.protected_mcp_routes[0].backend_mcp_path, "/mcp");
+    }
+
+    #[test]
+    fn protected_route_gateway_subset_target_parses() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "media"
+public_host = "mcp.example.com"
+public_path = "/media"
+scopes = ["mcp:media"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["sonarr", "radarr", " prowlarr "]
+services = ["gateway"]
+expose_code_mode = true
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes().expect("normalize");
+        let route = &cfg.protected_mcp_routes[0];
+
+        assert_eq!(route.name, "media");
+        assert_eq!(route.backend_url, "");
+        assert_eq!(route.upstream, None);
+        assert!(route.is_gateway_subset());
+        let target = route.gateway_subset_target().expect("gateway subset");
+        assert_eq!(target.upstreams, vec!["sonarr", "radarr", "prowlarr"]);
+        assert_eq!(target.services, vec!["gateway"]);
+        assert!(target.expose_code_mode);
+    }
+
+    #[test]
+    fn protected_route_legacy_backend_url_maps_to_proxy_target() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "syslog"
+public_host = "mcp.example.com"
+public_path = "/syslog"
+backend_url = "http://10.0.0.2:3100/mcp"
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes().expect("normalize");
+        let route = &cfg.protected_mcp_routes[0];
+
+        assert!(matches!(
+            route.effective_target(),
+            ProtectedMcpRouteEffectiveTarget::BackendUrl { .. }
+        ));
+    }
+
+    #[test]
+    fn protected_route_rejects_target_with_legacy_backend() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "bad"
+public_host = "mcp.example.com"
+public_path = "/bad"
+backend_url = "http://10.0.0.2:3100/mcp"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["sonarr"]
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        let err = cfg
+            .normalize_protected_mcp_routes()
+            .expect_err("target and backend_url must conflict");
+        assert!(err.to_string().contains(
+            "protected MCP route target cannot be combined with upstream or backend_url"
+        ));
     }
 
     #[test]

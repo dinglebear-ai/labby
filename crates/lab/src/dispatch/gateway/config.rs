@@ -6,7 +6,8 @@ use fd_lock::RwLock;
 use tempfile::NamedTempFile;
 
 use crate::config::{
-    GatewayPreferences, LabConfig, ProtectedMcpRouteConfig, UpstreamConfig, UpstreamImportTombstone,
+    GatewayPreferences, LabConfig, ProtectedMcpRouteConfig, ProtectedMcpRouteTarget,
+    UpstreamConfig, UpstreamImportTombstone,
 };
 use crate::dispatch::error::ToolError;
 use crate::dispatch::upstream::spawn_guard;
@@ -577,6 +578,12 @@ fn normalize_protected_mcp_route(route: &mut ProtectedMcpRouteConfig) -> Result<
     };
     route.backend_mcp_path = default_backend_mcp_path();
     route.scopes = normalize_scopes(&route.scopes)?;
+    if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+        target.upstreams =
+            normalize_name_list(std::mem::take(&mut target.upstreams), "target.upstreams")?;
+        target.services =
+            normalize_name_list(std::mem::take(&mut target.services), "target.services")?;
+    }
     if let Some(path) = route.health_path.take() {
         let trimmed = path.trim();
         route.health_path = if trimmed.is_empty() {
@@ -596,6 +603,26 @@ fn validate_protected_mcp_route(route: &ProtectedMcpRouteConfig) -> Result<(), T
         });
     }
     validate_safe_public_path(&route.public_path)?;
+    if route.target.is_some() && (route.upstream.is_some() || !route.backend_url.is_empty()) {
+        return Err(ToolError::InvalidParam {
+            message: "protected MCP route target cannot be combined with upstream or backend_url"
+                .to_string(),
+            param: "target".to_string(),
+        });
+    }
+
+    if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &route.target {
+        if target.upstreams.is_empty() && target.services.is_empty() && !target.expose_code_mode {
+            return Err(ToolError::InvalidParam {
+                message:
+                    "gateway_subset target must expose at least one upstream, service, or Code Mode"
+                        .to_string(),
+                param: "target".to_string(),
+            });
+        }
+        return Ok(());
+    }
+
     match (route.upstream.as_deref(), route.backend_url.is_empty()) {
         (Some(_), true) => {}
         (None, false) => validate_backend_target(&route.backend_url)?,
@@ -614,6 +641,24 @@ fn validate_protected_mcp_route(route: &ProtectedMcpRouteConfig) -> Result<(), T
         }
     }
     Ok(())
+}
+
+fn normalize_name_list(values: Vec<String>, param: &str) -> Result<Vec<String>, ToolError> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(ToolError::InvalidParam {
+                message: format!("{param} entries must not be empty"),
+                param: param.to_string(),
+            });
+        }
+        let name = trimmed.to_string();
+        if !normalized.contains(&name) {
+            normalized.push(name);
+        }
+    }
+    Ok(normalized)
 }
 
 fn normalize_public_host(raw: &str) -> Result<String, ToolError> {
@@ -1055,6 +1100,7 @@ mod tests {
             backend_mcp_path: "/mcp".to_string(),
             scopes: vec![],
             health_path: None,
+            target: None,
         }
     }
 

@@ -64,6 +64,9 @@ impl LabMcpServer {
     }
 
     pub(crate) async fn service_visible_on_mcp(&self, service: &str) -> bool {
+        if !self.route_scope.allows_service(service) {
+            return false;
+        }
         if matches!(self.node_role, Some(crate::config::NodeRole::NonMaster)) {
             return false;
         }
@@ -92,6 +95,9 @@ impl LabMcpServer {
     }
 
     pub(crate) async fn code_mode_visibility(&self) -> CodeModeVisibility {
+        if !self.route_scope.exposes_code_mode() {
+            return CodeModeVisibility::Raw;
+        }
         let manager_code_mode_enabled = if let Some(manager) = &self.gateway_manager {
             manager.code_mode_enabled().await
         } else {
@@ -206,16 +212,20 @@ impl LabMcpServer {
         if !visibility.hides_raw_tools()
             && let Some(pool) = self.current_upstream_pool().await
         {
-            // Use name-only accessor to avoid deep-cloning every tool schema
-            // just for change-detection (P-M2).
-            for name in pool.healthy_tool_names().await {
-                tools.insert(name);
+            for tool in pool
+                .healthy_tools_allowed(self.route_scope.allowed_upstreams())
+                .await
+            {
+                tools.insert(tool.tool.name.to_string());
             }
         }
 
         let mut resources = self.builtin_resource_identifiers().await;
         if let Some(pool) = self.current_upstream_pool().await {
             for (upstream_name, uris) in pool.cached_upstream_resource_uris().await {
+                if !self.route_scope.allows_upstream(&upstream_name) {
+                    continue;
+                }
                 for uri in uris {
                     resources.insert(format!("lab://upstream/{upstream_name}/{uri}"));
                 }
@@ -227,11 +237,17 @@ impl LabMcpServer {
             builtin_prompt_names.iter().map(String::as_str).collect();
         let mut prompts: BTreeSet<String> = builtin_prompt_names.iter().cloned().collect();
         if let Some(pool) = self.current_upstream_pool().await {
+            let owners = pool.cached_prompt_ownership_map().await;
             for prompt_name in pool
                 .cached_upstream_prompt_names(&builtin_prompt_refs)
                 .await
             {
-                prompts.insert(prompt_name);
+                if owners
+                    .get(&prompt_name)
+                    .is_some_and(|upstream| self.route_scope.allows_upstream(upstream))
+                {
+                    prompts.insert(prompt_name);
+                }
             }
         }
 

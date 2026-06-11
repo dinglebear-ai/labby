@@ -181,7 +181,10 @@ impl LabMcpServer {
             route = "upstream",
             "dispatch route selected"
         );
-        match pool.read_upstream_resource(uri).await {
+        match pool
+            .read_upstream_resource_allowed(uri, self.route_scope.allowed_upstreams())
+            .await
+        {
             Some(Ok(result)) => {
                 let elapsed_ms = start.elapsed().as_millis();
                 let upstream = uri

@@ -219,6 +219,25 @@ impl UpstreamPool {
         resources
     }
 
+    pub async fn list_upstream_resources_allowed(
+        &self,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Vec<Resource> {
+        if allowed.is_none() {
+            return self.list_upstream_resources().await;
+        }
+        let allowed = allowed.expect("checked some");
+        let mut resources = self.list_upstream_resources().await;
+        resources.retain(|resource| {
+            resource
+                .uri
+                .strip_prefix("lab://upstream/")
+                .and_then(|rest| rest.split('/').next())
+                .is_some_and(|upstream| allowed.contains(upstream))
+        });
+        resources
+    }
+
     pub async fn subject_scoped_resources(
         &self,
         configs: &[UpstreamConfig],

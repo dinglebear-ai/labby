@@ -234,6 +234,7 @@ pub(crate) fn canonical_kind(s: &str) -> &'static str {
         "decode_error" => "decode_error",
         "internal_error" => "internal_error",
         "upstream_error" => "upstream_error",
+        "route_scope_denied" => "route_scope_denied",
         _ => "internal_error",
     }
 }

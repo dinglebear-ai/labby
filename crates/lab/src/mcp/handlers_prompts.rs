@@ -47,7 +47,12 @@ impl LabMcpServer {
                 .map(|prompt| prompt.name.to_string())
                 .collect();
             let builtin_name_refs: Vec<&str> = builtin_names.iter().map(String::as_str).collect();
-            let upstream_prompts = pool.list_upstream_prompts(&builtin_name_refs).await;
+            let upstream_prompts = pool
+                .list_upstream_prompts_allowed(
+                    &builtin_name_refs,
+                    self.route_scope.allowed_upstreams(),
+                )
+                .await;
             prompts.extend(upstream_prompts);
             let auth = auth_context_from_extensions(&context.extensions);
             if let Some(oauth_subject) =
@@ -60,7 +65,12 @@ impl LabMcpServer {
                         &builtin_name_refs,
                     )
                     .await;
-                prompts.extend(scoped_prompts);
+                prompts.extend(scoped_prompts.into_iter().filter(|prompt| {
+                    prompt
+                        .name
+                        .split_once('/')
+                        .is_none_or(|(upstream, _)| self.route_scope.allows_upstream(upstream))
+                }));
             }
         }
 
@@ -136,7 +146,9 @@ impl LabMcpServer {
         }
 
         if let Some(pool) = self.current_upstream_pool().await
-            && let Some(upstream_name) = pool.find_prompt_owner(&request.name).await
+            && let Some(upstream_name) = pool
+                .find_prompt_owner_allowed(&request.name, self.route_scope.allowed_upstreams())
+                .await
         {
             let prompt_name = request.name.clone();
             tracing::info!(
@@ -238,6 +250,7 @@ impl LabMcpServer {
             if let Some(upstream_name) = pool
                 .subject_scoped_prompt_owner(&configs, oauth_subject.as_ref(), &request.name)
                 .await
+                && self.route_scope.allows_upstream(&upstream_name)
                 && let Some(config) = configs
                     .into_iter()
                     .find(|config| config.name == upstream_name)

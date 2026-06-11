@@ -266,6 +266,18 @@ pub struct GatewayProtectedRouteUpdateArgs {
     pub scopes: Vec<String>,
     #[arg(long)]
     pub health_path: Option<String>,
+    /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
+    #[arg(long)]
+    pub gateway_subset: bool,
+    /// Upstream names to expose for --gateway-subset. Repeat or comma-separate.
+    #[arg(long, value_delimiter = ',')]
+    pub target_upstream: Vec<String>,
+    /// Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate.
+    #[arg(long, value_delimiter = ',')]
+    pub target_service: Vec<String>,
+    /// Expose Code Mode search/execute on this gateway subset.
+    #[arg(long)]
+    pub expose_code_mode: bool,
 }
 
 #[derive(Debug, Args)]
@@ -288,6 +300,18 @@ pub struct GatewayProtectedRouteUpsertArgs {
     pub scopes: Vec<String>,
     #[arg(long)]
     pub health_path: Option<String>,
+    /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
+    #[arg(long)]
+    pub gateway_subset: bool,
+    /// Upstream names to expose for --gateway-subset. Repeat or comma-separate.
+    #[arg(long, value_delimiter = ',')]
+    pub target_upstream: Vec<String>,
+    /// Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate.
+    #[arg(long, value_delimiter = ',')]
+    pub target_service: Vec<String>,
+    /// Expose Code Mode search/execute on this gateway subset.
+    #[arg(long)]
+    pub expose_code_mode: bool,
 }
 
 #[derive(Debug, Args)]
@@ -432,16 +456,34 @@ fn filtered_builtin_service_registry(config: &LabConfig) -> ToolRegistry {
 }
 
 fn protected_route_from_args(args: GatewayProtectedRouteUpsertArgs) -> ProtectedMcpRouteConfig {
+    let target = args.gateway_subset.then_some({
+        crate::config::ProtectedMcpRouteTarget::GatewaySubset(
+            crate::config::ProtectedGatewaySubsetTarget {
+                upstreams: args.target_upstream,
+                services: args.target_service,
+                expose_code_mode: args.expose_code_mode,
+            },
+        )
+    });
     ProtectedMcpRouteConfig {
         name: args.name,
         enabled: args.enabled,
         public_host: args.public_host,
         public_path: args.public_path,
-        upstream: args.upstream,
-        backend_url: args.backend_url.unwrap_or_default(),
+        upstream: if target.is_some() {
+            None
+        } else {
+            args.upstream
+        },
+        backend_url: if target.is_some() {
+            String::new()
+        } else {
+            args.backend_url.unwrap_or_default()
+        },
         backend_mcp_path: args.backend_mcp_path.unwrap_or_else(|| "/mcp".to_string()),
         scopes: args.scopes,
         health_path: args.health_path,
+        target,
     }
 }
 
@@ -699,23 +741,39 @@ async fn dispatch_command(
                         "gateway.protected_route.add".to_string(),
                         json!({ "route": protected_route_from_args(args) }),
                     ),
-                    GatewayProtectedRouteCommand::Update(args) => (
-                        "gateway.protected_route.update".to_string(),
-                        json!({
-                            "name": args.name,
-                            "route": ProtectedMcpRouteConfig {
-                                name: args.new_name.unwrap_or_else(|| args.name.clone()),
-                                enabled: args.enabled.unwrap_or(true),
-                                public_host: args.public_host,
-                                public_path: args.public_path,
-                                upstream: args.upstream,
-                                backend_url: args.backend_url.unwrap_or_default(),
-                                backend_mcp_path: args.backend_mcp_path.unwrap_or_else(|| "/mcp".to_string()),
-                                scopes: args.scopes,
-                                health_path: args.health_path,
-                            }
-                        }),
-                    ),
+                    GatewayProtectedRouteCommand::Update(args) => {
+                        let target = args.gateway_subset.then_some({
+                            crate::config::ProtectedMcpRouteTarget::GatewaySubset(
+                                crate::config::ProtectedGatewaySubsetTarget {
+                                    upstreams: args.target_upstream,
+                                    services: args.target_service,
+                                    expose_code_mode: args.expose_code_mode,
+                                },
+                            )
+                        });
+                        (
+                            "gateway.protected_route.update".to_string(),
+                            json!({
+                                "name": args.name,
+                                "route": ProtectedMcpRouteConfig {
+                                    name: args.new_name.unwrap_or_else(|| args.name.clone()),
+                                    enabled: args.enabled.unwrap_or(true),
+                                    public_host: args.public_host,
+                                    public_path: args.public_path,
+                                    upstream: if target.is_some() { None } else { args.upstream },
+                                    backend_url: if target.is_some() {
+                                        String::new()
+                                    } else {
+                                        args.backend_url.unwrap_or_default()
+                                    },
+                                    backend_mcp_path: args.backend_mcp_path.unwrap_or_else(|| "/mcp".to_string()),
+                                    scopes: args.scopes,
+                                    health_path: args.health_path,
+                                    target,
+                                }
+                            }),
+                        )
+                    }
                     GatewayProtectedRouteCommand::Remove(args) => (
                         "gateway.protected_route.remove".to_string(),
                         json!({ "name": args.name }),

@@ -161,6 +161,17 @@ impl GatewayManager {
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,
     ) -> Result<Vec<UpstreamTool>, ToolError> {
+        self.code_mode_catalog_tools_allowed(allow_cold_connect, owner, oauth_subject, None)
+            .await
+    }
+
+    pub async fn code_mode_catalog_tools_allowed(
+        &self,
+        allow_cold_connect: bool,
+        owner: Option<&UpstreamRuntimeOwner>,
+        oauth_subject: Option<&str>,
+        allowed_upstreams: Option<&std::collections::BTreeSet<String>>,
+    ) -> Result<Vec<UpstreamTool>, ToolError> {
         if allow_cold_connect {
             self.refresh_code_mode_catalog(owner, oauth_subject).await?;
         } else {
@@ -170,7 +181,7 @@ impl GatewayManager {
         let Some(pool) = self.current_pool().await else {
             return Ok(Vec::new());
         };
-        Ok(pool.healthy_tools().await)
+        Ok(pool.healthy_tools_allowed(allowed_upstreams).await)
     }
 
     /// One-shot CLI variant of `code_mode_catalog_tools`: serve the codemode

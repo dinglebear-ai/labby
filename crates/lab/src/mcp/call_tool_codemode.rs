@@ -198,7 +198,15 @@ impl LabMcpServer {
                 sub: self.request_subject(context).map(ToOwned::to_owned),
             }
         });
-        match broker.search(&code, caller, self.code_mode_surface()).await {
+        match broker
+            .search_allowed(
+                &code,
+                caller,
+                self.code_mode_surface(),
+                self.route_scope.allowed_upstreams(),
+            )
+            .await
+        {
             Ok(response) => {
                 let output =
                     serde_json::to_string(&response).unwrap_or_else(|_| "null".to_string());
@@ -331,16 +339,41 @@ impl LabMcpServer {
             .unwrap_or(config.max_tool_calls)
             .max(1)
             .min(config.max_tool_calls.max(1));
-        let capability_filter = match (
-            string_array_arg(args, "upstreams"),
-            string_array_arg(args, "tools"),
-        ) {
-            (Ok(upstreams), Ok(tools)) => CodeModeCapabilityFilter::new(upstreams, tools),
-            (Err(err), _) | (_, Err(err)) => {
+        let requested_upstreams = match string_array_arg(args, "upstreams") {
+            Ok(upstreams) => upstreams,
+            Err(err) => {
                 let env = tool_error_envelope(service, "call_tool", &err);
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             }
         };
+        if let Some(route_allowed) = self.route_scope.allowed_upstreams()
+            && requested_upstreams
+                .iter()
+                .any(|name| !route_allowed.contains(name))
+        {
+            let err = DispatchToolError::Sdk {
+                sdk_kind: "route_scope_denied".to_string(),
+                message: "Code Mode requested an upstream outside this protected route scope"
+                    .to_string(),
+            };
+            let env = tool_error_envelope(service, "call_tool", &err);
+            return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+        }
+        let tools = match string_array_arg(args, "tools") {
+            Ok(tools) => tools,
+            Err(err) => {
+                let env = tool_error_envelope(service, "call_tool", &err);
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+        };
+        let effective_upstreams = if let Some(route_allowed) = self.route_scope.allowed_upstreams()
+            && requested_upstreams.is_empty()
+        {
+            route_allowed.iter().cloned().collect()
+        } else {
+            requested_upstreams
+        };
+        let capability_filter = CodeModeCapabilityFilter::new(effective_upstreams, tools);
         let code_hash = hash_arguments(&Value::String(code.to_string()));
         tracing::info!(
             surface = "mcp",

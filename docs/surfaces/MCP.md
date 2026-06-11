@@ -72,6 +72,28 @@ When HTTP serving is enabled, the route classes have separate auth contracts:
 - Static web assets serve the Labby browser app shell. Disabling browser UI auth only changes browser-session behavior for the web UI; it is not a switch that disables `/v1` or `/mcp` auth.
 - `/dev/*` routes are development preview routes. They are authenticated whenever bearer or OAuth auth is configured. They are only open when the server is intentionally running with no auth configured, and that posture is local/dev only, not production.
 
+### Protected Route Gateway Subsets
+
+Protected MCP routes can either proxy one legacy backend target or expose a route-scoped Lab gateway subset. A gateway subset reuses the same `LabMcpServer`, `GatewayManager`, and `UpstreamPool` model as `/mcp`, but the route's OAuth resource and scopes define a narrower authorization boundary.
+
+```toml
+[[protected_mcp_routes]]
+name = "media"
+public_host = "mcp.example.com"
+public_path = "/media"
+scopes = ["mcp:media"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["sonarr", "radarr", "prowlarr"]
+services = ["gateway"]
+expose_code_mode = true
+```
+
+The route above exposes only the listed upstreams, the listed built-in Lab services, and Code Mode if `expose_code_mode = true`. The allowlist is enforced for `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`, Code Mode `search`, and Code Mode `execute`.
+
+The OAuth protected resource remains route-specific: `https://mcp.example.com/media`. A token for one protected route does not authorize another route with a different resource or scope set.
+
 ## One Tool Per Service
 
 Each service exposes exactly one MCP tool named after the service.

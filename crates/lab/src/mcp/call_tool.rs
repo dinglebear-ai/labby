@@ -82,6 +82,18 @@ impl LabMcpServer {
             return self.call_tool_execute_impl(&service, &args, &context).await;
         }
 
+        if svc.is_some() && !self.route_scope.allows_service(&service) {
+            let envelope = build_error(
+                &service,
+                &action,
+                "route_scope_denied",
+                &format!("service `{service}` is not exposed on this MCP route"),
+            );
+            return Ok(CallToolResult::error(vec![Content::text(
+                envelope.to_string(),
+            )]));
+        }
+
         if svc.is_some() && !self.service_visible_on_mcp(&service).await {
             let envelope = build_error(
                 &service,

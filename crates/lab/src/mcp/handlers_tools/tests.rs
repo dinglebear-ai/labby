@@ -143,6 +143,7 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
             rmcp::model::LoggingLevel::Emergency,
         ))),
+        route_scope: crate::mcp::route_scope::McpRouteScope::Root,
     };
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -208,6 +209,7 @@ async fn snapshot_catalog_hides_builtin_tools_when_code_mode_is_enabled() {
         logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
             rmcp::model::LoggingLevel::Info,
         ))),
+        route_scope: crate::mcp::route_scope::McpRouteScope::Root,
     };
 
     let snapshot = server.snapshot_catalog().await;
@@ -260,6 +262,7 @@ async fn snapshot_catalog_shows_no_gateway_tools_when_surface_is_disabled() {
         logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
             rmcp::model::LoggingLevel::Info,
         ))),
+        route_scope: crate::mcp::route_scope::McpRouteScope::Root,
     };
 
     let snapshot = server.snapshot_catalog().await;
@@ -289,6 +292,7 @@ async fn server_reads_current_pool_from_gateway_manager() {
         logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
             rmcp::model::LoggingLevel::Info,
         ))),
+        route_scope: crate::mcp::route_scope::McpRouteScope::Root,
     };
 
     assert!(server.current_upstream_pool().await.is_none());
@@ -333,6 +337,7 @@ async fn snapshot_catalog_hides_mcp_disabled_virtual_services() {
         logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
             rmcp::model::LoggingLevel::Info,
         ))),
+        route_scope: crate::mcp::route_scope::McpRouteScope::Root,
     };
 
     let snapshot = server.snapshot_catalog().await;
@@ -375,6 +380,7 @@ async fn service_actions_json_filters_to_allowed_mcp_actions() {
         logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
             rmcp::model::LoggingLevel::Info,
         ))),
+        route_scope: crate::mcp::route_scope::McpRouteScope::Root,
     };
 
     let value = server

@@ -207,5 +207,6 @@ fn fixture_protected_route(name: &str) -> ProtectedMcpRouteConfig {
         backend_mcp_path: "/mcp".to_string(),
         scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
         health_path: Some("/health".to_string()),
+        target: None,
     }
 }

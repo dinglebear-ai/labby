@@ -15,6 +15,7 @@ use axum::{
     routing::{get, post},
 };
 use subtle::ConstantTimeEq;
+use tower::ServiceExt;
 use tower_http::{
     compression::CompressionLayer,
     cors::{AllowOrigin, CorsLayer},
@@ -24,6 +25,7 @@ use tower_http::{
 };
 use tracing::Level;
 
+use crate::config::ProtectedMcpRouteEffectiveTarget;
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::upstream::auth::configured_bearer_token;
 use lab_auth::AuthLayer;
@@ -615,17 +617,32 @@ async fn protected_route_upstream_target(
     state: &AppState,
     route: &crate::config::ProtectedMcpRouteConfig,
 ) -> Result<(reqwest::Url, Option<String>, String), axum::response::Response> {
-    let Some(upstream_name) = route.upstream.as_deref() else {
-        let url = reqwest::Url::parse(&route.backend_url).map_err(|error| {
+    let upstream_name = match route.effective_target() {
+        ProtectedMcpRouteEffectiveTarget::BackendUrl { url } => {
+            let url = reqwest::Url::parse(&url).map_err(|error| {
+                tracing::warn!(
+                    route = %route.name,
+                    resource = %route.public_resource(),
+                    error = %error,
+                    "protected MCP route proxy failed: invalid backend_url"
+                );
+                StatusCode::BAD_GATEWAY.into_response()
+            })?;
+            return Ok((url, None, "backend_url".to_string()));
+        }
+        ProtectedMcpRouteEffectiveTarget::Upstream { name } => name,
+        ProtectedMcpRouteEffectiveTarget::GatewaySubset(_) => {
             tracing::warn!(
                 route = %route.name,
                 resource = %route.public_resource(),
-                error = %error,
-                "protected MCP route proxy failed: invalid backend_url"
+                "protected MCP gateway subset reached legacy proxy path"
             );
-            StatusCode::BAD_GATEWAY.into_response()
-        })?;
-        return Ok((url, None, "backend_url".to_string()));
+            return Err(ToolError::Sdk {
+                sdk_kind: "bad_gateway".into(),
+                message: "gateway_subset routes must be served by the scoped MCP service".into(),
+            }
+            .into_response());
+        }
     };
 
     let Some(manager) = state.gateway_manager.as_ref() else {
@@ -641,7 +658,7 @@ async fn protected_route_upstream_target(
         }
         .into_response());
     };
-    let Some(upstream_config) = manager.upstream_config(upstream_name).await else {
+    let Some(upstream_config) = manager.upstream_config(&upstream_name).await else {
         tracing::warn!(
             route = %route.name,
             resource = %route.public_resource(),
@@ -679,7 +696,7 @@ async fn protected_route_upstream_target(
     })?;
 
     let token = if upstream_config.oauth.is_some() {
-        let Some(oauth_manager) = manager.upstream_oauth_manager(upstream_name) else {
+        let Some(oauth_manager) = manager.upstream_oauth_manager(&upstream_name) else {
             tracing::warn!(
                 route = %route.name,
                 resource = %route.public_resource(),
@@ -779,6 +796,41 @@ async fn protected_mcp_route_entry(
     .await
     {
         return response;
+    }
+    if matches!(
+        route.effective_target(),
+        ProtectedMcpRouteEffectiveTarget::GatewaySubset(_)
+    ) {
+        let Some(router) = state.protected_mcp_router.as_ref() else {
+            tracing::error!(
+                route = %route.name,
+                resource = %route.public_resource(),
+                "protected MCP gateway subset failed: scoped router missing"
+            );
+            return ToolError::Sdk {
+                sdk_kind: "bad_gateway".into(),
+                message: "protected MCP gateway subset service is not mounted".into(),
+            }
+            .into_response();
+        };
+        return router
+            .as_ref()
+            .clone()
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    route = %route.name,
+                    resource = %route.public_resource(),
+                    error = %error,
+                    "protected MCP gateway subset failed: scoped service error"
+                );
+                ToolError::Sdk {
+                    sdk_kind: "bad_gateway".into(),
+                    message: format!("protected MCP gateway subset service failed: {error}"),
+                }
+                .into_response()
+            });
     }
     proxy_protected_mcp_route(&state, request, route).await
 }
@@ -2672,6 +2724,7 @@ mod tests {
                 backend_mcp_path: "/mcp".to_string(),
                 scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
                 health_path: None,
+                target: None,
             }],
             ..crate::config::LabConfig::default()
         };
@@ -2771,6 +2824,91 @@ mod tests {
         assert_eq!(
             String::from_utf8(body.to_vec()).unwrap(),
             r#"{"proxied":true}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn protected_gateway_subset_unauthorized_header_points_to_route_metadata() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
+            tempdir.path().join("gateway.toml"),
+            crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+        ));
+        let config = protected_gateway_subset_config();
+        manager.seed_config(config.clone()).await;
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager);
+        let auth_state = test_lab_auth_state().await;
+        let app = build_router(state, None, Some(auth_state), None, &[]);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/media")
+                    .header(header::HOST, "mcp.tootie.tv")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            "Bearer resource_metadata=\"https://mcp.tootie.tv/.well-known/oauth-protected-resource/media\", scope=\"mcp:media\""
+        );
+    }
+
+    #[tokio::test]
+    async fn protected_gateway_subset_dispatches_to_scoped_router_after_auth() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
+            tempdir.path().join("gateway.toml"),
+            crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+        ));
+        let config = protected_gateway_subset_config();
+        manager.seed_config(config.clone()).await;
+        let scoped_router = Router::new().route(
+            "/media",
+            post(|| async { Json(serde_json::json!({"scoped": true})) }),
+        );
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager)
+            .with_protected_mcp_router(scoped_router);
+        let auth_state = test_lab_auth_state().await;
+        let token = issue_test_token(&auth_state, "https://mcp.tootie.tv/media", "mcp:media");
+        let app = build_router(
+            state,
+            Some("static-token".to_string()),
+            Some(auth_state),
+            None,
+            &[],
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/media")
+                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(body.to_vec()).unwrap(),
+            r#"{"scoped":true}"#
         );
     }
 
@@ -3048,6 +3186,31 @@ mod tests {
                 backend_mcp_path: "/mcp".to_string(),
                 scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
                 health_path: None,
+                target: None,
+            }],
+            ..crate::config::LabConfig::default()
+        }
+    }
+
+    fn protected_gateway_subset_config() -> crate::config::LabConfig {
+        crate::config::LabConfig {
+            protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
+                name: "media".to_string(),
+                enabled: true,
+                public_host: "mcp.tootie.tv".to_string(),
+                public_path: "/media".to_string(),
+                upstream: None,
+                backend_url: String::new(),
+                backend_mcp_path: "/mcp".to_string(),
+                scopes: vec!["mcp:media".to_string()],
+                health_path: None,
+                target: Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
+                    crate::config::ProtectedGatewaySubsetTarget {
+                        upstreams: vec!["sonarr".to_string(), "radarr".to_string()],
+                        services: vec!["gateway".to_string()],
+                        expose_code_mode: true,
+                    },
+                )),
             }],
             ..crate::config::LabConfig::default()
         }

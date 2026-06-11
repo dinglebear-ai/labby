@@ -15,11 +15,22 @@ use super::types::{
 use super::util::serialized_catalog_size;
 
 impl CodeModeBroker<'_> {
+    #[allow(dead_code)]
     pub async fn search(
         &self,
         code: &str,
         caller: CodeModeCaller,
         surface: CodeModeSurface,
+    ) -> Result<Value, ToolError> {
+        self.search_allowed(code, caller, surface, None).await
+    }
+
+    pub async fn search_allowed(
+        &self,
+        code: &str,
+        caller: CodeModeCaller,
+        surface: CodeModeSurface,
+        allowed_upstreams: Option<&std::collections::BTreeSet<String>>,
     ) -> Result<Value, ToolError> {
         if !caller.can_read() {
             return Err(ToolError::Sdk {
@@ -42,7 +53,13 @@ impl CodeModeBroker<'_> {
         // Returns (entries, catalog_json, serialized_size) — all from the
         // render cache when the healthy tool set has not changed.
         let (catalog, catalog_json, serialized_size) = self
-            .code_search_catalog(manager, require_fresh_catalog, &owner, oauth_subject)
+            .code_search_catalog_allowed(
+                manager,
+                require_fresh_catalog,
+                &owner,
+                oauth_subject,
+                allowed_upstreams,
+            )
             .await?;
         tracing::info!(
             surface = "dispatch",
@@ -94,6 +111,7 @@ impl CodeModeBroker<'_> {
     /// to inject as `const tools = ...;` into the runner. Both are served from
     /// the manager-level render cache when the healthy tool fingerprint matches,
     /// avoiding repeated `generate_tool_types` calls and JSON serialization.
+    #[allow(dead_code)]
     pub(in crate::dispatch::gateway::code_mode) async fn code_search_catalog(
         &self,
         manager: &GatewayManager,
@@ -101,8 +119,25 @@ impl CodeModeBroker<'_> {
         owner: &UpstreamRuntimeOwner,
         oauth_subject: Option<&str>,
     ) -> Result<(Vec<CodeModeCatalogEntry>, String, usize), ToolError> {
+        self.code_search_catalog_allowed(manager, allow_cold_connect, owner, oauth_subject, None)
+            .await
+    }
+
+    pub(in crate::dispatch::gateway::code_mode) async fn code_search_catalog_allowed(
+        &self,
+        manager: &GatewayManager,
+        allow_cold_connect: bool,
+        owner: &UpstreamRuntimeOwner,
+        oauth_subject: Option<&str>,
+        allowed_upstreams: Option<&std::collections::BTreeSet<String>>,
+    ) -> Result<(Vec<CodeModeCatalogEntry>, String, usize), ToolError> {
         let raw_tools = manager
-            .code_mode_catalog_tools(allow_cold_connect, Some(owner), oauth_subject)
+            .code_mode_catalog_tools_allowed(
+                allow_cold_connect,
+                Some(owner),
+                oauth_subject,
+                allowed_upstreams,
+            )
             .await?;
 
         // --- P-H3: catalog render cache ---

@@ -230,6 +230,36 @@ impl UpstreamPool {
 
         self.cached_prompt_owner(prompt_name, false).await
     }
+
+    pub async fn list_upstream_prompts_allowed(
+        &self,
+        builtin_name_refs: &[&str],
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Vec<Prompt> {
+        let mut prompts = self.list_upstream_prompts(builtin_name_refs).await;
+        if let Some(allowed) = allowed {
+            let owners = self.cached_prompt_ownership_map().await;
+            prompts.retain(|prompt| {
+                let name: &str = prompt.name.as_ref();
+                owners
+                    .get(name)
+                    .is_some_and(|upstream| allowed.contains(upstream))
+            });
+        }
+        prompts
+    }
+
+    pub async fn find_prompt_owner_allowed(
+        &self,
+        prompt_name: &str,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Option<String> {
+        let owner = self.find_prompt_owner(prompt_name).await?;
+        if allowed.is_some_and(|names| !names.contains(&owner)) {
+            return None;
+        }
+        Some(owner)
+    }
 }
 
 #[cfg(test)]
@@ -323,6 +353,7 @@ mod tests {
             node_role: None,
             peers: Arc::new(RwLock::new(Vec::new())),
             logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Info))),
+            route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         };
 
         let snapshot = server.snapshot_catalog().await;

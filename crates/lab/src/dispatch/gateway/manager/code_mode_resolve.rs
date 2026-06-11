@@ -170,6 +170,102 @@ impl GatewayManager {
         }
         Ok(matches.into_iter().next().expect("checked len"))
     }
+
+    pub async fn resolve_raw_upstream_tool_scoped(
+        &self,
+        tool: &str,
+        allowed_upstreams: Option<&std::collections::BTreeSet<String>>,
+        owner: Option<&UpstreamRuntimeOwner>,
+        oauth_subject: Option<&str>,
+    ) -> Result<(String, UpstreamTool), ToolError> {
+        if allowed_upstreams.is_none() {
+            return self
+                .resolve_raw_upstream_tool(tool, owner, oauth_subject)
+                .await;
+        }
+
+        let selector = ToolExecuteSelector::parse(tool, None)?;
+        let allowed = allowed_upstreams.expect("checked some");
+        let cfg = self.config.read().await.clone();
+        let Some(pool) = self.current_pool().await else {
+            return Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: format!("unknown tool `{}`", selector.display_name()),
+            });
+        };
+
+        if let Some(upstream_name) = selector.upstream.as_deref() {
+            if !allowed.contains(upstream_name) {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "unknown_tool".to_string(),
+                    message: format!("unknown tool `{}`", selector.display_name()),
+                });
+            }
+            self.ensure_upstream_tool_runtime_ready(upstream_name, owner, oauth_subject)
+                .await?;
+            return pool
+                .healthy_tools_for_upstream(upstream_name)
+                .await
+                .into_iter()
+                .find(|candidate| candidate.tool.name.as_ref() == selector.tool_name)
+                .map(|tool| (upstream_name.to_string(), tool))
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "unknown_tool".to_string(),
+                    message: format!("unknown tool `{}`", selector.display_name()),
+                });
+        }
+
+        if let Some((upstream, tool)) = pool
+            .find_tool_allowed(&selector.tool_name, Some(allowed))
+            .await
+            && cfg
+                .upstream
+                .iter()
+                .find(|candidate| candidate.name == upstream)
+                .is_none_or(|candidate| is_routable(candidate.priority))
+        {
+            return Ok((upstream, tool));
+        }
+
+        let mut matches = Vec::new();
+        for upstream in cfg
+            .upstream
+            .iter()
+            .filter(|upstream| upstream.enabled && allowed.contains(&upstream.name))
+            .filter(|upstream| is_routable(upstream.priority))
+        {
+            self.ensure_upstream_tool_runtime_ready(&upstream.name, owner, oauth_subject)
+                .await?;
+            matches.extend(
+                pool.healthy_tools_for_upstream(&upstream.name)
+                    .await
+                    .into_iter()
+                    .filter(|candidate| candidate.tool.name.as_ref() == selector.tool_name)
+                    .map(|tool| (upstream.name.clone(), tool)),
+            );
+        }
+
+        if matches.is_empty() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: format!("unknown tool `{}`", selector.display_name()),
+            });
+        }
+        if matches.len() > 1 {
+            let valid = matches
+                .iter()
+                .map(|(upstream, tool)| format!("{upstream}::{}", tool.tool.name))
+                .collect::<Vec<_>>();
+            return Err(ToolError::AmbiguousTool {
+                message: format!(
+                    "tool `{}` matched multiple upstream tools",
+                    selector.tool_name
+                ),
+                valid,
+            });
+        }
+        Ok(matches.into_iter().next().expect("checked len"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

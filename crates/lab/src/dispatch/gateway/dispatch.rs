@@ -1153,6 +1153,7 @@ mod tests {
             backend_mcp_path: "/mcp".to_string(),
             scopes: Vec::new(),
             health_path: None,
+            target: None,
         }
     }
 

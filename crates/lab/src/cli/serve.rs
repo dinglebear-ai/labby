@@ -1071,10 +1071,16 @@ fn build_http_router(
     let mcp_router = if mount_http_mcp {
         // Build the MCP streamable HTTP service in the serve path (not in the
         // router module) to avoid an api->mcp dependency.
-        let mcp_service = build_mcp_service(&state, mcp_config, notifier)?;
+        let mcp_service = build_mcp_service(&state, mcp_config, notifier.clone())?;
         Some(axum::Router::new().nest_service("/mcp", mcp_service))
     } else {
         None
+    };
+    let protected_mcp_router = build_protected_mcp_router(&state, mcp_config, notifier)?;
+    let state = if let Some(router) = protected_mcp_router {
+        state.with_protected_mcp_router(router)
+    } else {
+        state
     };
 
     Ok(crate::api::router::build_router(
@@ -1182,6 +1188,7 @@ async fn run_stdio(
         logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
             crate::mcp::logging::logging_level_rank(rmcp::model::LoggingLevel::Info),
         )),
+        route_scope: crate::mcp::route_scope::McpRouteScope::Root,
     };
     let running = server.serve(rmcp::transport::stdio()).await?;
     tracing::info!(
@@ -1227,6 +1234,22 @@ fn build_mcp_service(
     mcp_config: &crate::config::McpPreferences,
     notifier: PeerNotifier,
 ) -> Result<StreamableHttpService<LabMcpServer, LocalSessionManager>> {
+    build_mcp_service_with_scope(
+        state,
+        mcp_config,
+        notifier,
+        crate::mcp::route_scope::McpRouteScope::Root,
+        &[],
+    )
+}
+
+fn build_mcp_service_with_scope(
+    state: &AppState,
+    mcp_config: &crate::config::McpPreferences,
+    notifier: PeerNotifier,
+    route_scope: crate::mcp::route_scope::McpRouteScope,
+    extra_allowed_hosts: &[String],
+) -> Result<StreamableHttpService<LabMcpServer, LocalSessionManager>> {
     let registry = Arc::clone(&state.registry);
     let gateway_manager = state.gateway_manager.clone();
 
@@ -1245,13 +1268,18 @@ fn build_mcp_service(
     let stateful =
         resolve_stateful_mode(std::env::var("LAB_MCP_STATEFUL").ok(), mcp_config.stateful)?;
 
-    let allowed_hosts = allowed_hosts(
+    let mut allowed_hosts = allowed_hosts(
         mcp_config.allowed_hosts.as_deref().unwrap_or(&[]),
         state
             .auth_config
             .as_ref()
             .and_then(|cfg| cfg.public_url.as_ref().map(url::Url::as_str)),
     );
+    for host in extra_allowed_hosts {
+        if !allowed_hosts.contains(host) {
+            allowed_hosts.push(host.clone());
+        }
+    }
     let config = StreamableHttpServerConfig::default()
         .with_allowed_hosts(allowed_hosts.clone())
         .with_stateful_mode(stateful);
@@ -1272,12 +1300,14 @@ fn build_mcp_service(
     // vec) so that gateway reload notifications reach every connected session.
     let shared_peers = Arc::clone(&notifier.peers);
     let node_role = state.node_role;
+    let route_scope_label = route_scope.label();
 
     Ok(StreamableHttpService::new(
         move || {
             let reg = Arc::clone(&registry);
             let manager = gateway_manager.clone();
             let peers = Arc::clone(&shared_peers);
+            let route_scope = route_scope.clone();
             tracing::info!(
                 surface = "mcp",
                 service = "labby",
@@ -1288,6 +1318,7 @@ fn build_mcp_service(
                 services = reg.services().len(),
                 gateway_manager_configured = manager.is_some(),
                 node_role = ?node_role,
+                route_scope = %route_scope_label,
                 "initializing HTTP MCP session handler"
             );
             Ok(LabMcpServer {
@@ -1298,11 +1329,46 @@ fn build_mcp_service(
                 logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
                     crate::mcp::logging::logging_level_rank(rmcp::model::LoggingLevel::Info),
                 )),
+                route_scope,
             })
         },
         session_manager,
         config,
     ))
+}
+
+fn build_protected_mcp_router(
+    state: &AppState,
+    mcp_config: &crate::config::McpPreferences,
+    notifier: PeerNotifier,
+) -> Result<Option<axum::Router>> {
+    let routes: Vec<_> = state
+        .config
+        .protected_mcp_routes
+        .iter()
+        .filter(|route| route.enabled && route.is_gateway_subset())
+        .cloned()
+        .collect();
+    if routes.is_empty() {
+        return Ok(None);
+    }
+
+    let mut router = axum::Router::new();
+    for route in routes {
+        let Some(scope) = crate::mcp::route_scope::McpRouteScope::from_protected_route(&route)
+        else {
+            continue;
+        };
+        let service = build_mcp_service_with_scope(
+            state,
+            mcp_config,
+            notifier.clone(),
+            scope,
+            std::slice::from_ref(&route.public_host),
+        )?;
+        router = router.nest_service(&route.public_path, service);
+    }
+    Ok(Some(router))
 }
 
 /// Build the allowed hosts list for DNS rebinding protection.
