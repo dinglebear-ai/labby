@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { ChevronLeft, ChevronRight, Search } from 'lucide-react'
@@ -45,9 +45,21 @@ import { cn } from '@/lib/utils'
 
 const PAGE_SIZE = 50
 const ALL = 'all'
+const SEARCH_DEBOUNCE_MS = 300
 
 function isWindow(value: string | null): value is MetricsWindow {
   return value !== null && (METRICS_WINDOWS as readonly string[]).includes(value)
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs)
+    return () => window.clearTimeout(timer)
+  }, [delayMs, value])
+
+  return debounced
 }
 
 function UsageExplorer() {
@@ -61,22 +73,7 @@ function UsageExplorer() {
   const [outcome, setOutcome] = useState<string>(ALL)
   const [search, setSearch] = useState('')
   const [offset, setOffset] = useState(0)
-
-  // Unfiltered fetch → distinct option lists for the dropdowns.
-  const { data: all } = useToolCalls({ window, limit: 5000 })
-  const toolOptions = useMemo(
-    () => [...new Set((all?.calls ?? []).map((c) => c.tool))].sort(),
-    [all],
-  )
-  const agentOptions = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const c of all?.calls ?? []) map.set(c.agent_id, c.agent_label)
-    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]))
-  }, [all])
-  const ipOptions = useMemo(
-    () => [...new Set((all?.calls ?? []).map((c) => c.ip))].sort(),
-    [all],
-  )
+  const debouncedSearch = useDebouncedValue(search.trim(), SEARCH_DEBOUNCE_MS)
 
   const { data, isLoading, error, mutate } = useToolCalls({
     window,
@@ -84,10 +81,16 @@ function UsageExplorer() {
     agent: agent === ALL ? undefined : agent,
     ip: ip === ALL ? undefined : ip,
     outcome: outcome === ALL ? undefined : (outcome as CallOutcome),
-    search: search.trim() || undefined,
+    search: debouncedSearch || undefined,
     limit: PAGE_SIZE,
     offset,
   })
+  const toolOptions = data?.facets.tools ?? []
+  const agentOptions = useMemo(
+    () => (data?.facets.agents ?? []).map((entry) => [entry.id, entry.label] as const),
+    [data],
+  )
+  const ipOptions = data?.facets.ips ?? []
 
   const resetPaging = () => setOffset(0)
   const filtered = data?.filtered ?? 0
@@ -224,7 +227,9 @@ function UsageExplorer() {
                     </TableCell>
                     <TableCell>
                       <div className="text-aurora-text-primary">{call.agent_label}</div>
-                      <div className="font-mono text-[11px] text-aurora-text-muted">{call.ip}</div>
+                      <div className="font-mono text-[11px] text-aurora-text-muted">
+                        {call.ip || 'unknown IP'}
+                      </div>
                     </TableCell>
                     <TableCell><SurfaceTag surface={call.surface} /></TableCell>
                     <TableCell>

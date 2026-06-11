@@ -134,6 +134,17 @@ impl LogStore {
             .await
     }
 
+    pub async fn completion_events(
+        &self,
+        after_ts: Option<i64>,
+        before_ts: Option<i64>,
+    ) -> Result<Vec<LogEvent>, ToolError> {
+        self.blocking_read("completion_events", move |c| {
+            run_completion_events(c, after_ts, before_ts)
+        })
+        .await
+    }
+
     pub async fn tail(&self, req: LogTailRequest) -> Result<LogTailResult, ToolError> {
         self.blocking_read("tail", move |c| run_tail(c, &req)).await
     }
@@ -409,6 +420,32 @@ fn run_search(conn: &Connection, q: &LogQuery) -> Result<LogSearchResult, rusqli
         events,
         next_cursor,
     })
+}
+
+fn run_completion_events(
+    conn: &Connection,
+    after_ts: Option<i64>,
+    before_ts: Option<i64>,
+) -> Result<Vec<LogEvent>, rusqlite::Error> {
+    let mut sql = format!(
+        "SELECT {SELECT_COLS} FROM log_events
+         WHERE fields_json LIKE '%\"input_tokens\"%'
+           AND fields_json LIKE '%\"output_tokens\"%'"
+    );
+    let mut args: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(after) = after_ts {
+        sql.push_str(" AND ts > ?");
+        args.push(after.into());
+    }
+    if let Some(before) = before_ts {
+        sql.push_str(" AND ts <= ?");
+        args.push(before.into());
+    }
+    sql.push_str(" ORDER BY ts DESC, event_id DESC");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter()), row_to_event)?;
+    rows.collect::<Result<_, _>>()
 }
 
 /// Escape `%`, `_`, and `\` in a user-supplied string so they are treated as

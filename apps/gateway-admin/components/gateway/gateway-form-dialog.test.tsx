@@ -5,7 +5,13 @@ import { act } from 'react'
 import { SWRConfig } from 'swr'
 import { Window } from 'happy-dom'
 
-import type { CreateGatewayInput, Gateway, ProtectedMcpRoute, UpdateGatewayInput } from '@/lib/types/gateway'
+import type {
+  CreateGatewayInput,
+  Gateway,
+  GatewayWriteConfig,
+  ProtectedMcpRoute,
+  UpdateGatewayInput,
+} from '@/lib/types/gateway'
 
 test('new custom URL auto-switches to OAuth and shows blocked popup fallback', async () => {
   const window = installGatewayDialogDom()
@@ -715,10 +721,12 @@ test('editing an existing OAuth HTTP server preserves OAuth config by omission',
     const onSaveInputs: Array<CreateGatewayInput | UpdateGatewayInput> = []
     const existing = gatewayFixture('gdrive-mcp')
     existing.config.oauth_enabled = true
-    existing.config.oauth = {
-      registration_strategy: 'dynamic',
-      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-    }
+    Object.assign(existing.config, {
+      oauth: {
+        registration_strategy: 'dynamic',
+        scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+      },
+    } satisfies Partial<GatewayWriteConfig>)
 
     const view = await renderOpenGatewayDialog(existing, async (input) => {
       onSaveInputs.push(input)
@@ -733,7 +741,9 @@ test('editing an existing OAuth HTTP server preserves OAuth config by omission',
 
     await waitFor(() => {
       assert.equal(onSaveInputs.length, 1)
-      assert.equal(onSaveInputs[0]?.config.oauth, undefined)
+      const saved = onSaveInputs[0]
+      assert.ok(saved)
+      assert.equal(saved.config?.oauth, undefined)
     })
 
     await view.unmount()

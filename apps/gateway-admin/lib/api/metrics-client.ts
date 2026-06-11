@@ -538,10 +538,20 @@ export async function fetchToolCalls(
     const sorted = filtered.sort((a, b) => b.ts - a.ts)
     const offset = query.offset ?? 0
     const limit = query.limit ?? 50
+    const agentMap = new Map<string, string>()
+    for (const record of stream) agentMap.set(record.agent_id, record.agent_label)
     return {
       calls: sorted.slice(offset, offset + limit),
       total: stream.length,
       filtered: sorted.length,
+      facets: {
+        tools: [...new Set(stream.map((record) => record.tool))].sort(),
+        agents: [...agentMap.entries()]
+          .map(([id, label]) => ({ id, label }))
+          .sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id)),
+        ips: [...new Set(stream.map((record) => record.ip).filter(Boolean))].sort(),
+        surfaces: [...new Set(stream.map((record) => record.surface))].sort(),
+      },
     }
   }
   return postLogsAction<ToolCallPage>('logs.calls', { query }, options)

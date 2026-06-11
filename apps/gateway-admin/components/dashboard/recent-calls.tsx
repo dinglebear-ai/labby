@@ -14,17 +14,25 @@ export function OutcomeDot({ outcome }: { outcome: CallOutcome }) {
   )
 }
 
-const SURFACE_LABEL: Record<CallSurface, string> = {
+const SURFACE_LABEL: Partial<Record<CallSurface, string>> = {
   mcp: 'MCP',
   api: 'API',
   cli: 'CLI',
   web: 'Web',
+  core_runtime: 'Core runtime',
+  acp: 'ACP',
+  dispatch: 'Dispatch',
+  node: 'Node',
+}
+
+function surfaceLabel(surface: CallSurface): string {
+  return SURFACE_LABEL[surface] ?? surface.replaceAll('_', ' ')
 }
 
 export function SurfaceTag({ surface }: { surface: CallSurface }) {
   return (
     <span className="rounded-aurora-1 border border-aurora-border-default px-1.5 py-px font-mono text-[10px] uppercase tracking-wide text-aurora-text-muted">
-      {SURFACE_LABEL[surface]}
+      {surfaceLabel(surface)}
     </span>
   )
 }

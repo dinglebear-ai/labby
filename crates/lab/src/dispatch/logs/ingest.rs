@@ -614,6 +614,22 @@ mod tests {
     }
 
     #[test]
+    fn canonicalize_preserves_runtime_surfaces_used_by_logs() {
+        for (raw, expected) in [
+            ("acp", Surface::Acp),
+            ("dispatch", Surface::Dispatch),
+            ("node", Surface::Node),
+        ] {
+            let event = canonicalize(RawLogEvent {
+                surface: Some(raw.to_string()),
+                message: "runtime event".to_string(),
+                ..RawLogEvent::default()
+            });
+            assert_eq!(event.surface, expected);
+        }
+    }
+
+    #[test]
     fn scrub_json_handles_nested_and_arrays() {
         let v = serde_json::json!({"outer":{"api_key":"abc"},"list":["Bearer xyz"]});
         let out = scrub_json(v).to_string();

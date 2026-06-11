@@ -33,7 +33,20 @@ function StatCell({ value, label }: { value: ReactNode; label: string }) {
   )
 }
 
-const SURFACE_LABEL: Record<CallSurface, string> = { mcp: 'MCP', api: 'API', cli: 'CLI', web: 'Web' }
+const SURFACE_LABEL: Partial<Record<CallSurface, string>> = {
+  mcp: 'MCP',
+  api: 'API',
+  cli: 'CLI',
+  web: 'Web',
+  core_runtime: 'Core runtime',
+  acp: 'ACP',
+  dispatch: 'Dispatch',
+  node: 'Node',
+}
+
+function surfaceLabel(surface: CallSurface): string {
+  return SURFACE_LABEL[surface] ?? surface.replaceAll('_', ' ')
+}
 
 function hourLabel(hour: number): string {
   const h = hour % 12 === 0 ? 12 : hour % 12
@@ -92,7 +105,7 @@ export function FailuresPanel({ errors }: { errors: DashboardMetrics['errors'] }
 export function SurfacesPanel({ surfaces }: { surfaces: SurfaceCount[] }) {
   const items: MetricBarItem[] = surfaces.map((s) => ({
     key: s.surface,
-    label: SURFACE_LABEL[s.surface],
+    label: surfaceLabel(s.surface),
     value: s.calls,
     display: formatCompactNumber(s.calls),
   }))

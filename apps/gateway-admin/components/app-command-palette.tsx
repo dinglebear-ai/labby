@@ -774,7 +774,7 @@ function GatewayCommandPaletteRow({ gateway, onSelect }: GatewayCommandPaletteRo
           </span>
           <Badge
             variant="pill"
-            status={enabled ? 'default' : 'neutral'}
+            status="default"
             className="h-5 border-aurora-border-strong bg-aurora-panel-medium px-2 text-[10px] uppercase tracking-[0.12em] text-aurora-text-muted"
           >
             {gateway.transport}

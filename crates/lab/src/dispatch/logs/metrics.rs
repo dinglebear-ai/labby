@@ -736,6 +736,21 @@ pub struct ToolCallPage {
     pub calls: Vec<ToolCallRecord>,
     pub total: usize,
     pub filtered: usize,
+    pub facets: ToolCallFacets,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ToolCallFacets {
+    pub tools: Vec<String>,
+    pub agents: Vec<ToolCallAgentFacet>,
+    pub ips: Vec<String>,
+    pub surfaces: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ToolCallAgentFacet {
+    pub id: String,
+    pub label: String,
 }
 
 /// Distill a completion `LogEvent` into a serializable call record.
@@ -919,6 +934,7 @@ pub fn agent_detail(events: &[LogEvent], id: &str, window: MetricsWindow, now: i
 pub fn tool_calls(events: &[LogEvent], query: &ToolCallQuery) -> ToolCallPage {
     let all: Vec<ToolCallRecord> = events.iter().filter_map(extract_record).collect();
     let total = all.len();
+    let facets = build_facets(&all);
     let search = query.search.as_deref().map(str::to_lowercase);
 
     let mut filtered: Vec<ToolCallRecord> = all
@@ -966,6 +982,44 @@ pub fn tool_calls(events: &[LogEvent], query: &ToolCallQuery) -> ToolCallPage {
         calls,
         total,
         filtered: filtered_count,
+        facets,
+    }
+}
+
+fn build_facets(records: &[ToolCallRecord]) -> ToolCallFacets {
+    let mut tools = BTreeSet::new();
+    let mut agents: BTreeMap<String, String> = BTreeMap::new();
+    let mut ips = BTreeSet::new();
+    let mut surfaces = BTreeSet::new();
+
+    for record in records {
+        if !record.tool.is_empty() {
+            tools.insert(record.tool.clone());
+        }
+        if !record.agent_id.is_empty() {
+            agents
+                .entry(record.agent_id.clone())
+                .or_insert_with(|| record.agent_label.clone());
+        }
+        if !record.ip.trim().is_empty() {
+            ips.insert(record.ip.clone());
+        }
+        if !record.surface.is_empty() {
+            surfaces.insert(record.surface.clone());
+        }
+    }
+
+    let mut agents: Vec<ToolCallAgentFacet> = agents
+        .into_iter()
+        .map(|(id, label)| ToolCallAgentFacet { id, label })
+        .collect();
+    agents.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.id.cmp(&b.id)));
+
+    ToolCallFacets {
+        tools: tools.into_iter().collect(),
+        agents,
+        ips: ips.into_iter().collect(),
+        surfaces: surfaces.into_iter().collect(),
     }
 }
 

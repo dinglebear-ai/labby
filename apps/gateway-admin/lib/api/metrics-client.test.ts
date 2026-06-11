@@ -77,6 +77,9 @@ test('fetchToolCalls honors tool, ip, and outcome filters', async () => {
   const all = await fetchToolCalls({ window: '24h', limit: 5000 })
   assert.ok(all.calls.length > 0)
   assert.equal(all.filtered, all.total)
+  assert.ok(all.facets.tools.length > 0)
+  assert.ok(all.facets.agents.length > 0)
+  assert.ok(all.facets.ips.every((ip) => ip.length > 0))
 
   const tool = all.calls[0].tool
   const byTool = await fetchToolCalls({ window: '24h', tool, limit: 5000 })

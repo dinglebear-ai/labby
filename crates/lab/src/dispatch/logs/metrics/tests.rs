@@ -5,7 +5,7 @@ use super::{
     MetricsWindow, ToolCallQuery, agent_detail, aggregate, aggregate_with_previous, tool_calls,
     tool_detail,
 };
-use crate::dispatch::logs::types::LogEvent;
+use crate::dispatch::logs::types::{LogEvent, LogRetention};
 
 /// Build a dispatch-completion `LogEvent` via serde (LogEvent is a serde type).
 fn call_event(
@@ -193,6 +193,54 @@ fn tool_calls_filters_and_paginates() {
     let failed = tool_calls(&sample(now), &query(None, Some("failed"), None));
     assert_eq!(failed.filtered, 1);
     assert!(failed.calls.iter().all(|c| c.outcome == "failed"));
+}
+
+#[test]
+fn tool_call_facets_cover_full_unpaginated_input_and_skip_empty_ips() {
+    let now = 1_000_000_000_000;
+    let mut events = sample(now);
+    let mut rare = call_event(now - 10_000, "api", "rare_tool", true, 42, 1, 2);
+    rare.fields_json["ip"] = json!("");
+    events.push(rare);
+
+    let page = tool_calls(&events, &query(None, None, Some(1)));
+
+    assert_eq!(page.calls.len(), 1);
+    assert_eq!(page.total, 5);
+    assert!(page.facets.tools.iter().any(|tool| tool == "rare_tool"));
+    assert!(!page.facets.ips.iter().any(|ip| ip.is_empty()));
+}
+
+#[tokio::test]
+async fn completion_event_window_is_not_capped_at_ten_thousand_raw_rows() {
+    let store = crate::dispatch::logs::store::open_store_for_test(LogRetention::default())
+        .await
+        .expect("open store");
+    let now = 1_000_000_000_000;
+    let old_completion = call_event(now - 86_000_000, "mcp", "old_tool", true, 10, 1, 1);
+    store
+        .insert(&old_completion)
+        .await
+        .expect("insert old call");
+
+    for i in 0..10_050 {
+        store
+            .insert(&start_event(now - i))
+            .await
+            .expect("insert raw start event");
+    }
+
+    let events = store
+        .completion_events(Some(now - MetricsWindow::D7.ms()), Some(now))
+        .await
+        .expect("fetch completion events");
+
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_id == old_completion.event_id),
+        "older completion event must remain visible even when newer raw rows exceed 10k"
+    );
 }
 
 #[test]

@@ -1133,13 +1133,27 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
                 services::auth_admin::routes(state.clone()),
             );
 
-        if state
-            .registry
-            .services()
-            .iter()
-            .any(|service| service.name == "logs")
+        if api_auth_configured
+            && state
+                .registry
+                .services()
+                .iter()
+                .any(|service| service.name == "logs")
         {
             v1 = v1.nest("/logs", services::logs::routes(state.clone()));
+        } else if !api_auth_configured
+            && state
+                .registry
+                .services()
+                .iter()
+                .any(|service| service.name == "logs")
+        {
+            tracing::warn!(
+                subsystem = "startup",
+                phase = "logs.mount.skipped",
+                reason = "no_auth_configured",
+                "logs service routes not mounted: /v1/logs exposes runtime log and metrics data and requires API auth"
+            );
         }
 
         #[cfg(feature = "fs")]
@@ -1816,6 +1830,27 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["kind"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn logs_routes_are_not_mounted_without_api_auth() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, None, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/logs")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"action":"logs.metrics","params":{"window":"24h"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

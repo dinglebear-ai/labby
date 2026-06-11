@@ -112,6 +112,9 @@ pub enum Surface {
     Mcp,
     Api,
     Web,
+    Acp,
+    Dispatch,
+    Node,
     CoreRuntime,
 }
 
@@ -123,6 +126,9 @@ impl Surface {
             Self::Mcp => "mcp",
             Self::Api => "api",
             Self::Web => "web",
+            Self::Acp => "acp",
+            Self::Dispatch => "dispatch",
+            Self::Node => "node",
             Self::CoreRuntime => "core_runtime",
         }
     }
@@ -133,6 +139,9 @@ impl Surface {
             "mcp" => Self::Mcp,
             "api" => Self::Api,
             "web" => Self::Web,
+            "acp" => Self::Acp,
+            "dispatch" => Self::Dispatch,
+            "node" => Self::Node,
             "core_runtime" => Self::CoreRuntime,
             _ => return None,
         })
@@ -215,7 +224,7 @@ impl LogEvent {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RawLogEvent {
     #[serde(default)]
     pub ts: Option<i64>,
@@ -455,7 +464,7 @@ impl LogSystem {
         Ok(stats)
     }
 
-    /// Fetch the dispatch-completion events in a rolling window. Returns
+    /// Fetch all dispatch-completion events in a rolling window. Returns
     /// `(now_ms, events)`. Shared by all dashboard aggregation entry points.
     async fn fetch_window(
         &self,
@@ -465,36 +474,19 @@ impl LogSystem {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let query: LogQuery = serde_json::from_value(serde_json::json!({
-            "after_ts": now - window.ms(),
-            "limit": 10_000,
-        }))
-        .map_err(|e| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("build metrics query: {e}"),
-        })?;
-        let result = self.store.search(query).await?;
-        Ok((now, result.events))
+        let events = self
+            .store
+            .completion_events(Some(now - window.ms()), Some(now))
+            .await?;
+        Ok((now, events))
     }
 
     async fn fetch_previous_actor_ids(
         &self,
         before_ts: i64,
     ) -> Result<BTreeSet<String>, ToolError> {
-        let query: LogQuery = serde_json::from_value(serde_json::json!({
-            "before_ts": before_ts,
-            "limit": 10_000,
-        }))
-        .map_err(|e| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("build previous-actor query: {e}"),
-        })?;
-        let result = self.store.search(query).await?;
-        Ok(result
-            .events
-            .iter()
-            .filter_map(super::metrics::actor_id)
-            .collect())
+        let events = self.store.completion_events(None, Some(before_ts)).await?;
+        Ok(events.iter().filter_map(super::metrics::actor_id).collect())
     }
 
     /// Aggregate dispatch-completion events over a rolling window into the

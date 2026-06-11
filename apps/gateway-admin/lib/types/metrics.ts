@@ -199,7 +199,7 @@ export interface HourBucket {
 // ── Drill-down ─────────────────────────────────────────────────────────────
 
 export type CallOutcome = 'ok' | 'failed'
-export type CallSurface = 'mcp' | 'api' | 'cli' | 'web'
+export type CallSurface = 'mcp' | 'api' | 'cli' | 'web' | 'core_runtime' | 'acp' | 'dispatch' | 'node' | (string & {})
 
 /** A single dispatched tool call — the atom every drill-down rolls up from. */
 export interface ToolCallRecord {
@@ -266,4 +266,17 @@ export interface ToolCallPage {
   calls: ToolCallRecord[]
   total: number
   filtered: number
+  facets: ToolCallFacets
+}
+
+export interface ToolCallFacets {
+  tools: string[]
+  agents: ToolCallAgentFacet[]
+  ips: string[]
+  surfaces: string[]
+}
+
+export interface ToolCallAgentFacet {
+  id: string
+  label: string
 }

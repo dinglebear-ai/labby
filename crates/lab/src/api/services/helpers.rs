@@ -38,39 +38,21 @@ pub fn dispatch_meta_from_headers<'a>(
     ApiDispatchMeta {
         request_id: headers.get("x-request-id").and_then(|v| v.to_str().ok()),
         actor_key: auth.and_then(|ctx| ctx.actor_key.as_deref()),
-        actor_label: auth.and_then(|ctx| ctx.email.as_deref().or(Some(ctx.sub.as_str()))),
+        actor_label: auth
+            .and_then(|ctx| ctx.actor_key.as_deref())
+            .map(non_pii_actor_label),
         agent_kind: auth.map(|ctx| if ctx.via_session { "device" } else { "agent" }),
         ip: client_ip_from_headers(headers),
     }
 }
 
 fn client_ip_from_headers(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(first_forwarded_ip)
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|value| value.to_str().ok())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        })
-        .or_else(|| {
-            headers
-                .get("cf-connecting-ip")
-                .and_then(|value| value.to_str().ok())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        })
+    let _ = headers;
+    None
 }
 
-fn first_forwarded_ip(value: &str) -> Option<&str> {
-    value
-        .split(',')
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+fn non_pii_actor_label(actor_key: &str) -> &str {
+    actor_key
 }
 
 /// Dispatch a service action request with unknown-action gate, confirmation gate, and logging.
@@ -360,6 +342,18 @@ mod tests {
 
     fn test_surface() -> &'static str {
         "api"
+    }
+
+    fn auth_context() -> AuthContext {
+        AuthContext {
+            sub: "raw-subject@example.com".to_string(),
+            actor_key: Some(Arc::<str>::from("actor_123456")),
+            issuer: "test-issuer".to_string(),
+            scopes: vec!["lab:read".to_string()],
+            via_session: true,
+            email: Some("person@example.com".to_string()),
+            csrf_token: None,
+        }
     }
 
     #[derive(Clone, Default)]
@@ -838,5 +832,29 @@ mod tests {
             result.is_ok(),
             "schema must bypass catalog gate and reach dispatch, got {result:?}"
         );
+    }
+
+    #[test]
+    fn dispatch_meta_does_not_persist_raw_email_or_subject_as_actor_label() {
+        let headers = HeaderMap::new();
+        let auth = auth_context();
+        let meta = dispatch_meta_from_headers(&headers, Some(&auth));
+
+        assert_eq!(meta.actor_key, Some("actor_123456"));
+        assert_eq!(meta.actor_label, Some("actor_123456"));
+        assert_ne!(meta.actor_label, Some("person@example.com"));
+        assert_ne!(meta.actor_label, Some("raw-subject@example.com"));
+    }
+
+    #[test]
+    fn dispatch_meta_ignores_spoofable_forwarded_ip_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.99".parse().unwrap());
+        headers.insert("x-real-ip", "203.0.113.100".parse().unwrap());
+        headers.insert("cf-connecting-ip", "203.0.113.101".parse().unwrap());
+
+        let meta = dispatch_meta_from_headers(&headers, None);
+
+        assert_eq!(meta.ip, None);
     }
 }
