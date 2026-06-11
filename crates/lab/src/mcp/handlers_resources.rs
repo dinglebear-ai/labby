@@ -31,6 +31,9 @@ use crate::mcp::logging::DispatchLogOutcome;
 use crate::mcp::server::LabMcpServer;
 
 pub(crate) const CODE_MODE_APP_MIME: &str = "text/html;profile=mcp-app";
+/// URI namespace reserved for Lab's own Code Mode app resources, served locally.
+/// Any other `ui://` is an upstream mcp-ui widget resource routed to its peer.
+pub(crate) const CODE_MODE_APP_URI_PREFIX: &str = "ui://lab/code-mode/";
 pub(crate) const CODE_MODE_SEARCH_APP_URI: &str = "ui://lab/code-mode/search";
 pub(crate) const CODE_MODE_EXECUTE_APP_URI: &str = "ui://lab/code-mode/execute";
 pub(crate) const CODE_MODE_HISTORY_APP_URI: &str = "ui://lab/code-mode/history";
@@ -157,10 +160,40 @@ impl LabMcpServer {
 
         // Branch 0: MCP Apps UI resources. This must precede all lab://
         // fallbacks so ui:// has its own exact lookup semantics.
-        if uri.starts_with("ui://") {
+        //
+        // Local Code Mode app resources own the `ui://lab/code-mode/*` namespace
+        // and are served from the bundled HTML.
+        if uri.starts_with(CODE_MODE_APP_URI_PREFIX) {
             return self
                 .read_code_mode_app_resource_impl(uri, &subject, start, &context)
                 .await;
+        }
+        // Any other `ui://` is an upstream MCP Apps (mcp-ui) widget resource
+        // (referenced by a tool result's `_meta.ui.resourceUri`): reverse-look-up
+        // the owning upstream peer via the pool and forward the read under the
+        // native `ui://` URI. These widgets are surfaced through the Code Mode
+        // synthetic surface, so gate them behind the same read scope as Lab's own
+        // Code Mode app resources rather than leaving them ungated.
+        if uri.starts_with("ui://") {
+            let auth = auth_context_from_extensions(&context.extensions);
+            if !code_mode_search_scope_allowed(auth) {
+                return Err(ErrorData::invalid_params(
+                    "UI resources require one of scopes: lab:read, lab, lab:admin",
+                    Some(json!({
+                        "kind": "forbidden",
+                        "required_scopes": ["lab:read", "lab", "lab:admin"],
+                    })),
+                ));
+            }
+            if let Some(pool) = self.current_upstream_pool().await {
+                return self
+                    .read_upstream_ui_resource_impl(&pool, uri, &subject, start, &context)
+                    .await;
+            }
+            return Err(ErrorData::resource_not_found(
+                format!("unknown UI resource: {uri}"),
+                None,
+            ));
         }
 
         // Branch 1: gateway-synthetic resources.

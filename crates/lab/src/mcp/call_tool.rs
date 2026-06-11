@@ -115,15 +115,61 @@ impl LabMcpServer {
         }
 
         if self.code_mode_visibility().await.hides_raw_tools() {
-            let envelope = build_error(
-                &service,
-                &action,
-                "not_found",
-                &format!("tool `{service}` is hidden while code_mode mode is enabled"),
-            );
-            return Ok(CallToolResult::error(vec![Content::text(
-                envelope.to_string(),
-            )]));
+            // mcp-ui widget callbacks: when the operator has explicitly enabled
+            // them, a raw call that names a known upstream tool is allowed to
+            // fall through to the upstream proxy so a rendered widget can drive
+            // its tool. The tool stays hidden from `list_tools` — this relaxes
+            // callability, never visibility. Default off (strict boundary); see
+            // `config::code_mode_widget_callbacks_enabled`.
+            let widget_tool = if svc.is_none()
+                && crate::config::code_mode_widget_callbacks_enabled()
+                && let Some(pool) = self.current_upstream_pool().await
+            {
+                pool.find_tool(&service).await
+            } else {
+                None
+            };
+            match widget_tool {
+                // Destructive upstream effects are NOT reachable over the
+                // callback bypass: it has no confirmation channel, so unlike the
+                // `execute` path (which gates destructive upstream calls behind
+                // `confirm: true`) it could otherwise run a destructive tool
+                // unconfirmed. The sanctioned path for those is `execute`.
+                Some((_upstream, tool)) if tool.destructive => {
+                    let envelope = build_error(
+                        &service,
+                        &action,
+                        "confirmation_required",
+                        &format!(
+                            "destructive upstream tool `{service}` is not callable via the \
+                             widget callback bypass — use the `execute` tool with confirm:true"
+                        ),
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        envelope.to_string(),
+                    )]));
+                }
+                Some(_) => {
+                    tracing::info!(
+                        surface = "mcp",
+                        service = %service,
+                        action = %action,
+                        route = "upstream_widget_callback",
+                        "code_mode raw-tool gate bypassed for enabled widget callback"
+                    );
+                }
+                None => {
+                    let envelope = build_error(
+                        &service,
+                        &action,
+                        "not_found",
+                        &format!("tool `{service}` is hidden while code_mode mode is enabled"),
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        envelope.to_string(),
+                    )]));
+                }
+            }
         }
 
         if let Some(entry) = svc
