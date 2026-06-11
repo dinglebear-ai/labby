@@ -4,10 +4,11 @@
 //! requests with a non-loopback Host header are rejected with 421 before
 //! reaching the dispatcher.
 
-use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
+use axum::{Extension, Json, Router, extract::State, http::HeaderMap, routing::post};
 use serde_json::Value;
 
-use crate::api::services::helpers::handle_action;
+use crate::api::oauth::AuthContext;
+use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::setup::ACTIONS;
@@ -19,6 +20,7 @@ pub fn routes(_state: AppState) -> Router<AppState> {
 async fn handle(
     State(state): State<AppState>,
     headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ToolError> {
     if plugin_lifecycle_action(&req.action) && !http_bind_is_loopback(&state) {
@@ -34,11 +36,10 @@ async fn handle(
             message: "setup plugin lifecycle actions are only available over loopback HTTP".into(),
         });
     }
-    let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
-    handle_action(
+    handle_action_with_meta(
         "setup",
         "api",
-        request_id,
+        dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0)),
         req,
         ACTIONS,
         |action, params| async move { crate::dispatch::setup::dispatch(&action, params).await },

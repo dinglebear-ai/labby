@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { GatewayFilters } from './gateway-filters'
 
-test('gateway filters render aurora checkbox groups and clear state affordance', () => {
+test('gateway filters render compact desktop chips and clear state affordance', () => {
   const markup = renderToStaticMarkup(
     <GatewayFilters
       mode="gateways"
@@ -27,9 +27,9 @@ test('gateway filters render aurora checkbox groups and clear state affordance',
   assert.match(markup, /bg-aurora-control-surface/)
   assert.match(markup, /data-mobile-search="gateways"/)
   assert.match(markup, /Search servers/)
-  assert.match(markup, /Clear filters/i)
+  assert.match(markup, /Clear/i)
   assert.match(markup, /aria-label="Open filters"/)
-  assert.match(markup, /type="checkbox"/)
+  assert.match(markup, /aria-pressed="true"/)
   assert.match(markup, /Configured/)
   assert.doesNotMatch(markup, /role="combobox"/)
 })

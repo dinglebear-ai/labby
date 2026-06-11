@@ -69,6 +69,58 @@ test('gateway table uses aurora lifted surfaces and muted operational pills', ()
   assert.doesNotMatch(markup, /Reload required to apply policy changes/)
 })
 
+test('gateway table sorts servers by name and shows full stdio command line', () => {
+  const stdioGateway: Gateway = {
+    ...gateway,
+    id: 'gw_2',
+    name: 'Neo4j Memory',
+    transport: 'stdio',
+    config: {
+      command: 'uvx',
+      args: ['neo4j-memory-mcp'],
+    },
+    status: {
+      ...gateway.status,
+      discovered_tool_count: 3,
+      exposed_tool_count: 3,
+      discovered_resource_count: 0,
+      exposed_resource_count: 0,
+      discovered_prompt_count: 0,
+      exposed_prompt_count: 0,
+    },
+    warnings: [],
+  }
+
+  const zedGateway: Gateway = {
+    ...gateway,
+    id: 'gw_3',
+    name: 'Zed Search',
+    config: {
+      url: 'https://zed.example.com/mcp',
+    },
+    warnings: [],
+  }
+
+  const markup = renderToStaticMarkup(
+    React.createElement(GatewayTable, {
+      gateways: [zedGateway, stdioGateway],
+      density: 'comfortable',
+      onEdit: () => {},
+      onTest: () => {},
+      onReload: () => {},
+      onCleanup: () => {},
+      onClearCleanupHistory: () => {},
+      onToggleEnabled: () => {},
+      onDelete: () => {},
+    }),
+  )
+
+  assert.ok(markup.indexOf('Neo4j Memory') < markup.indexOf('Zed Search'))
+  assert.match(markup, /uvx neo4j-memory-mcp/)
+  assert.match(markup, /Sort by server/)
+})
+
+
 test('gateway table exposes stale service removal for unknown in-process services', () => {
   const staleService: Gateway = {
     ...gateway,

@@ -44,14 +44,16 @@ export function TransportBadge({ transport, className, iconOnly = false }: Trans
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded-full border px-2 py-[5px] text-[10px] font-medium uppercase tracking-[0.14em]',
+        iconOnly
+          ? 'inline-flex h-8 w-8 items-center justify-center rounded-aurora-1 border p-0'
+          : 'inline-flex h-8 min-w-[74px] items-center justify-center gap-1.5 rounded-aurora-1 border px-2.5 text-[11px] font-semibold uppercase tracking-[0.12em]',
         config.className,
         className
       )}
       title={config.label}
       aria-label={config.label}
     >
-      <Icon className="size-[11px]" />
+      <Icon className={iconOnly ? 'size-3.5' : 'size-3'} />
       {!iconOnly ? config.label : null}
     </span>
   )

@@ -213,7 +213,26 @@ async function normalizeListedServerView(
     }, runtime)
   }
 
-  return normalizeServerView(view, undefined, runtime)
+  try {
+    const gatewayView = await gatewayAction<BackendGatewayView>('gateway.get', { name: view.name }, signal)
+    const lastWarning = view.warnings?.[0]?.message
+    const connected = view.connected ?? runtime?.connected ?? false
+    return normalizeGateway(
+      gatewayView,
+      {
+        connected,
+        healthy: connected && !lastWarning,
+        ...(lastWarning ? { last_error: lastWarning } : {}),
+      },
+      { tools: [], resources: [], prompts: [] },
+      runtime,
+    )
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error
+    }
+    return normalizeServerView(view, undefined, runtime)
+  }
 }
 
 function logGatewayDegradation(gateways: Gateway[]) {

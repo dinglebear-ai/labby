@@ -11,15 +11,67 @@
 
 use std::future::Future;
 
-use axum::Json;
+use axum::{Json, http::HeaderMap};
 use serde_json::Value;
 use tracing::Instrument;
 
 use lab_apis::core::action::ActionSpec;
 
-use crate::api::ActionRequest;
+use crate::api::{ActionRequest, oauth::AuthContext};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::current_gateway_manager;
+use crate::dispatch::helpers::estimate_tokens_value;
+
+#[derive(Clone, Copy, Default)]
+pub struct ApiDispatchMeta<'a> {
+    pub request_id: Option<&'a str>,
+    pub actor_key: Option<&'a str>,
+    pub actor_label: Option<&'a str>,
+    pub agent_kind: Option<&'a str>,
+    pub ip: Option<&'a str>,
+}
+
+pub fn dispatch_meta_from_headers<'a>(
+    headers: &'a HeaderMap,
+    auth: Option<&'a AuthContext>,
+) -> ApiDispatchMeta<'a> {
+    ApiDispatchMeta {
+        request_id: headers.get("x-request-id").and_then(|v| v.to_str().ok()),
+        actor_key: auth.and_then(|ctx| ctx.actor_key.as_deref()),
+        actor_label: auth.and_then(|ctx| ctx.email.as_deref().or(Some(ctx.sub.as_str()))),
+        agent_kind: auth.map(|ctx| if ctx.via_session { "device" } else { "agent" }),
+        ip: client_ip_from_headers(headers),
+    }
+}
+
+fn client_ip_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(first_forwarded_ip)
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            headers
+                .get("cf-connecting-ip")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn first_forwarded_ip(value: &str) -> Option<&str> {
+    value
+        .split(',')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
 
 /// Dispatch a service action request with unknown-action gate, confirmation gate, and logging.
 ///
@@ -56,8 +108,36 @@ where
     F: FnOnce(String, Value) -> Fut,
     Fut: Future<Output = Result<Value, ToolError>>,
 {
+    handle_action_with_meta(
+        service,
+        surface,
+        ApiDispatchMeta {
+            request_id,
+            ..ApiDispatchMeta::default()
+        },
+        req,
+        actions,
+        dispatch,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+pub async fn handle_action_with_meta<F, Fut>(
+    service: &'static str,
+    surface: &'static str,
+    meta: ApiDispatchMeta<'_>,
+    req: ActionRequest,
+    actions: &[ActionSpec],
+    dispatch: F,
+) -> Result<Json<Value>, ToolError>
+where
+    F: FnOnce(String, Value) -> Fut,
+    Fut: Future<Output = Result<Value, ToolError>>,
+{
     let action = req.action;
     let mut params = req.params;
+    let request_id = meta.request_id;
 
     if let Some(manager) = current_gateway_manager() {
         if !manager.surface_enabled_for_service(service, surface).await {
@@ -172,17 +252,24 @@ where
         action = action_log,
         request_id
     );
+    let input_tokens = estimate_tokens_value(&params);
     let start = std::time::Instant::now();
     let result = dispatch(action, params).instrument(dispatch_span).await;
     let elapsed_ms = start.elapsed().as_millis();
 
     match &result {
-        Ok(_) => tracing::info!(
+        Ok(v) => tracing::info!(
             surface = surface,
             service,
             action = action_log.as_str(),
             request_id,
+            actor_key = meta.actor_key,
+            actor_label = meta.actor_label,
+            agent_kind = meta.agent_kind,
+            ip = meta.ip,
             elapsed_ms,
+            input_tokens,
+            output_tokens = estimate_tokens_value(v),
             destructive = is_destructive,
             "dispatch ok"
         ),
@@ -191,7 +278,13 @@ where
             service,
             action = action_log.as_str(),
             request_id,
+            actor_key = meta.actor_key,
+            actor_label = meta.actor_label,
+            agent_kind = meta.agent_kind,
+            ip = meta.ip,
             elapsed_ms,
+            input_tokens,
+            output_tokens = 0,
             kind = e.kind(),
             "dispatch error"
         ),
@@ -200,7 +293,13 @@ where
             service,
             action = action_log.as_str(),
             request_id,
+            actor_key = meta.actor_key,
+            actor_label = meta.actor_label,
+            agent_kind = meta.agent_kind,
+            ip = meta.ip,
             elapsed_ms,
+            input_tokens,
+            output_tokens = 0,
             kind = e.kind(),
             "dispatch error"
         ),

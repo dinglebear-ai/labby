@@ -51,9 +51,9 @@ import { GatewayToolsTable } from './gateway-tools-table'
 import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { AURORA_GATEWAY_STAT, gatewayActionTone } from './gateway-theme'
-import { CodeModeTogglePanel } from './code-mode-toggle'
+import { CodeModeHeaderToggle } from './code-mode-toggle'
 
-const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'configured'
+const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
 
 const DEFAULT_TOOL_FILTERS: ToolFilterState = {
@@ -84,7 +84,7 @@ type CleanupHistoryEntry = {
 }
 
 interface GatewaySummary {
-  configured: number
+  enabled: number
   healthy: number
   disconnected: number
   tools: number
@@ -168,12 +168,12 @@ export function GatewayListContent() {
   const items = useMemo(() => gateways ?? [], [gateways])
 
   const summary = useMemo(() => {
-    const configured = items.filter((gateway) => gateway.configured ?? true).length
+    const enabled = items.filter((gateway) => gateway.enabled ?? true).length
     const healthy = items.filter((gateway) => (gateway.enabled ?? true) && gateway.status.healthy && gateway.status.connected).length
     const disconnected = items.filter((gateway) => (gateway.enabled ?? true) && !gateway.status.connected).length
     const tools = items.reduce((sum, gateway) => sum + gateway.status.discovered_tool_count, 0)
 
-    return { configured, healthy, disconnected, tools }
+    return { enabled, healthy, disconnected, tools }
   }, [items])
 
   const toolRows = useMemo(() => aggregateToolsFromGateways(items), [items])
@@ -597,6 +597,14 @@ export function GatewayListView({
             ) : null}
             {!showToolsView ? (
               <>
+                <CodeModeHeaderToggle />
+                <McpConfigHeaderActions
+                  discoveredConfigs={discoveredConfigs}
+                  isDiscovering={isDiscoveringConfigs}
+                  isImporting={isImportingConfigs}
+                  onDiscover={onDiscoverConfigs}
+                  onImport={onImportConfigs}
+                />
                 <Button
                   variant="outline"
                   size="icon"
@@ -673,15 +681,19 @@ export function GatewayListView({
           AURORA_PAGE_SHELL,
         )}
       >
-        <div className={cn(AURORA_PAGE_FRAME, 'gap-6')}>
+        <div
+          className="pointer-events-none absolute inset-0 opacity-[0.32] [background-image:linear-gradient(rgba(41,182,246,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(41,182,246,0.035)_1px,transparent_1px)] [background-size:28px_28px]"
+          aria-hidden="true"
+        />
+        <div className={cn(AURORA_PAGE_FRAME, 'relative z-10 gap-4')}>
           <section className={cn(AURORA_MEDIUM_PANEL, 'p-1.5 lg:hidden')}>
             <div className="grid grid-cols-4 gap-1">
               <MobileSummaryChip
-                metric="configured"
-                value={summary.configured}
+                metric="enabled"
+                value={summary.enabled}
                 icon={<Cable className="size-3.5" />}
-                active={!showToolsView && gatewayFilters.primaryLens === 'configured'}
-                onClick={() => onPrimaryLensChange('configured')}
+                active={!showToolsView && gatewayFilters.primaryLens === 'enabled'}
+                onClick={() => onPrimaryLensChange('enabled')}
               />
               <MobileSummaryChip
                 metric="healthy"
@@ -707,18 +719,20 @@ export function GatewayListView({
             </div>
           </section>
 
-          <section className={cn(AURORA_MEDIUM_PANEL, 'hidden p-5 lg:block')}>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <section className={cn(AURORA_STRONG_PANEL, 'hidden rounded-aurora-1 p-2 lg:block')}>
+            <div className="grid h-full gap-2 sm:grid-cols-2 xl:grid-cols-4">
               <SummaryCard
-                label="Configured"
-                value={summary.configured}
+                label="Enabled"
+                value={summary.enabled}
+                subline="Ready to route"
                 icon={<Cable className="size-5 text-aurora-text-muted" />}
-                active={!showToolsView && gatewayFilters.primaryLens === 'configured'}
-                onClick={() => onPrimaryLensChange('configured')}
+                active={!showToolsView && gatewayFilters.primaryLens === 'enabled'}
+                onClick={() => onPrimaryLensChange('enabled')}
               />
               <SummaryCard
                 label="Healthy"
                 value={summary.healthy}
+                subline={`${summary.healthy} connected`}
                 icon={<Activity className="size-5 text-aurora-accent-strong" />}
                 valueClassName="text-aurora-accent-strong"
                 active={!showToolsView && gatewayFilters.primaryLens === 'healthy'}
@@ -727,6 +741,7 @@ export function GatewayListView({
               <SummaryCard
                 label="Disconnected"
                 value={summary.disconnected}
+                subline={`${summary.disconnected} needs attention`}
                 icon={<TriangleAlert className="size-5 text-aurora-warn" />}
                 valueClassName="text-aurora-warn"
                 active={!showToolsView && gatewayFilters.primaryLens === 'disconnected'}
@@ -735,6 +750,7 @@ export function GatewayListView({
               <SummaryCard
                 label="Discovered tools"
                 value={summary.tools}
+                subline={`${summary.tools} exposed surfaces`}
                 icon={<Wrench className="size-5 text-aurora-accent-primary" />}
                 active={showToolsView}
                 onClick={() => onPrimaryLensChange('tools')}
@@ -742,9 +758,7 @@ export function GatewayListView({
             </div>
           </section>
 
-          <CodeModeTogglePanel />
-
-          <div className="grid gap-6 2xl:grid-cols-[280px_minmax(0,1fr)] 2xl:items-start">
+          <div className="grid gap-4">
             <GatewayFilters
               mode={showToolsView ? 'tools' : 'gateways'}
               search={activeSearch}
@@ -765,12 +779,10 @@ export function GatewayListView({
             />
 
             <div>
-              {!showToolsView ? (
-                <McpConfigImportPanel
+              {!showToolsView && discoveredConfigs ? (
+                <McpConfigImportReviewPanel
                   discoveredConfigs={discoveredConfigs}
-                  isDiscovering={isDiscoveringConfigs}
                   isImporting={isImportingConfigs}
-                  onDiscover={onDiscoverConfigs}
                   onImport={onImportConfigs}
                   onRestore={onRestoreConfig}
                 />
@@ -834,119 +846,143 @@ export function GatewayListView({
   )
 }
 
-function McpConfigImportPanel({
+function McpConfigHeaderActions({
   discoveredConfigs,
   isDiscovering,
   isImporting,
   onDiscover,
   onImport,
-  onRestore,
 }: {
   discoveredConfigs: DiscoveredMcpServer[] | null
   isDiscovering: boolean
   isImporting: boolean
   onDiscover: () => void
   onImport: (names?: string[]) => void
-  onRestore: (server: DiscoveredMcpServer) => void
 }) {
   const importable = discoveredConfigs?.filter((server) => !server.already_configured && !server.tombstoned) ?? []
-  const configured = discoveredConfigs?.filter((server) => server.already_configured).length ?? 0
-  const tombstoned = discoveredConfigs?.filter((server) => server.tombstoned).length ?? 0
   const disabled = isDiscovering || isImporting
 
   return (
-    <section className={cn(AURORA_STRONG_PANEL, 'mb-4 p-4')}>
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold text-aurora-text-primary">MCP config imports</h2>
-            {discoveredConfigs ? (
-              <>
-                <Badge variant="outline">{discoveredConfigs.length} found</Badge>
-                <Badge variant="outline" status={importable.length > 0 ? 'warn' : 'success'}>
-                  {importable.length} new
-                </Badge>
-                {configured > 0 ? <Badge variant="outline">{configured} configured</Badge> : null}
-                {tombstoned > 0 ? <Badge variant="outline" status="warn">{tombstoned} removed</Badge> : null}
-              </>
-            ) : null}
-          </div>
-          <p className="mt-1 text-sm text-aurora-text-muted">
-            Imported servers are added to the gateway disabled.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+    <>
+      <Button
+        variant="outline"
+        size="icon"
+        onClick={onDiscover}
+        disabled={disabled}
+        className={cn(gatewayActionTone(), 'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary sm:inline-flex')}
+        aria-label="Scan MCP configs"
+        title="Scan MCP configs"
+      >
+        <Search className={cn('size-4', isDiscovering && 'animate-pulse')} />
+      </Button>
+      <Button
+        variant="outline"
+        size="icon"
+        onClick={() => onImport()}
+        disabled={disabled || importable.length === 0}
+        className={cn(gatewayActionTone('accent'), 'hidden size-10 hover:bg-aurora-hover-bg hover:text-aurora-text-primary sm:inline-flex')}
+        aria-label="Import all MCP configs"
+        title="Import all MCP configs"
+      >
+        <Download className={cn('size-4', isImporting && 'animate-pulse')} />
+      </Button>
+    </>
+  )
+}
+
+function McpConfigImportReviewPanel({
+  discoveredConfigs,
+  isImporting,
+  onImport,
+  onRestore,
+}: {
+  discoveredConfigs: DiscoveredMcpServer[]
+  isImporting: boolean
+  onImport: (names?: string[]) => void
+  onRestore: (server: DiscoveredMcpServer) => void
+}) {
+  const importable = discoveredConfigs.filter((server) => !server.already_configured && !server.tombstoned)
+  const configured = discoveredConfigs.filter((server) => server.already_configured).length
+  const tombstoned = discoveredConfigs.filter((server) => server.tombstoned).length
+
+  return (
+    <section className={cn(AURORA_STRONG_PANEL, 'mb-4 p-3')}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline">{discoveredConfigs.length} found</Badge>
+        <Badge variant="outline" status={importable.length > 0 ? 'warn' : 'success'}>
+          {importable.length} new
+        </Badge>
+        {configured > 0 ? <Badge variant="outline">{configured} configured</Badge> : null}
+        {tombstoned > 0 ? <Badge variant="outline" status="warn">{tombstoned} removed</Badge> : null}
+        <div className="ml-auto flex items-center gap-2">
           <Button
             variant="outline"
-            size="sm"
-            onClick={onDiscover}
-            disabled={disabled}
-            className={cn(gatewayActionTone(), 'hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
-          >
-            <Search className={cn('mr-2 size-4', isDiscovering && 'animate-pulse')} />
-            Scan configs
-          </Button>
-          <Button
-            size="sm"
+            size="icon"
             onClick={() => onImport()}
-            disabled={disabled || importable.length === 0}
-            className={cn(gatewayActionTone('accent'), 'border text-aurora-text-primary')}
+            disabled={isImporting || importable.length === 0}
+            className={cn(gatewayActionTone('accent'), 'size-8 hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
+            aria-label="Import all MCP configs"
+            title="Import all MCP configs"
           >
-            <Download className={cn('mr-2 size-4', isImporting && 'animate-pulse')} />
-            Import all
+            <Download className={cn('size-3.5', isImporting && 'animate-pulse')} />
           </Button>
         </div>
       </div>
 
-      {discoveredConfigs && discoveredConfigs.length > 0 ? (
-        <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {discoveredConfigs.slice(0, 6).map((server) => (
-            <div
-              key={`${server.source_client}:${server.name}:${server.source_path}`}
-              className="min-w-0 rounded-aurora-1 border border-aurora-border-strong bg-aurora-panel/70 p-3"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-aurora-text-primary" title={server.name}>
-                    {server.name}
-                  </p>
-                  <p className="mt-1 truncate text-xs text-aurora-text-muted" title={server.source_path}>
-                    {server.source_client} / {server.transport === 'http' ? server.url_preview : server.command_preview}
-                  </p>
+      {discoveredConfigs.length > 0 ? (
+        <details className="group mt-3 rounded-aurora-1 border border-aurora-border-strong bg-aurora-panel/60">
+          <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-aurora-text-muted transition-colors hover:text-aurora-text-primary">
+            Review scanned configs
+          </summary>
+          <div className="grid gap-2 border-t border-aurora-border-subtle p-2">
+            {discoveredConfigs.slice(0, 6).map((server) => (
+              <div
+                key={`${server.source_client}:${server.name}:${server.source_path}`}
+                className="min-w-0 rounded-aurora-1 border border-aurora-border-strong bg-aurora-panel/70 p-2.5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-aurora-text-primary" title={server.name}>
+                      {server.name}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-aurora-text-muted" title={server.source_path}>
+                      {server.source_client} / {server.transport === 'http' ? server.url_preview : server.command_preview}
+                    </p>
+                  </div>
+                  <Badge variant="outline" status={server.already_configured ? 'success' : 'warn'}>
+                    {server.already_configured ? 'configured' : server.tombstoned ? 'removed' : 'new'}
+                  </Badge>
                 </div>
-                <Badge variant="outline" status={server.already_configured ? 'success' : 'warn'}>
-                  {server.already_configured ? 'configured' : server.tombstoned ? 'removed' : 'new'}
-                </Badge>
+                {server.tombstoned ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onRestore(server)}
+                    disabled={isImporting}
+                    className={cn(gatewayActionTone(), 'mt-3 h-8 w-full hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
+                  >
+                    <Download className="mr-2 size-3.5" />
+                    Restore
+                  </Button>
+                ) : !server.already_configured ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onImport([server.name])}
+                    disabled={isImporting}
+                    className={cn(gatewayActionTone(), 'mt-3 h-8 w-full hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
+                  >
+                    <Download className="mr-2 size-3.5" />
+                    Import
+                  </Button>
+                ) : null}
               </div>
-              {server.tombstoned ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onRestore(server)}
-                  disabled={disabled}
-                  className={cn(gatewayActionTone(), 'mt-3 h-8 w-full hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
-                >
-                  <Download className="mr-2 size-3.5" />
-                  Restore
-                </Button>
-              ) : !server.already_configured ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onImport([server.name])}
-                  disabled={disabled}
-                  className={cn(gatewayActionTone(), 'mt-3 h-8 w-full hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
-                >
-                  <Download className="mr-2 size-3.5" />
-                  Import
-                </Button>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      ) : discoveredConfigs ? (
-        <p className="mt-3 text-sm text-aurora-text-muted">No external MCP configs found.</p>
-      ) : null}
+            ))}
+          </div>
+        </details>
+      ) : (
+        <p className="mt-3 text-xs text-aurora-text-muted">No external MCP configs found.</p>
+      )}
     </section>
   )
 }
@@ -954,6 +990,7 @@ function McpConfigImportPanel({
 function SummaryCard({
   label,
   value,
+  subline,
   icon,
   active,
   onClick,
@@ -961,6 +998,7 @@ function SummaryCard({
 }: {
   label: string
   value: number
+  subline: string
   icon: ReactNode
   active: boolean
   onClick: () => void
@@ -972,7 +1010,7 @@ function SummaryCard({
       onClick={onClick}
       className={cn(
         AURORA_GATEWAY_STAT,
-        'cursor-pointer text-left transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/34',
+        'cursor-pointer rounded-aurora-1 px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/34',
         !active &&
           'bg-aurora-panel/72 hover:border-aurora-accent-primary/28 hover:bg-aurora-hover-bg hover:shadow-[0_0_0_1px_rgba(87,190,255,0.08)]',
         active && 'border-aurora-accent-primary/40 bg-aurora-accent-primary/8 shadow-[inset_0_0_0_1px_rgba(87,190,255,0.12)]',
@@ -980,13 +1018,16 @@ function SummaryCard({
       aria-pressed={active}
     >
       <div className="flex items-center justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className={AURORA_MUTED_LABEL}>{label}</p>
-          <p className={cn(AURORA_DISPLAY_NUMBER, 'mt-2 text-aurora-text-primary', valueClassName)}>
+          <p className={cn(AURORA_DISPLAY_NUMBER, 'mt-1 text-[22px] text-aurora-text-primary', valueClassName)}>
             {value}
           </p>
+          <p className="mt-1 truncate text-[11px] font-medium text-aurora-text-muted">{subline}</p>
         </div>
-        {icon}
+        <span className="ml-auto flex size-9 shrink-0 items-center justify-center rounded-aurora-1 border border-aurora-border-strong/80 bg-aurora-control-surface/70 text-aurora-text-muted shadow-[var(--aurora-highlight-medium)]">
+          {icon}
+        </span>
       </div>
     </button>
   )
@@ -999,7 +1040,7 @@ function MobileSummaryChip({
   active,
   onClick,
 }: {
-  metric: 'configured' | 'healthy' | 'disconnected' | 'tools'
+  metric: 'enabled' | 'configured' | 'healthy' | 'disconnected' | 'tools'
   value: number
   icon: ReactNode
   active: boolean

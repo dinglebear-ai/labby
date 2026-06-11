@@ -2,7 +2,23 @@
 
 import Image from 'next/image'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, Play, ShieldCheck, AlertCircle, CheckCircle2, ChevronRight, ShieldOff, KeyRound } from 'lucide-react'
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronRight,
+  ClipboardPaste,
+  FileJson2,
+  Globe2,
+  KeyRound,
+  Loader2,
+  Play,
+  Route,
+  Settings2,
+  ShieldCheck,
+  ShieldOff,
+  TerminalSquare,
+  X,
+} from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -18,7 +34,7 @@ import { TextSurface } from '@/components/ui/text-surface'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { FieldGroup, Field, FieldLabel, FieldDescription } from '@/components/ui/field'
 import {
   useGatewayMutations,
@@ -73,6 +89,8 @@ type GatewayAuthSource = 'paste' | 'env'
 
 const PROTECTED_MCP_PUBLIC_HOST = process.env.NEXT_PUBLIC_PROTECTED_MCP_HOST || 'mcp.tootie.tv'
 const PROTECTED_ROUTE_SCOPES = ['mcp:read', 'mcp:write']
+const gatewayInputClassName =
+  'border-aurora-border-strong bg-aurora-page-bg/80 shadow-[var(--aurora-highlight-medium)] placeholder:text-aurora-text-muted/70 hover:border-aurora-accent-primary/35 focus-visible:bg-aurora-control-surface'
 
 function valuePreview(fieldName: string, preview?: string | null) {
   return preview ?? (fieldName.endsWith('_URL') ? 'http://localhost' : '')
@@ -134,6 +152,9 @@ export function buildEnvTextFromGatewayForm({
   stdioEnv: Record<string, string>
 }): string {
   if (transport === 'stdio') {
+    return formatEnvPairs(stdioEnv)
+  }
+  if (Object.keys(stdioEnv).length > 0) {
     return formatEnvPairs(stdioEnv)
   }
   const prefix = envPrefixForGatewayName(name)
@@ -205,6 +226,7 @@ const emptyCustomState = {
   bearerTokenEnv: '',
   proxyResources: true,
   proxyPrompts: true,
+  proxyMcpUi: true,
 }
 
 function serviceFields(serviceMeta: SupportedService | null) {
@@ -276,7 +298,7 @@ export function GatewayFormDialog({
   const [bearerTokenValue, setBearerTokenValue] = useState('')
   const [proxyResources, setProxyResources] = useState(true)
   const [proxyPrompts, setProxyPrompts] = useState(true)
-  const [envDrawerOpen, setEnvDrawerOpen] = useState(false)
+  const [proxyMcpUi, setProxyMcpUi] = useState(true)
   const [jsonDrawerOpen, setJsonDrawerOpen] = useState(false)
   const [jsonText, setJsonText] = useState('')
   const [jsonValid, setJsonValid] = useState(false)
@@ -472,7 +494,6 @@ export function GatewayFormDialog({
     prevOpenRef.current = open
     if (!open || wasOpen) return
 
-    setEnvDrawerOpen(false)
     setJsonDrawerOpen(false)
 
     if (gateway) {
@@ -507,6 +528,7 @@ export function GatewayFormDialog({
         setBearerTokenValue('')
         setProxyResources(gateway.config.proxy_resources ?? true)
         setProxyPrompts(gateway.config.proxy_prompts ?? true)
+        setProxyMcpUi(gateway.config.proxy_mcp_ui ?? true)
       }
       } else {
         setMode('custom')
@@ -525,6 +547,7 @@ export function GatewayFormDialog({
         setBearerTokenValue('')
         setProxyResources(emptyCustomState.proxyResources)
         setProxyPrompts(emptyCustomState.proxyPrompts)
+        setProxyMcpUi(emptyCustomState.proxyMcpUi)
         setSelectedService('')
         setServiceValues({})
         setEnableServer(true)
@@ -554,10 +577,17 @@ export function GatewayFormDialog({
       skipUrlOauthResetRef.current = false
       return
     }
+    if (
+      isEditing &&
+      gateway?.config.oauth_enabled &&
+      url.trim() === (gateway.config.url ?? '').trim()
+    ) {
+      return
+    }
     autoOauthAttemptedForRef.current = null
     setOauthState({ kind: 'idle' })
     setOauthProbed(null)
-  }, [url])
+  }, [gateway, isEditing, url])
 
   // Stdio connections don't support upstream authentication, so clear all OAuth
   // and bearer state whenever the transport is stdio. If a protected public path
@@ -674,12 +704,24 @@ export function GatewayFormDialog({
   const buildInput = (): CreateGatewayInput => {
     const stdio = transport === 'stdio' ? parseStdioCommandLine(command) : null
     const authEnabled = transport === 'http'
+    const preserveExistingOauth = isEditing && gateway?.config.oauth_enabled && authMode === 'oauth'
+    const oauthConfig =
+      authEnabled
+      && authMode === 'oauth'
+      && oauthState.kind === 'connected'
+      && oauthState.registration_strategy !== 'unknown'
+      && !preserveExistingOauth
+        ? { registration_strategy: oauthState.registration_strategy, scopes: oauthState.scopes }
+        : undefined
     return {
       name,
       transport,
       config: {
         ...(transport === 'http'
-          ? { url }
+          ? {
+              url,
+              ...(Object.keys(stdioEnv).length > 0 ? { env: stdioEnv } : {}),
+            }
           : {
               command: stdio?.command,
               args: stdio && stdio.args.length > 0 ? stdio.args : undefined,
@@ -696,12 +738,10 @@ export function GatewayFormDialog({
           authEnabled && authMode === 'bearer' && authSource === 'paste'
             ? bearerTokenValue
             : undefined,
-        oauth:
-          authEnabled && authMode === 'oauth' && oauthState.kind === 'connected' && oauthState.registration_strategy !== 'unknown'
-            ? { registration_strategy: oauthState.registration_strategy, scopes: oauthState.scopes }
-            : undefined,
+        oauth: oauthConfig,
         proxy_resources: proxyResources,
         proxy_prompts: proxyPrompts,
+        proxy_mcp_ui: proxyMcpUi,
       },
     }
   }
@@ -891,22 +931,20 @@ export function GatewayFormDialog({
     }
   }
 
-  const toggleEnvDrawer = () => {
-    const next = !envDrawerOpen
-    setEnvDrawerOpen(next)
-    if (next) setJsonDrawerOpen(false)
-  }
-
   const toggleJsonDrawer = () => {
     const next = !jsonDrawerOpen
     setJsonDrawerOpen(next)
-    if (next) setEnvDrawerOpen(false)
   }
 
-  const applyEnvTextToForm = (text: string, { close }: { close: boolean }) => {
+  const applyEnvTextToForm = (text: string) => {
     const { pairs, detectedServices } = parseEnvText(text)
+    setStdioEnv(pairs)
+    if (transport === 'stdio') {
+      if (!name.trim() && detectedServices[0]) setName(detectedServices[0])
+      return Object.keys(pairs).length > 0
+    }
     const detected = detectedServices[0]
-    if (!detected) return false
+    if (!detected) return Object.keys(pairs).length > 0
     const prefix = Object.entries(SERVICE_ENV_PREFIXES).find(([, key]) => key === detected)?.[0]
     setMode('custom')
     if (prefix) {
@@ -915,22 +953,15 @@ export function GatewayFormDialog({
       const urlKey = `${prefix}_URL`
       if (pairs[urlKey]) setUrl(pairs[urlKey])
     } else {
-      setTransport('stdio')
       setName((current) => current.trim() || detected)
-      setStdioEnv((current) => ({ ...current, ...pairs }))
     }
-    if (close) setEnvDrawerOpen(false)
     return true
-  }
-
-  const applyEnvToForm = () => {
-    applyEnvTextToForm(envText, { close: true })
   }
 
   const handleEnvTextChange = (next: string) => {
     setEnvText(next)
     syncingRef.current = true
-    applyEnvTextToForm(next, { close: false })
+    applyEnvTextToForm(next)
     setTimeout(() => { syncingRef.current = false }, 0)
   }
 
@@ -941,6 +972,7 @@ export function GatewayFormDialog({
     if (transport === 'http') {
       const u = url.trim()
       if (u) cfg.url = u
+      if (Object.keys(stdioEnv).length > 0) cfg.env = stdioEnv
     } else {
       const trimmed = command.trim()
       if (trimmed) {
@@ -954,6 +986,9 @@ export function GatewayFormDialog({
       }
       if (Object.keys(stdioEnv).length > 0) cfg.env = stdioEnv
     }
+    cfg.proxy_resources = proxyResources
+    cfg.proxy_prompts = proxyPrompts
+    cfg.proxy_mcp_ui = proxyMcpUi
     return { [n]: cfg }
   }
 
@@ -980,12 +1015,12 @@ export function GatewayFormDialog({
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { onFormChange() }, [name, url, command, stdioEnv, transport, jsonDrawerOpen])
+  useEffect(() => { onFormChange() }, [name, url, command, stdioEnv, transport, proxyResources, proxyPrompts, proxyMcpUi, jsonDrawerOpen])
 
   useEffect(() => {
-    if (syncingRef.current || !envDrawerOpen) return
+    if (syncingRef.current || !open || mode !== 'custom') return
     setEnvText(buildEnvTextFromGatewayForm({ name, transport, url, stdioEnv }))
-  }, [envDrawerOpen, name, stdioEnv, transport, url])
+  }, [mode, name, open, stdioEnv, transport, url])
 
   const parseJsonToForm = (text: string) => {
     if (syncingRef.current) return
@@ -1003,12 +1038,15 @@ export function GatewayFormDialog({
       if (typeof cfg.url === 'string') {
         setTransport('http')
         setUrl(cfg.url)
-        setStdioEnv({})
+        setStdioEnv(parseGatewayEnvObject(cfg.env))
       } else if (typeof cfg.command === 'string') {
         setTransport('stdio')
         setCommand(formatStdioCommandLine(cfg.command, Array.isArray(cfg.args) ? cfg.args as string[] : []))
         setStdioEnv(parseGatewayEnvObject(cfg.env))
       }
+      if (typeof cfg.proxy_resources === 'boolean') setProxyResources(cfg.proxy_resources)
+      if (typeof cfg.proxy_prompts === 'boolean') setProxyPrompts(cfg.proxy_prompts)
+      if (typeof cfg.proxy_mcp_ui === 'boolean') setProxyMcpUi(cfg.proxy_mcp_ui)
       // Defer reset — same reason as onFormChange: the useEffect fires after React
       // flushes the setName/setUrl/setTransport calls; guard must still be true then.
       setTimeout(() => { syncingRef.current = false }, 0)
@@ -1016,6 +1054,24 @@ export function GatewayFormDialog({
       setJsonValid(false)
     }
   }
+
+  const protectedRoutePreview = (() => {
+    const normalized = protectedPublicPath.trim()
+    if (!normalized) return null
+    try {
+      return `https://${PROTECTED_MCP_PUBLIC_HOST}${normalizeProtectedPublicPath(normalized)}`
+    } catch {
+      return `https://${PROTECTED_MCP_PUBLIC_HOST}/${normalized.replace(/^\/+/, '')}`
+    }
+  })()
+  const jsonHasText = jsonText.trim().length > 0
+  const jsonStatusLabel = !jsonHasText ? 'Empty' : jsonValid ? 'Synced' : 'Invalid'
+  const jsonStatusClassName = !jsonHasText
+    ? 'border-aurora-border-strong bg-aurora-control-surface text-aurora-text-muted'
+    : jsonValid
+      ? 'border-aurora-success/40 bg-aurora-success-surface text-aurora-success'
+      : 'border-aurora-error/40 bg-aurora-error-surface text-aurora-error'
+  const jsonTransportLabel = transport === 'http' ? 'HTTP URL' : 'stdio command'
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => {
@@ -1028,13 +1084,13 @@ export function GatewayFormDialog({
           className={cn(
             'overflow-visible transition-[border-radius] duration-[250ms]',
             'sm:max-w-[540px]',
-            (envDrawerOpen || jsonDrawerOpen) && 'rounded-r-none',
+            jsonDrawerOpen && 'rounded-r-none',
           )}
         >
         <DialogHeader className="shrink-0">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="flex min-w-0 flex-col gap-1">
-              <DialogTitle>{isEditing ? 'Edit Server' : 'Add Server'}</DialogTitle>
+              <DialogTitle>{isEditing ? 'Edit server' : 'Add server'}</DialogTitle>
               <DialogDescription>
                 {isEditing
                   ? 'Edit server settings.'
@@ -1053,20 +1109,6 @@ export function GatewayFormDialog({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={toggleEnvDrawer}
-                className={cn(
-                  'h-8 rounded-full px-3 text-xs font-medium',
-                  envDrawerOpen
-                    ? 'border-aurora-accent-primary/36 bg-aurora-accent-primary/12 text-aurora-text-primary'
-                    : 'border-aurora-border-strong bg-aurora-control-surface text-aurora-text-primary hover:bg-aurora-hover-bg',
-                )}
-              >
-                ENV
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
                 onClick={toggleJsonDrawer}
                 className={cn(
                   'h-8 rounded-full px-3 text-xs font-medium',
@@ -1081,25 +1123,11 @@ export function GatewayFormDialog({
           </div>
         </DialogHeader>
 
-        <div className="flex-1 min-h-0 overflow-y-auto aurora-scrollbar -mx-6 px-6">
+        <div className="flex-1 min-h-0 overflow-y-auto aurora-scrollbar -mx-6 px-6 pb-24 sm:pb-6">
         <Tabs
           value={mode}
-          onValueChange={(value) => {
-            setMode(value as FormMode)
-            setEnvDrawerOpen(false)
-            setJsonDrawerOpen(false)
-          }}
-          className="space-y-6"
+          className="space-y-4"
         >
-          <TabsList className="grid w-full grid-cols-2 overflow-hidden">
-            <TabsTrigger value="lab" disabled={isEditing && !isLabGateway}>
-              Lab Service
-            </TabsTrigger>
-            <TabsTrigger value="custom" disabled={isEditing && isLabGateway}>
-              Custom
-            </TabsTrigger>
-          </TabsList>
-
           <TabsContent value="lab" className="space-y-6">
             <FieldGroup>
               <Field>
@@ -1151,7 +1179,7 @@ export function GatewayFormDialog({
                         }))
                       }
                       placeholder={hasStoredSecret ? 'Leave blank to keep current value' : field.example}
-                      className={errors[field.name] ? 'border-destructive' : ''}
+                      className={cn(gatewayInputClassName, errors[field.name] && 'border-destructive')}
                     />
                     {errors[field.name] ? (
                       <p className="text-sm text-destructive">{errors[field.name]}</p>
@@ -1184,146 +1212,251 @@ export function GatewayFormDialog({
             </div>
           </TabsContent>
 
-          <TabsContent value="custom" className="space-y-6">
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="name">Name</FieldLabel>
-                <Input
-                  id="name"
-                  value={name}
-                  onChange={(event) => { nameAutoRef.current = false; setName(event.target.value) }}
-                  placeholder="my-gateway"
-                  className={errors.name ? 'border-destructive' : ''}
-                />
-                {errors.name ? (
-                  <p className="text-sm text-destructive">{errors.name}</p>
-                ) : (
-                  <FieldDescription>
-                    Letters, digits, underscores, hyphens — starts with a letter or digit
-                  </FieldDescription>
-                )}
-              </Field>
-            </FieldGroup>
-
-            <RadioGroup
-              value={transport}
-              onValueChange={(value) => setTransport(value as TransportType)}
-              className="grid grid-cols-1 sm:grid-cols-2 gap-3"
-            >
-              <label className="flex items-start gap-3 rounded-aurora-2 border p-4 cursor-pointer" htmlFor="transport-http">
-                <RadioGroupItem value="http" id="transport-http" />
-                <div className="space-y-0.5">
-                  <span className="font-medium text-sm">HTTP</span>
-                  <p className="text-sm text-aurora-text-muted">Remote server via HTTP or SSE</p>
-                </div>
-              </label>
-              <label className="flex items-start gap-3 rounded-aurora-2 border p-4 cursor-pointer" htmlFor="transport-stdio">
-                <RadioGroupItem value="stdio" id="transport-stdio" />
-                <div className="space-y-0.5">
-                  <span className="font-medium text-sm">stdio</span>
-                  <p className="text-sm text-aurora-text-muted">Local process via stdin/stdout</p>
-                </div>
-              </label>
-            </RadioGroup>
-
-            {transport === 'http' && (
-              <FieldGroup>
-                <Field>
-                  <FieldLabel htmlFor="url">URL</FieldLabel>
-                  <div className="relative">
-                    <Input
-                      id="url"
-                      value={url}
-                      onChange={(event) => setUrl(event.target.value)}
-                      placeholder="http://localhost:3001/mcp"
-                      className={`${errors.url ? 'border-destructive' : ''} pr-8`}
-                    />
-                    {isProbing && (
-                      <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 size-4 text-aurora-text-muted animate-spin pointer-events-none" />
-                    )}
-                    {!isProbing && oauthProbed?.oauth_discovered && (
-                      <CheckCircle2 className="absolute right-2.5 top-1/2 -translate-y-1/2 size-4 text-aurora-success pointer-events-none" />
-                    )}
-                  </div>
-                  {errors.url && <p className="text-sm text-destructive">{errors.url}</p>}
-                </Field>
-              </FieldGroup>
-            )}
-
-            {transport === 'stdio' && (
-              <FieldGroup>
-                <Field>
-                  <FieldLabel htmlFor="command">Command line</FieldLabel>
-                  <Input
-                    id="command"
-                    value={command}
-                    onChange={(event) => setCommand(event.target.value)}
-                    placeholder="npx -y @modelcontextprotocol/server-filesystem /path"
-                    className={errors.command ? 'border-destructive' : ''}
-                  />
-                  {errors.command && <p className="text-sm text-destructive">{errors.command}</p>}
-                  <FieldDescription>
-                    Enter the full stdio launch command. Quoted arguments with spaces are preserved.
-                  </FieldDescription>
-                </Field>
-              </FieldGroup>
-            )}
-
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="protected-public-path">Protected route path</FieldLabel>
-                <div className="flex overflow-hidden rounded-md border border-aurora-border-strong bg-aurora-control-surface focus-within:ring-2 focus-within:ring-ring">
-                  <span className="hidden items-center border-r border-aurora-border-strong px-3 text-sm text-aurora-text-muted sm:flex">
-                    https://{PROTECTED_MCP_PUBLIC_HOST}/
-                  </span>
-                  <Input
-                    id="protected-public-path"
-                    list="protected-route-path-options"
-                    value={protectedPublicPath}
-                    onChange={(event) => {
-                      protectedRouteTouchedRef.current = true
-                      if (!event.target.value.trim() && existingProtectedRoute && authMode === 'oauth') {
-                        setAuthMode('none')
-                        setOauthState({ kind: 'idle' })
-                      }
-                      setProtectedPublicPath(event.target.value)
-                    }}
-                    placeholder="tools"
-                    className={cn(
-                      'border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0',
-                      errors.protectedPublicPath && 'text-destructive',
-                    )}
-                  />
-                  <datalist id="protected-route-path-options">
-                    {protectedRoutePathOptions.map((path) => (
-                      <option key={path} value={path.replace(/^\//, '')}>
-                        {`https://${PROTECTED_MCP_PUBLIC_HOST}${path}`}
-                      </option>
-                    ))}
-                  </datalist>
-                </div>
-                {errors.protectedPublicPath ? (
-                  <p className="text-sm text-destructive">{errors.protectedPublicPath}</p>
-                ) : (
-                  <FieldDescription>
-                    Optional. When set, Lab publishes this server through Google OAuth at that public path.
-                  </FieldDescription>
-                )}
-              </Field>
-            </FieldGroup>
-
-            {transport === 'http' && (
-            <FieldGroup>
-              <Field className="space-y-4">
+          <TabsContent value="custom" className="flex flex-col gap-4">
+            <div className="order-1 rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface/70 p-4 shadow-[var(--aurora-highlight-medium)]">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-1">
-                  <FieldLabel>Authentication</FieldLabel>
-                  <FieldDescription>
-                    Choose how this server should authenticate upstream requests.
-                  </FieldDescription>
+                  <p className="flex items-center gap-2 text-[13px] font-semibold text-aurora-text-primary">
+                    {transport === 'http' ? <Globe2 className="size-4 text-aurora-accent-primary" /> : <TerminalSquare className="size-4 text-aurora-accent-primary" />}
+                    Connection
+                  </p>
+                  <p className="text-[12px] leading-5 text-aurora-text-muted">
+                    {transport === 'http' ? 'Remote MCP endpoint.' : 'Local process launched over stdin/stdout.'}
+                  </p>
                 </div>
+                <RadioGroup
+                  value={transport}
+                  onValueChange={(value) => setTransport(value as TransportType)}
+                  className="grid grid-cols-2 overflow-hidden rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-medium p-1"
+                >
+                  <label
+                    className={cn(
+                      'flex h-8 cursor-pointer items-center justify-center gap-2 rounded-aurora-1 px-3 text-[12px] font-semibold transition-[background-color,color,box-shadow]',
+                      transport === 'http'
+                        ? 'bg-aurora-accent-primary/12 text-aurora-text-primary shadow-aurora-active-glow'
+                        : 'text-aurora-text-muted hover:text-aurora-text-primary',
+                    )}
+                    htmlFor="transport-http"
+                  >
+                    <RadioGroupItem value="http" id="transport-http" className="sr-only" />
+                    <Globe2 className="size-3.5" />
+                    HTTP
+                  </label>
+                  <label
+                    className={cn(
+                      'flex h-8 cursor-pointer items-center justify-center gap-2 rounded-aurora-1 px-3 text-[12px] font-semibold transition-[background-color,color,box-shadow]',
+                      transport === 'stdio'
+                        ? 'bg-aurora-accent-primary/12 text-aurora-text-primary shadow-aurora-active-glow'
+                        : 'text-aurora-text-muted hover:text-aurora-text-primary',
+                    )}
+                    htmlFor="transport-stdio"
+                  >
+                    <RadioGroupItem value="stdio" id="transport-stdio" className="sr-only" />
+                    <TerminalSquare className="size-3.5" />
+                    stdio
+                  </label>
+                </RadioGroup>
+              </div>
+
+              <div className="mt-4 grid gap-4">
+                <Field>
+                  <FieldLabel htmlFor="name">Name</FieldLabel>
+                  <Input
+                    id="name"
+                    value={name}
+                    onChange={(event) => { nameAutoRef.current = false; setName(event.target.value) }}
+                    placeholder="my-gateway"
+                    className={cn(gatewayInputClassName, errors.name && 'border-destructive')}
+                  />
+                  {errors.name ? (
+                    <p className="text-sm text-destructive">{errors.name}</p>
+                  ) : (
+                    <FieldDescription>
+                      Letters, digits, underscores, hyphens. For URLs, Labby can fill this from the host.
+                    </FieldDescription>
+                  )}
+                </Field>
+
+                {transport === 'http' ? (
+                  <Field>
+                    <FieldLabel htmlFor="url">URL</FieldLabel>
+                    <div className="relative">
+                      <Input
+                        id="url"
+                        value={url}
+                        onChange={(event) => setUrl(event.target.value)}
+                        placeholder="https://example.com/mcp"
+                        className={cn(gatewayInputClassName, 'pr-8', errors.url && 'border-destructive')}
+                      />
+                      {isProbing && (
+                        <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 size-4 text-aurora-text-muted animate-spin pointer-events-none" />
+                      )}
+                      {!isProbing && oauthProbed?.oauth_discovered && (
+                        <CheckCircle2 className="absolute right-2.5 top-1/2 -translate-y-1/2 size-4 text-aurora-success pointer-events-none" />
+                      )}
+                    </div>
+                    {errors.url ? (
+                      <p className="text-sm text-destructive">{errors.url}</p>
+                    ) : (
+                      <FieldDescription>
+                        Labby probes this endpoint and detects OAuth support automatically.
+                      </FieldDescription>
+                    )}
+                  </Field>
+                ) : (
+                  <Field>
+                    <FieldLabel htmlFor="command">Command line</FieldLabel>
+                    <Input
+                      id="command"
+                      value={command}
+                      onChange={(event) => setCommand(event.target.value)}
+                      placeholder="npx -y @modelcontextprotocol/server-filesystem /path"
+                      className={cn(gatewayInputClassName, errors.command && 'border-destructive')}
+                    />
+                    {errors.command ? (
+                      <p className="text-sm text-destructive">{errors.command}</p>
+                    ) : (
+                      <FieldDescription>
+                        Enter the full launch command. Quoted arguments with spaces are preserved.
+                      </FieldDescription>
+                    )}
+                  </Field>
+                )}
+
+                <details
+                  className="group rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-medium/50 p-3"
+                >
+                  <summary className="flex cursor-pointer select-none list-none items-center justify-between gap-3 text-sm font-semibold text-aurora-text-primary [&::-webkit-details-marker]:hidden">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <ChevronRight className="size-4 shrink-0 transition-transform group-open:rotate-90" />
+                      <Settings2 className="size-4 shrink-0 text-aurora-accent-primary" />
+                      <span>Environment</span>
+                    </span>
+                    <span className="text-[12px] font-medium text-aurora-text-muted">
+                      {Object.keys(stdioEnv).length ? `${Object.keys(stdioEnv).length} vars` : 'Optional'}
+                    </span>
+                  </summary>
+                  <div className="mt-3 space-y-2">
+                    <textarea
+                      className={cn(
+                        'min-h-[112px] w-full resize-none rounded-aurora-1 px-3 py-2 font-mono text-xs text-aurora-text-primary outline-none transition-[border-color,box-shadow,background-color] focus:border-aurora-accent-primary focus:ring-2 focus:ring-aurora-accent-primary/34',
+                        gatewayInputClassName,
+                      )}
+                      placeholder={'GOOGLE_APPLICATION_CREDENTIALS=/path/to/creds.json\nMCP_LOG_LEVEL=info'}
+                      value={envText}
+                      onChange={(event) => handleEnvTextChange(event.target.value)}
+                    />
+                    <p className="text-[12px] leading-5 text-aurora-text-muted">
+                      One <code>KEY=VALUE</code> per line. Saved with this server config.
+                    </p>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <details
+              className="group order-3 rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-medium/50 p-4 shadow-[var(--aurora-highlight-medium)]"
+              open={Boolean(protectedPublicPath.trim() || errors.protectedPublicPath)}
+            >
+              <summary className="flex cursor-pointer select-none list-none items-center justify-between gap-3 text-sm font-semibold text-aurora-text-primary [&::-webkit-details-marker]:hidden">
+                <span className="flex min-w-0 items-center gap-2">
+                  <ChevronRight className="size-4 shrink-0 transition-transform group-open:rotate-90" />
+                  <Route className="size-4 shrink-0 text-aurora-accent-primary" />
+                  <span>Protected route</span>
+                </span>
+                <span className={cn(
+                  'max-w-[55%] truncate text-[12px] font-medium',
+                  protectedRoutePreview ? 'text-aurora-success' : 'text-aurora-text-muted',
+                )}>
+                  {protectedRoutePreview ?? 'Not published'}
+                </span>
+              </summary>
+              <div className="mt-4">
+                <Field>
+                  <FieldLabel htmlFor="protected-public-path">Public path</FieldLabel>
+                  <div className="flex overflow-hidden rounded-aurora-1 border border-aurora-border-strong bg-aurora-page-bg/80 shadow-[var(--aurora-highlight-medium)] transition-[border-color,box-shadow,background-color] hover:border-aurora-accent-primary/35 focus-within:border-aurora-accent-primary focus-within:bg-aurora-control-surface focus-within:ring-2 focus-within:ring-aurora-accent-primary/34">
+                    <span className="hidden items-center border-r border-aurora-border-strong px-3 text-[13px] text-aurora-text-muted sm:flex">
+                      https://{PROTECTED_MCP_PUBLIC_HOST}/
+                    </span>
+                    <Input
+                      id="protected-public-path"
+                      list="protected-route-path-options"
+                      value={protectedPublicPath}
+                      onChange={(event) => {
+                        protectedRouteTouchedRef.current = true
+                        if (!event.target.value.trim() && existingProtectedRoute && authMode === 'oauth') {
+                          setAuthMode('none')
+                          setOauthState({ kind: 'idle' })
+                        }
+                        setProtectedPublicPath(event.target.value)
+                      }}
+                      placeholder="tools"
+                      className={cn(
+                        'border-0 bg-transparent font-mono text-[13px] focus-visible:ring-0 focus-visible:ring-offset-0',
+                        errors.protectedPublicPath && 'text-destructive',
+                      )}
+                    />
+                    <datalist id="protected-route-path-options">
+                      {protectedRoutePathOptions.map((path) => (
+                        <option key={path} value={path.replace(/^\//, '')}>
+                          {`https://${PROTECTED_MCP_PUBLIC_HOST}${path}`}
+                        </option>
+                      ))}
+                    </datalist>
+                  </div>
+                  {errors.protectedPublicPath ? (
+                    <p className="text-sm text-destructive">{errors.protectedPublicPath}</p>
+                  ) : (
+                    <FieldDescription>
+                      Optional. Lab OAuth protects this public MCP route.
+                    </FieldDescription>
+                  )}
+                </Field>
+              </div>
+            </details>
+
+            {transport === 'http' && (
+            <details
+              className="group order-2 rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-medium/50 p-4 shadow-[var(--aurora-highlight-medium)]"
+              open={Boolean(authMode === 'bearer' || oauthState.kind === 'blocked' || oauthState.kind === 'error' || errors.oauth)}
+            >
+              <summary className="flex cursor-pointer select-none list-none items-center justify-between gap-3 text-sm font-semibold text-aurora-text-primary [&::-webkit-details-marker]:hidden">
+                <span className="flex min-w-0 items-center gap-2">
+                  <ChevronRight className="size-4 shrink-0 transition-transform group-open:rotate-90" />
+                  {authMode === 'oauth' ? (
+                    <ShieldCheck className="size-4 shrink-0 text-aurora-accent-primary" />
+                  ) : authMode === 'bearer' ? (
+                    <KeyRound className="size-4 shrink-0 text-aurora-warn" />
+                  ) : (
+                    <ShieldOff className="size-4 shrink-0 text-aurora-text-muted" />
+                  )}
+                  <span>Upstream auth</span>
+                </span>
+                <span className={cn(
+                  'text-[12px] font-medium',
+                  authMode === 'oauth' && oauthState.kind === 'connected'
+                    ? 'text-aurora-success'
+                    : authMode === 'bearer'
+                      ? 'text-aurora-warn'
+                      : 'text-aurora-text-muted',
+                )}>
+                  {authMode === 'none'
+                    ? oauthProbed?.oauth_discovered
+                      ? 'OAuth detected'
+                      : 'No auth'
+                    : authMode === 'bearer'
+                      ? 'Bearer token'
+                      : oauthState.kind === 'connected'
+                        ? 'Connected'
+                        : 'OAuth'}
+                </span>
+              </summary>
+              <div className="mt-4 space-y-4">
+                <Field>
+                  <FieldLabel>Authentication</FieldLabel>
 
                 <Select value={authMode} onValueChange={(value) => setAuthMode(value as GatewayAuthMode)}>
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger className={cn('w-full', gatewayInputClassName)}>
                     <SelectValue>
                       <span className="flex items-center gap-2">
                         {authMode === 'none' && <ShieldOff className="size-4 text-aurora-text-muted" />}
@@ -1362,9 +1495,10 @@ export function GatewayFormDialog({
                     </SelectItem>
                   </SelectContent>
                 </Select>
+                </Field>
 
                 {authMode === 'oauth' && (
-                  <div className="rounded-lg border p-4 flex flex-col gap-3">
+                  <div className="flex flex-col gap-3 rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface/70 p-4 shadow-[var(--aurora-highlight-medium)]">
                     {oauthState.kind === 'connected' ? (
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-sm text-aurora-success font-medium">
@@ -1424,9 +1558,17 @@ export function GatewayFormDialog({
                 {errors.oauth && <p className="text-sm text-destructive">{errors.oauth}</p>}
 
                 {authMode === 'bearer' && (
-                  <div className="space-y-4 rounded-aurora-2 border p-4">
+                  <div className="space-y-4 rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface/70 p-4 shadow-[var(--aurora-highlight-medium)]">
                     <RadioGroup value={authSource} onValueChange={(value) => setAuthSource(value as GatewayAuthSource)}>
-                      <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer" htmlFor="auth-source-paste">
+                      <label
+                        className={cn(
+                          'flex cursor-pointer items-start gap-3 rounded-aurora-1 border p-3 transition-[border-color,background-color,box-shadow]',
+                          authSource === 'paste'
+                            ? 'border-aurora-accent-primary/45 bg-aurora-accent-primary/10 shadow-aurora-active-glow'
+                            : 'border-aurora-border-default bg-aurora-panel-medium/60 hover:border-aurora-accent-primary/30',
+                        )}
+                        htmlFor="auth-source-paste"
+                      >
                         <RadioGroupItem value="paste" id="auth-source-paste" />
                         <div className="space-y-1">
                           <span className="font-medium text-sm">Paste token</span>
@@ -1435,7 +1577,15 @@ export function GatewayFormDialog({
                           </p>
                         </div>
                       </label>
-                      <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer" htmlFor="auth-source-env">
+                      <label
+                        className={cn(
+                          'flex cursor-pointer items-start gap-3 rounded-aurora-1 border p-3 transition-[border-color,background-color,box-shadow]',
+                          authSource === 'env'
+                            ? 'border-aurora-accent-primary/45 bg-aurora-accent-primary/10 shadow-aurora-active-glow'
+                            : 'border-aurora-border-default bg-aurora-panel-medium/60 hover:border-aurora-accent-primary/30',
+                        )}
+                        htmlFor="auth-source-env"
+                      >
                         <RadioGroupItem value="env" id="auth-source-env" />
                         <div className="space-y-1">
                           <span className="font-medium text-sm">Use existing env var</span>
@@ -1457,7 +1607,7 @@ export function GatewayFormDialog({
                             value={bearerTokenValue}
                             onChange={(event) => setBearerTokenValue(event.target.value)}
                             placeholder="ghp_..."
-                            className={errors.bearerTokenValue ? 'border-destructive' : ''}
+                            className={cn(gatewayInputClassName, errors.bearerTokenValue && 'border-destructive')}
                           />
                           {errors.bearerTokenValue ? (
                             <p className="text-sm text-destructive">{errors.bearerTokenValue}</p>
@@ -1480,7 +1630,7 @@ export function GatewayFormDialog({
                                 value={bearerTokenEnv}
                                 onChange={(event) => setBearerTokenEnv(event.target.value)}
                                 placeholder={defaultGatewayBearerEnvName(name || 'gateway')}
-                                className={errors.bearerTokenEnv ? 'border-destructive' : ''}
+                                className={cn(gatewayInputClassName, errors.bearerTokenEnv && 'border-destructive')}
                               />
                               {errors.bearerTokenEnv ? (
                                 <p className="text-sm text-destructive">{errors.bearerTokenEnv}</p>
@@ -1501,7 +1651,7 @@ export function GatewayFormDialog({
                           value={bearerTokenEnv}
                           onChange={(event) => setBearerTokenEnv(event.target.value)}
                           placeholder={defaultGatewayBearerEnvName(name || 'gateway')}
-                          className={errors.bearerTokenEnv ? 'border-destructive' : ''}
+                          className={cn(gatewayInputClassName, errors.bearerTokenEnv && 'border-destructive')}
                         />
                         {errors.bearerTokenEnv ? (
                           <p className="text-sm text-destructive">{errors.bearerTokenEnv}</p>
@@ -1514,20 +1664,21 @@ export function GatewayFormDialog({
                     )}
                   </div>
                 )}
-              </Field>
-            </FieldGroup>
+              </div>
+            </details>
             )}
 
-            <details className="group rounded-lg border p-4">
-              <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm font-medium [&::-webkit-details-marker]:hidden">
+            <details className="group order-4 rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface/70 p-4 shadow-[var(--aurora-highlight-medium)]">
+              <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm font-semibold text-aurora-text-primary [&::-webkit-details-marker]:hidden">
                 <ChevronRight className="size-4 transition-transform group-open:rotate-90" />
+                <Settings2 className="size-4 text-aurora-accent-primary" />
                 Advanced
               </summary>
               <div className="mt-4 space-y-4">
                 <div className="flex items-center justify-between gap-4">
                   <div className="space-y-0.5">
                     <Label htmlFor="proxy-resources" className="font-medium">
-                      Proxy Resources
+                      Proxy resources
                     </Label>
                     <p className="text-sm text-aurora-text-muted">
                       Forward MCP resource requests to this server
@@ -1543,7 +1694,7 @@ export function GatewayFormDialog({
                 <div className="flex items-center justify-between gap-4">
                   <div className="space-y-0.5">
                     <Label htmlFor="proxy-prompts" className="font-medium">
-                      Proxy Prompts
+                      Proxy prompts
                     </Label>
                     <p className="text-sm text-aurora-text-muted">
                       Forward MCP prompt requests to this server
@@ -1555,93 +1706,26 @@ export function GatewayFormDialog({
                     onCheckedChange={setProxyPrompts}
                   />
                 </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="proxy-mcp-ui" className="font-medium">
+                      Proxy MCP-UI
+                    </Label>
+                    <p className="text-sm text-aurora-text-muted">
+                      Forward MCP-UI resources through this gateway when available
+                    </p>
+                  </div>
+                  <Switch
+                    id="proxy-mcp-ui"
+                    checked={proxyMcpUi}
+                    onCheckedChange={setProxyMcpUi}
+                  />
+                </div>
               </div>
             </details>
           </TabsContent>
         </Tabs>
-        </div>
-
-        {/* ENV drawer */}
-        <div
-          className={cn(
-            'absolute top-0 bottom-0 bg-aurora-page-bg border-l border-aurora-border-strong rounded-r-lg overflow-hidden transition-[width] duration-[250ms] ease-[cubic-bezier(.4,0,.2,1)] flex flex-col sm:left-full',
-            'max-[600px]:fixed max-[600px]:inset-0 max-[600px]:rounded-none max-[600px]:border-l-0 max-[600px]:z-50',
-            envDrawerOpen
-              ? 'w-[300px] max-[600px]:w-full max-[600px]:h-full'
-              : 'w-0',
-          )}
-          aria-hidden={!envDrawerOpen}
-        >
-          <div className="flex flex-col gap-3 p-4 flex-1 overflow-y-auto aurora-scrollbar">
-            <p className="text-xs text-aurora-text-muted">
-              Paste <code>KEY=VALUE</code> lines — Lab detects the service and can pre-fill the form.
-            </p>
-            <div className="relative">
-              <textarea
-                className="w-full min-h-[180px] rounded-md border border-aurora-border-strong bg-aurora-page-bg px-3 py-2 text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder={'RADARR_URL=http://localhost:7878\nRADARR_API_KEY=abc123'}
-                value={envText}
-                onChange={(e) => handleEnvTextChange(e.target.value)}
-              />
-              {(() => {
-                if (!envText.trim()) {
-                  return <span className="absolute top-2 right-2 text-[10px] text-aurora-text-muted">Waiting</span>
-                }
-                const { detectedServices } = parseEnvText(envText)
-                if (detectedServices.length > 0) {
-                  return (
-                    <span className="absolute top-2 right-2 text-[10px] text-aurora-success">
-                      Valid · {detectedServices.length} service{detectedServices.length > 1 ? 's' : ''}
-                    </span>
-                  )
-                }
-                return <span className="absolute top-2 right-2 text-[10px] text-aurora-warn">No known service</span>
-              })()}
-            </div>
-            {envText.trim() && (() => {
-              const { detectedServices } = parseEnvText(envText)
-              if (detectedServices.length === 0) return null
-              return (
-                <div className="flex flex-wrap gap-1.5">
-                  {detectedServices.map((s) => (
-                    <span
-                      key={s}
-                      className="rounded-full border border-aurora-accent-primary/30 bg-aurora-accent-primary/10 px-2 py-0.5 text-xs text-aurora-accent-primary"
-                    >
-                      {s}
-                    </span>
-                  ))}
-                </div>
-              )
-            })()}
-          </div>
-          <div className="flex gap-2 border-t border-aurora-border-strong p-3">
-            <button
-              type="button"
-              className="flex-1 rounded-md border border-aurora-border-strong px-3 py-1.5 text-xs hover:bg-accent transition-colors"
-              onClick={async () => {
-                try {
-                  const text = await navigator.clipboard.readText()
-                  setEnvText(text)
-                  syncingRef.current = true
-                  applyEnvTextToForm(text, { close: false })
-                  setTimeout(() => { syncingRef.current = false }, 0)
-                } catch {
-                  // clipboard access denied — user must paste manually
-                }
-              }}
-            >
-              Paste
-            </button>
-            <button
-              type="button"
-              className="flex-1 rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-xs hover:bg-primary/90 transition-colors disabled:opacity-50"
-              disabled={!parseEnvText(envText).detectedServices.length}
-              onClick={applyEnvToForm}
-            >
-              Apply to form
-            </button>
-          </div>
         </div>
 
         {/* JSON drawer */}
@@ -1651,21 +1735,78 @@ export function GatewayFormDialog({
             'absolute top-0 bottom-0 bg-aurora-page-bg border-l border-aurora-border-strong rounded-r-lg overflow-hidden transition-[width] duration-[250ms] ease-[cubic-bezier(.4,0,.2,1)] flex flex-col sm:left-full',
             'max-[600px]:fixed max-[600px]:inset-0 max-[600px]:rounded-none max-[600px]:border-l-0 max-[600px]:z-50',
             jsonDrawerOpen
-              ? 'w-[380px] max-[600px]:w-full max-[600px]:h-full'
+              ? 'max-[600px]:h-full'
               : 'w-0',
           )}
+          style={{ width: jsonDrawerOpen ? 'min(480px, 100vw)' : '0px' }}
           aria-hidden={!jsonDrawerOpen}
         >
-          <div className="flex flex-col gap-3 p-4 flex-1 overflow-y-auto aurora-scrollbar">
-            <p className="text-xs text-aurora-text-muted">
-              Live editor — changes here update the form, and form changes update this JSON automatically.
-            </p>
-            <div className="min-h-[240px]">
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-aurora-border-strong bg-aurora-panel-strong px-5 py-4 shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-aurora-1 border border-aurora-accent-primary/35 bg-aurora-accent-primary/10 text-aurora-accent-primary shadow-[var(--aurora-highlight-medium)]">
+                <FileJson2 className="size-4" />
+              </div>
+              <div className="min-w-0 space-y-1">
+                <p className="text-[13px] font-semibold text-aurora-text-primary">
+                  JSON config
+                </p>
+                <p className="text-[12px] leading-5 text-aurora-text-muted">
+                  Paste a client config or tune the generated server spec.
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className={cn('rounded-full border px-2 py-0.5 text-[11px] font-semibold', jsonStatusClassName)}>
+                {jsonStatusLabel}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8 max-[600px]:inline-flex sm:hidden"
+                onClick={() => setJsonDrawerOpen(false)}
+                aria-label="Close JSON editor"
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-1 flex-col gap-4 overflow-y-auto bg-aurora-panel-medium/30 p-5 aurora-scrollbar">
+            <div className="rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface/75 p-4 shadow-[var(--aurora-highlight-medium)]">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1">
+                  <p className="text-[12px] font-semibold text-aurora-text-primary">Live sync</p>
+                  <p className="text-[12px] leading-5 text-aurora-text-muted">
+                    Form changes regenerate JSON. Valid JSON updates the form fields.
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-full border border-aurora-border-strong bg-aurora-page-bg/80 px-2 py-0.5 text-[11px] font-semibold text-aurora-text-muted">
+                  Two-way
+                </span>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <span className="rounded-full border border-aurora-accent-primary/30 bg-aurora-accent-primary/10 px-2 py-0.5 text-xs font-medium text-aurora-accent-primary">
+                  {name.trim() || 'Unnamed'}
+                </span>
+                <span className="rounded-full border border-aurora-border-strong bg-aurora-page-bg/80 px-2 py-0.5 text-xs font-medium text-aurora-text-muted">
+                  {jsonTransportLabel}
+                </span>
+                {Object.keys(stdioEnv).length > 0 && (
+                <span className="rounded-full border border-aurora-border-strong bg-aurora-page-bg/80 px-2 py-0.5 text-xs font-medium text-aurora-text-muted">
+                  {Object.keys(stdioEnv).length} env vars
+                </span>
+                )}
+              </div>
+            </div>
+
+            <div className="min-h-[420px] flex-1">
               <TextSurface
                 path="gateway-config.json"
                 value={jsonText}
                 mode="edit"
                 language="json"
+                diagnostics={jsonHasText ? undefined : []}
                 onChange={(next) => {
                   setJsonText(next)
                   parseJsonToForm(next)
@@ -1675,21 +1816,38 @@ export function GatewayFormDialog({
                 }}
               />
             </div>
-            {jsonValid && name && (
-              <div className="flex flex-wrap gap-1.5">
-                <span className="rounded-full border border-aurora-accent-primary/30 bg-aurora-accent-primary/10 px-2 py-0.5 text-xs text-aurora-accent-primary">
-                  {name}
-                </span>
-                <span className="rounded-full bg-aurora-control-surface border border-aurora-border-strong px-2 py-0.5 text-xs text-aurora-text-muted">
-                  {transport}
-                </span>
+
+            {!jsonValid && jsonHasText && (
+              <div className="flex items-start gap-2 rounded-aurora-1 border border-aurora-error/35 bg-aurora-error-surface px-3 py-2 text-[12px] leading-5 text-aurora-error">
+                <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                Use one server entry, either directly or inside <code>mcpServers</code>.
               </div>
             )}
+
+            <details className="group rounded-aurora-2 border border-aurora-border-default bg-aurora-control-surface/60 p-3 shadow-[var(--aurora-highlight-medium)]">
+              <summary className="flex cursor-pointer select-none list-none items-center justify-between gap-3 text-[12px] font-semibold text-aurora-text-primary [&::-webkit-details-marker]:hidden">
+                <span className="flex items-center gap-2">
+                  <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+                  Accepted JSON shapes
+                </span>
+                <span className="text-[11px] text-aurora-text-muted">Examples</span>
+              </summary>
+              <div className="mt-3 grid gap-2 text-[12px] leading-5 text-aurora-text-muted">
+                <code className="block rounded-aurora-1 border border-aurora-border-strong bg-aurora-page-bg/80 px-2 py-1 text-aurora-text-primary">
+                  {'{ "my-server": { "url": "https://..." } }'}
+                </code>
+                <code className="block rounded-aurora-1 border border-aurora-border-strong bg-aurora-page-bg/80 px-2 py-1 text-aurora-text-primary">
+                  {'{ "mcpServers": { "local": { "command": "npx", "args": ["..."], "env": {} } } }'}
+                </code>
+              </div>
+            </details>
           </div>
-          <div className="flex gap-2 border-t border-aurora-border-strong p-3">
-            <button
+          <div className="flex gap-2 border-t border-aurora-border-strong bg-aurora-panel-strong p-3 shadow-[var(--aurora-highlight-medium)]">
+            <Button
               type="button"
-              className="flex-1 rounded-md border border-aurora-border-strong px-3 py-1.5 text-xs hover:bg-accent transition-colors"
+              variant="outline"
+              size="sm"
+              className="w-full justify-center gap-2 border-aurora-border-strong bg-aurora-control-surface text-aurora-text-primary hover:bg-aurora-hover-bg"
               onClick={async () => {
                 try {
                   const text = await navigator.clipboard.readText()
@@ -1700,8 +1858,9 @@ export function GatewayFormDialog({
                 }
               }}
             >
+              <ClipboardPaste className="size-4" />
               Paste
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -1735,11 +1894,11 @@ export function GatewayFormDialog({
             {isSaving && <Loader2 className="size-4 mr-2 animate-spin" />}
             {mode === 'lab'
               ? isEditing
-                ? 'Save Service'
-                : 'Configure Service'
+                ? 'Save service'
+                : 'Configure service'
               : isEditing
-                ? 'Save Changes'
-                : 'Add Server'}
+                ? 'Save changes'
+                : 'Add server'}
           </Button>
         </DialogFooter>
       </DialogContent>

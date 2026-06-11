@@ -4,7 +4,7 @@ use axum::{Extension, Json, Router, extract::State, http::HeaderMap, routing::po
 use serde_json::Value;
 
 use crate::api::oauth::AuthContext;
-use crate::api::services::helpers::handle_action;
+use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 
@@ -83,10 +83,10 @@ async fn handle(
             message: "gateway manager not wired".to_string(),
         })?;
 
-    handle_action(
+    handle_action_with_meta(
         "gateway",
         "api",
-        request_id,
+        dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0)),
         req,
         crate::dispatch::gateway::ACTIONS,
         move |action, params| {

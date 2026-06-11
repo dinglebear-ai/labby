@@ -48,13 +48,16 @@ import {
 } from '@/lib/app-command-palette'
 import type { CatalogAction, CatalogParam } from '@/lib/types/command-catalog'
 import { useCommandCatalog } from '@/lib/hooks/use-command-catalog'
+import { useGateways } from '@/lib/hooks/use-gateways'
 import { confirmGatewayParams } from '@/lib/api/gateway-request'
-import { normalizeGatewayApiBase } from '@/lib/api/gateway-config'
+import { gatewayDetailHref, normalizeGatewayApiBase } from '@/lib/api/gateway-config'
+import { buildGatewayEndpointPreview } from '@/lib/api/gateway-mobile'
 import {
   isAbortError,
   performServiceAction,
   type ServiceActionError,
 } from '@/lib/api/service-action-client'
+import type { Gateway } from '@/lib/types/gateway'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -205,6 +208,7 @@ export function AppCommandPalette() {
 
   // Issue 4: destructure error so we can surface catalog fetch failures
   const { data: catalogServices, isLoading: catalogLoading, error: catalogError } = useCommandCatalog()
+  const { data: gateways = [] } = useGateways()
 
   const state = useMemo(() => buildAppCommandState(query), [query])
   const [activeItemId, setActiveItemId] = useState<string | null>(state.activeItemId)
@@ -221,6 +225,24 @@ export function AppCommandPalette() {
     if (!svc) return []
     return buildCatalogActionItems(svc.name, svc.actions)
   }, [currentPage, catalogServices])
+
+  const gatewayItems = useMemo(() => {
+    if (currentPage !== '' || !query.trim()) return []
+    const q = query.trim().toLowerCase()
+    return gateways
+      .filter((gateway) => {
+        const endpoint = buildGatewayEndpointPreview(gateway)
+        const haystack = [
+          gateway.name,
+          endpoint,
+          gateway.transport,
+          gateway.source ?? '',
+          ...gateway.discovery.tools.map((tool) => tool.name),
+        ].join(' ').toLowerCase()
+        return haystack.includes(q)
+      })
+      .slice(0, 8)
+  }, [currentPage, gateways, query])
 
   // ── Abort management ───────────────────────────────────────────────────────
 
@@ -378,6 +400,11 @@ export function AppCommandPalette() {
     if (item.kind === 'action') {
       toast.message(item.title, { description: item.description })
     }
+  }
+
+  function executeGatewayDestination(gatewayId: string) {
+    closePalette()
+    router.push(gatewayDetailHref(gatewayId))
   }
 
   // ── Param prompt form submit ───────────────────────────────────────────────
@@ -545,27 +572,45 @@ export function AppCommandPalette() {
 
                 {/* Static destination/action items — shown on root page only */}
                 {currentPage === '' && (
-                  state.items.length > 0 ? (
-                    state.groups.map((group) => (
-                      <CommandGroup
-                        key={group.key}
-                        heading={group.label}
-                        className="mb-3 overflow-visible p-0 [&_[cmdk-group-heading]]:px-0 [&_[cmdk-group-heading]]:py-0 [&_[cmdk-group-heading]]:pb-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-bold [&_[cmdk-group-heading]]:tracking-[0.18em] [&_[cmdk-group-heading]]:text-aurora-text-muted [&_[cmdk-group-heading]]:uppercase"
-                      >
-                        <div className="grid gap-2">
-                          {group.items.map((item) => (
-                            <AppCommandPaletteRow
-                              key={item.id}
-                              item={item}
-                              active={item.id === activeItemId}
-                              onSelect={(itemId) => {
-                                executeDestination(findAppCommandItemById(itemId, state.items))
-                              }}
-                            />
-                          ))}
-                        </div>
-                      </CommandGroup>
-                    ))
+                  state.items.length > 0 || gatewayItems.length > 0 ? (
+                    <>
+                      {gatewayItems.length > 0 ? (
+                        <CommandGroup
+                          heading="Servers"
+                          className="mb-3 overflow-visible p-0 [&_[cmdk-group-heading]]:px-0 [&_[cmdk-group-heading]]:py-0 [&_[cmdk-group-heading]]:pb-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-bold [&_[cmdk-group-heading]]:tracking-[0.18em] [&_[cmdk-group-heading]]:text-aurora-text-muted [&_[cmdk-group-heading]]:uppercase"
+                        >
+                          <div className="grid gap-2">
+                            {gatewayItems.map((gateway) => (
+                              <GatewayCommandPaletteRow
+                                key={gateway.id}
+                                gateway={gateway}
+                                onSelect={() => executeGatewayDestination(gateway.id)}
+                              />
+                            ))}
+                          </div>
+                        </CommandGroup>
+                      ) : null}
+                      {state.groups.map((group) => (
+                        <CommandGroup
+                          key={group.key}
+                          heading={group.label}
+                          className="mb-3 overflow-visible p-0 [&_[cmdk-group-heading]]:px-0 [&_[cmdk-group-heading]]:py-0 [&_[cmdk-group-heading]]:pb-2 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-bold [&_[cmdk-group-heading]]:tracking-[0.18em] [&_[cmdk-group-heading]]:text-aurora-text-muted [&_[cmdk-group-heading]]:uppercase"
+                        >
+                          <div className="grid gap-2">
+                            {group.items.map((item) => (
+                              <AppCommandPaletteRow
+                                key={item.id}
+                                item={item}
+                                active={item.id === activeItemId}
+                                onSelect={(itemId) => {
+                                  executeDestination(findAppCommandItemById(itemId, state.items))
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </CommandGroup>
+                      ))}
+                    </>
                   ) : (
                     !catalogLoading && !query && catalogItems.length === 0 ? null : (
                       <CommandEmpty className="rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface px-5 py-6 text-left">
@@ -690,6 +735,57 @@ function AppCommandPaletteRow({
       </div>
       <CommandShortcut className="text-[11px] tracking-[0.08em] text-aurora-text-muted">
         {item.actionHint}
+      </CommandShortcut>
+    </CommandItem>
+  )
+}
+
+// ── GatewayCommandPaletteRow ──────────────────────────────────────────────────
+
+type GatewayCommandPaletteRowProps = {
+  gateway: Gateway
+  onSelect: () => void
+}
+
+function GatewayCommandPaletteRow({ gateway, onSelect }: GatewayCommandPaletteRowProps) {
+  const endpoint = buildGatewayEndpointPreview(gateway)
+  const enabled = gateway.enabled ?? true
+  const status = !enabled
+    ? 'Disabled'
+    : gateway.status.healthy && gateway.status.connected
+      ? 'Healthy'
+      : gateway.status.connected
+        ? 'Attention'
+        : 'Offline'
+
+  return (
+    <CommandItem
+      value={`gateway:${gateway.id}`}
+      onSelect={onSelect}
+      className="rounded-aurora-2 border border-aurora-border-strong/80 bg-aurora-control-surface px-3 py-3 text-aurora-text-primary transition-[border-color,background-color,box-shadow] hover:bg-aurora-hover-bg"
+    >
+      <div className="flex size-9 items-center justify-center rounded-aurora-1 border border-aurora-accent-primary/25 bg-aurora-accent-primary/10 text-aurora-accent-strong">
+        <Cable className="size-4" />
+      </div>
+      <div className="grid min-w-0 flex-1 gap-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[13px] font-semibold leading-[1.2] text-aurora-text-primary">
+            {gateway.name}
+          </span>
+          <Badge
+            variant="pill"
+            status={enabled ? 'default' : 'neutral'}
+            className="h-5 border-aurora-border-strong bg-aurora-panel-medium px-2 text-[10px] uppercase tracking-[0.12em] text-aurora-text-muted"
+          >
+            {gateway.transport}
+          </Badge>
+        </div>
+        <span className="truncate text-[12px] leading-[1.45] text-aurora-text-muted">
+          {endpoint}
+        </span>
+      </div>
+      <CommandShortcut className="text-[11px] tracking-[0.08em] text-aurora-text-muted">
+        {status}
       </CommandShortcut>
     </CommandItem>
   )

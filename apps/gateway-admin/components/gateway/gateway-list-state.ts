@@ -1,6 +1,6 @@
 import type { Gateway, DiscoveredTool } from '@/lib/types/gateway'
 
-export type GatewayPrimaryLens = 'configured' | 'healthy' | 'disconnected'
+export type GatewayPrimaryLens = 'enabled' | 'configured' | 'healthy' | 'disconnected'
 export type GatewayStatusFacet = 'configured' | 'healthy' | 'disconnected' | 'enabled' | 'disabled'
 export type GatewaySourceFacet = 'lab' | 'custom'
 export type GatewayTransportFacet = 'stdio' | 'http'
@@ -91,6 +91,7 @@ export function filterGateways(gateways: Gateway[], state: GatewayFilterState): 
   const normalizedSearch = state.search.trim().toLowerCase()
   return gateways.filter((gateway) => {
     const enabled = gateway.enabled ?? true
+    if (state.primaryLens === 'enabled' && !enabled) return false
     if (state.primaryLens === 'healthy' && !(enabled && gateway.status.healthy && gateway.status.connected)) return false
     if (state.primaryLens === 'disconnected' && !(enabled && !gateway.status.connected)) return false
     if (state.primaryLens === 'configured' && !(gateway.configured ?? true)) return false

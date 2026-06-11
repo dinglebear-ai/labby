@@ -38,7 +38,7 @@ export const AURORA_GATEWAY_MUTED_CARD =
   'rounded-[1.15rem] border border-aurora-border-strong/80 bg-[linear-gradient(180deg,rgba(9,22,31,0.92),rgba(8,18,26,0.98))] shadow-[0_12px_22px_rgba(0,0,0,0.16),var(--aurora-highlight-medium)]'
 
 export const AURORA_GATEWAY_ROW =
-  'border-t border-aurora-border-strong/80 bg-[linear-gradient(180deg,rgba(14,31,44,0.72),rgba(10,22,31,0.88))] transition-colors hover:bg-[linear-gradient(180deg,rgba(17,38,54,0.9),rgba(12,27,38,0.96))]'
+  'border-t border-aurora-border-strong/80 bg-[linear-gradient(180deg,rgba(14,31,44,0.72),rgba(10,22,31,0.88))] transition-colors md:hover:bg-[linear-gradient(180deg,rgba(17,38,54,0.9),rgba(12,27,38,0.96))]'
 
 export const AURORA_GATEWAY_DISABLED_ROW =
   'border-t border-aurora-border-strong/60 bg-[linear-gradient(180deg,rgba(8,19,27,0.9),rgba(7,16,24,0.96))] text-aurora-text-muted'

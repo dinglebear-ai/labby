@@ -22,7 +22,7 @@ export function WarningsPill({ warnings, className }: WarningsPillProps) {
           type="button"
           aria-label={`${warnings.length} gateway warnings`}
           className={cn(
-            'inline-flex items-center gap-1.5 rounded-full border border-aurora-warn/28 bg-[linear-gradient(180deg,rgba(51,41,22,0.42),rgba(30,24,14,0.56))] px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-aurora-warn shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] transition-colors hover:bg-[linear-gradient(180deg,rgba(59,47,26,0.52),rgba(34,27,16,0.66))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-warn/35',
+            'inline-flex h-6 min-w-8 items-center justify-center gap-1 rounded-full border border-aurora-warn/28 bg-[color-mix(in_srgb,var(--aurora-warn)_12%,transparent)] px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-aurora-warn shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] transition-colors hover:bg-[color-mix(in_srgb,var(--aurora-warn)_18%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-warn/35',
             className,
           )}
         >

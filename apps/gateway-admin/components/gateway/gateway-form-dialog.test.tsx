@@ -391,6 +391,7 @@ test('saving a custom HTTP server with no auth sends no bearer credential', asyn
           oauth: undefined,
           proxy_resources: true,
           proxy_prompts: true,
+          proxy_mcp_ui: true,
         },
       })
     })
@@ -401,7 +402,113 @@ test('saving a custom HTTP server with no auth sends no bearer credential', asyn
   }
 })
 
-test('ENV drawer live-applies custom MCP env vars to stdio gateway saves', async () => {
+test('saving a custom server preserves the MCP-UI proxy toggle', async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') {
+      return gatewayActionResponse(init, {})
+    }
+    if (path === '/v1/gateway/oauth/probe') {
+      return jsonResponse({
+        upstream: 'deepwiki',
+        url: 'https://mcp.deepwiki.com/mcp',
+        oauth_discovered: false,
+      })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    const onSaveInputs: unknown[] = []
+    const view = await renderOpenGatewayDialog(null, async (input) => {
+      onSaveInputs.push(input)
+    })
+
+    const nameInput = document.querySelector('#name') as HTMLInputElement | null
+    const urlInput = document.querySelector('#url') as HTMLInputElement | null
+    const proxyMcpUiSwitch = document.querySelector('#proxy-mcp-ui') as HTMLElement | null
+    assert.ok(nameInput)
+    assert.ok(urlInput)
+    assert.ok(proxyMcpUiSwitch)
+
+    await setInputValue(window, nameInput, 'deepwiki')
+    await setInputValue(window, urlInput, 'https://mcp.deepwiki.com/mcp')
+    await act(async () => {
+      proxyMcpUiSwitch.click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    await clickSave()
+
+    await waitFor(() => {
+      assert.equal(onSaveInputs.length, 1)
+      assert.equal((onSaveInputs[0] as CreateGatewayInput).config.proxy_mcp_ui, false)
+    })
+
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('inline environment editor applies HTTP env vars to gateway saves', async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') {
+      return gatewayActionResponse(init, {})
+    }
+    if (path === '/v1/gateway/oauth/probe') {
+      return jsonResponse({
+        upstream: 'gdrive',
+        url: 'https://drivemcp.googleapis.com/mcp/v1',
+        oauth_discovered: false,
+      })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    const onSaveInputs: unknown[] = []
+    const view = await renderOpenGatewayDialog(null, async (input) => {
+      onSaveInputs.push(input)
+    })
+
+    const nameInput = document.querySelector('#name') as HTMLInputElement | null
+    const urlInput = document.querySelector('#url') as HTMLInputElement | null
+    assert.ok(nameInput)
+    assert.ok(urlInput)
+
+    await setInputValue(window, nameInput, 'gdrive')
+    await setInputValue(window, urlInput, 'https://drivemcp.googleapis.com/mcp/v1')
+    const environmentSummary = [...document.querySelectorAll('summary')]
+      .find((item) => item.textContent?.includes('Environment')) as HTMLElement | undefined
+    assert.ok(environmentSummary)
+    await act(async () => {
+      environmentSummary.click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const envInput = document.querySelector('textarea') as HTMLTextAreaElement | null
+    assert.ok(envInput)
+    await setTextareaValue(window, envInput, 'GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gdrive.json')
+    await clickSave()
+
+    await waitFor(() => {
+      assert.equal(onSaveInputs.length, 1)
+      assert.deepEqual((onSaveInputs[0] as CreateGatewayInput).config.env, {
+        GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gdrive.json',
+      })
+    })
+
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('inline environment editor applies stdio env vars to gateway saves', async () => {
   const window = installGatewayDialogDom()
   const onSaveInputs: unknown[] = []
   const view = await renderOpenGatewayDialog(null, async (input) => {
@@ -423,7 +530,13 @@ test('ENV drawer live-applies custom MCP env vars to stdio gateway saves', async
     assert.ok(commandInput)
     await setInputValue(window, commandInput, 'npx -y mcp-searxng')
 
-    await clickButton('ENV')
+    const environmentSummary = [...document.querySelectorAll('summary')]
+      .find((item) => item.textContent?.includes('Environment')) as HTMLElement | undefined
+    assert.ok(environmentSummary)
+    await act(async () => {
+      environmentSummary.click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
     const envInput = document.querySelector('textarea') as HTMLTextAreaElement | null
     assert.ok(envInput)
     await setTextareaValue(window, envInput, 'SEARXNG_URL=https://s.tootie.tv')
@@ -443,6 +556,7 @@ test('ENV drawer live-applies custom MCP env vars to stdio gateway saves', async
           oauth: undefined,
           proxy_resources: true,
           proxy_prompts: true,
+          proxy_mcp_ui: true,
         },
       })
     })
@@ -450,16 +564,6 @@ test('ENV drawer live-applies custom MCP env vars to stdio gateway saves', async
     await view.unmount()
   }
 })
-
-async function clickButton(label: string) {
-  const button = [...document.querySelectorAll('button')]
-    .find((item) => item.textContent?.trim() === label) as HTMLButtonElement | undefined
-  assert.ok(button, `button ${label} not found`)
-  await act(async () => {
-    button.click()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-  })
-}
 
 test('shouldAutoConnectOauth only allows new HTTP no-auth OAuth discoveries', async () => {
   const { shouldAutoConnectOauth } = await import('./gateway-form-dialog')
@@ -537,7 +641,7 @@ test('parseEnvText detects custom MCP env prefixes', async () => {
   assert.deepEqual(parsed.detectedServices, ['searxng'])
 })
 
-test('buildEnvTextFromGatewayForm reflects form state for ENV drawer', async () => {
+test('buildEnvTextFromGatewayForm reflects form state for env text', async () => {
   const { buildEnvTextFromGatewayForm } = await import('./gateway-form-dialog')
 
   assert.equal(
@@ -594,6 +698,48 @@ test('editing an existing gateway prevents OAuth auto-connect', async () => {
     oauthDiscovered: true,
     upstream: 'github',
   }), false)
+})
+
+test('editing an existing OAuth HTTP server preserves OAuth config by omission', async () => {
+  installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') {
+      return gatewayActionResponse(init, {})
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    const onSaveInputs: Array<CreateGatewayInput | UpdateGatewayInput> = []
+    const existing = gatewayFixture('gdrive-mcp')
+    existing.config.oauth_enabled = true
+    existing.config.oauth = {
+      registration_strategy: 'dynamic',
+      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    }
+
+    const view = await renderOpenGatewayDialog(existing, async (input) => {
+      onSaveInputs.push(input)
+    })
+
+    await waitFor(() => {
+      assert.equal((document.querySelector('#name') as HTMLInputElement | null)?.value, 'gdrive-mcp')
+      assert.match(document.body.textContent ?? '', /Connected/)
+    })
+
+    await clickSave()
+
+    await waitFor(() => {
+      assert.equal(onSaveInputs.length, 1)
+      assert.equal(onSaveInputs[0]?.config.oauth, undefined)
+    })
+
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 function installGatewayDialogDom() {
@@ -700,7 +846,7 @@ async function setTextareaValue(window: Window, input: HTMLTextAreaElement, valu
 
 async function clickSave() {
   const save = [...document.querySelectorAll('button')]
-    .find((button) => /^(Add Server|Save Changes)$/.test(button.textContent?.trim() ?? '')) as HTMLButtonElement | undefined
+    .find((button) => /^(Add Server|Add server|Save Changes|Save changes)$/.test(button.textContent?.trim() ?? '')) as HTMLButtonElement | undefined
   assert.ok(save)
   await act(async () => {
     save.click()
@@ -756,6 +902,7 @@ function gatewayFixture(name: string): Gateway {
       url: `https://${name}.example/mcp`,
       proxy_resources: true,
       proxy_prompts: true,
+      proxy_mcp_ui: true,
     },
     status: {
       healthy: true,

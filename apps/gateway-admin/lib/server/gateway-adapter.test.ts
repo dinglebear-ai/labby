@@ -86,6 +86,7 @@ test('buildGatewayCreatePayload generates an auth env var when a bearer token is
       bearer_token_env: 'LAB_GW_GITHUB_AUTH_HEADER',
       proxy_resources: true,
       proxy_prompts: true,
+      proxy_mcp_ui: true,
       expose_tools: null,
       expose_resources: null,
       expose_prompts: null,
@@ -113,6 +114,7 @@ test('buildGatewayCreatePayload preserves no-auth HTTP upstreams', () => {
       bearer_token_env: null,
       proxy_resources: true,
       proxy_prompts: true,
+      proxy_mcp_ui: true,
       expose_tools: null,
       expose_resources: null,
       expose_prompts: null,
@@ -139,6 +141,7 @@ test('buildGatewayCreatePayload builds a stdio spec without any ack flag', () =>
     bearer_token_env: null,
     proxy_resources: true,
     proxy_prompts: true,
+    proxy_mcp_ui: true,
     expose_tools: null,
     expose_resources: null,
     expose_prompts: null,
@@ -165,9 +168,53 @@ test('buildGatewayCreatePayload includes stdio environment variables', () => {
     bearer_token_env: null,
     proxy_resources: true,
     proxy_prompts: true,
+    proxy_mcp_ui: true,
     expose_tools: null,
     expose_resources: null,
     expose_prompts: null,
+  })
+})
+
+test('buildGatewayCreatePayload includes HTTP environment variables', () => {
+  const payload = buildGatewayCreatePayload({
+    name: 'gdrive',
+    transport: 'http',
+    config: {
+      url: 'https://drivemcp.googleapis.com/mcp/v1',
+      env: { GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gdrive.json' },
+    },
+  })
+
+  assert.deepEqual(payload.spec, {
+    name: 'gdrive',
+    url: 'https://drivemcp.googleapis.com/mcp/v1',
+    command: null,
+    args: [],
+    env: { GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gdrive.json' },
+    bearer_token_env: null,
+    proxy_resources: true,
+    proxy_prompts: true,
+    proxy_mcp_ui: true,
+    expose_tools: null,
+    expose_resources: null,
+    expose_prompts: null,
+  })
+})
+
+test('buildGatewayPatch includes HTTP environment variables', () => {
+  const patch = buildGatewayPatch({
+    transport: 'http',
+    config: {
+      url: 'https://drivemcp.googleapis.com/mcp/v1',
+      env: { GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gdrive.json' },
+    },
+  })
+
+  assert.deepEqual(patch, {
+    url: 'https://drivemcp.googleapis.com/mcp/v1',
+    command: null,
+    args: [],
+    env: { GOOGLE_APPLICATION_CREDENTIALS: '/run/secrets/gdrive.json' },
   })
 })
 
@@ -565,6 +612,7 @@ test('gatewayInputToSpec converts UI input into backend spec payload', () => {
     bearer_token_env: 'FIXTURE_TOKEN',
     proxy_resources: true,
     proxy_prompts: true,
+    proxy_mcp_ui: true,
     expose_tools: ['alpha.*'],
     expose_resources: null,
     expose_prompts: null,
@@ -580,6 +628,7 @@ test('buildGatewayPatch clears the opposite transport fields when switching to s
       args: ['-y', 'server'],
       bearer_token_env: '',
       proxy_resources: false,
+      proxy_mcp_ui: false,
     },
   })
 
@@ -590,6 +639,7 @@ test('buildGatewayPatch clears the opposite transport fields when switching to s
     args: ['-y', 'server'],
     bearer_token_env: null,
     proxy_resources: false,
+    proxy_mcp_ui: false,
   })
 })
 

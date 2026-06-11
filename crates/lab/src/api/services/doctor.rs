@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::State,
     http::HeaderMap,
     response::sse::{Event, KeepAlive, Sse},
@@ -12,7 +12,8 @@ use futures::stream;
 use serde_json::Value;
 use tracing::info;
 
-use crate::api::services::helpers::handle_action;
+use crate::api::oauth::AuthContext;
+use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::doctor::ACTIONS;
 use crate::dispatch::error::ToolError;
@@ -26,14 +27,14 @@ pub fn routes(_state: AppState) -> Router<AppState> {
 async fn handle(
     State(state): State<AppState>,
     headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ToolError> {
-    let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
     let clients = state.clients.clone();
-    handle_action(
+    handle_action_with_meta(
         "doctor",
         "api",
-        request_id,
+        dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0)),
         req,
         ACTIONS,
         move |action, params| async move {

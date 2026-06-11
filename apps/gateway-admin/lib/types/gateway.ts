@@ -11,6 +11,7 @@ export interface GatewayConfig {
   oauth_enabled?: boolean
   proxy_resources?: boolean
   proxy_prompts?: boolean
+  proxy_mcp_ui?: boolean
   expose_tools?: string[]
   expose_resources?: string[] | null
   expose_prompts?: string[] | null

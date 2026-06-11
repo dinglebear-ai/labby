@@ -70,9 +70,9 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
   const markup = renderToStaticMarkup(
     <SidebarProvider>
       <GatewayListView
-        summary={{ configured: 2, healthy: 1, disconnected: 1, tools: 2 }}
+        summary={{ enabled: 2, healthy: 1, disconnected: 1, tools: 2 }}
         showToolsView={false}
-        gatewayFilters={{ primaryLens: 'configured', search: '', status: [], source: [], transport: [] }}
+        gatewayFilters={{ primaryLens: 'enabled', search: '', status: [], source: [], transport: [] }}
         toolFilters={{ search: '', gatewayIds: [], exposure: 'all', source: [], transport: [] }}
         gatewayOptions={gatewayFixtures.map((gateway) => ({ value: gateway.id, label: gateway.name }))}
         activeSearch=""
@@ -114,7 +114,7 @@ test('gateway list view renders quick-lens cards and primary actions', () => {
     </SidebarProvider>,
   )
 
-  assert.match(markup, /data-mobile-summary="configured"/)
+  assert.match(markup, /data-mobile-summary="enabled"/)
   assert.match(markup, /data-mobile-summary="healthy"/)
   assert.match(markup, /data-mobile-summary="disconnected"/)
   assert.match(markup, /data-mobile-summary="tools"/)

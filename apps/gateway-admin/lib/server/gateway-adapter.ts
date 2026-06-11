@@ -72,6 +72,7 @@ export interface BackendGatewayConfigView {
   oauth_enabled?: boolean
   proxy_resources?: boolean
   proxy_prompts?: boolean
+  proxy_mcp_ui?: boolean
   expose_tools?: string[] | null
   expose_resources?: string[] | null
   expose_prompts?: string[] | null
@@ -363,6 +364,7 @@ export function normalizeServerView(
     ...(transport === 'stdio' ? { command: target } : {}),
     proxy_resources: false,
     proxy_prompts: false,
+    proxy_mcp_ui: false,
   }
   const isLabService = view.source === 'in_process'
   const warnings = (view.warnings ?? []).map((warning) => {
@@ -421,6 +423,7 @@ export function normalizeServerView(
       ...((transport === 'stdio' && target) ? { command: target } : {}),
       proxy_resources: config.proxy_resources,
       proxy_prompts: config.proxy_prompts,
+      proxy_mcp_ui: config.proxy_mcp_ui,
     },
     status: {
       healthy: (view.connected ?? false) && warnings.length === 0,
@@ -513,6 +516,7 @@ export function normalizeGateway(
       oauth_enabled: config.oauth_enabled ?? false,
       proxy_resources: config.proxy_resources ?? true,
       proxy_prompts: config.proxy_prompts ?? true,
+      proxy_mcp_ui: config.proxy_mcp_ui ?? true,
       expose_tools: exposePatterns ?? undefined,
       expose_resources: config.expose_resources ?? undefined,
       expose_prompts: config.expose_prompts ?? undefined,
@@ -604,7 +608,7 @@ export function probeStatusFromRuntime(runtime: BackendGatewayRuntimeView): Gate
 }
 
 export function gatewayInputToSpec(input: CreateGatewayInput) {
-  const env = input.transport === 'stdio' ? normalizeEnv(input.config.env) : undefined
+  const env = normalizeEnv(input.config.env)
   const spec: Record<string, unknown> = {
     name: input.name,
     url: input.transport === 'http' ? input.config.url ?? null : null,
@@ -614,6 +618,7 @@ export function gatewayInputToSpec(input: CreateGatewayInput) {
     bearer_token_env: input.config.bearer_token_env ?? null,
     proxy_resources: input.config.proxy_resources ?? true,
     proxy_prompts: input.config.proxy_prompts ?? true,
+    proxy_mcp_ui: input.config.proxy_mcp_ui ?? true,
     expose_tools: input.config.expose_tools ?? null,
     expose_resources: input.config.expose_resources ?? null,
     expose_prompts: input.config.expose_prompts ?? null,
@@ -661,6 +666,7 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
     patch.url = config.url ?? null
     patch.command = null
     patch.args = []
+    if (config.env !== undefined) patch.env = normalizeEnv(config.env) ?? {}
   } else if (input.transport === 'stdio') {
     patch.url = null
     patch.command = config.command ?? null
@@ -683,6 +689,10 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
 
   if (config.proxy_prompts !== undefined) {
     patch.proxy_prompts = config.proxy_prompts
+  }
+
+  if (config.proxy_mcp_ui !== undefined) {
+    patch.proxy_mcp_ui = config.proxy_mcp_ui
   }
 
   if (config.expose_tools !== undefined) {

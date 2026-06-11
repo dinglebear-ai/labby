@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Query, State},
     http::HeaderMap,
     response::sse::{Event, KeepAlive, Sse},
@@ -15,7 +15,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::api::services::helpers::handle_action;
+use crate::api::oauth::AuthContext;
+use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::marketplace::NodeRpcPort;
@@ -60,20 +61,21 @@ impl NodeRpcPort for WsNodeRpcPort {
 async fn handle(
     State(_state): State<AppState>,
     headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ToolError> {
-    handle_marketplace_action(headers, req).await
+    handle_marketplace_action(headers, auth, req).await
 }
 
 async fn handle_marketplace_action(
     headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
     req: ActionRequest,
 ) -> Result<Json<Value>, ToolError> {
-    let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
-    handle_action(
+    handle_action_with_meta(
         "marketplace",
         "api",
-        request_id,
+        dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0)),
         req,
         crate::dispatch::marketplace::actions(),
         |action, params| async move {
@@ -170,6 +172,7 @@ async fn handle_artifact_path_action(
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
     handle_marketplace_action(
         headers,
+        None,
         ActionRequest {
             action: action.to_string(),
             params,

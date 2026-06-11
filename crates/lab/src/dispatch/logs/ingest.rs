@@ -420,6 +420,12 @@ fn scrub_json(v: serde_json::Value) -> serde_json::Value {
 
 fn looks_secret(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
+    if matches!(
+        k.as_str(),
+        "input_tokens" | "output_tokens" | "total_tokens"
+    ) {
+        return false;
+    }
     k.contains("secret")
         || k.contains("token")
         || k.contains("password")
@@ -590,6 +596,21 @@ mod tests {
         let out = scrub_json(v).to_string();
         assert!(!out.contains("secret-value"));
         assert!(out.contains("\"safe\":\"ok\""));
+    }
+
+    #[test]
+    fn scrub_json_preserves_token_count_metrics() {
+        let v = serde_json::json!({
+            "input_tokens": 12,
+            "output_tokens": "34",
+            "total_tokens": 46,
+            "access_token": "secret-value",
+        });
+        let out = scrub_json(v);
+        assert_eq!(out["input_tokens"], 12);
+        assert_eq!(out["output_tokens"], "34");
+        assert_eq!(out["total_tokens"], 46);
+        assert_eq!(out["access_token"], "<redacted>");
     }
 
     #[test]

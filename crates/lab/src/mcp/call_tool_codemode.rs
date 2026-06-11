@@ -170,6 +170,7 @@ impl LabMcpServer {
         let started = Instant::now();
         let input_tokens = estimate_tokens_args(args);
         let subject = self.request_subject_log_tag(context);
+        let actor_key = self.request_actor_key(context);
         let auth = auth_context_from_extensions(&context.extensions);
         if !code_mode_search_scope_allowed(auth) {
             let required_scopes = vec![
@@ -186,6 +187,9 @@ impl LabMcpServer {
                 service = %service,
                 action = "call_tool",
                 subject,
+                actor_key,
+                actor_label = subject,
+                agent_kind = "agent",
                 elapsed_ms = started.elapsed().as_millis(),
                 input_tokens,
                 kind = "forbidden",
@@ -216,6 +220,9 @@ impl LabMcpServer {
             service = "code_search",
             action = "call_tool",
             subject,
+            actor_key,
+            actor_label = subject,
+            agent_kind = "agent",
             code_hash = %code_hash,
             code_len = code.len(),
             input_tokens,
@@ -260,6 +267,9 @@ impl LabMcpServer {
                     service = "code_search",
                     action = "call_tool",
                     subject,
+                    actor_key,
+                    actor_label = subject,
+                    agent_kind = "agent",
                     code_hash = %code_hash,
                     code_len = code.len(),
                     elapsed_ms = started.elapsed().as_millis(),
@@ -289,6 +299,9 @@ impl LabMcpServer {
                     service = "code_search",
                     action = "call_tool",
                     subject,
+                    actor_key,
+                    actor_label = subject,
+                    agent_kind = "agent",
                     code_hash = %code_hash,
                     code_len = code.len(),
                     elapsed_ms,
@@ -313,6 +326,7 @@ impl LabMcpServer {
         let started = Instant::now();
         let input_tokens = estimate_tokens_args(args);
         let subject = self.request_subject_log_tag(context);
+        let actor_key = self.request_actor_key(context);
         let auth = auth_context_from_extensions(&context.extensions);
         if !tool_execute_scope_allowed(auth) {
             let err = DispatchToolError::Forbidden {
@@ -324,6 +338,9 @@ impl LabMcpServer {
                 service = %service,
                 action = "call_tool",
                 subject,
+                actor_key,
+                actor_label = subject,
+                agent_kind = "agent",
                 elapsed_ms = started.elapsed().as_millis(),
                 input_tokens,
                 kind = "forbidden",
@@ -386,6 +403,9 @@ impl LabMcpServer {
             service = "code_execute",
             action = "call_tool",
             subject,
+            actor_key,
+            actor_label = subject,
+            agent_kind = "agent",
             code_hash = %code_hash,
             max_tool_calls = requested_max_tool_calls,
             input_tokens,
@@ -420,6 +440,23 @@ impl LabMcpServer {
                 self.notify_catalog_changes(&before, &after).await;
                 let calls = err.calls().to_vec();
                 let error_kind = err.kind().to_string();
+                let elapsed_ms = started.elapsed().as_millis();
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "code_execute",
+                    action = "call_tool",
+                    subject,
+                    actor_key,
+                    actor_label = subject,
+                    agent_kind = "agent",
+                    code_hash = %code_hash,
+                    call_count = calls.len(),
+                    elapsed_ms,
+                    input_tokens,
+                    output_tokens = 0,
+                    kind = error_kind.as_str(),
+                    "gateway code execute failed"
+                );
                 let tool_error = err.into_tool_error();
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
@@ -427,7 +464,7 @@ impl LabMcpServer {
                         route_scope: self.route_scope.label(),
                         kind: CodeModeHistoryKind::Execute,
                         ok: false,
-                        elapsed_ms: started.elapsed().as_millis(),
+                        elapsed_ms,
                         error_kind: Some(error_kind),
                         calls,
                         match_count: None,
@@ -462,13 +499,24 @@ impl LabMcpServer {
         let output = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
         let structured = code_mode_execute_trace(&response);
         let output_tokens = estimate_tokens(&output);
+        let truncated = response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("truncated"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         tracing::info!(
             surface = "mcp",
             service = "code_execute",
             action = "call_tool",
             subject,
+            actor_key,
+            actor_label = subject,
+            agent_kind = "agent",
             code_hash = %code_hash,
             call_count = response.calls.len(),
+            artifact_writes = response.artifacts.len(),
+            truncated,
             elapsed_ms = started.elapsed().as_millis(),
             input_tokens,
             output_tokens,

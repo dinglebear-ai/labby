@@ -28,7 +28,9 @@ use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_f
 use crate::mcp::envelope::build_error;
 use crate::mcp::error::canonical_kind;
 use crate::mcp::logging::DispatchLogOutcome;
-use crate::mcp::result_format::{format_dispatch_result, tool_error_envelope};
+use crate::mcp::result_format::{
+    estimate_tokens, estimate_tokens_args, format_dispatch_result, tool_error_envelope,
+};
 use crate::mcp::server::LabMcpServer;
 use crate::mcp::upstream::normalize_upstream_result;
 
@@ -315,6 +317,7 @@ impl LabMcpServer {
                     oauth_subject = %oauth_subject,
                     "dispatch route selected"
                 );
+                let input_tokens = raw_arguments.as_ref().map_or(0, estimate_tokens_args);
                 let mut upstream_params = CallToolRequestParams::new(service.to_string());
                 upstream_params.arguments = raw_arguments;
                 match pool
@@ -325,6 +328,9 @@ impl LabMcpServer {
                         let elapsed_ms = start.elapsed().as_millis();
                         let (result, kind, counts_as_failure) =
                             normalize_upstream_result(service, upstream_action, result);
+                        let output_tokens = serde_json::to_string(&result)
+                            .map(|output| estimate_tokens(&output))
+                            .unwrap_or(0);
                         let outcome = if counts_as_failure || kind != "ok" {
                             tracing::warn!(
                                 surface = "mcp",
@@ -336,8 +342,13 @@ impl LabMcpServer {
                                 operation = upstream_operation,
                                 subject_scoped = true,
                                 subject,
+                                actor_key,
+                                actor_label = subject,
+                                agent_kind = "agent",
                                 oauth_subject = %oauth_subject,
                                 elapsed_ms,
+                                input_tokens,
+                                output_tokens,
                                 kind,
                                 "upstream dispatch error"
                             );
@@ -360,8 +371,13 @@ impl LabMcpServer {
                                 operation = upstream_operation,
                                 subject_scoped = true,
                                 subject,
+                                actor_key,
+                                actor_label = subject,
+                                agent_kind = "agent",
                                 oauth_subject = %oauth_subject,
                                 elapsed_ms,
+                                input_tokens,
+                                output_tokens,
                                 "upstream dispatch ok"
                             );
                             DispatchLogOutcome::Success
@@ -388,7 +404,12 @@ impl LabMcpServer {
                             operation = upstream_operation,
                             subject_scoped = true,
                             subject,
+                            actor_key,
+                            actor_label = subject,
+                            agent_kind = "agent",
                             elapsed_ms,
+                            input_tokens,
+                            output_tokens = 0,
                             kind = "upstream_error",
                             error = %e,
                             "upstream dispatch error"
@@ -421,8 +442,16 @@ impl LabMcpServer {
         // Neither built-in nor upstream.
         let elapsed_ms = start.elapsed().as_millis();
         let err = anyhow::anyhow!("service `{service}` has no dispatcher wired");
-        let (result, outcome) =
-            format_dispatch_result(Err(err), service, action, elapsed_ms, subject, actor_key);
+        let input_tokens = raw_arguments.as_ref().map_or(0, estimate_tokens_args);
+        let (result, outcome) = format_dispatch_result(
+            Err(err),
+            service,
+            action,
+            elapsed_ms,
+            subject,
+            actor_key,
+            input_tokens,
+        );
         self.emit_dispatch_notification(context, service, action, elapsed_ms, outcome)
             .await;
         Ok(result)

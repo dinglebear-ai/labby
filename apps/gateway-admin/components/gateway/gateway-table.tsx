@@ -5,6 +5,9 @@ import Link from 'next/link'
 import {
   ArrowDown,
   ArrowUp,
+  Check,
+  ChevronDown,
+  Copy,
   MoreHorizontal,
   Eye,
   Pencil,
@@ -44,7 +47,6 @@ import { buildGatewayEndpointPreview } from '@/lib/api/gateway-mobile'
 import { SurfaceRatio } from './surface-ratio'
 import type { TransportType } from '@/lib/types/gateway'
 import {
-  AURORA_DISPLAY_2,
   AURORA_MUTED_LABEL,
 } from '@/components/aurora/tokens'
 import {
@@ -54,11 +56,17 @@ import {
   gatewayStatusTone,
 } from './gateway-theme'
 
-type SortKey = 'transport' | 'tools' | 'resources' | 'prompts'
+type SortKey = 'name' | 'transport' | 'tools' | 'resources' | 'prompts'
 type SortDirection = 'asc' | 'desc'
 
 const AURORA_GATEWAY_TABLE_SHELL =
   'border border-aurora-border-strong bg-aurora-panel-strong shadow-[var(--aurora-shadow-strong),var(--aurora-highlight-strong)] rounded-aurora-1'
+
+const GATEWAY_TABLE_BADGE =
+  'inline-flex h-6 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.12em]'
+
+const GATEWAY_TABLE_ACTION =
+  'size-8 rounded-aurora-1 hover:bg-aurora-hover-bg hover:text-aurora-text-primary'
 
 const rowToneClass = (index: number) => (index % 2 === 0 ? 'gateway-row-tone-a' : 'gateway-row-tone-b')
 
@@ -99,8 +107,10 @@ export function GatewayTable({
   onDelete,
 }: GatewayTableProps) {
   const [loadingAction, setLoadingAction] = useState<{ id: string; action: string } | null>(null)
-  const [sortKey, setSortKey] = useState<SortKey | null>(null)
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [sortKey, setSortKey] = useState<SortKey>('name')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
+  const [copiedGatewayId, setCopiedGatewayId] = useState<string | null>(null)
+  const [expandedMobileGatewayId, setExpandedMobileGatewayId] = useState<string | null>(null)
 
   const handleAction = async (
     gateway: Gateway,
@@ -117,9 +127,17 @@ export function GatewayTable({
 
   const isLoading = (id: string, action: string) => loadingAction?.id === id && loadingAction?.action === action
 
-  const sortedGateways = useMemo(() => {
-    if (!sortKey) return gateways
+  const copyCommand = async (gateway: Gateway, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopiedGatewayId(gateway.id)
+      window.setTimeout(() => setCopiedGatewayId((current) => (current === gateway.id ? null : current)), 1200)
+    } catch {
+      // Clipboard failures should not block table use.
+    }
+  }
 
+  const sortedGateways = useMemo(() => {
     const transportLabel = (transport: TransportType) => {
       switch (transport) {
         case 'in_process':
@@ -135,6 +153,9 @@ export function GatewayTable({
       let result = 0
 
       switch (sortKey) {
+        case 'name':
+          result = left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
+          break
         case 'transport':
           result = transportLabel(left.transport).localeCompare(transportLabel(right.transport))
           break
@@ -166,7 +187,7 @@ export function GatewayTable({
     }
 
     setSortKey(nextKey)
-    setSortDirection(nextKey === 'transport' ? 'asc' : 'desc')
+    setSortDirection(nextKey === 'name' || nextKey === 'transport' ? 'asc' : 'desc')
   }
 
   const renderSortIcon = (key: SortKey) => {
@@ -177,12 +198,15 @@ export function GatewayTable({
       : <ArrowDown className="size-3.5" />
   }
 
+  const activeSortLabel = `${sortKey === 'name' ? 'Server' : sortKey[0]!.toUpperCase() + sortKey.slice(1)} ${sortDirection === 'asc' ? '↑' : '↓'}`
+
   const SortHeader = ({ label, sort }: { label: string; sort: SortKey }) => (
     <button
       type="button"
       onClick={() => handleSort(sort)}
       className="inline-flex items-center gap-1.5 transition-colors hover:text-aurora-text-primary"
       aria-label={`Sort by ${label.toLowerCase()}`}
+      aria-sort={sortKey === sort ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
       <span>{label}</span>
       {renderSortIcon(sort)}
@@ -239,7 +263,7 @@ export function GatewayTable({
         <Badge
           key="stale"
           title={detailsTitle}
-          className="rounded-full border border-amber-500/30 bg-amber-500/10 text-[10px] uppercase tracking-[0.16em] text-amber-200"
+          className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-warn/30 bg-[color-mix(in_srgb,var(--aurora-warn)_12%,transparent)] text-aurora-warn')}
         >
           {gateway.status.likely_stale_count} stale
         </Badge>,
@@ -251,7 +275,7 @@ export function GatewayTable({
         <Badge
           key="pid"
           title={detailsTitle}
-          className="rounded-full border border-aurora-border-strong bg-[rgba(7,17,26,0.48)] font-mono text-[10px] uppercase tracking-[0.12em] text-aurora-text-muted"
+          className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-border-strong bg-[rgba(7,17,26,0.48)] font-mono text-aurora-text-muted')}
         >
           pid {gateway.status.pid}
         </Badge>,
@@ -263,7 +287,7 @@ export function GatewayTable({
         <Badge
           key="pgid"
           title={detailsTitle}
-          className="rounded-full border border-aurora-border-strong bg-[rgba(7,17,26,0.48)] font-mono text-[10px] uppercase tracking-[0.12em] text-aurora-text-muted"
+          className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-border-strong bg-[rgba(7,17,26,0.48)] font-mono text-aurora-text-muted')}
         >
           pgid {gateway.status.pgid}
         </Badge>,
@@ -276,7 +300,7 @@ export function GatewayTable({
         <Badge
           key="age"
           title={detailsTitle}
-          className="rounded-full border border-aurora-border-strong bg-[rgba(7,17,26,0.48)] text-[10px] uppercase tracking-[0.12em] text-aurora-text-muted"
+          className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-border-strong bg-[rgba(7,17,26,0.48)] text-aurora-text-muted')}
         >
           {age}
         </Badge>,
@@ -284,6 +308,56 @@ export function GatewayTable({
     }
 
     return badges
+  }
+
+  const statusRailClass = (gateway: Gateway) => {
+    if (!(gateway.enabled ?? true)) return 'bg-aurora-neutral'
+    if (gateway.status.healthy && gateway.status.connected && gateway.warnings.length === 0) return 'bg-aurora-accent-strong'
+    if (!gateway.status.connected) return 'bg-aurora-error'
+    return 'bg-aurora-warn'
+  }
+
+  const commandParts = (gateway: Gateway, preview: string) => {
+    if (gateway.transport !== 'stdio') {
+      return { command: preview, args: '' }
+    }
+    const command = gateway.config.command?.trim()
+    if (!command) return { command: preview, args: '' }
+    const args = (gateway.config.args ?? []).join(' ')
+    return { command, args }
+  }
+
+  const CommandPreview = ({
+    gateway,
+    preview,
+    compact = false,
+  }: {
+    gateway: Gateway
+    preview: string
+    compact?: boolean
+  }) => {
+    const isCommand = gateway.transport === 'stdio'
+    const parts = commandParts(gateway, preview)
+
+    return (
+      <span
+        className={cn(
+          'min-w-0 max-w-full font-mono text-aurora-text-muted transition-colors group-hover:text-aurora-text-primary/82',
+          compact ? 'text-[9px] leading-3' : 'text-[11px] leading-5',
+          isCommand ? 'whitespace-normal break-all' : 'truncate',
+        )}
+        title={preview}
+      >
+        {isCommand && parts.args ? (
+          <>
+            <span className="font-semibold text-aurora-text-primary/86">{parts.command}</span>
+            <span className="text-aurora-text-muted"> {parts.args}</span>
+          </>
+        ) : (
+          preview
+        )}
+      </span>
+    )
   }
 
   return (
@@ -295,12 +369,15 @@ export function GatewayTable({
           <div />
         </div>
         <div className="divide-y divide-aurora-border-strong/70">
-          {gateways.map((gateway, index) => {
+          {sortedGateways.map((gateway, index) => {
             const supportsProbeControls = gateway.source !== 'in_process'
             const canRemoveGatewayRow = canRemoveGateway(gateway)
             const isDisabled = !(gateway.enabled ?? true)
             const statusTone = gatewayStatusTone(gateway.status.healthy, gateway.status.connected)
             const endpointPreview = buildGatewayEndpointPreview(gateway)
+            const showsCommandLine = gateway.transport === 'stdio'
+            const isExpanded = expandedMobileGatewayId === gateway.id
+            const envCount = Object.keys(gateway.config.env ?? {}).length
             const runtimeLabel = runtimeAgeLabel(gateway) ?? 'live'
             const cleanupSummary = cleanupSummaryByGatewayId[gateway.id]
             const cleanupSummaryLabel =
@@ -312,25 +389,70 @@ export function GatewayTable({
               <div
                 key={gateway.id}
                 className={cn(
+                  'relative overflow-hidden',
                   rowTone,
                   AURORA_GATEWAY_ROW,
                   isDisabled && AURORA_GATEWAY_DISABLED_ROW,
                 )}
               >
+                <span className={cn('absolute inset-y-0 left-0 w-1', statusRailClass(gateway))} aria-hidden="true" />
                 <div className={cn('grid grid-cols-[minmax(0,1fr)_82px_24px] gap-2 px-2.5', density === 'condensed' ? 'py-1.5' : 'py-2')}>
-                  <Link href={gatewayDetailHref(gateway.id)} className="min-w-0 space-y-1">
+                  <div className="min-w-0 space-y-1 pl-2">
                     <div className="flex min-w-0 items-center gap-2">
                       <span className={cn('size-2 rounded-full', statusTone.dot)} aria-label={statusTone.label} title={statusTone.label} />
-                      <span className="truncate text-[12px] font-semibold text-aurora-text-primary">{gateway.name}</span>
+                      <Link href={gatewayDetailHref(gateway.id)} className="truncate text-[12px] font-semibold text-aurora-text-primary hover:text-aurora-accent-strong">
+                        {gateway.name}
+                      </Link>
                       {isDisabled ? (
                         <span className="rounded-full border border-aurora-border-strong px-1.5 py-0.5 text-[9px] uppercase tracking-[0.12em] text-aurora-text-muted">
                           Off
                         </span>
                       ) : null}
                     </div>
-                    <div className="truncate text-[9px] text-aurora-text-muted" title={endpointPreview}>
-                      {endpointPreview}
-                    </div>
+                    <button
+                      type="button"
+                      className={cn(
+                        'group/command flex w-full min-w-0 items-start gap-1.5 text-left',
+                        showsCommandLine && 'rounded-aurora-1 border border-transparent hover:border-aurora-border-strong/70 hover:bg-aurora-control-surface/45',
+                      )}
+                      onClick={() => {
+                        if (showsCommandLine) {
+                          setExpandedMobileGatewayId((current) => (current === gateway.id ? null : gateway.id))
+                        }
+                      }}
+                      aria-expanded={showsCommandLine ? isExpanded : undefined}
+                      aria-label={showsCommandLine ? `${isExpanded ? 'Collapse' : 'Expand'} ${gateway.name} command` : undefined}
+                      title={endpointPreview}
+                    >
+                      <CommandPreview gateway={gateway} preview={endpointPreview} compact />
+                      {showsCommandLine ? (
+                        <ChevronDown
+                          className={cn(
+                            'mt-0.5 size-3 shrink-0 text-aurora-text-muted transition-transform',
+                            isExpanded && 'rotate-180',
+                          )}
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                    </button>
+                    {showsCommandLine && isExpanded ? (
+                      <div className="rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface/70 p-2 text-[9px] leading-4 shadow-[var(--aurora-highlight-medium)]">
+                        <div className="flex items-start justify-between gap-2">
+                          <code className="font-mono text-aurora-text-primary break-all">{endpointPreview}</code>
+                          <button
+                            type="button"
+                            onClick={() => copyCommand(gateway, endpointPreview)}
+                            className="inline-flex size-6 shrink-0 items-center justify-center rounded-aurora-1 border border-aurora-border-strong bg-aurora-panel-medium text-aurora-text-muted"
+                            aria-label={`Copy ${gateway.name} command`}
+                          >
+                            {copiedGatewayId === gateway.id ? <Check className="size-3" /> : <Copy className="size-3" />}
+                          </button>
+                        </div>
+                        <div className="mt-1 text-[8px] uppercase tracking-[0.12em] text-aurora-text-muted">
+                          {envCount > 0 ? `${envCount} env vars` : 'No env vars'}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[9px] text-aurora-text-muted">
                       <span data-mobile-metric="tools" className="inline-flex items-center gap-1 whitespace-nowrap" title="Tools">
                         <Wrench className="size-3 text-aurora-text-muted" aria-hidden="true" />
@@ -353,7 +475,7 @@ export function GatewayTable({
                         <strong className="text-[10px] font-semibold text-aurora-text-primary">{runtimeLabel}</strong>
                       </span>
                     </div>
-                  </Link>
+                  </div>
 
                   <div className="space-y-0.5 pt-0.5 text-right">
                     <div className="inline-flex items-center justify-end gap-1 text-[10px] font-semibold text-aurora-text-primary">
@@ -457,23 +579,33 @@ export function GatewayTable({
       </div>
 
       <div className={cn(AURORA_GATEWAY_TABLE_SHELL, 'hidden overflow-hidden md:block')}>
+        <div className="flex items-center justify-between border-b border-aurora-border-strong/80 bg-[repeating-linear-gradient(90deg,rgba(41,182,246,0.045)_0,rgba(41,182,246,0.045)_1px,transparent_1px,transparent_18px),linear-gradient(180deg,rgba(7,17,26,0.56),rgba(7,17,26,0.38))] px-5 py-2">
+          <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-aurora-text-muted">
+            Server inventory
+          </span>
+          <span className="inline-flex h-6 items-center rounded-full border border-aurora-accent-primary/24 bg-aurora-accent-primary/10 px-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-aurora-accent-strong">
+            Sorted by {activeSortLabel}
+          </span>
+        </div>
         <Table className="min-w-[920px] table-fixed">
           <TableHeader>
             <TableRow className="border-b border-aurora-border-strong bg-[rgba(7,17,26,0.48)] hover:bg-[rgba(7,17,26,0.48)]">
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[37%] px-6 py-4')}>Server</TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[11%] px-2 py-4 text-center')}>
+              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[50%] px-5 py-3')}>
+                <SortHeader label="Server" sort="name" />
+              </TableHead>
+              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[8%] px-2 py-3 text-center')}>
                 <SortHeader label="Transport" sort="transport" />
               </TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[11%] px-2 py-4 text-center')}>
+              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[9%] px-2 py-3 text-center')}>
                 <SortHeader label="Tools" sort="tools" />
               </TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[11%] px-2 py-4 text-center')}>
+              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[10%] px-2 py-3 text-center')}>
                 <SortHeader label="Resources" sort="resources" />
               </TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[11%] px-2 py-4 text-center')}>
+              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[9%] px-2 py-3 text-center')}>
                 <SortHeader label="Prompts" sort="prompts" />
               </TableHead>
-              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[19%] px-4 py-4 text-right')}>Actions</TableHead>
+              <TableHead className={cn(AURORA_MUTED_LABEL, 'w-[14%] px-4 py-3 text-right')}>Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -481,9 +613,9 @@ export function GatewayTable({
               const supportsProbeControls = gateway.source !== 'in_process'
               const canRemoveGatewayRow = canRemoveGateway(gateway)
               const endpointPreview = buildGatewayEndpointPreview(gateway)
+              const showsCommandLine = gateway.transport === 'stdio'
               const isDisabled = !(gateway.enabled ?? true)
               const statusTone = gatewayStatusTone(gateway.status.healthy, gateway.status.connected)
-              const launcherState = isDisabled ? 'deactivated' : 'active'
               const runtimeChips = runtimeBadges(gateway)
               const cleanupSummary = cleanupSummaryByGatewayId[gateway.id]
               const cleanupBadge = cleanupBadgeLabel(cleanupSummary?.cleanup, 'cleaned')
@@ -494,27 +626,27 @@ export function GatewayTable({
                 <TableRow
                   key={gateway.id}
                   className={cn(
-                    'group',
+                    'group transition-[background-color,box-shadow,transform] duration-150 hover:translate-x-px hover:shadow-[inset_3px_0_0_color-mix(in_srgb,var(--aurora-accent-primary)_42%,transparent)]',
                     rowTone,
                     isDisabled ? AURORA_GATEWAY_DISABLED_ROW : AURORA_GATEWAY_ROW,
                   )}
                 >
-                  <TableCell className={cn('w-[62%] px-6 align-top whitespace-normal', density === 'condensed' ? 'py-3' : 'py-4')}>
+                  <TableCell className={cn('relative px-5 align-middle whitespace-normal', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
+                    <span className={cn('absolute inset-y-0 left-0 w-1', statusRailClass(gateway))} aria-hidden="true" />
                     <div className="min-w-0 space-y-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
                         <span className={cn('size-2 rounded-full', statusTone.dot)} aria-label={statusTone.label} title={statusTone.label} />
                         <Link
                           href={gatewayDetailHref(gateway.id)}
                           className={cn(
-                            AURORA_DISPLAY_2,
-                            density === 'condensed' ? 'text-[15px]' : 'font-medium',
-                            'min-w-0 max-w-full break-words text-aurora-text-primary hover:text-aurora-accent-strong hover:underline underline-offset-4',
+                            'min-w-0 max-w-full break-words font-display text-[15px] leading-[1.16] font-bold text-aurora-text-primary hover:text-aurora-accent-strong hover:underline underline-offset-4',
+                            density === 'condensed' && 'text-[14px]',
                           )}
                         >
                           {gateway.name}
                         </Link>
                         {isDisabled ? (
-                          <Badge className="rounded-full border border-aurora-border-strong bg-[rgba(7,17,26,0.48)] text-[10px] uppercase tracking-[0.16em] text-aurora-text-muted">
+                          <Badge className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-border-strong bg-[rgba(7,17,26,0.48)] text-aurora-text-muted')}>
                             Disabled
                           </Badge>
                         ) : null}
@@ -522,7 +654,7 @@ export function GatewayTable({
                         {runtimeChips}
                         {cleanupSummary?.cleanup && cleanupBadge ? (
                           <Badge
-                            className="rounded-full border border-emerald-500/30 bg-emerald-500/10 text-[10px] uppercase tracking-[0.16em] text-emerald-200"
+                            className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-success/30 bg-[color-mix(in_srgb,var(--aurora-success)_12%,transparent)] text-aurora-success')}
                             title={`${cleanupSummary.cleanup.label}\n${cleanupSummary.cleanup.occurredAt}`}
                           >
                             {cleanupBadge}
@@ -530,58 +662,72 @@ export function GatewayTable({
                         ) : null}
                         {cleanupSummary?.preview && previewBadge ? (
                           <Badge
-                            className="rounded-full border border-sky-500/30 bg-sky-500/10 text-[10px] uppercase tracking-[0.16em] text-sky-200"
+                            className={cn(GATEWAY_TABLE_BADGE, 'border border-aurora-accent-primary/30 bg-aurora-accent-primary/10 text-aurora-accent-strong')}
                             title={`${cleanupSummary.preview.label}\n${cleanupSummary.preview.occurredAt}`}
                           >
                             {previewBadge}
                           </Badge>
                         ) : null}
                         {density === 'condensed' ? (
-                          <span className="min-w-0 truncate text-[13px] text-aurora-text-muted" title={endpointPreview}>
-                            {endpointPreview} • {launcherState}
+                          <span className="min-w-0 truncate font-mono text-[11px] leading-4 text-aurora-text-muted" title={endpointPreview}>
+                            {endpointPreview}
                           </span>
                         ) : null}
                       </div>
                       {density === 'comfortable' ? (
-                        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-aurora-text-muted">
-                          <span className="truncate text-aurora-text-muted" title={endpointPreview}>
-                            {endpointPreview}
-                          </span>
-                          <span className="tabular-nums">{launcherState}</span>
+                        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12px] leading-5 text-aurora-text-muted">
+                          <div className="group/command flex min-w-0 max-w-full items-start gap-1.5 rounded-aurora-1 border border-transparent pr-1 transition-[background-color,border-color] hover:border-aurora-border-strong/70 hover:bg-aurora-control-surface/45">
+                            <CommandPreview
+                              gateway={gateway}
+                              preview={endpointPreview}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => copyCommand(gateway, endpointPreview)}
+                              className={cn(
+                                'mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-aurora-1 border border-aurora-border-strong bg-aurora-panel-medium text-aurora-text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 group-hover/command:opacity-100',
+                                copiedGatewayId === gateway.id && 'border-aurora-accent-primary/35 text-aurora-accent-strong opacity-100',
+                              )}
+                              aria-label={`Copy ${gateway.name} ${showsCommandLine ? 'command' : 'endpoint'}`}
+                              title={`Copy ${showsCommandLine ? 'command' : 'endpoint'}`}
+                            >
+                              {copiedGatewayId === gateway.id ? <Check className="size-3" /> : <Copy className="size-3" />}
+                            </button>
+                          </div>
                         </div>
                       ) : null}
                     </div>
                   </TableCell>
-                  <TableCell className={cn('px-2 align-top', density === 'condensed' ? 'py-3' : 'py-4')}>
+                  <TableCell className={cn('px-2 align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
                     <div className="flex items-center justify-center">
                       <TransportBadge transport={gateway.transport} iconOnly />
                     </div>
                   </TableCell>
-                  <TableCell className={cn('px-2 align-top', density === 'condensed' ? 'py-3' : 'py-4')}>
+                  <TableCell className={cn('px-2 align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
                     <div className="flex items-center justify-center">
                       <SurfaceRatio icon={Wrench} label="Tools" exposed={gateway.status.exposed_tool_count} total={gateway.status.discovered_tool_count} />
                     </div>
                   </TableCell>
-                  <TableCell className={cn('px-2 align-top', density === 'condensed' ? 'py-3' : 'py-4')}>
+                  <TableCell className={cn('px-2 align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
                     <div className="flex items-center justify-center">
                       <SurfaceRatio icon={FileText} label="Resources" exposed={gateway.status.exposed_resource_count} total={gateway.status.discovered_resource_count} />
                     </div>
                   </TableCell>
-                  <TableCell className={cn('px-2 align-top', density === 'condensed' ? 'py-3' : 'py-4')}>
+                  <TableCell className={cn('px-2 align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
                     <div className="flex items-center justify-center">
                       <SurfaceRatio icon={MessageSquare} label="Prompts" exposed={gateway.status.exposed_prompt_count} total={gateway.status.discovered_prompt_count} />
                     </div>
                   </TableCell>
-                  <TableCell className={cn('px-4 text-right', density === 'condensed' ? 'py-3' : 'py-4')}>
+                  <TableCell className={cn('px-4 text-right align-middle', density === 'condensed' ? 'py-2.5' : 'py-3.5')}>
                     <div className="flex items-center justify-end gap-1">
                       {density === 'comfortable' ? (
                         <Button
                           variant="outline"
                           size="icon"
-                          className={cn(gatewayActionTone(), 'size-9 opacity-100 transition-opacity hover:bg-aurora-hover-bg hover:text-aurora-text-primary md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
+                          className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION, 'opacity-100 transition-opacity md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
                           onClick={() => onToggleEnabled(gateway)}
                         >
-                          <Power className="size-4" />
+                          <Power className="size-3.5" />
                           <span className="sr-only">{gateway.enabled ?? true ? 'Disable server' : 'Enable server'}</span>
                         </Button>
                       ) : null}
@@ -589,11 +735,11 @@ export function GatewayTable({
                         <Button
                           variant="outline"
                           size="icon"
-                          className={cn(gatewayActionTone(), 'size-9 opacity-100 transition-opacity hover:bg-aurora-hover-bg hover:text-aurora-text-primary md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
+                          className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION, 'opacity-100 transition-opacity md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
                           onClick={() => handleAction(gateway, 'test', onTest)}
                           disabled={isLoading(gateway.id, 'test')}
                         >
-                          <Play className={`size-4 ${isLoading(gateway.id, 'test') ? 'animate-pulse' : ''}`} />
+                          <Play className={`size-3.5 ${isLoading(gateway.id, 'test') ? 'animate-pulse' : ''}`} />
                           <span className="sr-only">Test connection</span>
                         </Button>
                       ) : null}
@@ -601,11 +747,11 @@ export function GatewayTable({
                         <Button
                           variant="outline"
                           size="icon"
-                          className={cn(gatewayActionTone(), 'size-9 opacity-100 transition-opacity hover:bg-aurora-hover-bg hover:text-aurora-text-primary md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
+                          className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION, 'opacity-100 transition-opacity md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
                           onClick={() => handleAction(gateway, 'reload', onReload)}
                           disabled={isLoading(gateway.id, 'reload')}
                         >
-                          <RefreshCw className={`size-4 ${isLoading(gateway.id, 'reload') ? 'animate-spin' : ''}`} />
+                          <RefreshCw className={`size-3.5 ${isLoading(gateway.id, 'reload') ? 'animate-spin' : ''}`} />
                           <span className="sr-only">Reload server</span>
                         </Button>
                       ) : null}
@@ -613,17 +759,17 @@ export function GatewayTable({
                         <Button
                           variant="outline"
                           size="icon"
-                          className={cn(gatewayActionTone(), 'size-9 opacity-100 text-destructive transition-opacity hover:bg-aurora-hover-bg hover:text-destructive md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
+                          className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION, 'opacity-100 text-destructive transition-opacity hover:text-destructive md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
                           onClick={() => onDelete(gateway)}
                         >
-                          <Trash2 className="size-4" />
+                          <Trash2 className="size-3.5" />
                           <span className="sr-only">Remove stale service</span>
                         </Button>
                       ) : null}
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="outline" size="icon" className={cn(gatewayActionTone(), 'size-9 hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}>
-                            <MoreHorizontal className="size-4" />
+                          <Button variant="outline" size="icon" className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION)}>
+                            <MoreHorizontal className="size-3.5" />
                             <span className="sr-only">More actions</span>
                           </Button>
                         </DropdownMenuTrigger>

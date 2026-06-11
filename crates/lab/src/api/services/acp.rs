@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::api::ActionRequest;
 use crate::api::oauth::AuthContext;
-use crate::api::services::helpers::handle_action;
+use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::state::AppState;
 use crate::dispatch::acp::catalog::ACTIONS;
 use crate::dispatch::acp::dispatch::dispatch_with_registry;
@@ -68,9 +68,8 @@ async fn handle(
     auth: Option<Extension<AuthContext>>,
     Json(mut req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ToolError> {
-    let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
     if req.action.starts_with("session.") {
-        let principal = required_principal(auth)?;
+        let principal = required_principal(auth.clone())?;
         match req.params {
             Value::Object(ref mut params) => {
                 params.insert("principal".to_string(), Value::String(principal));
@@ -87,10 +86,10 @@ async fn handle(
         }
     }
 
-    handle_action(
+    handle_action_with_meta(
         "acp",
         "api",
-        request_id,
+        dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0)),
         req,
         ACTIONS,
         move |action, mut params| {

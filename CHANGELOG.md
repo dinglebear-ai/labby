@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.24.0] - 2026-06-11
+
 ### Added
 
 - **First-run `labby serve` self-bootstrap** — when no MCP token is configured
