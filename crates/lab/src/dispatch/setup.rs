@@ -18,6 +18,6 @@ mod secret_mask;
 mod state;
 mod token;
 
-pub use bootstrap::{bootstrap, should_bootstrap};
+pub use bootstrap::{BootstrapOutcome, bootstrap, bootstrap_action, should_bootstrap};
 pub use catalog::ACTIONS;
 pub use dispatch::dispatch;

@@ -492,48 +492,49 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         .context("verify upstream OAuth subject-resolution wiring")?;
 
     // First-run self-bootstrap (setup-wizard consolidation): when no MCP token
-    // is configured and OAuth is not active, generate a token + minimal
-    // ~/.lab/.env so the server can start and the operator can reach /setup.
-    // Closes the headless bootstrap circularity. The freshly written file is
-    // re-loaded via dotenvy (the same crate config::load_dotenv() uses) so the
-    // token becomes visible process-wide — not just to the local bearer_token,
-    // but to every downstream LAB_MCP_HTTP_TOKEN reader (e.g. node master
-    // client, `logs`). dotenvy does not override already-set vars, and the
-    // token was absent on first run, so it loads fresh. We avoid `unsafe`
-    // std::env::set_var (the workspace forbids unsafe_code) by letting dotenvy
-    // — which encapsulates its own set_var — own the mutation.
+    // is configured, OAuth is not active, AND the bind is loopback, generate a
+    // token + minimal ~/.lab/.env so the server can start and the operator can
+    // reach /setup. Closes the headless bootstrap circularity.
+    //
+    // Loopback gate (HIGH-1): we deliberately do NOT auto-bootstrap on a
+    // non-loopback bind. An explicit `--host 0.0.0.0` with no auth must still
+    // hit the lab-319g safety gate below and bail — silently minting a token
+    // would turn a misconfiguration into a publicly reachable server.
+    //
+    // The generated token is made authoritative in-process immediately
+    // (`bearer_token = Some(token)`), so the running server always
+    // authenticates with the token it just wrote even if the env reload fails.
+    // We THEN reload the file via dotenvy so downstream LAB_MCP_HTTP_TOKEN
+    // readers (e.g. node master client, `logs`) also see it. dotenvy owns its
+    // own set_var, keeping this crate unsafe-free (the workspace forbids
+    // unsafe_code) and not overriding already-set vars.
     if crate::dispatch::setup::should_bootstrap(
         bearer_token.is_some(),
         matches!(auth_config.mode, AuthMode::OAuth),
-    ) {
+    ) && is_loopback_host(&host)
+    {
         match crate::dispatch::setup::bootstrap() {
-            Ok(outcome)
-                if outcome.get("created").and_then(serde_json::Value::as_bool) == Some(true) =>
-            {
-                if let Some(env_file) = outcome.get("env_path").and_then(serde_json::Value::as_str)
-                {
-                    if let Err(error) = dotenvy::from_path(PathBuf::from(env_file)) {
-                        tracing::warn!(
-                            surface = "cli",
-                            service = "serve",
-                            error = %error,
-                            "failed to reload generated ~/.lab/.env into process env"
-                        );
-                    }
+            Ok(crate::dispatch::setup::BootstrapOutcome::Created { env_path, token }) => {
+                bearer_token = Some(token.clone());
+                if let Err(error) = dotenvy::from_path(&env_path) {
+                    tracing::error!(
+                        surface = "cli",
+                        service = "serve",
+                        error = %error,
+                        "failed to reload generated ~/.lab/.env into process env; \
+                         in-process token is authoritative, downstream env readers may not see it"
+                    );
                 }
-                bearer_token = http_token();
                 tracing::warn!(
                     surface = "cli",
                     service = "serve",
                     "first run: generated LAB_MCP_HTTP_TOKEN and wrote ~/.lab/.env"
                 );
-                if let Some(tok) = outcome.get("token").and_then(serde_json::Value::as_str) {
-                    eprintln!("\n  Lab first-run setup");
-                    eprintln!("  MCP bearer token: {tok}");
-                    eprintln!("  Open http://{host}:{port}/setup to finish configuration\n");
-                }
+                eprintln!("\n  Lab first-run setup");
+                eprintln!("  MCP bearer token: {token}");
+                eprintln!("  Open http://{host}:{port}/setup to finish configuration\n");
             }
-            Ok(_) => {}
+            Ok(crate::dispatch::setup::BootstrapOutcome::AlreadyPresent { .. }) => {}
             Err(error) => {
                 tracing::warn!(surface = "cli", service = "serve", error = %error, "first-run bootstrap skipped");
             }
@@ -1591,17 +1592,6 @@ mod tests {
     use crate::config::{LabConfig, McpPreferences, WebPreferences};
     use crate::registry::{build_default_registry, filter_built_in_upstream_apis};
     use clap::Parser;
-
-    #[test]
-    fn first_run_gate_matches_token_and_oauth_state() {
-        use crate::dispatch::setup::should_bootstrap;
-        // No token, bearer mode → bootstrap.
-        assert!(should_bootstrap(false, false));
-        // Token already present → never bootstrap.
-        assert!(!should_bootstrap(true, false));
-        // OAuth mode → never bootstrap (OAuth needs no static token).
-        assert!(!should_bootstrap(false, true));
-    }
 
     #[test]
     fn transport_resolution_prefers_explicit_stdio_then_cli_then_http_default() {

@@ -4,6 +4,9 @@
 //! 32 random bytes → 64 lowercase hex chars. `doctor` validates length >= 32.
 
 /// Generate a fresh 64-char hex MCP bearer token from 32 OS-random bytes.
+///
+/// Fail-closed by design: if the OS RNG is unavailable we `panic` rather than
+/// emit a weak/predictable token for a security primitive.
 #[must_use]
 pub fn generate_mcp_token() -> String {
     let mut buf = [0_u8; 32];
