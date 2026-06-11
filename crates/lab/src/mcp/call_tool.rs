@@ -17,7 +17,9 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, Content, LoggingLevel, LoggingMessageNotificationParam,
+};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
@@ -28,6 +30,11 @@ use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::DispatchError;
 use crate::mcp::result_format::format_dispatch_result;
 use crate::mcp::server::LabMcpServer;
+
+fn route_scope_denied_result(service: &str, action: &str, message: String) -> CallToolResult {
+    let envelope = build_error(service, action, "route_scope_denied", &message);
+    CallToolResult::error(vec![Content::text(envelope.to_string())])
+}
 
 fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
     let raw = subject
@@ -50,11 +57,71 @@ fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
 }
 
 impl LabMcpServer {
+    fn log_route_scope_denial(
+        &self,
+        context: &RequestContext<RoleServer>,
+        service: &str,
+        action: &str,
+        message: &str,
+        elapsed_ms: u128,
+    ) {
+        let subject = self.request_subject_log_tag(context);
+        tracing::warn!(
+            surface = "mcp",
+            service,
+            action,
+            subject,
+            route_scope = %self.route_scope.label(),
+            elapsed_ms,
+            kind = "route_scope_denied",
+            error = %message,
+            "MCP call denied by protected route scope"
+        );
+        if !self.should_emit_logging_notification(LoggingLevel::Warning) {
+            return;
+        }
+
+        let peer = context.peer.clone();
+        let actor_key = crate::mcp::context::actor_key_from_extensions(&context.extensions)
+            .map(ToOwned::to_owned);
+        let service = service.to_string();
+        let action = action.to_string();
+        tokio::spawn(async move {
+            let mut payload = serde_json::json!({
+                "surface": "mcp",
+                "service": service,
+                "action": action,
+                "elapsed_ms": elapsed_ms,
+                "kind": "route_scope_denied",
+            });
+            if let Some(actor_key) = actor_key {
+                payload["actor_key"] = serde_json::json!(actor_key);
+            }
+            if let Err(error) = peer
+                .notify_logging_message(
+                    LoggingMessageNotificationParam::new(LoggingLevel::Warning, payload)
+                        .with_logger("lab.mcp.dispatch"),
+                )
+                .await
+            {
+                tracing::debug!(
+                    surface = "mcp",
+                    service = %service,
+                    action = %action,
+                    level = ?LoggingLevel::Warning,
+                    error = %error,
+                    "failed to send rmcp logging notification"
+                );
+            }
+        });
+    }
+
     pub(crate) async fn call_tool_impl(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        let start = Instant::now();
         let service = request.name.as_ref().to_string();
         let raw_arguments = request.arguments.clone();
         let args = request.arguments.unwrap_or_default();
@@ -74,12 +141,49 @@ impl LabMcpServer {
 
         // ── Gateway `search` tool: run caller's JS over the upstream catalog ──
         if service == CODE_MODE_SEARCH_TOOL_NAME {
+            if !self.route_scope.exposes_code_mode() {
+                let elapsed_ms = start.elapsed().as_millis();
+                self.log_route_scope_denial(
+                    &context,
+                    &service,
+                    "call_tool",
+                    "Code Mode is not exposed on this MCP route",
+                    elapsed_ms,
+                );
+                return Ok(route_scope_denied_result(
+                    &service,
+                    "call_tool",
+                    "Code Mode is not exposed on this MCP route".to_string(),
+                ));
+            }
             return self.call_code_mode_impl(&service, &args, &context).await;
         }
 
         // ── Gateway `execute` tool: run caller's JS in the subprocess sandbox ─
         if service == TOOL_EXECUTE_TOOL_NAME {
+            if !self.route_scope.exposes_code_mode() {
+                let elapsed_ms = start.elapsed().as_millis();
+                self.log_route_scope_denial(
+                    &context,
+                    &service,
+                    "call_tool",
+                    "Code Mode is not exposed on this MCP route",
+                    elapsed_ms,
+                );
+                return Ok(route_scope_denied_result(
+                    &service,
+                    "call_tool",
+                    "Code Mode is not exposed on this MCP route".to_string(),
+                ));
+            }
             return self.call_tool_execute_impl(&service, &args, &context).await;
+        }
+
+        if svc.is_some() && !self.route_scope.allows_service(&service) {
+            let elapsed_ms = start.elapsed().as_millis();
+            let message = format!("service `{service}` is not exposed on this MCP route");
+            self.log_route_scope_denial(&context, &service, &action, &message, elapsed_ms);
+            return Ok(route_scope_denied_result(&service, &action, message));
         }
 
         if svc.is_some() && !self.service_visible_on_mcp(&service).await {
@@ -248,7 +352,6 @@ impl LabMcpServer {
             }
         }
 
-        let start = Instant::now();
         let subject = self.request_subject_log_tag(&context);
         let actor_key = self.request_actor_key(&context);
         let dispatch_action = if svc.is_some() {

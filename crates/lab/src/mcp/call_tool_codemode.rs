@@ -12,6 +12,7 @@
 //! `notify_catalog_changes` around the broker call — preserved
 //! byte-identically. No behavior change.
 
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use rmcp::ErrorData;
@@ -129,6 +130,35 @@ pub(crate) fn string_array_arg(
         .collect()
 }
 
+fn route_scoped_capability_filter(
+    args: &JsonObject,
+    route_allowed: Option<&BTreeSet<String>>,
+) -> Result<CodeModeCapabilityFilter, DispatchToolError> {
+    let requested_upstreams = string_array_arg(args, "upstreams")?;
+    if let Some(allowed) = route_allowed
+        && requested_upstreams
+            .iter()
+            .any(|name| !allowed.contains(name))
+    {
+        return Err(DispatchToolError::Sdk {
+            sdk_kind: "route_scope_denied".to_string(),
+            message: "Code Mode requested an upstream outside this protected route scope"
+                .to_string(),
+        });
+    }
+
+    let tools = string_array_arg(args, "tools")?;
+    let Some(allowed) = route_allowed else {
+        return Ok(CodeModeCapabilityFilter::new(requested_upstreams, tools));
+    };
+    let filter = if requested_upstreams.is_empty() {
+        CodeModeCapabilityFilter::scoped_upstreams(allowed.iter().cloned().collect(), tools)
+    } else {
+        CodeModeCapabilityFilter::scoped_upstreams(requested_upstreams, tools)
+    };
+    Ok(filter)
+}
+
 impl LabMcpServer {
     /// `search` gateway meta-tool branch. Self-returns.
     pub(crate) async fn call_code_mode_impl(
@@ -198,7 +228,15 @@ impl LabMcpServer {
                 sub: self.request_subject(context).map(ToOwned::to_owned),
             }
         });
-        match broker.search(&code, caller, self.code_mode_surface()).await {
+        match broker
+            .search_allowed(
+                &code,
+                caller,
+                self.code_mode_surface(),
+                self.route_scope.allowed_upstreams(),
+            )
+            .await
+        {
             Ok(response) => {
                 let output =
                     serde_json::to_string(&response).unwrap_or_else(|_| "null".to_string());
@@ -206,6 +244,7 @@ impl LabMcpServer {
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
                         seq: 0,
+                        route_scope: self.route_scope.label(),
                         kind: CodeModeHistoryKind::Search,
                         ok: true,
                         elapsed_ms,
@@ -236,6 +275,7 @@ impl LabMcpServer {
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
                         seq: 0,
+                        route_scope: self.route_scope.label(),
                         kind: CodeModeHistoryKind::Search,
                         ok: false,
                         elapsed_ms,
@@ -332,16 +372,14 @@ impl LabMcpServer {
             .unwrap_or(config.max_tool_calls)
             .max(1)
             .min(config.max_tool_calls.max(1));
-        let capability_filter = match (
-            string_array_arg(args, "upstreams"),
-            string_array_arg(args, "tools"),
-        ) {
-            (Ok(upstreams), Ok(tools)) => CodeModeCapabilityFilter::new(upstreams, tools),
-            (Err(err), _) | (_, Err(err)) => {
-                let env = tool_error_envelope(service, "call_tool", &err);
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-            }
-        };
+        let capability_filter =
+            match route_scoped_capability_filter(args, self.route_scope.allowed_upstreams()) {
+                Ok(filter) => filter,
+                Err(err) => {
+                    let env = tool_error_envelope(service, "call_tool", &err);
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+            };
         let code_hash = hash_arguments(&Value::String(code.to_string()));
         tracing::info!(
             surface = "mcp",
@@ -386,6 +424,7 @@ impl LabMcpServer {
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
                         seq: 0,
+                        route_scope: self.route_scope.label(),
                         kind: CodeModeHistoryKind::Execute,
                         ok: false,
                         elapsed_ms: started.elapsed().as_millis(),
@@ -401,6 +440,7 @@ impl LabMcpServer {
         manager
             .record_code_mode_history(CodeModeHistoryEntry {
                 seq: 0,
+                route_scope: self.route_scope.label(),
                 kind: CodeModeHistoryKind::Execute,
                 ok: true,
                 elapsed_ms: started.elapsed().as_millis(),

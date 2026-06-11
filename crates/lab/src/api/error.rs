@@ -43,6 +43,7 @@ impl IntoResponse for ToolError {
                 StatusCode::BAD_REQUEST
             }
             "network_error"
+            | "bad_gateway"
             | "server_error"
             | "upstream_error"
             | "oauth_resource_mismatch"
@@ -60,7 +61,7 @@ impl IntoResponse for ToolError {
             | "arch_mismatch"
             | "integrity_missing"
             | "integrity_mismatch" => StatusCode::BAD_GATEWAY,
-            "conflict" | "ambiguous_tool" => StatusCode::CONFLICT,
+            "conflict" | "ambiguous_tool" | "restart_required" => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // Serialize self directly — byte-identical to the MCP error envelope.
@@ -91,6 +92,17 @@ mod tests {
         }
         .into_response();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn restart_required_maps_to_conflict() {
+        let response = ToolError::Sdk {
+            sdk_kind: "restart_required".to_string(),
+            message: "restart labby serve".to_string(),
+        }
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
     #[test]

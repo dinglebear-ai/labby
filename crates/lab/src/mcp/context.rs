@@ -66,6 +66,14 @@ impl LabMcpServer {
         }
     }
 
+    pub(crate) async fn route_scoped_oauth_upstream_configs(
+        &self,
+    ) -> Vec<crate::config::UpstreamConfig> {
+        let mut configs = self.oauth_upstream_configs().await;
+        configs.retain(|config| self.route_scope.allows_upstream(&config.name));
+        configs
+    }
+
     pub(crate) async fn oauth_upstream_config(
         &self,
         upstream_name: &str,

@@ -3,6 +3,8 @@
 //! tool health. `has_healthy_tools_for_upstream` is `pub(super)` because
 //! `ensure.rs` calls it across the module boundary (plan §3.0/§2.1).
 
+use std::collections::BTreeSet;
+
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use serde_json::Value;
@@ -29,6 +31,10 @@ pub const MAX_UPSTREAM_RESOURCES: usize = 1000;
 /// Hard cap on the total number of prompts returned by `collect_upstream_prompts()`.
 pub const MAX_UPSTREAM_PROMPTS: usize = 1000;
 
+fn upstream_allowed(allowed: Option<&BTreeSet<String>>, upstream: &str) -> bool {
+    allowed.is_none_or(|names| names.contains(upstream))
+}
+
 impl UpstreamPool {
     /// Get all healthy upstream tools, up to [`MAX_UPSTREAM_TOOLS`] total.
     ///
@@ -36,11 +42,19 @@ impl UpstreamPool {
     /// is dropped and a `tracing::warn!` is emitted.  This prevents a buggy or
     /// malicious upstream from forcing large allocations.
     pub async fn healthy_tools(&self) -> Vec<UpstreamTool> {
+        self.healthy_tools_allowed(None).await
+    }
+
+    pub async fn healthy_tools_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<UpstreamTool> {
         let catalog = self.catalog.read().await;
         let mut tools: Vec<UpstreamTool> = catalog
-            .values()
-            .filter(|entry| entry.tool_health.is_routable())
-            .flat_map(|entry| {
+            .iter()
+            .filter(|(name, _)| upstream_allowed(allowed, name))
+            .filter(|(_, entry)| entry.tool_health.is_routable())
+            .flat_map(|(_, entry)| {
                 entry.tools.values().filter_map(|tool| {
                     entry
                         .exposure_policy
@@ -172,9 +186,20 @@ impl UpstreamPool {
     /// Look up which upstream owns a given tool name.
     #[allow(clippy::significant_drop_tightening)]
     pub async fn find_tool(&self, tool_name: &str) -> Option<(String, UpstreamTool)> {
+        self.find_tool_allowed(tool_name, None).await
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn find_tool_allowed(
+        &self,
+        tool_name: &str,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Option<(String, UpstreamTool)> {
         let catalog = self.catalog.read().await;
         catalog
-            .values()
+            .iter()
+            .filter(|(name, _)| upstream_allowed(allowed, name))
+            .map(|(_, entry)| entry)
             .filter(|entry| entry.tool_health.is_routable())
             .find_map(|entry| {
                 entry.tools.get(tool_name).and_then(|tool| {

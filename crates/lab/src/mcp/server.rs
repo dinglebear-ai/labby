@@ -23,6 +23,7 @@ use crate::dispatch::gateway::manager::GatewayManager;
 use crate::mcp::completion::{complete_prompt_arg, completion_info};
 use crate::mcp::context::subject_from_extensions;
 use crate::mcp::logging::{DispatchLogOutcome, logging_level_rank};
+use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
 /// MCP server handler — one tool per registered service.
@@ -36,6 +37,8 @@ pub struct LabMcpServer {
     pub peers: Arc<RwLock<Vec<Peer<RoleServer>>>>,
     /// Negotiated RMCP logging threshold for this server/session.
     pub logging_level: Arc<AtomicU8>,
+    /// Visibility and dispatch constraints for this MCP route/session.
+    pub(crate) route_scope: McpRouteScope,
 }
 
 pub fn verify_upstream_subject_resolution_support() -> anyhow::Result<()> {
@@ -354,6 +357,7 @@ mod tests {
             logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 logging_level_rank(rmcp::model::LoggingLevel::Info),
             )),
+            route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         };
 
         let info = server.get_info();

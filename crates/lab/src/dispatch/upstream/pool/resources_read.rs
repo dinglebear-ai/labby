@@ -146,6 +146,22 @@ impl UpstreamPool {
         )
     }
 
+    pub async fn read_upstream_resource_allowed(
+        &self,
+        uri: &str,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Option<Result<ReadResourceResult, String>> {
+        if let Some(allowed) = allowed {
+            let upstream = uri
+                .strip_prefix("lab://upstream/")
+                .and_then(|rest| rest.split('/').next())?;
+            if !allowed.contains(upstream) {
+                return None;
+            }
+        }
+        self.read_upstream_resource(uri).await
+    }
+
     pub async fn subject_scoped_read_resource(
         &self,
         config: &UpstreamConfig,
@@ -258,6 +274,7 @@ mod tests {
             node_role: None,
             peers: Arc::new(RwLock::new(Vec::new())),
             logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Info))),
+            route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         };
 
         let snapshot = server.snapshot_catalog().await;

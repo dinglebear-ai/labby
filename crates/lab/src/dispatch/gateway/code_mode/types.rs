@@ -266,6 +266,7 @@ pub enum CodeModeHistoryKind {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CodeModeHistoryEntry {
     pub seq: u64,
+    pub route_scope: String,
     pub kind: CodeModeHistoryKind,
     pub ok: bool,
     pub elapsed_ms: u128,
@@ -325,6 +326,19 @@ impl CodeModeHistory {
         self.entries.iter().cloned().collect()
     }
 
+    #[must_use]
+    pub fn snapshot_for_route_scope(&self, route_scope: Option<&str>) -> Vec<CodeModeHistoryEntry> {
+        match route_scope {
+            None => self.snapshot(),
+            Some(route_scope) => self
+                .entries
+                .iter()
+                .filter(|entry| entry.route_scope == route_scope)
+                .cloned()
+                .collect(),
+        }
+    }
+
     fn trim(&mut self) {
         while self.entries.len() > self.max_entries {
             if let Some(evicted) = self.entries.pop_front() {
@@ -357,6 +371,7 @@ impl CodeModeHistory {
     fn oversized_entry_sentinel(seq: u64, kind: CodeModeHistoryKind) -> CodeModeHistoryEntry {
         CodeModeHistoryEntry {
             seq,
+            route_scope: "root".to_string(),
             kind,
             ok: false,
             elapsed_ms: 0,
@@ -482,13 +497,26 @@ impl CodeModeCaller {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CodeModeCapabilityFilter {
-    upstreams: BTreeSet<String>,
+    upstreams: Option<BTreeSet<String>>,
     tools: BTreeSet<String>,
 }
 
 impl CodeModeCapabilityFilter {
     #[must_use]
     pub fn new(upstreams: Vec<String>, tools: Vec<String>) -> Self {
+        Self::new_inner(None, upstreams, tools)
+    }
+
+    #[must_use]
+    pub fn scoped_upstreams(upstreams: Vec<String>, tools: Vec<String>) -> Self {
+        Self::new_inner(Some(BTreeSet::new()), upstreams, tools)
+    }
+
+    fn new_inner(
+        scoped_default: Option<BTreeSet<String>>,
+        upstreams: Vec<String>,
+        tools: Vec<String>,
+    ) -> Self {
         fn clean_set(values: Vec<String>) -> BTreeSet<String> {
             values
                 .into_iter()
@@ -496,15 +524,23 @@ impl CodeModeCapabilityFilter {
                 .filter(|value| !value.is_empty())
                 .collect()
         }
+        let upstreams = clean_set(upstreams);
         Self {
-            upstreams: clean_set(upstreams),
+            upstreams: if upstreams.is_empty() {
+                scoped_default
+            } else {
+                Some(upstreams)
+            },
             tools: clean_set(tools),
         }
     }
 
     #[must_use]
     pub fn allows(&self, upstream: &str, tool: &str) -> bool {
-        (self.upstreams.is_empty() || self.upstreams.contains(upstream))
+        (self
+            .upstreams
+            .as_ref()
+            .is_none_or(|upstreams| upstreams.contains(upstream)))
             && (self.tools.is_empty()
                 || self.tools.contains(tool)
                 || self.tools.contains(&upstream_tool_id(upstream, tool)))

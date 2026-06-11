@@ -23,6 +23,7 @@ pub mod registry;
 pub mod resource_proxy;
 pub mod resources;
 pub mod result_format;
+pub(crate) mod route_scope;
 pub mod server;
 pub mod services;
 pub mod upstream;

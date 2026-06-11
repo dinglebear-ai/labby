@@ -154,7 +154,9 @@ impl LabMcpServer {
                     builtin_names.push(service.name);
                 }
             }
-            let upstream_tools = pool.healthy_tools().await;
+            let upstream_tools = pool
+                .healthy_tools_allowed(self.route_scope.allowed_upstreams())
+                .await;
             for ut in upstream_tools {
                 let tool_name = ut.tool.name.as_ref();
                 if builtin_names.contains(&tool_name) {
@@ -174,11 +176,9 @@ impl LabMcpServer {
             if let Some(oauth_subject) =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             {
-                for (_upstream_name, upstream_tools) in pool
-                    .subject_scoped_tools(
-                        &self.oauth_upstream_configs().await,
-                        oauth_subject.as_ref(),
-                    )
+                let configs = self.route_scoped_oauth_upstream_configs().await;
+                for (_, upstream_tools) in pool
+                    .subject_scoped_tools(&configs, oauth_subject.as_ref())
                     .await
                 {
                     for ut in upstream_tools {

@@ -33,6 +33,32 @@ async fn search_tools_seeds_cold_lazy_runtime_before_searching() {
 }
 
 #[tokio::test]
+async fn scoped_code_mode_catalog_fails_when_allowed_upstream_is_unhealthy() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "ping"))
+        .await;
+    let allowed = std::collections::BTreeSet::from(["alpha".to_string()]);
+
+    let err = manager
+        .code_mode_catalog_tools_allowed(true, None, None, Some(&allowed))
+        .await
+        .expect_err("healthy disallowed upstreams must not mask scoped connect failures");
+
+    match err {
+        ToolError::Sdk { sdk_kind, message } => {
+            assert_eq!(sdk_kind, "upstream_connect_error");
+            assert!(message.contains("alpha"));
+            assert!(!message.contains("beta"));
+        }
+        other => panic!("expected upstream_connect_error sdk error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn resolve_code_mode_upstream_tool_hides_priority_zero_upstreams() {
     let mut upstream = fixture_http_upstream("suppressed");
     upstream.priority = 0.0;
@@ -171,6 +197,26 @@ async fn resolve_raw_upstream_tool_honors_qualified_upstream_name() {
 
     assert_eq!(upstream, "beta");
     assert_eq!(tool.tool.name.as_ref(), "ping");
+}
+
+#[tokio::test]
+async fn resolve_raw_upstream_tool_scoped_hides_priority_zero_upstreams() {
+    let mut upstream = fixture_http_upstream("suppressed");
+    upstream.priority = 0.0;
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![upstream]).await;
+    pool.insert_entry_for_tests("suppressed", healthy_entry_with_tool("suppressed", "ping"))
+        .await;
+    let allowed = std::collections::BTreeSet::from(["suppressed".to_string()]);
+
+    let err = manager
+        .resolve_raw_upstream_tool_scoped("suppressed::ping", Some(&allowed), None, None)
+        .await
+        .expect_err("priority=0 upstream tools must not be invokable through scoped raw proxy");
+
+    match err {
+        ToolError::Sdk { sdk_kind, .. } => assert_eq!(sdk_kind, "unknown_tool"),
+        other => panic!("expected unknown_tool sdk error, got {other:?}"),
+    }
 }
 
 #[tokio::test]

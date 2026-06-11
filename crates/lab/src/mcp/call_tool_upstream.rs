@@ -60,8 +60,9 @@ impl LabMcpServer {
         let raw_resolved = if let Some(manager) = &self.gateway_manager {
             Some(
                 manager
-                    .resolve_raw_upstream_tool(
+                    .resolve_raw_upstream_tool_scoped(
                         service,
+                        self.route_scope.allowed_upstreams(),
                         Some(&raw_runtime_owner),
                         raw_oauth_subject.as_deref(),
                     )
@@ -287,7 +288,7 @@ impl LabMcpServer {
             oauth_upstream_subject_for_request(auth, self.request_subject(context))
             && let Some(pool) = self.current_upstream_pool().await
         {
-            let configs = self.oauth_upstream_configs().await;
+            let configs = self.route_scoped_oauth_upstream_configs().await;
             let mut owner = None;
             for (upstream_name, tools) in pool
                 .subject_scoped_tools(&configs, oauth_subject.as_ref())

@@ -1415,6 +1415,18 @@ Options:
       --health-path <HEALTH_PATH>
 
 
+      --gateway-subset
+          Expose a scoped Lab gateway MCP surface instead of proxying one backend
+
+      --target-upstream <TARGET_UPSTREAM>
+          Upstream names to expose for --gateway-subset. Repeat or comma-separate
+
+      --target-service <TARGET_SERVICE>
+          Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate
+
+      --expose-code-mode
+          Expose Code Mode search/execute on this gateway subset
+
   -h, --help
           Print help
 ```
@@ -1463,6 +1475,18 @@ Options:
 
       --health-path <HEALTH_PATH>
 
+
+      --gateway-subset
+          Expose a scoped Lab gateway MCP surface instead of proxying one backend
+
+      --target-upstream <TARGET_UPSTREAM>
+          Upstream names to expose for --gateway-subset. Repeat or comma-separate
+
+      --target-service <TARGET_SERVICE>
+          Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate
+
+      --expose-code-mode
+          Expose Code Mode search/execute on this gateway subset
 
   -h, --help
           Print help
@@ -1533,6 +1557,18 @@ Options:
 
       --health-path <HEALTH_PATH>
 
+
+      --gateway-subset
+          Expose a scoped Lab gateway MCP surface instead of proxying one backend
+
+      --target-upstream <TARGET_UPSTREAM>
+          Upstream names to expose for --gateway-subset. Repeat or comma-separate
+
+      --target-service <TARGET_SERVICE>
+          Built-in Lab service names to expose for --gateway-subset. Repeat or comma-separate
+
+      --expose-code-mode
+          Expose Code Mode search/execute on this gateway subset
 
   -h, --help
           Print help

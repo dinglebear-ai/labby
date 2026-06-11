@@ -107,16 +107,29 @@ impl LabMcpServer {
         }
 
         if let Some(pool) = self.current_upstream_pool().await {
-            resources.extend(pool.gateway_synthetic_resources().await);
-            resources.extend(pool.list_upstream_resources().await);
+            resources.extend(
+                pool.gateway_synthetic_resources_allowed(self.route_scope.allowed_upstreams())
+                    .await,
+            );
+            resources.extend(
+                pool.list_upstream_resources_allowed(self.route_scope.allowed_upstreams())
+                    .await,
+            );
             if let Some(oauth_subject) =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             {
-                let configs = self.oauth_upstream_configs().await;
-                resources.extend(
-                    pool.subject_scoped_resources(&configs, oauth_subject.as_ref())
-                        .await,
-                );
+                let configs = self.route_scoped_oauth_upstream_configs().await;
+                let mut scoped_resources = pool
+                    .subject_scoped_resources(&configs, oauth_subject.as_ref())
+                    .await;
+                scoped_resources.retain(|resource| {
+                    resource
+                        .uri
+                        .strip_prefix("lab://upstream/")
+                        .and_then(|rest| rest.split('/').next())
+                        .is_none_or(|upstream| self.route_scope.allows_upstream(upstream))
+                });
+                resources.extend(scoped_resources);
             }
         }
 
@@ -220,6 +233,7 @@ impl LabMcpServer {
             && let Some(upstream_name) = uri
                 .strip_prefix("lab://upstream/")
                 .and_then(|rest| rest.split('/').next())
+            && self.route_scope.allows_upstream(upstream_name)
             && let Some(config) = self.oauth_upstream_config(upstream_name).await
         {
             return self
@@ -363,6 +377,13 @@ impl LabMcpServer {
         }
         let history = if uri == CODE_MODE_HISTORY_APP_URI {
             match &self.gateway_manager {
+                Some(manager) if self.route_scope.protected_history_label().is_some() => {
+                    let label = self.route_scope.protected_history_label();
+                    Some(json!({
+                        "kind": "code_mode_history",
+                        "entries": manager.code_mode_history_snapshot_for_route_scope(label.as_deref()).await,
+                    }))
+                }
                 Some(manager) => Some(json!({
                     "kind": "code_mode_history",
                     "entries": manager.code_mode_history_snapshot().await,
@@ -473,6 +494,12 @@ mod tests {
     use rmcp::service::{Peer, RequestContext};
 
     async fn code_mode_server() -> LabMcpServer {
+        code_mode_server_with_scope(crate::mcp::route_scope::McpRouteScope::Root).await
+    }
+
+    async fn code_mode_server_with_scope(
+        route_scope: crate::mcp::route_scope::McpRouteScope,
+    ) -> LabMcpServer {
         let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
         let manager = std::sync::Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
             std::path::PathBuf::from("config.toml"),
@@ -495,6 +522,7 @@ mod tests {
             logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 crate::mcp::logging::logging_level_rank(LoggingLevel::Emergency),
             )),
+            route_scope,
         }
     }
 
@@ -633,6 +661,52 @@ mod tests {
             }
             ResourceContents::BlobResourceContents { .. } => panic!("expected text resource"),
         }
+    }
+
+    #[tokio::test]
+    async fn protected_scope_history_resource_hides_unscoped_entries() {
+        let server =
+            code_mode_server_with_scope(crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "media",
+                ["sonarr"],
+                ["gateway"],
+                true,
+            ))
+            .await;
+        let manager = server.gateway_manager.as_ref().expect("manager").clone();
+        manager
+            .record_code_mode_history(crate::dispatch::gateway::code_mode::CodeModeHistoryEntry {
+                seq: 0,
+                route_scope: "root".to_string(),
+                kind: crate::dispatch::gateway::code_mode::CodeModeHistoryKind::Search,
+                ok: true,
+                elapsed_ms: 7,
+                error_kind: None,
+                calls: Vec::new(),
+                match_count: Some(7),
+            })
+            .await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let allowed = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(CODE_MODE_HISTORY_APP_URI),
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .expect("read history resource");
+
+        let ResourceContents::TextResourceContents { text, .. } = &allowed.contents[0] else {
+            panic!("expected text resource");
+        };
+        assert!(
+            text.contains(r#""entries":[]"#),
+            "protected scope should not see global history: {text}"
+        );
     }
 
     #[test]

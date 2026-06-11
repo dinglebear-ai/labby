@@ -31,6 +31,9 @@ pub struct AppState {
     pub clients: Arc<ServiceClients>,
     /// Shared HTTP client for protected MCP reverse proxy requests.
     pub protected_mcp_http_client: reqwest::Client,
+    /// Router containing protected route scoped MCP services, mounted by
+    /// host/path after protected route auth.
+    pub protected_mcp_router: Option<Arc<axum::Router>>,
     /// Runtime-enabled service names derived from the registry.
     ///
     /// The HTTP router checks this set to decide which per-service route groups
@@ -130,6 +133,7 @@ impl AppState {
             registry: Arc::new(registry),
             clients,
             protected_mcp_http_client,
+            protected_mcp_router: None,
             enabled_services: Arc::new(enabled_services),
             auth_config: None,
             config: Arc::new(LabConfig::default()),
@@ -163,6 +167,12 @@ impl AppState {
     #[must_use]
     pub fn with_config(mut self, config: LabConfig) -> Self {
         self.config = Arc::new(config);
+        self
+    }
+
+    #[must_use]
+    pub fn with_protected_mcp_router(mut self, router: axum::Router) -> Self {
+        self.protected_mcp_router = Some(Arc::new(router));
         self
     }
 

@@ -2,6 +2,7 @@
 //! single-flight catalog reprobe with TTL coalescing, and the rendered-catalog
 //! cache used by the `search` surface.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use futures::StreamExt as _;
@@ -27,6 +28,10 @@ struct CodeModeReprobeFailure {
     message: String,
 }
 
+fn upstream_allowed(upstream: &str, allowed_upstreams: Option<&BTreeSet<String>>) -> bool {
+    allowed_upstreams.is_none_or(|allowed| allowed.contains(upstream))
+}
+
 impl GatewayManager {
     pub async fn code_mode_config(&self) -> CodeModeConfig {
         self.config.read().await.code_mode.clone()
@@ -40,6 +45,16 @@ impl GatewayManager {
         self.code_mode_history.lock().await.snapshot()
     }
 
+    pub async fn code_mode_history_snapshot_for_route_scope(
+        &self,
+        route_scope: Option<&str>,
+    ) -> Vec<CodeModeHistoryEntry> {
+        self.code_mode_history
+            .lock()
+            .await
+            .snapshot_for_route_scope(route_scope)
+    }
+
     pub async fn code_mode_enabled(&self) -> bool {
         self.config.read().await.code_mode.enabled
     }
@@ -49,11 +64,23 @@ impl GatewayManager {
     /// index to build — the `search` tool runs the caller's JS over the live
     /// catalog. When `wait_for_refresh` is set, connect upstreams synchronously
     /// so the first cold call sees a populated catalog; otherwise fire-and-forget.
+    #[allow(dead_code)]
     pub async fn ensure_search_runtime_ready(
         &self,
         wait_for_refresh: bool,
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,
+    ) -> Result<(), ToolError> {
+        self.ensure_search_runtime_ready_allowed(wait_for_refresh, owner, oauth_subject, None)
+            .await
+    }
+
+    async fn ensure_search_runtime_ready_allowed(
+        &self,
+        wait_for_refresh: bool,
+        owner: Option<&UpstreamRuntimeOwner>,
+        oauth_subject: Option<&str>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<(), ToolError> {
         let cfg = self.config.read().await.clone();
         if !cfg.code_mode.enabled {
@@ -63,7 +90,11 @@ impl GatewayManager {
         let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
         if wait_for_refresh {
             let mut failures = Vec::new();
-            for upstream in cfg.upstream.iter().filter(|u| u.enabled) {
+            for upstream in cfg
+                .upstream
+                .iter()
+                .filter(|u| u.enabled && upstream_allowed(&u.name, allowed_upstreams))
+            {
                 let subject = upstream.oauth.as_ref().and(oauth_subject);
                 if let Err(err) = pool
                     .ensure_tools_for_upstream(upstream, subject, owner)
@@ -75,7 +106,12 @@ impl GatewayManager {
                     });
                 }
             }
-            if !failures.is_empty() && pool.healthy_tools().await.is_empty() {
+            if !failures.is_empty()
+                && pool
+                    .healthy_tools_allowed(allowed_upstreams)
+                    .await
+                    .is_empty()
+            {
                 let details = failures
                     .iter()
                     .map(|failure| format!("{}: {}", failure.upstream, failure.message))
@@ -87,7 +123,13 @@ impl GatewayManager {
                 });
             }
         } else {
-            self.spawn_code_mode_upstream_connections(pool, &cfg, owner, oauth_subject);
+            self.spawn_code_mode_upstream_connections(
+                pool,
+                &cfg,
+                owner,
+                oauth_subject,
+                allowed_upstreams,
+            );
         }
         Ok(())
     }
@@ -161,16 +203,33 @@ impl GatewayManager {
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,
     ) -> Result<Vec<UpstreamTool>, ToolError> {
+        self.code_mode_catalog_tools_allowed(allow_cold_connect, owner, oauth_subject, None)
+            .await
+    }
+
+    pub async fn code_mode_catalog_tools_allowed(
+        &self,
+        allow_cold_connect: bool,
+        owner: Option<&UpstreamRuntimeOwner>,
+        oauth_subject: Option<&str>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+    ) -> Result<Vec<UpstreamTool>, ToolError> {
         if allow_cold_connect {
-            self.refresh_code_mode_catalog(owner, oauth_subject).await?;
-        } else {
-            self.ensure_search_runtime_ready(false, owner, oauth_subject)
+            self.refresh_code_mode_catalog_allowed(owner, oauth_subject, allowed_upstreams)
                 .await?;
+        } else {
+            self.ensure_search_runtime_ready_allowed(
+                false,
+                owner,
+                oauth_subject,
+                allowed_upstreams,
+            )
+            .await?;
         }
         let Some(pool) = self.current_pool().await else {
             return Ok(Vec::new());
         };
-        Ok(pool.healthy_tools().await)
+        Ok(pool.healthy_tools_allowed(allowed_upstreams).await)
     }
 
     /// One-shot CLI variant of `code_mode_catalog_tools`: serve the codemode
@@ -262,10 +321,21 @@ impl GatewayManager {
     ///   single-caller freshness contract.
     /// - Parallel reprobe: all enabled upstreams are probed concurrently, bounded by
     ///   `upstream_discovery_concurrency()` (default 3, env `LAB_UPSTREAM_DISCOVERY_CONCURRENCY`).
+    #[allow(dead_code)]
     pub async fn refresh_code_mode_catalog(
         &self,
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,
+    ) -> Result<(), ToolError> {
+        self.refresh_code_mode_catalog_allowed(owner, oauth_subject, None)
+            .await
+    }
+
+    async fn refresh_code_mode_catalog_allowed(
+        &self,
+        owner: Option<&UpstreamRuntimeOwner>,
+        oauth_subject: Option<&str>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<(), ToolError> {
         let cfg = self.config.read().await.clone();
         if !cfg.code_mode.enabled {
@@ -316,8 +386,12 @@ impl GatewayManager {
         let pool_arc = Arc::clone(&pool);
 
         // Parallel reprobe — all enabled upstreams concurrently, bounded by concurrency.
-        let enabled_upstreams: Vec<_> =
-            cfg.upstream.iter().filter(|u| u.enabled).cloned().collect();
+        let enabled_upstreams: Vec<_> = cfg
+            .upstream
+            .iter()
+            .filter(|u| u.enabled && upstream_allowed(&u.name, allowed_upstreams))
+            .cloned()
+            .collect();
 
         let results: Vec<_> = futures::stream::iter(enabled_upstreams.into_iter())
             .map(|upstream| {
@@ -365,7 +439,12 @@ impl GatewayManager {
         }
         crate::dispatch::gateway::code_mode::catalog_cache::merge_and_store(cache_updates);
 
-        if !failures.is_empty() && pool.healthy_tools().await.is_empty() {
+        if !failures.is_empty()
+            && pool
+                .healthy_tools_allowed(allowed_upstreams)
+                .await
+                .is_empty()
+        {
             let details = failures
                 .iter()
                 .map(|failure| format!("{}: {}", failure.upstream, failure.message))
@@ -436,10 +515,15 @@ impl GatewayManager {
         cfg: &LabConfig,
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
     ) {
         let owner = owner.cloned();
         let oauth_subject = oauth_subject.map(ToOwned::to_owned);
-        for upstream in cfg.upstream.iter().filter(|u| u.enabled) {
+        for upstream in cfg
+            .upstream
+            .iter()
+            .filter(|u| u.enabled && upstream_allowed(&u.name, allowed_upstreams))
+        {
             let pool = Arc::clone(&pool);
             let upstream = upstream.clone();
             let owner = owner.clone();

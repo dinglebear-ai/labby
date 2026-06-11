@@ -77,13 +77,17 @@ impl LabMcpServer {
         };
 
         let json = if uri == "lab://gateway/servers" {
-            Some(pool.gateway_servers_doc().await)
+            Some(
+                pool.gateway_servers_doc_allowed(self.route_scope.allowed_upstreams())
+                    .await,
+            )
         } else if let Some(name) = uri
             .strip_prefix("lab://gateway/")
             .and_then(|rest| rest.strip_suffix("/schema"))
             .filter(|name| !name.is_empty() && !name.contains('/'))
         {
-            pool.gateway_server_schema(name).await
+            pool.gateway_server_schema_allowed(name, self.route_scope.allowed_upstreams())
+                .await
         } else {
             None
         };
@@ -181,7 +185,10 @@ impl LabMcpServer {
             route = "upstream",
             "dispatch route selected"
         );
-        match pool.read_upstream_resource(uri).await {
+        match pool
+            .read_upstream_resource_allowed(uri, self.route_scope.allowed_upstreams())
+            .await
+        {
             Some(Ok(result)) => {
                 let elapsed_ms = start.elapsed().as_millis();
                 let upstream = uri
