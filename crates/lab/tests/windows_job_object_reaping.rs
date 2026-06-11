@@ -112,8 +112,8 @@ mod windows_job_reaping {
             }
             if std::time::Instant::now() >= deadline {
                 // Force-clean the tree so subsequent test runs start fresh.
-                let _ = direct_child.kill();
-                let _ = direct_child.wait();
+                let _kill = direct_child.kill();
+                let _wait = direct_child.wait();
                 panic!(
                     "grandchild pid {grandchild_pid} still alive 5 s after job-object close; \
                      Windows Job Object reaping did not work"
@@ -128,6 +128,6 @@ mod windows_job_reaping {
             "direct child (pid {parent_pid}) should also be dead after job-object close"
         );
         // Reap to avoid zombie handle.
-        let _ = direct_child.wait();
+        let _wait = direct_child.wait();
     }
 }
