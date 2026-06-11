@@ -12,6 +12,7 @@ use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
 use crate::registry::{RegisteredService, ToolRegistry};
 use lab_apis::core::action::ActionSpec;
+use rmcp::model::CallToolRequestParams;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -272,6 +273,61 @@ async fn snapshot_catalog_shows_no_gateway_tools_when_surface_is_disabled() {
         assert!(
             !snapshot.tools.contains(meta_tool),
             "gateway meta-tool '{meta_tool}' must not appear when neither mode is enabled"
+        );
+    }
+}
+
+#[tokio::test]
+async fn protected_scope_denies_direct_code_mode_calls_when_hidden() {
+    let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+    let manager = std::sync::Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
+        std::path::PathBuf::from("config.toml"),
+        runtime,
+    ));
+    manager
+        .seed_config(crate::config::LabConfig {
+            code_mode: crate::config::CodeModeConfig {
+                enabled: true,
+                ..crate::config::CodeModeConfig::default()
+            },
+            ..crate::config::LabConfig::default()
+        })
+        .await;
+    let server = LabMcpServer {
+        registry: std::sync::Arc::new(completion_test_registry()),
+        gateway_manager: Some(manager),
+        node_role: None,
+        peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+        logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
+            rmcp::model::LoggingLevel::Info,
+        ))),
+        route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "media",
+            ["sonarr"],
+            ["radarr"],
+            false,
+        ),
+    };
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = rmcp::service::RequestContext::new(
+        rmcp::model::NumberOrString::Number(1),
+        running.peer().clone(),
+    );
+
+    for tool_name in [CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME] {
+        let result = running
+            .service()
+            .call_tool_impl(CallToolRequestParams::new(tool_name), context.clone())
+            .await
+            .expect("call tool result");
+        assert!(result.is_error.unwrap_or(false));
+        let text = result.content[0].as_text().expect("text").text.as_str();
+        assert!(
+            text.contains("route_scope_denied"),
+            "{tool_name} should be denied, got {text}"
         );
     }
 }

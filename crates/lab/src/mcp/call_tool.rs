@@ -74,11 +74,33 @@ impl LabMcpServer {
 
         // ── Gateway `search` tool: run caller's JS over the upstream catalog ──
         if service == CODE_MODE_SEARCH_TOOL_NAME {
+            if !self.route_scope.exposes_code_mode() {
+                let envelope = build_error(
+                    &service,
+                    "call_tool",
+                    "route_scope_denied",
+                    "Code Mode is not exposed on this MCP route",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(
+                    envelope.to_string(),
+                )]));
+            }
             return self.call_code_mode_impl(&service, &args, &context).await;
         }
 
         // ── Gateway `execute` tool: run caller's JS in the subprocess sandbox ─
         if service == TOOL_EXECUTE_TOOL_NAME {
+            if !self.route_scope.exposes_code_mode() {
+                let envelope = build_error(
+                    &service,
+                    "call_tool",
+                    "route_scope_denied",
+                    "Code Mode is not exposed on this MCP route",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(
+                    envelope.to_string(),
+                )]));
+            }
             return self.call_tool_execute_impl(&service, &args, &context).await;
         }
 

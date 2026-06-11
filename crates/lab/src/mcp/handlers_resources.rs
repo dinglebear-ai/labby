@@ -104,7 +104,10 @@ impl LabMcpServer {
         }
 
         if let Some(pool) = self.current_upstream_pool().await {
-            resources.extend(pool.gateway_synthetic_resources().await);
+            resources.extend(
+                pool.gateway_synthetic_resources_allowed(self.route_scope.allowed_upstreams())
+                    .await,
+            );
             resources.extend(
                 pool.list_upstream_resources_allowed(self.route_scope.allowed_upstreams())
                     .await,

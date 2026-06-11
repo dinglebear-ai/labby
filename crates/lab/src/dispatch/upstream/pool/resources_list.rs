@@ -37,9 +37,17 @@ impl UpstreamPool {
     /// Lists every registered upstream (regardless of health) with the
     /// tool count an agent would see in the corresponding schema document.
     pub async fn gateway_servers_doc(&self) -> Value {
+        self.gateway_servers_doc_allowed(None).await
+    }
+
+    pub async fn gateway_servers_doc_allowed(
+        &self,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Value {
         let catalog = self.catalog.read().await;
         let mut servers: Vec<Value> = catalog
             .iter()
+            .filter(|(name, _)| allowed.is_none_or(|allowed| allowed.contains(*name)))
             .map(|(name, e)| {
                 let tool_count = e
                     .tools
@@ -66,6 +74,17 @@ impl UpstreamPool {
     /// the upstream's `ToolExposurePolicy` are omitted. `input_schema` and
     /// `meta` are passed through verbatim from the cached tool definition.
     pub async fn gateway_server_schema(&self, name: &str) -> Option<Value> {
+        self.gateway_server_schema_allowed(name, None).await
+    }
+
+    pub async fn gateway_server_schema_allowed(
+        &self,
+        name: &str,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Option<Value> {
+        if allowed.is_some_and(|allowed| !allowed.contains(name)) {
+            return None;
+        }
         let catalog = self.catalog.read().await;
         let entry = catalog.get(name)?;
         let mut tools: Vec<Value> = entry
@@ -95,6 +114,13 @@ impl UpstreamPool {
     /// Returns one entry for `lab://gateway/servers` plus one
     /// `lab://gateway/<name>/schema` entry per registered upstream.
     pub async fn gateway_synthetic_resources(&self) -> Vec<Resource> {
+        self.gateway_synthetic_resources_allowed(None).await
+    }
+
+    pub async fn gateway_synthetic_resources_allowed(
+        &self,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Vec<Resource> {
         let mut out = vec![
             RawResource::new("lab://gateway/servers", "gateway/servers")
                 .with_description("Index of upstream MCP servers registered with the gateway")
@@ -103,6 +129,9 @@ impl UpstreamPool {
         ];
         let catalog = self.catalog.read().await;
         let mut names: Vec<&String> = catalog.keys().collect();
+        if let Some(allowed) = allowed {
+            names.retain(|name| allowed.contains(*name));
+        }
         names.sort();
         for name in names {
             out.push(
@@ -122,7 +151,14 @@ impl UpstreamPool {
     ///
     /// Resources are prefixed with `lab://upstream/{name}/` to avoid collisions.
     pub async fn list_upstream_resources(&self) -> Vec<Resource> {
-        let peers = routable_upstream_peers(self, UpstreamCapability::Resources).await;
+        self.list_upstream_resources_allowed(None).await
+    }
+
+    pub async fn list_upstream_resources_allowed(
+        &self,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Vec<Resource> {
+        let peers = routable_upstream_peers(self, UpstreamCapability::Resources, allowed).await;
         if peers.is_empty() {
             return Vec::new();
         }
@@ -218,26 +254,6 @@ impl UpstreamPool {
 
         resources
     }
-
-    pub async fn list_upstream_resources_allowed(
-        &self,
-        allowed: Option<&std::collections::BTreeSet<String>>,
-    ) -> Vec<Resource> {
-        if allowed.is_none() {
-            return self.list_upstream_resources().await;
-        }
-        let allowed = allowed.expect("checked some");
-        let mut resources = self.list_upstream_resources().await;
-        resources.retain(|resource| {
-            resource
-                .uri
-                .strip_prefix("lab://upstream/")
-                .and_then(|rest| rest.split('/').next())
-                .is_some_and(|upstream| allowed.contains(upstream))
-        });
-        resources
-    }
-
     pub async fn subject_scoped_resources(
         &self,
         configs: &[UpstreamConfig],
@@ -436,5 +452,44 @@ mod tests {
         assert!(uris.iter().any(|u| u == "lab://gateway/alpha/schema"));
         assert!(uris.iter().any(|u| u == "lab://gateway/beta/schema"));
         assert_eq!(uris.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn gateway_synthetic_resources_respect_allowed_upstreams() {
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+
+        let pool = UpstreamPool::new();
+        let entry = healthy_in_process_entry(Arc::from("alpha"), HashMap::new());
+        pool.catalog
+            .write()
+            .await
+            .insert("alpha".to_string(), entry);
+        let entry = healthy_in_process_entry(Arc::from("beta"), HashMap::new());
+        pool.catalog.write().await.insert("beta".to_string(), entry);
+        let allowed = BTreeSet::from(["alpha".to_string()]);
+
+        let resources = pool
+            .gateway_synthetic_resources_allowed(Some(&allowed))
+            .await;
+        let uris: Vec<String> = resources.iter().map(|r| r.uri.clone()).collect();
+        assert!(uris.iter().any(|u| u == "lab://gateway/servers"));
+        assert!(uris.iter().any(|u| u == "lab://gateway/alpha/schema"));
+        assert!(!uris.iter().any(|u| u == "lab://gateway/beta/schema"));
+        assert_eq!(uris.len(), 2);
+
+        let doc = pool.gateway_servers_doc_allowed(Some(&allowed)).await;
+        let servers = doc
+            .get("servers")
+            .and_then(|v| v.as_array())
+            .expect("servers array");
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0]["name"], "alpha");
+
+        assert!(
+            pool.gateway_server_schema_allowed("beta", Some(&allowed))
+                .await
+                .is_none()
+        );
     }
 }

@@ -87,6 +87,14 @@ fn capability_filter_allows_only_selected_upstreams_and_tools() {
 }
 
 #[test]
+fn scoped_capability_filter_with_empty_upstreams_denies_all_tool_calls() {
+    let filter = CodeModeCapabilityFilter::scoped_upstreams(Vec::new(), Vec::new());
+
+    assert!(!filter.allows("github", "search_issues"));
+    assert!(!filter.allows("docker", "containers"));
+}
+
+#[test]
 fn upstream_error_info_preserves_user_error_kinds() {
     let text = json!({
         "error": {

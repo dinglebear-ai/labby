@@ -373,7 +373,11 @@ impl LabMcpServer {
         } else {
             requested_upstreams
         };
-        let capability_filter = CodeModeCapabilityFilter::new(effective_upstreams, tools);
+        let capability_filter = if self.route_scope.allowed_upstreams().is_some() {
+            CodeModeCapabilityFilter::scoped_upstreams(effective_upstreams, tools)
+        } else {
+            CodeModeCapabilityFilter::new(effective_upstreams, tools)
+        };
         let code_hash = hash_arguments(&Value::String(code.to_string()));
         tracing::info!(
             surface = "mcp",

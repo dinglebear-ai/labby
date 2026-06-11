@@ -7,6 +7,7 @@
 //! deterministic order and is `pub(super)` because the tools/resources/prompts
 //! modules call it across the module boundary.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -42,6 +43,7 @@ enum DiscoveryLifecycle {
 pub(super) async fn routable_upstream_peers(
     pool: &UpstreamPool,
     capability: UpstreamCapability,
+    allowed_upstreams: Option<&BTreeSet<String>>,
 ) -> Vec<(String, rmcp::service::Peer<RoleClient>)> {
     let mut names: Vec<String> = {
         let catalog = pool.catalog.read().await;
@@ -64,6 +66,9 @@ pub(super) async fn routable_upstream_peers(
                 .map(|(name, _)| name.clone())
                 .collect::<Vec<_>>(),
         };
+        if let Some(allowed) = allowed_upstreams {
+            names.retain(|name| allowed.contains(name));
+        }
         names.sort_unstable();
         names.dedup();
         names

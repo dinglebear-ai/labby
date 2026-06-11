@@ -380,8 +380,20 @@ impl LabConfig {
                 .map(|name| name.trim().to_string())
                 .filter(|name| !name.is_empty());
             if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
-                normalize_string_list(&mut target.upstreams);
-                normalize_string_list(&mut target.services);
+                normalize_string_list(&mut target.upstreams).map_err(|field| {
+                    ConfigError::InvalidProtectedRoute {
+                        name: route.name.clone(),
+                        field,
+                        value: "gateway_subset target entries must not be empty".to_string(),
+                    }
+                })?;
+                normalize_string_list(&mut target.services).map_err(|field| {
+                    ConfigError::InvalidProtectedRoute {
+                        name: route.name.clone(),
+                        field,
+                        value: "gateway_subset target entries must not be empty".to_string(),
+                    }
+                })?;
             }
             if route.target.is_some()
                 && (route.upstream.is_some() || !route.backend_url.trim().is_empty())
@@ -428,15 +440,19 @@ impl LabConfig {
     }
 }
 
-fn normalize_string_list(values: &mut Vec<String>) {
+fn normalize_string_list(values: &mut Vec<String>) -> Result<(), &'static str> {
     let mut normalized = Vec::new();
     for value in std::mem::take(values) {
         let name = value.trim().to_string();
-        if !name.is_empty() && !normalized.contains(&name) {
+        if name.is_empty() {
+            return Err("target");
+        }
+        if !normalized.contains(&name) {
             normalized.push(name);
         }
     }
     *values = normalized;
+    Ok(())
 }
 
 fn default_true() -> bool {
@@ -3162,6 +3178,29 @@ upstreams = ["sonarr"]
         assert!(err.to_string().contains(
             "protected MCP route target cannot be combined with upstream or backend_url"
         ));
+    }
+
+    #[test]
+    fn protected_route_rejects_empty_gateway_subset_entries() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "bad"
+public_host = "mcp.example.com"
+public_path = "/bad"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["sonarr", " "]
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        let err = cfg
+            .normalize_protected_mcp_routes()
+            .expect_err("empty upstream entry must fail");
+        assert!(
+            err.to_string()
+                .contains("gateway_subset target entries must not be empty")
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! co-located with its only caller (`find_prompt_owner`) — no `pub(super)` needed
 //! (plan §2.1 drop note).
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 use futures::StreamExt;
@@ -27,8 +28,9 @@ impl UpstreamPool {
     async fn collect_upstream_prompts(
         &self,
         builtin_names: &[&str],
+        allowed: Option<&BTreeSet<String>>,
     ) -> (Vec<Prompt>, HashMap<String, String>) {
-        let peers = routable_upstream_peers(self, UpstreamCapability::Prompts).await;
+        let peers = routable_upstream_peers(self, UpstreamCapability::Prompts, allowed).await;
 
         // Issue RPCs in parallel. merge_upstream_prompts sorts internally,
         // so completion order does not affect the final result.
@@ -127,7 +129,7 @@ impl UpstreamPool {
 
     /// List prompts from all healthy upstreams, filtering built-in and cross-upstream collisions.
     pub async fn list_upstream_prompts(&self, builtin_names: &[&str]) -> Vec<Prompt> {
-        let (prompts, _) = self.collect_upstream_prompts(builtin_names).await;
+        let (prompts, _) = self.collect_upstream_prompts(builtin_names, None).await;
         prompts
     }
 
@@ -182,7 +184,7 @@ impl UpstreamPool {
     /// Makes M RPCs (one per healthy upstream), not M*N. Use this when you need
     /// to look up ownership for multiple prompts.
     pub async fn prompt_ownership_map(&self, builtin_names: &[&str]) -> HashMap<String, String> {
-        let (_, owners) = self.collect_upstream_prompts(builtin_names).await;
+        let (_, owners) = self.collect_upstream_prompts(builtin_names, None).await;
         owners
     }
 
@@ -223,7 +225,7 @@ impl UpstreamPool {
             return Some(owner);
         }
 
-        let (_, owners) = self.collect_upstream_prompts(&[]).await;
+        let (_, owners) = self.collect_upstream_prompts(&[], None).await;
         if let Some(owner) = owners.get(prompt_name) {
             return Some(owner.clone());
         }
@@ -234,25 +236,18 @@ impl UpstreamPool {
     pub async fn list_upstream_prompts_allowed(
         &self,
         builtin_name_refs: &[&str],
-        allowed: Option<&std::collections::BTreeSet<String>>,
+        allowed: Option<&BTreeSet<String>>,
     ) -> Vec<Prompt> {
-        let mut prompts = self.list_upstream_prompts(builtin_name_refs).await;
-        if let Some(allowed) = allowed {
-            let owners = self.cached_prompt_ownership_map().await;
-            prompts.retain(|prompt| {
-                let name: &str = prompt.name.as_ref();
-                owners
-                    .get(name)
-                    .is_some_and(|upstream| allowed.contains(upstream))
-            });
-        }
+        let (prompts, _) = self
+            .collect_upstream_prompts(builtin_name_refs, allowed)
+            .await;
         prompts
     }
 
     pub async fn find_prompt_owner_allowed(
         &self,
         prompt_name: &str,
-        allowed: Option<&std::collections::BTreeSet<String>>,
+        allowed: Option<&BTreeSet<String>>,
     ) -> Option<String> {
         let owner = self.find_prompt_owner(prompt_name).await?;
         if allowed.is_some_and(|names| !names.contains(&owner)) {
