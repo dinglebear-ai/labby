@@ -313,7 +313,7 @@ fn settings_config_update_action(params: &Value) -> Result<Value, ToolError> {
         sdk_kind: "internal_error".into(),
         message: "HOME env var not set; cannot resolve config.toml path".into(),
     })?;
-    let expected = super::settings::expected_config_scalars(&entries);
+    let expected = super::settings::expected_config_scalars(&entries)?;
     let outcome = crate::config::patch_config_scalars_checked(&path, &patches, &expected)
         .map_err(config_io_error)?;
     if patches
@@ -971,6 +971,71 @@ mod tests {
         );
 
         crate::registry::set_runtime_built_in_upstream_apis_enabled(previous_runtime);
+        crate::config::set_test_config_toml_path(None);
+    }
+
+    #[tokio::test]
+    async fn settings_config_update_dispatch_persists_and_rejects_stale_previous() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_dir = temp.path().join(".config/lab");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        let config_path = config_dir.join("config.toml");
+        let original = "# keep me\n[mcp]\nport = 8765\n[plugin_owned]\nfuture = \"keep\"\n";
+        std::fs::write(&config_path, original).expect("write config");
+        crate::config::set_test_config_toml_path(Some(config_path.clone()));
+
+        let updated = dispatch(
+            "settings.config.update",
+            json!({
+                "section": "surfaces",
+                "confirm": true,
+                "entries": [{
+                    "key": "mcp.port",
+                    "value": 8766,
+                    "previous": 8765
+                }]
+            }),
+        )
+        .await
+        .expect("settings config update");
+
+        assert_eq!(updated["state"]["values"]["mcp.port"], 8766);
+        assert!(
+            updated["backup_path"]
+                .as_str()
+                .is_some_and(|path| path.contains("config.toml.bak."))
+        );
+        let persisted = std::fs::read_to_string(&config_path).expect("read config");
+        assert!(persisted.contains("# keep me"));
+        assert!(persisted.contains("[plugin_owned]"));
+        assert!(persisted.contains("port = 8766"));
+
+        let err = dispatch(
+            "settings.config.update",
+            json!({
+                "section": "surfaces",
+                "confirm": true,
+                "entries": [{
+                    "key": "mcp.port",
+                    "value": 8767,
+                    "previous": 8765
+                }]
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind(), "invalid_param");
+        match err {
+            ToolError::InvalidParam { param, .. } => assert_eq!(param, "mcp.port"),
+            other => panic!("expected invalid_param, got {other:?}"),
+        }
+        assert!(
+            std::fs::read_to_string(&config_path)
+                .expect("read config")
+                .contains("port = 8766")
+        );
+
         crate::config::set_test_config_toml_path(None);
     }
 

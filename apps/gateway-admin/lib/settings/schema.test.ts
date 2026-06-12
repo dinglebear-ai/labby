@@ -37,6 +37,20 @@ test('settings schema helpers build dirty entries only for changed keys', () => 
   ])
 })
 
+test('settings schema helpers emit unset for blank optional config fields', () => {
+  const pathField: SettingsFieldSpec = {
+    ...numberField,
+    key: 'workspace.root',
+    control: 'text',
+    env_override: null,
+    min: null,
+    max: null,
+  }
+  assert.deepEqual(buildDirtyEntries([pathField], new Set(['workspace.root']), { 'workspace.root': '' }, { 'workspace.root': '/srv/lab' }), [
+    { key: 'workspace.root', value: null, previous: '/srv/lab', unset: true },
+  ])
+})
+
 test('settings schema helpers partition dirty entries by backend', () => {
   const envField: SettingsFieldSpec = { ...numberField, key: 'LAB_MCP_HTTP_PORT', backend: 'env' }
   const partitioned = buildDirtyEntriesByBackend(
@@ -47,6 +61,18 @@ test('settings schema helpers partition dirty entries by backend', () => {
   )
   assert.deepEqual(partitioned.configEntries, [{ key: 'mcp.port', value: 8766, previous: 8765 }])
   assert.deepEqual(partitioned.envEntries, [{ key: 'LAB_MCP_HTTP_PORT', value: 8767, previous: 8765 }])
+})
+
+test('settings schema helpers exclude config fields shadowed by env overrides', () => {
+  const partitioned = buildDirtyEntriesByBackend(
+    [numberField],
+    new Set(['mcp.port']),
+    { 'mcp.port': 8766 },
+    { 'mcp.port': 8765 },
+    { 'mcp.port': { source: 'env', overridden_by_env: 'LAB_MCP_HTTP_PORT' } },
+  )
+  assert.deepEqual(partitioned.configEntries, [])
+  assert.deepEqual(partitioned.envEntries, [])
 })
 
 test('settings schema helpers do not stringify arrays as objects', () => {

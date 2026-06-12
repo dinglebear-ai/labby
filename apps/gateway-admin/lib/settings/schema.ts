@@ -44,11 +44,14 @@ export function buildDirtyEntries(
 ): SettingsUpdateEntry[] {
   return fields
     .filter((field) => changedKeys.has(field.key))
-    .map((field) => ({
-      key: field.key,
-      value: values[field.key] ?? null,
-      previous: initialValues[field.key] ?? null,
-    }))
+    .map((field) => {
+      const value = values[field.key] ?? null
+      const previous = initialValues[field.key] ?? null
+      const unset = field.backend === 'config_toml'
+        && !field.required
+        && (value === null || value === '' || (Array.isArray(value) && value.length === 0))
+      return unset ? { key: field.key, value: null, previous, unset: true } : { key: field.key, value, previous }
+    })
 }
 
 export function buildDirtyEntriesByBackend(
@@ -56,8 +59,11 @@ export function buildDirtyEntriesByBackend(
   changedKeys: Set<string>,
   values: Record<string, unknown>,
   initialValues: Record<string, unknown>,
+  sources: SettingsState['sources'] = {},
 ): { envEntries: SettingsUpdateEntry[]; configEntries: SettingsUpdateEntry[] } {
-  const editable = editableFields(fields)
+  const editable = editableFields(fields).filter((field) => {
+    return !(field.backend === 'config_toml' && sources[field.key]?.overridden_by_env)
+  })
   const backendByKey = new Map(editable.map((field) => [field.key, field.backend]))
   const entries = buildDirtyEntries(editable, changedKeys, values, initialValues)
   return {

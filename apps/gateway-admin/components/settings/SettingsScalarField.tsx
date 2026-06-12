@@ -24,10 +24,11 @@ export function SettingsScalarField({
 }): React.ReactElement {
   const id = `settings-${field.key.replaceAll('.', '-')}`
   const errorId = `${id}-error`
-  const disabled = field.write_policy !== 'editable'
   const inputValue = valueAsInputString(value)
   const source = state.sources[field.key]
   const envOverride = source?.overridden_by_env
+  const isEnvShadowedConfig = field.backend === 'config_toml' && Boolean(envOverride)
+  const disabled = field.write_policy !== 'editable' || isEnvShadowedConfig
   const sourceLabel = source?.source ?? 'default'
   const backendLabel = field.backend === 'env' ? '.env' : 'config.toml'
   const describedBy = error ? errorId : undefined
@@ -86,7 +87,7 @@ export function SettingsScalarField({
         {field.env_override ? <Badge variant="outline">env: {field.env_override}</Badge> : null}
       </div>
       {hasEnvOverrideWarning(field, state) ? (
-        <p className="text-xs text-amber-600">{envOverride} currently overrides this config.toml value.</p>
+        <p className="text-xs text-amber-600">{envOverride} currently overrides this config.toml value. Edit the env var or remove the override first.</p>
       ) : null}
       {renderControl()}
       {error ? <p id={errorId} className="text-xs text-destructive">{error}</p> : null}

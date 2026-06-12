@@ -116,14 +116,50 @@ pub struct SettingsStateResponse {
     pub sources: BTreeMap<String, SettingsValueSource>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SettingsUpdateEntry {
     pub key: String,
     pub value: Value,
     #[serde(default)]
-    pub previous: Option<Value>,
+    pub previous: Value,
     #[serde(default)]
     pub unset: bool,
+    #[serde(skip)]
+    pub previous_present: bool,
+}
+
+impl<'de> Deserialize<'de> for SettingsUpdateEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let mut object = Map::<String, Value>::deserialize(deserializer)?;
+        let key = object
+            .remove("key")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or_else(|| D::Error::missing_field("key"))?;
+        let value = object.remove("value").unwrap_or(Value::Null);
+        let previous_present = object.contains_key("previous");
+        let previous = object.remove("previous").unwrap_or(Value::Null);
+        let unset = object
+            .remove("unset")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| D::Error::custom("unset must be boolean"))
+            })
+            .transpose()?
+            .unwrap_or(false);
+        Ok(Self {
+            key,
+            value,
+            previous,
+            unset,
+            previous_present,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1227,8 +1263,7 @@ fn cap_readonly_value(value: Value, depth: usize) -> Value {
 
     match value {
         Value::String(text) if text.len() > READONLY_MAX_STRING_BYTES => {
-            let mut preview = text;
-            preview.truncate(READONLY_MAX_STRING_BYTES);
+            let preview = truncate_utf8_preview(text, READONLY_MAX_STRING_BYTES);
             json!({
                 "truncated": true,
                 "kind": "string",
@@ -1275,6 +1310,20 @@ fn cap_readonly_value(value: Value, depth: usize) -> Value {
     }
 }
 
+fn truncate_utf8_preview(mut text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let end = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    text.truncate(end);
+    text
+}
+
 pub fn config_patches_from_entries(
     entries: &[SettingsUpdateEntry],
 ) -> Result<Vec<crate::config::ConfigScalarPatch>, ToolError> {
@@ -1304,6 +1353,18 @@ pub fn config_patches_from_entries(
                 param: entry.key.clone(),
             });
         }
+        if let Some(name) = field.env_override
+            && std::env::var_os(name).is_some()
+        {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "setting `{}` is overridden by env var `{name}` and cannot be edited here",
+                    entry.key
+                ),
+                param: entry.key.clone(),
+            });
+        }
+        require_previous(entry)?;
         patches.push(config_patch_for_field(field, entry)?);
     }
     Ok(patches)
@@ -1311,22 +1372,20 @@ pub fn config_patches_from_entries(
 
 pub fn expected_config_scalars(
     entries: &[SettingsUpdateEntry],
-) -> Vec<crate::config::ExpectedConfigScalar> {
+) -> Result<Vec<crate::config::ExpectedConfigScalar>, ToolError> {
     let fields = settings_fields_by_key();
     let mut expected = Vec::new();
     for entry in entries {
-        let Some(previous) = &entry.previous else {
-            continue;
-        };
         let Some(field) = fields.get(entry.key.as_str()) else {
             continue;
         };
-        expected.push(
-            crate::config::ExpectedConfigScalar::new(field.key, previous.clone())
-                .skip_if_env_present(field.env_override),
-        );
+        require_previous(entry)?;
+        expected.push(crate::config::ExpectedConfigScalar::new(
+            field.key,
+            entry.previous.clone(),
+        ));
     }
-    expected
+    Ok(expected)
 }
 
 fn config_patch_for_field(
@@ -1441,6 +1500,7 @@ pub fn env_entries_from_updates(
                 param: entry.key.clone(),
             });
         }
+        require_previous(entry)?;
         let value = match field.control {
             SettingsControl::Number => entry
                 .value
@@ -1473,14 +1533,12 @@ pub fn validate_env_previous(
 ) -> Result<(), ToolError> {
     let fields = settings_fields_by_key();
     for entry in entries {
-        let Some(previous) = &entry.previous else {
-            continue;
-        };
         let Some(field) = fields.get(entry.key.as_str()) else {
             continue;
         };
+        require_previous(entry)?;
         let current = env_file_value(env_path, field).unwrap_or(Value::Null);
-        if &current != previous {
+        if current != entry.previous {
             return Err(ToolError::InvalidParam {
                 message: format!("setting `{}` changed since it was loaded", entry.key),
                 param: entry.key.clone(),
@@ -1488,6 +1546,19 @@ pub fn validate_env_previous(
         }
     }
     Ok(())
+}
+
+fn require_previous(entry: &SettingsUpdateEntry) -> Result<(), ToolError> {
+    if entry.previous_present {
+        return Ok(());
+    }
+    Err(ToolError::InvalidParam {
+        message: format!(
+            "setting `{}` requires previous for stale-write protection",
+            entry.key
+        ),
+        param: entry.key.clone(),
+    })
 }
 
 fn settings_fields_by_key() -> BTreeMap<&'static str, SettingsFieldSpec> {
@@ -1705,8 +1776,9 @@ mod tests {
         let entries = vec![SettingsUpdateEntry {
             key: "auth".into(),
             value: json!("********"),
-            previous: None,
+            previous: json!(null),
             unset: false,
+            previous_present: true,
         }];
         let err = config_patches_from_entries(&entries).unwrap_err();
         assert_eq!(err.kind(), "invalid_param");
@@ -1717,8 +1789,9 @@ mod tests {
         let entries = vec![SettingsUpdateEntry {
             key: "LAB_MCP_HTTP_PORT".into(),
             value: json!(8766),
-            previous: None,
+            previous: json!(8765),
             unset: false,
+            previous_present: true,
         }];
         let parsed = env_entries_from_updates(&entries).unwrap();
         assert_eq!(parsed[0].key, "LAB_MCP_HTTP_PORT");
@@ -1727,10 +1800,24 @@ mod tests {
         let rejected = vec![SettingsUpdateEntry {
             key: "LAB_MCP_HTTP_TOKEN".into(),
             value: json!("secret"),
-            previous: None,
+            previous: json!(null),
             unset: false,
+            previous_present: true,
         }];
         assert!(env_entries_from_updates(&rejected).is_err());
+    }
+
+    #[test]
+    fn config_update_requires_previous_for_stale_protection() {
+        let entries = vec![SettingsUpdateEntry {
+            key: "mcp.port".into(),
+            value: json!(8766),
+            previous: json!(null),
+            unset: false,
+            previous_present: false,
+        }];
+        let err = config_patches_from_entries(&entries).unwrap_err();
+        assert_eq!(err.kind(), "invalid_param");
     }
 
     #[test]
@@ -1757,6 +1844,18 @@ mod tests {
         assert_eq!(capped["truncated"], true);
         assert_eq!(capped["kind"], "array");
         assert_eq!(capped["total_items"], 90);
+    }
+
+    #[test]
+    fn readonly_string_capping_is_utf8_boundary_safe() {
+        let value = json!(format!("{}é", "a".repeat(READONLY_MAX_STRING_BYTES - 1)));
+        let capped = cap_readonly_value(value, 0);
+        assert_eq!(capped["truncated"], true);
+        assert_eq!(capped["kind"], "string");
+        assert_eq!(
+            capped["preview"].as_str().unwrap().len(),
+            READONLY_MAX_STRING_BYTES - 1
+        );
     }
 
     #[test]

@@ -52,6 +52,6 @@ test('settings state contract is section scoped', () => {
 })
 
 test('settings update entries support explicit unset', () => {
-  const entry: SettingsUpdateEntry = { key: 'mcp.port', value: null, unset: true }
+  const entry: SettingsUpdateEntry = { key: 'mcp.port', value: null, previous: 8765, unset: true }
   assert.equal(entry.unset, true)
 })

@@ -41,3 +41,25 @@ test('SettingsScalarField renders scalar metadata and value', () => {
   assert.match(html, /LAB_LOG/)
   assert.match(html, /labby=info/)
 })
+
+test('SettingsScalarField disables config values shadowed by env overrides', () => {
+  const configField: SettingsFieldSpec = {
+    ...field,
+    key: 'mcp.port',
+    backend: 'config_toml',
+    control: 'number',
+    env_override: 'LAB_MCP_HTTP_PORT',
+    min: 1,
+    max: 65535,
+  }
+  const configState: SettingsState = {
+    ...state,
+    values: { 'mcp.port': 9000 },
+    sources: { 'mcp.port': { source: 'env', overridden_by_env: 'LAB_MCP_HTTP_PORT' } },
+  }
+  const html = renderToStaticMarkup(
+    <SettingsScalarField field={configField} value={9000} state={configState} onChange={() => undefined} />,
+  )
+  assert.match(html, /disabled/)
+  assert.match(html, /Edit the env var or remove the override first/)
+})

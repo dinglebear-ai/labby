@@ -1789,7 +1789,6 @@ pub struct ConfigPatchOutcome {
 pub struct ExpectedConfigScalar {
     pub path: String,
     pub value: serde_json::Value,
-    pub skip_if_env_present: Option<String>,
 }
 
 impl ExpectedConfigScalar {
@@ -1798,14 +1797,7 @@ impl ExpectedConfigScalar {
         Self {
             path: path.into(),
             value,
-            skip_if_env_present: None,
         }
-    }
-
-    #[must_use]
-    pub fn skip_if_env_present(mut self, env: Option<&str>) -> Self {
-        self.skip_if_env_present = env.map(ToOwned::to_owned);
-        self
     }
 }
 
@@ -1919,13 +1911,6 @@ pub fn patch_config_scalars_checked(
             .validate()
             .with_context(|| format!("invalid config {}", path.display()))?;
         for item in expected {
-            if item
-                .skip_if_env_present
-                .as_deref()
-                .is_some_and(|name| std::env::var_os(name).is_some())
-            {
-                continue;
-            }
             let current = config_json_value_for_path(&current_cfg, &item.path);
             anyhow::ensure!(
                 current == item.value,

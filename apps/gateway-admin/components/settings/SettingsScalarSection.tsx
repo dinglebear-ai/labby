@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import type { SettingsFieldSpec, SettingsState } from '@/lib/api/setup-client'
@@ -35,6 +35,7 @@ export function SettingsScalarSection({
   const [confirmed, setConfirmed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const savingRef = useRef(false)
 
   useEffect(() => {
     setValues(initialValues)
@@ -44,10 +45,12 @@ export function SettingsScalarSection({
   }, [initialValues])
 
   async function save(): Promise<void> {
+    if (savingRef.current) return
+    savingRef.current = true
     setSaving(true)
     setErrors({})
     try {
-      const { envEntries, configEntries } = buildDirtyEntriesByBackend(fields, changedKeys, values, initialValues)
+      const { envEntries, configEntries } = buildDirtyEntriesByBackend(fields, changedKeys, values, initialValues, state.sources)
       if (envEntries.length > 0 && configEntries.length > 0) {
         setErrors({ _form: 'Save .env and config.toml settings separately.' })
         return
@@ -69,6 +72,7 @@ export function SettingsScalarSection({
         setErrors({ _form: message })
       }
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }

@@ -314,7 +314,7 @@ export interface SettingsState {
 export interface SettingsUpdateEntry {
   key: string
   value: unknown
-  previous?: unknown
+  previous: unknown
   unset?: boolean
 }
 
@@ -446,17 +446,17 @@ export const setupApi = {
   },
 
   settingsUpdate(patch: SettingsUpdate, signal?: AbortSignal): Promise<SettingsState> {
-    return this.settingsConfigUpdate(
-      'features',
-      [
+    if (USE_MOCK_DATA) {
+      signal?.throwIfAborted?.()
+      return Promise.resolve(mockSettingsState('features', [
         {
           key: 'services.built_in_upstream_apis_enabled',
           value: patch.services.built_in_upstream_apis_enabled,
+          previous: null,
         },
-      ],
-      true,
-      signal,
-    ).then((outcome) => outcome.state)
+      ]))
+    }
+    return setupAction<SettingsState>('settings.update', { ...patch, confirm: true }, signal)
   },
 
   draftGet(signal?: AbortSignal): Promise<{ entries: DraftEntry[] }> {
