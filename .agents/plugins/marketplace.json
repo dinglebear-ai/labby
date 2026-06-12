@@ -761,13 +761,13 @@
     },
     {
       "name": "mcp-apps",
-      "description": "Skills for creating MCP Apps with the MCP Apps SDK.",
+      "description": "Claude Code skill for building MCP Apps with interactive UIs.",
       "source": {
         "source": "git-subdir",
         "url": "https://github.com/modelcontextprotocol/ext-apps.git",
         "path": "plugins/mcp-apps",
         "ref": "main",
-        "sha": "a9907802937f1da067cbc4aa48b283cd4cfa7dc8"
+        "sha": "ca1d29894fabbd1558885a9ec8620dcb01d7457e"
       },
       "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
       "category": "Developer Tools",
