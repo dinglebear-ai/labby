@@ -1,0 +1,1523 @@
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+
+use crate::dispatch::error::ToolError;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsBackend {
+    Env,
+    ConfigToml,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsControl {
+    Text,
+    Url,
+    Bool,
+    Number,
+    Enum,
+    StringList,
+    ReadOnly,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsRisk {
+    Low,
+    Restart,
+    SecuritySensitive,
+    Dangerous,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsWritePolicy {
+    Editable,
+    ReadOnly,
+    DangerousFlowRequired,
+    SecretWriteOnlyFuture,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsApplyMode {
+    Immediate,
+    Restart,
+    Partial,
+    ReadOnly,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SettingsOption {
+    pub value: &'static str,
+    pub label: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SettingsFieldSpec {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub section: &'static str,
+    pub backend: SettingsBackend,
+    pub control: SettingsControl,
+    pub risk: SettingsRisk,
+    pub write_policy: SettingsWritePolicy,
+    pub apply_mode: SettingsApplyMode,
+    pub secret: bool,
+    pub required: bool,
+    pub env_override: Option<&'static str>,
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+    pub options: Vec<SettingsOption>,
+    pub example: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SettingsSectionSpec {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub advanced: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SettingsSchemaResponse {
+    pub schema_version: u32,
+    pub sections: Vec<SettingsSectionSpec>,
+    pub fields: Vec<SettingsFieldSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsSourceKind {
+    Env,
+    ConfigToml,
+    Default,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SettingsValueSource {
+    pub source: SettingsSourceKind,
+    pub overridden_by_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingsStateResponse {
+    pub schema_version: u32,
+    pub config_path: String,
+    pub env_path: String,
+    pub section: String,
+    pub values: BTreeMap<String, Value>,
+    pub sources: BTreeMap<String, SettingsValueSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingsUpdateEntry {
+    pub key: String,
+    pub value: Value,
+    #[serde(default)]
+    pub unset: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingsMutationOutcome {
+    pub state: SettingsStateResponse,
+    pub backup_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnvSettingSpec {
+    pub service: String,
+    pub key: String,
+    pub required: bool,
+    pub secret: bool,
+    pub description: String,
+    pub example: String,
+    pub editable: bool,
+}
+
+pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+
+fn editable(
+    section: &'static str,
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    backend: SettingsBackend,
+    control: SettingsControl,
+    apply_mode: SettingsApplyMode,
+    env_override: Option<&'static str>,
+    example: Option<&'static str>,
+) -> SettingsFieldSpec {
+    SettingsFieldSpec {
+        key,
+        label,
+        description,
+        section,
+        backend,
+        control,
+        risk: if apply_mode == SettingsApplyMode::Restart {
+            SettingsRisk::Restart
+        } else {
+            SettingsRisk::Low
+        },
+        write_policy: SettingsWritePolicy::Editable,
+        apply_mode,
+        secret: false,
+        required: false,
+        env_override,
+        min: None,
+        max: None,
+        options: Vec::new(),
+        example,
+    }
+}
+
+fn readonly(
+    section: &'static str,
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    risk: SettingsRisk,
+    write_policy: SettingsWritePolicy,
+) -> SettingsFieldSpec {
+    SettingsFieldSpec {
+        key,
+        label,
+        description,
+        section,
+        backend: SettingsBackend::ConfigToml,
+        control: SettingsControl::ReadOnly,
+        risk,
+        write_policy,
+        apply_mode: SettingsApplyMode::ReadOnly,
+        secret: matches!(write_policy, SettingsWritePolicy::SecretWriteOnlyFuture),
+        required: false,
+        env_override: None,
+        min: None,
+        max: None,
+        options: Vec::new(),
+        example: None,
+    }
+}
+
+fn enum_editable(
+    section: &'static str,
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    apply_mode: SettingsApplyMode,
+    options: Vec<SettingsOption>,
+    example: Option<&'static str>,
+) -> SettingsFieldSpec {
+    let mut field = editable(
+        section,
+        key,
+        label,
+        description,
+        SettingsBackend::ConfigToml,
+        SettingsControl::Enum,
+        apply_mode,
+        None,
+        example,
+    );
+    field.options = options;
+    field
+}
+
+fn number_editable(
+    section: &'static str,
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    apply_mode: SettingsApplyMode,
+    min: i64,
+    max: i64,
+    example: Option<&'static str>,
+) -> SettingsFieldSpec {
+    let mut field = editable(
+        section,
+        key,
+        label,
+        description,
+        SettingsBackend::ConfigToml,
+        SettingsControl::Number,
+        apply_mode,
+        None,
+        example,
+    );
+    field.min = Some(min);
+    field.max = Some(max);
+    field
+}
+
+fn number_editable_with_env(
+    section: &'static str,
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    apply_mode: SettingsApplyMode,
+    min: i64,
+    max: i64,
+    env_override: Option<&'static str>,
+    example: Option<&'static str>,
+) -> SettingsFieldSpec {
+    let mut field = number_editable(
+        section,
+        key,
+        label,
+        description,
+        apply_mode,
+        min,
+        max,
+        example,
+    );
+    field.env_override = env_override;
+    field
+}
+
+pub fn schema_response() -> SettingsSchemaResponse {
+    SettingsSchemaResponse {
+        schema_version: SETTINGS_SCHEMA_VERSION,
+        sections: vec![
+            SettingsSectionSpec {
+                id: "core",
+                label: "Core",
+                description: "Env-backed process defaults and low-risk operator paths.",
+                advanced: false,
+            },
+            SettingsSectionSpec {
+                id: "surfaces",
+                label: "Surfaces",
+                description: "Safe scalar HTTP, MCP, URL, and CORS settings.",
+                advanced: false,
+            },
+            SettingsSectionSpec {
+                id: "features",
+                label: "Features",
+                description: "Runtime feature gates with explicit apply semantics.",
+                advanced: false,
+            },
+            SettingsSectionSpec {
+                id: "services",
+                label: "Services",
+                description: "Service env vars and service preferences.",
+                advanced: false,
+            },
+            SettingsSectionSpec {
+                id: "advanced",
+                label: "Advanced",
+                description: "Redacted read-only complex config and env inventory.",
+                advanced: true,
+            },
+        ],
+        fields: settings_fields(),
+    }
+}
+
+pub fn settings_fields() -> Vec<SettingsFieldSpec> {
+    let mut fields = vec![
+        editable(
+            "core",
+            "LAB_MCP_HTTP_HOST",
+            "Bind host",
+            "Environment override for HTTP MCP bind host.",
+            SettingsBackend::Env,
+            SettingsControl::Text,
+            SettingsApplyMode::Restart,
+            None,
+            Some("127.0.0.1"),
+        ),
+        editable(
+            "core",
+            "LAB_MCP_HTTP_PORT",
+            "Bind port",
+            "Environment override for HTTP MCP bind port.",
+            SettingsBackend::Env,
+            SettingsControl::Number,
+            SettingsApplyMode::Restart,
+            None,
+            Some("8765"),
+        ),
+        editable(
+            "core",
+            "LAB_LOG",
+            "Log filter",
+            "Tracing filter directive.",
+            SettingsBackend::Env,
+            SettingsControl::Text,
+            SettingsApplyMode::Restart,
+            None,
+            Some("labby=info,lab_apis=warn"),
+        ),
+        enum_env(
+            "core",
+            "LAB_LOG_FORMAT",
+            "Log format",
+            "Set json for structured logs.",
+            vec![
+                SettingsOption {
+                    value: "text",
+                    label: "Text",
+                },
+                SettingsOption {
+                    value: "json",
+                    label: "JSON",
+                },
+            ],
+            Some("json"),
+        ),
+        editable(
+            "core",
+            "output.format",
+            "CLI output format",
+            "Default CLI output format when --json is not supplied.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Text,
+            SettingsApplyMode::Restart,
+            None,
+            Some("human"),
+        ),
+        editable(
+            "core",
+            "workspace.root",
+            "Workspace root",
+            "Root directory used by fs browsing and stash workspaces.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Text,
+            SettingsApplyMode::Restart,
+            None,
+            Some("~/.lab/stash"),
+        ),
+        editable(
+            "core",
+            "mcpregistry.url",
+            "MCP Registry URL",
+            "Upstream MCP Registry base URL.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Url,
+            SettingsApplyMode::Restart,
+            None,
+            Some("https://registry.modelcontextprotocol.io"),
+        ),
+        enum_editable(
+            "surfaces",
+            "mcp.transport",
+            "MCP transport",
+            "Default MCP transport.",
+            SettingsApplyMode::Restart,
+            vec![
+                SettingsOption {
+                    value: "http",
+                    label: "HTTP",
+                },
+                SettingsOption {
+                    value: "stdio",
+                    label: "stdio",
+                },
+            ],
+            Some("http"),
+        ),
+        editable(
+            "surfaces",
+            "mcp.host",
+            "MCP HTTP host",
+            "TOML default for HTTP MCP host; LAB_MCP_HTTP_HOST overrides it.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Text,
+            SettingsApplyMode::Restart,
+            Some("LAB_MCP_HTTP_HOST"),
+            Some("127.0.0.1"),
+        ),
+        number_editable_with_env(
+            "surfaces",
+            "mcp.port",
+            "MCP HTTP port",
+            "TOML default for HTTP MCP port; LAB_MCP_HTTP_PORT overrides it.",
+            SettingsApplyMode::Restart,
+            1,
+            65535,
+            Some("LAB_MCP_HTTP_PORT"),
+            Some("8765"),
+        ),
+        number_editable(
+            "surfaces",
+            "mcp.session_ttl_secs",
+            "MCP session TTL",
+            "Default session keep-alive TTL in seconds.",
+            SettingsApplyMode::Restart,
+            1,
+            86_400,
+            Some("3600"),
+        ),
+        editable(
+            "surfaces",
+            "mcp.stateful",
+            "Stateful MCP sessions",
+            "Whether HTTP MCP uses stateful sessions by default.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Bool,
+            SettingsApplyMode::Restart,
+            None,
+            Some("true"),
+        ),
+        editable(
+            "surfaces",
+            "mcp.allowed_hosts",
+            "Allowed hosts",
+            "Additional DNS rebinding allowed hosts.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::StringList,
+            SettingsApplyMode::Restart,
+            None,
+            Some("lab.tootie.tv"),
+        ),
+        editable(
+            "surfaces",
+            "api.cors_origins",
+            "CORS origins",
+            "Additional CORS origins. Loopback origins are always included.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::StringList,
+            SettingsApplyMode::Restart,
+            None,
+            Some("https://lab.example.com"),
+        ),
+        editable(
+            "surfaces",
+            "web.assets_dir",
+            "Web assets directory",
+            "Path to exported Labby assets served by labby serve.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Text,
+            SettingsApplyMode::Restart,
+            None,
+            Some("apps/gateway-admin/out"),
+        ),
+        editable(
+            "surfaces",
+            "public_urls.app",
+            "Public app URL",
+            "Public Lab UI and OAuth issuer URL.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Url,
+            SettingsApplyMode::Restart,
+            Some("LAB_PUBLIC_URL"),
+            Some("https://lab.example.com"),
+        ),
+        editable(
+            "surfaces",
+            "public_urls.mcp_gateway",
+            "Public MCP gateway URL",
+            "Separate public MCP gateway base URL.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Url,
+            SettingsApplyMode::Restart,
+            Some("LAB_MCP_GATEWAY_URL"),
+            Some("https://mcp.example.com"),
+        ),
+        editable(
+            "features",
+            "services.built_in_upstream_apis_enabled",
+            "Built-in upstream API services",
+            "Enable bundled external API integrations while keeping bootstrap tools online.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Bool,
+            SettingsApplyMode::Immediate,
+            None,
+            Some("true"),
+        ),
+        enum_editable(
+            "features",
+            "gateway_import_mode",
+            "Gateway import mode",
+            "Controls external MCP config discovery on startup.",
+            SettingsApplyMode::Restart,
+            vec![
+                SettingsOption {
+                    value: "off",
+                    label: "Off",
+                },
+                SettingsOption {
+                    value: "pending",
+                    label: "Pending approval",
+                },
+                SettingsOption {
+                    value: "auto",
+                    label: "Auto import",
+                },
+            ],
+            Some("off"),
+        ),
+        editable(
+            "features",
+            "admin.enabled",
+            "Admin tool enabled",
+            "Enable the lab_admin MCP tool.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Bool,
+            SettingsApplyMode::Restart,
+            Some("LAB_ADMIN_ENABLED"),
+            Some("false"),
+        ),
+        editable(
+            "features",
+            "code_mode.trace_params",
+            "Trace Code Mode params",
+            "Include redacted/capped tool params in Code Mode traces.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Bool,
+            SettingsApplyMode::Partial,
+            None,
+            Some("false"),
+        ),
+        editable(
+            "features",
+            "gateway.extra_stdio_commands",
+            "Extra stdio commands",
+            "Additional commands allowed as stdio upstream programs.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::StringList,
+            SettingsApplyMode::Restart,
+            None,
+            Some("labby,runarr"),
+        ),
+        editable(
+            "services",
+            "services.tailscale.tailnet",
+            "Tailscale tailnet",
+            "Tailnet name. TAILSCALE_TAILNET overrides this.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Text,
+            SettingsApplyMode::Restart,
+            Some("TAILSCALE_TAILNET"),
+            Some("-"),
+        ),
+        number_editable(
+            "advanced",
+            "upstream_request_timeout_ms",
+            "Upstream request timeout",
+            "Maximum time for one proxied upstream MCP response.",
+            SettingsApplyMode::Restart,
+            1,
+            300_000,
+            Some("30000"),
+        ),
+        number_editable(
+            "advanced",
+            "local_logs.retention_days",
+            "Log retention days",
+            "Local log retention window.",
+            SettingsApplyMode::Partial,
+            1,
+            3650,
+            Some("30"),
+        ),
+        number_editable(
+            "advanced",
+            "local_logs.max_bytes",
+            "Max log bytes",
+            "Maximum retained logical bytes.",
+            SettingsApplyMode::Partial,
+            1,
+            1_099_511_627_776,
+            Some("1073741824"),
+        ),
+        number_editable(
+            "advanced",
+            "local_logs.queue_capacity",
+            "Log queue capacity",
+            "Bounded ingest queue size.",
+            SettingsApplyMode::Restart,
+            1,
+            1_000_000,
+            Some("4096"),
+        ),
+        number_editable(
+            "advanced",
+            "local_logs.subscriber_capacity",
+            "Subscriber capacity",
+            "Bounded live-subscriber ring size.",
+            SettingsApplyMode::Restart,
+            1,
+            1_000_000,
+            Some("1024"),
+        ),
+        editable(
+            "advanced",
+            "node.controller",
+            "Node controller",
+            "Controller host for node runtime.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Text,
+            SettingsApplyMode::Restart,
+            None,
+            Some("dookie"),
+        ),
+        number_editable(
+            "advanced",
+            "node.log_retention_days",
+            "Node log retention days",
+            "How many days of node logs to retain.",
+            SettingsApplyMode::Partial,
+            1,
+            3650,
+            Some("30"),
+        ),
+        enum_editable(
+            "advanced",
+            "node.role",
+            "Node role",
+            "Explicit runtime role for this device.",
+            SettingsApplyMode::Restart,
+            vec![
+                SettingsOption {
+                    value: "controller",
+                    label: "Controller",
+                },
+                SettingsOption {
+                    value: "node",
+                    label: "Node",
+                },
+            ],
+            Some("controller"),
+        ),
+        editable(
+            "advanced",
+            "device.master",
+            "Legacy device master",
+            "Legacy master host for device runtime.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Text,
+            SettingsApplyMode::Restart,
+            None,
+            Some("dookie"),
+        ),
+        number_editable(
+            "advanced",
+            "code_mode.timeout_ms",
+            "Code Mode timeout",
+            "Maximum wall-clock time for one Code Mode execution.",
+            SettingsApplyMode::Partial,
+            1,
+            60_000,
+            Some("30000"),
+        ),
+        number_editable(
+            "advanced",
+            "code_mode.max_tool_calls",
+            "Code Mode max tool calls",
+            "Maximum host-brokered tool calls per execution.",
+            SettingsApplyMode::Partial,
+            1,
+            10_000,
+            Some("100"),
+        ),
+        number_editable(
+            "advanced",
+            "code_mode.max_response_bytes",
+            "Code Mode max response bytes",
+            "Maximum serialized response envelope size.",
+            SettingsApplyMode::Partial,
+            1024,
+            1_048_576,
+            Some("1048576"),
+        ),
+        number_editable(
+            "advanced",
+            "code_mode.max_response_tokens",
+            "Code Mode max response tokens",
+            "Approximate maximum response tokens.",
+            SettingsApplyMode::Partial,
+            256,
+            256_000,
+            Some("64000"),
+        ),
+        number_editable(
+            "advanced",
+            "code_mode.token_estimate_divisor",
+            "Token estimate divisor",
+            "Lower values are more conservative.",
+            SettingsApplyMode::Partial,
+            1,
+            64,
+            Some("4"),
+        ),
+        number_editable(
+            "advanced",
+            "code_mode.max_log_entries",
+            "Code Mode max log entries",
+            "Maximum console log lines captured per execution.",
+            SettingsApplyMode::Partial,
+            1,
+            100_000,
+            Some("1000"),
+        ),
+        number_editable(
+            "advanced",
+            "code_mode.max_log_bytes",
+            "Code Mode max log bytes",
+            "Maximum console log bytes captured per execution.",
+            SettingsApplyMode::Partial,
+            1,
+            104_857_600,
+            Some("1048576"),
+        ),
+    ];
+    fields.extend(readonly_fields());
+    fields
+}
+
+fn enum_env(
+    section: &'static str,
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    options: Vec<SettingsOption>,
+    example: Option<&'static str>,
+) -> SettingsFieldSpec {
+    let mut field = editable(
+        section,
+        key,
+        label,
+        description,
+        SettingsBackend::Env,
+        SettingsControl::Enum,
+        SettingsApplyMode::Restart,
+        None,
+        example,
+    );
+    field.options = options;
+    field
+}
+
+fn readonly_fields() -> Vec<SettingsFieldSpec> {
+    vec![
+        readonly(
+            "surfaces",
+            "web.disable_auth",
+            "Disable web auth",
+            "Auth bypass is visible here but requires a dedicated dangerous settings flow.",
+            SettingsRisk::Dangerous,
+            SettingsWritePolicy::DangerousFlowRequired,
+        ),
+        readonly(
+            "surfaces",
+            "auth",
+            "Auth config",
+            "OAuth and bearer auth settings are redacted and read-only in this epic.",
+            SettingsRisk::SecuritySensitive,
+            SettingsWritePolicy::SecretWriteOnlyFuture,
+        ),
+        readonly(
+            "features",
+            "code_mode.enabled",
+            "Code Mode enabled",
+            "Enabling the synthetic Code Mode surface requires dedicated runtime exposure tests.",
+            SettingsRisk::SecuritySensitive,
+            SettingsWritePolicy::DangerousFlowRequired,
+        ),
+        readonly(
+            "features",
+            "gateway.disable_spawn_guard",
+            "Disable spawn guard",
+            "Disabling stdio command validation requires typed confirmation and rollback instructions.",
+            SettingsRisk::Dangerous,
+            SettingsWritePolicy::DangerousFlowRequired,
+        ),
+        readonly(
+            "advanced",
+            "oauth.machines",
+            "OAuth relay machines",
+            "Named OAuth callback relay targets.",
+            SettingsRisk::SecuritySensitive,
+            SettingsWritePolicy::ReadOnly,
+        ),
+        readonly(
+            "advanced",
+            "deploy",
+            "Deploy preferences",
+            "Deploy defaults and per-host overrides.",
+            SettingsRisk::SecuritySensitive,
+            SettingsWritePolicy::ReadOnly,
+        ),
+        readonly(
+            "advanced",
+            "upstream",
+            "Gateway upstreams",
+            "Upstream MCP servers proxied through Lab.",
+            SettingsRisk::SecuritySensitive,
+            SettingsWritePolicy::ReadOnly,
+        ),
+        readonly(
+            "advanced",
+            "upstream_pending",
+            "Pending upstream imports",
+            "Discovered upstreams waiting for approval.",
+            SettingsRisk::SecuritySensitive,
+            SettingsWritePolicy::ReadOnly,
+        ),
+        readonly(
+            "advanced",
+            "upstream_import_tombstones",
+            "Import tombstones",
+            "Deleted imports that should not return automatically.",
+            SettingsRisk::Restart,
+            SettingsWritePolicy::ReadOnly,
+        ),
+        readonly(
+            "advanced",
+            "protected_mcp_routes",
+            "Protected MCP routes",
+            "OAuth-protected public MCP route definitions.",
+            SettingsRisk::Dangerous,
+            SettingsWritePolicy::ReadOnly,
+        ),
+        readonly(
+            "advanced",
+            "virtual_servers",
+            "Virtual servers",
+            "Virtual MCP servers backed by Lab services.",
+            SettingsRisk::Restart,
+            SettingsWritePolicy::ReadOnly,
+        ),
+        readonly(
+            "advanced",
+            "quarantined_virtual_servers",
+            "Quarantined virtual servers",
+            "Virtual servers whose backing service is no longer registered.",
+            SettingsRisk::Restart,
+            SettingsWritePolicy::ReadOnly,
+        ),
+    ]
+}
+
+pub fn state_response(
+    cfg: &crate::config::LabConfig,
+    config_path: String,
+    env_path: String,
+    section: &str,
+) -> SettingsStateResponse {
+    let mut values = BTreeMap::new();
+    let mut sources = BTreeMap::new();
+    for field in settings_fields()
+        .into_iter()
+        .filter(|field| field.section == section)
+    {
+        let (value, source) = value_for_field(cfg, &field);
+        values.insert(field.key.to_string(), value);
+        sources.insert(field.key.to_string(), source);
+    }
+    SettingsStateResponse {
+        schema_version: SETTINGS_SCHEMA_VERSION,
+        config_path,
+        env_path,
+        section: section.to_string(),
+        values,
+        sources,
+    }
+}
+
+fn value_for_field(
+    cfg: &crate::config::LabConfig,
+    field: &SettingsFieldSpec,
+) -> (Value, SettingsValueSource) {
+    if field.backend == SettingsBackend::Env {
+        return (
+            env_value(field.key),
+            SettingsValueSource {
+                source: SettingsSourceKind::Env,
+                overridden_by_env: None,
+            },
+        );
+    }
+    let override_source = field
+        .env_override
+        .and_then(|name| std::env::var(name).ok().map(|_| name.to_string()));
+    let value = config_value_for_key(cfg, field.key);
+    let source = if let Some(name) = override_source.clone() {
+        SettingsValueSource {
+            source: SettingsSourceKind::Env,
+            overridden_by_env: Some(name),
+        }
+    } else if value.is_null() {
+        SettingsValueSource {
+            source: SettingsSourceKind::Default,
+            overridden_by_env: None,
+        }
+    } else {
+        SettingsValueSource {
+            source: SettingsSourceKind::ConfigToml,
+            overridden_by_env: None,
+        }
+    };
+    (value, source)
+}
+
+fn env_value(key: &str) -> Value {
+    match std::env::var(key) {
+        Ok(value) if key == "LAB_MCP_HTTP_PORT" => value
+            .parse::<i64>()
+            .map_or_else(|_| json!(value), |parsed| json!(parsed)),
+        Ok(value) => json!(value),
+        Err(_) => Value::Null,
+    }
+}
+
+fn config_value_for_key(cfg: &crate::config::LabConfig, key: &str) -> Value {
+    match key {
+        "output.format" => json!(cfg.output.format),
+        "mcp.transport" => json!(cfg.mcp.transport),
+        "mcp.host" => json!(cfg.mcp.host),
+        "mcp.port" => json!(cfg.mcp.port),
+        "mcp.session_ttl_secs" => json!(cfg.mcp.session_ttl_secs),
+        "mcp.stateful" => json!(cfg.mcp.stateful),
+        "mcp.allowed_hosts" => json!(cfg.mcp.allowed_hosts),
+        "log.filter" => json!(cfg.log.filter),
+        "log.format" => json!(cfg.log.format),
+        "local_logs.retention_days" => json!(
+            cfg.local_logs
+                .as_ref()
+                .and_then(|value| value.retention_days)
+        ),
+        "local_logs.max_bytes" => json!(cfg.local_logs.as_ref().and_then(|value| value.max_bytes)),
+        "local_logs.queue_capacity" => json!(
+            cfg.local_logs
+                .as_ref()
+                .and_then(|value| value.queue_capacity)
+        ),
+        "local_logs.subscriber_capacity" => json!(
+            cfg.local_logs
+                .as_ref()
+                .and_then(|value| value.subscriber_capacity)
+        ),
+        "api.cors_origins" => json!(cfg.api.cors_origins),
+        "web.assets_dir" => json!(
+            cfg.web
+                .assets_dir
+                .as_ref()
+                .map(|path| path.display().to_string())
+        ),
+        "workspace.root" => json!(
+            cfg.workspace
+                .root
+                .as_ref()
+                .map(|path| path.display().to_string())
+        ),
+        "mcpregistry.url" => json!(cfg.mcpregistry.url),
+        "public_urls.app" => json!(cfg.public_urls.as_ref().and_then(|value| value.app.clone())),
+        "public_urls.mcp_gateway" => json!(
+            cfg.public_urls
+                .as_ref()
+                .and_then(|value| value.mcp_gateway.clone())
+        ),
+        "services.built_in_upstream_apis_enabled" => {
+            json!(cfg.services.built_in_upstream_apis_enabled)
+        }
+        "services.tailscale.tailnet" => json!(cfg.services.tailscale.tailnet),
+        "admin.enabled" => json!(cfg.admin.enabled),
+        "code_mode.trace_params" => json!(cfg.code_mode.trace_params),
+        "code_mode.timeout_ms" => json!(cfg.code_mode.timeout_ms),
+        "code_mode.max_tool_calls" => json!(cfg.code_mode.max_tool_calls),
+        "code_mode.max_response_bytes" => json!(cfg.code_mode.max_response_bytes),
+        "code_mode.max_response_tokens" => json!(cfg.code_mode.max_response_tokens),
+        "code_mode.token_estimate_divisor" => json!(cfg.code_mode.token_estimate_divisor),
+        "code_mode.max_log_entries" => json!(cfg.code_mode.max_log_entries),
+        "code_mode.max_log_bytes" => json!(cfg.code_mode.max_log_bytes),
+        "gateway_import_mode" => json!(cfg.gateway_import_mode),
+        "gateway.extra_stdio_commands" => json!(cfg.gateway.extra_stdio_commands),
+        "upstream_request_timeout_ms" => json!(cfg.upstream_request_timeout_ms),
+        "node.controller" => json!(cfg.node.as_ref().and_then(|value| value.controller.clone())),
+        "node.log_retention_days" => {
+            json!(cfg.node.as_ref().and_then(|value| value.log_retention_days))
+        }
+        "node.role" => json!(cfg.node.as_ref().and_then(|value| value.role).map(
+            |role| match role {
+                crate::config::NodeRuntimeRole::Controller => "controller",
+                crate::config::NodeRuntimeRole::Node => "node",
+            }
+        )),
+        "device.master" => json!(cfg.device.as_ref().and_then(|value| value.master.clone())),
+        "web.disable_auth" => json!(cfg.web.disable_auth),
+        "auth" => redact_value(serde_json::to_value(&cfg.auth).unwrap_or(Value::Null)),
+        "code_mode.enabled" => json!(cfg.code_mode.enabled),
+        "gateway.disable_spawn_guard" => json!(cfg.gateway.disable_spawn_guard),
+        "oauth.machines" => {
+            redact_value(serde_json::to_value(&cfg.oauth.machines).unwrap_or(Value::Null))
+        }
+        "deploy" => redact_value(serde_json::to_value(&cfg.deploy).unwrap_or(Value::Null)),
+        "upstream" => redact_value(serde_json::to_value(&cfg.upstream).unwrap_or(Value::Null)),
+        "upstream_pending" => {
+            redact_value(serde_json::to_value(&cfg.upstream_pending).unwrap_or(Value::Null))
+        }
+        "upstream_import_tombstones" => redact_value(
+            serde_json::to_value(&cfg.upstream_import_tombstones).unwrap_or(Value::Null),
+        ),
+        "protected_mcp_routes" => {
+            redact_value(serde_json::to_value(&cfg.protected_mcp_routes).unwrap_or(Value::Null))
+        }
+        "virtual_servers" => {
+            redact_value(serde_json::to_value(&cfg.virtual_servers).unwrap_or(Value::Null))
+        }
+        "quarantined_virtual_servers" => redact_value(
+            serde_json::to_value(&cfg.quarantined_virtual_servers).unwrap_or(Value::Null),
+        ),
+        _ => Value::Null,
+    }
+}
+
+pub fn redact_value(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let redacted = map
+                .into_iter()
+                .map(|(key, value)| {
+                    let lower = key.to_ascii_lowercase();
+                    let looks_secret = lower.contains("secret")
+                        || lower.contains("token")
+                        || lower.contains("password")
+                        || lower.contains("api_key")
+                        || lower.contains("client_secret");
+                    if looks_secret {
+                        (key, json!({ "has_value": !value.is_null() }))
+                    } else {
+                        (key, redact_value(value))
+                    }
+                })
+                .collect();
+            Value::Object(redacted)
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(redact_value).collect()),
+        other => other,
+    }
+}
+
+pub fn config_patches_from_entries(
+    entries: &[SettingsUpdateEntry],
+) -> Result<Vec<crate::config::ConfigScalarPatch>, ToolError> {
+    let fields: BTreeMap<&str, SettingsFieldSpec> = settings_fields()
+        .into_iter()
+        .map(|field| (field.key, field))
+        .collect();
+    let mut patches = Vec::new();
+    for entry in entries {
+        let Some(field) = fields.get(entry.key.as_str()) else {
+            return Err(ToolError::InvalidParam {
+                message: format!("unknown setting `{}`", entry.key),
+                param: entry.key.clone(),
+            });
+        };
+        if field.backend != SettingsBackend::ConfigToml
+            || field.write_policy != SettingsWritePolicy::Editable
+        {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "setting `{}` is not editable through settings.config.update",
+                    entry.key
+                ),
+                param: entry.key.clone(),
+            });
+        }
+        if field.secret {
+            return Err(ToolError::InvalidParam {
+                message: "secret config writes are not supported by this settings slice".into(),
+                param: entry.key.clone(),
+            });
+        }
+        patches.push(config_patch_for_field(field, entry)?);
+    }
+    Ok(patches)
+}
+
+fn config_patch_for_field(
+    field: &SettingsFieldSpec,
+    entry: &SettingsUpdateEntry,
+) -> Result<crate::config::ConfigScalarPatch, ToolError> {
+    use crate::config::{ConfigScalarPatch, ConfigScalarValue};
+    if entry.unset {
+        return Ok(ConfigScalarPatch::new(
+            field.key,
+            ConfigScalarValue::UnsetOptional,
+        ));
+    }
+    let value = match field.control {
+        SettingsControl::Bool => ConfigScalarValue::Bool(
+            entry
+                .value
+                .as_bool()
+                .ok_or_else(|| invalid_field(field, "must be boolean"))?,
+        ),
+        SettingsControl::Number => {
+            let raw = entry
+                .value
+                .as_i64()
+                .ok_or_else(|| invalid_field(field, "must be an integer"))?;
+            if let Some(min) = field.min
+                && raw < min
+            {
+                return Err(invalid_field(field, "below minimum"));
+            }
+            if let Some(max) = field.max
+                && raw > max
+            {
+                return Err(invalid_field(field, "above maximum"));
+            }
+            ConfigScalarValue::I64(raw)
+        }
+        SettingsControl::Text | SettingsControl::Url | SettingsControl::Enum => {
+            let raw = entry
+                .value
+                .as_str()
+                .ok_or_else(|| invalid_field(field, "must be a string"))?
+                .trim()
+                .to_string();
+            validate_string_field(field, &raw)?;
+            ConfigScalarValue::String(raw)
+        }
+        SettingsControl::StringList => {
+            let values = entry
+                .value
+                .as_array()
+                .ok_or_else(|| invalid_field(field, "must be an array"))?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+                .collect::<Option<Vec<String>>>()
+                .ok_or_else(|| invalid_field(field, "must be an array of strings"))?;
+            ConfigScalarValue::StringList(values)
+        }
+        SettingsControl::ReadOnly => return Err(invalid_field(field, "is read-only")),
+    };
+    Ok(ConfigScalarPatch::new(field.key, value))
+}
+
+fn invalid_field(field: &SettingsFieldSpec, message: &'static str) -> ToolError {
+    ToolError::InvalidParam {
+        message: format!("{} {message}", field.key),
+        param: field.key.to_string(),
+    }
+}
+
+fn validate_string_field(field: &SettingsFieldSpec, value: &str) -> Result<(), ToolError> {
+    if field.control == SettingsControl::Url
+        && !value.is_empty()
+        && !(value.starts_with("http://") || value.starts_with("https://"))
+    {
+        return Err(invalid_field(field, "must start with http:// or https://"));
+    }
+    if field.control == SettingsControl::Enum
+        && !field.options.iter().any(|option| option.value == value)
+    {
+        return Err(invalid_field(field, "must be one of the allowed values"));
+    }
+    Ok(())
+}
+
+pub fn env_entries_from_updates(
+    entries: &[SettingsUpdateEntry],
+) -> Result<Vec<lab_apis::setup::DraftEntry>, ToolError> {
+    let fields: BTreeMap<&str, SettingsFieldSpec> = settings_fields()
+        .into_iter()
+        .map(|field| (field.key, field))
+        .collect();
+    let mut out = Vec::new();
+    for entry in entries {
+        let Some(field) = fields.get(entry.key.as_str()) else {
+            return Err(ToolError::InvalidParam {
+                message: format!("unknown setting `{}`", entry.key),
+                param: entry.key.clone(),
+            });
+        };
+        if field.backend != SettingsBackend::Env
+            || field.write_policy != SettingsWritePolicy::Editable
+        {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "setting `{}` is not editable through settings.env.update",
+                    entry.key
+                ),
+                param: entry.key.clone(),
+            });
+        }
+        let value = match field.control {
+            SettingsControl::Number => entry
+                .value
+                .as_i64()
+                .ok_or_else(|| invalid_field(field, "must be an integer"))?
+                .to_string(),
+            SettingsControl::Enum | SettingsControl::Text | SettingsControl::Url => {
+                let raw = entry
+                    .value
+                    .as_str()
+                    .ok_or_else(|| invalid_field(field, "must be a string"))?
+                    .trim()
+                    .to_string();
+                validate_string_field(field, &raw)?;
+                raw
+            }
+            _ => return Err(invalid_field(field, "has unsupported env control")),
+        };
+        out.push(lab_apis::setup::DraftEntry {
+            key: entry.key.clone(),
+            value,
+        });
+    }
+    Ok(out)
+}
+
+pub fn env_schema() -> Vec<EnvSettingSpec> {
+    let mut by_key: BTreeMap<String, EnvSettingSpec> = BTreeMap::new();
+    let generated: Value = serde_json::from_str(include_str!(
+        "../../../../../docs/generated/env-reference.json"
+    ))
+    .unwrap_or_else(|_| Value::Array(Vec::new()));
+    if let Value::Array(entries) = generated {
+        for entry in entries {
+            let Some(key) = entry.get("env_var").and_then(Value::as_str) else {
+                continue;
+            };
+            by_key.insert(
+                key.to_string(),
+                EnvSettingSpec {
+                    service: entry
+                        .get("service")
+                        .and_then(Value::as_str)
+                        .unwrap_or("lab")
+                        .to_string(),
+                    key: key.to_string(),
+                    required: entry
+                        .get("required")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    secret: entry
+                        .get("secret")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    description: entry
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    example: entry
+                        .get("example")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    editable: is_editable_core_env(key),
+                },
+            );
+        }
+    }
+    for (key, description, example, secret) in [
+        (
+            "LAB_MCP_HTTP_HOST",
+            "HTTP MCP bind host.",
+            "127.0.0.1",
+            false,
+        ),
+        ("LAB_MCP_HTTP_PORT", "HTTP MCP bind port.", "8765", false),
+        (
+            "LAB_LOG",
+            "Tracing filter directive.",
+            "labby=info,lab_apis=warn",
+            false,
+        ),
+        ("LAB_LOG_FORMAT", "Log format.", "json", false),
+        (
+            "LAB_PUBLIC_URL",
+            "Public Lab app URL.",
+            "https://lab.example.com",
+            false,
+        ),
+        (
+            "LAB_MCP_HTTP_TOKEN",
+            "Bearer token for the HTTP MCP/API surface.",
+            "<token>",
+            true,
+        ),
+    ] {
+        by_key
+            .entry(key.to_string())
+            .or_insert_with(|| EnvSettingSpec {
+                service: "lab".to_string(),
+                key: key.to_string(),
+                required: false,
+                secret,
+                description: description.to_string(),
+                example: example.to_string(),
+                editable: is_editable_core_env(key),
+            });
+    }
+    for entry in super::client::cached_registry().services() {
+        if let Some(meta) = crate::registry::service_meta(entry.name) {
+            for (required, vars) in [(true, meta.required_env), (false, meta.optional_env)] {
+                for var in vars {
+                    by_key
+                        .entry(var.name.to_string())
+                        .and_modify(|existing| {
+                            existing.secret |= var.secret;
+                            existing.required |= required;
+                            existing.editable = is_editable_core_env(var.name);
+                        })
+                        .or_insert_with(|| EnvSettingSpec {
+                            service: entry.name.to_string(),
+                            key: var.name.to_string(),
+                            required,
+                            secret: var.secret,
+                            description: var.description.to_string(),
+                            example: var.example.to_string(),
+                            editable: is_editable_core_env(var.name),
+                        });
+                }
+            }
+        }
+    }
+    by_key.into_values().collect()
+}
+
+fn is_editable_core_env(key: &str) -> bool {
+    matches!(
+        key,
+        "LAB_MCP_HTTP_HOST" | "LAB_MCP_HTTP_PORT" | "LAB_LOG" | "LAB_LOG_FORMAT"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn settings_schema_keys_are_unique() {
+        let mut seen = BTreeSet::new();
+        for field in settings_fields() {
+            assert!(seen.insert(field.key), "duplicate field {}", field.key);
+        }
+    }
+
+    #[test]
+    fn dangerous_and_secret_config_is_not_editable_in_first_slice() {
+        let fields = settings_fields();
+        for key in [
+            "auth",
+            "web.disable_auth",
+            "gateway.disable_spawn_guard",
+            "upstream",
+            "protected_mcp_routes",
+            "deploy",
+        ] {
+            let field = fields.iter().find(|field| field.key == key).expect(key);
+            assert_ne!(
+                field.write_policy,
+                SettingsWritePolicy::Editable,
+                "{key} must not be scalar-editable"
+            );
+        }
+    }
+
+    #[test]
+    fn env_override_metadata_is_present_for_shadowed_toml_fields() {
+        let fields = settings_fields();
+        assert_eq!(
+            fields
+                .iter()
+                .find(|field| field.key == "mcp.port")
+                .unwrap()
+                .env_override,
+            Some("LAB_MCP_HTTP_PORT")
+        );
+        assert_eq!(
+            fields
+                .iter()
+                .find(|field| field.key == "public_urls.app")
+                .unwrap()
+                .env_override,
+            Some("LAB_PUBLIC_URL")
+        );
+    }
+
+    #[test]
+    fn redaction_removes_nested_secret_values() {
+        let raw = json!({
+            "oauth": { "client_secret": "super-secret" },
+            "nested": [{ "api_key": "abc123" }],
+            "safe": "visible"
+        });
+        let redacted = redact_value(raw);
+        let serialized = serde_json::to_string(&redacted).unwrap();
+        assert!(!serialized.contains("super-secret"));
+        assert!(!serialized.contains("abc123"));
+        assert!(serialized.contains("visible"));
+    }
+
+    #[test]
+    fn config_update_rejects_readonly_and_secret_settings() {
+        let entries = vec![SettingsUpdateEntry {
+            key: "auth".into(),
+            value: json!("********"),
+            unset: false,
+        }];
+        let err = config_patches_from_entries(&entries).unwrap_err();
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[test]
+    fn env_update_accepts_only_allowlisted_core_env_keys() {
+        let entries = vec![SettingsUpdateEntry {
+            key: "LAB_MCP_HTTP_PORT".into(),
+            value: json!(8766),
+            unset: false,
+        }];
+        let parsed = env_entries_from_updates(&entries).unwrap();
+        assert_eq!(parsed[0].key, "LAB_MCP_HTTP_PORT");
+        assert_eq!(parsed[0].value, "8766");
+
+        let rejected = vec![SettingsUpdateEntry {
+            key: "LAB_MCP_HTTP_TOKEN".into(),
+            value: json!("secret"),
+            unset: false,
+        }];
+        assert!(env_entries_from_updates(&rejected).is_err());
+    }
+
+    #[test]
+    fn env_schema_merges_generated_reference_and_plugin_meta() {
+        let specs = env_schema();
+        for key in ["LAB_ACP_DB", "LAB_PUBLIC_URL", "LAB_MCP_HTTP_TOKEN"] {
+            assert!(specs.iter().any(|spec| spec.key == key), "missing {key}");
+        }
+        let token = specs
+            .iter()
+            .find(|spec| spec.key == "LAB_MCP_HTTP_TOKEN")
+            .unwrap();
+        assert!(token.secret, "token must be secret");
+    }
+
+    #[test]
+    fn env_schema_only_marks_low_risk_core_env_editable() {
+        let specs = env_schema();
+        assert!(
+            specs
+                .iter()
+                .find(|spec| spec.key == "LAB_LOG")
+                .unwrap()
+                .editable
+        );
+        assert!(
+            !specs
+                .iter()
+                .find(|spec| spec.key == "LAB_MCP_HTTP_TOKEN")
+                .unwrap()
+                .editable
+        );
+    }
+}

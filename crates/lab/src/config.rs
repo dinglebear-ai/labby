@@ -1754,13 +1754,84 @@ pub fn load_toml(candidates: &[PathBuf]) -> Result<LabConfig> {
     Ok(LabConfig::default())
 }
 
-/// Patch the non-secret built-in upstream API preference without rewriting
-/// unrelated TOML content.
-///
-/// This intentionally edits only `[services].built_in_upstream_apis_enabled`.
-/// It preserves comments, unknown keys, and plugin-owned sections that the
-/// full typed `LabConfig` serializer cannot round-trip.
-pub fn patch_built_in_upstream_apis_enabled(path: &Path, enabled: bool) -> Result<LabConfig> {
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigScalarValue {
+    Bool(bool),
+    I64(i64),
+    String(String),
+    StringList(Vec<String>),
+    UnsetOptional,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigScalarPatch {
+    pub path: String,
+    pub value: ConfigScalarValue,
+}
+
+impl ConfigScalarPatch {
+    #[must_use]
+    pub fn new(path: impl Into<String>, value: ConfigScalarValue) -> Self {
+        Self {
+            path: path.into(),
+            value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConfigPatchOutcome {
+    pub config: LabConfig,
+    pub backup_path: Option<PathBuf>,
+}
+
+fn set_toml_scalar_path(
+    document: &mut toml_edit::DocumentMut,
+    dotted_path: &str,
+    value: ConfigScalarValue,
+) -> Result<()> {
+    let parts: Vec<&str> = dotted_path
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect();
+    anyhow::ensure!(!parts.is_empty(), "config path must not be empty");
+    let (leaf, parents) = parts.split_last().expect("non-empty parts");
+    let mut item = document.as_item_mut();
+    for part in parents {
+        if item[*part].is_none() {
+            item[*part] = toml_edit::Item::Table(toml_edit::Table::new());
+        } else if !item[*part].is_table() {
+            anyhow::bail!("config parent `{part}` is not a table");
+        }
+        item = &mut item[*part];
+    }
+    if matches!(value, ConfigScalarValue::UnsetOptional) {
+        if let Some(table) = item.as_table_mut() {
+            table.remove(*leaf);
+            return Ok(());
+        }
+        anyhow::bail!("config parent for `{dotted_path}` is not a table");
+    }
+    item[*leaf] = toml_edit::Item::Value(match value {
+        ConfigScalarValue::Bool(value) => toml_edit::Value::from(value),
+        ConfigScalarValue::I64(value) => toml_edit::Value::from(value),
+        ConfigScalarValue::String(value) => toml_edit::Value::from(value),
+        ConfigScalarValue::StringList(values) => {
+            let mut array = toml_edit::Array::default();
+            for value in values {
+                array.push(value);
+            }
+            toml_edit::Value::Array(array)
+        }
+        ConfigScalarValue::UnsetOptional => unreachable!("handled above"),
+    });
+    Ok(())
+}
+
+pub fn patch_config_scalars(
+    path: &Path,
+    entries: &[ConfigScalarPatch],
+) -> Result<ConfigPatchOutcome> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -1788,14 +1859,26 @@ pub fn patch_built_in_upstream_apis_enabled(path: &Path, enabled: bool) -> Resul
     let mut document = raw
         .parse::<toml_edit::DocumentMut>()
         .with_context(|| format!("failed to parse {}", path.display()))?;
-
-    document["services"]["built_in_upstream_apis_enabled"] = toml_edit::value(enabled);
+    for entry in entries {
+        set_toml_scalar_path(&mut document, &entry.path, entry.value.clone())
+            .with_context(|| format!("failed to patch {}", entry.path))?;
+    }
     let patched = document.to_string();
-    let cfg = toml::from_str::<LabConfig>(&patched)
+    let mut cfg = toml::from_str::<LabConfig>(&patched)
         .with_context(|| format!("failed to parse patched {}", path.display()))?;
+    cfg.normalize_protected_mcp_routes()
+        .with_context(|| format!("invalid patched config {}", path.display()))?;
     cfg.validate()
         .with_context(|| format!("invalid patched config {}", path.display()))?;
 
+    let backup_path = if path.exists() {
+        Some(backup_config_file(path, &raw)?)
+    } else {
+        None
+    };
+    let old_mode = std::fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = NamedTempFile::new_in(parent)
         .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
@@ -1804,11 +1887,46 @@ pub fn patch_built_in_upstream_apis_enabled(path: &Path, enabled: bool) -> Resul
     tmp.as_file()
         .sync_all()
         .context("failed to sync temp config")?;
+    if let Some(mode) = old_mode {
+        tmp.as_file()
+            .set_permissions(mode)
+            .context("failed to preserve config mode")?;
+    }
     tmp.persist(path)
         .map_err(|e| anyhow::Error::new(e.error))
         .with_context(|| format!("failed to persist {}", path.display()))?;
+    if let Ok(parent_dir) = OpenOptions::new().read(true).open(parent) {
+        drop(parent_dir.sync_all());
+    }
 
-    Ok(cfg)
+    Ok(ConfigPatchOutcome {
+        config: cfg,
+        backup_path,
+    })
+}
+
+fn backup_config_file(path: &Path, raw: &str) -> Result<PathBuf> {
+    let stamp = jiff::Timestamp::now().strftime("%Y%m%d%H%M%S").to_string();
+    let backup = path.with_extension(format!("toml.bak.{stamp}"));
+    std::fs::write(&backup, raw).with_context(|| format!("write backup {}", backup.display()))?;
+    Ok(backup)
+}
+
+/// Patch the non-secret built-in upstream API preference without rewriting
+/// unrelated TOML content.
+///
+/// This intentionally edits only `[services].built_in_upstream_apis_enabled`.
+/// It preserves comments, unknown keys, and plugin-owned sections that the
+/// full typed `LabConfig` serializer cannot round-trip.
+pub fn patch_built_in_upstream_apis_enabled(path: &Path, enabled: bool) -> Result<LabConfig> {
+    Ok(patch_config_scalars(
+        path,
+        &[ConfigScalarPatch::new(
+            "services.built_in_upstream_apis_enabled",
+            ConfigScalarValue::Bool(enabled),
+        )],
+    )?
+    .config)
 }
 
 fn config_lock_path(path: &Path) -> PathBuf {
@@ -2645,6 +2763,62 @@ future = "keep"
         assert!(raw.contains("[plugin_owned]"));
         assert!(raw.contains("future = \"keep\""));
         assert!(raw.contains("built_in_upstream_apis_enabled = false"));
+    }
+
+    #[test]
+    fn patch_config_scalars_rejects_non_table_parent_without_mutating() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "mcp = \"bad\"\n").unwrap();
+        let err = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(8765),
+            )],
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not a table"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "mcp = \"bad\"\n");
+    }
+
+    #[test]
+    fn patch_config_scalars_unsets_optional_instead_of_empty_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[mcp]\nport = 8765\n").unwrap();
+        let outcome = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::UnsetOptional,
+            )],
+        )
+        .unwrap();
+        assert_eq!(outcome.config.mcp.port, None);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("port"));
+    }
+
+    #[test]
+    fn patch_config_scalars_creates_backup_and_preserves_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# keep\n[mcp]\nhost = \"127.0.0.1\"\n").unwrap();
+        let outcome = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(8765),
+            )],
+        )
+        .unwrap();
+        assert!(outcome.backup_path.unwrap().is_file());
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("# keep"));
+        assert!(raw.contains("port = 8765"));
     }
 
     #[test]

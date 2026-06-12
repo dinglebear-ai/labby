@@ -30,7 +30,14 @@ const AUDIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// prevent secret-bearing draft values from leaking into log sinks.
 /// Keep this in sync with the catalog — every action that accepts a
 /// `value` parameter or commits the draft must be listed here.
-const REDACTED_LOG_ACTIONS: &[&str] = &["draft.set", "draft.commit", "finalize"];
+const REDACTED_LOG_ACTIONS: &[&str] = &[
+    "draft.set",
+    "draft.commit",
+    "finalize",
+    "settings.update",
+    "settings.env.update",
+    "settings.config.update",
+];
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::current_gateway_manager;
 use crate::dispatch::helpers::{action_schema, help_payload, to_json};
@@ -70,8 +77,13 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
         "draft.get" => draft_get_action(),
         "draft.set" => draft_set_action(params).await,
         "draft.commit" => draft_commit_action(params).await,
-        "settings.state" => settings_state_action(),
+        "settings.schema" => to_json(super::settings::schema_response()),
+        "settings.state" => settings_state_action(params),
         "settings.update" => settings_update_action(params),
+        "settings.env.update" => settings_env_update_action(params).await,
+        "settings.config.update" => settings_config_update_action(params),
+        "settings.advanced_state" => settings_advanced_state_action(params),
+        "settings.env_schema" => settings_env_schema_action(),
         "plugin_hook" => plugin_hook_action(params).await,
         "plugin_sync" => plugin_sync_action(),
         "plugin_export" => plugin_export_action(),
@@ -222,21 +234,112 @@ fn service_schema(entry: &RegisteredService, meta: &PluginMeta) -> Value {
     })
 }
 
-fn settings_state_action() -> Result<Value, ToolError> {
+fn settings_state_action(params: &Value) -> Result<Value, ToolError> {
+    let section = requested_section(params)?;
     let path = config_toml_path().ok_or_else(|| ToolError::Sdk {
         sdk_kind: "internal_error".into(),
         message: "HOME env var not set; cannot resolve config.toml path".into(),
     })?;
     let cfg = load_settings_config(&path)?;
-    let restart_required = cfg.services.built_in_upstream_apis_enabled
-        != crate::registry::runtime_built_in_upstream_apis_enabled();
-    Ok(settings_state_json(
+    to_json(super::settings::state_response(
         &cfg,
         path.display().to_string(),
-        restart_required,
-        false,
-        None,
+        env_path().display().to_string(),
+        &section,
     ))
+}
+
+fn settings_advanced_state_action(params: &Value) -> Result<Value, ToolError> {
+    let mut params = params.clone();
+    if let Some(map) = params.as_object_mut() {
+        map.insert("section".into(), Value::String("advanced".into()));
+    } else {
+        params = json!({ "section": "advanced" });
+    }
+    settings_state_action(&params)
+}
+
+fn requested_section(params: &Value) -> Result<String, ToolError> {
+    Ok(params
+        .get("section")
+        .and_then(Value::as_str)
+        .unwrap_or("core")
+        .to_string())
+}
+
+fn parse_update_entries(
+    params: &Value,
+) -> Result<Vec<super::settings::SettingsUpdateEntry>, ToolError> {
+    serde_json::from_value(params.get("entries").cloned().unwrap_or(Value::Null)).map_err(|_| {
+        ToolError::InvalidParam {
+            message: "entries must be an array of settings updates".into(),
+            param: "entries".into(),
+        }
+    })
+}
+
+async fn settings_env_update_action(params: &Value) -> Result<Value, ToolError> {
+    let entries = parse_update_entries(params)?;
+    let env_entries = super::settings::env_entries_from_updates(&entries)?;
+    let env = env_path();
+    let expected_mtime = snapshot_mtime(&env);
+    let outcome = env_merge::merge(
+        &env,
+        MergeRequest {
+            entries: env_entries
+                .into_iter()
+                .map(|entry| EnvEntry::new(entry.key, entry.value))
+                .collect(),
+            force: false,
+            expected_mtime,
+        },
+    )
+    .map_err(map_merge_err)?;
+    tracing::info!(
+        surface = "dispatch",
+        service = "setup",
+        action = "settings.env.update.success",
+        written = outcome.written,
+        "settings env update success"
+    );
+    settings_state_action(params)
+}
+
+fn settings_config_update_action(params: &Value) -> Result<Value, ToolError> {
+    let entries = parse_update_entries(params)?;
+    let patches = super::settings::config_patches_from_entries(&entries)?;
+    let path = config_toml_path().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "internal_error".into(),
+        message: "HOME env var not set; cannot resolve config.toml path".into(),
+    })?;
+    let outcome = crate::config::patch_config_scalars(&path, &patches).map_err(config_io_error)?;
+    if patches
+        .iter()
+        .any(|patch| patch.path == "services.built_in_upstream_apis_enabled")
+    {
+        crate::registry::set_runtime_built_in_upstream_apis_enabled(
+            outcome.config.services.built_in_upstream_apis_enabled,
+        );
+        if let Some(manager) = current_gateway_manager() {
+            manager.set_builtin_service_registry(crate::registry::filter_built_in_upstream_apis(
+                crate::registry::build_default_registry(),
+                outcome.config.services.built_in_upstream_apis_enabled,
+            ));
+        }
+    }
+    to_json(super::settings::SettingsMutationOutcome {
+        state: super::settings::state_response(
+            &outcome.config,
+            path.display().to_string(),
+            env_path().display().to_string(),
+            requested_section(params)?.as_str(),
+        ),
+        backup_path: outcome.backup_path.map(|path| path.display().to_string()),
+    })
+}
+
+fn settings_env_schema_action() -> Result<Value, ToolError> {
+    to_json(super::settings::env_schema())
 }
 
 fn settings_update_action(params: &Value) -> Result<Value, ToolError> {
@@ -713,8 +816,13 @@ mod tests {
             "state",
             "draft.set",
             "draft.commit",
+            "settings.schema",
             "settings.state",
             "settings.update",
+            "settings.env.update",
+            "settings.config.update",
+            "settings.advanced_state",
+            "settings.env_schema",
             "finalize",
             "installed_plugins",
             "services_status",
@@ -766,12 +874,29 @@ mod tests {
             .find(|action| action.name == "settings.update")
             .expect("settings.update action");
         assert!(action.destructive);
+        assert!(action.requires_admin);
         let param = action
             .params
             .iter()
             .find(|param| param.name == "services.built_in_upstream_apis_enabled")
             .expect("toggle param");
         assert!(param.required);
+    }
+
+    #[test]
+    fn setup_settings_mutations_require_admin_scope() {
+        for action_name in [
+            "settings.update",
+            "settings.config.update",
+            "settings.env.update",
+        ] {
+            let action = ACTIONS
+                .iter()
+                .find(|action| action.name == action_name)
+                .expect(action_name);
+            assert!(action.requires_admin, "{action_name} must require admin");
+            assert!(action.destructive, "{action_name} must be destructive");
+        }
     }
 
     #[tokio::test]
@@ -810,11 +935,13 @@ mod tests {
         assert!(persisted.contains("[plugin_owned]"));
         assert!(persisted.contains("built_in_upstream_apis_enabled = false"));
 
-        let state = dispatch("settings.state", json!({}))
+        let state = dispatch("settings.state", json!({"section": "features"}))
             .await
             .expect("settings state");
-        assert_eq!(state["services"]["built_in_upstream_apis_enabled"], false);
-        assert_eq!(state["restart_required"], false);
+        assert_eq!(
+            state["values"]["services.built_in_upstream_apis_enabled"],
+            false
+        );
 
         crate::registry::set_runtime_built_in_upstream_apis_enabled(previous_runtime);
         crate::config::set_test_config_toml_path(None);
