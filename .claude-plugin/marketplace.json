@@ -486,7 +486,8 @@
             "name": "webwright",
             "source": {
                 "source": "url",
-                "url": "https://github.com/microsoft/Webwright.git"
+                "url": "https://github.com/microsoft/Webwright.git",
+                "sha": "4a46f282ec37f27d6003cc498a977939d62d9015"
             },
             "description": "Turn your coding agent into a browser agent using a local Playwright workspace, screenshots, action logs, and visual self-verification."
         },

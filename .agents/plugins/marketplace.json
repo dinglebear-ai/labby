@@ -850,6 +850,27 @@
       }
     },
     {
+      "name": "webwright",
+      "description": "Turn your coding agent into a browser agent using a local Playwright workspace, screenshots, action logs, and visual self-verification.",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/microsoft/Webwright.git",
+        "sha": "4a46f282ec37f27d6003cc498a977939d62d9015"
+      },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+      "category": "Productivity",
+      "interface": {
+        "displayName": "Webwright",
+        "shortDescription": "SOTA browser agent driven by your coding agent.",
+        "longDescription": "Webwright drives a local Playwright workspace through coding-agent-authored scripts, saving screenshots and action logs into final_runs/run_<id>/ so browser tasks can be inspected, rerun, and visually verified.",
+        "developerName": "Microsoft Research",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write", "Automation"],
+        "defaultPrompt": ["Use Webwright to complete this browser task.", "Use Webwright to craft a reusable browser automation script.", "Use Webwright to inspect and verify this website workflow."],
+        "brandColor": "#29B6F6"
+      }
+    },
+    {
       "name": "mcp-tunnels",
       "description": "Connect Claude to a private MCP server through an Anthropic-managed tunnel.",
       "source": {
