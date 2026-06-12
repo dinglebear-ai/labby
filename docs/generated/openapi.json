@@ -2757,6 +2757,36 @@
           }
         }
       },
+      "SetupSettingsConfigUpdateParams": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupSettingsEnvUpdateParams": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupSettingsStateParams": {
+        "type": "object",
+        "properties": {
+          "section": {
+            "type": "string"
+          }
+        }
+      },
       "SetupSettingsUpdateParams": {
         "type": "object",
         "required": [
