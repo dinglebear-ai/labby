@@ -21,7 +21,9 @@ use crate::mcp::call_tool_codemode::CODE_EXECUTE_DESCRIPTION;
 use crate::mcp::catalog::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
 use crate::mcp::completion::action_schema;
 use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_for_request};
-use crate::mcp::handlers_resources::code_mode_app_resource_uri_for_tool;
+use crate::mcp::handlers_resources::{
+    code_mode_app_resource_uri_for_tool, code_mode_app_skybridge_uri_for_tool,
+};
 use crate::mcp::logging::DispatchLogOutcome;
 use crate::mcp::server::LabMcpServer;
 
@@ -256,12 +258,24 @@ fn code_mode_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = code_mode_app_resource_uri_for_tool(tool_name)
         .expect("Code Mode tools must have an associated UI resource");
     let mut meta = serde_json::Map::new();
+    // Anthropic / MCP Apps (SEP-1724) binding: hosts read `_meta.ui.resourceUri`.
     meta.insert(
         "ui".to_string(),
         serde_json::json!({
             "resourceUri": resource_uri,
         }),
     );
+    // OpenAI Apps SDK binding: ChatGPT / Codex hosts bind the widget via
+    // `openai/outputTemplate` and ignore `_meta.ui`. It points at the skybridge
+    // variant of the same widget — identical HTML, served under the
+    // `text/html+skybridge` MIME those hosts expect — so the Claude resource
+    // stays untouched. The widget self-hydrates from `window.openai.toolOutput`.
+    if let Some(skybridge_uri) = code_mode_app_skybridge_uri_for_tool(tool_name) {
+        meta.insert(
+            "openai/outputTemplate".to_string(),
+            serde_json::json!(skybridge_uri),
+        );
+    }
     Meta(meta)
 }
 

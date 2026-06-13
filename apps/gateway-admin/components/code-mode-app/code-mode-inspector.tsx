@@ -67,6 +67,8 @@ const AURORA_DARK_TOKENS = {
 declare global {
   interface Window {
     __LAB_CODE_MODE_INITIAL_TRACE__?: unknown
+    // OpenAI Apps runtime (ChatGPT / Codex) injects this; MCP Apps hosts do not.
+    openai?: { toolOutput?: unknown }
     ExtApps?: {
       App?: new (
         appInfo: { name: string; version: string },
@@ -126,6 +128,25 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
     return () => {
       void app.close?.()
     }
+  }, [])
+
+  // OpenAI Apps runtime (ChatGPT / Codex) bridge. These hosts bind the widget
+  // via the tool's `openai/outputTemplate` meta and expose the structured tool
+  // result on `window.openai.toolOutput` instead of driving the ExtApps
+  // `ontoolresult` path, so hydrate from it directly and track live updates.
+  useEffect(() => {
+    if (!window.openai) return
+    const sync = () => {
+      const next = parseCodeModeTrace(window.openai?.toolOutput)
+      if (next) {
+        setTrace(next)
+        setBridgeWarning(null)
+        setBridgeState('connected')
+      }
+    }
+    sync()
+    window.addEventListener('openai:set_globals', sync)
+    return () => window.removeEventListener('openai:set_globals', sync)
   }, [])
 
   const rows = flattenTraceRows(trace)

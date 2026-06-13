@@ -30,35 +30,76 @@ use crate::mcp::context::{
 use crate::mcp::logging::DispatchLogOutcome;
 use crate::mcp::server::LabMcpServer;
 
+/// MCP Apps (Claude / SEP-1724) MIME — bound via the tool's `_meta.ui.resourceUri`.
 pub(crate) const CODE_MODE_APP_MIME: &str = "text/html;profile=mcp-app";
+/// OpenAI Apps (ChatGPT / Codex) MIME — bound via the tool's `openai/outputTemplate`.
+/// Same HTML body; a distinct URI + MIME so the Claude resource stays untouched.
+pub(crate) const CODE_MODE_APP_SKYBRIDGE_MIME: &str = "text/html+skybridge";
 /// URI namespace reserved for Lab's own Code Mode app resources, served locally.
 /// Any other `ui://` is an upstream mcp-ui widget resource routed to its peer.
 pub(crate) const CODE_MODE_APP_URI_PREFIX: &str = "ui://lab/code-mode/";
 pub(crate) const CODE_MODE_SEARCH_APP_URI: &str = "ui://lab/code-mode/search";
 pub(crate) const CODE_MODE_EXECUTE_APP_URI: &str = "ui://lab/code-mode/execute";
 pub(crate) const CODE_MODE_HISTORY_APP_URI: &str = "ui://lab/code-mode/history";
+/// OpenAI Apps skybridge variants — same HTML, served under the skybridge MIME.
+pub(crate) const CODE_MODE_SEARCH_APP_SKYBRIDGE_URI: &str = "ui://lab/code-mode/search.skybridge";
+pub(crate) const CODE_MODE_EXECUTE_APP_SKYBRIDGE_URI: &str = "ui://lab/code-mode/execute.skybridge";
 
 pub(crate) struct CodeModeAppResourceDescriptor {
     pub(crate) uri: &'static str,
     pub(crate) name: &'static str,
-    pub(crate) tool_name: Option<&'static str>,
+    /// MIME the resource is served with — selects the host runtime that binds it.
+    pub(crate) mime: &'static str,
+    /// Whether the resource appears in `resources/list`. Skybridge variants are
+    /// discovered via the tool's `openai/outputTemplate`, not the resource list,
+    /// so they stay out of the listing to keep the Claude surface unchanged.
+    pub(crate) listed: bool,
+    /// Tool whose MCP Apps `_meta.ui.resourceUri` (Claude) points here.
+    pub(crate) mcp_tool_name: Option<&'static str>,
+    /// Tool whose OpenAI Apps `openai/outputTemplate` (ChatGPT / Codex) points here.
+    pub(crate) openai_tool_name: Option<&'static str>,
 }
 
 pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[CodeModeAppResourceDescriptor] = &[
     CodeModeAppResourceDescriptor {
         uri: CODE_MODE_SEARCH_APP_URI,
         name: "code-mode/search",
-        tool_name: Some(CODE_MODE_SEARCH_TOOL_NAME),
+        mime: CODE_MODE_APP_MIME,
+        listed: true,
+        mcp_tool_name: Some(CODE_MODE_SEARCH_TOOL_NAME),
+        openai_tool_name: None,
     },
     CodeModeAppResourceDescriptor {
         uri: CODE_MODE_EXECUTE_APP_URI,
         name: "code-mode/execute",
-        tool_name: Some(TOOL_EXECUTE_TOOL_NAME),
+        mime: CODE_MODE_APP_MIME,
+        listed: true,
+        mcp_tool_name: Some(TOOL_EXECUTE_TOOL_NAME),
+        openai_tool_name: None,
     },
     CodeModeAppResourceDescriptor {
         uri: CODE_MODE_HISTORY_APP_URI,
         name: "code-mode/history",
-        tool_name: None,
+        mime: CODE_MODE_APP_MIME,
+        listed: true,
+        mcp_tool_name: None,
+        openai_tool_name: None,
+    },
+    CodeModeAppResourceDescriptor {
+        uri: CODE_MODE_SEARCH_APP_SKYBRIDGE_URI,
+        name: "code-mode/search.skybridge",
+        mime: CODE_MODE_APP_SKYBRIDGE_MIME,
+        listed: false,
+        mcp_tool_name: None,
+        openai_tool_name: Some(CODE_MODE_SEARCH_TOOL_NAME),
+    },
+    CodeModeAppResourceDescriptor {
+        uri: CODE_MODE_EXECUTE_APP_SKYBRIDGE_URI,
+        name: "code-mode/execute.skybridge",
+        mime: CODE_MODE_APP_SKYBRIDGE_MIME,
+        listed: false,
+        mcp_tool_name: None,
+        openai_tool_name: Some(TOOL_EXECUTE_TOOL_NAME),
     },
 ];
 
@@ -416,7 +457,7 @@ impl LabMcpServer {
 
         Ok(ReadResourceResult::new(vec![
             ResourceContents::text(html, uri.to_string())
-                .with_mime_type(CODE_MODE_APP_MIME)
+                .with_mime_type(code_mode_app_mime_for_uri(uri))
                 .with_meta(code_mode_app_resource_meta(uri)),
         ]))
     }
@@ -444,9 +485,17 @@ fn code_mode_app_html(uri: &str, history: Option<&Value>) -> Result<String, Stri
 fn code_mode_app_resource(descriptor: &CodeModeAppResourceDescriptor) -> rmcp::model::Resource {
     RawResource::new(descriptor.uri.to_string(), descriptor.name.to_string())
         .with_description("Read-only MCP App for Code Mode call traces")
-        .with_mime_type(CODE_MODE_APP_MIME)
+        .with_mime_type(descriptor.mime)
         .with_meta(code_mode_app_resource_meta(descriptor.uri))
         .no_annotation()
+}
+
+/// MIME a Code Mode app URI is served with (defaults to the MCP Apps MIME).
+fn code_mode_app_mime_for_uri(uri: &str) -> &'static str {
+    CODE_MODE_APP_RESOURCE_DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.uri == uri)
+        .map_or(CODE_MODE_APP_MIME, |descriptor| descriptor.mime)
 }
 
 fn code_mode_app_resources_visible(
@@ -459,14 +508,24 @@ fn code_mode_app_resources_visible(
 fn code_mode_app_resources() -> Vec<rmcp::model::Resource> {
     CODE_MODE_APP_RESOURCE_DESCRIPTORS
         .iter()
+        .filter(|descriptor| descriptor.listed)
         .map(code_mode_app_resource)
         .collect()
 }
 
+/// MCP Apps (Claude) widget URI for a tool — backs `_meta.ui.resourceUri`.
 pub(crate) fn code_mode_app_resource_uri_for_tool(tool_name: &str) -> Option<&'static str> {
     CODE_MODE_APP_RESOURCE_DESCRIPTORS
         .iter()
-        .find(|descriptor| descriptor.tool_name == Some(tool_name))
+        .find(|descriptor| descriptor.mcp_tool_name == Some(tool_name))
+        .map(|descriptor| descriptor.uri)
+}
+
+/// OpenAI Apps (ChatGPT / Codex) widget URI for a tool — backs `openai/outputTemplate`.
+pub(crate) fn code_mode_app_skybridge_uri_for_tool(tool_name: &str) -> Option<&'static str> {
+    CODE_MODE_APP_RESOURCE_DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.openai_tool_name == Some(tool_name))
         .map(|descriptor| descriptor.uri)
 }
 
@@ -476,7 +535,7 @@ pub(crate) fn code_mode_app_resource_meta(uri: &str) -> Meta {
         "ui".to_string(),
         json!({
             "resourceUri": uri,
-            "mimeTypes": [CODE_MODE_APP_MIME],
+            "mimeTypes": [code_mode_app_mime_for_uri(uri)],
             "csp": {
                 "connectDomains": [],
                 "resourceDomains": [],
@@ -713,6 +772,17 @@ mod tests {
     fn code_mode_app_html_accepts_known_ui_resources_and_rejects_unknown() {
         let html = code_mode_app_html(CODE_MODE_EXECUTE_APP_URI, None).expect("known resource");
         assert!(html.contains("Lab Code Mode Inspector"));
+        // The bundle hydrates natively under the OpenAI Apps runtime
+        // (ChatGPT / Codex) via window.openai.toolOutput + openai:set_globals.
+        assert!(
+            html.contains("openai:set_globals"),
+            "bundle must carry the OpenAI Apps hydration bridge"
+        );
+
+        // The skybridge variant serves the same HTML under the OpenAI MIME.
+        let skybridge = code_mode_app_html(CODE_MODE_EXECUTE_APP_SKYBRIDGE_URI, None)
+            .expect("skybridge resource");
+        assert!(skybridge.contains("Lab Code Mode Inspector"));
 
         let err = code_mode_app_html("ui://lab/code-mode/nope", None).expect_err("unknown");
         assert!(err.contains("unknown UI resource"));

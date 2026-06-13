@@ -167,16 +167,27 @@ function render(trace){
   if(t.kind==="code_mode_history"){const rows=(t.entries||[]).map(historyRow).join("")||card('<div class="meta">History is empty.</div>');summary.textContent=`${(t.entries||[]).length} bounded history entries`;renderStats([["Execute calls",0],["Catalog matches",0],["History entries",(t.entries||[]).length]]);content.innerHTML=panel("Recent history",(t.entries||[]).length,rows);return;}
   clearStats();content.innerHTML=card(`<pre>${esc(json(t))}</pre>`);
 }
-// Render immediately from the server-injected snapshot (history widget).
-render(window.__LAB_CODE_MODE_INITIAL_TRACE__);
-// MCP Apps bridge: live search/execute traces arrive via ontoolresult.
-const app = new App({ name: "LabCodeModeInspector", version: "1.0.0" }, {});
-app.onhostcontextchanged = (ctx) => { if (ctx && ctx.theme) { document.documentElement.classList.toggle("dark", ctx.theme === "dark"); } };
-app.ontoolresult = (result) => render(result && result.structuredContent ? result.structuredContent : result);
-try { state.textContent = "connected"; state.classList.add("connected"); } catch (_) {}
-// Fire-and-forget per the MCP Apps spec — resolves async after the host
-// postMessage handshake, which may be delayed or unavailable.
-app.connect().catch(() => { try { state.textContent = "read only"; state.classList.remove("connected"); } catch (_) {} });
+// Render immediately from the OpenAI Apps tool output (ChatGPT / Codex) when
+// present, otherwise the server-injected snapshot (history widget) / null seed.
+render(window.openai && window.openai.toolOutput != null ? window.openai.toolOutput : window.__LAB_CODE_MODE_INITIAL_TRACE__);
+if (window.openai) {
+  // OpenAI Apps runtime: there is no MCP Apps host to hand-shake with. The
+  // structured tool result lives on window.openai.toolOutput and live updates
+  // arrive via the openai:set_globals event — drive render() from both.
+  const syncOpenai = () => { const out = window.openai && window.openai.toolOutput; if (out != null) render(out); };
+  window.addEventListener("openai:set_globals", syncOpenai);
+  syncOpenai();
+  try { state.textContent = "connected"; state.classList.add("connected"); } catch (_) {}
+} else {
+  // MCP Apps bridge (Claude): live search/execute traces arrive via ontoolresult.
+  const app = new App({ name: "LabCodeModeInspector", version: "1.0.0" }, {});
+  app.onhostcontextchanged = (ctx) => { if (ctx && ctx.theme) { document.documentElement.classList.toggle("dark", ctx.theme === "dark"); } };
+  app.ontoolresult = (result) => render(result && result.structuredContent ? result.structuredContent : result);
+  try { state.textContent = "connected"; state.classList.add("connected"); } catch (_) {}
+  // Fire-and-forget per the MCP Apps spec — resolves async after the host
+  // postMessage handshake, which may be delayed or unavailable.
+  app.connect().catch(() => { try { state.textContent = "read only"; state.classList.remove("connected"); } catch (_) {} });
+}
 })();
 </script>
 </body>
