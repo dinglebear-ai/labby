@@ -25,9 +25,7 @@ mod patch;
 mod runtime;
 pub(crate) mod service;
 pub(crate) mod stash_meta;
-#[cfg(feature = "marketplace")]
 pub mod store;
-#[cfg(feature = "marketplace")]
 pub mod sync;
 mod update;
 

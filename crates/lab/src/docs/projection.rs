@@ -62,7 +62,7 @@ fn build_service_catalog(
             description: meta.description.to_string(),
             category: meta.category.as_str().to_string(),
             status: "sdk_only".to_string(),
-            feature: Some(meta.name.to_string()),
+            feature: sdk_only_feature(meta),
             exposure: ServiceExposure::SdkOnly,
             surfaces: SurfaceAvailability::none(),
             default_port: meta.default_port,
@@ -76,6 +76,13 @@ fn build_service_catalog(
 
     docs.sort_by(|a, b| a.name.cmp(&b.name));
     docs
+}
+
+fn sdk_only_feature(meta: &PluginMeta) -> Option<String> {
+    match meta.name {
+        "mcpregistry" => Some("marketplace".to_string()),
+        _ => Some(meta.name.to_string()),
+    }
 }
 
 fn service_doc(

@@ -11,11 +11,10 @@ run() {
 run cargo check -p lab-apis --no-default-features
 run cargo check -p lab-apis --no-default-features --features all
 
-labby_features=(
+labby_product_features=(
   ""
   "gateway"
   "marketplace"
-  "mcpregistry" # compatibility alias for marketplace
   "fs"
   "deploy"
   "acp_registry"
@@ -23,7 +22,7 @@ labby_features=(
   "all"
 )
 
-for features in "${labby_features[@]}"; do
+for features in "${labby_product_features[@]}"; do
   if [[ -z "$features" ]]; then
     run cargo check -p labby --no-default-features --all-targets
   else
@@ -31,4 +30,5 @@ for features in "${labby_features[@]}"; do
   fi
 done
 
+run cargo check -p labby --no-default-features --features mcpregistry --all-targets
 run cargo check -p labby --all-features --all-targets

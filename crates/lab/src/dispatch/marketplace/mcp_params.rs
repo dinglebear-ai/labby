@@ -4,7 +4,6 @@
 //! [`crate::dispatch::security::spawn_guard`] module — do NOT add local copies
 //! of those rules here.
 //!
-#[cfg(feature = "marketplace")]
 use lab_apis::mcpregistry::types::{
     LabRegistryMetadata, LabRegistrySetupDifficulty, LabRegistryTransportScore, ListServersParams,
 };
@@ -135,7 +134,6 @@ fn optional_bool_param(params: &Value, key: &str) -> Result<Option<bool>, ToolEr
 }
 
 /// Extract `mcp.list` params from the dispatch params object.
-#[cfg(feature = "marketplace")]
 pub fn list_servers_params(params: &Value) -> Result<ListServersParams, ToolError> {
     Ok(ListServersParams {
         search: resolve_search(params)?,
@@ -151,7 +149,6 @@ pub fn list_servers_params(params: &Value) -> Result<ListServersParams, ToolErro
     })
 }
 
-#[cfg(feature = "marketplace")]
 pub fn parse_lab_metadata(value: &Value) -> Result<LabRegistryMetadata, ToolError> {
     let metadata: LabRegistryMetadata =
         serde_json::from_value(value.clone()).map_err(|e| ToolError::Sdk {
@@ -162,7 +159,6 @@ pub fn parse_lab_metadata(value: &Value) -> Result<LabRegistryMetadata, ToolErro
     Ok(normalize_lab_metadata(metadata))
 }
 
-#[cfg(feature = "marketplace")]
 fn validate_lab_metadata(metadata: &LabRegistryMetadata) -> Result<(), ToolError> {
     if metadata.audit.is_some() {
         return Err(ToolError::Sdk {
@@ -210,7 +206,6 @@ fn validate_lab_metadata(metadata: &LabRegistryMetadata) -> Result<(), ToolError
     Ok(())
 }
 
-#[cfg(feature = "marketplace")]
 fn normalize_lab_metadata(mut metadata: LabRegistryMetadata) -> LabRegistryMetadata {
     if let Some(curation) = metadata.curation.as_mut() {
         curation.tags = curation
@@ -239,7 +234,6 @@ fn normalize_lab_metadata(mut metadata: LabRegistryMetadata) -> LabRegistryMetad
     metadata
 }
 
-#[cfg(feature = "marketplace")]
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
     value
         .as_deref()
@@ -248,7 +242,6 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
-#[cfg(feature = "marketplace")]
 fn validate_timestamp(value: Option<&str>, field: &str) -> Result<(), ToolError> {
     let Some(value) = value else {
         return Ok(());
@@ -259,7 +252,6 @@ fn validate_timestamp(value: Option<&str>, field: &str) -> Result<(), ToolError>
     Ok(())
 }
 
-#[cfg(feature = "marketplace")]
 fn invalid_metadata(message: &str) -> ToolError {
     ToolError::Sdk {
         sdk_kind: "invalid_param".to_string(),

@@ -215,7 +215,7 @@
     "description": "MCP Registry v0.1 — discover and validate MCP servers",
     "category": "marketplace",
     "status": "sdk_only",
-    "feature": "mcpregistry",
+    "feature": "marketplace",
     "exposure": "sdk_only",
     "surfaces": {
       "cli": false,

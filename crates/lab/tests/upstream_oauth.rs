@@ -7,7 +7,6 @@
     clippy::len_zero,
     clippy::manual_string_new,
     clippy::needless_raw_string_hashes,
-    clippy::panic,
     clippy::single_char_pattern,
     clippy::unnested_or_patterns
 )]
