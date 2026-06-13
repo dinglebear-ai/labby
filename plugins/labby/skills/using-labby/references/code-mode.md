@@ -88,6 +88,30 @@ async () => {
 
 The host validates params against the upstream input schema before dispatching.
 
+## Action-Dispatched Upstreams
+
+Many upstreams expose a single action-dispatched tool instead of one tool per
+operation — `axon`, and the rmcp family (`unraid`, `unifi`, `sonarr`, `radarr`,
+`cortex`, ...). These take a single envelope, `{ action, params }`, and some add a
+`subaction`. Do not guess the envelope shape from memory.
+
+- Discover operations with the tool's own `{ "action": "help" }`, or read the
+  `schema` entry returned by `search`.
+- Put operation arguments under `params`, never at the top level:
+
+```js
+// Right: action + nested params
+async () => callTool("axon::axon", { action: "research", params: { query: "mcpb" } });
+
+// Wrong: guessed top-level fields — rejects with `invalid_param`
+//   ("... must match exactly one schema").
+async () => callTool("axon::axon", { action: "research", subaction: "help" });
+```
+
+An `invalid_param` that mentions `must match exactly one schema` means the
+envelope matched no action variant. Re-read the schema and nest the arguments
+under `params` — it is not a bug in the upstream tool.
+
 ## Destructive Tools
 
 Destructive upstream tools require top-level `confirm` on `execute`:
@@ -128,6 +152,15 @@ Upstream result unwrapping:
 - Else join all text content and parse JSON when possible.
 - Else return text or the full mixed MCP result shape.
 - Per-call result payloads are not copied into `calls`.
+
+> **Reading the value back.** `execute` returns the envelope in the tool's text
+> content block and a copy in `structuredContent` carrying both `result` and a
+> compact `result_shape`. Most MCP clients (Claude Code included) surface
+> `structuredContent` over text. If `result` comes back as a truncation marker —
+> an object with `"truncated": true`, plus `preview` and `next_action` — the
+> value exceeded the response budget (24 KB / 6000 tokens). Reduce the data
+> inside the sandbox before returning, or write large payloads to an artifact and
+> read them back — do not rely on a large `result` reaching the model verbatim.
 
 Oversized final responses are replaced with a truncation marker. Reduce data in
 the sandbox before returning large values.

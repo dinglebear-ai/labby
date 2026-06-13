@@ -63,7 +63,9 @@ impl LabMcpServer {
             oauth_upstream_subject_for_request(auth, self.request_subject(&context));
         let mut builtin_names = Vec::new();
         for svc in self.registry.services() {
-            if self.service_visible_on_mcp(svc.name).await {
+            if self.route_scope.allows_service(svc.name)
+                && self.service_visible_on_mcp(svc.name).await
+            {
                 builtin_names.push(svc.name);
                 if hide_raw_tools {
                     suppressed_builtin_tool_count += 1;
@@ -300,7 +302,9 @@ fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
                     "kind": { "const": "code_mode_execute_trace" },
                     "call_count": { "type": "integer", "minimum": 0 },
                     "calls": { "type": "array", "items": { "type": "object" } },
+                    "result": {},
                     "result_shape": { "type": "object" },
+                    "artifacts": { "type": "array", "items": { "type": "object" } },
                     "logs_count": { "type": "integer", "minimum": 0 }
                 },
                 "required": ["kind", "call_count", "calls", "result_shape", "logs_count"],

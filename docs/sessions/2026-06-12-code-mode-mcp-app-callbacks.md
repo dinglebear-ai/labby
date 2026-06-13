@@ -1,141 +1,228 @@
 ---
-date: 2026-06-12 18:59:44 EDT
+date: 2026-06-12 22:07:09 EDT
 repo: git@github.com:jmagar/lab.git
-branch: codex/fix-code-mode-mcp-app-callbacks
-head: 293c1617
-working directory: /home/jmagar/workspace/lab
-worktree: /home/jmagar/workspace/lab 293c1617 [codex/fix-code-mode-mcp-app-callbacks]
-pr: none
-beads: lab-zn7es
+branch: codex/code-mode-mcp-app-callbacks
+head: e2559d7b
+plan: docs/superpowers/plans/2026-06-12-code-mode-mcp-app-callbacks.md
+working directory: /home/jmagar/workspace/lab/.worktrees/code-mode-mcp-app-callbacks
+worktree: /home/jmagar/workspace/lab/.worktrees/code-mode-mcp-app-callbacks e2559d7b [codex/code-mode-mcp-app-callbacks]
+pr: "#118 Fix code mode MCP App sibling callbacks (https://github.com/jmagar/lab/pull/118)"
 ---
 
-# Code Mode MCP App callbacks and Vibin repo-status
+# Code mode MCP App callback session
 
 ## User Request
 
-Fix the Lab host bug where Code Mode allowed an MCP App UI tool to render but blocked its `callServerTool` callbacks to sibling tools, then stage, commit, push everything, build the latest release binary, and sync it to PATH and the container.
+Create a plan to address the issue where code mode hides sibling upstream tools needed by rendered MCP Apps, then execute the plan with `$vibin:work-it`.
 
 ## Session Overview
 
-This session fixed the Code Mode MCP App callback routing bug and moved the `repo-status` skill into the Vibin plugin bundle. The workspace version was bumped from `0.24.0` to `0.24.1`, the changelog was updated, and the related bead was closed after verification.
+Implemented and published PR #118 to let code mode MCP Apps call safe same-upstream sibling tools through `callServerTool` without re-exposing those tools in `tools/list`. The final pushed state blocks destructive direct UI, legacy-widget, and sibling callbacks, rejects ambiguous duplicate-name sibling matches, preserves route scope and execute-scope checks, and routes pre-resolved OAuth callbacks through subject-scoped routing.
 
 ## Sequence of Events
 
-1. Investigated Code Mode tool visibility and confirmed the existing bypass only allowed the MCP App UI tool itself.
-2. Added a same-upstream MCP App sibling-tool lookup in the upstream pool.
-3. Updated the MCP `call_tool` Code Mode gate to allow exposed sibling callbacks while keeping raw tools hidden from `list_tools`.
-4. Added targeted regressions for sibling callback routing and route-scope behavior.
-5. Moved the `repo-status` skill into `plugins/vibin` and refreshed marketplace/plugin metadata.
-6. Bumped the workspace version to `0.24.1`, updated `Cargo.lock`, and documented the release in `CHANGELOG.md`.
+1. Wrote `docs/superpowers/plans/2026-06-12-code-mode-mcp-app-callbacks.md` for the host-side fix.
+2. Created clean worktree `/home/jmagar/workspace/lab/.worktrees/code-mode-mcp-app-callbacks` on branch `codex/code-mode-mcp-app-callbacks`.
+3. Added upstream sibling lookup, code-mode callback gate behavior, docs, and tests.
+4. Fixed unrelated all-features clippy drift already exposed by the branch verification gate.
+5. Rebased onto current `origin/main`, verified, pushed, and opened PR #118.
+6. Ran review waves, addressed findings around same-name upstream routing, execute scope, destructive callback bypasses, ambiguity ordering, OAuth subject-scoped routing, and missing handler tests.
+7. Refreshed the PR body with final verification and saved this session note.
 
 ## Key Findings
 
-- `crates/lab/src/mcp/call_tool.rs:221` handled Code Mode hidden raw-tool gating and previously only bypassed for UI tools themselves or the broad `LAB_CODE_MODE_WIDGET_CALLBACKS` escape hatch.
-- `crates/lab/src/dispatch/upstream/pool/tools.rs:150` is now the narrow allowlist for exposed tools whose upstream also exposes at least one MCP App UI tool.
-- `crates/lab/src/mcp/handlers_tools/tests.rs:365` now proves a `youtube_probe`-style sibling callback no longer returns the hidden-tool envelope.
+- Code mode hid raw upstream sibling tools while still exposing MCP-App UI tools, making rendered apps able to display but unable to call their server-side helpers.
+- `UpstreamPool::find_mcp_app_sibling_tool_candidates` now provides a narrow allowlist: same upstream, exposed target tool, routable upstream, and at least one exposed MCP App UI sibling (`crates/lab/src/dispatch/upstream/pool/tools.rs:150`).
+- `call_tool_impl` now classifies callback attempts before raw upstream fallback, binding allowed callbacks to the selected upstream and returning `ambiguous_tool`, `confirmation_required`, or `forbidden` where appropriate (`crates/lab/src/mcp/call_tool.rs:237`).
+- Pre-resolved OAuth callbacks now bypass the shared raw-pool call path and use subject-scoped routing (`crates/lab/src/mcp/call_tool_upstream.rs:66`, `crates/lab/src/mcp/call_tool_upstream.rs:126`, `crates/lab/src/mcp/call_tool_upstream.rs:308`).
+- PR comments had no actionable review threads; Codex review and CodeRabbit both reported usage/rate limits on the final pushed state.
 
 ## Technical Decisions
 
-- Kept ordinary raw sibling tools hidden from the model-facing `list_tools` output.
-- Scoped callback reachability to exposed tools on the same healthy upstream that exposes an MCP App UI tool.
-- Preserved the destructive-tool guard so unconfirmed callback paths cannot perform destructive upstream actions.
-- Left the existing broad `LAB_CODE_MODE_WIDGET_CALLBACKS` opt-in in place for legacy/operator escape-hatch behavior.
+- Keep model-facing `tools/list` collapsed in code mode; only callback dispatch gets the scoped exception.
+- Require the sibling tool to be exposed by the upstream policy and paired with an exposed MCP-App UI tool on the same upstream.
+- Require `lab` or `lab:admin` scope for hidden sibling callbacks, matching the execute-scope boundary.
+- Reject destructive callbacks instead of trying to run confirmation elicitation through widget callbacks; the message points callers to `execute` with confirmation.
+- Prefer ambiguity over destructive classification when duplicate sibling matches exist, because the caller has not identified which upstream should own the call.
+- Add a `cfg(test)` server flag for the legacy widget callback branch instead of mutating process environment in Rust 2024 tests.
 
 ## Files Changed
 
 | status | path | previous path | purpose | evidence |
 |---|---|---|---|---|
-| modified | `.agents/plugins/marketplace.json` | - | Refresh Codex marketplace metadata for Vibin/mcp-apps work | `git status --short` |
-| modified | `.claude-plugin/marketplace.json` | - | Refresh Claude marketplace metadata for Vibin/mcp-apps work | `git status --short` |
-| modified | `CHANGELOG.md` | - | Add `0.24.1` release notes | `git diff --name-status` |
-| modified | `Cargo.toml` | - | Bump workspace version to `0.24.1` | `cargo check --manifest-path crates/lab/Cargo.toml --all-features` |
-| modified | `Cargo.lock` | - | Sync locked package versions after workspace version bump | `cargo check --manifest-path crates/lab/Cargo.toml --all-features` |
-| modified | `crates/lab/src/dispatch/upstream/pool/tools.rs` | - | Add MCP App sibling callback allowlist lookup and tests | targeted unit test passed |
-| modified | `crates/lab/src/mcp/call_tool.rs` | - | Allow same-upstream MCP App sibling callbacks in Code Mode | targeted MCP test passed |
-| modified | `crates/lab/src/mcp/handlers_tools/tests.rs` | - | Add regression for hidden raw tools vs sibling callback reachability | targeted MCP test passed |
-| modified | `plugins/vibin/.claude-plugin/plugin.json` | - | Advertise repo-status skill in Claude plugin metadata | plugin validation previously passed |
-| modified | `plugins/vibin/.codex-plugin/plugin.json` | - | Advertise repo-status skill in Codex plugin metadata | skill validation previously passed |
-| created | `plugins/vibin/skills/repo-status/` | `/home/jmagar/.codex/skills/repo-status` | Move repo readiness audit skill into Vibin plugin source | installed cache refreshed earlier |
+| modified | crates/lab/src/acp/providers.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/acp/runtime.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/api/nodes/fleet.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/api/services/acp.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/cli.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/cli/doctor.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/cli/gateway.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/cli/oauth.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/cli/serve.rs | - | Test-only server field initialization and cleanup | `origin/main...HEAD` diff |
+| modified | crates/lab/src/cli/setup.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/config.rs | - | Code mode/config cleanup | `origin/main...HEAD` diff |
+| modified | crates/lab/src/config/env_merge.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/acp/persistence.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/doctor.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/doctor/proxy.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/doctor/system.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/fs/dispatch.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/gateway/code_mode/tests_broker.rs | - | Code mode test adjustment | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/gateway/code_mode/tests_ids_schema.rs | - | Code mode test adjustment | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/gateway/code_mode/tests_runtime.rs | - | Code mode test adjustment | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/gateway/config.rs | - | Code mode config support | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/gateway/discovery/opencode.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/gateway/dispatch.rs | - | Code mode dispatch support | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/gateway/manager/tests/cleanup.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/gateway/manager/tests/code_mode.rs | - | Code mode test coverage | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/gateway/manager/tests/lifecycle.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/logs/metrics/tests.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/marketplace.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/marketplace/acp_dispatch.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/marketplace/backends/codex.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/marketplace/client.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/marketplace/dispatch.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/node/send.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/setup/bootstrap.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/setup/dispatch.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/stash/store.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/upstream/http_client.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/upstream/pool/ensure.rs | - | Upstream pool cleanup | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/upstream/pool/prompts_list.rs | - | Test-only server field initialization | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/upstream/pool/resources_read.rs | - | Test-only server field initialization and cleanup | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/upstream/pool/tools.rs | - | MCP App UI listing and sibling candidate lookup | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/upstream/process_guard.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/dispatch/upstream/types.rs | - | Upstream type cleanup | `origin/main...HEAD` diff |
+| modified | crates/lab/src/mcp/call_tool.rs | - | Callback gate, ambiguity/destructive/scope handling, selected-upstream binding | `origin/main...HEAD` diff |
+| modified | crates/lab/src/mcp/call_tool_codemode/tests.rs | - | Code mode test adjustments | `origin/main...HEAD` diff |
+| modified | crates/lab/src/mcp/call_tool_upstream.rs | - | Pre-resolved OAuth callback routing | `origin/main...HEAD` diff |
+| modified | crates/lab/src/mcp/handlers_prompts.rs | - | Test-only server field initialization | `origin/main...HEAD` diff |
+| modified | crates/lab/src/mcp/handlers_resources.rs | - | Test-only server field initialization | `origin/main...HEAD` diff |
+| modified | crates/lab/src/mcp/handlers_tools/tests.rs | - | Handler-level callback safety and routing tests | `origin/main...HEAD` diff |
+| modified | crates/lab/src/mcp/in_process_peer.rs | - | Test-only server field initialization | `origin/main...HEAD` diff |
+| modified | crates/lab/src/mcp/server.rs | - | Test-only server flag for legacy widget callback branch | `origin/main...HEAD` diff |
+| modified | crates/lab/src/mcp/services/fs.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/node/runtime.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/node/ws_client.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/oauth/local_relay.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/oauth/upstream/encryption.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/src/output/render.rs | - | Clippy cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/acp_backend_contract.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/code_mode_runner.rs | - | Code mode test adjustment | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/deploy_runner.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/device_cli.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/device_runtime.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/device_scan.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/gateway_stdio_spawn.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/logs_api.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/nodes_cli.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/nodes_runtime.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | crates/lab/tests/upstream_oauth.rs | - | Test cleanup from all-features gate | `origin/main...HEAD` diff |
+| modified | docs/dev/CODE_MODE.md | - | Document code-mode MCP App callback rules | `origin/main...HEAD` diff |
+| created | docs/superpowers/plans/2026-06-12-code-mode-mcp-app-callbacks.md | - | Execution plan | `origin/main...HEAD` diff |
+| modified | docs/surfaces/MCP.md | - | Document MCP surface callback behavior | `origin/main...HEAD` diff |
 
 ## Beads Activity
 
-| id | title | action | final status | why |
-|---|---|---|---|---|
-| `lab-zn7es` | Code mode MCP Apps callServerTool access | Created, worked, closed | closed | Tracked the host-side fix for MCP App sibling callbacks blocked by Code Mode |
+No bead activity observed. `bd list --all --sort updated --reverse --limit 100 --json` returned only historical closed issues, and `tail -200 .beads/interactions.jsonl` returned `none`.
 
 ## Repository Maintenance
 
 ### Plans
 
-`docs/plans/complete/mcp-streamable-http-oauth-proxy.md` was already complete. `docs/plans/fleet-ws-plan-lab-n07n.md` was left untouched because it was not part of this session.
+`find docs/plans docs/superpowers/plans -maxdepth 2 -type f` found the completed plan in `docs/superpowers/plans/2026-06-12-code-mode-mcp-app-callbacks.md`. I did not move it because the save workflow only names `docs/plans/complete/`, and this repo currently has many active historical superpowers plans without a matching `docs/superpowers/plans/complete/` convention.
 
 ### Beads
 
-`lab-zn7es` was closed with verification evidence after the Code Mode callback fix and tests passed.
+No bead was created or closed during this session. There is no observed relevant open bead to close.
 
 ### Worktrees and branches
 
-The worktree was moved from `main` to `codex/fix-code-mode-mcp-app-callbacks` before committing because the push workflow creates a feature branch from `main`.
+`git worktree list --porcelain` showed active worktrees for this branch plus unrelated branches: `codex/feature-slice-cleanup`, `codex/fix-code-mode-mcp-app-callbacks`, `codex/readme-rewrite`, `main`, and `codex/settings-page-config-plan`. I did not remove any worktree or branch because they are separate active contexts or protected base branches.
 
 ### Stale docs
 
-No stale docs beyond `CHANGELOG.md` were identified in the touched surface.
+`docs/dev/CODE_MODE.md` and `docs/surfaces/MCP.md` were updated in the implementation commits to reflect the new callback rule. No additional stale-doc update was found during the closeout pass.
+
+### Transparency
+
+The branch was clean before writing this session note. The PR body was updated through GitHub to reflect final verification; that did not change local files.
 
 ## Tools and Skills Used
 
-- **Skills.** Used `superpowers:systematic-debugging` for the root-cause workflow and `vibin:quick-push` / `vibin:save-to-md` for closeout.
-- **Shell commands.** Used `rg`, `sed`, `git`, `cargo`, `bd`, and `gh` for inspection, verification, tracker updates, and release prep.
-- **File edits.** Used patch-based edits for Rust source, tests, changelog, version bump, and this session note.
-- **MCP/tools.** Used Lumen semantic search earlier for code discovery.
+- Shell commands: git, cargo, nextest, clippy, formatter, find, bead reads, and date/status inspection.
+- File tools: `apply_patch` for the plan, implementation fixes, and this session artifact.
+- GitHub connector: created and inspected PR #118, fetched comments/reviews/threads, and updated the PR body.
+- Skills/plugins: `superpowers:writing-plans` for the plan, `vibin:work-it` for execution flow, and `vibin:save-to-md` for session closeout.
+- Subagents/reviewers: implementation and review waves produced findings that drove the `a7ff3abb` and `e2559d7b` follow-up commits.
+- External review bots: Codex review and CodeRabbit both reported usage/rate limits; no actionable review threads were present.
 
 ## Commands Executed
 
 | command | result |
 |---|---|
-| `cargo test --manifest-path crates/lab/Cargo.toml --all-features mcp_app_sibling_lookup_requires_exposed_ui_tool_on_same_upstream` | passed |
-| `cargo test --manifest-path crates/lab/Cargo.toml --all-features call_tool_allows_mcp_app_sibling_callbacks_when_raw_tools_are_hidden` | passed |
-| `cargo fmt --manifest-path crates/lab/Cargo.toml --all -- --check` | passed |
-| `cargo check --manifest-path crates/lab/Cargo.toml --all-features` | passed |
-| `bd close lab-zn7es --reason "Fixed Code Mode MCP App sibling callback routing; added regressions; cargo check --all-features passed"` | closed bead |
+| `cargo fmt --all --check` | passed |
+| `cargo test -p labby call_tool_ --all-features` | passed; 24 tests passed |
+| `cargo test -p labby mcp_app_sibling_lookup --all-features` | passed; 2 tests passed |
+| `cargo clippy --workspace --all-features --all-targets -- -D warnings` | passed |
+| `cargo nextest run --workspace --all-features` | passed; 1942 tests run, 1942 passed, 27 skipped |
+| `git push` | pushed `e2559d7b` to `origin/codex/code-mode-mcp-app-callbacks` |
+| GitHub PR comment/review/thread fetches | no actionable review threads; bot comments were rate/usage-limit notices |
+| `bd list --all --sort updated --reverse --limit 100 --json` | historical closed issues only |
+| `tail -200 .beads/interactions.jsonl` | `none` |
 
 ## Errors Encountered
 
-- `cargo test -p lab ... --all-features` failed because the current workspace invocation cannot specify features for that package form. The test command was rerun successfully with `--manifest-path crates/lab/Cargo.toml --all-features`.
-- Repo-root `cargo fmt --all` did not reformat the nested crate as expected, so formatting was rerun with `--manifest-path crates/lab/Cargo.toml`.
+- `cargo fmt --all --check` initially failed on formatting in `call_tool_upstream.rs` and an expected JSON array test assertion; `cargo fmt --all` fixed it.
+- A first draft of the legacy widget callback test used unsafe process-env mutation, which is rejected by the crate's unsafe-code lint under tests. Replaced it with a `cfg(test)` per-server flag.
+- Starting two cargo checks in parallel caused cargo build-lock waiting. The commands serialized and completed successfully.
+- CodeRabbit and Codex review bots could not run final external reviews due usage/rate limits; direct PR thread inspection found no actionable review comments.
 
 ## Behavior Changes (Before/After)
 
 | area | before | after |
 |---|---|---|
-| Code Mode MCP Apps | UI tools with `_meta.ui.resourceUri` could render, but sibling callbacks such as `youtube_probe` returned hidden-tool errors | Exposed sibling callbacks from the same MCP App upstream can reach the upstream proxy |
-| Raw tool visibility | Ordinary upstream tools were hidden from `list_tools` in Code Mode | Still hidden from `list_tools` |
-| Destructive callbacks | Callback bypass could not confirm destructive actions | Destructive sibling tools remain blocked and must use `execute` with confirmation |
-| Vibin plugin | `repo-status` existed as a standalone local skill | `repo-status` now ships from the Vibin plugin bundle |
+| MCP App in code mode | Rendered UI could be exposed while its safe sibling tools were hidden and unreachable. | Safe same-upstream sibling callbacks can dispatch while remaining hidden from `tools/list`. |
+| Same-name upstream tools | A callback could be approved for one upstream but fall through to another raw same-name upstream. | Callback dispatch binds to the selected upstream or rejects ambiguity. |
+| Destructive callbacks | Direct UI and legacy-widget callbacks could bypass confirmation. | Destructive callback paths return `confirmation_required`. |
+| Hidden sibling callbacks | Review found missing execute-scope enforcement risk. | Hidden sibling callbacks require `lab` or `lab:admin` scope. |
+| OAuth upstream callbacks | Pre-resolved OAuth callbacks could use the shared raw pool. | Pre-resolved OAuth callbacks use subject-scoped routing. |
 
 ## Verification Evidence
 
 | command | expected | actual | status |
 |---|---|---|---|
-| `cargo test --manifest-path crates/lab/Cargo.toml --all-features mcp_app_sibling_lookup_requires_exposed_ui_tool_on_same_upstream` | sibling lookup only returns same-upstream UI-backed candidates | passed | pass |
-| `cargo test --manifest-path crates/lab/Cargo.toml --all-features call_tool_allows_mcp_app_sibling_callbacks_when_raw_tools_are_hidden` | sibling callback avoids hidden-tool error and reaches proxy routing | passed | pass |
-| `cargo fmt --manifest-path crates/lab/Cargo.toml --all -- --check` | Rust formatting is clean | passed | pass |
-| `cargo check --manifest-path crates/lab/Cargo.toml --all-features` | all-feature Lab binary compiles | passed | pass |
+| `cargo fmt --all --check` | Rust formatting clean | exited 0 | pass |
+| `cargo test -p labby call_tool_ --all-features` | callback handler tests pass | 24 passed | pass |
+| `cargo test -p labby mcp_app_sibling_lookup --all-features` | sibling lookup tests pass | 2 passed | pass |
+| `cargo clippy --workspace --all-features --all-targets -- -D warnings` | no clippy warnings | exited 0 | pass |
+| `cargo nextest run --workspace --all-features` | all-features workspace tests pass | 1942 passed, 27 skipped | pass |
 
 ## Risks and Rollback
 
-The callback allowlist depends on an upstream exposing at least one MCP App UI tool and the requested sibling tool being exposed by the same upstream. Roll back by reverting the commit that changes `call_tool.rs`, `tools.rs`, and the related tests.
+Risk is concentrated in MCP upstream callback routing. Rollback is to revert PR #118 or specifically revert `e2559d7b` plus earlier callback commits if post-merge behavior differs from expected host routing. Destructive callbacks are intentionally conservative and can be loosened later only with a confirmed safe confirmation channel.
 
 ## Decisions Not Taken
 
-- Did not globally expose all hidden raw tools in Code Mode; that remains behind `LAB_CODE_MODE_WIDGET_CALLBACKS`.
-- Did not refactor duplicate `0.24.0` changelog history because it was unrelated release-note cleanup.
+- Did not expose sibling tools in `tools/list`; that would undo code mode's collapsed model-facing surface.
+- Did not allow destructive widget callbacks through elicitation; widget-originated callbacks do not provide the same explicit confirmation path as `execute`.
+- Did not move the superpowers plan into a new `complete/` directory because no matching convention was observed for `docs/superpowers/plans`.
 
 ## References
 
-- Downstream mitigation PR noted by the user: `https://github.com/jmagar/ytdl-mcp/pull/4`
+- PR #118: https://github.com/jmagar/lab/pull/118
+- Downstream mitigation PR from the original issue: https://github.com/jmagar/ytdl-mcp/pull/4
+- Plan: `docs/superpowers/plans/2026-06-12-code-mode-mcp-app-callbacks.md`
+- Code mode docs: `docs/dev/CODE_MODE.md`
+- MCP surface docs: `docs/surfaces/MCP.md`
+
+## Open Questions
+
+- External CodeRabbit/Codex bot review was rate-limited on the final pushed state, so there is no final third-party bot pass to summarize.
+- CI status was not fetched after the final push in this session artifact; local verification passed all required Rust gates.
 
 ## Next Steps
 
-1. Commit and push the full worktree.
-2. Build the latest release binary.
-3. Sync the new binary to the local PATH target and the running dev container.
+1. Watch PR #118 CI on GitHub and merge when checks are green.
+2. If desired after CodeRabbit limits reset, trigger `@coderabbitai review` for one more external pass.
+3. After merge, validate a live `ytdl-mcp` panel in code mode: `youtube_search_ui` should render, safe Probe/Audio/Video sibling actions should dispatch, and destructive callbacks should be rejected unless run through `execute` with confirmation.

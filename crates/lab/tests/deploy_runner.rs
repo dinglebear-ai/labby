@@ -19,6 +19,7 @@
 //! correctly and respects the concurrency/abort knobs.
 
 #![cfg(feature = "deploy")]
+#![allow(clippy::panic)]
 #![allow(unused_qualifications)]
 
 use std::collections::HashMap;

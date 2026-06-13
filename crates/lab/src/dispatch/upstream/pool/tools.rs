@@ -626,6 +626,44 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn mcp_app_sibling_lookup_respects_exposure_policy() {
+        let pool = UpstreamPool::new();
+        let upstream_name: Arc<str> = Arc::from("apps");
+        let mut tools = test_upstream_tools(
+            &upstream_name,
+            &["youtube_search_ui", "youtube_probe", "internal_delete"],
+        );
+        tools
+            .get_mut("youtube_search_ui")
+            .expect("ui tool")
+            .tool
+            .meta = Some(Meta(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({ "resourceUri": "ui://apps/youtube-search.html" }),
+        )])));
+        let mut entry = healthy_in_process_entry(Arc::clone(&upstream_name), tools);
+        entry.exposure_policy = ToolExposurePolicy::from_patterns(vec![
+            "youtube_search_ui".to_string(),
+            "youtube_probe".to_string(),
+        ])
+        .expect("policy");
+        pool.catalog.write().await.insert("apps".to_string(), entry);
+
+        assert_eq!(
+            pool.find_mcp_app_sibling_tool_candidates("youtube_probe", None)
+                .await
+                .len(),
+            1
+        );
+        assert!(
+            pool.find_mcp_app_sibling_tool_candidates("internal_delete", None)
+                .await
+                .is_empty(),
+            "unexposed sibling tools must remain uncallable"
+        );
+    }
+
     // --- lab-tad5: oversized catalog bounds regression tests ---
 
     /// A gateway pool that receives more than `MAX_UPSTREAM_TOOLS` tools must cap
