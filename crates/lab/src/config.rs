@@ -2006,7 +2006,7 @@ fn backup_config_file(path: &Path, raw: &str) -> Result<PathBuf> {
     anyhow::bail!("failed to create unique backup for {}", path.display())
 }
 
-fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_json::Value {
+pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_json::Value {
     match path {
         "output.format" => serde_json::json!(cfg.output.format),
         "mcp.transport" => serde_json::json!(cfg.mcp.transport),
@@ -2071,6 +2071,7 @@ fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_json::Value 
             serde_json::json!(cfg.services.built_in_upstream_apis_enabled)
         }
         "services.tailscale.tailnet" => serde_json::json!(cfg.services.tailscale.tailnet),
+        "admin.enabled" => serde_json::json!(cfg.admin.enabled),
         "code_mode.trace_params" => serde_json::json!(cfg.code_mode.trace_params),
         "code_mode.timeout_ms" => serde_json::json!(cfg.code_mode.timeout_ms),
         "code_mode.max_tool_calls" => serde_json::json!(cfg.code_mode.max_tool_calls),
@@ -2081,6 +2082,8 @@ fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_json::Value 
         }
         "code_mode.max_log_entries" => serde_json::json!(cfg.code_mode.max_log_entries),
         "code_mode.max_log_bytes" => serde_json::json!(cfg.code_mode.max_log_bytes),
+        "gateway_import_mode" => serde_json::json!(cfg.gateway_import_mode),
+        "gateway.extra_stdio_commands" => serde_json::json!(cfg.gateway.extra_stdio_commands),
         "upstream_request_timeout_ms" => serde_json::json!(cfg.upstream_request_timeout_ms),
         "node.controller" => {
             serde_json::json!(cfg.node.as_ref().and_then(|value| value.controller.clone()))
@@ -2097,6 +2100,29 @@ fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_json::Value 
         "device.master" => {
             serde_json::json!(cfg.device.as_ref().and_then(|value| value.master.clone()))
         }
+        "web.disable_auth" => serde_json::json!(cfg.web.disable_auth),
+        "auth" => serde_json::to_value(&cfg.auth).unwrap_or(serde_json::Value::Null),
+        "code_mode.enabled" => serde_json::json!(cfg.code_mode.enabled),
+        "gateway.disable_spawn_guard" => serde_json::json!(cfg.gateway.disable_spawn_guard),
+        "oauth.machines" => {
+            serde_json::to_value(&cfg.oauth.machines).unwrap_or(serde_json::Value::Null)
+        }
+        "deploy" => serde_json::to_value(&cfg.deploy).unwrap_or(serde_json::Value::Null),
+        "upstream" => serde_json::to_value(&cfg.upstream).unwrap_or(serde_json::Value::Null),
+        "upstream_pending" => {
+            serde_json::to_value(&cfg.upstream_pending).unwrap_or(serde_json::Value::Null)
+        }
+        "upstream_import_tombstones" => {
+            serde_json::to_value(&cfg.upstream_import_tombstones).unwrap_or(serde_json::Value::Null)
+        }
+        "protected_mcp_routes" => {
+            serde_json::to_value(&cfg.protected_mcp_routes).unwrap_or(serde_json::Value::Null)
+        }
+        "virtual_servers" => {
+            serde_json::to_value(&cfg.virtual_servers).unwrap_or(serde_json::Value::Null)
+        }
+        "quarantined_virtual_servers" => serde_json::to_value(&cfg.quarantined_virtual_servers)
+            .unwrap_or(serde_json::Value::Null),
         _ => serde_json::Value::Null,
     }
 }

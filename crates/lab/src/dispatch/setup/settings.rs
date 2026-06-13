@@ -438,6 +438,28 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             Some("json"),
         ),
         editable(
+            "surfaces",
+            "LAB_PUBLIC_URL",
+            "Public app URL env",
+            "Environment override for the public Lab UI and OAuth issuer URL.",
+            SettingsBackend::Env,
+            SettingsControl::Url,
+            SettingsApplyMode::Restart,
+            None,
+            Some("https://lab.example.com"),
+        ),
+        editable(
+            "surfaces",
+            "LAB_MCP_GATEWAY_URL",
+            "Public MCP gateway URL env",
+            "Environment override for the public MCP gateway base URL.",
+            SettingsBackend::Env,
+            SettingsControl::Url,
+            SettingsApplyMode::Restart,
+            None,
+            Some("https://mcp.example.com"),
+        ),
+        editable(
             "core",
             "log.filter",
             "Log filter default",
@@ -500,11 +522,11 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             None,
             Some("https://registry.modelcontextprotocol.io"),
         ),
-        enum_editable(
+        enum_editable_with_env(
             "surfaces",
             "mcp.transport",
             "MCP transport",
-            "Default MCP transport.",
+            "Default MCP transport; LAB_MCP_TRANSPORT overrides it.",
             SettingsApplyMode::Restart,
             vec![
                 SettingsOption {
@@ -516,6 +538,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
                     label: "stdio",
                 },
             ],
+            Some("LAB_MCP_TRANSPORT"),
             Some("http"),
         ),
         editable(
@@ -540,47 +563,48 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             Some("LAB_MCP_HTTP_PORT"),
             Some("8765"),
         ),
-        number_editable(
+        number_editable_with_env(
             "surfaces",
             "mcp.session_ttl_secs",
             "MCP session TTL",
-            "Default session keep-alive TTL in seconds.",
+            "Default session keep-alive TTL in seconds; LAB_MCP_SESSION_TTL_SECS overrides it.",
             SettingsApplyMode::Restart,
             1,
             86_400,
+            Some("LAB_MCP_SESSION_TTL_SECS"),
             Some("3600"),
         ),
         editable(
             "surfaces",
             "mcp.stateful",
             "Stateful MCP sessions",
-            "Whether HTTP MCP uses stateful sessions by default.",
+            "Whether HTTP MCP uses stateful sessions by default; LAB_MCP_STATEFUL overrides it.",
             SettingsBackend::ConfigToml,
             SettingsControl::Bool,
             SettingsApplyMode::Restart,
-            None,
+            Some("LAB_MCP_STATEFUL"),
             Some("true"),
         ),
         editable(
             "surfaces",
             "mcp.allowed_hosts",
             "Allowed hosts",
-            "Additional DNS rebinding allowed hosts.",
+            "Additional DNS rebinding allowed hosts; LAB_MCP_ALLOWED_HOSTS overrides it.",
             SettingsBackend::ConfigToml,
             SettingsControl::StringList,
             SettingsApplyMode::Restart,
-            None,
+            Some("LAB_MCP_ALLOWED_HOSTS"),
             Some("lab.tootie.tv"),
         ),
         editable(
             "surfaces",
             "api.cors_origins",
             "CORS origins",
-            "Additional CORS origins. Loopback origins are always included.",
+            "Additional CORS origins. Loopback origins are always included; LAB_CORS_ORIGINS overrides this list.",
             SettingsBackend::ConfigToml,
             SettingsControl::StringList,
             SettingsApplyMode::Restart,
-            None,
+            Some("LAB_CORS_ORIGINS"),
             Some("https://lab.example.com"),
         ),
         editable(
@@ -1007,7 +1031,7 @@ fn value_for_field(
     env_path: &std::path::Path,
 ) -> (Value, SettingsValueSource) {
     if field.backend == SettingsBackend::Env {
-        let value = env_file_value(env_path, field).unwrap_or_else(|| env_process_value(field));
+        let value = env_current_value(env_path, field).unwrap_or(Value::Null);
         return (
             value.clone(),
             SettingsValueSource {
@@ -1020,14 +1044,13 @@ fn value_for_field(
             },
         );
     }
-    let override_source = field
-        .env_override
-        .and_then(|name| std::env::var(name).ok().map(|value| (name, value)));
+    let override_source = env_override_source(env_path, field);
     let mut value = override_source.as_ref().map_or_else(
-        || config_value_for_key(cfg, field.key),
+        || crate::config::config_json_value_for_path(cfg, field.key),
         |(_, value)| env_override_value(field, value),
     );
     if field.control == SettingsControl::ReadOnly {
+        value = redact_value(value);
         value = cap_readonly_value(value, 0);
     }
     let source = if let Some((name, _)) = override_source.clone() {
@@ -1096,13 +1119,30 @@ fn collect_toml_value_paths(value: &toml_edit::Value, prefix: &str, paths: &mut 
 }
 
 fn env_process_value(field: &SettingsFieldSpec) -> Value {
-    match std::env::var(field.key) {
-        Ok(value) if field.control == SettingsControl::Number => value
+    match crate::dispatch::helpers::env_non_empty(field.key) {
+        Some(value) if field.control == SettingsControl::Number => value
             .parse::<i64>()
             .map_or_else(|_| json!(value), |parsed| json!(parsed)),
-        Ok(value) => json!(value),
-        Err(_) => Value::Null,
+        Some(value) => json!(value),
+        None => Value::Null,
     }
+}
+
+fn env_current_value(path: &std::path::Path, field: &SettingsFieldSpec) -> Option<Value> {
+    env_file_value(path, field).or_else(|| {
+        let value = env_process_value(field);
+        (!value.is_null()).then_some(value)
+    })
+}
+
+fn env_override_source(
+    path: &std::path::Path,
+    field: &SettingsFieldSpec,
+) -> Option<(&'static str, String)> {
+    let name = field.env_override?;
+    env_file_value_by_name(path, name)
+        .or_else(|| crate::dispatch::helpers::env_non_empty(name))
+        .map(|value| (name, value))
 }
 
 fn env_override_value(field: &SettingsFieldSpec, value: &str) -> Value {
@@ -1122,108 +1162,6 @@ fn env_override_value(field: &SettingsFieldSpec, value: &str) -> Value {
             .parse::<bool>()
             .map_or_else(|_| json!(value), |parsed| json!(parsed)),
         _ => json!(value),
-    }
-}
-
-fn config_value_for_key(cfg: &crate::config::LabConfig, key: &str) -> Value {
-    match key {
-        "output.format" => json!(cfg.output.format),
-        "mcp.transport" => json!(cfg.mcp.transport),
-        "mcp.host" => json!(cfg.mcp.host),
-        "mcp.port" => json!(cfg.mcp.port),
-        "mcp.session_ttl_secs" => json!(cfg.mcp.session_ttl_secs),
-        "mcp.stateful" => json!(cfg.mcp.stateful),
-        "mcp.allowed_hosts" => json!(cfg.mcp.allowed_hosts),
-        "log.filter" => json!(cfg.log.filter),
-        "log.format" => json!(cfg.log.format),
-        "local_logs.retention_days" => json!(
-            cfg.local_logs
-                .as_ref()
-                .and_then(|value| value.retention_days)
-        ),
-        "local_logs.max_bytes" => json!(cfg.local_logs.as_ref().and_then(|value| value.max_bytes)),
-        "local_logs.queue_capacity" => json!(
-            cfg.local_logs
-                .as_ref()
-                .and_then(|value| value.queue_capacity)
-        ),
-        "local_logs.subscriber_capacity" => json!(
-            cfg.local_logs
-                .as_ref()
-                .and_then(|value| value.subscriber_capacity)
-        ),
-        "api.cors_origins" => json!(cfg.api.cors_origins),
-        "web.assets_dir" => json!(
-            cfg.web
-                .assets_dir
-                .as_ref()
-                .map(|path| path.display().to_string())
-        ),
-        "workspace.root" => json!(
-            cfg.workspace
-                .root
-                .as_ref()
-                .map(|path| path.display().to_string())
-        ),
-        "mcpregistry.url" => json!(cfg.mcpregistry.url),
-        "public_urls.app" => json!(cfg.public_urls.as_ref().and_then(|value| value.app.clone())),
-        "public_urls.mcp_gateway" => json!(
-            cfg.public_urls
-                .as_ref()
-                .and_then(|value| value.mcp_gateway.clone())
-        ),
-        "services.built_in_upstream_apis_enabled" => {
-            json!(cfg.services.built_in_upstream_apis_enabled)
-        }
-        "services.tailscale.tailnet" => json!(cfg.services.tailscale.tailnet),
-        "admin.enabled" => json!(cfg.admin.enabled),
-        "code_mode.trace_params" => json!(cfg.code_mode.trace_params),
-        "code_mode.timeout_ms" => json!(cfg.code_mode.timeout_ms),
-        "code_mode.max_tool_calls" => json!(cfg.code_mode.max_tool_calls),
-        "code_mode.max_response_bytes" => json!(cfg.code_mode.max_response_bytes),
-        "code_mode.max_response_tokens" => json!(cfg.code_mode.max_response_tokens),
-        "code_mode.token_estimate_divisor" => json!(cfg.code_mode.token_estimate_divisor),
-        "code_mode.max_log_entries" => json!(cfg.code_mode.max_log_entries),
-        "code_mode.max_log_bytes" => json!(cfg.code_mode.max_log_bytes),
-        "gateway_import_mode" => json!(cfg.gateway_import_mode),
-        "gateway.extra_stdio_commands" => json!(cfg.gateway.extra_stdio_commands),
-        "upstream_request_timeout_ms" => json!(cfg.upstream_request_timeout_ms),
-        "node.controller" => json!(cfg.node.as_ref().and_then(|value| value.controller.clone())),
-        "node.log_retention_days" => {
-            json!(cfg.node.as_ref().and_then(|value| value.log_retention_days))
-        }
-        "node.role" => json!(cfg.node.as_ref().and_then(|value| value.role).map(
-            |role| match role {
-                crate::config::NodeRuntimeRole::Controller => "controller",
-                crate::config::NodeRuntimeRole::Node => "node",
-            }
-        )),
-        "device.master" => json!(cfg.device.as_ref().and_then(|value| value.master.clone())),
-        "web.disable_auth" => json!(cfg.web.disable_auth),
-        "auth" => redact_value(serde_json::to_value(&cfg.auth).unwrap_or(Value::Null)),
-        "code_mode.enabled" => json!(cfg.code_mode.enabled),
-        "gateway.disable_spawn_guard" => json!(cfg.gateway.disable_spawn_guard),
-        "oauth.machines" => {
-            redact_value(serde_json::to_value(&cfg.oauth.machines).unwrap_or(Value::Null))
-        }
-        "deploy" => redact_value(serde_json::to_value(&cfg.deploy).unwrap_or(Value::Null)),
-        "upstream" => redact_value(serde_json::to_value(&cfg.upstream).unwrap_or(Value::Null)),
-        "upstream_pending" => {
-            redact_value(serde_json::to_value(&cfg.upstream_pending).unwrap_or(Value::Null))
-        }
-        "upstream_import_tombstones" => redact_value(
-            serde_json::to_value(&cfg.upstream_import_tombstones).unwrap_or(Value::Null),
-        ),
-        "protected_mcp_routes" => {
-            redact_value(serde_json::to_value(&cfg.protected_mcp_routes).unwrap_or(Value::Null))
-        }
-        "virtual_servers" => {
-            redact_value(serde_json::to_value(&cfg.virtual_servers).unwrap_or(Value::Null))
-        }
-        "quarantined_virtual_servers" => redact_value(
-            serde_json::to_value(&cfg.quarantined_virtual_servers).unwrap_or(Value::Null),
-        ),
-        _ => Value::Null,
     }
 }
 
@@ -1353,9 +1291,7 @@ pub fn config_patches_from_entries(
                 param: entry.key.clone(),
             });
         }
-        if let Some(name) = field.env_override
-            && std::env::var_os(name).is_some()
-        {
+        if let Some((name, _)) = env_override_source(&super::client::env_path(), field) {
             return Err(ToolError::InvalidParam {
                 message: format!(
                     "setting `{}` is overridden by env var `{name}` and cannot be edited here",
@@ -1537,7 +1473,7 @@ pub fn validate_env_previous(
             continue;
         };
         require_previous(entry)?;
-        let current = env_file_value(env_path, field).unwrap_or(Value::Null);
+        let current = env_current_value(env_path, field).unwrap_or(Value::Null);
         if current != entry.previous {
             return Err(ToolError::InvalidParam {
                 message: format!("setting `{}` changed since it was loaded", entry.key),
@@ -1569,16 +1505,19 @@ fn settings_fields_by_key() -> BTreeMap<&'static str, SettingsFieldSpec> {
 }
 
 fn env_file_value(path: &std::path::Path, field: &SettingsFieldSpec) -> Option<Value> {
-    let iter = dotenvy::from_path_iter(path).ok()?;
-    let raw = iter
-        .filter_map(Result::ok)
-        .find_map(|(key, value)| (key == field.key).then_some(value))?;
+    let raw = env_file_value_by_name(path, field.key)?;
     if field.control == SettingsControl::Number {
         return raw
             .parse::<i64>()
             .map_or_else(|_| Some(json!(raw)), |parsed| Some(json!(parsed)));
     }
     Some(json!(raw))
+}
+
+fn env_file_value_by_name(path: &std::path::Path, name: &str) -> Option<String> {
+    let iter = dotenvy::from_path_iter(path).ok()?;
+    iter.filter_map(Result::ok)
+        .find_map(|(key, value)| (key == name).then_some(value))
 }
 
 pub fn env_schema() -> Vec<EnvSettingSpec> {
@@ -1651,6 +1590,12 @@ fn build_env_schema() -> Vec<EnvSettingSpec> {
             false,
         ),
         (
+            "LAB_MCP_GATEWAY_URL",
+            "Public MCP gateway URL.",
+            "https://mcp.example.com",
+            false,
+        ),
+        (
             "LAB_MCP_HTTP_TOKEN",
             "Bearer token for the HTTP MCP/API surface.",
             "<token>",
@@ -1699,14 +1644,19 @@ fn build_env_schema() -> Vec<EnvSettingSpec> {
 fn is_editable_core_env(key: &str) -> bool {
     matches!(
         key,
-        "LAB_MCP_HTTP_HOST" | "LAB_MCP_HTTP_PORT" | "LAB_LOG" | "LAB_LOG_FORMAT"
+        "LAB_MCP_HTTP_HOST"
+            | "LAB_MCP_HTTP_PORT"
+            | "LAB_LOG"
+            | "LAB_LOG_FORMAT"
+            | "LAB_PUBLIC_URL"
+            | "LAB_MCP_GATEWAY_URL"
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
 
     #[test]
     fn settings_schema_keys_are_unique() {
@@ -1739,22 +1689,29 @@ mod tests {
     #[test]
     fn env_override_metadata_is_present_for_shadowed_toml_fields() {
         let fields = settings_fields();
-        assert_eq!(
-            fields
-                .iter()
-                .find(|field| field.key == "mcp.port")
-                .unwrap()
-                .env_override,
-            Some("LAB_MCP_HTTP_PORT")
-        );
-        assert_eq!(
-            fields
-                .iter()
-                .find(|field| field.key == "public_urls.app")
-                .unwrap()
-                .env_override,
-            Some("LAB_PUBLIC_URL")
-        );
+        for (key, env) in [
+            ("log.filter", "LAB_LOG"),
+            ("log.format", "LAB_LOG_FORMAT"),
+            ("mcp.transport", "LAB_MCP_TRANSPORT"),
+            ("mcp.host", "LAB_MCP_HTTP_HOST"),
+            ("mcp.port", "LAB_MCP_HTTP_PORT"),
+            ("mcp.session_ttl_secs", "LAB_MCP_SESSION_TTL_SECS"),
+            ("mcp.stateful", "LAB_MCP_STATEFUL"),
+            ("mcp.allowed_hosts", "LAB_MCP_ALLOWED_HOSTS"),
+            ("api.cors_origins", "LAB_CORS_ORIGINS"),
+            ("public_urls.app", "LAB_PUBLIC_URL"),
+            ("public_urls.mcp_gateway", "LAB_MCP_GATEWAY_URL"),
+        ] {
+            assert_eq!(
+                fields
+                    .iter()
+                    .find(|field| field.key == key)
+                    .unwrap()
+                    .env_override,
+                Some(env),
+                "{key} must advertise {env}"
+            );
+        }
     }
 
     #[test]
@@ -1805,6 +1762,25 @@ mod tests {
             previous_present: true,
         }];
         assert!(env_entries_from_updates(&rejected).is_err());
+    }
+
+    #[test]
+    fn env_previous_validation_accepts_matching_process_value_when_file_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_path = temp.path().join(".env");
+        let entries = vec![SettingsUpdateEntry {
+            key: "LAB_LOG".into(),
+            value: json!("labby=debug"),
+            previous: json!("labby=info"),
+            unset: false,
+            previous_present: true,
+        }];
+
+        crate::dispatch::helpers::with_env_override(
+            HashMap::from([("LAB_LOG".to_string(), "labby=info".to_string())]),
+            || validate_env_previous(&entries, &env_path),
+        )
+        .expect("process value should satisfy previous");
     }
 
     #[test]
@@ -1883,13 +1859,12 @@ mod tests {
     #[test]
     fn env_schema_only_marks_low_risk_core_env_editable() {
         let specs = env_schema();
-        assert!(
-            specs
-                .iter()
-                .find(|spec| spec.key == "LAB_LOG")
-                .unwrap()
-                .editable
-        );
+        for key in ["LAB_LOG", "LAB_PUBLIC_URL", "LAB_MCP_GATEWAY_URL"] {
+            assert!(
+                specs.iter().find(|spec| spec.key == key).unwrap().editable,
+                "{key} should be editable"
+            );
+        }
         assert!(
             !specs
                 .iter()

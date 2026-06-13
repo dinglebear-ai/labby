@@ -203,3 +203,94 @@ test('SettingsScalarSection blocks mixed env and config saves', async () => {
     setupApi.settingsConfigUpdate = originalConfigUpdate
   }
 })
+
+test('SettingsScalarSection sends unset for cleared optional config field', async () => {
+  installDom()
+  const configField: SettingsFieldSpec = {
+    ...fields[0],
+    key: 'workspace.root',
+    label: 'Workspace root',
+    backend: 'config_toml',
+    env_override: null,
+  }
+  const configState: SettingsState = {
+    ...state,
+    values: { 'workspace.root': '/srv/lab' },
+    sources: {
+      'workspace.root': { source: 'config_toml', overridden_by_env: null },
+    },
+  }
+  const originalEnvUpdate = setupApi.settingsEnvUpdate
+  const originalConfigUpdate = setupApi.settingsConfigUpdate
+  let receivedEntries: SettingsUpdateEntry[] = []
+  setupApi.settingsEnvUpdate = async () => {
+    throw new Error('env update should not be called')
+  }
+  setupApi.settingsConfigUpdate = async (_section, entries) => {
+    receivedEntries = entries
+    return { state: configState, backup_path: null }
+  }
+
+  try {
+    const view = await renderClient(
+      <SettingsScalarSection title="Core" description="" section="core" state={configState} fields={[configField]} onSaved={() => undefined} />,
+    )
+    const input = view.container.querySelector('input')
+    assert.ok(input)
+    await setInputValue(input, '')
+    await click(view.container.querySelector('[data-slot="checkbox"]'))
+    await click([...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('Save changes')) ?? null)
+
+    await waitFor(() => assert.deepEqual(receivedEntries, [
+      { key: 'workspace.root', value: null, previous: '/srv/lab', unset: true },
+    ]))
+    await view.unmount()
+  } finally {
+    setupApi.settingsEnvUpdate = originalEnvUpdate
+    setupApi.settingsConfigUpdate = originalConfigUpdate
+  }
+})
+
+test('SettingsScalarSection blocks invalid numeric input before save', async () => {
+  installDom()
+  const numberField: SettingsFieldSpec = {
+    ...fields[0],
+    key: 'mcp.session_ttl_secs',
+    label: 'Session TTL',
+    backend: 'config_toml',
+    control: 'number',
+    min: 1,
+    max: 86_400,
+    env_override: null,
+  }
+  const numberState: SettingsState = {
+    ...state,
+    values: { 'mcp.session_ttl_secs': 3600 },
+    sources: {
+      'mcp.session_ttl_secs': { source: 'config_toml', overridden_by_env: null },
+    },
+  }
+  const originalConfigUpdate = setupApi.settingsConfigUpdate
+  let calls = 0
+  setupApi.settingsConfigUpdate = async () => {
+    calls += 1
+    return { state: numberState, backup_path: null }
+  }
+
+  try {
+    const view = await renderClient(
+      <SettingsScalarSection title="Surfaces" description="" section="surfaces" state={numberState} fields={[numberField]} onSaved={() => undefined} />,
+    )
+    const input = view.container.querySelector('input')
+    assert.ok(input)
+    await setInputValue(input, '90000')
+    await click(view.container.querySelector('[data-slot="checkbox"]'))
+    await click([...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('Save changes')) ?? null)
+
+    await waitFor(() => assert.match(view.container.textContent ?? '', /Must be at most 86400/))
+    assert.equal(calls, 0)
+    await view.unmount()
+  } finally {
+    setupApi.settingsConfigUpdate = originalConfigUpdate
+  }
+})

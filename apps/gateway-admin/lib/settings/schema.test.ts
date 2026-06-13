@@ -1,7 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildDirtyEntries, buildDirtyEntriesByBackend, parseFieldInput, valueAsInputString } from './schema'
+import {
+  buildDirtyEntries,
+  buildDirtyEntriesByBackend,
+  collectFieldInputErrors,
+  isInvalidFieldInput,
+  parseFieldInput,
+  valueAsInputString,
+} from './schema'
 import type { SettingsFieldSpec } from '@/lib/api/setup-client'
 
 const numberField: SettingsFieldSpec = {
@@ -25,10 +32,21 @@ const numberField: SettingsFieldSpec = {
 
 test('settings schema helpers parse scalar controls', () => {
   assert.equal(parseFieldInput(numberField, '8765'), 8765)
-  assert.equal(parseFieldInput(numberField, '1.5'), null)
-  assert.equal(parseFieldInput(numberField, '70000'), null)
+  assert.equal(parseFieldInput(numberField, ''), null)
+  assert.equal(isInvalidFieldInput(parseFieldInput(numberField, '1.5')), true)
+  assert.equal(isInvalidFieldInput(parseFieldInput(numberField, '70000')), true)
   assert.equal(parseFieldInput({ ...numberField, control: 'bool' }, true), true)
   assert.deepEqual(parseFieldInput({ ...numberField, control: 'string_list' }, 'a,b\nc'), ['a', 'b', 'c'])
+})
+
+test('settings schema helpers surface invalid numeric errors without losing raw input', () => {
+  const invalid = parseFieldInput(numberField, '70000')
+  assert.equal(isInvalidFieldInput(invalid), true)
+  assert.equal(valueAsInputString(invalid), '70000')
+  assert.deepEqual(
+    collectFieldInputErrors([numberField], new Set(['mcp.port']), { 'mcp.port': invalid }),
+    { 'mcp.port': 'Must be at most 65535.' },
+  )
 })
 
 test('settings schema helpers build dirty entries only for changed keys', () => {

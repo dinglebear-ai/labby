@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { setupApi, SetupApiError } from '@/lib/api/setup-client'
-import { buildDirtyEntriesByBackend } from '@/lib/settings/schema'
+import { buildDirtyEntriesByBackend, collectFieldInputErrors } from '@/lib/settings/schema'
 import { SettingsScalarField } from './SettingsScalarField'
 
 export function SettingsScalarSection({
@@ -50,6 +50,11 @@ export function SettingsScalarSection({
     setSaving(true)
     setErrors({})
     try {
+      const inputErrors = collectFieldInputErrors(fields, changedKeys, values)
+      if (Object.keys(inputErrors).length > 0) {
+        setErrors(inputErrors)
+        return
+      }
       const { envEntries, configEntries } = buildDirtyEntriesByBackend(fields, changedKeys, values, initialValues, state.sources)
       if (envEntries.length > 0 && configEntries.length > 0) {
         setErrors({ _form: 'Save .env and config.toml settings separately.' })

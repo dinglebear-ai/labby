@@ -320,15 +320,7 @@ fn settings_config_update_action(params: &Value) -> Result<Value, ToolError> {
         .iter()
         .any(|patch| patch.path == "services.built_in_upstream_apis_enabled")
     {
-        crate::registry::set_runtime_built_in_upstream_apis_enabled(
-            outcome.config.services.built_in_upstream_apis_enabled,
-        );
-        if let Some(manager) = current_gateway_manager() {
-            manager.set_builtin_service_registry(crate::registry::filter_built_in_upstream_apis(
-                crate::registry::build_default_registry(),
-                outcome.config.services.built_in_upstream_apis_enabled,
-            ));
-        }
+        refresh_built_in_upstream_registry(outcome.config.services.built_in_upstream_apis_enabled);
     }
     to_json(super::settings::SettingsMutationOutcome {
         state: super::settings::state_response(
@@ -360,13 +352,7 @@ fn settings_update_action(params: &Value) -> Result<Value, ToolError> {
         current
     };
     if changed {
-        crate::registry::set_runtime_built_in_upstream_apis_enabled(enabled);
-        if let Some(manager) = current_gateway_manager() {
-            manager.set_builtin_service_registry(crate::registry::filter_built_in_upstream_apis(
-                crate::registry::build_default_registry(),
-                enabled,
-            ));
-        }
+        refresh_built_in_upstream_registry(enabled);
     }
     let restart_required = false;
     Ok(settings_state_json(
@@ -376,6 +362,16 @@ fn settings_update_action(params: &Value) -> Result<Value, ToolError> {
         changed,
         Some(previous_enabled),
     ))
+}
+
+fn refresh_built_in_upstream_registry(enabled: bool) {
+    crate::registry::set_runtime_built_in_upstream_apis_enabled(enabled);
+    if let Some(manager) = current_gateway_manager() {
+        manager.set_builtin_service_registry(crate::registry::filter_built_in_upstream_apis(
+            crate::registry::build_default_registry(),
+            enabled,
+        ));
+    }
 }
 
 fn load_settings_config(path: &std::path::Path) -> Result<crate::config::LabConfig, ToolError> {
@@ -1036,6 +1032,51 @@ mod tests {
                 .contains("port = 8766")
         );
 
+        crate::config::set_test_config_toml_path(None);
+    }
+
+    #[tokio::test]
+    async fn settings_config_update_rejects_env_file_shadowed_config_field() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_dir = temp.path().join(".config/lab");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(&config_path, "[mcp]\nport = 8765\n").expect("write config");
+        crate::config::set_test_config_toml_path(Some(config_path.clone()));
+
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        std::fs::write(lab_dir.join(".env"), "LAB_MCP_HTTP_PORT=9999\n").expect("write env");
+        crate::dispatch::helpers::set_test_lab_home(Some(lab_dir));
+
+        let err = dispatch(
+            "settings.config.update",
+            json!({
+                "section": "surfaces",
+                "confirm": true,
+                "entries": [{
+                    "key": "mcp.port",
+                    "value": 8766,
+                    "previous": 8765
+                }]
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.kind(), "invalid_param");
+        match err {
+            ToolError::InvalidParam { param, .. } => assert_eq!(param, "mcp.port"),
+            other => panic!("expected invalid_param, got {other:?}"),
+        }
+        assert!(
+            std::fs::read_to_string(&config_path)
+                .expect("read config")
+                .contains("port = 8765")
+        );
+
+        crate::dispatch::helpers::set_test_lab_home(None);
         crate::config::set_test_config_toml_path(None);
     }
 
