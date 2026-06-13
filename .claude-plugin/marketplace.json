@@ -79,6 +79,11 @@
             "description": "Browser automation plugin for agent-driven web app testing, inspection, and debugging."
         },
         {
+            "name": "agent-os",
+            "source": "./plugins/agent-os",
+            "description": "Drive the agent-os Windows 11 sandbox VM through its Windows-MCP server — desktop automation, Windows app testing, screenshots, shell commands, and VM health checks."
+        },
+        {
             "name": "axon",
             "source": {
                 "source": "git-subdir",
@@ -207,6 +212,11 @@
             "description": "NotebookLM research, source, generation, and download workflows."
         },
         {
+            "name": "plexus",
+            "source": "./plugins/plexus",
+            "description": "Remote-device memory and live operating context for host-specific work — a CLAUDE.md-style memory file per host combined with live SSH, Tailscale, Docker, systemd, and log context."
+        },
+        {
             "name": "radicale",
             "source": "./plugins/radicale",
             "description": "CalDAV and CardDAV workflow skills for Radicale."
@@ -216,11 +226,11 @@
             "source": "./plugins/swag",
             "description": "SWAG reverse proxy configuration management via MCP. Create, edit, view, and manage nginx proxy configurations with auth integration."
         },
-        {
-            "name": "vibin",
-            "source": "./plugins/vibin",
-            "description": "Session, GitHub review, and CI workflow skills for quick push, session documentation, PR comments, and CI debugging."
-        },
+    {
+      "name": "vibin",
+      "source": "./plugins/vibin",
+      "description": "Session, repo status, GitHub review, and CI workflow skills for branch/worktree readiness audits, quick push, session documentation, PR comments, and CI debugging."
+    },
         {
             "name": "arrs",
             "source": "./plugins/arrs",

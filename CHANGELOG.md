@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Code Mode MCP App callback — destructive bypass hardening** — the widget callback gate now fails closed when a requested tool name matches more than one allowed upstream (returns `ambiguous_tool` instead of proxying an arbitrary, hash-order-dependent upstream). This closes a hole where a destructive sibling tool exposed by multiple UI-bearing upstreams could be invoked unconfirmed because the multi-candidate case skipped the destructive gate. The three callback routes (legacy bypass, direct UI tool, hidden sibling) are now modeled as a single `CallbackDecision` so the destructive check always runs on the exact resolved tool.
+
+---
+
+## [0.24.1] - 2026-06-12
+
+### Fixed
+
+- **Code Mode MCP App callbacks** — MCP Apps rendered from an exposed upstream UI tool can now call exposed sibling tools from the same upstream through `callServerTool` while ordinary raw tools remain hidden from `list_tools`. Destructive sibling tools still require the `execute` confirmation path.
+
+### Changed
+
+- **Vibin repo-status skill** — moved the repo readiness audit skill into the Vibin plugin and refreshed Claude/Codex marketplace metadata so the skill ships with the plugin bundle.
+
 ---
 
 ## [0.24.1] - 2026-06-13

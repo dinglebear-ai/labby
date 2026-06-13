@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use crate::config::env_merge::{self, EnvEntry, MergeRequest, snapshot_mtime};
 use crate::config::{config_toml_path, patch_built_in_upstream_apis_enabled};
+use crate::dispatch::gateway::current_gateway_manager;
 
 /// Maximum elapsed time for the inline doctor.audit.full call inside
 /// setup.draft.commit. A misconfigured probe (network hang, dead host)
@@ -39,7 +40,6 @@ const REDACTED_LOG_ACTIONS: &[&str] = &[
     "settings.config.update",
 ];
 use crate::dispatch::error::ToolError;
-use crate::dispatch::gateway::current_gateway_manager;
 use crate::dispatch::helpers::{action_schema, help_payload, to_json};
 use crate::registry::{
     RegisteredService, RegisteredServiceKind, bootstrap_operator_services,

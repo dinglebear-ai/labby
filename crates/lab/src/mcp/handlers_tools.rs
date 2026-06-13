@@ -17,10 +17,14 @@ use rmcp::model::{ListToolsResult, Meta, PaginatedRequestParams, Tool};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
+#[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CODE_EXECUTE_DESCRIPTION;
 use crate::mcp::catalog::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
 use crate::mcp::completion::action_schema;
-use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_for_request};
+use crate::mcp::context::auth_context_from_extensions;
+#[cfg(feature = "gateway")]
+use crate::mcp::context::oauth_upstream_subject_for_request;
+#[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::code_mode_app_resource_uri_for_tool;
 use crate::mcp::logging::DispatchLogOutcome;
 use crate::mcp::server::LabMcpServer;
@@ -54,6 +58,7 @@ impl LabMcpServer {
         let hide_raw_tools = visibility.hides_raw_tools();
         let visibility_mode = visibility.mode_label();
         let auth = auth_context_from_extensions(&context.extensions);
+        #[cfg(feature = "gateway")]
         let oauth_subject =
             oauth_upstream_subject_for_request(auth, self.request_subject(&context));
         let mut builtin_names = Vec::new();
@@ -70,6 +75,7 @@ impl LabMcpServer {
                 }
             }
         }
+        #[cfg(feature = "gateway")]
         if visibility.exposes_synthetic_tools() {
             // ── Gateway meta-tools: search (Boa JS against upstream catalog) +
             // execute (subprocess sandbox). Both take `{ code: string }`.
@@ -155,6 +161,7 @@ impl LabMcpServer {
         }
 
         // Merge upstream tools (healthy only, filtered for collisions with built-in services).
+        #[cfg(feature = "gateway")]
         if hide_raw_tools
             && let Some(manager) = self.gateway_manager.as_ref()
             && let Err(error) = manager
@@ -174,6 +181,7 @@ impl LabMcpServer {
                 "failed to warm upstream catalog before listing MCP App tools"
             );
         }
+        #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             let upstream_tools = if hide_raw_tools {
                 pool.healthy_ui_tools_allowed(self.route_scope.allowed_upstreams())
@@ -254,6 +262,7 @@ impl LabMcpServer {
     }
 }
 
+#[cfg(feature = "gateway")]
 fn code_mode_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = code_mode_app_resource_uri_for_tool(tool_name)
         .expect("Code Mode tools must have an associated UI resource");
@@ -267,6 +276,7 @@ fn code_mode_tool_meta(tool_name: &str) -> Meta {
     Meta(meta)
 }
 
+#[cfg(feature = "gateway")]
 fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
     match serde_json::json!({
         "type": "object",
@@ -308,4 +318,5 @@ fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "gateway")]
 mod tests;
