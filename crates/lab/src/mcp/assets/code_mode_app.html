@@ -172,9 +172,14 @@ function render(trace){
 render(window.openai && window.openai.toolOutput != null ? window.openai.toolOutput : window.__LAB_CODE_MODE_INITIAL_TRACE__);
 if (window.openai) {
   // OpenAI Apps runtime: there is no MCP Apps host to hand-shake with. The
-  // structured tool result lives on window.openai.toolOutput and live updates
-  // arrive via the openai:set_globals event — drive render() from both.
-  const syncOpenai = () => { const out = window.openai && window.openai.toolOutput; if (out != null) render(out); };
+  // structured tool result is the tool's structuredContent, exposed as
+  // window.openai.toolOutput. It may be empty at first paint and arrive later
+  // via the openai:set_globals CustomEvent, whose changed values live on
+  // event.detail.globals — prefer that, falling back to the live snapshot.
+  const syncOpenai = (event) => {
+    const out = (event && event.detail && event.detail.globals && event.detail.globals.toolOutput) ?? (window.openai && window.openai.toolOutput);
+    if (out != null) render(out);
+  };
   window.addEventListener("openai:set_globals", syncOpenai);
   syncOpenai();
   try { state.textContent = "connected"; state.classList.add("connected"); } catch (_) {}

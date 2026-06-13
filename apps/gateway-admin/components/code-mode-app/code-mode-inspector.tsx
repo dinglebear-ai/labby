@@ -136,8 +136,11 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   // `ontoolresult` path, so hydrate from it directly and track live updates.
   useEffect(() => {
     if (!window.openai) return
-    const sync = () => {
-      const next = parseCodeModeTrace(window.openai?.toolOutput)
+    // The openai:set_globals CustomEvent carries changed values on
+    // event.detail.globals; prefer that, falling back to the live snapshot.
+    const sync = (event?: Event) => {
+      const detail = (event as CustomEvent<{ globals?: { toolOutput?: unknown } }> | undefined)?.detail
+      const next = parseCodeModeTrace(detail?.globals?.toolOutput ?? window.openai?.toolOutput)
       if (next) {
         setTrace(next)
         setBridgeWarning(null)

@@ -544,6 +544,17 @@ pub(crate) fn code_mode_app_resource_meta(uri: &str) -> Meta {
             "prefersBorder": false,
         }),
     );
+    // OpenAI Apps surfaces a model-facing description when the widget loads.
+    // Skybridge-only, so the Claude (`text/html;profile=mcp-app`) resource
+    // `_meta` stays byte-identical.
+    if code_mode_app_mime_for_uri(uri) == CODE_MODE_APP_SKYBRIDGE_MIME {
+        meta.insert(
+            "openai/widgetDescription".to_string(),
+            json!(
+                "Live Code Mode call trace — upstream tool calls, catalog search matches, and recent gateway history."
+            ),
+        );
+    }
     Meta(meta)
 }
 
@@ -786,6 +797,31 @@ mod tests {
 
         let err = code_mode_app_html("ui://lab/code-mode/nope", None).expect_err("unknown");
         assert!(err.contains("unknown UI resource"));
+    }
+
+    #[test]
+    fn skybridge_and_mcp_app_resource_meta_diverge_by_runtime() {
+        // OpenAI skybridge resource: skybridge MIME + model-facing description.
+        let skybridge = code_mode_app_resource_meta(CODE_MODE_EXECUTE_APP_SKYBRIDGE_URI);
+        assert_eq!(
+            skybridge.0["ui"]["mimeTypes"][0].as_str(),
+            Some(CODE_MODE_APP_SKYBRIDGE_MIME)
+        );
+        assert!(
+            skybridge.0.contains_key("openai/widgetDescription"),
+            "skybridge resource must carry an OpenAI widget description"
+        );
+
+        // Claude resource: MCP Apps MIME, and byte-identical (no openai/* keys).
+        let mcp_app = code_mode_app_resource_meta(CODE_MODE_EXECUTE_APP_URI);
+        assert_eq!(
+            mcp_app.0["ui"]["mimeTypes"][0].as_str(),
+            Some(CODE_MODE_APP_MIME)
+        );
+        assert!(
+            !mcp_app.0.contains_key("openai/widgetDescription"),
+            "Claude resource _meta must stay free of OpenAI compatibility keys"
+        );
     }
 
     #[test]
