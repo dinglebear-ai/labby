@@ -23,13 +23,29 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
+use crate::dispatch::upstream::types::UpstreamTool;
 use crate::mcp::catalog::{CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME};
-use crate::mcp::context::{auth_context_from_extensions, tool_execute_builtin_action_allowed};
+use crate::mcp::context::{
+    auth_context_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
+};
 use crate::mcp::elicitation::{ElicitResult, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::DispatchError;
 use crate::mcp::result_format::{estimate_tokens_args, format_dispatch_result};
 use crate::mcp::server::LabMcpServer;
+
+enum WidgetCallbackGate {
+    Allowed {
+        route: &'static str,
+        upstream_name: String,
+        tool: Box<UpstreamTool>,
+        hidden_sibling: bool,
+    },
+    Ambiguous {
+        valid: Vec<String>,
+    },
+    Destructive,
+}
 
 fn route_scope_denied_result(service: &str, action: &str, message: String) -> CallToolResult {
     let envelope = build_error(service, action, "route_scope_denied", &message);
@@ -218,6 +234,7 @@ impl LabMcpServer {
             )]));
         }
 
+        let mut resolved_upstream_tool = None;
         if self.code_mode_visibility().await.hides_raw_tools() {
             let widget_callback = if svc.is_none()
                 && let Some(pool) = self.current_upstream_pool().await
@@ -226,37 +243,58 @@ impl LabMcpServer {
                 if crate::config::code_mode_widget_callbacks_enabled() {
                     pool.find_tool_allowed(&service, allowed)
                         .await
-                        .map(|(_, tool)| ("upstream_widget_callback_legacy", Some(tool)))
-                } else if let Some((_, tool)) = pool
+                        .map(|(upstream_name, tool)| WidgetCallbackGate::Allowed {
+                            route: "upstream_widget_callback_legacy",
+                            upstream_name,
+                            tool: Box::new(tool),
+                            hidden_sibling: false,
+                        })
+                } else if let Some((upstream_name, tool)) = pool
                     .find_tool_allowed(&service, allowed)
                     .await
                     .filter(|(_, tool)| {
                         crate::dispatch::upstream::pool::tool_has_mcp_app_ui_resource(tool)
                     })
                 {
-                    Some(("upstream_widget_callback", Some(tool)))
+                    Some(WidgetCallbackGate::Allowed {
+                        route: "upstream_widget_callback",
+                        upstream_name,
+                        tool: Box::new(tool),
+                        hidden_sibling: false,
+                    })
                 } else {
                     let candidates = pool
                         .find_mcp_app_sibling_tool_candidates(&service, allowed)
                         .await;
                     if candidates.is_empty() {
                         None
-                    } else if let Some((_, tool)) = candidates
+                    } else if candidates
                         .iter()
-                        .find(|(_, candidate)| candidate.destructive)
+                        .any(|(_, candidate)| candidate.destructive)
                     {
-                        Some(("upstream_widget_sibling_callback", Some(tool.clone())))
+                        Some(WidgetCallbackGate::Destructive)
+                    } else if candidates.len() > 1 {
+                        let valid = candidates
+                            .iter()
+                            .map(|(upstream, tool)| format!("{upstream}::{}", tool.tool.name))
+                            .collect();
+                        Some(WidgetCallbackGate::Ambiguous { valid })
                     } else {
-                        let tool = (candidates.len() == 1)
-                            .then(|| candidates.into_iter().next().expect("checked len").1);
-                        Some(("upstream_widget_sibling_callback", tool))
+                        let (upstream_name, tool) =
+                            candidates.into_iter().next().expect("checked len");
+                        Some(WidgetCallbackGate::Allowed {
+                            route: "upstream_widget_sibling_callback",
+                            upstream_name,
+                            tool: Box::new(tool),
+                            hidden_sibling: true,
+                        })
                     }
                 }
             } else {
                 None
             };
             match widget_callback {
-                Some((_, Some(tool))) if tool.destructive => {
+                Some(WidgetCallbackGate::Destructive) => {
                     let envelope = build_error(
                         &service,
                         &action,
@@ -270,7 +308,42 @@ impl LabMcpServer {
                         envelope.to_string(),
                     )]));
                 }
-                Some((route, _)) => {
+                Some(WidgetCallbackGate::Ambiguous { valid }) => {
+                    let envelope = build_error_extra(
+                        &service,
+                        &action,
+                        "ambiguous_tool",
+                        &format!("tool `{service}` matched multiple MCP App sibling tools"),
+                        &serde_json::json!({ "valid": valid }),
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        envelope.to_string(),
+                    )]));
+                }
+                Some(WidgetCallbackGate::Allowed {
+                    route,
+                    upstream_name,
+                    tool,
+                    hidden_sibling,
+                }) => {
+                    if hidden_sibling
+                        && !tool_execute_scope_allowed(auth_context_from_extensions(
+                            &context.extensions,
+                        ))
+                    {
+                        let envelope = build_error_extra(
+                            &service,
+                            &action,
+                            "forbidden",
+                            "MCP App sibling callbacks require one of scopes: lab, lab:admin",
+                            &serde_json::json!({
+                                "required_scopes": ["lab", "lab:admin"],
+                            }),
+                        );
+                        return Ok(CallToolResult::error(vec![Content::text(
+                            envelope.to_string(),
+                        )]));
+                    }
                     tracing::info!(
                         surface = "mcp",
                         service = %service,
@@ -278,6 +351,7 @@ impl LabMcpServer {
                         route,
                         "code_mode raw-tool gate bypassed for MCP App widget callback"
                     );
+                    resolved_upstream_tool = Some((upstream_name, *tool));
                 }
                 None => {
                     let envelope = build_error(
@@ -428,6 +502,7 @@ impl LabMcpServer {
             &service,
             &action,
             raw_arguments,
+            resolved_upstream_tool,
             start,
             &subject,
             actor_key,

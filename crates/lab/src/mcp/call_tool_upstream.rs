@@ -34,6 +34,8 @@ use crate::mcp::result_format::{
 use crate::mcp::server::LabMcpServer;
 use crate::mcp::upstream::normalize_upstream_result;
 
+use crate::dispatch::upstream::types::UpstreamTool;
+
 impl LabMcpServer {
     /// Upstream-proxy tail. Reached by fall-through from `call_tool_impl`
     /// when `svc.is_none()`. Owns raw + subject-scoped proxy branches and
@@ -44,6 +46,7 @@ impl LabMcpServer {
         service: &str,
         action: &str,
         raw_arguments: Option<JsonObject>,
+        resolved_upstream_tool: Option<(String, UpstreamTool)>,
         start: Instant,
         subject: &str,
         actor_key: Option<&str>,
@@ -59,7 +62,9 @@ impl LabMcpServer {
             auth_context_from_extensions(&context.extensions),
             self.request_subject(context),
         );
-        let raw_resolved = if let Some(manager) = &self.gateway_manager {
+        let raw_resolved = if let Some(resolved) = resolved_upstream_tool {
+            Some(Ok(resolved))
+        } else if let Some(manager) = &self.gateway_manager {
             Some(
                 manager
                     .resolve_raw_upstream_tool_scoped(

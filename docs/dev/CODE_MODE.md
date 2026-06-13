@@ -230,9 +230,10 @@ Destructive sibling callbacks return `confirmation_required`; callers should use
 the `execute` tool with `confirm:true` for destructive upstream actions.
 
 `LAB_CODE_MODE_WIDGET_CALLBACKS=1` remains as a broader legacy operator bypass.
-With that variable set, any known exposed upstream tool may pass the raw-tool
-gate while Code Mode is enabled. Leave it off unless a legacy widget depends on
-callbacks that cannot be represented by the same-upstream MCP App sibling rule.
+With that variable set, any known exposed non-destructive upstream tool may pass
+the raw-tool gate while Code Mode is enabled. It does not bypass destructive
+confirmation. Leave it off unless a legacy widget depends on callbacks that
+cannot be represented by the same-upstream MCP App sibling rule.
 
 ## Error Contract
 

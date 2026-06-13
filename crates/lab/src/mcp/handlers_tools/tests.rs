@@ -132,6 +132,14 @@ async fn code_mode_manager_with_pool(
     upstream: crate::config::UpstreamConfig,
     pool: Arc<UpstreamPool>,
 ) -> Arc<crate::dispatch::gateway::manager::GatewayManager> {
+    code_mode_manager_with_pool_and_upstreams(enabled, vec![upstream], pool).await
+}
+
+async fn code_mode_manager_with_pool_and_upstreams(
+    enabled: bool,
+    upstream: Vec<crate::config::UpstreamConfig>,
+    pool: Arc<UpstreamPool>,
+) -> Arc<crate::dispatch::gateway::manager::GatewayManager> {
     let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
     runtime.swap(Some(pool)).await;
     let manager = Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
@@ -144,7 +152,7 @@ async fn code_mode_manager_with_pool(
                 enabled,
                 ..crate::config::CodeModeConfig::default()
             },
-            upstream: vec![upstream],
+            upstream,
             ..crate::config::LabConfig::default()
         })
         .await;
@@ -215,6 +223,26 @@ fn fixture_upstream_tool(
         upstream_name: Arc::clone(upstream),
         destructive: false,
     }
+}
+
+fn scoped_context(
+    peer: rmcp::service::Peer<rmcp::RoleServer>,
+    scopes: &[&str],
+) -> rmcp::service::RequestContext<rmcp::RoleServer> {
+    let mut context =
+        rmcp::service::RequestContext::new(rmcp::model::NumberOrString::Number(1), peer);
+    let mut parts = axum::http::Request::new(()).into_parts().0;
+    parts.extensions.insert(crate::api::oauth::AuthContext {
+        sub: "reader".to_string(),
+        actor_key: None,
+        scopes: scopes.iter().map(|scope| scope.to_string()).collect(),
+        issuer: "https://lab.example.com".to_string(),
+        via_session: true,
+        csrf_token: None,
+        email: None,
+    });
+    context.extensions.insert(parts);
+    context
 }
 
 #[test]
@@ -409,6 +437,133 @@ async fn call_tool_allows_mcp_app_sibling_callbacks_when_raw_tools_are_hidden() 
     assert!(
         text.contains("upstream_error"),
         "test fixture has no live peer, so allowed callbacks should fail at proxy call, got {text}"
+    );
+}
+
+#[tokio::test]
+async fn call_tool_preserves_selected_mcp_app_sibling_upstream() {
+    let unrelated_name: Arc<str> = Arc::from("aaa_plain");
+    let unrelated_probe = fixture_upstream_tool(&unrelated_name, "youtube_probe", None);
+
+    let app_name: Arc<str> = Arc::from("apps");
+    let ui_tool = fixture_upstream_tool(
+        &app_name,
+        "youtube_search_ui",
+        Some("ui://apps/youtube-search.html"),
+    );
+    let app_probe = fixture_upstream_tool(&app_name, "youtube_probe", None);
+
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "aaa_plain",
+        fixture_upstream_entry(
+            "aaa_plain",
+            HashMap::from([("youtube_probe".to_string(), unrelated_probe)]),
+        ),
+    )
+    .await;
+    pool.insert_entry_for_test(
+        "apps",
+        fixture_upstream_entry(
+            "apps",
+            HashMap::from([
+                ("youtube_search_ui".to_string(), ui_tool),
+                ("youtube_probe".to_string(), app_probe),
+            ]),
+        ),
+    )
+    .await;
+    let manager = code_mode_manager_with_pool_and_upstreams(
+        true,
+        vec![
+            fixture_upstream_config("aaa_plain"),
+            fixture_upstream_config("apps"),
+        ],
+        pool,
+    )
+    .await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        rmcp::model::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = rmcp::service::RequestContext::new(
+        rmcp::model::NumberOrString::Number(1),
+        running.peer().clone(),
+    );
+
+    let result = Box::pin(
+        running
+            .service()
+            .call_tool_impl(CallToolRequestParams::new("youtube_probe"), context),
+    )
+    .await
+    .expect("call tool result");
+
+    assert!(result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    assert!(
+        text.contains("upstream `apps` is not connected"),
+        "MCP App sibling callbacks should dispatch to the UI sibling upstream, got {text}"
+    );
+    assert!(
+        !text.contains("upstream `aaa_plain` is not connected"),
+        "callback dispatch must not fall through to an unrelated same-name tool, got {text}"
+    );
+}
+
+#[tokio::test]
+async fn call_tool_requires_execute_scope_for_hidden_mcp_app_sibling_callbacks() {
+    let upstream_name: Arc<str> = Arc::from("apps");
+    let ui_tool = fixture_upstream_tool(
+        &upstream_name,
+        "youtube_search_ui",
+        Some("ui://apps/youtube-search.html"),
+    );
+    let plain_tool = fixture_upstream_tool(&upstream_name, "youtube_probe", None);
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "apps",
+        fixture_upstream_entry(
+            "apps",
+            HashMap::from([
+                ("youtube_search_ui".to_string(), ui_tool),
+                ("youtube_probe".to_string(), plain_tool),
+            ]),
+        ),
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(true, fixture_upstream_config("apps"), pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        rmcp::model::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("youtube_probe"),
+        scoped_context(running.peer().clone(), &["lab:read"]),
+    ))
+    .await
+    .expect("call tool result");
+
+    assert!(result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    let envelope: Value = serde_json::from_str(text).expect("error envelope");
+    assert_eq!(envelope["error"]["kind"], "forbidden");
+    assert_eq!(
+        envelope["error"]["required_scopes"],
+        serde_json::json!(["lab", "lab:admin"])
     );
 }
 

@@ -143,7 +143,7 @@ async fn mcp_app_sibling_lookup_respects_exposure_policy() {
 Run:
 
 ```bash
-cargo test -p lab mcp_app_sibling_lookup --all-features
+cargo test -p labby mcp_app_sibling_lookup --all-features
 ```
 
 Expected before implementation: compile failure for missing `find_mcp_app_sibling_tool_candidates`, or assertion failure showing the helper does not filter correctly.
@@ -216,7 +216,7 @@ use serde_json::Value;
 Run:
 
 ```bash
-cargo test -p lab mcp_app_sibling_lookup --all-features
+cargo test -p labby mcp_app_sibling_lookup --all-features
 ```
 
 Expected: both `mcp_app_sibling_lookup_*` tests pass.
@@ -357,7 +357,7 @@ async fn call_tool_blocks_destructive_mcp_app_sibling_callbacks() {
 Run:
 
 ```bash
-cargo test -p lab call_tool_ --all-features
+cargo test -p labby call_tool_ --all-features
 ```
 
 Expected before implementation: `call_tool_allows_mcp_app_sibling_callbacks_when_raw_tools_are_hidden` fails with `hidden while code_mode mode is enabled`, and the destructive callback test either reaches the proxy or returns the wrong error kind.
@@ -445,7 +445,7 @@ Why `candidates.len() == 1`: if two allowed upstreams expose the same sibling to
 Run:
 
 ```bash
-cargo test -p lab call_tool_ --all-features
+cargo test -p labby call_tool_ --all-features
 ```
 
 Expected: sibling callback and destructive denial tests pass.
@@ -528,7 +528,7 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
 Run:
 
 ```bash
-cargo test -p lab list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden --all-features
+cargo test -p labby list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden --all-features
 ```
 
 Expected: PASS. If `youtube_probe` appears in `names`, the implementation accidentally widened model visibility and must be fixed before continuing.
@@ -617,10 +617,10 @@ git commit -m "docs: document code mode mcp app callbacks"
 Run:
 
 ```bash
-cargo test -p lab mcp_app_sibling_lookup --all-features
-cargo test -p lab list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden --all-features
-cargo test -p lab call_tool_allows_mcp_app_sibling_callbacks_when_raw_tools_are_hidden --all-features
-cargo test -p lab call_tool_blocks_destructive_mcp_app_sibling_callbacks --all-features
+cargo test -p labby mcp_app_sibling_lookup --all-features
+cargo test -p labby list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden --all-features
+cargo test -p labby call_tool_allows_mcp_app_sibling_callbacks_when_raw_tools_are_hidden --all-features
+cargo test -p labby call_tool_blocks_destructive_mcp_app_sibling_callbacks --all-features
 ```
 
 Expected: all focused tests pass.
@@ -630,15 +630,15 @@ Expected: all focused tests pass.
 Run:
 
 ```bash
-cargo test -p lab mcp::handlers_tools --all-features
-cargo test -p lab mcp::call_tool_codemode --all-features
+cargo test -p labby mcp::handlers_tools --all-features
+cargo test -p labby mcp::call_tool_codemode --all-features
 ```
 
 Expected: all tests pass. If the module path filter does not match in this workspace, run:
 
 ```bash
-cargo test -p lab handlers_tools --all-features
-cargo test -p lab call_tool_codemode --all-features
+cargo test -p labby handlers_tools --all-features
+cargo test -p labby call_tool_codemode --all-features
 ```
 
 Expected: all tests pass.
@@ -670,10 +670,10 @@ Implemented and verified in Lab:
 
 Verification:
 
-- `cargo test -p lab mcp_app_sibling_lookup --all-features`
-- `cargo test -p lab list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden --all-features`
-- `cargo test -p lab call_tool_allows_mcp_app_sibling_callbacks_when_raw_tools_are_hidden --all-features`
-- `cargo test -p lab call_tool_blocks_destructive_mcp_app_sibling_callbacks --all-features`
+- `cargo test -p labby mcp_app_sibling_lookup --all-features`
+- `cargo test -p labby list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden --all-features`
+- `cargo test -p labby call_tool_allows_mcp_app_sibling_callbacks_when_raw_tools_are_hidden --all-features`
+- `cargo test -p labby call_tool_blocks_destructive_mcp_app_sibling_callbacks --all-features`
 - `cargo nextest run --workspace --all-features`
 ```
 
