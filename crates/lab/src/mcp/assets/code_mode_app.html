@@ -176,13 +176,23 @@ if (window.openai) {
   // window.openai.toolOutput. It may be empty at first paint and arrive later
   // via the openai:set_globals CustomEvent, whose changed values live on
   // event.detail.globals — prefer that, falling back to the live snapshot.
+  let hydrated = false;
   const syncOpenai = (event) => {
     const out = (event && event.detail && event.detail.globals && event.detail.globals.toolOutput) ?? (window.openai && window.openai.toolOutput);
-    if (out != null) render(out);
+    if (out != null) {
+      render(out);
+      hydrated = true;
+      try { state.textContent = "connected"; state.classList.add("connected"); } catch (_) {}
+    }
   };
   window.addEventListener("openai:set_globals", syncOpenai);
   syncOpenai();
-  try { state.textContent = "connected"; state.classList.add("connected"); } catch (_) {}
+  // Only claim "connected" once a payload has rendered. Until then show "waiting"
+  // so an empty widget isn't indistinguishable from a broken bridge — output may
+  // still arrive via a later openai:set_globals event.
+  if (!hydrated) {
+    try { state.textContent = "waiting"; state.classList.remove("connected"); } catch (_) {}
+  }
 } else {
   // MCP Apps bridge (Claude): live search/execute traces arrive via ontoolresult.
   const app = new App({ name: "LabCodeModeInspector", version: "1.0.0" }, {});

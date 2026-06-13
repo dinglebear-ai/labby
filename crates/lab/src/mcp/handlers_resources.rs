@@ -45,61 +45,74 @@ pub(crate) const CODE_MODE_HISTORY_APP_URI: &str = "ui://lab/code-mode/history";
 pub(crate) const CODE_MODE_SEARCH_APP_SKYBRIDGE_URI: &str = "ui://lab/code-mode/search.skybridge";
 pub(crate) const CODE_MODE_EXECUTE_APP_SKYBRIDGE_URI: &str = "ui://lab/code-mode/execute.skybridge";
 
+/// Host runtime a Code Mode widget resource targets. The runtime is the single
+/// discriminant: it derives the served MIME, whether the resource is listed, and
+/// which tool `_meta` key binds it — so those projections can't drift apart.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodeModeRuntime {
+    /// Anthropic MCP Apps (Claude): `text/html;profile=mcp-app`, listed in
+    /// `resources/list`, bound via the tool's `_meta.ui.resourceUri`.
+    McpApp,
+    /// OpenAI Apps (ChatGPT / Codex): `text/html+skybridge`, unlisted — reached
+    /// directly via the tool's `openai/outputTemplate`.
+    Skybridge,
+}
+
+impl CodeModeRuntime {
+    const fn mime(self) -> &'static str {
+        match self {
+            Self::McpApp => CODE_MODE_APP_MIME,
+            Self::Skybridge => CODE_MODE_APP_SKYBRIDGE_MIME,
+        }
+    }
+
+    /// Only MCP Apps resources appear in `resources/list`; skybridge variants are
+    /// discovered via the tool's `openai/outputTemplate`, keeping the Claude
+    /// surface unchanged.
+    const fn listed(self) -> bool {
+        matches!(self, Self::McpApp)
+    }
+}
+
 pub(crate) struct CodeModeAppResourceDescriptor {
     pub(crate) uri: &'static str,
     pub(crate) name: &'static str,
-    /// MIME the resource is served with — selects the host runtime that binds it.
-    pub(crate) mime: &'static str,
-    /// Whether the resource appears in `resources/list`. Skybridge variants are
-    /// discovered via the tool's `openai/outputTemplate`, not the resource list,
-    /// so they stay out of the listing to keep the Claude surface unchanged.
-    pub(crate) listed: bool,
-    /// Tool whose MCP Apps `_meta.ui.resourceUri` (Claude) points here.
-    pub(crate) mcp_tool_name: Option<&'static str>,
-    /// Tool whose OpenAI Apps `openai/outputTemplate` (ChatGPT / Codex) points here.
-    pub(crate) openai_tool_name: Option<&'static str>,
+    pub(crate) runtime: CodeModeRuntime,
+    /// Tool this widget binds to, or `None` for the history widget (not tool-
+    /// bound). The binding `_meta` key is selected by `runtime`.
+    pub(crate) tool_name: Option<&'static str>,
 }
 
 pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[CodeModeAppResourceDescriptor] = &[
     CodeModeAppResourceDescriptor {
         uri: CODE_MODE_SEARCH_APP_URI,
         name: "code-mode/search",
-        mime: CODE_MODE_APP_MIME,
-        listed: true,
-        mcp_tool_name: Some(CODE_MODE_SEARCH_TOOL_NAME),
-        openai_tool_name: None,
+        runtime: CodeModeRuntime::McpApp,
+        tool_name: Some(CODE_MODE_SEARCH_TOOL_NAME),
     },
     CodeModeAppResourceDescriptor {
         uri: CODE_MODE_EXECUTE_APP_URI,
         name: "code-mode/execute",
-        mime: CODE_MODE_APP_MIME,
-        listed: true,
-        mcp_tool_name: Some(TOOL_EXECUTE_TOOL_NAME),
-        openai_tool_name: None,
+        runtime: CodeModeRuntime::McpApp,
+        tool_name: Some(TOOL_EXECUTE_TOOL_NAME),
     },
     CodeModeAppResourceDescriptor {
         uri: CODE_MODE_HISTORY_APP_URI,
         name: "code-mode/history",
-        mime: CODE_MODE_APP_MIME,
-        listed: true,
-        mcp_tool_name: None,
-        openai_tool_name: None,
+        runtime: CodeModeRuntime::McpApp,
+        tool_name: None,
     },
     CodeModeAppResourceDescriptor {
         uri: CODE_MODE_SEARCH_APP_SKYBRIDGE_URI,
         name: "code-mode/search.skybridge",
-        mime: CODE_MODE_APP_SKYBRIDGE_MIME,
-        listed: false,
-        mcp_tool_name: None,
-        openai_tool_name: Some(CODE_MODE_SEARCH_TOOL_NAME),
+        runtime: CodeModeRuntime::Skybridge,
+        tool_name: Some(CODE_MODE_SEARCH_TOOL_NAME),
     },
     CodeModeAppResourceDescriptor {
         uri: CODE_MODE_EXECUTE_APP_SKYBRIDGE_URI,
         name: "code-mode/execute.skybridge",
-        mime: CODE_MODE_APP_SKYBRIDGE_MIME,
-        listed: false,
-        mcp_tool_name: None,
-        openai_tool_name: Some(TOOL_EXECUTE_TOOL_NAME),
+        runtime: CodeModeRuntime::Skybridge,
+        tool_name: Some(TOOL_EXECUTE_TOOL_NAME),
     },
 ];
 
@@ -485,7 +498,7 @@ fn code_mode_app_html(uri: &str, history: Option<&Value>) -> Result<String, Stri
 fn code_mode_app_resource(descriptor: &CodeModeAppResourceDescriptor) -> rmcp::model::Resource {
     RawResource::new(descriptor.uri.to_string(), descriptor.name.to_string())
         .with_description("Read-only MCP App for Code Mode call traces")
-        .with_mime_type(descriptor.mime)
+        .with_mime_type(descriptor.runtime.mime())
         .with_meta(code_mode_app_resource_meta(descriptor.uri))
         .no_annotation()
 }
@@ -510,7 +523,7 @@ fn code_mode_app_mime_for_uri(uri: &str) -> &'static str {
                 );
                 CODE_MODE_APP_MIME
             },
-            |descriptor| descriptor.mime,
+            |descriptor| descriptor.runtime.mime(),
         )
 }
 
@@ -524,24 +537,25 @@ fn code_mode_app_resources_visible(
 fn code_mode_app_resources() -> Vec<rmcp::model::Resource> {
     CODE_MODE_APP_RESOURCE_DESCRIPTORS
         .iter()
-        .filter(|descriptor| descriptor.listed)
+        .filter(|descriptor| descriptor.runtime.listed())
         .map(code_mode_app_resource)
         .collect()
 }
 
 /// MCP Apps (Claude) widget URI for a tool — backs `_meta.ui.resourceUri`.
 pub(crate) fn code_mode_app_resource_uri_for_tool(tool_name: &str) -> Option<&'static str> {
-    CODE_MODE_APP_RESOURCE_DESCRIPTORS
-        .iter()
-        .find(|descriptor| descriptor.mcp_tool_name == Some(tool_name))
-        .map(|descriptor| descriptor.uri)
+    code_mode_app_uri_for_tool(CodeModeRuntime::McpApp, tool_name)
 }
 
 /// OpenAI Apps (ChatGPT / Codex) widget URI for a tool — backs `openai/outputTemplate`.
 pub(crate) fn code_mode_app_skybridge_uri_for_tool(tool_name: &str) -> Option<&'static str> {
+    code_mode_app_uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
+}
+
+fn code_mode_app_uri_for_tool(runtime: CodeModeRuntime, tool_name: &str) -> Option<&'static str> {
     CODE_MODE_APP_RESOURCE_DESCRIPTORS
         .iter()
-        .find(|descriptor| descriptor.openai_tool_name == Some(tool_name))
+        .find(|descriptor| descriptor.runtime == runtime && descriptor.tool_name == Some(tool_name))
         .map(|descriptor| descriptor.uri)
 }
 
@@ -852,58 +866,44 @@ mod tests {
 
     #[test]
     fn code_mode_app_descriptor_table_invariants_hold() {
-        for descriptor in CODE_MODE_APP_RESOURCE_DESCRIPTORS {
-            // MIME determines the runtime, which fixes listed-ness and which
-            // tool-binding channel is legal. These couplings live only in the
-            // const table by convention — assert them so a future row can't
-            // silently leak a skybridge resource into the Claude listing or
-            // cross-wire the two host runtimes.
-            if descriptor.mime == CODE_MODE_APP_MIME {
-                assert!(
-                    descriptor.listed && descriptor.openai_tool_name.is_none(),
-                    "mcp-app descriptor {} must be listed with no OpenAI binding",
-                    descriptor.uri
-                );
-            } else if descriptor.mime == CODE_MODE_APP_SKYBRIDGE_MIME {
-                assert!(
-                    !descriptor.listed && descriptor.mcp_tool_name.is_none(),
-                    "skybridge descriptor {} must be unlisted with no MCP binding",
-                    descriptor.uri
-                );
-            } else {
-                panic!(
-                    "descriptor {} has unknown MIME {}",
-                    descriptor.uri, descriptor.mime
-                );
-            }
-            assert!(
-                !(descriptor.mcp_tool_name.is_some() && descriptor.openai_tool_name.is_some()),
-                "descriptor {} binds both runtimes to one resource",
-                descriptor.uri
-            );
-        }
-
-        // Every Code Mode tool with an MCP widget must have exactly one MCP
-        // descriptor and exactly one skybridge variant — otherwise the tool
-        // silently loses OpenAI Apps support (no `openai/outputTemplate`).
+        // MIME and listed-ness now derive from `runtime`, so the mime↔listed and
+        // "both runtimes bound to one resource" failure modes are unrepresentable.
+        // The one convention left is the tool↔descriptor mapping: every Code Mode
+        // tool must have exactly one MCP (Claude) descriptor and exactly one
+        // skybridge (OpenAI) descriptor, or it silently loses one runtime's binding.
         for tool in [CODE_MODE_SEARCH_TOOL_NAME, TOOL_EXECUTE_TOOL_NAME] {
             assert_eq!(
                 CODE_MODE_APP_RESOURCE_DESCRIPTORS
                     .iter()
-                    .filter(|descriptor| descriptor.mcp_tool_name == Some(tool))
+                    .filter(|descriptor| {
+                        descriptor.runtime == CodeModeRuntime::McpApp
+                            && descriptor.tool_name == Some(tool)
+                    })
                     .count(),
                 1,
-                "tool {tool} must have exactly one MCP descriptor"
+                "tool {tool} must have exactly one MCP (Claude) descriptor"
             );
             assert_eq!(
                 CODE_MODE_APP_RESOURCE_DESCRIPTORS
                     .iter()
-                    .filter(|descriptor| descriptor.openai_tool_name == Some(tool))
+                    .filter(|descriptor| {
+                        descriptor.runtime == CodeModeRuntime::Skybridge
+                            && descriptor.tool_name == Some(tool)
+                    })
                     .count(),
                 1,
                 "tool {tool} is missing its skybridge (OpenAI) descriptor"
             );
         }
+
+        // Skybridge resources must never appear in resources/list (Claude surface).
+        assert!(
+            CODE_MODE_APP_RESOURCE_DESCRIPTORS
+                .iter()
+                .filter(|descriptor| descriptor.runtime == CodeModeRuntime::Skybridge)
+                .all(|descriptor| !descriptor.runtime.listed()),
+            "skybridge resources must stay out of resources/list"
+        );
     }
 
     #[test]
