@@ -99,6 +99,24 @@ fn truncate_trace_string(value: &str, max_chars: usize) -> String {
     }
 }
 
+/// Build the structured-content trace for an `execute` result.
+///
+/// The trace carries the **actual** `result` verbatim — not just its shape —
+/// because most MCP clients (Claude Code included) surface `structuredContent`
+/// over the text content block. Emitting only a `result_shape` here means a
+/// structured-content-preferring client never sees the value the model asked
+/// for. This mirrors [`code_mode_search_trace`], which embeds the real
+/// `matches`, and matches Cloudflare's Code Mode, where the executed function's
+/// return value is surfaced verbatim and bounded only by the response budget
+/// (`packages/codemode/src/mcp.ts::truncateResponse`).
+///
+/// `response.result` is already capped to the response budget
+/// (`max_response_bytes` / `max_response_tokens`) by `truncate_execution_response`
+/// before it reaches here, so it is embedded as-is rather than run through the
+/// per-string `redact_trace_value` cap (which would truncate a valid answer to
+/// 512 chars). The secret-bearing channel is per-call `params` — those remain
+/// redacted below. `result_shape` is retained as a cheap descriptor the inline
+/// UI app and tooling read.
 #[must_use]
 pub(crate) fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
     let calls = response
@@ -117,17 +135,36 @@ pub(crate) fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> V
             })
         })
         .collect::<Vec<_>>();
-    json!({
-        "kind": "code_mode_execute_trace",
-        "call_count": response.calls.len(),
-        "calls": calls,
-        "result_shape": response
+
+    let mut trace = Map::new();
+    trace.insert("kind".to_string(), json!("code_mode_execute_trace"));
+    trace.insert("call_count".to_string(), json!(response.calls.len()));
+    trace.insert("calls".to_string(), json!(calls));
+    // Embed the real return value. Omit the field entirely when the function
+    // returned `undefined` (mirrors `CodeModeExecutionResponse::result`'s
+    // skip-if-none serialization); an explicit JS `null` is `Some(Value::Null)`
+    // and is preserved as `"result": null`.
+    if let Some(result) = &response.result {
+        trace.insert("result".to_string(), result.clone());
+    }
+    trace.insert(
+        "result_shape".to_string(),
+        response
             .result
             .as_ref()
             .map(compact_result_shape)
             .unwrap_or_else(|| json!({ "type": "undefined" })),
-        "logs_count": response.logs.len(),
-    })
+    );
+    // Surface artifact receipts so a structured-content-only client can follow
+    // the "write large payloads to an artifact and read them back" path.
+    if !response.artifacts.is_empty() {
+        trace.insert(
+            "artifacts".to_string(),
+            serde_json::to_value(&response.artifacts).unwrap_or(Value::Null),
+        );
+    }
+    trace.insert("logs_count".to_string(), json!(response.logs.len()));
+    Value::Object(trace)
 }
 
 #[must_use]

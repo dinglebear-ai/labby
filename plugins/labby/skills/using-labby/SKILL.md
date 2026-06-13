@@ -82,6 +82,8 @@ async () => {
 
 Prefer `callTool("<upstream>::<tool>", params)` when dynamically selecting tools. Use `codemode.<upstream>.<tool>(params)` only after `search` confirms the helper name.
 
+Many upstreams are action-dispatched — one tool taking `{ action, params }` (e.g. `axon`, and the rmcp family: `unraid`, `sonarr`, `cortex`, ...). Put operation arguments under `params`, and discover actions with `{ "action": "help" }` or the `search` schema. Guessing top-level fields rejects as `invalid_param` (`params must match exactly one schema`). See `references/code-mode.md` for the full pattern.
+
 Destructive upstream tools require top-level confirmation on the Labby `execute` call:
 
 ```json

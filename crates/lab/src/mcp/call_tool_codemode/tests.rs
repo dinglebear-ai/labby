@@ -104,12 +104,12 @@ fn gateway_search_input_schema_is_code_only() {
 }
 
 #[test]
-fn execute_trace_contains_redacted_params_and_compact_result_shape() {
+fn execute_trace_embeds_result_and_redacts_call_params() {
     let response = CodeModeExecutionResponse {
         ui: None,
         result: Some(json!({
-            "items": ["raw payload that should not be copied into trace"],
-            "secret": "result payloads are summarized, not previewed"
+            "answer": "the full research answer the model asked for",
+            "items": ["a", "b", "c"]
         })),
         calls: vec![CodeModeExecutedCall {
             id: "github::search_issues".to_string(),
@@ -126,14 +126,43 @@ fn execute_trace_contains_redacted_params_and_compact_result_shape() {
     assert_eq!(trace["kind"], json!("code_mode_execute_trace"));
     assert_eq!(trace["calls"][0]["upstream"], json!("github"));
     assert_eq!(trace["calls"][0]["tool"], json!("search_issues"));
+    // Per-call params remain redacted — that is the secret-bearing channel.
     assert_eq!(trace["calls"][0]["params"]["token"], json!("[redacted]"));
+
+    // The real return value is now embedded verbatim so structured-content-only
+    // clients (e.g. Claude Code) actually receive it, not just its shape. The
+    // value is already response-budget-capped upstream by
+    // `truncate_execution_response`, so it is not re-truncated here.
+    assert_eq!(
+        trace["result"]["answer"],
+        json!("the full research answer the model asked for")
+    );
+    assert_eq!(trace["result"]["items"], json!(["a", "b", "c"]));
+
+    // result_shape is retained for the inline UI app / quick inspection.
     assert_eq!(trace["result_shape"]["type"], json!("object"));
     assert_eq!(trace["result_shape"]["key_count"], json!(2));
+}
 
-    let serialized = trace.to_string();
-    assert!(serialized.contains("[redacted]"));
-    assert!(!serialized.contains("raw payload that should not be copied"));
-    assert!(!serialized.contains("result payloads are summarized"));
+#[test]
+fn execute_trace_omits_result_when_function_returns_undefined() {
+    let response = CodeModeExecutionResponse {
+        ui: None,
+        result: None,
+        calls: vec![],
+        logs: vec![],
+        artifacts: vec![],
+    };
+
+    let trace = code_mode_execute_trace(&response);
+    // `undefined` return omits the field entirely (parity with the response
+    // envelope), and the shape descriptor reports `"undefined"`.
+    assert!(
+        trace.get("result").is_none(),
+        "an undefined return must omit `result`, not emit null"
+    );
+    assert_eq!(trace["result_shape"]["type"], json!("undefined"));
+    assert_eq!(trace["logs_count"], json!(0));
 }
 
 #[test]
