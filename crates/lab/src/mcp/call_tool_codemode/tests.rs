@@ -166,6 +166,27 @@ fn execute_trace_omits_result_when_function_returns_undefined() {
 }
 
 #[test]
+fn execute_trace_preserves_explicit_null_result() {
+    let response = CodeModeExecutionResponse {
+        ui: None,
+        result: Some(Value::Null),
+        calls: vec![],
+        logs: vec![],
+        artifacts: vec![],
+    };
+
+    let trace = code_mode_execute_trace(&response);
+    // Explicit JS `null` is distinct from `undefined`: the field is present and
+    // null, matching the response envelope's null-vs-undefined contract.
+    assert!(
+        trace.get("result").is_some(),
+        "explicit null must emit `result`, not omit it"
+    );
+    assert!(trace["result"].is_null());
+    assert_eq!(trace["result_shape"]["type"], json!("null"));
+}
+
+#[test]
 fn search_trace_summarizes_matched_tools() {
     let response = json!([
         {

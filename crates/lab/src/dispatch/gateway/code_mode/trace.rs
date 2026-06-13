@@ -158,9 +158,18 @@ pub(crate) fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> V
     // Surface artifact receipts so a structured-content-only client can follow
     // the "write large payloads to an artifact and read them back" path.
     if !response.artifacts.is_empty() {
+        // Receipts are a flat derived-`Serialize` struct, so this is infallible
+        // in practice. If it ever did fail, keep the signal that artifacts
+        // existed rather than collapsing to a value that reads as "no artifacts"
+        // (mirrors the degradation marker in `redact_trace_value`).
         trace.insert(
             "artifacts".to_string(),
-            serde_json::to_value(&response.artifacts).unwrap_or(Value::Null),
+            serde_json::to_value(&response.artifacts).unwrap_or_else(|_| {
+                json!({
+                    "error": "artifact_serialization_failed",
+                    "count": response.artifacts.len(),
+                })
+            }),
         );
     }
     trace.insert("logs_count".to_string(), json!(response.logs.len()));

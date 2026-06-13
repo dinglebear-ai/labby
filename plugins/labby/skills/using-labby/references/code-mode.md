@@ -103,12 +103,12 @@ operation — `axon`, and the rmcp family (`unraid`, `unifi`, `sonarr`, `radarr`
 // Right: action + nested params
 async () => callTool("axon::axon", { action: "research", params: { query: "mcpb" } });
 
-// Wrong: guessed top-level fields — rejects with `invalid_param`:
-//   "callTool params `params` must match exactly one schema"
+// Wrong: guessed top-level fields — rejects with `invalid_param`
+//   ("... must match exactly one schema").
 async () => callTool("axon::axon", { action: "research", subaction: "help" });
 ```
 
-An `invalid_param` that says `params must match exactly one schema` means the
+An `invalid_param` that mentions `must match exactly one schema` means the
 envelope matched no action variant. Re-read the schema and nest the arguments
 under `params` — it is not a bug in the upstream tool.
 
@@ -154,13 +154,13 @@ Upstream result unwrapping:
 - Per-call result payloads are not copied into `calls`.
 
 > **Reading the value back.** `execute` returns the envelope in the tool's text
-> content block and a compact, redaction-safe copy in `structuredContent`. Most
-> MCP clients (Claude Code included) surface `structuredContent` over text. If a
-> client shows you a `code_mode_execute_trace` whose `result` has collapsed to a
-> `result_shape` (a description of the value, not the value), the payload was too
-> large to inline. Reduce the data inside the sandbox before returning, or write
-> large payloads to an artifact and read them back — do not rely on a large
-> `result` reaching the model verbatim.
+> content block and a copy in `structuredContent` carrying both `result` and a
+> compact `result_shape`. Most MCP clients (Claude Code included) surface
+> `structuredContent` over text. If `result` comes back as a truncation marker —
+> an object with `"truncated": true`, plus `preview` and `next_action` — the
+> value exceeded the response budget (24 KB / 6000 tokens). Reduce the data
+> inside the sandbox before returning, or write large payloads to an artifact and
+> read them back — do not rely on a large `result` reaching the model verbatim.
 
 Oversized final responses are replaced with a truncation marker. Reduce data in
 the sandbox before returning large values.
