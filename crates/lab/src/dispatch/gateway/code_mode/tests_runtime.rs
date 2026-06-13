@@ -1,5 +1,6 @@
 //! Tests: response-budget truncation, wasm runner smoke, token estimate.
 #![cfg(test)]
+#![allow(clippy::panic)]
 
 use std::collections::HashSet;
 
@@ -568,6 +569,47 @@ fn truncation_preserves_artifact_receipts() {
     assert_eq!(result["artifacts"][0]["path"], "brief.md");
 }
 
+#[test]
+fn execute_trace_surfaces_artifacts_when_present() {
+    let response = CodeModeExecutionResponse {
+        ui: None,
+        result: Some(json!({ "ok": true })),
+        calls: vec![],
+        logs: vec![],
+        artifacts: vec![CodeModeArtifactReceipt {
+            path: "brief.md".to_string(),
+            absolute_path: "~/.lab/code-mode-artifacts/run/brief.md".to_string(),
+            content_type: "text/markdown".to_string(),
+            bytes: 10_000,
+            sha256: "a".repeat(64),
+        }],
+    };
+
+    let trace = code_mode_execute_trace(&response);
+    // A structured-content-only client must see artifact receipts so it can
+    // follow the "write large payload to an artifact, read it back" path.
+    assert_eq!(trace["artifacts"][0]["path"], json!("brief.md"));
+    assert_eq!(trace["artifacts"][0]["bytes"], json!(10_000));
+    assert_eq!(trace["result"]["ok"], json!(true));
+}
+
+#[test]
+fn execute_trace_omits_artifacts_when_empty() {
+    let response = CodeModeExecutionResponse {
+        ui: None,
+        result: Some(json!({ "ok": true })),
+        calls: vec![],
+        logs: vec![],
+        artifacts: vec![],
+    };
+
+    let trace = code_mode_execute_trace(&response);
+    assert!(
+        trace.get("artifacts").is_none(),
+        "no artifacts → field omitted"
+    );
+}
+
 #[tokio::test]
 async fn write_code_mode_artifact_rejects_absolute_paths() {
     let root = TempDir::new().expect("temp root");
@@ -1114,7 +1156,7 @@ fn runner_process_group_is_reaped_after_kill() {
     // the `process_group(0)` call in `runner_drive.rs`.
     // `process_group(0)` is a safe method on `std::process::Command` (stable
     // since Rust 1.64) — no `pre_exec` or `unsafe` needed.
-    let child = std::process::Command::new("/bin/sleep")
+    let mut child = std::process::Command::new("/bin/sleep")
         .arg("60")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1150,6 +1192,7 @@ fn runner_process_group_is_reaped_after_kill() {
             panic!("unexpected waitpid result after killpg: {other:?}");
         }
     }
+    drop(child.wait());
 
     // On Linux, verify the process is gone from /proc as an extra check.
     #[cfg(target_os = "linux")]

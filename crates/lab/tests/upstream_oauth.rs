@@ -1,3 +1,15 @@
+#![allow(
+    clippy::await_holding_lock,
+    clippy::bool_assert_comparison,
+    clippy::err_expect,
+    clippy::field_reassign_with_default,
+    clippy::float_cmp,
+    clippy::len_zero,
+    clippy::manual_string_new,
+    clippy::needless_raw_string_hashes,
+    clippy::single_char_pattern,
+    clippy::unnested_or_patterns
+)]
 //! Integration tests for the upstream OAuth manager.
 //!
 //! These tests stand up a wiremock-backed OAuth authorization server and drive
@@ -478,6 +490,7 @@ async fn subject_lookup_survives_restart_for_saved_state() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::await_holding_lock)]
 async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets() {
     let _tracing_lock = TRACING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let buf = SharedBuf::default();

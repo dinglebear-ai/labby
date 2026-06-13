@@ -1,3 +1,14 @@
+#![allow(
+    clippy::bool_assert_comparison,
+    clippy::err_expect,
+    clippy::field_reassign_with_default,
+    clippy::float_cmp,
+    clippy::len_zero,
+    clippy::manual_string_new,
+    clippy::needless_raw_string_hashes,
+    clippy::single_char_pattern,
+    clippy::unnested_or_patterns
+)]
 use labby::config::{LabConfig, NodePreferences};
 use labby::node::master_client::MasterClient;
 use url::Url;
@@ -135,12 +146,14 @@ async fn master_client_applies_bearer_token_to_master_requests() {
 
 fn config_for_master(uri: &str) -> LabConfig {
     let parsed = Url::parse(uri).unwrap();
-    let mut config = LabConfig::default();
-    config.node = Some(NodePreferences {
-        controller: parsed.host_str().map(str::to_string),
-        log_retention_days: None,
-        role: None,
-    });
+    let mut config = LabConfig {
+        node: Some(NodePreferences {
+            controller: parsed.host_str().map(str::to_string),
+            log_retention_days: None,
+            role: None,
+        }),
+        ..LabConfig::default()
+    };
     config.mcp.port = parsed.port();
     config
 }

@@ -1,4 +1,17 @@
+#![allow(
+    clippy::bool_assert_comparison,
+    clippy::err_expect,
+    clippy::field_reassign_with_default,
+    clippy::float_cmp,
+    clippy::len_zero,
+    clippy::manual_string_new,
+    clippy::needless_raw_string_hashes,
+    clippy::panic,
+    clippy::single_char_pattern,
+    clippy::unnested_or_patterns
+)]
 //! Integration test: real stdio MCP child-process spawn + reaping.
+#![allow(clippy::panic)]
 //!
 //! These tests are `#[ignore]` (local-only, per repo convention) because they
 //! spawn real child processes and require the `labby` binary compiled into

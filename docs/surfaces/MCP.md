@@ -85,7 +85,7 @@ scopes = ["mcp:media"]
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
-upstreams = ["sonarr", "radarr", "prowlarr"]
+upstreams = ["github", "linear", "cortex"]
 services = ["gateway"]
 expose_code_mode = true
 ```
@@ -103,8 +103,8 @@ Each service exposes exactly one MCP tool named after the service.
 Examples:
 
 ```json
-{ "tool": "radarr", "input": { "action": "movie.search", "params": { "query": "The Matrix" } } }
-{ "tool": "plex", "input": { "action": "library.list" } }
+{ "tool": "marketplace", "input": { "action": "mcp.list", "params": { "search": "github", "limit": 10 } } }
+{ "tool": "stash", "input": { "action": "components.list", "params": {} } }
 ```
 
 This avoids exploding the tool list into hundreds of tiny tools.
@@ -157,7 +157,7 @@ MCP sessions.
 There are three discovery surfaces:
 
 - per-service `help` action
-- per-service resources such as `lab://radarr/actions`
+- per-service resources such as `lab://marketplace/actions`
 - top-level `lab://catalog`
 
 This means agents can discover the available tool shape without guessing.
@@ -184,6 +184,13 @@ build verification for the richer Next route lives under
 `apps/gateway-admin/app/mcp/code-mode/`.
 The history resource is process-local inspection state, not a durable audit log
 or a hard quota guarantee.
+
+For upstream MCP Apps, Code Mode keeps widget-bearing tools host-visible so the
+host can render their `_meta.ui.resourceUri` resources. Ordinary sibling tools
+remain hidden from `tools/list`, but a rendered app's `callServerTool` callback
+may call an exposed, non-destructive sibling tool on the same routable upstream.
+The exemption is scoped to callback callability and route scope; it does not
+expand the model-facing catalog.
 
 ## Top-Level Catalog
 

@@ -1,3 +1,15 @@
+#![allow(
+    clippy::bool_assert_comparison,
+    clippy::err_expect,
+    clippy::field_reassign_with_default,
+    clippy::float_cmp,
+    clippy::len_zero,
+    clippy::manual_string_new,
+    clippy::needless_raw_string_hashes,
+    clippy::single_char_pattern,
+    clippy::unnested_or_patterns
+)]
+#![cfg(feature = "gateway")]
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 
@@ -415,7 +427,7 @@ fn code_mode_runner_round_trips_date_typed_array_and_array_buffer() {
     let mut stdout = BufReader::new(stdout);
 
     // Args carry a Date, an Int16Array([256, -1]), and an ArrayBuffer.
-    let code = r#"async () => {
+    let code = r"async () => {
         const buf = new Uint8Array([9, 8, 7]).buffer;
         const echoed = await callTool('test::echo', {
           when: new Date(0),
@@ -427,7 +439,7 @@ fn code_mode_runner_round_trips_date_typed_array_and_array_buffer() {
           ctor: echoed && echoed.constructor && echoed.constructor.name,
           values: Array.from(echoed)
         };
-    }"#;
+    }";
 
     writeln!(stdin, "{}", json!({ "type": "start", "code": code })).expect("write start");
 

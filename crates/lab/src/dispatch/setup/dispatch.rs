@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use crate::config::env_merge::{self, EnvEntry, MergeRequest, snapshot_mtime};
 use crate::config::{config_toml_path, patch_built_in_upstream_apis_enabled};
+use crate::dispatch::gateway::current_gateway_manager;
 
 /// Maximum elapsed time for the inline doctor.audit.full call inside
 /// setup.draft.commit. A misconfigured probe (network hang, dead host)
@@ -39,7 +40,6 @@ const REDACTED_LOG_ACTIONS: &[&str] = &[
     "settings.config.update",
 ];
 use crate::dispatch::error::ToolError;
-use crate::dispatch::gateway::current_gateway_manager;
 use crate::dispatch::helpers::{action_schema, help_payload, to_json};
 use crate::registry::{
     RegisteredService, RegisteredServiceKind, bootstrap_operator_services,
@@ -788,6 +788,8 @@ fn assert_action_count_const() {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::await_holding_lock, clippy::panic)]
+
     use super::*;
     use crate::registry::build_default_registry;
     use std::sync::Mutex;
@@ -861,19 +863,17 @@ mod tests {
 
     #[test]
     fn settings_update_accepts_flat_and_nested_toggle_param() {
-        assert_eq!(
-            parse_built_in_upstream_apis_enabled(
+        assert!(
+            !parse_built_in_upstream_apis_enabled(
                 &json!({"services.built_in_upstream_apis_enabled": false})
             )
-            .unwrap(),
-            false
+            .unwrap()
         );
-        assert_eq!(
+        assert!(
             parse_built_in_upstream_apis_enabled(
                 &json!({"services": {"built_in_upstream_apis_enabled": true}})
             )
-            .unwrap(),
-            true
+            .unwrap()
         );
     }
 
@@ -923,6 +923,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn settings_update_dispatch_persists_and_preserves_config_toml() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_runtime = crate::registry::runtime_built_in_upstream_apis_enabled();
