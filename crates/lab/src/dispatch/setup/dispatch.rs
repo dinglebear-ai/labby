@@ -71,8 +71,12 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
             let a = crate::dispatch::helpers::require_str(params, "action")?;
             action_schema(ACTIONS, a)
         }
-        "state" => state_action(),
-        "bootstrap" => super::bootstrap_action(),
+        "setup.state" | "state" => state_action(),
+        // Dotted canonical names are listed first; the flat snake_case forms on
+        // the right of each `|` are deprecated aliases kept working for existing
+        // callers (Arch-M3). The catalog lint exempts the flat forms via
+        // DEPRECATED_ACTION_ALIASES in tests/architecture_orchestrator.rs.
+        "setup.bootstrap" | "bootstrap" => super::bootstrap_action(),
         "schema.get" => schema_get_action(params),
         "draft.get" => draft_get_action(),
         "draft.set" => draft_set_action(params).await,
@@ -85,16 +89,24 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
         "settings.config.update" => settings_config_update_action(params),
         "settings.advanced_state" => settings_advanced_state_action(params),
         "settings.env_schema" => settings_env_schema_action(),
-        "plugin_hook" => plugin_hook_action(params).await,
-        "plugin_sync" => plugin_sync_action(),
-        "plugin_export" => plugin_export_action(),
-        "plugin_connectivity" => plugin_connectivity_action(params).await,
-        "check" => setup_check_action(),
-        "repair" => setup_repair_action(),
+        "setup.plugin.hook" | "plugin_hook" => plugin_hook_action(params).await,
+        "setup.plugin.sync" | "plugin_sync" => plugin_sync_action(),
+        "setup.plugin.export" | "plugin_export" => plugin_export_action(),
+        "setup.plugin.connectivity" | "plugin_connectivity" => {
+            plugin_connectivity_action(params).await
+        }
+        "setup.check" | "check" => setup_check_action(),
+        "setup.repair" | "repair" => setup_repair_action(),
+        // The four plugin-lifecycle actions keep ONLY their flat names: the API
+        // loopback gate (`api/services/setup.rs::plugin_lifecycle_action`)
+        // matches them by flat name. Dotted aliases are deferred until that gate
+        // recognizes the dotted forms (otherwise a dotted call bypasses the
+        // loopback-only restriction). See setup/catalog.rs note.
         "installed_plugins" => installed_plugins_action(params).await,
         "services_status" => services_status_action().await,
         "install_plugin" => install_plugin_action(params).await,
         "uninstall_plugin" => uninstall_plugin_action(params).await,
+        // `finalize` is itself a (pre-existing) deprecated alias for draft.commit.
         "finalize" => draft_commit_action(params).await,
         unknown => Err(ToolError::UnknownAction {
             message: format!("unknown action `{unknown}` for service `setup`"),
@@ -758,6 +770,13 @@ fn log_outcome(
             | "plugin_connectivity"
             | "check"
             | "repair"
+            // Dotted canonical forms (Arch-M3) get the same logging treatment.
+            | "setup.plugin.hook"
+            | "setup.plugin.sync"
+            | "setup.plugin.export"
+            | "setup.plugin.connectivity"
+            | "setup.check"
+            | "setup.repair"
     ) {
         return;
     }

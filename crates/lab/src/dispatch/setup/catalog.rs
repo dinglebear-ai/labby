@@ -299,4 +299,93 @@ pub const ACTIONS: &[ActionSpec] = &[
             description: "Overwrite conflicting .env keys (default false)",
         }],
     },
+    // ---- Dotted canonical aliases (Arch-M3) ----
+    // The flat snake_case actions above predate the `<resource>.<verb>` naming
+    // rule and remain working as deprecated aliases. These dotted entries are
+    // the canonical names; both route to the same handlers in dispatch.rs.
+    // The catalog lint exempts the flat forms via DEPRECATED_ACTION_ALIASES in
+    // tests/architecture_orchestrator.rs. Prefer the dotted forms in new code.
+    ActionSpec {
+        name: "setup.state",
+        description: "First-run + draft snapshot for the wizard / settings UI",
+        destructive: false,
+        requires_admin: false,
+        returns: "SetupSnapshot",
+        params: &[],
+    },
+    ActionSpec {
+        name: "setup.bootstrap",
+        description: "Create ~/.lab/.env with a generated token + loopback defaults when absent (first-run)",
+        destructive: false,
+        requires_admin: false,
+        returns: "BootstrapOutcome",
+        params: &[],
+    },
+    ActionSpec {
+        name: "setup.plugin.hook",
+        description: "Run binary-owned local setup checks for Claude plugin hooks; in repair mode also syncs CLAUDE_PLUGIN_OPTION_* and probes server connectivity",
+        destructive: true,
+        requires_admin: false,
+        returns: "PluginHookReport",
+        params: &[ParamSpec {
+            name: "repair",
+            ty: "boolean",
+            required: false,
+            description: "Create missing local Lab setup files and sync plugin env; defaults to true",
+        }],
+    },
+    ActionSpec {
+        name: "setup.plugin.sync",
+        description: "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.lab/.env as LAB_* vars",
+        destructive: true,
+        requires_admin: false,
+        returns: "PluginSyncOutcome",
+        params: &[],
+    },
+    ActionSpec {
+        name: "setup.plugin.export",
+        description: "Read ~/.lab/.env and return current values keyed by userConfig field name",
+        destructive: false,
+        requires_admin: false,
+        returns: "PluginExportOutcome",
+        params: &[],
+    },
+    ActionSpec {
+        name: "setup.plugin.connectivity",
+        description: "Validate connectivity to the lab MCP server at {server_url}/health",
+        destructive: false,
+        requires_admin: false,
+        returns: "ConnectivityOutcome",
+        params: &[ParamSpec {
+            name: "server_url",
+            ty: "string",
+            required: false,
+            description: "Override server URL; defaults to CLAUDE_PLUGIN_OPTION_SERVER_URL or http://localhost:8765",
+        }],
+    },
+    ActionSpec {
+        name: "setup.check",
+        description: "Check local Lab setup prerequisites without mutating the filesystem",
+        destructive: false,
+        requires_admin: false,
+        returns: "SetupReport",
+        params: &[],
+    },
+    ActionSpec {
+        name: "setup.repair",
+        description: "Repair missing local Lab setup prerequisites without contacting external services",
+        destructive: true,
+        requires_admin: false,
+        returns: "SetupReport",
+        params: &[],
+    },
+    // NOTE: the four plugin-lifecycle actions (installed_plugins,
+    // services_status, install_plugin, uninstall_plugin) intentionally do NOT
+    // have dotted aliases yet. The API surface gate
+    // `api/services/setup.rs::plugin_lifecycle_action` matches them by their
+    // flat names to enforce the loopback-only restriction; adding dotted
+    // aliases before that gate recognizes the dotted forms would let a
+    // dotted-named call bypass the loopback check. Add the dotted aliases here
+    // in the same change that teaches `plugin_lifecycle_action` the dotted
+    // names. Tracked as a deferred Arch-M3 follow-up.
 ];
