@@ -106,21 +106,13 @@ fn plugin_lifecycle_action(action: &str) -> bool {
     // dispatcher will execute, so a dotted-named HTTP call (e.g.
     // `plugin.install`) must be loopback-restricted exactly like its legacy
     // `install_plugin` alias — otherwise the dotted form would be a
-    // restriction bypass. Keep this list in lockstep with the catalog /
-    // dispatch arms for these four actions.
-    matches!(
-        action,
-        // Canonical dotted forms (<resource>.<verb>):
-        "plugins.installed"
-            | "services.status"
-            | "plugin.install"
-            | "plugin.uninstall"
-            // Deprecated snake_case aliases:
-            | "installed_plugins"
-            | "services_status"
-            | "install_plugin"
-            | "uninstall_plugin"
-    )
+    // restriction bypass.
+    //
+    // The name set is owned by `crate::dispatch::setup::PLUGIN_LIFECYCLE_ACTIONS`
+    // (the same module that holds the catalog and dispatch arms) so the gate,
+    // catalog, and dispatch routing share one source of truth instead of three
+    // hand-synced literal lists.
+    crate::dispatch::setup::PLUGIN_LIFECYCLE_ACTIONS.contains(&action)
 }
 
 fn http_bind_is_loopback(state: &AppState) -> bool {
@@ -175,46 +167,99 @@ mod tests {
                 "{action} must be treated as a plugin-lifecycle action"
             );
         }
-        // A non-lifecycle action must NOT be gated.
+        // Non-lifecycle actions must NOT be gated.
         assert!(!plugin_lifecycle_action("settings.update"));
         assert!(!plugin_lifecycle_action("draft.commit"));
+        // Near-miss typos of the lifecycle names must NOT be gated either —
+        // these are the realistic mistake classes the dotted/flat split adds,
+        // and matching them would over-restrict (or mask a real routing bug).
+        for near_miss in [
+            "plugin.installed",
+            "plugins.install",
+            "service.status",
+            "services.statu",
+            "plugin.uninstal",
+        ] {
+            assert!(
+                !plugin_lifecycle_action(near_miss),
+                "{near_miss} is not a real lifecycle action and must not be gated"
+            );
+        }
     }
 
-    /// Mirror of the existing flat-name behavior: a dotted plugin-lifecycle
-    /// action is rejected when the HTTP surface is bound to a non-loopback
-    /// address, and permitted on a loopback bind. This is the exact gate the
-    /// `handle` function applies before dispatching.
+    /// `host_is_loopback` is the predicate the `handle` gate uses to decide
+    /// whether plugin-lifecycle actions are reachable. Table-test it directly,
+    /// including IPv6, bracketed, and whitespace-padded forms.
+    #[test]
+    fn host_is_loopback_classifies_bind_addresses() {
+        for host in [
+            Some("127.0.0.1"),
+            Some("::1"),
+            Some("localhost"),
+            Some("[::1]"),
+            Some("[127.0.0.1]"),
+            Some("  127.0.0.1  "),
+            None, // unset → defaults to the loopback bind
+        ] {
+            assert!(host_is_loopback(host), "{host:?} should be loopback");
+        }
+        for host in [
+            Some("0.0.0.0"),
+            Some("10.0.0.5"),
+            Some("192.168.1.10"),
+            Some("example.com"),
+            Some("::"),
+            Some(""),
+        ] {
+            assert!(!host_is_loopback(host), "{host:?} should NOT be loopback");
+        }
+    }
+
+    /// The `handle` gate rejects a request when
+    /// `plugin_lifecycle_action(action) && !http_bind_is_loopback(state)`.
+    /// `http_bind_is_loopback` delegates to `host_is_loopback`, so we exercise
+    /// that exact composition here without building `AppState` (which needs a
+    /// Tokio runtime for ACP registry init). Asserting the computed outcome —
+    /// rather than chaining the predicates inside the assertion — keeps the
+    /// test from collapsing into a tautology and proves the dotted forms are
+    /// rejected/allowed identically to the flat aliases.
     #[test]
     fn dotted_plugin_lifecycle_action_is_loopback_gated() {
-        // The `handle` gate rejects when
-        // `plugin_lifecycle_action(action) && !http_bind_is_loopback(state)`.
-        // `http_bind_is_loopback` delegates to `host_is_loopback`, so the gate
-        // is exercised here over the host predicate without building AppState
-        // (which needs a Tokio runtime for ACP registry init).
-        for action in [
-            // dotted canonical forms gated identically to the legacy aliases
-            "plugins.installed",
-            "services.status",
-            "plugin.install",
-            "plugin.uninstall",
-            "installed_plugins",
-            "services_status",
-            "install_plugin",
-            "uninstall_plugin",
-        ] {
-            // Rejected on a non-loopback bind.
-            assert!(
-                plugin_lifecycle_action(action) && !host_is_loopback(Some("0.0.0.0")),
-                "{action} must be rejected on a non-loopback bind"
+        // (action, expected_rejected_on_non_loopback)
+        let cases = [
+            // dotted canonical forms — gated
+            ("plugins.installed", true),
+            ("services.status", true),
+            ("plugin.install", true),
+            ("plugin.uninstall", true),
+            // flat aliases — gated identically
+            ("installed_plugins", true),
+            ("install_plugin", true),
+            // non-lifecycle actions — never gated, reachable on any bind
+            ("settings.update", false),
+            ("draft.commit", false),
+        ];
+
+        for (action, expect_rejected_off_loopback) in cases {
+            // The exact boolean the `handle` gate computes before dispatch.
+            let rejected_on_non_loopback =
+                plugin_lifecycle_action(action) && !host_is_loopback(Some("0.0.0.0"));
+            let rejected_on_loopback =
+                plugin_lifecycle_action(action) && !host_is_loopback(Some("127.0.0.1"));
+            let rejected_on_default = plugin_lifecycle_action(action) && !host_is_loopback(None);
+
+            assert_eq!(
+                rejected_on_non_loopback, expect_rejected_off_loopback,
+                "{action}: non-loopback rejection outcome mismatch"
             );
-            // Permitted on a loopback bind (and on the default/unset bind).
+            // Loopback and the default (unset) bind never reject, for any action.
             assert!(
-                !(plugin_lifecycle_action(action) && !host_is_loopback(Some("127.0.0.1"))),
-                "{action} must be permitted on a loopback bind"
+                !rejected_on_loopback,
+                "{action} must be reachable on loopback"
             );
             assert!(
-                !(plugin_lifecycle_action(action) && !host_is_loopback(None)),
-                "{action} must be permitted on the default (unset) bind"
+                !rejected_on_default,
+                "{action} must be reachable on the default (unset) bind"
             );
         }
     }
