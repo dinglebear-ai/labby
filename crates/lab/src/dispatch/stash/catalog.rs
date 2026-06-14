@@ -105,6 +105,51 @@ pub const ACTIONS: &[ActionSpec] = &[
         ],
     },
     ActionSpec {
+        name: "component.adopt",
+        description: "Create a stash component from a local path, attach origin metadata, and save the initial revision",
+        destructive: true,
+        requires_admin: false,
+        returns: "AdoptResult",
+        params: &[
+            ParamSpec {
+                name: "kind",
+                ty: "string",
+                required: true,
+                description: "Component kind: skill, agent, command, channel, monitor, hook, output_style, theme, settings, mcp_config, lsp_config, script, bin_file",
+            },
+            ParamSpec {
+                name: "name",
+                ty: "string",
+                required: true,
+                description: "Component name",
+            },
+            ParamSpec {
+                name: "label",
+                ty: "string",
+                required: false,
+                description: "Optional human-readable label",
+            },
+            ParamSpec {
+                name: "source_path",
+                ty: "string",
+                required: true,
+                description: "Validated absolute source path to copy into the stash workspace; direct HTTP use requires lab:admin",
+            },
+            ParamSpec {
+                name: "origin",
+                ty: "object",
+                required: true,
+                description: "Structured StashOrigin metadata",
+            },
+            ParamSpec {
+                name: "save_label",
+                ty: "string",
+                required: false,
+                description: "Optional initial revision label",
+            },
+        ],
+    },
+    ActionSpec {
         name: "component.workspace",
         description: "Get the workspace (local checkout) path for a component",
         destructive: false,

@@ -22,7 +22,7 @@ use crate::dispatch::path_safety::{
 use crate::dispatch::stash::export;
 use crate::dispatch::stash::import;
 use crate::dispatch::stash::params::{
-    CreateParams, DeployParams, ExportParams, GetParams, ImportParams, LinkParams,
+    AdoptParams, CreateParams, DeployParams, ExportParams, GetParams, ImportParams, LinkParams,
     ProviderSyncParams, RevisionsParams, SaveParams, TargetAddParams, TargetRemoveParams,
     WorkspaceParams,
 };
@@ -168,6 +168,67 @@ pub async fn component_import(store: &StashStore, p: ImportParams) -> Result<Val
     .await?;
 
     to_json(&result)
+}
+
+/// `component.adopt` - create a component from a path and save its initial revision.
+pub async fn component_adopt(store: &StashStore, p: AdoptParams) -> Result<Value, ToolError> {
+    let result = adopt_component_from_path(
+        store,
+        &p.kind,
+        &p.name,
+        p.label.as_deref(),
+        &p.source_path,
+        p.origin,
+        p.save_label.as_deref(),
+    )
+    .await?;
+    to_json(result)
+}
+
+#[derive(serde::Serialize)]
+pub struct AdoptResult {
+    pub component: StashComponent,
+    pub revision: lab_apis::stash::StashRevision,
+}
+
+pub async fn adopt_component_from_path(
+    store: &StashStore,
+    kind: &str,
+    name: &str,
+    label: Option<&str>,
+    source_path: &Path,
+    origin: lab_apis::stash::StashOrigin,
+    save_label: Option<&str>,
+) -> Result<AdoptResult, ToolError> {
+    let kind_override = serde_json::from_value::<StashComponentKind>(Value::String(
+        kind.to_string(),
+    ))
+    .map_err(|_| ToolError::InvalidParam {
+        param: "kind".into(),
+        message: "unrecognised component kind".into(),
+    })?;
+    let id = ulid::Ulid::new().to_string().to_lowercase();
+    let component = import::import_component_with_origin(
+        store,
+        &id,
+        source_path,
+        Some(kind_override),
+        name,
+        label,
+        Some(origin),
+    )
+    .await?;
+    let revision = revision::save_revision(store, &component.id, save_label).await?;
+    let updated = store
+        .read_component(&component.id)?
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "not_found".into(),
+            message: format!("component `{}` disappeared after save", component.id),
+        })?;
+    Ok(AdoptResult {
+        component: updated,
+        revision,
+    })
 }
 
 /// `component.workspace` — return the workspace path info for a component.

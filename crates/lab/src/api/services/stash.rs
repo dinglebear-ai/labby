@@ -19,6 +19,7 @@ use crate::dispatch::stash::catalog::ACTIONS;
 /// Actions that mutate stash state and require `lab:admin` scope.
 const STASH_WRITE_ACTIONS: &[&str] = &[
     "component.import",
+    "component.adopt",
     "component.save",
     "component.export",
     "component.deploy",
@@ -168,16 +169,35 @@ mod tests {
 
     #[tokio::test]
     async fn write_actions_require_admin_scope() {
-        for app in [test_app(), test_app_with_auth(read_only_auth_context())] {
-            let response = post_stash(
-                app,
+        let write_actions = [
+            (
+                "component.create",
+                json!({"kind": "settings", "name": "test"}),
+            ),
+            (
+                "component.adopt",
                 json!({
-                    "action": "component.create",
-                    "params": {"kind": "settings", "name": "test"}
+                    "kind": "skill",
+                    "name": "demo",
+                    "source_path": "/tmp/demo",
+                    "origin": {"kind": "local_path", "source_path": "/tmp/demo"},
+                    "confirm": true
                 }),
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            ),
+        ];
+
+        for (action, params) in write_actions {
+            for app in [test_app(), test_app_with_auth(read_only_auth_context())] {
+                let response = post_stash(
+                    app,
+                    json!({
+                        "action": action,
+                        "params": params.clone()
+                    }),
+                )
+                .await;
+                assert_eq!(response.status(), StatusCode::FORBIDDEN, "{action}");
+            }
         }
 
         let response = post_stash(
