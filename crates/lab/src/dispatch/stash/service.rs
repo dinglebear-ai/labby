@@ -105,6 +105,7 @@ pub fn component_create(store: &StashStore, p: CreateParams) -> Result<Value, To
         label: p.label.clone(),
         head_revision_id: None,
         origin: None,
+        origin_meta: None,
         workspace_root,
         workspace_shape,
         unix_mode: None,

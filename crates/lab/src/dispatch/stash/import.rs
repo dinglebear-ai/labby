@@ -457,6 +457,7 @@ fn import_blocking(
             label: label.map(str::to_string),
             head_revision_id: None,
             origin: existing.as_ref().and_then(|c| c.origin.clone()),
+            origin_meta: existing.as_ref().and_then(|c| c.origin_meta.clone()),
             workspace_root,
             workspace_shape,
             unix_mode,
