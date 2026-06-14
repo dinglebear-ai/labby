@@ -101,18 +101,37 @@ fn require_setup_admin(
 }
 
 fn plugin_lifecycle_action(action: &str) -> bool {
+    // Both the canonical dotted names AND the deprecated snake_case aliases
+    // must be matched here. The gate is keyed on the action string the
+    // dispatcher will execute, so a dotted-named HTTP call (e.g.
+    // `plugin.install`) must be loopback-restricted exactly like its legacy
+    // `install_plugin` alias — otherwise the dotted form would be a
+    // restriction bypass. Keep this list in lockstep with the catalog /
+    // dispatch arms for these four actions.
     matches!(
         action,
-        "installed_plugins" | "services_status" | "install_plugin" | "uninstall_plugin"
+        // Canonical dotted forms (<resource>.<verb>):
+        "plugins.installed"
+            | "services.status"
+            | "plugin.install"
+            | "plugin.uninstall"
+            // Deprecated snake_case aliases:
+            | "installed_plugins"
+            | "services_status"
+            | "install_plugin"
+            | "uninstall_plugin"
     )
 }
 
 fn http_bind_is_loopback(state: &AppState) -> bool {
-    let host = state
-        .http_bind_host
-        .as_deref()
-        .map(String::as_str)
-        .unwrap_or("127.0.0.1");
+    host_is_loopback(state.http_bind_host.as_deref().map(String::as_str))
+}
+
+/// Pure loopback check over the configured bind host. A missing host defaults
+/// to `127.0.0.1` (the loopback default for `labby serve`). Extracted so the
+/// gate predicate is testable without constructing a full `AppState`.
+fn host_is_loopback(host: Option<&str>) -> bool {
+    let host = host.unwrap_or("127.0.0.1");
     let normalized = host.trim().trim_start_matches('[').trim_end_matches(']');
     matches!(normalized, "127.0.0.1" | "::1" | "localhost")
 }
@@ -131,6 +150,73 @@ mod tests {
             email: Some("tester@example.com".to_string()),
             csrf_token: None,
         })
+    }
+
+    /// The canonical dotted plugin-lifecycle names and their deprecated
+    /// snake_case aliases must all be recognized as loopback-gated. A miss
+    /// here means a dotted-named HTTP call could bypass the loopback
+    /// restriction that the flat names enforce.
+    #[test]
+    fn plugin_lifecycle_gate_matches_dotted_and_flat_names() {
+        for action in [
+            // canonical dotted forms
+            "plugins.installed",
+            "services.status",
+            "plugin.install",
+            "plugin.uninstall",
+            // deprecated snake_case aliases
+            "installed_plugins",
+            "services_status",
+            "install_plugin",
+            "uninstall_plugin",
+        ] {
+            assert!(
+                plugin_lifecycle_action(action),
+                "{action} must be treated as a plugin-lifecycle action"
+            );
+        }
+        // A non-lifecycle action must NOT be gated.
+        assert!(!plugin_lifecycle_action("settings.update"));
+        assert!(!plugin_lifecycle_action("draft.commit"));
+    }
+
+    /// Mirror of the existing flat-name behavior: a dotted plugin-lifecycle
+    /// action is rejected when the HTTP surface is bound to a non-loopback
+    /// address, and permitted on a loopback bind. This is the exact gate the
+    /// `handle` function applies before dispatching.
+    #[test]
+    fn dotted_plugin_lifecycle_action_is_loopback_gated() {
+        // The `handle` gate rejects when
+        // `plugin_lifecycle_action(action) && !http_bind_is_loopback(state)`.
+        // `http_bind_is_loopback` delegates to `host_is_loopback`, so the gate
+        // is exercised here over the host predicate without building AppState
+        // (which needs a Tokio runtime for ACP registry init).
+        for action in [
+            // dotted canonical forms gated identically to the legacy aliases
+            "plugins.installed",
+            "services.status",
+            "plugin.install",
+            "plugin.uninstall",
+            "installed_plugins",
+            "services_status",
+            "install_plugin",
+            "uninstall_plugin",
+        ] {
+            // Rejected on a non-loopback bind.
+            assert!(
+                plugin_lifecycle_action(action) && !host_is_loopback(Some("0.0.0.0")),
+                "{action} must be rejected on a non-loopback bind"
+            );
+            // Permitted on a loopback bind (and on the default/unset bind).
+            assert!(
+                !(plugin_lifecycle_action(action) && !host_is_loopback(Some("127.0.0.1"))),
+                "{action} must be permitted on a loopback bind"
+            );
+            assert!(
+                !(plugin_lifecycle_action(action) && !host_is_loopback(None)),
+                "{action} must be permitted on the default (unset) bind"
+            );
+        }
     }
 
     #[test]

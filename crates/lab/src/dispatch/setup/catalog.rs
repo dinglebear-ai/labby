@@ -239,8 +239,18 @@ pub const ACTIONS: &[ActionSpec] = &[
         returns: "SetupReport",
         params: &[],
     },
+    // -- Plugin-lifecycle actions ------------------------------------------
+    //
+    // These four actions are HTTP loopback-gated in
+    // `crate::api::services::setup::plugin_lifecycle_action`. The canonical
+    // names are the dotted `<resource>.<verb>` forms below; the snake_case
+    // entries that follow each one are deprecated aliases kept for backward
+    // compatibility (CLI shims + any existing callers). Both forms route to
+    // the same handler in `dispatch.rs` and both are recognized by the
+    // loopback gate — keep all three locations (catalog, dispatch arms, gate)
+    // in lockstep.
     ActionSpec {
-        name: "installed_plugins",
+        name: "plugins.installed",
         description: "List installed Claude Code lab plugins",
         destructive: false,
         requires_admin: false,
@@ -252,16 +262,39 @@ pub const ACTIONS: &[ActionSpec] = &[
             description: "Bypass the short in-process cache",
         }],
     },
+    // Deprecated alias for `plugins.installed`.
     ActionSpec {
-        name: "services_status",
+        name: "installed_plugins",
+        description: "Deprecated alias for `plugins.installed`",
+        destructive: false,
+        requires_admin: false,
+        returns: "InstalledPlugin[]",
+        params: &[ParamSpec {
+            name: "force",
+            ty: "boolean",
+            required: false,
+            description: "Bypass the short in-process cache",
+        }],
+    },
+    ActionSpec {
+        name: "services.status",
         description: "Join service configuration, draft, and Claude plugin state",
         destructive: false,
         requires_admin: false,
         returns: "ServiceStatus[]",
         params: &[],
     },
+    // Deprecated alias for `services.status`.
     ActionSpec {
-        name: "install_plugin",
+        name: "services_status",
+        description: "Deprecated alias for `services.status`",
+        destructive: false,
+        requires_admin: false,
+        returns: "ServiceStatus[]",
+        params: &[],
+    },
+    ActionSpec {
+        name: "plugin.install",
         description: "Install the Claude Code plugin for one configured service",
         destructive: true,
         requires_admin: false,
@@ -273,9 +306,37 @@ pub const ACTIONS: &[ActionSpec] = &[
             description: "Registered service name",
         }],
     },
+    // Deprecated alias for `plugin.install`.
+    ActionSpec {
+        name: "install_plugin",
+        description: "Deprecated alias for `plugin.install`",
+        destructive: true,
+        requires_admin: false,
+        returns: "PluginMutationResult",
+        params: &[ParamSpec {
+            name: "service",
+            ty: "string",
+            required: true,
+            description: "Registered service name",
+        }],
+    },
+    ActionSpec {
+        name: "plugin.uninstall",
+        description: "Uninstall the Claude Code plugin for one service",
+        destructive: true,
+        requires_admin: false,
+        returns: "PluginMutationResult",
+        params: &[ParamSpec {
+            name: "service",
+            ty: "string",
+            required: true,
+            description: "Registered service name",
+        }],
+    },
+    // Deprecated alias for `plugin.uninstall`.
     ActionSpec {
         name: "uninstall_plugin",
-        description: "Uninstall the Claude Code plugin for one service",
+        description: "Deprecated alias for `plugin.uninstall`",
         destructive: true,
         requires_admin: false,
         returns: "PluginMutationResult",

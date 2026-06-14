@@ -91,10 +91,16 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
         "plugin_connectivity" => plugin_connectivity_action(params).await,
         "check" => setup_check_action(),
         "repair" => setup_repair_action(),
-        "installed_plugins" => installed_plugins_action(params).await,
-        "services_status" => services_status_action().await,
-        "install_plugin" => install_plugin_action(params).await,
-        "uninstall_plugin" => uninstall_plugin_action(params).await,
+        // Plugin-lifecycle actions. The dotted `<resource>.<verb>` forms are
+        // the canonical names; the snake_case arms below them are deprecated
+        // aliases retained for backward compatibility. Both forms are HTTP
+        // loopback-gated in `crate::api::services::setup::plugin_lifecycle_action`
+        // — when adding/removing one here, update the gate and the catalog
+        // together so a dotted call can never bypass the loopback restriction.
+        "plugins.installed" | "installed_plugins" => installed_plugins_action(params).await,
+        "services.status" | "services_status" => services_status_action().await,
+        "plugin.install" | "install_plugin" => install_plugin_action(params).await,
+        "plugin.uninstall" | "uninstall_plugin" => uninstall_plugin_action(params).await,
         "finalize" => draft_commit_action(params).await,
         unknown => Err(ToolError::UnknownAction {
             message: format!("unknown action `{unknown}` for service `setup`"),
@@ -860,6 +866,12 @@ mod tests {
             "settings.advanced_state",
             "settings.env_schema",
             "finalize",
+            // Canonical dotted plugin-lifecycle names:
+            "plugins.installed",
+            "services.status",
+            "plugin.install",
+            "plugin.uninstall",
+            // Deprecated snake_case aliases (still routed):
             "installed_plugins",
             "services_status",
             "install_plugin",
