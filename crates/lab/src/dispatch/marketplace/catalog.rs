@@ -159,8 +159,8 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "artifact.fork",
-        description: "Fork artifact(s) or an entire plugin into your stash with upstream tracking.",
-        destructive: false,
+        description: "Fork Marketplace artifact(s) into Stash [destructive]",
+        destructive: true,
         requires_admin: false,
         params: &[
             ParamSpec {
@@ -173,16 +173,16 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "artifacts",
                 ty: "array",
                 required: false,
-                description: "Relative artifact paths to fork; omit for a plugin-level fork",
+                description: "Relative artifact paths to fork; omit to fork the whole plugin",
             },
             ParamSpec {
-                name: "instance",
-                ty: "string",
-                required: false,
-                description: "Multi-instance label",
+                name: "confirm",
+                ty: "boolean",
+                required: true,
+                description: "HTTP/MCP confirmation for this write action; stripped before dispatch",
             },
         ],
-        returns: "ForkResult",
+        returns: "ForkResponse",
     },
     ActionSpec {
         name: "artifact.list",

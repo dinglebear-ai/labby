@@ -11,23 +11,12 @@ use crate::dispatch::marketplace::params::{
 };
 
 pub(super) async fn artifact_fork(params: ForkParams) -> Result<Value, ToolError> {
-    Err(not_implemented_error(
-        "artifact.fork",
-        format!(
-            "fork lifecycle is not implemented yet for `{}`",
-            params.plugin_id
-        ),
-    ))
+    crate::dispatch::marketplace::stash_bridge::fork_artifacts(&params.plugin_id, params.artifacts)
+        .await
 }
 
 pub(super) async fn artifact_list(params: ArtifactListParams) -> Result<Value, ToolError> {
-    Err(not_implemented_error(
-        "artifact.list",
-        params
-            .plugin_id
-            .map(|plugin_id| format!("fork listing is not implemented yet for `{plugin_id}`"))
-            .unwrap_or_else(|| "fork listing is not implemented yet".to_string()),
-    ))
+    crate::dispatch::marketplace::stash_bridge::list_forks(params.plugin_id).await
 }
 
 pub(super) async fn artifact_unfork(params: UnforkParams) -> Result<Value, ToolError> {
@@ -68,5 +57,22 @@ fn not_implemented_error(action: &'static str, detail: String) -> ToolError {
     ToolError::Sdk {
         sdk_kind: "not_implemented".to_string(),
         message: format!("{action}: {detail}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn artifact_list_empty_when_no_forks_exist() {
+        let result = artifact_list(ArtifactListParams {
+            plugin_id: None,
+            instance: None,
+        })
+        .await
+        .unwrap();
+        let rows = result.as_array().unwrap();
+        assert!(rows.is_empty());
     }
 }

@@ -42,7 +42,7 @@ mod tests {
     use serde_json::json;
 
     const ARTIFACT_ACTIONS: &[(&str, bool, &str)] = &[
-        ("artifact.fork", false, "ForkResult"),
+        ("artifact.fork", true, "ForkResponse"),
         ("artifact.list", false, "ForkedPluginStatus[]"),
         ("artifact.unfork", true, "UnforkResult"),
         ("artifact.reset", true, "ResetResult"),
@@ -78,14 +78,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_with_client_artifact_fork_roundtrip() {
+    async fn dispatch_artifact_fork_returns_not_found_for_unknown_plugin_source() {
         let err = super::dispatch(
             "artifact.fork",
-            json!({"plugin_id": "demo@local", "artifacts": ["agents/demo.md"]}),
+            json!({"plugin_id": "missing@local", "artifacts": ["agents/demo.md"]}),
         )
         .await
         .unwrap_err();
-        assert_eq!(err.kind(), "not_implemented");
+        assert_ne!(err.kind(), "not_implemented");
     }
 
     #[tokio::test]

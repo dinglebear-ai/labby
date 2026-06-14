@@ -646,6 +646,16 @@ pub(super) fn source_paths_for_bridge(id: &str) -> Result<(PathBuf, PathBuf), To
     source_paths_for_plugin(id)
 }
 
+pub(super) fn upstream_version_for_bridge(plugin_id: &str) -> Result<String, ToolError> {
+    let (_marketplace_root, source) = source_paths_for_bridge(plugin_id)?;
+    Ok(upstream_version(&source).unwrap_or_else(|| "unknown".to_string()))
+}
+
+pub(super) fn source_fingerprint_for_bridge(plugin_id: &str) -> Result<String, ToolError> {
+    let (_marketplace_root, source) = source_paths_for_bridge(plugin_id)?;
+    compute_tree_fingerprint(&source)
+}
+
 fn source_paths_for_plugin(id: &str) -> Result<(PathBuf, PathBuf), ToolError> {
     let (name, marketplace) = parse_plugin_id(id)?;
     let root = client::plugins_root()?;
