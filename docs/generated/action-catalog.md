@@ -185,14 +185,6 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `setup` | `settings.schema` | false | false |  | `SettingsSchema` | cli, mcp, api, web |
 | `setup` | `settings.state` | false | false | `section: string` | `SettingsState` | cli, mcp, api, web |
 | `setup` | `settings.update` | false | true | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | cli, mcp, api, web |
-| `setup` | `setup.bootstrap` | false | false |  | `BootstrapOutcome` | cli, mcp, api, web |
-| `setup` | `setup.check` | false | false |  | `SetupReport` | cli, mcp, api, web |
-| `setup` | `setup.plugin.connectivity` | false | false | `server_url: string` | `ConnectivityOutcome` | cli, mcp, api, web |
-| `setup` | `setup.plugin.export` | false | false |  | `PluginExportOutcome` | cli, mcp, api, web |
-| `setup` | `setup.plugin.hook` | false | true | `repair: boolean` | `PluginHookReport` | cli, mcp, api, web |
-| `setup` | `setup.plugin.sync` | false | true |  | `PluginSyncOutcome` | cli, mcp, api, web |
-| `setup` | `setup.repair` | false | true |  | `SetupReport` | cli, mcp, api, web |
-| `setup` | `setup.state` | false | false |  | `SetupSnapshot` | cli, mcp, api, web |
 | `setup` | `state` | false | false |  | `SetupSnapshot` | cli, mcp, api, web |
 | `setup` | `uninstall_plugin` | false | true | `service*: string` | `PluginMutationResult` | cli, mcp, api, web |
 | `snippets` | `help` | false | false |  | `Catalog` | cli, mcp, api |

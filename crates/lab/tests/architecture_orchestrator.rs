@@ -110,6 +110,11 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
     // marketplace → node: ACP install fan-out uses node::send to push installs
     //   to fleet nodes.
     ("marketplace", "node"),
+    // marketplace → stash: marketplace forks persist adopted plugin components
+    //   through the shared stash store/service (stash_bridge.rs reuses
+    //   stash::store::StashStore + stash::service::adopt_component_from_path)
+    //   instead of reimplementing component persistence.
+    ("marketplace", "stash"),
     // upstream → gateway: TEST-ONLY. upstream/pool unit tests construct a
     //   GatewayManager + GatewayRuntimeHandle to exercise the pool against a
     //   live manager. Production upstream code does not depend on gateway; the

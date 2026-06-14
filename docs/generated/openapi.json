@@ -1164,7 +1164,6 @@
         "type": "object",
         "required": [
           "targets",
-          "confirm",
           "confirm"
         ],
         "properties": {
@@ -1183,7 +1182,6 @@
         "type": "object",
         "required": [
           "targets",
-          "confirm",
           "confirm"
         ],
         "properties": {
@@ -3276,28 +3274,6 @@
             "type": "boolean"
           },
           "services.built_in_upstream_apis_enabled": {
-            "type": "boolean"
-          }
-        }
-      },
-      "SetupSetupPluginConnectivityParams": {
-        "type": "object",
-        "properties": {
-          "server_url": {
-            "type": "string"
-          }
-        }
-      },
-      "SetupSetupPluginHookParams": {
-        "type": "object",
-        "required": [
-          "confirm"
-        ],
-        "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
-          "repair": {
             "type": "boolean"
           }
         }
