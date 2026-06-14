@@ -22,6 +22,9 @@ use crate::dispatch::marketplace::params::{
 use crate::dispatch::marketplace::stash_meta::ConflictStrategy;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_PREVIEW_FILES: usize = 250;
+const MAX_PREVIEW_FILE_BYTES: usize = 256 * 1024;
+const MAX_PREVIEW_DIFF_BYTES: usize = 512 * 1024;
 static FETCH_GUARDS: OnceLock<DashMap<PathBuf, Arc<std::sync::Mutex<()>>>> = OnceLock::new();
 
 #[cfg(test)]
@@ -96,6 +99,10 @@ fn default_notify() -> bool {
     true
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StashMeta {
     // Preserve schema_version so write_stash_meta doesn't strip the field that
@@ -165,6 +172,12 @@ struct CleanMerge {
     yours_diff: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     theirs_diff: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +188,12 @@ struct MergeConflict {
     theirs_content: Option<String>,
     #[serde(default)]
     conflict_ranges: Vec<ConflictRange>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +259,12 @@ struct FileVersions {
 struct PlannedWrite {
     path: PathBuf,
     content: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PreviewTruncation {
+    original_size: usize,
+    preview: String,
 }
 
 struct StashLock {
@@ -313,6 +338,48 @@ fn build_preview(plugin_id: &str) -> Result<UpdatePreviewResult, ToolError> {
     build_preview_from_fork(&fork)
 }
 
+fn truncate_preview_string(value: String, max_bytes: usize) -> (String, Option<PreviewTruncation>) {
+    let original_size = value.len();
+    if original_size <= max_bytes {
+        return (value, None);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    let preview = value[..end].to_string();
+    (
+        preview.clone(),
+        Some(PreviewTruncation {
+            original_size,
+            preview,
+        }),
+    )
+}
+
+fn truncate_diff_string(
+    value: String,
+    remaining_diff_bytes: &mut usize,
+) -> (String, Option<PreviewTruncation>) {
+    let max = (*remaining_diff_bytes).min(MAX_PREVIEW_FILE_BYTES);
+    let original_size = value.len();
+    let (preview, truncation) = truncate_preview_string(value, max);
+    *remaining_diff_bytes = remaining_diff_bytes.saturating_sub(preview.len());
+    if truncation.is_some() {
+        return (preview, truncation);
+    }
+    if original_size > max {
+        return (
+            preview.clone(),
+            Some(PreviewTruncation {
+                original_size,
+                preview,
+            }),
+        );
+    }
+    (preview, None)
+}
+
 fn build_preview_from_fork(fork: &ForkRecord) -> Result<UpdatePreviewResult, ToolError> {
     let meta = &fork.meta;
     require_forked(meta)?;
@@ -335,7 +402,19 @@ fn build_preview_from_fork(fork: &ForkRecord) -> Result<UpdatePreviewResult, Too
     };
 
     let base = base_dir_for_fork(fork);
-    for file in collect_versions(&fork.stash, &base, &source, meta)? {
+    let files = collect_versions(&fork.stash, &base, &source, meta)?;
+    if files.len() > MAX_PREVIEW_FILES {
+        return Err(ToolError::Sdk {
+            sdk_kind: "preview_truncated".into(),
+            message: format!(
+                "preview includes {} files, exceeding limit of {}; narrow the artifact selection",
+                files.len(),
+                MAX_PREVIEW_FILES
+            ),
+        });
+    }
+    let mut remaining_diff_bytes = MAX_PREVIEW_DIFF_BYTES;
+    for file in files {
         let upstream_changed = file.theirs != file.base;
         if upstream_changed {
             preview.has_update = true;
@@ -352,31 +431,119 @@ fn build_preview_from_fork(fork: &ForkRecord) -> Result<UpdatePreviewResult, Too
             (_, Some(yours), Some(theirs)) if yours == theirs => preview.unchanged.push(file.path),
             (Some(base), Some(yours), Some(theirs)) => {
                 if let Some(merged_content) = try_clean_merge(base, yours, theirs) {
+                    let (merged_content, merged_truncation) =
+                        truncate_preview_string(merged_content, MAX_PREVIEW_FILE_BYTES);
+                    let yours_diff = diff_text(base, yours)
+                        .map(|diff| truncate_diff_string(diff, &mut remaining_diff_bytes));
+                    let theirs_diff = diff_text(base, theirs)
+                        .map(|diff| truncate_diff_string(diff, &mut remaining_diff_bytes));
+                    let truncation = [
+                        merged_truncation,
+                        yours_diff
+                            .as_ref()
+                            .and_then(|(_, truncation)| truncation.clone()),
+                        theirs_diff
+                            .as_ref()
+                            .and_then(|(_, truncation)| truncation.clone()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .max_by_key(|truncation| truncation.original_size);
+                    let truncated = truncation.is_some();
+                    let original_size = truncation
+                        .as_ref()
+                        .map(|truncation| truncation.original_size);
+                    let preview_text = truncation.map(|truncation| truncation.preview);
                     preview.clean_merges.push(CleanMerge {
                         path: file.path,
                         merged_content,
-                        yours_diff: diff_text(base, yours),
-                        theirs_diff: diff_text(base, theirs),
+                        yours_diff: yours_diff.map(|(diff, _)| diff),
+                        theirs_diff: theirs_diff.map(|(diff, _)| diff),
+                        truncated,
+                        original_size,
+                        preview: preview_text,
                     });
                 } else {
                     let conflict_ranges = conflict_ranges(base, yours, theirs);
+                    let base_content = file
+                        .base
+                        .map(|content| truncate_preview_string(content, MAX_PREVIEW_FILE_BYTES));
+                    let yours_content = file
+                        .yours
+                        .map(|content| truncate_preview_string(content, MAX_PREVIEW_FILE_BYTES));
+                    let theirs_content = file
+                        .theirs
+                        .map(|content| truncate_preview_string(content, MAX_PREVIEW_FILE_BYTES));
+                    let truncation = [
+                        base_content
+                            .as_ref()
+                            .and_then(|(_, truncation)| truncation.clone()),
+                        yours_content
+                            .as_ref()
+                            .and_then(|(_, truncation)| truncation.clone()),
+                        theirs_content
+                            .as_ref()
+                            .and_then(|(_, truncation)| truncation.clone()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .max_by_key(|truncation| truncation.original_size);
+                    let truncated = truncation.is_some();
+                    let original_size = truncation
+                        .as_ref()
+                        .map(|truncation| truncation.original_size);
+                    let preview_text = truncation.map(|truncation| truncation.preview);
                     preview.conflicts.push(MergeConflict {
                         path: file.path,
-                        base_content: file.base,
-                        yours_content: file.yours,
-                        theirs_content: file.theirs,
+                        base_content: base_content.map(|(content, _)| content),
+                        yours_content: yours_content.map(|(content, _)| content),
+                        theirs_content: theirs_content.map(|(content, _)| content),
                         conflict_ranges,
+                        truncated,
+                        original_size,
+                        preview: preview_text,
                     });
                 }
             }
             (_, _, _) => {
                 if upstream_changed {
+                    let base_content = file
+                        .base
+                        .map(|content| truncate_preview_string(content, MAX_PREVIEW_FILE_BYTES));
+                    let yours_content = file
+                        .yours
+                        .map(|content| truncate_preview_string(content, MAX_PREVIEW_FILE_BYTES));
+                    let theirs_content = file
+                        .theirs
+                        .map(|content| truncate_preview_string(content, MAX_PREVIEW_FILE_BYTES));
+                    let truncation = [
+                        base_content
+                            .as_ref()
+                            .and_then(|(_, truncation)| truncation.clone()),
+                        yours_content
+                            .as_ref()
+                            .and_then(|(_, truncation)| truncation.clone()),
+                        theirs_content
+                            .as_ref()
+                            .and_then(|(_, truncation)| truncation.clone()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .max_by_key(|truncation| truncation.original_size);
+                    let truncated = truncation.is_some();
+                    let original_size = truncation
+                        .as_ref()
+                        .map(|truncation| truncation.original_size);
+                    let preview_text = truncation.map(|truncation| truncation.preview);
                     preview.conflicts.push(MergeConflict {
                         path: file.path,
-                        base_content: file.base,
-                        yours_content: file.yours,
-                        theirs_content: file.theirs,
+                        base_content: base_content.map(|(content, _)| content),
+                        yours_content: yours_content.map(|(content, _)| content),
+                        theirs_content: theirs_content.map(|(content, _)| content),
                         conflict_ranges: Vec::new(),
+                        truncated,
+                        original_size,
+                        preview: preview_text,
                     });
                 }
             }
@@ -533,6 +700,9 @@ fn merge_suggest(params: MergeSuggestParams) -> Result<Result<Value, ToolError>,
         yours_content: std::fs::read_to_string(stash.join(&params.artifact_path)).ok(),
         theirs_content: std::fs::read_to_string(source.join(&params.artifact_path)).ok(),
         conflict_ranges: Vec::new(),
+        truncated: false,
+        original_size: None,
+        preview: None,
     };
     let changed_region = changed_region_text(&conflict);
     if contains_secret(&changed_region) {
@@ -1879,6 +2049,46 @@ esac
         assert_eq!(preview["clean_merges"][0]["path"], "plugin.json");
         assert!(preview["clean_merges"][0]["yours_diff"].is_string());
         assert!(preview["clean_merges"][0]["theirs_diff"].is_string());
+    }
+
+    #[test]
+    fn update_preview_marks_oversized_clean_merge_as_truncated() {
+        let dir = tempdir().unwrap();
+        let large_mine = format!("{}\nalpha\nmiddle\nomega\n", "mine".repeat(70_000));
+        let large_theirs = format!("alpha\nmiddle\nomega\n{}\n", "theirs".repeat(70_000));
+        seed_fork(
+            dir.path(),
+            "1.0.0",
+            "alpha\nmiddle\nomega\n",
+            &large_mine,
+            &large_theirs,
+        );
+
+        let preview = dispatch_with_home(
+            dir.path(),
+            "artifact.update.preview",
+            json!({ "plugin_id": plugin_id() }),
+        )
+        .unwrap();
+
+        let merge = &preview["clean_merges"][0];
+        assert_eq!(merge["path"], "plugin.json");
+        assert_eq!(merge["truncated"], true);
+        assert!(
+            merge["original_size"]
+                .as_u64()
+                .is_some_and(|size| size > super::MAX_PREVIEW_FILE_BYTES as u64)
+        );
+        assert!(
+            merge["preview"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty())
+        );
+        assert!(
+            merge["merged_content"]
+                .as_str()
+                .is_some_and(|text| text.len() <= super::MAX_PREVIEW_FILE_BYTES)
+        );
     }
 
     #[test]
