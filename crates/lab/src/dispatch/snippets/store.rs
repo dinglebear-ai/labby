@@ -844,10 +844,13 @@ mod tests {
                 .expect("builtin snippet file stem");
             let body = fs::read_to_string(&path).expect("read builtin snippet");
             // Mirror `collect_snippets`' builtin discovery rule: a markdown file
-            // without frontmatter (e.g. the directory README) is not treated as
-            // a snippet, so it is not held to the snippet contract.
-            if path.extension().and_then(|e| e.to_str()) == Some("md")
-                && frontmatter(&body).ok().flatten().is_none()
+            // with no frontmatter at all (e.g. the directory README) is not a
+            // snippet, so it is not held to the snippet contract. A file that
+            // *opens* frontmatter (`---`) but fails to parse is a broken builtin
+            // and must fail loudly — so skip only on genuine absence and let the
+            // `frontmatter(body)?` inside `validate_snippet_body` surface parse
+            // errors, rather than collapsing both cases with `.ok().flatten()`.
+            if path.extension().and_then(|e| e.to_str()) == Some("md") && !body.starts_with("---\n")
             {
                 continue;
             }
@@ -883,6 +886,51 @@ mod tests {
         let error = validate_snippet_body("demo", &body)
             .expect_err("oversized code block should be rejected");
         assert!(format!("{error}").contains("snippet code exceeds"));
+    }
+
+    #[test]
+    fn validate_snippet_body_bounds_bare_code_without_fences() {
+        // A bare snippet body (no frontmatter, no fences) is its own code, so
+        // the code bound governs the whole body directly.
+        let small = "async () => ({ ok: true })";
+        assert!(validate_snippet_body("demo", small).is_ok());
+
+        let big = format!("async () => {{\n{}\nreturn 1;\n}}", "// pad\n".repeat(4096));
+        assert!(big.len() > MAX_SNIPPET_CODE_BYTES);
+        let error = validate_snippet_body("demo", &big)
+            .expect_err("oversized bare code should be rejected");
+        assert!(format!("{error}").contains("snippet code exceeds"));
+    }
+
+    #[test]
+    fn validate_snippet_body_code_bound_is_exclusive_at_the_limit() {
+        // Pin the strict `>` comparison: code of exactly MAX_SNIPPET_CODE_BYTES
+        // passes, one byte over fails. Guards against a `>` -> `>=` drift.
+        let prefix = "async () => { return \"";
+        let suffix = "\"; }";
+        let pad = MAX_SNIPPET_CODE_BYTES - prefix.len() - suffix.len();
+        let at_limit = format!("{prefix}{}{suffix}", "x".repeat(pad));
+        assert_eq!(at_limit.len(), MAX_SNIPPET_CODE_BYTES);
+        assert!(validate_snippet_body("demo", &at_limit).is_ok());
+
+        let over_limit = format!("{prefix}{}{suffix}", "x".repeat(pad + 1));
+        assert_eq!(over_limit.len(), MAX_SNIPPET_CODE_BYTES + 1);
+        let error = validate_snippet_body("demo", &over_limit)
+            .expect_err("code one byte over the limit should be rejected");
+        assert!(format!("{error}").contains("snippet code exceeds"));
+    }
+
+    #[test]
+    fn validate_snippet_body_rejects_oversized_file() {
+        // A file larger than MAX_SNIPPET_FILE_BYTES is rejected before parsing,
+        // even though its extracted code would be tiny.
+        let prose = "x".repeat(MAX_SNIPPET_FILE_BYTES + 1);
+        let body = format!(
+            "---\nname: demo\ndescription: Demo snippet\ntags: []\n---\n\n{prose}\n\n```js\nasync () => ({{ ok: true }})\n```\n"
+        );
+        let error =
+            validate_snippet_body("demo", &body).expect_err("oversized file should be rejected");
+        assert!(format!("{error}").contains("snippet file exceeds"));
     }
 
     #[test]
