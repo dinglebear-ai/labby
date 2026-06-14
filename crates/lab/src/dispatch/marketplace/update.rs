@@ -642,6 +642,10 @@ fn source_path_for_plugin(id: &str) -> Result<PathBuf, ToolError> {
     source_paths_for_plugin(id).map(|(_, source)| source)
 }
 
+pub(super) fn source_paths_for_bridge(id: &str) -> Result<(PathBuf, PathBuf), ToolError> {
+    source_paths_for_plugin(id)
+}
+
 fn source_paths_for_plugin(id: &str) -> Result<(PathBuf, PathBuf), ToolError> {
     let (name, marketplace) = parse_plugin_id(id)?;
     let root = client::plugins_root()?;
