@@ -20,6 +20,7 @@ mod artifacts;
 pub(crate) mod catalog_cache;
 mod execute;
 mod normalize;
+mod pool;
 pub mod preamble;
 mod protocol;
 mod runner;
@@ -65,6 +66,9 @@ mod tests_ts_signatures;
 mod tests_types_legacy;
 
 pub use normalize::normalize_user_code;
+// Re-export the pool type so `GatewayManager` (a sibling of `code_mode.rs`) can
+// hold the shared, long-lived warm-runner pool in a field.
+pub(crate) use pool::RunnerPool;
 pub use runner::run_code_mode_runner_stdio;
 pub(crate) use trace::{code_mode_execute_trace, code_mode_search_trace};
 pub(crate) use types::split_upstream_tool;

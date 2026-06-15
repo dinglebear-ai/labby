@@ -42,15 +42,124 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
         });
     });
 
-    let result = run_code_mode_runner();
-    if let Err(err) = result {
-        drop(runner_emit(CodeModeRunnerOutput::Error {
-            kind: err.kind,
-            message: err.message,
-        }));
-        return ExitCode::from(1);
+    // Warm-runner pool (Perf H1): the runner process is long-lived and serves
+    // one execution per `Start` message, building a FRESH `javy::Runtime` per
+    // execution so no JS state (globals, `__labPendingToolCalls`, captured data)
+    // can leak across callers. After each execution the process parks on the
+    // next `read_line`. The parent pools these processes to amortize the fork
+    // cost. EOF on the input (parent closed stdin / dropped the handle) ends the
+    // loop with a clean exit. A genuine per-execution failure is reported as an
+    // `Error` line; the runner then continues to the next `Start` so a single bad
+    // snippet does not poison a pooled process (the parent decides whether to
+    // recycle it).
+    loop {
+        match run_code_mode_runner() {
+            Ok(RunnerLoopOutcome::Completed) => {
+                // Reset per-execution state and park for the next Start.
+                reset_runner_seq();
+            }
+            Ok(RunnerLoopOutcome::InputClosed) => {
+                // Parent closed the pipe; shut the process down cleanly.
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                drop(runner_emit(CodeModeRunnerOutput::Error {
+                    kind: err.kind,
+                    message: err.message,
+                }));
+                // Reset and continue: the per-execution javy runtime is dropped
+                // at the end of `run_code_mode_runner`, so a failed execution
+                // leaves no JS state behind. Whether to reuse or recycle this
+                // process is the parent pool's decision.
+                reset_runner_seq();
+            }
+        }
     }
-    ExitCode::SUCCESS
+}
+
+/// Why the per-execution loop body returned.
+enum RunnerLoopOutcome {
+    /// An execution ran to a `Done` and the runner is ready for the next Start.
+    Completed,
+    /// The input stream reached EOF before a Start arrived; the process should
+    /// exit cleanly (the parent dropped this pooled runner).
+    InputClosed,
+}
+
+/// Reset the per-execution sequence counter so the next pooled execution starts
+/// from `seq = 0`, matching the spawn-per-execution contract. The javy runtime
+/// (and all JS globals) is constructed fresh inside `run_code_mode_runner`, so
+/// this is the only thread-local carried across executions that needs clearing.
+fn reset_runner_seq() {
+    RUNNER_STATE.with(|state| {
+        if let Some(state) = state.borrow_mut().as_mut() {
+            state.next_seq = 0;
+        }
+    });
+}
+
+thread_local! {
+    /// Stable base directory the per-execution jails live under — the runner's
+    /// spawn cwd (the per-runner `TempDir` the parent set). Captured lazily on
+    /// the first execution so each new jail is anchored here, never nested inside
+    /// the previous execution's jail.
+    static JAIL_BASE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    /// The current per-execution jail subdir, so the next execution can remove
+    /// it before creating a fresh one. `None` until the first execution.
+    static EXECUTION_JAIL: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Create a fresh empty per-execution working directory and `chdir` into it,
+/// removing the previous execution's directory first. Best-effort: any failure
+/// leaves the process in its existing (already-isolated) cwd. See the call site
+/// for why this is defense-in-depth rather than a hard containment boundary.
+fn reset_execution_jail() {
+    // Resolve (and remember) the stable base = the spawn cwd. The first call
+    // captures it before we ever chdir into a subdir, so subsequent jails are
+    // siblings, not nested.
+    let base = JAIL_BASE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none() {
+            *cell = std::env::current_dir().ok();
+        }
+        cell.clone()
+    });
+    let Some(base) = base else {
+        return;
+    };
+
+    EXECUTION_JAIL.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        // Remove the previous execution's jail (if any) so no file state from a
+        // prior caller survives on this pooled process.
+        if let Some(previous) = cell.take() {
+            drop(std::fs::remove_dir_all(&previous));
+        }
+        let unique = format!("exec-{}-{}", std::process::id(), next_jail_seq());
+        let jail = base.join(unique);
+        if std::fs::create_dir(&jail).is_err() {
+            return;
+        }
+        if std::env::set_current_dir(&jail).is_ok() {
+            *cell = Some(jail);
+        } else {
+            // Could not enter the jail; clean it up and stay put.
+            drop(std::fs::remove_dir_all(&jail));
+        }
+    });
+}
+
+fn next_jail_seq() -> u64 {
+    thread_local! {
+        static JAIL_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    JAIL_SEQ.with(|seq| {
+        let next = seq.get();
+        seq.set(next.saturating_add(1));
+        next
+    })
 }
 
 /// Runner failure with an explicit error kind so the contract distinguishes a
@@ -146,10 +255,28 @@ pub(in crate::dispatch::gateway::code_mode) fn structured_error_message_for_test
     serde_json::json!({ "kind": kind, "message": message }).to_string()
 }
 
-fn run_code_mode_runner() -> Result<(), CodeModeRunnerError> {
-    let CodeModeRunnerInput::Start { code, proxy } = runner_read_input()? else {
+fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
+    // Read the next Start. EOF here is the normal pool-shutdown path (the parent
+    // dropped this runner), NOT an error — return InputClosed so the caller can
+    // exit cleanly without emitting a spurious `Error` line.
+    let input = match runner_read_input() {
+        Ok(input) => input,
+        Err(RunnerReadError::InputClosed) => return Ok(RunnerLoopOutcome::InputClosed),
+        Err(RunnerReadError::Other(message)) => return Err(message.into()),
+    };
+    let CodeModeRunnerInput::Start { code, proxy } = input else {
         return Err("runner expected start message".to_string().into());
     };
+
+    // Per-execution cwd jail (Perf H1 isolation): a pooled runner is long-lived,
+    // so its process cwd must not accumulate state across executions. Create a
+    // fresh empty subdir under the runner's spawn cwd and chdir into it, after
+    // removing the previous execution's subdir. The JS sandbox exposes no fs
+    // APIs, so this is defense-in-depth — it guarantees that even a future
+    // host-side artifact path bug cannot let one execution observe a prior one's
+    // working-directory contents on the same pooled process. Failure is
+    // non-fatal: the spawn cwd is already an isolated TempDir.
+    reset_execution_jail();
 
     let mut config = javy::Config::default();
     config
@@ -210,7 +337,9 @@ fn run_code_mode_runner() -> Result<(), CodeModeRunnerError> {
                 return Err(classify_rejection(message));
             }
             JavyMainPromiseState::Pending => {
-                let input = runner_read_input()?;
+                // Mid-execution EOF means the parent died while a tool call was
+                // in flight — a genuine fault, not the clean pool-shutdown path.
+                let input = runner_read_input().map_err(RunnerReadError::into_runner_error)?;
                 javy_settle_tool_promise(&runtime, &input)?;
             }
         }
@@ -220,7 +349,8 @@ fn run_code_mode_runner() -> Result<(), CodeModeRunnerError> {
         result: CodeModeRunnerResult::from_response_result(resolved_result),
         logs: Vec::new(),
     })
-    .map_err(CodeModeRunnerError::from)
+    .map_err(CodeModeRunnerError::from)?;
+    Ok(RunnerLoopOutcome::Completed)
 }
 
 fn wrap_code_mode(code: &str, proxy: &str) -> String {
@@ -515,20 +645,42 @@ fn runner_emit(output: CodeModeRunnerOutput) -> Result<(), String> {
     })
 }
 
-fn runner_read_input() -> Result<CodeModeRunnerInput, String> {
+/// Distinguishes a clean end-of-input (EOF on stdin — the parent dropped this
+/// pooled runner) from any other read failure. The pool loop treats `InputClosed`
+/// as a normal shutdown signal and exits cleanly without emitting an `Error` line.
+enum RunnerReadError {
+    /// EOF: the parent closed/dropped the input stream.
+    InputClosed,
+    /// Any other failure (I/O error, malformed protocol JSON, uninitialized state).
+    Other(String),
+}
+
+impl RunnerReadError {
+    /// Collapse to a `CodeModeRunnerError` for mid-execution reads, where an EOF
+    /// is a genuine fault (the parent died while a tool call was in flight)
+    /// rather than the clean pool-shutdown path.
+    fn into_runner_error(self) -> CodeModeRunnerError {
+        match self {
+            Self::InputClosed => "runner input closed".to_string().into(),
+            Self::Other(message) => message.into(),
+        }
+    }
+}
+
+fn runner_read_input() -> Result<CodeModeRunnerInput, RunnerReadError> {
     RUNNER_STATE.with(|state| {
         let mut state = state.borrow_mut();
         let state = state
             .as_mut()
-            .ok_or_else(|| "runner state is not initialized".to_string())?;
+            .ok_or_else(|| RunnerReadError::Other("runner state is not initialized".to_string()))?;
         let mut line = String::new();
         let read = state
             .reader
             .read_line(&mut line)
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| RunnerReadError::Other(err.to_string()))?;
         if read == 0 {
-            return Err("runner input closed".to_string());
+            return Err(RunnerReadError::InputClosed);
         }
-        serde_json::from_str(&line).map_err(|err| err.to_string())
+        serde_json::from_str(&line).map_err(|err| RunnerReadError::Other(err.to_string()))
     })
 }

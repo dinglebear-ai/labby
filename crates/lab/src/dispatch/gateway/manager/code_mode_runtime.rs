@@ -37,6 +37,17 @@ impl GatewayManager {
         self.config.read().await.code_mode.clone()
     }
 
+    /// Shared, long-lived Code Mode warm-runner pool (Perf H1).
+    ///
+    /// The broker checks out a runner from this pool per execution. The pool is
+    /// `Arc`-shared across every `Clone` of the manager so a single set of
+    /// long-lived runner processes serves all surfaces.
+    pub(crate) fn code_mode_runner_pool(
+        &self,
+    ) -> &Arc<crate::dispatch::gateway::code_mode::RunnerPool> {
+        &self.code_mode_runner_pool
+    }
+
     pub async fn record_code_mode_history(&self, entry: CodeModeHistoryEntry) {
         self.code_mode_history.lock().await.push(entry);
     }

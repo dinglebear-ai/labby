@@ -9,25 +9,23 @@
 //! select loop readable.
 
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
 
 use futures::{StreamExt, stream::FuturesUnordered};
 use serde_json::{Value, json};
-use tempfile::TempDir;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::BufReader as TokioBufReader;
-use tokio::process::{ChildStdin, Command};
-use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio::process::ChildStdin;
 use ulid::Ulid;
 
 use crate::dispatch::error::ToolError;
 
 use super::CodeModeBroker;
+use super::GatewayManager;
 use super::artifacts::{
     ActiveArtifactRun, CodeModeArtifactReceipt, CodeModeArtifactWrite, code_mode_artifact_root,
     write_code_mode_artifact,
 };
+use super::pool::RunnerPool;
+use super::pool::runner_handle::PooledRunner;
 use super::protocol::{CodeModeRunnerInput, CodeModeRunnerOutput};
 use super::runner_io::{terminate_code_mode_runner, write_runner_input};
 use super::truncate::apply_log_caps;
@@ -153,113 +151,95 @@ impl CodeModeBroker<'_> {
             sdk_kind: "internal_error".to_string(),
             message: format!("failed to locate current executable for Code Mode runner: {err}"),
         })?;
-        let temp_dir = TempDir::new().map_err(|err| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("failed to create Code Mode sandbox directory: {err}"),
-        })?;
-        let mut cmd = Command::new(exe);
-        cmd.args(["internal", "code-mode-runner"])
-            .current_dir(temp_dir.path())
-            .env_clear()
-            .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // Make the child its own process group leader (pgid = pid) so that
-        // killpg can reach grandchildren (e.g. any processes spawned by the
-        // Boa/Javy runtime) and not just the immediate child.
-        // process_group is Unix-only; on Windows we attach a Job Object below.
-        #[cfg(unix)]
-        cmd.process_group(0);
-        let mut child = cmd.spawn().map_err(|err| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("failed to spawn Code Mode runner: {err}"),
-        })?;
-        // Capture pid immediately after spawn; it becomes None once the child
-        // has been waited on, so we save it before any await points.
-        // On Unix it is used for killpg; on Windows it is used to attach a
-        // Job Object (see below).
-        let child_pid = child.id();
 
-        // Windows: attach the runner child to a Job Object with
-        // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so the OS terminates the entire
-        // descendant tree (runner + any children it may spawn) when the guard
-        // is dropped — covering all exit paths: normal completion, timeout,
-        // protocol error, and early return from a `?`. On Unix, process_group(0)
-        // + killpg in terminate_code_mode_runner covers the same role.
-        //
-        // The guard is a plain local variable; its Drop fires at the end of
-        // this function on every path, which is intentional: the runner child
-        // is always re-spawned per execution request, so there is no value in
-        // keeping the job alive past the function boundary.
-        #[cfg(windows)]
-        let _runner_job_guard =
-            child_pid.map(crate::dispatch::upstream::process_guard::JobObjectGuard::arm);
+        // Acquire a runner. With a gateway manager, use the shared warm pool
+        // (Perf H1): a pooled runner amortizes the fork/startup cost across
+        // executions while still building a fresh `javy::Runtime` per `Start`
+        // (runner-side), so JS state isolation holds. Without a manager (some
+        // tests / standalone paths), spawn a one-shot runner directly.
+        match self
+            .gateway_manager
+            .map(GatewayManager::code_mode_runner_pool)
+        {
+            Some(pool) => self.run_via_pool(pool, &exe, cfg).await,
+            None => self.run_standalone(&exe, cfg).await,
+        }
+    }
 
-        let mut stdin = child.stdin.take().ok_or_else(|| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: "Code Mode runner stdin was not available".to_string(),
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: "Code Mode runner stdout was not available".to_string(),
-        })?;
+    /// Run one execution against a runner checked out from the shared pool.
+    ///
+    /// On a clean completion (`Done`) or a runner-reported execution `Error`,
+    /// the runner is parked and returned to the pool — it stayed alive and built
+    /// a fresh runtime, so it is safe to reuse. On a crash (EOF/exit), timeout,
+    /// or protocol fault the runner is evicted (killed) and the slot respawns on
+    /// the next checkout.
+    async fn run_via_pool(
+        &self,
+        pool: &RunnerPool,
+        exe: &Path,
+        cfg: RunnerConfig,
+    ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
+        let mut lease = pool.checkout(exe).await?;
+        let outcome = self.drive_runner(lease.runner_mut(), &cfg).await;
+        match outcome {
+            DriveOutcome::Completed(response) => {
+                lease.release().await;
+                Ok(response)
+            }
+            DriveOutcome::ExecutionError(err) => {
+                // The runner parked after emitting its `Error` line and is
+                // healthy (fresh runtime dropped); reuse it.
+                lease.release().await;
+                Err(err)
+            }
+            DriveOutcome::RunnerUnhealthy(err) => {
+                // Crash / timeout / protocol fault: discard the runner so the
+                // pool respawns a clean replacement.
+                lease.evict();
+                Err(err)
+            }
+        }
+    }
 
-        // Drain stderr continuously in a background task to prevent pipe-buffer
-        // deadlock when the runner emits more than ~64KB of console output. The
-        // javy runner redirects console output to stderr, so this is where the
-        // captured logs come from.
-        let (stderr_lines, stderr_task) = {
-            let stderr = child.stderr.take().ok_or_else(|| ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: "Code Mode runner stderr was not available".to_string(),
-            })?;
-            let stderr_buf = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
-            let stderr_buf_clone = stderr_buf.clone();
-            let task = tokio::spawn(async move {
-                // Mirror the runner-side hard caps so the parent buffer can't
-                // grow unbounded when the wasm feature swaps the runner backend.
-                const CAP_ENTRIES: usize = 10_000;
-                const CAP_BYTES: usize = 1024 * 1024;
-                let mut lines = TokioBufReader::new(stderr).lines();
-                let mut total_bytes = 0usize;
-                let mut capped = false;
-                // Keep draining the pipe to EOF even after the cap is reached:
-                // stopping the read would let the child's stderr pipe fill and
-                // block the child on write (hang on large log output). Once
-                // capped, discard further lines instead of appending.
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if capped {
-                        continue;
-                    }
-                    total_bytes += line.len() + 1;
-                    let mut buf = stderr_buf_clone.lock().await;
-                    if buf.len() >= CAP_ENTRIES || total_bytes > CAP_BYTES {
-                        capped = true;
-                        continue;
-                    }
-                    buf.push(line);
-                }
-            });
-            (stderr_buf, task)
-        };
+    /// Run one execution against a freshly-spawned one-shot runner (no pool).
+    async fn run_standalone(
+        &self,
+        exe: &Path,
+        cfg: RunnerConfig,
+    ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
+        let mut runner = PooledRunner::spawn(exe)?;
+        let outcome = self.drive_runner(&mut runner, &cfg).await;
+        // The runner handle's Drop kills the process on every path here, so a
+        // standalone runner is never leaked or reused.
+        match outcome {
+            DriveOutcome::Completed(response) => Ok(response),
+            DriveOutcome::ExecutionError(err) | DriveOutcome::RunnerUnhealthy(err) => Err(err),
+        }
+    }
 
-        write_runner_input(
-            &mut stdin,
+    /// Drive the Start → tool-call/artifact → Done/Error protocol loop against a
+    /// single runner. Returns a [`DriveOutcome`] classifying both the result and
+    /// whether the runner is safe to reuse.
+    async fn drive_runner(&self, runner: &mut PooledRunner, cfg: &RunnerConfig) -> DriveOutcome {
+        // Record the stderr buffer position before this execution so we capture
+        // only the lines this run produces (a pooled runner's buffer carries
+        // prior executions' lines).
+        let stderr = runner.stderr.clone();
+        let stderr_start = stderr.mark().await;
+
+        if let Err(err) = write_runner_input(
+            &mut runner.stdin,
             &CodeModeRunnerInput::Start {
                 code: cfg.code_to_run.clone(),
                 proxy: cfg.proxy.clone(),
             },
         )
-        .await?;
+        .await
+        {
+            // Failed to even send Start — the runner is suspect; evict it.
+            return DriveOutcome::RunnerUnhealthy(err.into());
+        }
 
-        // The QuickJS runner is bounded to 64 MiB of heap, but a single
-        // protocol line (e.g. a large JSON result) could still reach that
-        // bound. Apply an explicit per-line cap: 64 MiB + framing headroom.
-        // Lines longer than this are a protocol violation; return a structured
-        // error rather than buffering an unbounded amount into a single String.
-        const MAX_LINE_BYTES: usize = 64 * 1024 * 1024 + 4 * 1024; // 64 MiB + 4 KiB
-        let mut lines = FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_LINE_BYTES));
         let deadline = tokio::time::Instant::now() + cfg.timeout;
         let artifact_run_id = Ulid::new().to_string();
         let mut state = DriveState::new(&artifact_run_id);
@@ -273,82 +253,91 @@ impl CodeModeBroker<'_> {
         // futures to capture `self` (a non-'static reference) without error.
         let mut pending_tool_calls: FuturesUnordered<ToolCallFut<'_>> = FuturesUnordered::new();
 
+        // Borrow the runner's components for the loop. The protocol loop owns
+        // these references for its duration; the runner is parked afterwards.
+        let child = &mut runner.child;
+        let child_pid = runner.child_pid;
+        let stdin = &mut runner.stdin;
+        let lines = &mut runner.lines;
+
         loop {
             tokio::select! {
                 line = tokio::time::timeout_at(deadline, lines.next()) => {
                     let line = match line {
                         Ok(line) => line,
                         Err(_) => {
-                            terminate_code_mode_runner(&mut child, child_pid).await;
-                            return Err(code_mode_timeout_error(&state.calls));
+                            // Wall-clock expiry: kill the runner (do not reuse a
+                            // runtime mid-execution) so the pool respawns it.
+                            terminate_code_mode_runner(child, child_pid).await;
+                            return DriveOutcome::RunnerUnhealthy(
+                                code_mode_timeout_error(&state.calls),
+                            );
                         }
                     };
                     // `FramedRead::next()` yields `Option<Result<String, LinesCodecError>>`.
-                    // `None` = EOF (runner exited); `Some(Err(_))` = I/O or line-too-long.
+                    // `None` = EOF (runner crashed/exited); `Some(Err(_))` = I/O or line-too-long.
                     let Some(line_result) = line else {
-                        let status = child.wait().await.map_err(|err| ToolError::Sdk {
-                            sdk_kind: "internal_error".to_string(),
-                            message: format!("failed to wait for Code Mode runner: {err}"),
-                        })?;
-                        return Err(CodeModeExecutionError::with_trace(
-                            ToolError::Sdk {
-                                sdk_kind: "server_error".to_string(),
-                                message: format!(
-                                    "Code Mode runner exited before completion with status {status}"
-                                ),
-                            },
-                            sorted_calls(&state.calls),
-                        ));
+                        // EOF: the runner process died unexpectedly. Surface a
+                        // clean error and evict so a replacement spawns.
+                        drop(child.wait().await);
+                        return DriveOutcome::RunnerUnhealthy(
+                            CodeModeExecutionError::with_trace(
+                                ToolError::Sdk {
+                                    sdk_kind: "server_error".to_string(),
+                                    message:
+                                        "Code Mode runner exited before completion".to_string(),
+                                },
+                                sorted_calls(&state.calls),
+                            ),
+                        );
                     };
-                    let line = line_result.map_err(|err| {
-                        // `LinesCodecError::MaxLineLengthExceeded` means the runner
-                        // emitted a line larger than MAX_LINE_BYTES — a protocol
-                        // violation. Surface it as a structured error so callers can
-                        // distinguish it from a plain I/O failure.
-                        use tokio_util::codec::LinesCodecError;
-                        let (sdk_kind, message) = match &err {
-                            LinesCodecError::MaxLineLengthExceeded => (
-                                "internal_error",
-                                format!(
-                                    "Code Mode runner emitted a protocol line exceeding the \
-                                     {MAX_LINE_BYTES}-byte safety cap; possible unbounded output"
-                                ),
-                            ),
-                            LinesCodecError::Io(io_err) => (
-                                "internal_error",
-                                format!("failed to read Code Mode runner output: {io_err}"),
-                            ),
-                        };
-                        ToolError::Sdk {
-                            sdk_kind: sdk_kind.to_string(),
-                            message,
+                    let line = match classify_line_result(line_result) {
+                        Ok(line) => line,
+                        Err(err) => {
+                            terminate_code_mode_runner(child, child_pid).await;
+                            return DriveOutcome::RunnerUnhealthy(
+                                CodeModeExecutionError::with_trace(err, sorted_calls(&state.calls)),
+                            );
                         }
-                    })?;
+                    };
 
-                    let msg = serde_json::from_str::<CodeModeRunnerOutput>(&line).map_err(|err| {
-                        ToolError::Sdk {
-                            sdk_kind: "internal_error".to_string(),
-                            message: format!(
-                                "Code Mode runner emitted invalid protocol JSON: {err}"
-                            ),
+                    let msg = match serde_json::from_str::<CodeModeRunnerOutput>(&line) {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            terminate_code_mode_runner(child, child_pid).await;
+                            return DriveOutcome::RunnerUnhealthy(
+                                CodeModeExecutionError::with_trace(
+                                    ToolError::Sdk {
+                                        sdk_kind: "internal_error".to_string(),
+                                        message: format!(
+                                            "Code Mode runner emitted invalid protocol JSON: {err}"
+                                        ),
+                                    },
+                                    sorted_calls(&state.calls),
+                                ),
+                            );
                         }
-                    })?;
+                    };
 
                     match msg {
                         CodeModeRunnerOutput::ToolCall { seq, id, params } => {
-                            enqueue_tool_call(
+                            if let Err(err) = enqueue_tool_call(
                                 self,
                                 seq,
                                 id,
                                 params,
-                                &mut child,
+                                child,
                                 child_pid,
                                 deadline,
-                                &cfg,
+                                cfg,
                                 &mut state,
                                 &mut pending_tool_calls,
                             )
-                            .await?;
+                            .await
+                            {
+                                // The limit gate already terminated the runner.
+                                return DriveOutcome::RunnerUnhealthy(err);
+                            }
                         }
                         CodeModeRunnerOutput::ArtifactWrite {
                             seq,
@@ -356,45 +345,48 @@ impl CodeModeBroker<'_> {
                             content,
                             content_type,
                         } => {
-                            handle_artifact_write_event(
+                            if let Err(err) = handle_artifact_write_event(
                                 seq,
                                 path,
                                 content,
                                 content_type,
-                                &mut stdin,
-                                &mut child,
+                                stdin,
+                                child,
                                 child_pid,
                                 deadline,
-                                &cfg,
+                                cfg,
                                 &mut state,
                             )
-                            .await?;
+                            .await
+                            {
+                                return DriveOutcome::RunnerUnhealthy(err);
+                            }
                         }
                         CodeModeRunnerOutput::Done { result, logs } => {
                             // Preserve original invariant: Done with in-flight
-                            // tool calls is a protocol error.
+                            // tool calls is a protocol error → evict.
                             if !pending_tool_calls.is_empty() {
-                                terminate_code_mode_runner(&mut child, child_pid).await;
-                                return Err(CodeModeExecutionError::with_trace(
-                                    ToolError::Sdk {
-                                        sdk_kind: "internal_error".to_string(),
-                                        message: "Code Mode runner completed with pending tool calls"
-                                            .to_string(),
-                                    },
-                                    sorted_calls(&state.calls),
-                                ));
+                                terminate_code_mode_runner(child, child_pid).await;
+                                return DriveOutcome::RunnerUnhealthy(
+                                    CodeModeExecutionError::with_trace(
+                                        ToolError::Sdk {
+                                            sdk_kind: "internal_error".to_string(),
+                                            message:
+                                                "Code Mode runner completed with pending tool calls"
+                                                    .to_string(),
+                                        },
+                                        sorted_calls(&state.calls),
+                                    ),
+                                );
                             }
-                            let response =
-                                finalize_done(result, logs, &mut child, &state).await?;
-                            // The child has exited (child.wait() in finalize_done),
-                            // so stderr is closed and the drain task will reach EOF.
-                            let _joined = stderr_task.await;
-                            // Merge stderr lines with protocol-carried logs.
+                            let response = finalize_done(result, logs, &state);
+                            // Capture only this execution's stderr lines. The
+                            // runner is parked (it loops), so do not wait on it;
+                            // give the drain a brief window to flush console
+                            // output emitted before Done.
+                            stderr.flush_settle().await;
                             let mut all_logs = response.logs.clone();
-                            {
-                                let stderr_captured = stderr_lines.lock().await;
-                                all_logs.extend(stderr_captured.iter().cloned());
-                            }
+                            all_logs.extend(stderr.since(stderr_start).await);
                             let all_logs = apply_log_caps(
                                 all_logs,
                                 cfg.max_log_entries,
@@ -408,30 +400,83 @@ impl CodeModeBroker<'_> {
                                     )
                                 })
                                 .collect();
-                            return Ok(CodeModeExecutionResponse {
+                            return DriveOutcome::Completed(CodeModeExecutionResponse {
                                 logs: sanitized_logs,
                                 ..response
                             });
                         }
                         CodeModeRunnerOutput::Error { kind, message } => {
-                            return handle_runner_error(
-                                kind,
-                                message,
-                                &mut child,
-                                &state.calls,
-                            )
-                            .await;
+                            // A per-execution error. The runner reset and parked
+                            // (it does NOT exit), so it is safe to reuse — return
+                            // ExecutionError so the pool releases rather than
+                            // evicts.
+                            return DriveOutcome::ExecutionError(
+                                CodeModeExecutionError::with_trace(
+                                    ToolError::Sdk {
+                                        sdk_kind: kind,
+                                        message,
+                                    },
+                                    sorted_calls(&state.calls),
+                                ),
+                            );
                         }
                     }
                 }
                 completed = pending_tool_calls.next(),
                     if !pending_tool_calls.is_empty() =>
                 {
-                    handle_completed_tool_call(completed, &mut stdin, &mut state).await?;
+                    if let Err(err) =
+                        handle_completed_tool_call(completed, stdin, &mut state).await
+                    {
+                        // Failed to relay a tool result back to the runner — the
+                        // pipe is suspect; evict.
+                        return DriveOutcome::RunnerUnhealthy(err);
+                    }
                 }
             }
         }
     }
+}
+
+/// Classification of a single drive: the result plus whether the runner is safe
+/// to return to the pool.
+enum DriveOutcome {
+    /// Clean `Done` — return the response and keep (park) the runner.
+    Completed(CodeModeExecutionResponse),
+    /// The runner reported a per-execution `Error` and then parked itself; the
+    /// process is healthy and may be reused.
+    ExecutionError(CodeModeExecutionError),
+    /// The runner crashed, timed out, or violated the protocol; it must be
+    /// killed and replaced.
+    RunnerUnhealthy(CodeModeExecutionError),
+}
+
+/// Decode a framed-line read result into either the line text or a structured
+/// I/O / protocol-violation error.
+fn classify_line_result(
+    line_result: Result<String, tokio_util::codec::LinesCodecError>,
+) -> Result<String, ToolError> {
+    line_result.map_err(|err| {
+        use tokio_util::codec::LinesCodecError;
+        let max = super::pool::runner_handle::MAX_LINE_BYTES;
+        let (sdk_kind, message) = match &err {
+            LinesCodecError::MaxLineLengthExceeded => (
+                "internal_error",
+                format!(
+                    "Code Mode runner emitted a protocol line exceeding the \
+                     {max}-byte safety cap; possible unbounded output"
+                ),
+            ),
+            LinesCodecError::Io(io_err) => (
+                "internal_error",
+                format!("failed to read Code Mode runner output: {io_err}"),
+            ),
+        };
+        ToolError::Sdk {
+            sdk_kind: sdk_kind.to_string(),
+            message,
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -552,69 +597,30 @@ async fn handle_artifact_write_event(
     }
 }
 
-/// Handle the `Done` protocol message. Waits for the child to exit and
-/// returns a partially-assembled `CodeModeExecutionResponse` (logs are
-/// merged by the caller after the stderr drain task joins).
+/// Assemble the `Done` response. The runner is long-lived (it loops after Done),
+/// so this does NOT wait on the child — the process parks for the next `Start`.
+/// Logs are merged by the caller from the per-execution stderr slice.
 ///
 /// Cloudflare parity: pure computation (filter, sort, reduce over
 /// already-known data) is a valid Code Mode use case. Do not require at
 /// least one callTool.
-async fn finalize_done(
+fn finalize_done(
     result: super::protocol::CodeModeRunnerResult,
     logs: Vec<String>,
-    child: &mut tokio::process::Child,
     state: &DriveState,
-) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
-    let status = child.wait().await.map_err(|err| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("failed to wait for Code Mode runner: {err}"),
-    })?;
-    if !status.success() {
-        return Err(CodeModeExecutionError::with_trace(
-            ToolError::Sdk {
-                sdk_kind: "server_error".to_string(),
-                message: format!("Code Mode runner exited with status {status}"),
-            },
-            sorted_calls(&state.calls),
-        ));
-    }
+) -> CodeModeExecutionResponse {
     let mut sorted = state.calls.clone();
     sorted.sort_by_key(|(seq, _)| *seq);
-    Ok(CodeModeExecutionResponse {
+    CodeModeExecutionResponse {
         result: result.into_response_result(),
         // Widget capture and optional `__ui` unwrapping are applied later in
         // `execute()`; the runner-level response always starts with `ui: None`.
         ui: None,
         calls: sorted.into_iter().map(|(_, call)| call).collect(),
-        // Caller merges stderr drain into logs after await-ing the task.
+        // Caller merges the per-execution stderr slice into logs.
         logs,
         artifacts: state.artifacts.clone(),
-    })
-}
-
-/// Handle a runner `Error` protocol message.
-async fn handle_runner_error(
-    kind: String,
-    message: String,
-    child: &mut tokio::process::Child,
-    calls: &[(u64, CodeModeExecutedCall)],
-) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
-    if let Ok(status) = child.wait().await {
-        tracing::debug!(
-            surface = "dispatch",
-            service = "code_mode",
-            action = "code_execute",
-            exit_status = %status,
-            "runner exited with error"
-        );
     }
-    Err(CodeModeExecutionError::with_trace(
-        ToolError::Sdk {
-            sdk_kind: kind,
-            message,
-        },
-        sorted_calls(calls),
-    ))
 }
 
 /// Handle a completed tool-call future from `pending_tool_calls`.
@@ -815,4 +821,51 @@ fn artifact_call(
             error_kind,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::ToolRegistry;
+
+    fn test_config(timeout: Duration) -> RunnerConfig {
+        RunnerConfig {
+            code_to_run: "async () => 1".to_string(),
+            proxy: String::new(),
+            max_tool_calls: 1,
+            timeout,
+            caller: CodeModeCaller::TrustedLocal,
+            surface: CodeModeSurface::Cli,
+            max_log_entries: 100,
+            max_log_bytes: 4096,
+            trace_params: false,
+            capability_filter: CodeModeCapabilityFilter::default(),
+        }
+    }
+
+    /// The wall-clock deadline path: a runner that never replies is killed when
+    /// the deadline fires, the run surfaces the stable `timeout` kind, and the
+    /// runner is classified `RunnerUnhealthy` so the pool evicts (never reuses) a
+    /// runtime interrupted mid-execution.
+    #[tokio::test]
+    async fn drive_runner_times_out_and_marks_runner_unhealthy() {
+        let registry = ToolRegistry::new();
+        let broker = CodeModeBroker::new(&registry, None);
+        let mut runner = PooledRunner::spawn_stub_silent().expect("spawn silent stub");
+        let outcome = broker
+            .drive_runner(&mut runner, &test_config(Duration::from_millis(80)))
+            .await;
+        match outcome {
+            DriveOutcome::RunnerUnhealthy(err) => {
+                assert_eq!(
+                    err.kind(),
+                    "timeout",
+                    "wall-clock expiry must surface the `timeout` kind"
+                );
+            }
+            DriveOutcome::Completed(_) | DriveOutcome::ExecutionError(_) => {
+                panic!("a never-replying runner must time out as RunnerUnhealthy")
+            }
+        }
+    }
 }

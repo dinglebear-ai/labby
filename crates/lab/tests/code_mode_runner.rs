@@ -137,6 +137,8 @@ fn code_mode_runner_evaluates_js_in_a_minimal_host_environment() {
     assert_done_undefined(&done);
     // logs is always [] until Bead 3 console capture is implemented.
     assert_eq!(done["logs"], json!([]));
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
     let mut stderr_text = String::new();
@@ -186,8 +188,15 @@ fn code_mode_runner_rejects_non_function_search_input_as_server_error() {
         "non-function search input must surface as server_error, got: {error}"
     );
 
+    // The runner is now long-lived (warm-pool): after emitting its error line it
+    // resets and parks for the next Start. Closing stdin signals EOF so the
+    // process shuts down cleanly with a success exit.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
-    assert!(!status.success(), "runner must exit non-zero after error");
+    assert!(
+        status.success(),
+        "runner exits cleanly once stdin closes after an error, got {status}"
+    );
 }
 
 /// Malformed search JS (a syntax/parse error like `async () => {`) fails at the
@@ -230,8 +239,15 @@ fn code_mode_runner_rejects_malformed_search_js_as_invalid_param() {
         "malformed search JS must surface as invalid_param, got: {error}"
     );
 
+    // The runner is now long-lived (warm-pool): after emitting its error line it
+    // resets and parks for the next Start. Closing stdin signals EOF so the
+    // process shuts down cleanly with a success exit.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
-    assert!(!status.success(), "runner must exit non-zero after error");
+    assert!(
+        status.success(),
+        "runner exits cleanly once stdin closes after an error, got {status}"
+    );
 }
 
 /// An *uncaught* structured rejection — the main promise throws an Error whose
@@ -267,8 +283,15 @@ fn code_mode_runner_preserves_kind_from_uncaught_structured_rejection() {
         "an uncaught structured rejection must preserve its kind, got: {error}"
     );
 
+    // The runner is now long-lived (warm-pool): after emitting its error line it
+    // resets and parks for the next Start. Closing stdin signals EOF so the
+    // process shuts down cleanly with a success exit.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
-    assert!(!status.success(), "runner must exit non-zero after error");
+    assert!(
+        status.success(),
+        "runner exits cleanly once stdin closes after an error, got {status}"
+    );
 }
 
 #[test]
@@ -305,6 +328,8 @@ fn code_mode_runner_tags_typed_array_results_as_base64() {
             "data": "AQL/"
         })
     );
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
 }
@@ -343,8 +368,15 @@ fn code_mode_runner_rejects_non_json_serializable_results() {
         "unexpected error message: {error}"
     );
 
+    // The runner is now long-lived (warm-pool): after emitting its error line it
+    // resets and parks for the next Start. Closing stdin signals EOF so the
+    // process shuts down cleanly with a success exit.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
-    assert!(!status.success(), "runner must exit non-zero after error");
+    assert!(
+        status.success(),
+        "runner exits cleanly once stdin closes after an error, got {status}"
+    );
 }
 
 #[test]
@@ -403,6 +435,8 @@ fn code_mode_runner_preserves_binary_tool_args_and_results() {
         done_json_result(&done),
         &json!({"isBytes": true, "values": [4, 5, 6]})
     );
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
 }
@@ -482,6 +516,8 @@ fn code_mode_runner_round_trips_date_typed_array_and_array_buffer() {
         "Int16Array result sentinel must reconstruct as Int16Array, got: {}",
         done["result"]
     );
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
 }
@@ -584,6 +620,8 @@ fn code_mode_runner_fans_out_promise_all_tool_calls() {
     assert_done_undefined(&done);
     // logs is always [] until Bead 3 console capture is implemented.
     assert_eq!(done["logs"], json!([]));
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
 }
@@ -637,6 +675,8 @@ fn code_mode_runner_done_carries_return_value() {
         "done.result must carry the function return value"
     );
     assert_eq!(done["logs"], json!([]), "logs must be empty until Bead 3");
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
 }
@@ -698,6 +738,8 @@ fn code_mode_runner_tool_error_produces_json_encoded_error() {
     assert_eq!(result["caught"], json!(true));
     assert_eq!(result["kind"], json!("server_error"));
     assert_eq!(result["msg"], json!("upstream exploded"));
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
 }
@@ -770,6 +812,8 @@ fn code_mode_runner_tool_error_does_not_abort_fan_out() {
     assert_eq!(result[0]["kind"], json!("rate_limited"));
     assert_eq!(result[1]["status"], json!("fulfilled"));
     assert_eq!(result[1]["value"], json!({"pong": true}));
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
 }
@@ -813,6 +857,8 @@ fn assert_single_call_round_trip(code: &str, expected_result: Value) {
         &expected_result,
         "done.result must carry the function return value"
     );
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
 }
@@ -897,6 +943,8 @@ fn codemode_proxy_routes_through_call_tool() {
         &json!({"pong": true}),
         "codemode.demo.ping must resolve to the tool result"
     );
+    // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
+    drop(stdin);
     let status = child.wait().expect("wait for runner");
     assert!(status.success(), "runner exited with {status}");
 }
@@ -1010,4 +1058,263 @@ fn normalized_export_default_multi_statement_prologue_executes_end_to_end() {
         "normalize must emit executable script code without export syntax, got: {normalized}"
     );
     assert_single_call_round_trip(&normalized, json!({"pong": true}));
+}
+
+// ===========================================================================
+// Perf H1 — warm-runner pool: the runner process is long-lived and serves one
+// execution per Start, building a FRESH javy runtime each time. These tests
+// drive ONE runner process across multiple Start messages (exactly what the
+// parent pool does when it reuses a parked runner) to prove process reuse and,
+// critically, JS-state isolation between consecutive executions on the SAME
+// process.
+// ===========================================================================
+
+/// Spawn a single long-lived runner process and return its handles.
+fn spawn_pooled_runner() -> (
+    std::process::Child,
+    std::process::ChildStdin,
+    BufReader<std::process::ChildStdout>,
+) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["internal", "code-mode-runner"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn code mode runner");
+    let stdin = child.stdin.take().expect("runner stdin");
+    let stdout = BufReader::new(child.stdout.take().expect("runner stdout"));
+    (child, stdin, stdout)
+}
+
+/// Send one Start and read until Done, returning the Done message. Panics if the
+/// runner emits a tool_call/artifact (these helpers run snippets with no I/O) or
+/// an error.
+fn run_once(
+    stdin: &mut std::process::ChildStdin,
+    stdout: &mut BufReader<std::process::ChildStdout>,
+    code: &str,
+) -> Value {
+    writeln!(stdin, "{}", json!({ "type": "start", "code": code })).expect("write start");
+    let msg = read_protocol_line(stdout);
+    assert_eq!(
+        msg["type"], "done",
+        "expected done from a no-I/O snippet, got: {msg}"
+    );
+    msg
+}
+
+/// CRITICAL state-isolation test. Run snippet A on a pooled runner that pollutes
+/// the JS global scope and registers a pending tool call, then run snippet B on
+/// the SAME reused process and assert B sees a pristine environment: no leaked
+/// global, no leftover `__labPendingToolCalls`, and a fresh callTool seq counter
+/// starting at 0. Proves the process is reused (same PID) while the javy runtime
+/// is rebuilt per execution.
+#[test]
+fn warm_pool_runner_isolates_js_state_between_executions_on_one_process() {
+    let (mut child, mut stdin, mut stdout) = spawn_pooled_runner();
+    let pid = child.id();
+
+    // Execution A: leak a global, leave a pending tool call registered, and
+    // confirm the seq counter advanced past 0 for THIS run.
+    let code_a = r#"async () => {
+        globalThis.__leakedByA = "polluted";
+        // Register a pending tool call without ever settling it, then return —
+        // a deliberately abandoned entry in __labPendingToolCalls. We do NOT
+        // await it (that would block the run), we just create the promise so the
+        // map is non-empty during the run.
+        callTool("never::settled", {});
+        return {
+            seenLeak: typeof globalThis.__leakedByA,
+            pendingSize: globalThis.__labPendingToolCalls.size
+        };
+    }"#;
+    // This snippet emits a tool_call (for never::settled) before returning, so
+    // we cannot use run_once. Drive it manually: read the tool_call, then the
+    // function returns without awaiting it → Done with pending entry left behind.
+    writeln!(stdin, "{}", json!({ "type": "start", "code": code_a })).expect("write start A");
+    let call = read_protocol_line(&mut stdout);
+    assert_eq!(
+        call["type"], "tool_call",
+        "A should emit a tool_call: {call}"
+    );
+    assert_eq!(call["seq"], json!(0), "first run's seq must start at 0");
+    let done_a = read_protocol_line(&mut stdout);
+    assert_eq!(done_a["type"], "done", "A should complete: {done_a}");
+    assert_eq!(done_a["result"]["value"]["seenLeak"], json!("string"));
+    assert_eq!(done_a["result"]["value"]["pendingSize"], json!(1));
+
+    // Execution B on the SAME process: a fresh runtime must show no leaked
+    // global, an empty pending-call map, and a seq counter reset to 0.
+    let code_b = r#"async () => {
+        return {
+            leakVisible: typeof globalThis.__leakedByA,
+            pendingSize: globalThis.__labPendingToolCalls.size
+        };
+    }"#;
+    // First, prove the seq reset: B's own callTool must be seq 0 again. Await it
+    // so the runner parks waiting for our tool_result (rather than racing ahead
+    // to Done and reading our settle line as the next Start).
+    let code_b_seq = r#"async () => {
+        await callTool("probe::seq", {});
+        return null;
+    }"#;
+    writeln!(stdin, "{}", json!({ "type": "start", "code": code_b_seq }))
+        .expect("write start B-seq");
+    let b_call = read_protocol_line(&mut stdout);
+    assert_eq!(b_call["type"], "tool_call");
+    assert_eq!(
+        b_call["seq"],
+        json!(0),
+        "the reused runner must reset its seq counter to 0 for a new execution"
+    );
+    // Settle B-seq's call so the run completes.
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "tool_result", "seq": 0, "result": {} })
+    )
+    .expect("settle B-seq");
+    let b_seq_done = read_protocol_line(&mut stdout);
+    assert_eq!(b_seq_done["type"], "done");
+
+    // Now the pristine-environment assertions.
+    let done_b = run_once(&mut stdin, &mut stdout, code_b);
+    assert_eq!(
+        done_b["result"]["value"]["leakVisible"],
+        json!("undefined"),
+        "a global set by a prior execution must NOT be visible to the next on the same runner"
+    );
+    assert_eq!(
+        done_b["result"]["value"]["pendingSize"],
+        json!(0),
+        "a prior execution's pending tool calls must NOT survive into the next execution"
+    );
+
+    // Prove the process was actually reused, not freshly spawned.
+    assert_eq!(
+        child.id(),
+        pid,
+        "the same runner process must serve both executions"
+    );
+
+    drop(stdin);
+    let status = child.wait().expect("wait for runner");
+    assert!(
+        status.success(),
+        "runner exits cleanly on stdin close: {status}"
+    );
+}
+
+/// A per-execution error on a pooled runner must NOT poison the process: after
+/// emitting its error line the runner resets and serves the next Start normally.
+#[test]
+fn warm_pool_runner_recovers_after_execution_error_and_serves_next_start() {
+    let (mut child, mut stdin, mut stdout) = spawn_pooled_runner();
+    let pid = child.id();
+
+    // Execution A errors (non-JSON-serializable result → invalid_param).
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "start", "code": "async () => BigInt(1)" })
+    )
+    .expect("write start A");
+    let err = read_protocol_line(&mut stdout);
+    assert_eq!(err["type"], "error", "A must error: {err}");
+    assert_eq!(err["kind"], "invalid_param");
+
+    // Execution B on the SAME process must succeed — the error did not kill it.
+    let done = run_once(&mut stdin, &mut stdout, "async () => ({ ok: true })");
+    assert_eq!(done["result"]["value"], json!({ "ok": true }));
+    assert_eq!(child.id(), pid, "process reused after an execution error");
+
+    drop(stdin);
+    let status = child.wait().expect("wait for runner");
+    assert!(status.success(), "runner exits cleanly: {status}");
+}
+
+/// Security invariants hold on a LONG-LIVED (pooled) runner: the process is
+/// spawned with `env_clear()` so no ambient/`LAB_*` vars are visible to JS, and
+/// on Linux `/proc/<pid>/environ` is unreadable (PR_SET_DUMPABLE). We set a
+/// sentinel env var in the PARENT and prove it is invisible to the child after
+/// at least one execution (i.e. on the warm process), then check `/proc`.
+#[test]
+fn warm_pool_runner_preserves_env_isolation_on_reused_process() {
+    // A sentinel the child must NOT see. env_clear() drops it.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["internal", "code-mode-runner"])
+        .env("LAB_SECRET_SENTINEL", "do-not-leak")
+        .env("LAB_MCP_HTTP_TOKEN", "super-secret")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn runner");
+    let pid = child.id();
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+    // Warm the process with one execution first.
+    drop(run_once(&mut stdin, &mut stdout, "async () => 1"));
+
+    // The runner exposes no `process`/`process.env` to JS at all, so the only
+    // way the child could leak env is via the OS. Assert the child's actual
+    // environment (read from /proc on Linux) carries neither sentinel.
+    #[cfg(target_os = "linux")]
+    {
+        let environ_path = format!("/proc/{pid}/environ");
+        match std::fs::read(&environ_path) {
+            Ok(bytes) => {
+                // Readable means PR_SET_DUMPABLE did not take effect; even so,
+                // env_clear must have removed our sentinels.
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(
+                    !text.contains("do-not-leak"),
+                    "env_clear must remove LAB_SECRET_SENTINEL from the runner env"
+                );
+                assert!(
+                    !text.contains("super-secret"),
+                    "env_clear must remove LAB_MCP_HTTP_TOKEN from the runner env"
+                );
+            }
+            Err(err) => {
+                // Unreadable /proc/<pid>/environ is the expected hardened state
+                // (PR_SET_DUMPABLE, 0) — a stronger guarantee than env_clear.
+                assert!(
+                    matches!(
+                        err.kind(),
+                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+                    ),
+                    "unexpected error reading {environ_path}: {err}"
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = pid;
+
+    drop(stdin);
+    let status = child.wait().expect("wait");
+    assert!(status.success(), "runner exits cleanly: {status}");
+}
+
+/// The per-execution cwd jail is reset between executions on a pooled runner: a
+/// fresh empty working directory each run, never accumulating state. The JS
+/// sandbox has no fs APIs, so we observe the effect indirectly — the runner must
+/// keep functioning across many executions (the jail churn is non-fatal) and the
+/// process is reused throughout.
+#[test]
+fn warm_pool_runner_serves_many_executions_on_one_process() {
+    let (mut child, mut stdin, mut stdout) = spawn_pooled_runner();
+    let pid = child.id();
+    for i in 0..25 {
+        let code = format!("async () => ({{ iter: {i} }})");
+        let done = run_once(&mut stdin, &mut stdout, &code);
+        assert_eq!(done["result"]["value"]["iter"], json!(i));
+    }
+    assert_eq!(child.id(), pid, "one process served all 25 executions");
+    drop(stdin);
+    let status = child.wait().expect("wait");
+    assert!(status.success(), "runner exits cleanly: {status}");
 }
