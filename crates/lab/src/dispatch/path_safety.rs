@@ -283,6 +283,26 @@ mod tests {
     }
 
     #[test]
+    fn rel_to_unix_string_joins_components_with_forward_slash() {
+        // Multi-component relative path renders with `/` on every platform —
+        // this is what keeps artifact keys stable across the Windows runner and
+        // Linux. Build via `join` so the input uses the platform separator.
+        let path = Path::new("skills").join("demo").join("SKILL.md");
+        assert_eq!(rel_to_unix_string(&path), "skills/demo/SKILL.md");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rel_to_unix_string_preserves_backslash_in_unix_filename() {
+        // On Unix a `\` is an ordinary filename byte, not a separator, so it must
+        // survive as part of a single component rather than being rewritten.
+        assert_eq!(
+            rel_to_unix_string(Path::new(r"weird\name.txt")),
+            r"weird\name.txt"
+        );
+    }
+
+    #[test]
     fn reject_symlink_accepts_directory() {
         let dir = tempdir().unwrap();
         assert!(reject_symlink(dir.path()).is_ok());

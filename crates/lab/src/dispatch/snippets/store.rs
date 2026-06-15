@@ -811,6 +811,24 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_tolerates_crlf_line_endings() {
+        // Regression guard for the Windows-checkout failure: a `---\r\n` opening
+        // delimiter must be recognized just like `---\n`, otherwise built-in
+        // snippets carry no frontmatter and become undiscoverable. Without this
+        // test a dropped CRLF arm in `strip_frontmatter_open` would pass on both
+        // CI platforms (Cargo never rewrites these string literals).
+        let body = "---\r\nname: demo\r\ndescription: Demo snippet\r\ntags: []\r\n---\r\n\r\n```js\r\nasync () => ({ ok: true })\r\n```\r\n";
+
+        assert!(has_frontmatter(body), "CRLF frontmatter must be detected");
+        let meta = frontmatter(body)
+            .expect("CRLF frontmatter must parse")
+            .expect("CRLF frontmatter must be present");
+        assert_eq!(meta.name, "demo");
+        assert_eq!(meta.description, "Demo snippet");
+        assert!(validate_snippet_body("demo", body).is_ok());
+    }
+
+    #[test]
     fn repo_status_gh_pulse_builtin_is_discoverable_and_executable() {
         let lab_home = tempfile::tempdir().expect("temp lab home");
         let builtin_dir = builtin_snippet_dir();
