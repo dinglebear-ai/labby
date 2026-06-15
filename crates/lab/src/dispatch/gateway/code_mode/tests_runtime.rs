@@ -700,6 +700,32 @@ async fn write_code_mode_artifact_rejects_backslash_absolute_path() {
     );
 }
 
+#[tokio::test]
+async fn write_code_mode_artifact_rejects_windows_drive_paths() {
+    // Regression: a Windows drive prefix (`C:/foo` drive-absolute or `C:foo`
+    // drive-relative) is NOT caught by `Path::is_absolute()` on Unix, and its
+    // `C:` segment parses as a plain `Normal` component there — so without the
+    // explicit `has_windows_drive_prefix` guard it would slip past the jail and
+    // only later (if at all) be mislabeled by the traversal check. Both forms
+    // must be rejected as `invalid_param` on every platform.
+    let root = TempDir::new().expect("temp root");
+    for raw in ["C:/Windows/evil", "C:foo"] {
+        let request = CodeModeArtifactWrite {
+            path: raw.to_string(),
+            content: "# nope".to_string(),
+            content_type: None,
+        };
+        let err = write_code_mode_artifact(root.path(), &request, TEST_MAX_BYTES)
+            .await
+            .expect_err("drive-prefixed path must be rejected");
+        assert_eq!(err.kind(), "invalid_param", "path `{raw}`");
+        assert!(
+            err.to_string().contains("relative path"),
+            "error should explain relative path requirement for `{raw}`: {err}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn write_code_mode_artifact_rejects_symlinked_ancestor() {

@@ -191,9 +191,25 @@ impl PooledRunner {
     /// the pool's lease / free-list / recycle / eviction bookkeeping and PID
     /// reuse without needing the real labby binary (`current_exe()` in a lib
     /// unit test is the test harness, not the runner).
+    ///
+    /// The stand-in program must exist on the test host AND resolve under the
+    /// `env_clear()` in `spawn_stub_command` (no inherited `PATH`). On Unix `cat`
+    /// satisfies both; on Windows `cat`/`sleep` don't exist, so we use System32
+    /// built-ins, which `CreateProcess` finds via its default search order even
+    /// with an empty environment. `findstr` reads stdin and parks until EOF,
+    /// mirroring `cat`.
     #[cfg(test)]
     pub(in crate::dispatch::gateway::code_mode) fn spawn_stub() -> Result<Self, ToolError> {
-        Self::spawn_stub_command("cat", &[])
+        #[cfg(not(windows))]
+        {
+            Self::spawn_stub_command("cat", &[])
+        }
+        #[cfg(windows)]
+        {
+            // `findstr ^` matches every line and reads stdin until EOF, so it
+            // parks on an open-but-idle stdin pipe just like `cat`.
+            Self::spawn_stub_command("findstr", &["^"])
+        }
     }
 
     /// Test-only: a stub that consumes nothing on stdout and stays alive for a
@@ -201,9 +217,21 @@ impl PooledRunner {
     /// parent-side wall-clock timeout path in `drive_runner`.
     #[cfg(test)]
     pub(in crate::dispatch::gateway::code_mode) fn spawn_stub_silent() -> Result<Self, ToolError> {
-        // `sleep` ignores stdin and emits nothing on stdout, so the drive loop's
-        // `lines.next()` pends until the wall-clock deadline fires.
-        Self::spawn_stub_command("sleep", &["3600"])
+        // The program ignores stdin and emits nothing on stdout, so the drive
+        // loop's `lines.next()` pends until the wall-clock deadline fires.
+        #[cfg(not(windows))]
+        {
+            Self::spawn_stub_command("sleep", &["3600"])
+        }
+        #[cfg(windows)]
+        {
+            // `timeout` refuses redirected stdin; `powershell -Command Start-Sleep`
+            // is silent, ignores stdin, and resolves from System32 under env_clear.
+            Self::spawn_stub_command(
+                "powershell",
+                &["-NoProfile", "-Command", "Start-Sleep -Seconds 3600"],
+            )
+        }
     }
 
     #[cfg(test)]

@@ -425,8 +425,17 @@ pub fn validate_snippet_code(code: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
+/// Strip the opening `---` frontmatter delimiter line, tolerating both LF and
+/// CRLF endings. Windows checkouts (and Windows-authored user snippets) carry
+/// `---\r\n`, which a bare `strip_prefix("---\n")` would miss — silently
+/// dropping the snippet's frontmatter and making built-ins undiscoverable.
+fn strip_frontmatter_open(body: &str) -> Option<&str> {
+    body.strip_prefix("---\n")
+        .or_else(|| body.strip_prefix("---\r\n"))
+}
+
 pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> {
-    let Some(rest) = body.strip_prefix("---\n") else {
+    let Some(rest) = strip_frontmatter_open(body) else {
         return Ok(None);
     };
     let Some(raw) = frontmatter_block(rest) else {
@@ -496,7 +505,7 @@ fn frontmatter_block(rest: &str) -> Option<String> {
 }
 
 fn has_frontmatter(body: &str) -> bool {
-    body.starts_with("---\n")
+    strip_frontmatter_open(body).is_some()
 }
 
 fn required_frontmatter_field(value: Option<String>, field: &str) -> Result<String, ToolError> {
@@ -802,6 +811,24 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_tolerates_crlf_line_endings() {
+        // Regression guard for the Windows-checkout failure: a `---\r\n` opening
+        // delimiter must be recognized just like `---\n`, otherwise built-in
+        // snippets carry no frontmatter and become undiscoverable. Without this
+        // test a dropped CRLF arm in `strip_frontmatter_open` would pass on both
+        // CI platforms (Cargo never rewrites these string literals).
+        let body = "---\r\nname: demo\r\ndescription: Demo snippet\r\ntags: []\r\n---\r\n\r\n```js\r\nasync () => ({ ok: true })\r\n```\r\n";
+
+        assert!(has_frontmatter(body), "CRLF frontmatter must be detected");
+        let meta = frontmatter(body)
+            .expect("CRLF frontmatter must parse")
+            .expect("CRLF frontmatter must be present");
+        assert_eq!(meta.name, "demo");
+        assert_eq!(meta.description, "Demo snippet");
+        assert!(validate_snippet_body("demo", body).is_ok());
+    }
+
+    #[test]
     fn repo_status_gh_pulse_builtin_is_discoverable_and_executable() {
         let lab_home = tempfile::tempdir().expect("temp lab home");
         let builtin_dir = builtin_snippet_dir();
@@ -850,8 +877,7 @@ mod tests {
             // and must fail loudly — so skip only on genuine absence and let the
             // `frontmatter(body)?` inside `validate_snippet_body` surface parse
             // errors, rather than collapsing both cases with `.ok().flatten()`.
-            if path.extension().and_then(|e| e.to_str()) == Some("md") && !body.starts_with("---\n")
-            {
+            if path.extension().and_then(|e| e.to_str()) == Some("md") && !has_frontmatter(&body) {
                 continue;
             }
             validate_snippet_body(stem, &body).unwrap_or_else(|error| {

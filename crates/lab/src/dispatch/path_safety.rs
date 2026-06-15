@@ -239,6 +239,21 @@ fn reject_existing_symlink(path: &Path) -> Result<(), ToolError> {
     }
 }
 
+/// Render a relative path with `/` separators on every platform so the logical
+/// artifact keys stashes and updates emit are stable across Unix and Windows.
+///
+/// `Path::to_string_lossy()` uses the platform separator (`\` on Windows), which
+/// would make the same artifact key differ by OS and break equality with the
+/// forward-slash keys callers and snapshots expect. Iterating `components()`
+/// only rewrites the real `MAIN_SEPARATOR`; a literal backslash inside a Unix
+/// filename stays intact because it is part of a single `Normal` component.
+pub fn rel_to_unix_string(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn normalize_lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in path.components() {
@@ -265,6 +280,26 @@ mod tests {
         let file = dir.path().join("regular.txt");
         std::fs::write(&file, b"hi").unwrap();
         assert!(reject_symlink(&file).is_ok());
+    }
+
+    #[test]
+    fn rel_to_unix_string_joins_components_with_forward_slash() {
+        // Multi-component relative path renders with `/` on every platform —
+        // this is what keeps artifact keys stable across the Windows runner and
+        // Linux. Build via `join` so the input uses the platform separator.
+        let path = Path::new("skills").join("demo").join("SKILL.md");
+        assert_eq!(rel_to_unix_string(&path), "skills/demo/SKILL.md");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rel_to_unix_string_preserves_backslash_in_unix_filename() {
+        // On Unix a `\` is an ordinary filename byte, not a separator, so it must
+        // survive as part of a single component rather than being rewritten.
+        assert_eq!(
+            rel_to_unix_string(Path::new(r"weird\name.txt")),
+            r"weird\name.txt"
+        );
     }
 
     #[test]
