@@ -112,6 +112,12 @@ pub struct GatewayManager {
     /// the upstream catalog has not changed between calls.
     pub(super) code_mode_catalog_render_cache:
         Arc<Mutex<Option<crate::dispatch::gateway::code_mode::CatalogRenderCache>>>,
+    /// Shared, long-lived warm-runner pool for Code Mode (Perf H1). Pools the
+    /// runner OS process across executions (fresh `javy::Runtime` per run) to
+    /// amortize fork/startup. Wrapped in `Arc` so the `Clone` manager shares one
+    /// pool; configured from the environment at construction (kill switch:
+    /// `LAB_CODE_MODE_POOL_SIZE=0` → spawn-per-execution fallback).
+    pub(super) code_mode_runner_pool: Arc<crate::dispatch::gateway::code_mode::RunnerPool>,
 }
 
 impl GatewayManager {

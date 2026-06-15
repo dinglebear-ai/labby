@@ -103,6 +103,9 @@ impl GatewayManager {
             code_mode_refresh_deadline: Arc::new(Mutex::new(None)),
             code_mode_refresh_inflight: Arc::new(Mutex::new(())),
             code_mode_catalog_render_cache: Arc::new(Mutex::new(None)),
+            code_mode_runner_pool: Arc::new(
+                crate::dispatch::gateway::code_mode::RunnerPool::from_env(),
+            ),
         }
     }
 

@@ -281,12 +281,52 @@ Trusted local callers use the shared gateway subject.
 
 The stdio parent-broker protocol is:
 
-1. Parent starts `labby internal code-mode-runner`.
-2. Child evaluates the normalized async function.
+1. Parent starts (or reuses a pooled) `labby internal code-mode-runner` process.
+2. Parent sends a `start` line; the child builds a FRESH QuickJS runtime and
+   evaluates the normalized async function.
 3. Child emits `tool_call` lines for `callTool` requests.
 4. Parent dispatches through the gateway broker and replies with `tool_result` or
    `tool_error`.
 5. Child settles pending promises and emits `done`.
+6. The child then resets and parks for the next `start` (warm-runner pool).
+
+### Warm-runner pool
+
+The runner **process** is pooled and long-lived; the **JS runtime is rebuilt for
+every execution**. Pooling amortizes the dominant fixed cost (process fork +
+startup) without ever sharing JS state across callers — a brand-new runtime has
+no globals, no leftover pending tool calls, and no captured data from a prior
+run, so isolation holds by construction.
+
+- **Process reuse, fresh runtime.** A pooled runner loops: read `start` → build a
+  fresh `javy::Runtime` → run → emit `done`/`error` → reset and read the next
+  `start`. It exits only when the parent closes stdin.
+- **Per-execution isolation.** Each run resets the `callTool` sequence counter and
+  creates a fresh, empty per-execution working-directory jail (removing the prior
+  one), so a long-lived process never accumulates JS or filesystem state across
+  callers. The 64 MiB heap, 30 s wall-clock timeout, and stack limit are enforced
+  per execution.
+- **Bounded pool, one execution per runner.** `N` runners serve `N` concurrent
+  executions. When all are busy, an extra request is served by a bounded
+  ephemeral (overflow) runner rather than queueing unboundedly.
+- **Robustness.** A runner that crashes, times out, or violates the protocol is
+  killed and replaced (the failing run surfaces a clean error — `timeout` on
+  wall-clock expiry — never a hang). A pooled runner is also recycled
+  (killed + respawned) after a fixed number of executions as cheap insurance
+  against native-side leaks.
+- **Configuration / kill switch** (environment, read at startup):
+  - `LAB_CODE_MODE_POOL_SIZE` — number of pooled runners (default `2`, clamped to
+    `16`). **`LAB_CODE_MODE_POOL_SIZE=0` disables pooling entirely**, falling back
+    to spawn-per-execution with behavior identical to the pre-pool path.
+  - `LAB_CODE_MODE_POOL_RECYCLE_AFTER` — executions before a runner is recycled
+    (default `100`).
+  - `LAB_CODE_MODE_POOL_MAX_OVERFLOW` — cap on simultaneous ephemeral overflow
+    runners (default `8`).
+
+  The conservative default (`size = 2`) keeps idle memory bounded while absorbing
+  typical `search` + `execute` bursts. The security invariants (`env_clear`,
+  process-group/Job-Object reaping, `kill_on_drop`, `PR_SET_DUMPABLE`) are set
+  once at spawn and therefore hold for the pooled process's whole lifetime.
 
 Code Mode always uses Javy/QuickJS for snippet execution — it is the **sole live
 engine**, with no Boa fallback and no `code_mode_wasm` feature. Both `execute`
