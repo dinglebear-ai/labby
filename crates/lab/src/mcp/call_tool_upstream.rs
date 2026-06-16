@@ -160,7 +160,39 @@ impl LabMcpServer {
             let mut upstream_params = CallToolRequestParams::new(service.to_string());
             upstream_params.arguments = raw_arguments;
 
-            match pool.call_tool(&upstream_name, upstream_params).await {
+            // Relay path (opt-in): when the downstream agent advertises
+            // elicitation and the operator enabled relaying, route this call
+            // over a dedicated connection that forwards the upstream's
+            // server→client requests (elicitation/sampling/roots) down to the
+            // agent. Falls back to the pooled multiplexed call when the gate is
+            // off, the agent can't elicit, or the config can't be resolved.
+            let relay_enabled = crate::config::env_flag_enabled("LAB_UPSTREAM_RELAY_ELICITATION")
+                && !context.peer.supported_elicitation_modes().is_empty();
+            let relay_config = if relay_enabled {
+                match &self.gateway_manager {
+                    Some(manager) => manager.upstream_config(&upstream_name).await,
+                    None => None,
+                }
+            } else {
+                None
+            };
+            let call_outcome = if let Some(config) = relay_config {
+                tracing::debug!(
+                    surface = "mcp",
+                    service,
+                    action = upstream_action,
+                    tool = %service,
+                    upstream = %upstream_name,
+                    route = "relayed",
+                    "proxying to upstream over relayed dedicated connection"
+                );
+                pool.call_tool_relayed(&config, None, upstream_params, context.peer.clone())
+                    .await
+            } else {
+                pool.call_tool(&upstream_name, upstream_params).await
+            };
+
+            match call_outcome {
                 Some(Ok(result)) => {
                     let elapsed_ms = start.elapsed().as_millis();
                     let (result, kind, counts_as_failure) =

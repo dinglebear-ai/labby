@@ -31,7 +31,7 @@ Dependency direction:
 | `pool/logging.rs` | `UpstreamRequestLog` + `log_upstream_request_{start,finish,error}`, `capability_name`, `is_capability_unsupported`. |
 | `pool/entries.rs` | `UpstreamEntry` constructors, `resolve_exposure_policy`, `health_str`. |
 | `pool/validate.rs` | `validate_upstream_config` + the `validate_*` tests. |
-| `pool/connect.rs` | `connect_upstream` / `_http` / `_websocket`, `runtime_origin_label`, jitter/oauth-log helpers (reads env). |
+| `pool/connect.rs` | `connect_upstream` / `_http` / `_websocket`, `runtime_origin_label`, jitter/oauth-log helpers (reads env). All transport fns are generic over the client handler `H: ClientHandler`; `connect_upstream_with_client` passes `()` (the default for pooled connections), while `connect_upstream_with_handler` is the seam the relay path uses to install a `RelayClientHandler`. |
 | `pool/connect_stdio.rs` | `connect_stdio_upstream` (child-process spawn + process-group guard) + `connect_in_process_service_peer`. |
 | `pool/connection.rs` | `UpstreamConnection` `Debug`/`Drop`/`shutdown` + `UpstreamPool::acquire_peer`. |
 | `pool/lifecycle.rs` | `drain_for_swap`. |
@@ -40,7 +40,7 @@ Dependency direction:
 | `pool/capability.rs` | `discover_capability_counts`. |
 | `pool/probe.rs` | `ensure_probe_task` + `reprobe_upstream` background heartbeat/reconnect. |
 | `pool/registration.rs` | In-process service-peer registration. |
-| `pool/relay.rs` | **Prototype.** `RelayClientHandler` — a `ClientHandler` for *dedicated* (non-multiplexed) upstream connections that forwards server→client requests (elicitation/sampling/roots) down to the agent's `Peer<RoleServer>`, advertising only the capabilities the agent itself declared. `connect_relayed` is the relay analogue of `().serve(transport)`. Not yet wired into the live `call_tool` path (carries a scoped `#![allow(dead_code)]`); proven end to end by its own tests. |
+| `pool/relay.rs` | `RelayClientHandler` — a `ClientHandler` for *dedicated* (non-multiplexed) upstream connections that forwards server→client requests (elicitation/sampling/roots) down to the agent's `Peer<RoleServer>`, advertising only the capabilities the agent itself declared. `UpstreamPool::call_tool_relayed` opens a one-shot dedicated connection via the generic `connect::connect_upstream_with_handler` seam, invokes one tool, and shuts it down. Wired into the MCP raw-proxy path (`mcp/call_tool_upstream.rs`) behind the `LAB_UPSTREAM_RELAY_ELICITATION` env gate + a downstream-elicitation-capability check. |
 | `pool/tools.rs` | Tool queries (`healthy_tools*`, `find_tool*`, `tool_schema`, exposure rows, summaries, runtime metadata, health). |
 | `pool/tools_call.rs` | `call_tool` + `subject_scoped_call_tool`. |
 | `pool/health.rs` | Circuit breaker: `record_*`, `should_reprobe*`, `*_last_error`, `filter_collisions`, `upstream_status`/`upstream_count`. |

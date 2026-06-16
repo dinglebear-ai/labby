@@ -62,7 +62,7 @@ fn evict_lru_over_cap(
     evicted
 }
 
-impl std::fmt::Debug for UpstreamConnection {
+impl<H: rmcp::ClientHandler> std::fmt::Debug for UpstreamConnection<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UpstreamConnection").finish_non_exhaustive()
     }
@@ -84,7 +84,7 @@ impl std::fmt::Debug for UpstreamConnection {
 ///   causes the OS to terminate every process in the job (direct child +
 ///   all descendants).
 /// - `_server_task.abort()` runs on all platforms.
-impl Drop for UpstreamConnection {
+impl<H: rmcp::ClientHandler> Drop for UpstreamConnection<H> {
     fn drop(&mut self) {
         #[cfg(unix)]
         if let Some(pgid) = self.runtime.pgid.take() {
@@ -129,7 +129,7 @@ impl Drop for UpstreamConnection {
     }
 }
 
-impl UpstreamConnection {
+impl<H: rmcp::ClientHandler> UpstreamConnection<H> {
     pub(super) async fn shutdown(mut self, upstream_name: &str, reason: &'static str) {
         // Clone runtime BEFORE taking pgid / job_handle so subsequent log
         // lines still surface the original values.

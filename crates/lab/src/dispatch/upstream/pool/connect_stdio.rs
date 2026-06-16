@@ -6,7 +6,7 @@
 //! `crate::mcp` (A-M6 fix).
 
 use crate::config::UpstreamConfig;
-use rmcp::{RoleClient, ServiceExt};
+use rmcp::{ClientHandler, RoleClient, ServiceExt};
 
 use super::super::auth::configured_bearer_token;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
@@ -31,13 +31,14 @@ use super::connect::runtime_origin_label;
 ///   an accepted residual: the trust boundary is admin-write access to the gateway
 ///   config file or authenticated `gateway.add` / `gateway.update` calls. The
 ///   allowlist is applied at config-write time, not here.
-pub(super) async fn connect_stdio_upstream(
+pub(super) async fn connect_stdio_upstream<H: ClientHandler>(
     command: &str,
     args: &[String],
     config: &UpstreamConfig,
     runtime_origin: Option<&str>,
     runtime_owner: Option<&UpstreamRuntimeOwner>,
-) -> anyhow::Result<(UpstreamConnection, Vec<rmcp::model::Tool>)> {
+    handler: H,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     #[cfg(unix)]
     use process_wrap::tokio::{CommandWrap, ProcessGroup};
     use rmcp::transport::child_process::TokioChildProcess;
@@ -165,7 +166,7 @@ pub(super) async fn connect_stdio_upstream(
     #[cfg(windows)]
     let job_guard = pid.map(super::super::process_guard::JobObjectGuard::arm);
 
-    let service: rmcp::service::RunningService<RoleClient, ()> = ().serve(process).await?;
+    let service: rmcp::service::RunningService<RoleClient, H> = handler.serve(process).await?;
     let peer = service.peer().clone();
 
     // Discover tools

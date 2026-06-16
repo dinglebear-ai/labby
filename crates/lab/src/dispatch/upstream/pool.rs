@@ -120,9 +120,20 @@ pub struct UpstreamPool {
 }
 
 /// A live connection to an upstream MCP server.
-pub(crate) struct UpstreamConnection {
+///
+/// Generic over the client handler `H` (default `()`). Almost every connection
+/// uses the unit handler `()` — which declines server→client requests — and is
+/// stored in the pool maps as `UpstreamConnection<()>`. The relay path
+/// (`pool/relay.rs`) constructs an `UpstreamConnection<RelayClientHandler>` for
+/// a dedicated, ephemeral connection that forwards elicitation/sampling/roots to
+/// the downstream agent. Only the `serve()` handler differs; every field below
+/// (peer ops, process reaping, shutdown) is handler-agnostic.
+pub(crate) struct UpstreamConnection<H = ()>
+where
+    H: rmcp::ClientHandler,
+{
     /// The running client service handle — kept alive to maintain the connection.
-    pub(crate) _client_service: rmcp::service::RunningService<RoleClient, ()>,
+    pub(crate) _client_service: rmcp::service::RunningService<RoleClient, H>,
     /// Background task holding an in-process server alive when applicable.
     pub(crate) _server_task: Option<tokio::task::JoinHandle<()>>,
     /// The peer handle for making requests.

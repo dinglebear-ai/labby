@@ -26,26 +26,32 @@
 //! upstream will not attempt it. This keeps the proxied capability set honest
 //! end to end instead of advertising support the gateway cannot actually honor.
 //!
-//! ## Status: prototype
+//! ## Live entry point
 //!
-//! The handler and [`connect_relayed`] are proven end to end by this module's
-//! tests but are not yet called from the live `call_tool` path — wiring a
-//! per-call dedicated connection through `tools_call.rs` (and threading the
-//! downstream `Peer<RoleServer>` from the MCP surface down to the pool) is the
-//! follow-up. The `dead_code` allow below is scoped to this module and should
-//! be removed when that wiring lands.
-#![allow(dead_code)]
+//! [`UpstreamPool::call_tool_relayed`] opens a dedicated connection via the
+//! generic `connect_upstream_with_handler` seam (so HTTP, WebSocket, stdio, and
+//! OAuth all reuse the existing transport + process-reaping machinery), invokes
+//! one tool with the relay handler installed, and shuts the connection down. The
+//! MCP raw-proxy path calls it (behind an opt-in env gate) when the downstream
+//! agent advertises elicitation. Cost: one fresh connect per call — the gate
+//! keeps that off the default hot path.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
-    ClientInfo, CreateElicitationRequestParams, CreateElicitationResult,
-    CreateMessageRequestParams, CreateMessageResult, ListRootsResult,
+    CallToolRequestParams, CallToolResult, ClientInfo, CreateElicitationRequestParams,
+    CreateElicitationResult, CreateMessageRequestParams, CreateMessageResult, ListRootsResult,
 };
-use rmcp::service::{ClientInitializeError, Peer, RequestContext, RunningService, ServiceExt};
-use rmcp::transport::IntoTransport;
+use rmcp::service::{Peer, RequestContext};
 use rmcp::{ClientHandler, RoleClient, RoleServer};
+
+use crate::config::UpstreamConfig;
+
+use super::super::types::UpstreamCapability;
+use super::UpstreamPool;
+use super::connect::connect_upstream_with_handler;
 
 /// A client handler that relays an upstream server's server→client requests
 /// (elicitation, sampling, roots) down to the gateway's downstream agent peer.
@@ -152,26 +158,85 @@ impl ClientHandler for RelayClientHandler {
     }
 }
 
-/// Open a **dedicated** upstream connection served with a [`RelayClientHandler`].
-///
-/// This is the relay equivalent of the `().serve(transport)` calls in
-/// `connect.rs` / `connect_stdio.rs`: same transport plumbing, but the client
-/// handler forwards server→client requests to `downstream` instead of declining
-/// them. A real integration would build `transport` from the upstream's
-/// HTTP/stdio config (one fresh connection per in-flight downstream call) and
-/// drop the returned `RunningService` when that call completes.
-pub(crate) async fn connect_relayed<T, E, A>(
-    transport: T,
-    downstream: Peer<RoleServer>,
-    upstream_name: Arc<str>,
-) -> Result<RunningService<RoleClient, RelayClientHandler>, ClientInitializeError>
-where
-    T: IntoTransport<RoleClient, E, A>,
-    E: std::error::Error + Send + Sync + 'static,
-{
-    RelayClientHandler::new(downstream, upstream_name)
-        .serve(transport)
+impl UpstreamPool {
+    /// Call a single tool on an upstream over a **dedicated, relay-handled**
+    /// connection.
+    ///
+    /// Unlike [`UpstreamPool::call_tool`] (which reuses a pooled, multiplexed
+    /// `()` connection), this opens a fresh connection served with a
+    /// [`RelayClientHandler`] bound to `downstream`, so any server→client
+    /// request the upstream raises mid-call (elicitation/sampling/roots) is
+    /// forwarded to that one agent. The connection is shut down before
+    /// returning — it exists only for the lifetime of the call, which is what
+    /// makes the upstream→agent mapping unambiguous.
+    ///
+    /// Reuses the generic `connect_upstream_with_handler` seam, so every
+    /// transport (HTTP, WebSocket, stdio, OAuth-HTTP) and the stdio
+    /// process-reaping guard work unchanged. `subject` is forwarded for
+    /// OAuth-scoped upstreams (`None` for the common non-OAuth case).
+    ///
+    /// Returns `None` only if the dedicated connect fails before a peer exists
+    /// — mirroring `call_tool`'s "not connected" signal so the caller's circuit
+    /// breaker can react identically.
+    pub async fn call_tool_relayed(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        params: CallToolRequestParams,
+        downstream: Peer<RoleServer>,
+    ) -> Option<Result<CallToolResult, String>> {
+        let upstream_name: Arc<str> = Arc::from(config.name.as_str());
+        let handler = RelayClientHandler::new(downstream, Arc::clone(&upstream_name));
+        let started = Instant::now();
+
+        let (conn, _tools) = match connect_upstream_with_handler(
+            config,
+            subject,
+            self.oauth_client_cache.as_ref(),
+            self.runtime_origin.as_deref(),
+            self.runtime_owner.as_ref(),
+            Some(&self.shared_http_client),
+            handler,
+        )
         .await
+        {
+            Ok(pair) => pair,
+            Err(error) => {
+                self.record_failure_for(
+                    &config.name,
+                    UpstreamCapability::Tools,
+                    format!("relayed upstream connect failed: {error}"),
+                )
+                .await;
+                return None;
+            }
+        };
+
+        let timeout = self.request_timeout;
+        let outcome = match tokio::time::timeout(timeout, conn.peer.call_tool(params)).await {
+            Ok(Ok(result)) => Some(Ok(result)),
+            Ok(Err(error)) => Some(Err(format!("relayed upstream call failed: {error}"))),
+            Err(_) => Some(Err(format!(
+                "relayed upstream call timed out after {}ms",
+                timeout.as_millis()
+            ))),
+        };
+
+        tracing::debug!(
+            surface = "dispatch",
+            service = "upstream.pool",
+            action = "upstream.relay.call",
+            upstream = %config.name,
+            subject_scoped = subject.is_some(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "relayed upstream tool call complete",
+        );
+
+        // Tear the dedicated connection down before returning — it is scoped to
+        // this single call (and, for stdio, must reap its child).
+        conn.shutdown(&config.name, "relay.call.complete").await;
+        outcome
+    }
 }
 
 #[cfg(test)]
@@ -184,7 +249,7 @@ mod tests {
         ElicitationSchema, ErrorData, PaginatedRequestParams, PrimitiveSchema, ServerCapabilities,
         ServerInfo,
     };
-    use rmcp::service::RequestContext;
+    use rmcp::service::{RequestContext, RunningService};
     use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
 
     use super::super::helpers::IN_PROCESS_PEER_BUFFER_BYTES;
@@ -311,13 +376,10 @@ mod tests {
                 .expect("upstream connects");
             running.waiting().await.expect("upstream runs");
         });
-        let gw_client = connect_relayed(
-            gw_client_transport,
-            downstream,
-            Arc::from("test-upstream"),
-        )
-        .await
-        .expect("relayed upstream connection establishes");
+        let gw_client = RelayClientHandler::new(downstream, Arc::from("test-upstream"))
+            .serve(gw_client_transport)
+            .await
+            .expect("relayed upstream connection establishes");
         let upstream_peer = gw_client.peer().clone();
 
         // 3. Drive a tool call on the upstream. Its handler elicits → relay →
@@ -371,6 +433,47 @@ mod tests {
         assert_eq!(
             text, "confirmed=false",
             "the unit handler declines elicitation, so nothing is confirmed"
+        );
+    }
+
+    /// `call_tool_relayed` returns `None` (the "not connected" signal, mirroring
+    /// `call_tool`) when the dedicated connect fails — here because the config
+    /// names neither a URL nor a command. Proves the orchestration's
+    /// connect-failure path without needing a live transport.
+    #[tokio::test]
+    async fn call_tool_relayed_returns_none_when_connect_fails() {
+        // A downstream agent peer is required by the signature; the connect
+        // fails before it is ever used.
+        let (gw_server_transport, agent_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let _agent_task = tokio::spawn(async move {
+            let running = ()
+                .serve(agent_transport)
+                .await
+                .expect("agent connects");
+            running.waiting().await.expect("agent runs");
+        });
+        let gw_server = TrivialServer
+            .serve(gw_server_transport)
+            .await
+            .expect("gateway server side connects");
+        let downstream = gw_server.peer().clone();
+
+        let pool = UpstreamPool::new();
+        // Neither `url` nor `command` set → connect_upstream_with_handler errors.
+        let config = super::super::testsupport::test_upstream_config();
+
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("anything"),
+                downstream,
+            )
+            .await;
+
+        assert!(
+            result.is_none(),
+            "a failed dedicated connect should surface as None"
         );
     }
 }
