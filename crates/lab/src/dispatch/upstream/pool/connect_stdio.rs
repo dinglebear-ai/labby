@@ -12,6 +12,9 @@ use super::super::auth::configured_bearer_token;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 use super::UpstreamConnection;
 use super::connect::runtime_origin_label;
+use super::stdio_stderr::{
+    StdioConnectError, StdioDiagnostics, forward_upstream_stderr, upstream_stderr_log_level,
+};
 
 /// Connect to a stdio upstream MCP server (child process).
 ///
@@ -31,7 +34,7 @@ use super::connect::runtime_origin_label;
 ///   an accepted residual: the trust boundary is admin-write access to the gateway
 ///   config file or authenticated `gateway.add` / `gateway.update` calls. The
 ///   allowlist is applied at config-write time, not here.
-pub(super) async fn connect_stdio_upstream<H: ClientHandler>(
+pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
     command: &str,
     args: &[String],
     config: &UpstreamConfig,
@@ -39,23 +42,88 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler>(
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     handler: H,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    // Cross-process spawn lock: stdio servers launched via `npx -y`/`uvx` install
+    // into a shared package cache on first cold spawn; two processes installing
+    // the same package at once corrupt it. Hold an advisory file lock (keyed on
+    // the command + args) for the whole connect — spawn, handshake, list_tools,
+    // and a possible targeted cache repair/retry.
+    let mut spawn_lock = super::spawn_lock::open(command, args);
+    let _spawn_guard = super::spawn_lock::acquire(spawn_lock.as_mut()).await;
+
+    match connect_stdio_upstream_once(
+        command,
+        args,
+        config,
+        runtime_origin,
+        runtime_owner,
+        handler.clone(),
+    )
+    .await
+    {
+        Ok(ok) => Ok(ok),
+        Err(first_error) => {
+            let diagnostics = first_error.diagnostics_with_error();
+            let repair = super::cache_repair::maybe_repair(command, &diagnostics).await;
+            match &repair {
+                super::cache_repair::CacheRepairOutcome::Repaired { summary } => {
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "upstream.pool",
+                        upstream = %config.name,
+                        command = %command,
+                        action = "upstream.cache_repair",
+                        repair = %summary,
+                        "stdio package-runner cache repaired after startup failure; retrying once"
+                    );
+                }
+                super::cache_repair::CacheRepairOutcome::Failed { summary } => {
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "upstream.pool",
+                        upstream = %config.name,
+                        command = %command,
+                        action = "upstream.cache_repair",
+                        repair = %summary,
+                        "stdio package-runner cache repair failed; returning original startup error"
+                    );
+                    return Err(first_error.into_anyhow());
+                }
+                _ => return Err(first_error.into_anyhow()),
+            }
+
+            match connect_stdio_upstream_once(
+                command,
+                args,
+                config,
+                runtime_origin,
+                runtime_owner,
+                handler,
+            )
+            .await
+            {
+                Ok(ok) => Ok(ok),
+                Err(retry_error) => Err(anyhow::anyhow!(
+                    "stdio upstream failed after package-runner cache repair retry: {}",
+                    retry_error.diagnostics_with_error()
+                )),
+            }
+        }
+    }
+}
+
+async fn connect_stdio_upstream_once<H: ClientHandler>(
+    command: &str,
+    args: &[String],
+    config: &UpstreamConfig,
+    runtime_origin: Option<&str>,
+    runtime_owner: Option<&UpstreamRuntimeOwner>,
+    handler: H,
+) -> Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>), StdioConnectError> {
     #[cfg(unix)]
     use process_wrap::tokio::{CommandWrap, ProcessGroup};
     use rmcp::transport::child_process::TokioChildProcess;
     use std::process::Stdio;
     use tokio::process::Command;
-
-    // Cross-process spawn lock: stdio servers launched via `npx -y`/`uvx` install
-    // into a shared package cache on first cold spawn; two processes installing
-    // the same package at once corrupt it. Hold an advisory file lock (keyed on
-    // the command + args) for the whole connect — spawn, handshake, and the
-    // `list_tools` below — so identical commands serialize across every process.
-    // Best-effort: a `None` guard means locking was unavailable and we proceed.
-    // The guard borrows `spawn_lock`, so both are held as locals here; the guard
-    // is declared second so it drops first (unlock before the file handle closes)
-    // at the end of this function.
-    let mut spawn_lock = super::spawn_lock::open(command, args);
-    let _spawn_guard = super::spawn_lock::acquire(spawn_lock.as_mut()).await;
 
     // SECURITY (S1): never inherit labby's full environment — it holds
     // LAB_OAUTH_ENCRYPTION_KEY and every upstream credential. Start from a
@@ -121,13 +189,8 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler>(
     // it by default and forward into the gateway log at the level resolved from
     // `LAB_GW_UPSTREAM_STDERR` (default DEBUG; `off` discards).
     let stderr_level = upstream_stderr_log_level();
-    let stderr_cfg = || {
-        if stderr_level.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        }
-    };
+    let stderr_capture = StdioDiagnostics::default();
+    let stderr_cfg = || Stdio::piped();
 
     #[cfg(unix)]
     let (process, child_stderr) = {
@@ -135,22 +198,27 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler>(
         wrapped.wrap(ProcessGroup::leader());
         TokioChildProcess::builder(wrapped)
             .stderr(stderr_cfg())
-            .spawn()?
+            .spawn()
+            .map_err(StdioConnectError::without_diagnostics)?
     };
     #[cfg(not(unix))]
     let (process, child_stderr) = {
         TokioChildProcess::builder(cmd)
             .stderr(stderr_cfg())
-            .spawn()?
+            .spawn()
+            .map_err(StdioConnectError::without_diagnostics)?
     };
 
     // INVARIANT: a piped child stderr MUST be drained continuously. A chatty
     // upstream (e.g. axon at INFO) fills the ~64 KB pipe buffer and then blocks
     // on its next stderr write, hanging the upstream. The drain task reads to
     // EOF so failures are recoverable from the gateway log instead of lost.
-    if let Some(level) = stderr_level {
-        forward_upstream_stderr(child_stderr, config.name.clone(), level);
-    }
+    forward_upstream_stderr(
+        child_stderr,
+        config.name.clone(),
+        stderr_level,
+        stderr_capture.clone(),
+    );
 
     let pid = process.id();
     tracing::info!(
@@ -178,11 +246,17 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler>(
     #[cfg(windows)]
     let job_guard = pid.map(super::super::process_guard::JobObjectGuard::arm);
 
-    let service: rmcp::service::RunningService<RoleClient, H> = handler.serve(process).await?;
+    let service: rmcp::service::RunningService<RoleClient, H> = match handler.serve(process).await {
+        Ok(service) => service,
+        Err(error) => return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await),
+    };
     let peer = service.peer().clone();
 
     // Discover tools
-    let tools = peer.list_all_tools().await?;
+    let tools = match peer.list_all_tools().await {
+        Ok(tools) => tools,
+        Err(error) => return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await),
+    };
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = "stdio",
@@ -230,249 +304,4 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler>(
     };
 
     Ok((conn, tools))
-}
-
-/// Resolve the log level for forwarded upstream stderr from
-/// `LAB_GW_UPSTREAM_STDERR`.
-///
-/// - unset / `on` / `1` / `true` / unknown values → `Some(DEBUG)` (the
-///   reviewed default: a chatty upstream must not pollute the INFO stream)
-/// - `trace` / `debug` / `info` / `warn` → that level (e.g. `info` restores
-///   the pre-hardening visibility for an upstream being actively debugged)
-/// - `null` / `off` / `0` / `none` / `discard` / `false` → `None` — stderr is
-///   discarded entirely (the pre-capture behavior)
-fn upstream_stderr_log_level() -> Option<tracing::Level> {
-    parse_stderr_level(std::env::var("LAB_GW_UPSTREAM_STDERR").ok().as_deref())
-}
-
-fn parse_stderr_level(raw: Option<&str>) -> Option<tracing::Level> {
-    let Some(raw) = raw else {
-        return Some(tracing::Level::DEBUG);
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "null" | "off" | "0" | "none" | "discard" | "false" => None,
-        "trace" => Some(tracing::Level::TRACE),
-        "info" => Some(tracing::Level::INFO),
-        "warn" | "warning" => Some(tracing::Level::WARN),
-        // "debug", enable-flavored values, and anything unrecognized fall back
-        // to the default level.
-        _ => Some(tracing::Level::DEBUG),
-    }
-}
-
-/// Truncate `line` to at most `max` bytes without splitting a UTF-8 codepoint.
-///
-/// A plain `&line[..max]` panics when byte `max` lands inside a multi-byte
-/// character — and stderr content is upstream-controlled, so that slice was a
-/// remotely triggerable panic in the drain task.
-fn cap_line_bytes(line: &str, max: usize) -> &str {
-    if line.len() <= max {
-        return line;
-    }
-    let mut cut = max;
-    while cut > 0 && !line.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    &line[..cut]
-}
-
-/// Maximum number of bytes forwarded per line from a child's stderr.
-///
-/// Lines longer than this are truncated before emission so a chatty or
-/// adversarial upstream cannot amplify log volume with a single huge write.
-const STDERR_LINE_MAX_BYTES: usize = 1024;
-
-/// Maximum number of lines forwarded per second from a single upstream's stderr.
-///
-/// Exceeding this cap drops lines and emits a single `WARN` instead, protecting
-/// labby's log stream from a firehose upstream (O-M2 / P-L5).
-const STDERR_RATE_CAP_PER_SEC: u32 = 50;
-
-/// Drain a piped child stderr to EOF, forwarding each non-empty line into the
-/// gateway log under the `labby::upstream_stderr` target at `level`
-/// (default **DEBUG**; tune per `LAB_GW_UPSTREAM_STDERR`, or silence just this
-/// stream with `LAB_LOG=labby::upstream_stderr=warn`).
-///
-/// Security / observability invariants (O-M2 / P-L5):
-/// - Default level is DEBUG so a chatty upstream does not pollute the INFO
-///   stream; the operator can raise it per `LAB_GW_UPSTREAM_STDERR=info` while
-///   actively debugging an upstream.
-/// - Each line is capped at `STDERR_LINE_MAX_BYTES` before logging.
-/// - Lines are rate-limited to `STDERR_RATE_CAP_PER_SEC`; bursts above the cap
-///   are dropped with a single warning rather than forwarded verbatim.
-/// - Each line is run through `redact_stdio_value` so a third-party upstream
-///   printing its own token cannot launder credentials into labby's log stream.
-///
-/// Draining is mandatory: an unread pipe buffer fills and blocks the child's
-/// next stderr write, hanging the upstream.
-fn forward_upstream_stderr(
-    stderr: Option<tokio::process::ChildStderr>,
-    upstream: String,
-    level: tracing::Level,
-) {
-    let Some(stderr) = stderr else {
-        // Capture was requested (level resolved) but the spawn returned no
-        // stderr handle — diagnostics for this upstream are being lost.
-        tracing::warn!(
-            target: "labby::upstream_stderr",
-            upstream = %upstream,
-            "stderr capture enabled but child returned no stderr handle; upstream diagnostics will be lost"
-        );
-        return;
-    };
-    tokio::spawn(async move {
-        use crate::dispatch::redact::redact_stdio_value;
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
-        let mut lines = BufReader::new(stderr).lines();
-        // Rate-limiting state: count of lines emitted in the current second.
-        let mut window_start = std::time::Instant::now();
-        let mut lines_this_window: u32 = 0;
-        let mut dropped_this_window: u32 = 0;
-
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-
-                    // Rotate rate-limit window every second.
-                    if window_start.elapsed().as_secs() >= 1 {
-                        if dropped_this_window > 0 {
-                            tracing::warn!(
-                                target: "labby::upstream_stderr",
-                                upstream = %upstream,
-                                dropped = dropped_this_window,
-                                "upstream stderr rate cap exceeded; lines dropped"
-                            );
-                        }
-                        window_start = std::time::Instant::now();
-                        lines_this_window = 0;
-                        dropped_this_window = 0;
-                    }
-
-                    if lines_this_window >= STDERR_RATE_CAP_PER_SEC {
-                        dropped_this_window += 1;
-                        continue;
-                    }
-                    lines_this_window += 1;
-
-                    // Truncate long lines (UTF-8-boundary-safe) before
-                    // redaction/emission.
-                    let capped = cap_line_bytes(&line, STDERR_LINE_MAX_BYTES);
-                    let truncated = if capped.len() < line.len() {
-                        format!("{capped}…[truncated]")
-                    } else {
-                        line.clone()
-                    };
-
-                    // Redact credential-shaped tokens before forwarding.
-                    let redacted = redact_stdio_value(&truncated);
-
-                    // `tracing` macros require a const level — dispatch on the
-                    // configured level explicitly.
-                    macro_rules! emit {
-                        ($macro:ident) => {
-                            tracing::$macro!(
-                                target: "labby::upstream_stderr",
-                                surface = "dispatch",
-                                service = "upstream.pool",
-                                upstream = %upstream,
-                                stream = "stderr",
-                                "{redacted}",
-                            )
-                        };
-                    }
-                    match level {
-                        tracing::Level::TRACE => emit!(trace),
-                        tracing::Level::INFO => emit!(info),
-                        tracing::Level::WARN | tracing::Level::ERROR => emit!(warn),
-                        _ => emit!(debug),
-                    }
-                }
-                Ok(None) => break,
-                Err(error) => {
-                    tracing::debug!(
-                        target: "labby::upstream_stderr",
-                        upstream = %upstream,
-                        error = %error,
-                        "upstream stderr drain ended on read error",
-                    );
-                    break;
-                }
-            }
-        }
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{cap_line_bytes, parse_stderr_level};
-
-    #[test]
-    fn stderr_level_unset_defaults_to_debug() {
-        assert_eq!(parse_stderr_level(None), Some(tracing::Level::DEBUG));
-    }
-
-    #[test]
-    fn stderr_level_named_levels_parse() {
-        assert_eq!(
-            parse_stderr_level(Some("trace")),
-            Some(tracing::Level::TRACE)
-        );
-        assert_eq!(
-            parse_stderr_level(Some("debug")),
-            Some(tracing::Level::DEBUG)
-        );
-        assert_eq!(parse_stderr_level(Some("INFO")), Some(tracing::Level::INFO));
-        assert_eq!(
-            parse_stderr_level(Some(" warn ")),
-            Some(tracing::Level::WARN)
-        );
-        assert_eq!(
-            parse_stderr_level(Some("warning")),
-            Some(tracing::Level::WARN)
-        );
-    }
-
-    #[test]
-    fn stderr_level_disable_values_discard() {
-        for raw in ["null", "off", "0", "none", "discard", "FALSE"] {
-            assert_eq!(parse_stderr_level(Some(raw)), None, "{raw}");
-        }
-    }
-
-    #[test]
-    fn stderr_level_enable_flavored_and_unknown_fall_back_to_debug() {
-        for raw in ["", "on", "1", "true", "verbose", "garbage"] {
-            assert_eq!(
-                parse_stderr_level(Some(raw)),
-                Some(tracing::Level::DEBUG),
-                "{raw}"
-            );
-        }
-    }
-
-    #[test]
-    fn cap_line_bytes_is_utf8_boundary_safe() {
-        // 'é' is 2 bytes; a cut at byte 3 lands mid-codepoint and must back up.
-        let line = "aéé";
-        assert_eq!(cap_line_bytes(line, 3), "aé");
-        // ASCII passes through untouched below the cap.
-        assert_eq!(cap_line_bytes("abc", 8), "abc");
-        // Exact-cap multi-byte input is not truncated.
-        assert_eq!(cap_line_bytes("éé", 4), "éé");
-        // A pathological all-multibyte line cut at byte 1 yields empty, not a panic.
-        assert_eq!(cap_line_bytes("ééé", 1), "");
-    }
-
-    #[test]
-    fn cap_line_bytes_never_panics_on_any_boundary() {
-        let line = "x😀y漢字é";
-        for max in 0..=line.len() + 2 {
-            let capped = cap_line_bytes(line, max.min(line.len()));
-            assert!(line.starts_with(capped));
-        }
-    }
 }

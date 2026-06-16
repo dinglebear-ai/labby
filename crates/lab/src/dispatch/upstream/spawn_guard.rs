@@ -151,7 +151,7 @@ fn validate_runtime_argv_flag(runtime_hint: &str, arg: &str) -> Result<(), ToolE
         }
         "node" | "npx" => DANGEROUS_NODE_FLAGS
             .iter()
-            .any(|prefix| flag == *prefix || flag.starts_with(*prefix)),
+            .any(|prefix| node_flag_matches(prefix, flag)),
         "python" | "python3" => DANGEROUS_PYTHON_FLAGS.contains(&flag),
         "deno" => DANGEROUS_DENO_FLAGS.contains(&flag),
         _ => false,
@@ -165,6 +165,14 @@ fn validate_runtime_argv_flag(runtime_hint: &str, arg: &str) -> Result<(), ToolE
     } else {
         Ok(())
     }
+}
+
+fn node_flag_matches(denied: &str, flag: &str) -> bool {
+    flag == denied
+        || match denied {
+            "--allow" | "--experimental" | "--inspect" => flag.starts_with(&format!("{denied}-")),
+            _ => false,
+        }
 }
 
 /// Validate an environment variable name supplied with a stdio upstream.
@@ -408,6 +416,35 @@ mod tests {
     #[test]
     fn argv_rejects_npx_inspect() {
         let err = validate_stdio_argv("npx", &["--inspect=0.0.0.0:9229".to_string()]).unwrap_err();
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[test]
+    fn argv_accepts_npx_package_flag_that_shares_node_prefix() {
+        assert!(
+            validate_stdio_argv(
+                "npx",
+                &[
+                    "-y".to_string(),
+                    "@vaulttools/mcp".to_string(),
+                    "--allowed-dir".to_string(),
+                    "/home/jmagar".to_string(),
+                ],
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn argv_rejects_node_permission_flags() {
+        let err = validate_stdio_argv(
+            "node",
+            &[
+                "--allow-fs-read=/home/jmagar".to_string(),
+                "server.js".to_string(),
+            ],
+        )
+        .unwrap_err();
         assert_eq!(err.kind(), "invalid_param");
     }
 

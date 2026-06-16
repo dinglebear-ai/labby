@@ -62,7 +62,7 @@ pub(super) async fn connect_upstream_with_client(
 /// the unit handler `()`). The relay path passes a `RelayClientHandler` so the
 /// dedicated connection forwards server→client requests to the downstream agent.
 /// `handler` is moved into whichever transport branch matches the config.
-pub(super) async fn connect_upstream_with_handler<H: ClientHandler>(
+pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
     config: &UpstreamConfig,
     subject: Option<&str>,
     oauth_client_cache: Option<&OauthClientCache>,

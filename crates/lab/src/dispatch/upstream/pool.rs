@@ -19,6 +19,7 @@ use crate::registry::RegisteredService;
 
 use super::types::{UpstreamEntry, UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 
+mod cache_repair;
 mod capability;
 mod capability_call;
 mod connect;
@@ -39,6 +40,7 @@ mod relay;
 mod resources_list;
 mod resources_read;
 mod spawn_lock;
+mod stdio_stderr;
 #[cfg(test)]
 mod testsupport;
 mod tools;

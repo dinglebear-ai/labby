@@ -8,7 +8,7 @@ RUN apt-get update \
  && mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
- && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
+ && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
     > /etc/apt/sources.list.d/nodesource.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends nodejs zsh \
@@ -53,7 +53,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh \
  && uv --version \
  && uvx --version
 
-RUN mkdir -p /home/lab/.lab /home/lab/.config/lab /home/lab/.local/state/lab /home/lab/.local/share/lab && chown -R 1000:1000 /home/lab
+RUN mkdir -p /home/lab/.lab /home/lab/.config/lab /home/lab/.local/state/lab /home/lab/.local/share/lab /home/lab/.npm /home/lab/.cache \
+ && chown -R 1000:1000 /home/lab
 COPY bin/labby /usr/local/bin/labby
 RUN chmod +x /usr/local/bin/labby
 ENV HOME=/home/lab
