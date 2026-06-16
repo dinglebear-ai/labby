@@ -338,9 +338,18 @@ impl GatewayManager {
                 discovered_tool_count = summary.discovered_tool_count;
                 exposed_tool_count = summary.exposed_tool_count;
             }
-            if let Some(error) = pool.upstream_last_error(upstream).await {
+            // Only a TOOL discovery failure marks the upstream as failed —
+            // tool routing is gated solely on tool health (see
+            // `UpstreamPool::healthy_tools`). A resources/prompts capability
+            // probe that errors (e.g. an upstream whose endpoint returns HTTP
+            // 400 for `resources/list` instead of a clean "unsupported" reply)
+            // must NOT hide tools that discovered fine; surface it as a
+            // non-fatal diagnostic and keep the connection authenticated.
+            if let Some(error) = pool.upstream_tool_last_error(upstream).await {
                 discovery_error = Some(error);
                 state = UpstreamOauthConnectionState::DiscoveryFailed;
+            } else if let Some(error) = pool.upstream_last_error(upstream).await {
+                discovery_error = Some(error);
             }
         }
         let authenticated = matches!(
