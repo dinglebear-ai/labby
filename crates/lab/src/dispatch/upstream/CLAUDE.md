@@ -40,6 +40,7 @@ Dependency direction:
 | `pool/capability.rs` | `discover_capability_counts`. |
 | `pool/probe.rs` | `ensure_probe_task` + `reprobe_upstream` background heartbeat/reconnect. |
 | `pool/registration.rs` | In-process service-peer registration. |
+| `pool/relay.rs` | **Prototype.** `RelayClientHandler` — a `ClientHandler` for *dedicated* (non-multiplexed) upstream connections that forwards server→client requests (elicitation/sampling/roots) down to the agent's `Peer<RoleServer>`, advertising only the capabilities the agent itself declared. `connect_relayed` is the relay analogue of `().serve(transport)`. Not yet wired into the live `call_tool` path (carries a scoped `#![allow(dead_code)]`); proven end to end by its own tests. |
 | `pool/tools.rs` | Tool queries (`healthy_tools*`, `find_tool*`, `tool_schema`, exposure rows, summaries, runtime metadata, health). |
 | `pool/tools_call.rs` | `call_tool` + `subject_scoped_call_tool`. |
 | `pool/health.rs` | Circuit breaker: `record_*`, `should_reprobe*`, `*_last_error`, `filter_collisions`, `upstream_status`/`upstream_count`. |

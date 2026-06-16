@@ -35,6 +35,7 @@ mod probe;
 mod prompts_get;
 mod prompts_list;
 mod registration;
+mod relay;
 mod resources_list;
 mod resources_read;
 #[cfg(test)]
