@@ -35,6 +35,7 @@ mod probe;
 mod prompts_get;
 mod prompts_list;
 mod registration;
+mod relay;
 mod resources_list;
 mod resources_read;
 mod spawn_lock;
@@ -98,6 +99,17 @@ pub struct UpstreamPool {
     /// for the same key do not open duplicate OAuth connections (mirrors the
     /// `lazy_connect_locks` gate used by the normal pool path).
     subject_connect_locks: Arc<RwLock<HashMap<(String, String), Arc<Mutex<()>>>>>,
+    /// Per-`(upstream, downstream-session)` cached **relay** connections.
+    ///
+    /// Distinct from `subject_connections` because the cached connection is
+    /// served with a `RelayClientHandler` bound to one specific downstream
+    /// agent peer (`UpstreamConnection<RelayClientHandler>`, a different type).
+    /// The session component of the key is what guarantees a cached relay
+    /// connection is never reused across agents — see `pool/relay.rs`.
+    relay_connections: Arc<RwLock<HashMap<(String, u64), relay::RelayCachedConnection>>>,
+    /// Single-flight locks for the relay-connection cache, mirroring
+    /// `subject_connect_locks`.
+    relay_connect_locks: Arc<RwLock<HashMap<(String, u64), Arc<Mutex<()>>>>>,
     /// Cancellation token for the background subject-connection sweep task.
     /// `None` until the first subject-scoped connect arms it; cancelled and
     /// cleared on `drain_for_swap` (P-H2). Mirrors the `probe_tasks` lifecycle.
@@ -120,9 +132,20 @@ pub struct UpstreamPool {
 }
 
 /// A live connection to an upstream MCP server.
-pub(crate) struct UpstreamConnection {
+///
+/// Generic over the client handler `H` (default `()`). Almost every connection
+/// uses the unit handler `()` — which declines server→client requests — and is
+/// stored in the pool maps as `UpstreamConnection<()>`. The relay path
+/// (`pool/relay.rs`) constructs an `UpstreamConnection<RelayClientHandler>` for
+/// a dedicated, ephemeral connection that forwards elicitation/sampling/roots to
+/// the downstream agent. Only the `serve()` handler differs; every field below
+/// (peer ops, process reaping, shutdown) is handler-agnostic.
+pub(crate) struct UpstreamConnection<H = ()>
+where
+    H: rmcp::ClientHandler,
+{
     /// The running client service handle — kept alive to maintain the connection.
-    pub(crate) _client_service: rmcp::service::RunningService<RoleClient, ()>,
+    pub(crate) _client_service: rmcp::service::RunningService<RoleClient, H>,
     /// Background task holding an in-process server alive when applicable.
     pub(crate) _server_task: Option<tokio::task::JoinHandle<()>>,
     /// The peer handle for making requests.
@@ -177,6 +200,8 @@ impl UpstreamPool {
             lazy_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             subject_connections: Arc::new(RwLock::new(HashMap::new())),
             subject_connect_locks: Arc::new(RwLock::new(HashMap::new())),
+            relay_connections: Arc::new(RwLock::new(HashMap::new())),
+            relay_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             subject_sweep_task: Arc::new(RwLock::new(None)),
             runtime_origin: None,
             runtime_owner: None,

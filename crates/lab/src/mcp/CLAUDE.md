@@ -86,6 +86,30 @@ When an action's `ActionSpec.destructive == true`, the dispatcher **must** call 
 
 When the MCP client does not support elicitation (e.g. headless agents, CI, Claude Desktop non-interactive), the dispatcher accepts `params.confirm == true` as a machine-to-machine bypass. Without that flag, destructive actions are refused with a `confirmation_required` error.
 
+## Upstream elicitation relay (opt-in)
+
+The above is lab's *own* server→downstream elicitation. The reverse direction —
+an **upstream** MCP server that raises `elicitation/create` (or sampling/roots)
+back at the gateway during a proxied tool call — is bridged by the relay path.
+`mcp/call_tool_upstream.rs` routes the proxied call through
+`UpstreamPool::call_tool_relayed` (a dedicated connection served with
+`RelayClientHandler`, see `dispatch/upstream/pool/relay.rs`) instead of the
+pooled `call_tool` / `subject_scoped_call_tool` when **both**: the
+`LAB_UPSTREAM_RELAY_ELICITATION` env flag is set, and the downstream agent
+advertised elicitation (`context.peer.supported_elicitation_modes()` non-empty).
+Both proxy branches honor the gate — the raw branch passes `subject = None`, the
+OAuth/subject-scoped branch forwards the resolved `oauth_subject` so the
+dedicated connection authenticates as the caller. The relay forwards the
+upstream's request straight to `context.peer` (the agent).
+
+Relay connections are cached per `(upstream, session_id)`, where `session_id` is
+minted once per `LabMcpServer` session (`next_relay_session_id()`) and passed
+into `call_tool_relayed`. Because each session has exactly one downstream agent
+peer, the session-scoped key guarantees a cached relay connection is never
+reused across agents — so the first relayed call in a session pays the connect
+cost and subsequent calls reuse it, without risking misrouted elicitation. It
+stays opt-in (gated) so the default path is the untouched pooled `call_tool`.
+
 ## Built-in actions
 
 Every tool automatically supports `help` and `schema` without the service declaring them. The dispatcher intercepts these before the action match.

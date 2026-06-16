@@ -11,7 +11,7 @@ use std::time::Instant;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
-use rmcp::{RoleClient, ServiceExt};
+use rmcp::{ClientHandler, RoleClient, ServiceExt};
 
 use crate::config::UpstreamConfig;
 use crate::oauth::upstream::cache::OauthClientCache;
@@ -44,6 +44,33 @@ pub(super) async fn connect_upstream_with_client(
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     shared_client: Option<&reqwest::Client>,
 ) -> anyhow::Result<(UpstreamConnection, Vec<rmcp::model::Tool>)> {
+    connect_upstream_with_handler(
+        config,
+        subject,
+        oauth_client_cache,
+        runtime_origin,
+        runtime_owner,
+        shared_client,
+        (),
+    )
+    .await
+}
+
+/// Connect to an upstream MCP server, serving the client side with `handler`.
+///
+/// This is the generic seam behind `connect_upstream_with_client` (which passes
+/// the unit handler `()`). The relay path passes a `RelayClientHandler` so the
+/// dedicated connection forwards server→client requests to the downstream agent.
+/// `handler` is moved into whichever transport branch matches the config.
+pub(super) async fn connect_upstream_with_handler<H: ClientHandler>(
+    config: &UpstreamConfig,
+    subject: Option<&str>,
+    oauth_client_cache: Option<&OauthClientCache>,
+    runtime_origin: Option<&str>,
+    runtime_owner: Option<&UpstreamRuntimeOwner>,
+    shared_client: Option<&reqwest::Client>,
+    handler: H,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     let started = Instant::now();
     tracing::debug!(
         surface = "dispatch",
@@ -59,12 +86,28 @@ pub(super) async fn connect_upstream_with_client(
     );
     let result = if let Some(ref url) = config.url {
         if is_websocket_url(url) {
-            connect_websocket_upstream(url, config).await
+            connect_websocket_upstream(url, config, handler).await
         } else {
-            connect_http_upstream(url, config, subject, oauth_client_cache, shared_client).await
+            connect_http_upstream(
+                url,
+                config,
+                subject,
+                oauth_client_cache,
+                shared_client,
+                handler,
+            )
+            .await
         }
     } else if let Some(ref command) = config.command {
-        connect_stdio_upstream(command, &config.args, config, runtime_origin, runtime_owner).await
+        connect_stdio_upstream(
+            command,
+            &config.args,
+            config,
+            runtime_origin,
+            runtime_owner,
+            handler,
+        )
+        .await
     } else {
         Err(anyhow::anyhow!(
             "upstream {} has neither url nor command",
@@ -123,10 +166,11 @@ pub(super) async fn connect_upstream(
     .await
 }
 
-pub(super) async fn connect_websocket_upstream(
+pub(super) async fn connect_websocket_upstream<H: ClientHandler>(
     url: &str,
     config: &UpstreamConfig,
-) -> anyhow::Result<(UpstreamConnection, Vec<rmcp::model::Tool>)> {
+    handler: H,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = "websocket",
@@ -145,7 +189,7 @@ pub(super) async fn connect_websocket_upstream(
     let transport = connect_websocket_transport(
         WebSocketTransportConfig::new(parsed.to_string()).with_authorization(authorization),
     );
-    let service: rmcp::service::RunningService<RoleClient, ()> = ().serve(transport).await?;
+    let service: rmcp::service::RunningService<RoleClient, H> = handler.serve(transport).await?;
     let peer = service.peer().clone();
     let tools = peer.list_all_tools().await?;
     tracing::info!(
@@ -180,13 +224,14 @@ pub(super) fn stable_jitter_seed(name: &str, attempt: u32) -> u64 {
 /// for connection-pooling and TLS session reuse (P-M10).  When `None` a fresh
 /// client is built.  Both the OAuth and non-OAuth paths wrap the base client in
 /// `BodyCappedHttpClient` so the response-size cap (P-H4) is always applied.
-pub(super) async fn connect_http_upstream(
+pub(super) async fn connect_http_upstream<H: ClientHandler>(
     url: &str,
     config: &UpstreamConfig,
     subject: Option<&str>,
     oauth_client_cache: Option<&OauthClientCache>,
     shared_client: Option<&reqwest::Client>,
-) -> anyhow::Result<(UpstreamConnection, Vec<rmcp::model::Tool>)> {
+    handler: H,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = "http",
@@ -230,7 +275,7 @@ pub(super) async fn connect_http_upstream(
             .map_err(|e| anyhow::anyhow!("oauth_required: {e}"))?;
 
         let worker = StreamableHttpClientWorker::new(auth_client, transport_config);
-        let service: rmcp::service::RunningService<RoleClient, ()> = ().serve(worker).await?;
+        let service: rmcp::service::RunningService<RoleClient, H> = handler.serve(worker).await?;
         let peer = service.peer().clone();
         let tools = peer.list_all_tools().await?;
         return Ok((
@@ -260,7 +305,7 @@ pub(super) async fn connect_http_upstream(
 
     // `capped` is already built above with the shared/fresh base client.
     let worker = StreamableHttpClientWorker::new(capped, transport_config);
-    let service: rmcp::service::RunningService<RoleClient, ()> = ().serve(worker).await?;
+    let service: rmcp::service::RunningService<RoleClient, H> = handler.serve(worker).await?;
     let peer = service.peer().clone();
     let tools = peer.list_all_tools().await?;
     tracing::info!(
@@ -367,6 +412,7 @@ mod tests {
             None,
             Some(&OauthClientCache::new(Arc::new(dashmap::DashMap::new()))),
             None,
+            (),
         )
         .await
         .expect_err("missing subject should fail");
@@ -387,6 +433,7 @@ mod tests {
             Some("alice"),
             None,
             None,
+            (),
         )
         .await
         .expect_err("missing cache should fail");
