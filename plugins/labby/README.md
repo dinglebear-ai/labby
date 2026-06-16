@@ -6,6 +6,7 @@ This plugin does **not** bundle the `labby` binary and does not auto-install
 or auto-repair anything. It ships:
 
 - the `using-labby` skill,
+- the `creating-snippets` skill for Labby Code Mode snippet authoring,
 - an HTTP MCP server entry pointing at a running `labby serve`
   (`${user_config.server_url}/mcp` — remote machines never need a local binary),
 - advisory hooks: SessionStart reports setup status via

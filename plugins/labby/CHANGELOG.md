@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added the `creating-snippets` skill for Labby Code Mode snippet authoring.
 - **Removed the bundled `labby` binary** (previously shipped via Git LFS at
   `bin/labby`). The plugin is now skills + MCP config only. Install the binary
   explicitly: `curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh`,
