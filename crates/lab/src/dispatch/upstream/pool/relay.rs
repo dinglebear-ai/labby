@@ -157,6 +157,14 @@ impl ClientHandler for RelayClientHandler {
         &self,
         _context: RequestContext<RoleClient>,
     ) -> Result<ListRootsResult, McpError> {
+        tracing::debug!(
+            surface = "dispatch",
+            service = "upstream.pool",
+            action = "upstream.relay",
+            upstream = %self.upstream_name,
+            capability = "roots",
+            "relaying upstream roots request to downstream agent",
+        );
         self.downstream
             .list_roots()
             .await
