@@ -59,16 +59,27 @@ impl StderrBuffer {
         self.lines.lock().await.len()
     }
 
-    /// Lines appended since `start_index`.
-    pub(in crate::dispatch::gateway::code_mode) async fn since(
+    /// Return lines appended since `start_index`, then release all retained
+    /// stderr lines for this runner. A runner executes one request at a time, so
+    /// completed executions do not need historical stderr retained after the
+    /// response has been materialized.
+    pub(in crate::dispatch::gateway::code_mode) async fn take_since_and_clear(
         &self,
         start_index: usize,
     ) -> Vec<String> {
-        let guard = self.lines.lock().await;
-        guard
+        let mut guard = self.lines.lock().await;
+        let captured = guard
             .get(start_index..)
             .map(<[String]>::to_vec)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        guard.clear();
+        captured
+    }
+
+    /// Release retained stderr without returning it, used when the runner
+    /// reports a reusable per-execution error.
+    pub(in crate::dispatch::gateway::code_mode) async fn clear(&self) {
+        self.lines.lock().await.clear();
     }
 
     /// Wait (bounded) for the stderr drain to flush lines emitted before `Done`.

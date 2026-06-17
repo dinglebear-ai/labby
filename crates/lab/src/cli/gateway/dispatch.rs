@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::cli::gateway::{
     GatewayArgs, GatewayCommand, GatewayMcpAuthCommand, GatewayMcpCommand, GatewayPendingCommand,
     GatewayProtectedRouteCommand, GatewayProtectedRouteUpdateArgs, GatewayProtectedRouteUpsertArgs,
-    GatewayQuarantineCommand,
+    GatewayQuarantineCommand, GatewayUpdateArgs,
 };
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
 use crate::config::ProtectedMcpRouteConfig;
@@ -93,6 +93,42 @@ fn protected_route_from_update_args(
         target,
     };
     (name, route)
+}
+
+fn update_patch_from_args(args: GatewayUpdateArgs) -> serde_json::Value {
+    let url_was_set = args.url.is_some();
+    let command_was_set = args.command.is_some();
+    let url = if args.clear_url || command_was_set {
+        Some(None)
+    } else {
+        args.url.map(Some)
+    };
+    let command = if args.clear_command || url_was_set {
+        Some(None)
+    } else {
+        args.command.map(Some)
+    };
+    let command_args = if url_was_set {
+        Some(Vec::new())
+    } else if args.args.is_empty() {
+        None
+    } else {
+        Some(args.args)
+    };
+    let bearer_token_env = if args.clear_bearer_token_env {
+        Some(None)
+    } else {
+        args.bearer_token_env.map(Some)
+    };
+
+    json!({
+        "name": args.new_name,
+        "url": url,
+        "command": command,
+        "args": command_args,
+        "bearer_token_env": bearer_token_env,
+        "proxy_resources": args.proxy_resources,
+    })
 }
 
 pub(super) async fn dispatch_command(
@@ -246,22 +282,18 @@ pub(super) async fn dispatch_command(
                         }
                     }),
                 ),
-                GatewayCommand::Update(args) => (
-                    "gateway.update".to_string(),
-                    json!({
-                        "name": args.name,
-                        "origin": cli_origin,
-                        "owner": cli_owner,
-                        "patch": {
-                            "name": args.new_name,
-                            "url": args.url.map(Some),
-                            "command": args.command.map(Some),
-                            "args": if args.args.is_empty() { None::<Vec<String>> } else { Some(args.args) },
-                            "bearer_token_env": args.bearer_token_env.map(Some),
-                            "proxy_resources": args.proxy_resources,
-                        }
-                    }),
-                ),
+                GatewayCommand::Update(args) => {
+                    let name = args.name.clone();
+                    (
+                        "gateway.update".to_string(),
+                        json!({
+                            "name": name,
+                            "origin": cli_origin,
+                            "owner": cli_owner,
+                            "patch": update_patch_from_args(args)
+                        }),
+                    )
+                }
                 GatewayCommand::Remove(args) => (
                     "gateway.remove".to_string(),
                     json!({ "name": args.name, "origin": cli_origin, "owner": cli_owner }),
@@ -370,5 +402,100 @@ pub(super) async fn dispatch_command(
             )
             .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    use serde_json::json;
+
+    use crate::cli::{Cli, Command};
+
+    use super::*;
+
+    fn parsed_update(args: &[&str]) -> GatewayUpdateArgs {
+        let cli = Cli::try_parse_from(args).expect("parse gateway update args");
+        let Command::Gateway(gateway) = cli.command else {
+            panic!("expected gateway command");
+        };
+        let GatewayCommand::Update(update) = gateway.command else {
+            panic!("expected gateway update command");
+        };
+        update
+    }
+
+    #[test]
+    fn gateway_update_command_transport_clears_url_side() {
+        let update = parsed_update(&[
+            "lab",
+            "gateway",
+            "update",
+            "fixture",
+            "--command",
+            "local-mcp-server",
+            "--arg=--stdio",
+        ]);
+
+        assert_eq!(
+            update_patch_from_args(update),
+            json!({
+                "name": null,
+                "url": null,
+                "command": "local-mcp-server",
+                "args": ["--stdio"],
+                "bearer_token_env": null,
+                "proxy_resources": null,
+            })
+        );
+    }
+
+    #[test]
+    fn gateway_update_url_transport_clears_stdio_side() {
+        let update = parsed_update(&[
+            "lab",
+            "gateway",
+            "update",
+            "fixture",
+            "--url",
+            "https://example.test/mcp",
+        ]);
+
+        assert_eq!(
+            update_patch_from_args(update),
+            json!({
+                "name": null,
+                "url": "https://example.test/mcp",
+                "command": null,
+                "args": [],
+                "bearer_token_env": null,
+                "proxy_resources": null,
+            })
+        );
+    }
+
+    #[test]
+    fn gateway_update_explicit_clear_flags_emit_nullable_patch_fields() {
+        let update = parsed_update(&[
+            "lab",
+            "gateway",
+            "update",
+            "fixture",
+            "--clear-url",
+            "--clear-command",
+            "--clear-bearer-token-env",
+        ]);
+
+        assert_eq!(
+            update_patch_from_args(update),
+            json!({
+                "name": null,
+                "url": null,
+                "command": null,
+                "args": null,
+                "bearer_token_env": null,
+                "proxy_resources": null,
+            })
+        );
     }
 }

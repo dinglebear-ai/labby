@@ -751,7 +751,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.oauth.clear",
         description: "Clear stored upstream OAuth credentials for the shared gateway credential",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "ok",
         params: &[
@@ -801,7 +801,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.mcp.enable",
         description: "Enable an upstream MCP server so new sessions discover and proxy it again",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "GatewayView",
         params: &[NAME_PARAM],
@@ -817,7 +817,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.mcp.disable",
         description: "Disable an upstream MCP server and optionally clean up running processes",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "GatewayView + optional cleanup result",
         params: &[
@@ -839,7 +839,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.mcp.cleanup",
         description: "Kill or preview running processes associated with one upstream MCP server",
-        destructive: true,
+        destructive: false,
         requires_admin: true,
         returns: "GatewayCleanupView",
         params: &[
@@ -908,12 +908,36 @@ mod tests {
             "gateway.mcp.list",
             "gateway.discover",
             "gateway.import_tombstones.list",
+            "gateway.oauth.clear",
+            "gateway.mcp.enable",
+            "gateway.mcp.disable",
+            "gateway.mcp.cleanup",
         ] {
             let spec = ACTIONS
                 .iter()
                 .find(|spec| spec.name == action)
                 .expect("gateway action");
             assert!(!spec.destructive, "{action} should remain non-destructive");
+        }
+    }
+
+    #[test]
+    fn reversible_gateway_lifecycle_actions_are_not_destructive() {
+        for action in [
+            "gateway.oauth.clear",
+            "gateway.mcp.enable",
+            "gateway.mcp.disable",
+            "gateway.mcp.cleanup",
+        ] {
+            let spec = ACTIONS
+                .iter()
+                .find(|spec| spec.name == action)
+                .expect("gateway action");
+            assert!(spec.requires_admin, "{action} should remain admin-gated");
+            assert!(
+                !spec.destructive,
+                "{action} is reversible or easily recreated and must not require destructive confirmation"
+            );
         }
     }
 

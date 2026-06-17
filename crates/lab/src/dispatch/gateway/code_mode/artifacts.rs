@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
+use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -326,18 +327,23 @@ pub(in crate::dispatch::gateway::code_mode) async fn prune_artifact_runs_in(
         }
     }
     run_dirs.sort(); // ascending: oldest ULID first
-    let newest_first: Vec<&String> = run_dirs.iter().rev().collect();
+    let newest_first: Vec<String> = run_dirs.iter().rev().cloned().collect();
 
     // When byte-pruning is on, size every run directory concurrently up front —
     // the walks are independent — instead of serializing them inside the
     // decision loop below.
     let sizes: Vec<u64> = if byte_pruning {
-        futures::future::join_all(
-            newest_first
-                .iter()
-                .map(|name| dir_size_bytes(store_root.join(name))),
-        )
-        .await
+        const SIZE_WALK_CONCURRENCY: usize = 8;
+        let mut indexed_sizes: Vec<(usize, u64)> =
+            stream::iter(newest_first.iter().cloned().enumerate().map(|(idx, name)| {
+                let path = store_root.join(name);
+                async move { (idx, dir_size_bytes(path).await) }
+            }))
+            .buffer_unordered(SIZE_WALK_CONCURRENCY)
+            .collect()
+            .await;
+        indexed_sizes.sort_by_key(|(idx, _)| *idx);
+        indexed_sizes.into_iter().map(|(_, size)| size).collect()
     } else {
         Vec::new()
     };
@@ -359,10 +365,10 @@ pub(in crate::dispatch::gateway::code_mode) async fn prune_artifact_runs_in(
         }
         // Never collect a run that is still executing — its directory may be
         // mid-write. It becomes eligible on a later prune once it finishes.
-        if active.contains(*name) {
+        if active.contains(name) {
             continue;
         }
-        to_remove.push((*name).clone());
+        to_remove.push(name.clone());
     }
 
     for name in to_remove {

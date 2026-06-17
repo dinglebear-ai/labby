@@ -28,6 +28,13 @@ The complete gateway action inventory is generated from `ActionSpec`:
 - [generated action catalog](../generated/action-catalog.md)
 - [generated action catalog JSON](../generated/action-catalog.json)
 
+Lab uses `destructive` only for actions that can permanently lose data that
+cannot be quickly and easily regenerated with minimal effort. Reversible gateway
+lifecycle work is still admin-gated, but it is not destructive under that
+definition. In particular, clearing OAuth tokens, enabling/disabling an
+upstream, and killing restartable upstream processes do not require destructive
+confirmation.
+
 `gateway.test`, `gateway.add`, `gateway.update`, `gateway.remove`, and
 `gateway.reload` are destructive actions in shared action metadata. HTTP callers
 must send `params.confirm = true`, CLI callers must confirm interactively or use
@@ -301,6 +308,9 @@ labby gateway add --name remote-lab --url https://lab2.example.com/mcp --bearer-
 labby gateway add --name deepwiki --url https://mcp.deepwiki.com/mcp
 labby gateway add --name local-tools --command local-mcp-server
 labby gateway update remote-lab --proxy-resources true
+labby gateway update remote-lab --command local-mcp-server --arg=--stdio
+labby gateway update local-tools --url https://lab2.example.com/mcp
+labby gateway update remote-lab --clear-bearer-token-env
 labby gateway remove remote-lab
 labby gateway reload
 ```
@@ -329,6 +339,14 @@ POST /v1/gateway
 ```json
 POST /v1/gateway
 { "action": "gateway.update", "params": { "confirm": true, "name": "remote-lab", "patch": { "proxy_resources": true } } }
+```
+
+To switch transports over HTTP/MCP, set the new transport field and explicitly
+clear the old one with `null`:
+
+```json
+{ "action": "gateway.update", "params": { "confirm": true, "name": "remote-lab", "patch": { "command": "local-mcp-server", "args": ["--stdio"], "url": null } } }
+{ "action": "gateway.update", "params": { "confirm": true, "name": "local-tools", "patch": { "url": "https://lab2.example.com/mcp", "command": null, "args": [] } } }
 ```
 
 ## Gateway-Managed Protected MCP Routes
@@ -751,7 +769,7 @@ MCP tool calls:
 ```json
 { "tool": "gateway", "input": { "action": "gateway.oauth.start", "params": { "upstream": "chrome-devtools" } } }
 { "tool": "gateway", "input": { "action": "gateway.oauth.status", "params": { "upstream": "chrome-devtools" } } }
-{ "tool": "gateway", "input": { "action": "gateway.oauth.clear", "params": { "confirm": true, "upstream": "chrome-devtools" } } }
+{ "tool": "gateway", "input": { "action": "gateway.oauth.clear", "params": { "upstream": "chrome-devtools" } } }
 ```
 
 These actions now operate on the shared gateway OAuth subject `gateway`, so the
