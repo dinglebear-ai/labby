@@ -177,7 +177,7 @@ async fn execute_proxy_embeds_only_reduced_discovery_catalog() {
 }
 
 #[tokio::test]
-async fn execute_proxy_keeps_discovery_when_generated_helpers_collide() {
+async fn execute_proxy_rejects_generated_helper_collisions() {
     let (manager, pool) =
         code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
     pool.insert_entry_for_tests(
@@ -200,23 +200,17 @@ async fn execute_proxy_keeps_discovery_when_generated_helpers_collide() {
     let registry = super::ToolRegistry::new();
     let broker = super::CodeModeBroker::new(&registry, Some(&manager));
 
-    let proxy = broker
+    let err = broker
         .build_code_mode_proxy_for_tests(
             &super::CodeModeCaller::TrustedLocal,
             super::CodeModeSurface::Mcp,
             &super::CodeModeCapabilityFilter::default(),
         )
         .await
-        .expect("discovery proxy should survive helper collisions");
+        .expect_err("generated helper collisions fail the run");
 
-    assert!(proxy.contains("codemode.search"));
-    assert!(proxy.contains("codemode.describe"));
-    assert!(proxy.contains("alpha::movie.search"));
-    assert!(proxy.contains("alpha::movie_search"));
-    assert!(
-        !proxy.contains("codemode[\"alpha\"] = {"),
-        "colliding generated helpers should be omitted, not emitted"
-    );
+    assert_eq!(err.kind(), "invalid_param");
+    assert!(err.to_string().contains("both sanitize to"));
 }
 
 #[tokio::test]

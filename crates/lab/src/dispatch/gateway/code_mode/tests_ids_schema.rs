@@ -2,10 +2,14 @@
 #![cfg(test)]
 #![allow(clippy::panic)]
 
+use std::collections::BTreeMap;
+
 use rmcp::model::{CallToolResult, Content};
 use serde_json::json;
 
-use crate::dispatch::snippets::store::{SnippetInfo, SnippetSource};
+use crate::dispatch::snippets::store::{
+    SnippetInfo, SnippetInputSpec, SnippetInputType, SnippetSource,
+};
 
 use super::protocol::CodeModeRunnerOutput;
 use super::runner_io::code_mode_upstream_error_info;
@@ -53,6 +57,36 @@ fn snippet_catalog_entry_projects_to_codemode_run() {
     assert_eq!(discovery.kind, types::CodeModeCatalogKind::Snippet);
     assert_eq!(discovery.path, "snippet.gateway-summary");
     assert_eq!(discovery.helper, "codemode.run(\"gateway-summary\", input)");
+}
+
+#[test]
+fn snippet_catalog_json_input_schema_allows_any_json_value() {
+    let mut inputs = BTreeMap::new();
+    inputs.insert(
+        "payload".to_string(),
+        SnippetInputSpec {
+            ty: SnippetInputType::Json,
+            required: true,
+            default: None,
+            description: Some("Raw payload".to_string()),
+        },
+    );
+    let info = SnippetInfo {
+        name: "json-snippet".to_string(),
+        description: None,
+        tags: Vec::new(),
+        inputs,
+        source: SnippetSource::User,
+        path: "json-snippet.md".into(),
+        shadowed: false,
+    };
+
+    let entry = CodeModeCatalogEntry::snippet(&info);
+    let schema = entry.schema.expect("snippet schema");
+    let payload = &schema["properties"]["payload"];
+    assert!(payload.get("type").is_none(), "{payload}");
+    assert_eq!(payload["description"], "Raw payload");
+    assert_eq!(schema["required"], json!(["payload"]));
 }
 
 #[test]
@@ -111,6 +145,21 @@ fn capability_filter_allows_only_selected_upstreams_and_tools() {
     assert!(filter.allows("github", "search_issues"));
     assert!(!filter.allows("github", "delete_repo"));
     assert!(!filter.allows("docker", "search_issues"));
+}
+
+#[test]
+fn capability_filter_fingerprint_is_structured_and_collision_resistant() {
+    let first = CodeModeCapabilityFilter::new(
+        vec!["a,b".to_string(), "c".to_string()],
+        vec!["x".to_string()],
+    );
+    let second = CodeModeCapabilityFilter::new(
+        vec!["a".to_string(), "b,c".to_string()],
+        vec!["x".to_string()],
+    );
+
+    assert_ne!(first.fingerprint(), second.fingerprint());
+    assert!(serde_json::from_str::<serde_json::Value>(&first.fingerprint()).is_ok());
 }
 
 #[test]

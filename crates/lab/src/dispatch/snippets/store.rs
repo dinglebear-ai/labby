@@ -224,7 +224,7 @@ pub fn create_promoted_user_snippet(
     let shadows_builtin = find_snippet_file(builtin_dir, name).is_some();
     if shadows_builtin && !shadow_builtin {
         return Err(ToolError::Sdk {
-            sdk_kind: "builtin_shadow_requires_confirmation".to_string(),
+            sdk_kind: "confirmation_required".to_string(),
             message: format!(
                 "snippet `{name}` matches a built-in snippet; pass shadow_builtin:true to create a user override"
             ),

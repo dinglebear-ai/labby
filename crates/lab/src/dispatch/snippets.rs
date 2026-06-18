@@ -181,7 +181,7 @@ async () => ({ ok: true })
             false,
         )
         .expect_err("builtin shadow requires explicit flag");
-        assert_eq!(err.kind(), "builtin_shadow_requires_confirmation");
+        assert_eq!(err.kind(), "confirmation_required");
 
         let info = create_promoted_user_snippet(
             &lab_home,

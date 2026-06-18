@@ -198,10 +198,9 @@ fn snippet_inputs_schema(inputs: &std::collections::BTreeMap<String, SnippetInpu
             required.push(Value::String(name.clone()));
         }
         let mut field = serde_json::Map::new();
-        field.insert(
-            "type".to_string(),
-            Value::String(snippet_input_json_type(spec.ty).to_string()),
-        );
+        if let Some(json_type) = snippet_input_json_type(spec.ty) {
+            field.insert("type".to_string(), Value::String(json_type.to_string()));
+        }
         if let Some(description) = &spec.description {
             field.insert(
                 "description".to_string(),
@@ -221,15 +220,15 @@ fn snippet_inputs_schema(inputs: &std::collections::BTreeMap<String, SnippetInpu
     })
 }
 
-fn snippet_input_json_type(ty: SnippetInputType) -> &'static str {
+fn snippet_input_json_type(ty: SnippetInputType) -> Option<&'static str> {
     match ty {
-        SnippetInputType::String => "string",
-        SnippetInputType::Integer => "integer",
-        SnippetInputType::Number => "number",
-        SnippetInputType::Boolean => "boolean",
-        SnippetInputType::Object => "object",
-        SnippetInputType::Array => "array",
-        SnippetInputType::Json => "string",
+        SnippetInputType::String => Some("string"),
+        SnippetInputType::Integer => Some("integer"),
+        SnippetInputType::Number => Some("number"),
+        SnippetInputType::Boolean => Some("boolean"),
+        SnippetInputType::Object => Some("object"),
+        SnippetInputType::Array => Some("array"),
+        SnippetInputType::Json => None,
     }
 }
 
@@ -658,6 +657,22 @@ fn source_capability_within_lookup(source: &str, lookup: &str) -> bool {
 }
 
 fn capability_fingerprint_upstreams(fingerprint: &str) -> Option<Option<BTreeSet<String>>> {
+    if let Ok(value) = serde_json::from_str::<Value>(fingerprint) {
+        let upstreams = value.get("upstreams")?;
+        if upstreams.is_null() {
+            return Some(None);
+        }
+        let set = upstreams
+            .as_array()?
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>();
+        return Some(Some(set));
+    }
+
     let upstreams = fingerprint
         .split(';')
         .find_map(|part| part.strip_prefix("upstreams="))?;
@@ -857,12 +872,10 @@ impl CodeModeCapabilityFilter {
 
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        let upstreams = self
-            .upstreams
-            .as_ref()
-            .map(|set| set.iter().cloned().collect::<Vec<_>>().join(","))
-            .unwrap_or_else(|| "*".to_string());
-        let tools = self.tools.iter().cloned().collect::<Vec<_>>().join(",");
-        format!("upstreams={upstreams};tools={tools}")
+        serde_json::json!({
+            "upstreams": self.upstreams.as_ref().map(|set| set.iter().cloned().collect::<Vec<_>>()),
+            "tools": self.tools.iter().cloned().collect::<Vec<_>>(),
+        })
+        .to_string()
     }
 }

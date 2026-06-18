@@ -158,16 +158,12 @@ impl CodeModeBroker<'_> {
             .filter(|entry| entry.kind == super::types::CodeModeCatalogKind::Tool)
             .collect::<Vec<_>>();
         let namespace_js =
-            match super::preamble::generate_js_proxy_from_catalog(&tool_entries, &upstreams) {
-                Ok(namespace_js) => namespace_js,
-                Err(message) => {
-                    tracing::warn!(
-                        error = %message,
-                        "code_mode.proxy_helpers_omitted; discovery helpers remain available"
-                    );
-                    String::new()
-                }
-            };
+            super::preamble::generate_js_proxy_from_catalog(&tool_entries, &upstreams).map_err(
+                |message| ToolError::Sdk {
+                    sdk_kind: "invalid_param".to_string(),
+                    message,
+                },
+            )?;
         Ok(format!("{discovery_js}\n{namespace_js}"))
     }
 

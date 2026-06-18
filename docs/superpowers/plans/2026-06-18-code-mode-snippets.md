@@ -279,7 +279,7 @@
     - missing gateway manager/source store: `gateway_unavailable`
     - authorization failure: existing stable auth/admin error kind
     - route/actor mismatch: `forbidden`
-    - builtin shadow without flag: `builtin_shadow_requires_confirmation`
+    - builtin shadow without flag: `confirmation_required`
     - existing snippet without force: existing store error
 
 - [ ] Do not add a standalone local CLI promotion command in this implementation.
