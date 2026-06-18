@@ -32,5 +32,6 @@
       "Help prepare a secret lookup without exposing the value."
     ],
     "brandColor": "#175DDC"
-  }
+  },
+  "mcpServers": "./.mcp.json"
 }

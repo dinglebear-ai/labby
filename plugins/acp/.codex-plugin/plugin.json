@@ -32,5 +32,6 @@
       "Explain how ACP tool calls should stream results."
     ],
     "brandColor": "#7C3AED"
-  }
+  },
+  "mcpServers": "./.mcp.json"
 }

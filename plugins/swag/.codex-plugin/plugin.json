@@ -33,5 +33,6 @@
       "Inspect existing SWAG configs for a service."
     ],
     "brandColor": "#10B981"
-  }
+  },
+  "mcpServers": "./.mcp.json"
 }
