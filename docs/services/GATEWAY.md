@@ -131,7 +131,7 @@ CLI:
 labby gateway code status
 labby gateway code enable
 labby gateway code disable
-labby gateway code exec --code 'async () => tools.length'
+labby gateway code exec --code 'async () => (await codemode.search("GitHub issues")).total'
 ```
 
 HTTP/MCP gateway management actions:
@@ -174,9 +174,11 @@ exposure checks. `params` must be JSON-serializable.
 
 ### Code Mode Call Inspector
 
-When Code Mode is enabled, the synthetic MCP `search` and `execute` tools also
-advertise a read-only MCP App inspector through `_meta.ui.resourceUri`.
+When Code Mode is enabled, the synthetic MCP `codemode`, `search`, and
+`execute` tools also advertise a read-only MCP App inspector through
+`_meta.ui.resourceUri`.
 
+- `codemode` attaches `ui://lab/code-mode/codemode`
 - `search` attaches `ui://lab/code-mode/search`
 - `execute` attaches `ui://lab/code-mode/execute`
 - recent in-memory history is available at `ui://lab/code-mode/history`
@@ -214,16 +216,12 @@ Advertised tools per active mode:
 
 | Mode | Advertised MCP tools |
 |------|---------------------|
-| `[code_mode].enabled = true` | `search`, `execute` |
+| `[code_mode].enabled = true` | `codemode`, `search`, `execute` |
 | Neither | raw Lab service tools + healthy upstream tools |
 
-Legacy aliases emit a `WARN`-level trace event with `legacy_alias` and `canonical` fields on every
-invocation. Use canonical names in new clients:
-
-| Canonical | Legacy aliases |
-|-----------|---------------|
-| `search` | `code_mode` |
-| `execute` | `tool_execute`, `invoke`, `tool_invoke` |
+Use canonical MCP tool names in new clients: `codemode` for primary execution,
+`search` for compatibility catalog filtering, and `execute` for compatibility
+sandbox execution.
 
 Rules:
 
@@ -234,14 +232,14 @@ Rules:
 - `code_mode.token_estimate_divisor` is validated in the range `1..=64`
 - `code_mode.max_log_entries` is validated in the range `1..=100000`
 - `code_mode.max_log_bytes` is validated in the range `1..=104857600`
-- `search` and `execute` both require a non-empty `code` string
+- `codemode`, `search`, and `execute` all require a non-empty `code` string
 - `search` is read-only discovery and accepts `lab:read`, `lab`, or `lab:admin`
-- `execute` requires `lab` or `lab:admin` and brokers calls through the same gateway visibility checks as legacy `tool_execute`
+- `codemode` and `execute` require `lab` or `lab:admin` and broker calls through the same gateway visibility checks as legacy `tool_execute`
 - Lab actions are not supported inside Code Mode `callTool`
 - gateway action provenance fields (`origin` and `owner`) are reserved in Code Mode and are overwritten by the broker
 - `execute` enforces `timeout_ms` by killing the child process and enforces `max_tool_calls` in the parent before brokering each call
 - invalid Code Mode ids return `invalid_code_mode_id`
-- unavailable or overlarge upstream schemas return `schema_unavailable`
+- unavailable or overlarge upstream schemas may be omitted; generated signatures fall back to `unknown`
 - old `[[upstream]].code_mode` blocks are accepted only as migration input and are dropped on the next gateway config write
 - `gateway.update` rejects `patch.code_mode`; use `gateway.code_mode.set` instead
 
@@ -277,7 +275,7 @@ Every mutating action follows the same sequence:
 2. write `~/.config/lab/config.toml` with temp-file-in-same-dir plus rename
 3. build and lazy-seed a fresh upstream pool outside the config mutation lock
 4. atomically swap the runtime handle
-5. leave Code Mode catalog refresh to the next `search` or `execute` call, which
+5. leave Code Mode catalog refresh to the next `codemode`, `search`, or `execute` call, which
    reprobes live upstream metadata through the gateway manager
 6. notify connected MCP peers when visible tool/resource/prompt catalogs changed
 

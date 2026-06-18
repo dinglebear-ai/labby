@@ -394,6 +394,12 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         .expect("execute tool");
 
     for tool in [codemode, search, execute] {
+        assert_eq!(
+            tool.input_schema["properties"]["code"]["minLength"],
+            serde_json::json!(1),
+            "{} must advertise non-empty code",
+            tool.name
+        );
         let schema = tool.output_schema.as_ref().expect("outputSchema");
         let kinds = schema["oneOf"]
             .as_array()
@@ -462,6 +468,56 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
     assert!(names.contains(&CODE_MODE_SEARCH_TOOL_NAME));
     assert!(names.contains(&TOOL_EXECUTE_TOOL_NAME));
     assert!(!names.contains(&"radarr"));
+}
+
+#[tokio::test]
+async fn list_tools_skips_upstream_ui_tools_that_collide_with_synthetic_names() {
+    let upstream_name: Arc<str> = Arc::from("apps");
+    let colliding_tool = fixture_upstream_tool(
+        &upstream_name,
+        CODE_MODE_TOOL_NAME,
+        Some("ui://apps/codemode.html"),
+    );
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "apps",
+        fixture_upstream_entry(
+            "apps",
+            HashMap::from([(CODE_MODE_TOOL_NAME.to_string(), colliding_tool)]),
+        ),
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(true, fixture_upstream_config("apps"), pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        rmcp::model::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = rmcp::service::RequestContext::new(
+        rmcp::model::NumberOrString::Number(1),
+        running.peer().clone(),
+    );
+
+    let result = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("list tools");
+    let codemode_count = result
+        .tools
+        .iter()
+        .filter(|tool| tool.name.as_ref() == CODE_MODE_TOOL_NAME)
+        .count();
+
+    assert_eq!(
+        codemode_count, 1,
+        "upstream UI tool must not duplicate the synthetic codemode tool"
+    );
 }
 
 #[tokio::test]

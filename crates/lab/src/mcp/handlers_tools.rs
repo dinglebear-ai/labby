@@ -92,6 +92,7 @@ impl LabMcpServer {
                 "properties": {
                     "code": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "JavaScript async arrow function to execute. Use await callTool(id, params) with JSON-serializable params."
                     },
                     "upstreams": {
@@ -102,7 +103,7 @@ impl LabMcpServer {
                     "tools": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional tool allowlist for this execution. Accepts raw tool names or <name>::<tool> ids."
+                        "description": "Optional tool allowlist for this execution. Accepts raw tool names or <upstream>::<tool> ids."
                     },
                     "max_tool_calls": {
                         "type": "integer",
@@ -152,6 +153,7 @@ impl LabMcpServer {
                 "properties": {
                     "code": {
                         "type": "string",
+                        "minLength": 1,
                         "description": "JavaScript async arrow function to search the upstream MCP tool catalog. \
                             The sandbox injects `const tools = [...]` where each entry has id, upstream, \
                             name, description, schema, output_schema, signature, and dts. Return JSON-serializable results. \
@@ -254,13 +256,17 @@ impl LabMcpServer {
             };
             for ut in upstream_tools {
                 let tool_name = ut.tool.name.as_ref();
-                if builtin_names.contains(&tool_name) {
+                if builtin_names.contains(&tool_name)
+                    || tools
+                        .iter()
+                        .any(|existing| existing.name.as_ref() == tool_name)
+                {
                     tracing::debug!(
                         surface = "mcp",
                         service = "labby",
                         action = "tool.register",
                         tool = tool_name,
-                        "skipping upstream tool that collides with built-in service"
+                        "skipping upstream tool that collides with an already advertised tool"
                     );
                     continue;
                 }

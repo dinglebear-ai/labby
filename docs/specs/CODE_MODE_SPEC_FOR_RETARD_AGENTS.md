@@ -96,8 +96,8 @@ catalog, so callers control filtering in their own code.
 ## Enforcement
 
 - `search` is read-only and accepts `lab:read`, `lab`, or `lab:admin`.
-- `execute` requires `lab` or `lab:admin`.
-- `execute` has no filesystem, environment, host network, Node, or Deno APIs.
+- `codemode` and `execute` require `lab` or `lab:admin`.
+- `codemode` and `execute` have no filesystem, environment, host network, Node, or Deno APIs.
 - Host calls are brokered by the parent gateway and retain upstream visibility, auth, destructive-action, schema-validation, and response-budget checks.
 - `timeout_ms` kills runaway executions.
 - `max_tool_calls` is enforced in the parent before each brokered upstream call.
@@ -108,10 +108,10 @@ catalog, so callers control filtering in their own code.
 Code Mode specific failures use stable `kind` values including:
 
 - `invalid_code_mode_id`
-- `schema_unavailable`
 - `validation_failed`
 - `code_mode_timeout`
 - `code_mode_fuel_exhausted`
 - `timeout`
 
 General gateway and upstream failures continue to use the shared error envelope described in [docs/dev/ERRORS.md](../dev/ERRORS.md).
+Unavailable or overlarge upstream schemas may be omitted from Code Mode metadata; generated signatures fall back to `unknown`.

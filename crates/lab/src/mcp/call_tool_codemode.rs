@@ -143,6 +143,23 @@ pub(crate) fn string_array_arg(
         .collect()
 }
 
+pub(crate) fn code_arg(args: &JsonObject) -> Result<&str, DispatchToolError> {
+    let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
+    if code.trim().is_empty() {
+        return Err(DispatchToolError::Sdk {
+            sdk_kind: "invalid_param".to_string(),
+            message: "code must not be empty".to_string(),
+        });
+    }
+    if code.len() > CODE_MODE_MAX_CODE_BYTES {
+        return Err(DispatchToolError::Sdk {
+            sdk_kind: "invalid_param".to_string(),
+            message: "code exceeds max length 20000 bytes".to_string(),
+        });
+    }
+    Ok(code)
+}
+
 fn route_scoped_capability_filter(
     args: &JsonObject,
     route_allowed: Option<&BTreeSet<String>>,
@@ -212,11 +229,13 @@ impl LabMcpServer {
             let env = tool_error_envelope(service, "call_tool", &err);
             return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
         }
-        let code = args
-            .get("code")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let code = match code_arg(args) {
+            Ok(code) => code.to_string(),
+            Err(err) => {
+                let env = tool_error_envelope(service, "call_tool", &err);
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+        };
         let code_hash = hash_arguments(&Value::String(code.clone()));
         let Some(manager) = &self.gateway_manager else {
             let envelope = build_error(
@@ -393,27 +412,19 @@ impl LabMcpServer {
             )]));
         };
         let config = manager.code_mode_config().await;
-        let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
-        if code.trim().is_empty() {
-            let env = build_error_extra(
-                service,
-                "call_tool",
-                "invalid_param",
-                "code must not be empty",
-                &serde_json::json!({ "param": "code" }),
-            );
-            return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-        }
-        if code.len() > CODE_MODE_MAX_CODE_BYTES {
-            let env = build_error_extra(
-                service,
-                "call_tool",
-                "invalid_param",
-                "code exceeds max length 20000 bytes",
-                &serde_json::json!({ "param": "code" }),
-            );
-            return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-        }
+        let code = match code_arg(args) {
+            Ok(code) => code,
+            Err(err) => {
+                let env = build_error_extra(
+                    service,
+                    "call_tool",
+                    err.kind(),
+                    &err.to_string(),
+                    &serde_json::json!({ "param": "code" }),
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+        };
         let requested_max_tool_calls = args
             .get("max_tool_calls")
             .and_then(Value::as_u64)

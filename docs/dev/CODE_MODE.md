@@ -17,7 +17,7 @@ that same execution.
 
 Inside the sandbox:
 
-- `await codemode.search("github pull requests")` searches the reduced
+- `await codemode.search("GitHub pull requests")` searches the reduced
   in-execution catalog.
 - `await codemode.describe("github.list_pull_requests")` returns compact docs
   for an exact tool target.
@@ -28,7 +28,7 @@ Example:
 
 ```ts
 async () => {
-  const matches = await codemode.search({ query: "github pull requests", limit: 1 });
+  const matches = await codemode.search({ query: "GitHub pull requests", limit: 1 });
   const docs = await codemode.describe(matches.results[0].path);
   const pulls = await codemode.github.list_pull_requests({ state: "open" });
   return {

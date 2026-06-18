@@ -177,6 +177,90 @@ async fn execute_proxy_embeds_only_reduced_discovery_catalog() {
 }
 
 #[tokio::test]
+async fn execute_proxy_keeps_discovery_when_generated_helpers_collide() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
+    pool.insert_entry_for_tests(
+        "alpha",
+        fixture_upstream_entry(
+            "alpha",
+            HashMap::from([
+                (
+                    "movie.search".to_string(),
+                    fixture_catalog_tool("alpha", "movie.search"),
+                ),
+                (
+                    "movie_search".to_string(),
+                    fixture_catalog_tool("alpha", "movie_search"),
+                ),
+            ]),
+        ),
+    )
+    .await;
+    let registry = super::ToolRegistry::new();
+    let broker = super::CodeModeBroker::new(&registry, Some(&manager));
+
+    let proxy = broker
+        .build_code_mode_proxy_for_tests(
+            &super::CodeModeCaller::TrustedLocal,
+            super::CodeModeSurface::Mcp,
+            &super::CodeModeCapabilityFilter::default(),
+        )
+        .await
+        .expect("discovery proxy should survive helper collisions");
+
+    assert!(proxy.contains("codemode.search"));
+    assert!(proxy.contains("codemode.describe"));
+    assert!(proxy.contains("alpha::movie.search"));
+    assert!(proxy.contains("alpha::movie_search"));
+    assert!(
+        !proxy.contains("codemode[\"alpha\"] = {"),
+        "colliding generated helpers should be omitted, not emitted"
+    );
+}
+
+#[tokio::test]
+async fn execute_proxy_discovery_paths_use_reserved_safe_namespaces() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("search"),
+        fixture_http_upstream("describe"),
+        fixture_http_upstream("step"),
+    ])
+    .await;
+    for upstream in ["search", "describe", "step"] {
+        pool.insert_entry_for_tests(upstream, healthy_entry_with_tool(upstream, "lookup"))
+            .await;
+    }
+    let registry = super::ToolRegistry::new();
+    let broker = super::CodeModeBroker::new(&registry, Some(&manager));
+
+    let proxy = broker
+        .build_code_mode_proxy_for_tests(
+            &super::CodeModeCaller::TrustedLocal,
+            super::CodeModeSurface::Mcp,
+            &super::CodeModeCapabilityFilter::default(),
+        )
+        .await
+        .expect("proxy");
+
+    for upstream in ["search", "describe", "step"] {
+        let namespace = format!("{upstream}_");
+        assert!(
+            proxy.contains(&format!("\"path\":\"{namespace}.lookup\"")),
+            "discovery path must use reserved-safe namespace for {upstream}: {proxy}"
+        );
+        assert!(
+            proxy.contains(&format!("\"helper\":\"codemode.{namespace}.lookup\"")),
+            "discovery helper must use reserved-safe namespace for {upstream}: {proxy}"
+        );
+        assert!(
+            proxy.contains(&format!("{upstream}::lookup")),
+            "raw id must keep original upstream for {upstream}: {proxy}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn broker_search_exposes_typed_schema_metadata_from_live_catalog() {
     let dir = tempfile::tempdir().expect("tempdir");
     let runtime = super::super::runtime::GatewayRuntimeHandle::default();

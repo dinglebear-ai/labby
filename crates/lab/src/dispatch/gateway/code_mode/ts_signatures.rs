@@ -15,7 +15,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use serde_json::Value;
 
-use super::preamble::tool_name_to_snake;
+use super::preamble::{tool_name_to_snake, upstream_name_to_namespace};
 use super::upstream_tool_id;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +39,7 @@ pub fn generate_tool_types(
     let input_name = format!("{base}Input");
     let output_name = format!("{base}Output");
     let upstream_interface = format!("Codemode{}Tools", to_pascal_identifier(upstream));
-    let upstream_method = tool_name_to_snake(upstream);
+    let upstream_method = upstream_name_to_namespace(upstream);
     let tool_method = tool_name_to_snake(tool);
     let tool_id = upstream_tool_id(upstream, tool);
     let tool_id_literal = serde_json::to_string(&tool_id).unwrap_or_else(|_| "\"\"".to_string());

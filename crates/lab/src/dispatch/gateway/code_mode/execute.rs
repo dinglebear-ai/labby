@@ -140,7 +140,7 @@ impl CodeModeBroker<'_> {
             .map(|tool| {
                 let upstream = tool.upstream_name.to_string();
                 let name = tool.tool.name.to_string();
-                let upstream_snake = super::preamble::tool_name_to_snake(&upstream);
+                let upstream_snake = super::preamble::upstream_name_to_namespace(&upstream);
                 let name_snake = super::preamble::tool_name_to_snake(&name);
                 let description = tool
                     .tool
@@ -176,13 +176,16 @@ impl CodeModeBroker<'_> {
                     message,
                 }
             })?;
-        let namespace_js =
-            super::preamble::generate_js_proxy(&tools, &upstreams).map_err(|message| {
-                ToolError::Sdk {
-                    sdk_kind: "invalid_param".to_string(),
-                    message,
-                }
-            })?;
+        let namespace_js = match super::preamble::generate_js_proxy(&tools, &upstreams) {
+            Ok(namespace_js) => namespace_js,
+            Err(message) => {
+                tracing::warn!(
+                    error = %message,
+                    "code_mode.proxy_helpers_omitted; discovery helpers remain available"
+                );
+                String::new()
+            }
+        };
         Ok(format!("{discovery_js}\n{namespace_js}"))
     }
 
@@ -215,42 +218,50 @@ impl CodeModeBroker<'_> {
         let code_to_run = normalize_user_code(code);
 
         // Build the runtime `codemode.*` proxy from the live upstream catalog
-        // (same source `search` uses). On any failure, fall back to an empty
-        // proxy rather than aborting execute — `callTool` is always available as
-        // the documented escape hatch, so the run can still proceed without the
-        // typed namespace.
-        // Bound proxy generation by the same wall-clock budget as the run so a
-        // slow upstream catalog cannot blow past the configured timeout before
-        // the runner even starts. On elapsed or failure, fall back to an empty
-        // proxy and continue — `callTool` is always available as the escape hatch.
-        let proxy = match tokio::time::timeout(
-            timeout,
+        // (same source `search` uses) before starting the runner. Proxy failure is
+        // an execution failure: otherwise `codemode.search`, `codemode.describe`,
+        // and generated helpers silently disappear while raw `callTool` can still
+        // make the run look successful.
+        let deadline = tokio::time::Instant::now() + timeout;
+        let proxy = match tokio::time::timeout_at(
+            deadline,
             self.build_code_mode_proxy(&caller, surface, &capability_filter),
         )
         .await
         {
             Ok(Ok(proxy)) => proxy,
             Ok(Err(err)) => {
-                tracing::warn!(
-                    kind = err.kind(),
-                    "code_mode.proxy_generation_failed; continuing with callTool only"
-                );
-                String::new()
+                tracing::warn!(kind = err.kind(), "code_mode.proxy_generation_failed");
+                return Err(err.into());
             }
             Err(_elapsed) => {
                 tracing::warn!(
                     timeout_ms = timeout.as_millis(),
-                    "code_mode.proxy_generation_timed_out; continuing with callTool only"
+                    "code_mode.proxy_generation_timed_out"
                 );
-                String::new()
+                return Err(ToolError::Sdk {
+                    sdk_kind: "timeout".to_string(),
+                    message: "Code Mode proxy generation timed out".to_string(),
+                }
+                .into());
             }
         };
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .unwrap_or_default();
+        if remaining.is_zero() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "timeout".to_string(),
+                message: "Code Mode execution timed out before sandbox start".to_string(),
+            }
+            .into());
+        }
 
         self.run_in_runner(
             code_to_run,
             proxy,
             max_tool_calls,
-            timeout,
+            remaining,
             caller,
             surface,
             max_log_entries,

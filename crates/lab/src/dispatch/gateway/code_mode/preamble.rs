@@ -91,6 +91,13 @@ const JS_RESERVED: &[&str] = &[
     "yield",
 ];
 
+/// Top-level `codemode` helper names owned by Lab's local runtime.
+///
+/// Upstream namespaces that sanitize to one of these names are suffixed so a
+/// real upstream named `search`, `describe`, or `step` cannot overwrite the
+/// local discovery/control helpers.
+const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &["search", "describe", "step"];
+
 /// Convert a dotted/hyphenated/slashed/coloned tool name to snake_case.
 ///
 /// Examples (Cloudflare parity):
@@ -144,6 +151,16 @@ pub fn tool_name_to_snake(name: &str) -> String {
         format!("{snake}_")
     } else {
         snake
+    }
+}
+
+/// Convert an upstream name to the runtime `codemode.<namespace>` key.
+pub(crate) fn upstream_name_to_namespace(name: &str) -> String {
+    let namespace = tool_name_to_snake(name);
+    if CODEMODE_TOP_LEVEL_RESERVED.contains(&namespace.as_str()) {
+        format!("{namespace}_")
+    } else {
+        namespace
     }
 }
 
@@ -290,7 +307,7 @@ pub fn generate_js_proxy(tools: &[UpstreamTool], upstreams: &[String]) -> Result
     let mut by_snake_upstream: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut final_proxy_keys: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
     for (upstream_name, upstream_tools) in &by_upstream {
-        let upstream_snake = tool_name_to_snake(upstream_name);
+        let upstream_snake = upstream_name_to_namespace(upstream_name);
 
         // Build snake_case → dotted name mapping, last registration wins on collision.
         let mut snake_to_dotted: BTreeMap<String, String> = BTreeMap::new();
@@ -411,6 +428,14 @@ mod tests {
         assert_eq!(tool_name_to_snake(""), "_");
     }
 
+    #[test]
+    fn upstream_name_to_namespace_preserves_top_level_helpers() {
+        assert_eq!(upstream_name_to_namespace("github"), "github");
+        assert_eq!(upstream_name_to_namespace("search"), "search_");
+        assert_eq!(upstream_name_to_namespace("describe"), "describe_");
+        assert_eq!(upstream_name_to_namespace("step"), "step_");
+    }
+
     // ── generate_js_proxy ─────────────────────────────────────────────────────
 
     #[test]
@@ -431,6 +456,41 @@ mod tests {
         assert!(!js.contains("schema"));
         assert!(!js.contains("output_schema"));
         assert!(!js.contains("dts"));
+    }
+
+    #[test]
+    fn discovery_preamble_advertises_search_describe_and_step_semantics() {
+        let entries = vec![
+            CodeModeDiscoveryEntry {
+                id: "github::search_issues".to_string(),
+                path: "github.search_issues".to_string(),
+                upstream: "github".to_string(),
+                name: "search_issues".to_string(),
+                helper: "codemode.github.search_issues".to_string(),
+                description: "Search GitHub issues".to_string(),
+                signature: "codemode.github.search_issues(params: unknown): Promise<unknown>"
+                    .to_string(),
+            },
+            CodeModeDiscoveryEntry {
+                id: "github::list_pull_requests".to_string(),
+                path: "github.list_pull_requests".to_string(),
+                upstream: "github".to_string(),
+                name: "list_pull_requests".to_string(),
+                helper: "codemode.github.list_pull_requests".to_string(),
+                description: "List GitHub pull requests".to_string(),
+                signature: "codemode.github.list_pull_requests(params: unknown): Promise<unknown>"
+                    .to_string(),
+            },
+        ];
+        let js = generate_discovery_js(&entries).expect("js");
+
+        assert!(js.contains("typeof input === \"object\""));
+        assert!(js.contains("Math.max(1, Math.min(50"));
+        assert!(js.contains("truncated: total > limit"));
+        assert!(js.contains("raw === entry.id || raw === entry.path || raw === entry.helper"));
+        assert!(js.contains("ambiguous_target"));
+        assert!(js.contains("unknown_tool"));
+        assert!(js.contains("Promise.resolve().then(fn)"));
     }
 
     #[test]
@@ -533,6 +593,39 @@ mod tests {
         );
         // ABSENCE: must not use nullish-coalescing (engine-portability)
         assert!(!js.contains("?? {}"), "must not depend on ?? operator");
+    }
+
+    #[test]
+    fn generate_js_proxy_does_not_overwrite_local_discovery_helpers() {
+        let schema = Arc::new(serde_json::Map::new());
+        for upstream in ["search", "describe", "step"] {
+            let namespace = upstream_name_to_namespace(upstream);
+            let tool = UpstreamTool {
+                upstream_name: Arc::from(upstream),
+                tool: Tool::new(
+                    "lookup",
+                    format!("Lookup through {upstream} upstream"),
+                    Arc::clone(&schema),
+                ),
+                destructive: false,
+                input_schema: None,
+                output_schema: None,
+            };
+            let js = generate_js_proxy(&[tool], &[upstream.to_string()]).expect("proxy");
+
+            assert!(
+                js.contains(&format!("codemode[\"{namespace}\"]")),
+                "reserved upstream must be suffixed: {js}"
+            );
+            assert!(
+                !js.contains(&format!("codemode[\"{upstream}\"] = {{")),
+                "reserved upstream must not replace codemode.{upstream}"
+            );
+            assert!(
+                js.contains(&format!("{upstream}::lookup")),
+                "raw upstream id must still route to the original upstream"
+            );
+        }
     }
 
     #[test]

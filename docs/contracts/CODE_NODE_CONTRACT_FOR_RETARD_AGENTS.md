@@ -115,9 +115,9 @@ Do not prefix IDs with `upstream::`; the gateway already knows these are upstrea
 
 ## Config
 
-`[code_mode].enabled` controls whether the MCP gateway advertises `search` and `execute`.
+`[code_mode].enabled` controls whether the MCP gateway advertises `codemode`, `search`, and `execute`.
 
-`[code_mode]` controls execution limits only:
+The remaining `[code_mode]` fields control execution limits:
 
 ```toml
 [code_mode]
@@ -130,4 +130,4 @@ max_log_entries = 1000
 max_log_bytes = 65536
 ```
 
-There is no `[code_mode].enabled` field.
+There is no separate `[gateway.search_and_execute]` enable field; `[code_mode].enabled` is the switch for this MCP surface.
