@@ -10,6 +10,15 @@ Observability is governed by `docs/dev/OBSERVABILITY.md`. When adding or changin
 Errors are governed by `docs/dev/ERRORS.md`. Serialization and output-boundary rules are governed by `docs/design/SERIALIZATION.md`.
 Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPATCH.md`.
 
+## Long-Lived Branches
+
+- `marketplace-no-mcp` is an intentional long-lived marketplace variant branch,
+  not stale cleanup. It keeps Lab/Labby marketplace plugin and skill entries
+  available while removing bundled MCP server registrations for environments
+  where those servers are already connected through the Labby gateway.
+- Do not merge `marketplace-no-mcp` into `main` by default, and do not delete it
+  as stale unless Jacob explicitly retires the no-MCP marketplace variant.
+
 **Build assumption.** This repo is developed and verified as an **all-features** binary. Treat `cargo build --all-features`, `cargo nextest run --all-features`, and the equivalent `just` commands as the default truth. Narrow feature-slice builds are supported for `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; use them to catch accidental cross-slice coupling, but check warning/removal decisions against the normal all-features build before deleting shared helpers.
 
 **Service onboarding rule.** When bringing a service online, follow the dispatch/module layout in `docs/dev/SERVICE_ONBOARDING.md`, update generated docs, then validate with the all-features test/build path. The older `labby scaffold service` / `labby audit onboarding` workflow is not part of the current CLI surface unless those commands are restored in code.
