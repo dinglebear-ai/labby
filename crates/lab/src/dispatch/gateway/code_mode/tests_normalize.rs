@@ -518,7 +518,7 @@ fn oauth_subject_trusted_local_returns_shared_subject() {
     );
 }
 
-// ── CodeModeCaller can_execute / can_read scope checks ────────────────────
+// ── CodeModeCaller can_execute scope checks ───────────────────────────────
 
 #[test]
 fn scoped_caller_can_execute_with_lab_scope() {
@@ -527,7 +527,6 @@ fn scoped_caller_can_execute_with_lab_scope() {
         sub: None,
     };
     assert!(caller.can_execute());
-    assert!(caller.can_read());
 }
 
 #[test]
@@ -536,9 +535,6 @@ fn scoped_caller_read_only_cannot_execute() {
         scopes: vec!["lab:read".to_string()],
         sub: None,
     };
-    // PRESENCE: can read
-    assert!(caller.can_read());
-    // ABSENCE: cannot execute
     assert!(
         !caller.can_execute(),
         "lab:read scope must not permit execution"

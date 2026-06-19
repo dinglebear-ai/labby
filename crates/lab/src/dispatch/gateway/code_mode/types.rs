@@ -744,16 +744,6 @@ impl CodeModeCaller {
     }
 
     #[must_use]
-    pub fn can_read(&self) -> bool {
-        match self {
-            Self::TrustedLocal => true,
-            Self::Scoped { scopes, .. } => scopes
-                .iter()
-                .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin")),
-        }
-    }
-
-    #[must_use]
     pub fn can_execute(&self) -> bool {
         match self {
             Self::TrustedLocal => true,

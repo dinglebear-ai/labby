@@ -1,8 +1,6 @@
-//! `CodeModeBroker::search` and live in-sandbox discovery catalog construction.
+//! Live in-sandbox discovery catalog construction.
 
 use std::path::{Path, PathBuf};
-
-use serde_json::Value;
 
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
@@ -11,104 +9,10 @@ use crate::dispatch::snippets::store::{builtin_snippet_dir, list_snippets};
 use crate::dispatch::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 
 use super::CodeModeBroker;
-use super::protocol::CODE_MODE_DISCOVERY_TIMEOUT;
-use super::types::{
-    CodeModeCaller, CodeModeCapabilityFilter, CodeModeCatalogEntry, CodeModeSurface,
-    sanitize_code_mode_schema,
-};
+use super::types::{CodeModeCatalogEntry, sanitize_code_mode_schema};
 use super::util::serialized_catalog_size;
 
 impl CodeModeBroker<'_> {
-    #[allow(dead_code)]
-    pub async fn search(
-        &self,
-        code: &str,
-        caller: CodeModeCaller,
-        surface: CodeModeSurface,
-    ) -> Result<Value, ToolError> {
-        self.search_allowed(code, caller, surface, None).await
-    }
-
-    pub async fn search_allowed(
-        &self,
-        code: &str,
-        caller: CodeModeCaller,
-        surface: CodeModeSurface,
-        allowed_upstreams: Option<&std::collections::BTreeSet<String>>,
-    ) -> Result<Value, ToolError> {
-        if !caller.can_read() {
-            return Err(ToolError::Sdk {
-                sdk_kind: "forbidden".to_string(),
-                message: "codemode.search requires one of scopes: lab:read, lab, lab:admin"
-                    .to_string(),
-            });
-        }
-
-        let Some(manager) = self.gateway_manager else {
-            return Ok(Value::Array(Vec::new()));
-        };
-
-        // `require_fresh_catalog = true` triggers `refresh_code_mode_catalog`,
-        // which is now bounded by a 30 s wall-clock TTL and a single-flight
-        // guard — back-to-back searches do not re-probe upstreams within the
-        // freshness window. See `manager/code_mode_runtime.rs`.
-        let require_fresh_catalog = true;
-        let owner = caller.runtime_owner(surface);
-        let oauth_subject = caller.oauth_subject();
-        // Returns (entries, catalog_json, serialized_size) — all from the
-        // render cache when the healthy tool set has not changed.
-        let include_snippets = caller.can_use_snippets() && allowed_upstreams.is_none();
-        let (catalog, catalog_json, serialized_size) = self
-            .code_mode_catalog_allowed(
-                manager,
-                require_fresh_catalog,
-                &owner,
-                oauth_subject,
-                allowed_upstreams,
-                include_snippets,
-            )
-            .await?;
-        tracing::info!(
-            surface = "dispatch",
-            service = "codemode",
-            action = "catalog.build",
-            catalog_size_bytes = serialized_size,
-            entry_count = catalog.len(),
-            "Code Mode discovery catalog ready"
-        );
-
-        // Run the caller's JS filter over the catalog inside the Javy runner. The
-        // catalog is injected as a global `const tools = [...]`. The discovery
-        // proxy exposes no host tool-call helpers, so discovery cannot call tools.
-        //
-        // Use the pre-serialized `catalog_json` from the render cache so we do
-        // not pay `serde_json::to_string` again when the catalog is unchanged.
-        let proxy = format!("const tools = {catalog_json};\n");
-        // Discovery passes the caller's code to the runner *raw* (no
-        // `normalize_user_code`). The runner's invoker requires the code to
-        // evaluate to a function and throws otherwise, so a non-function search
-        // input still surfaces as `server_error` — preserving the contract the
-        // old in-process `evaluate_code_mode_catalog` enforced. Normalizing here would
-        // wrap a bare expression like `42` into `async () => 42`, silently
-        // turning a contract violation into a successful run.
-        let response = self
-            .run_in_runner(
-                code.to_string(),
-                proxy,
-                CODE_MODE_DISCOVERY_TIMEOUT,
-                caller,
-                surface,
-                0,
-                0,
-                false,
-                CodeModeCapabilityFilter::default(),
-            )
-            .await
-            .map_err(super::types::CodeModeExecutionError::into_tool_error)?;
-        // Discovery must return an array/Value; undefined/None -> [].
-        Ok(response.result.unwrap_or_else(|| Value::Array(Vec::new())))
-    }
-
     /// Build or return the cached Code Mode discovery catalog.
     ///
     /// Returns `(entries, catalog_json, serialized_size)`. The `catalog_json`

@@ -104,25 +104,6 @@ fn healthy_entry_with_tool(
 }
 
 #[tokio::test]
-async fn search_without_manager_returns_empty_array() {
-    // No gateway manager → no upstream catalog → search returns an empty
-    // array regardless of the supplied JS (it never runs the script).
-    let registry = super::ToolRegistry::new();
-    let broker = super::CodeModeBroker::new(&registry, None);
-
-    let result = broker
-        .search(
-            "async () => tools",
-            super::CodeModeCaller::TrustedLocal,
-            super::CodeModeSurface::Cli,
-        )
-        .await
-        .expect("search ok without manager");
-
-    assert_eq!(result, serde_json::json!([]));
-}
-
-#[tokio::test]
 async fn execute_proxy_embeds_local_discovery_helpers_without_host_callbacks() {
     let (manager, pool) =
         code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;

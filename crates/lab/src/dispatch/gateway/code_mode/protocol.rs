@@ -1,11 +1,9 @@
 //! Code Mode runner stdio protocol types, shared runner state, and tuning consts.
 
-use std::cell::RefCell;
-use std::io::{self, BufReader, BufWriter};
-use std::time::Duration;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cell::RefCell;
+use std::io::{self, BufReader, BufWriter};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -141,9 +139,3 @@ thread_local! {
 // gateway) plus await/Promise machinery needs ample headroom; 256 KiB avoids
 // operand-stack overflow on a single callTool.
 pub(in crate::dispatch::gateway::code_mode) const CODE_MODE_STACK_SIZE_LIMIT: usize = 256 * 1024;
-
-/// Wall-clock budget for a discovery filter run in the Javy runner. Discovery
-/// does pure computation over the catalog (no tool calls), so this is shorter
-/// than the configurable Code Mode timeout.
-pub(in crate::dispatch::gateway::code_mode) const CODE_MODE_DISCOVERY_TIMEOUT: Duration =
-    Duration::from_secs(15);
