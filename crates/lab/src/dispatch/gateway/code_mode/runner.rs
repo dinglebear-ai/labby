@@ -433,7 +433,10 @@ globalThis.writeArtifact = (path, content, options = {{}}) => {{
   if (options === null || typeof options !== "object" || Array.isArray(options)) {{
     throw new TypeError("writeArtifact options must be a JSON object");
   }}
-  const contentType = typeof options.contentType === "string" ? options.contentType : null;
+  if (options.contentType !== undefined && typeof options.contentType !== "string") {{
+    throw new TypeError("writeArtifact options.contentType must be a string");
+  }}
+  const contentType = options.contentType ?? null;
   return new Promise((resolve, reject) => {{
     const seq = globalThis.__labEmitArtifactWrite(path, content, contentType);
     globalThis.__labPendingToolCalls.set(seq, {{ kind: "artifact", resolve, reject }});

@@ -286,7 +286,29 @@ fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
                     "calls": { "type": "array", "items": { "type": "object" } },
                     "result": {},
                     "result_shape": { "type": "object" },
-                    "artifacts": { "type": "array", "items": { "type": "object" } },
+                    "artifacts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string" },
+                                "absolute_path": { "type": "string" },
+                                "content_type": {
+                                    "type": "string",
+                                    "maxLength": 256,
+                                    "pattern": "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$",
+                                    "description": "Simple ASCII type/subtype media type for the artifact receipt."
+                                },
+                                "bytes": { "type": "integer", "minimum": 0 },
+                                "sha256": {
+                                    "type": "string",
+                                    "pattern": "^[a-f0-9]{64}$"
+                                }
+                            },
+                            "required": ["path", "absolute_path", "content_type", "bytes", "sha256"],
+                            "additionalProperties": false
+                        }
+                    },
                     "logs_count": { "type": "integer", "minimum": 0 }
                 },
                 "required": ["kind", "call_count", "calls", "result_shape", "logs_count"],

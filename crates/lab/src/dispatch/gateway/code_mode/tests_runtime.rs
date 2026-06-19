@@ -187,6 +187,7 @@ fn code_mode_runner_wrapper_exposes_write_artifact() {
     assert!(wrapped.contains("__labEmitArtifactWrite"));
     assert!(wrapped.contains("writeArtifact path must be a non-empty string"));
     assert!(wrapped.contains("writeArtifact content must be a string"));
+    assert!(wrapped.contains("writeArtifact options.contentType must be a string"));
 }
 
 #[test]
@@ -1041,33 +1042,75 @@ fn artifact_max_store_bytes_parses_env_with_zero_disabling() {
 }
 
 #[tokio::test]
-async fn write_code_mode_artifact_rejects_oversized_content_type() {
-    // content_type rides the receipt into the model's context, so it carries its
-    // own 256-byte cap independent of the (large) content cap.
+async fn write_code_mode_artifact_accepts_and_trims_common_content_types() {
     let root = TempDir::new().expect("temp root");
-    let err = write_code_mode_artifact(
-        root.path(),
-        &CodeModeArtifactWrite {
-            path: "note.md".to_string(),
-            content: "body".to_string(),
-            content_type: Some("x".repeat(257)),
-        },
-        TEST_MAX_BYTES,
-    )
-    .await
-    .expect_err("oversized content_type must be rejected");
-    assert_eq!(err.kind(), "invalid_param");
-    assert!(
-        err.to_string().contains("content_type"),
-        "error should name the offending param: {err}"
-    );
+    for (idx, (content_type, expected)) in [
+        ("text/plain", "text/plain"),
+        ("text/markdown", "text/markdown"),
+        ("application/json", "application/json"),
+        (" application/vnd.lab+json ", "application/vnd.lab+json"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let receipt = write_code_mode_artifact(
+            root.path(),
+            &CodeModeArtifactWrite {
+                path: format!("valid-{idx}.txt"),
+                content: "body".to_string(),
+                content_type: Some(content_type.to_string()),
+            },
+            TEST_MAX_BYTES,
+        )
+        .await
+        .expect("write succeeds");
+        assert_eq!(receipt.content_type, expected);
+    }
+}
 
-    // A normal-length content_type is accepted and nothing was written for the
-    // rejected one.
-    assert!(
-        !root.path().join("note.md").exists(),
-        "rejected content_type must not write a file"
-    );
+#[tokio::test]
+async fn write_code_mode_artifact_rejects_invalid_content_types_without_writing() {
+    // content_type rides the receipt into the model's context, so it carries its
+    // own grammar and 256-byte cap independent of the (large) content cap.
+    let root = TempDir::new().expect("temp root");
+    for (idx, content_type) in [
+        "text/html\nnope".to_string(),
+        "text/html\r\nContent-Length: 0".to_string(),
+        "text /plain".to_string(),
+        "text/plain charset=utf-8".to_string(),
+        "textplain".to_string(),
+        "/plain".to_string(),
+        "text/".to_string(),
+        "text/plain/html".to_string(),
+        "text/pláin".to_string(),
+        "\u{00a0}text/plain\u{00a0}".to_string(),
+        format!("text/{}", "a".repeat(252)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = format!("invalid-{idx}.txt");
+        let err = write_code_mode_artifact(
+            root.path(),
+            &CodeModeArtifactWrite {
+                path: path.clone(),
+                content: "body".to_string(),
+                content_type: Some(content_type),
+            },
+            TEST_MAX_BYTES,
+        )
+        .await
+        .expect_err("invalid content_type must be rejected");
+        assert_eq!(err.kind(), "invalid_param");
+        assert!(
+            err.to_string().contains("content_type"),
+            "error should name the offending param: {err}"
+        );
+        assert!(
+            !root.path().join(path).exists(),
+            "rejected content_type must not write a file"
+        );
+    }
 }
 
 #[tokio::test]

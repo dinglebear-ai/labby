@@ -388,7 +388,7 @@ pub(in crate::dispatch::gateway::code_mode) async fn write_code_mode_artifact(
     max_bytes: usize,
 ) -> Result<CodeModeArtifactReceipt, ToolError> {
     let rel_path = normalize_artifact_path(&request.path)?;
-    reject_oversized_content_type(request.content_type.as_deref())?;
+    let content_type = normalize_content_type(request.content_type.as_deref())?;
     let bytes = request.content.as_bytes();
     if bytes.len() > max_bytes {
         return Err(ToolError::InvalidParam {
@@ -433,12 +433,6 @@ pub(in crate::dispatch::gateway::code_mode) async fn write_code_mode_artifact(
     })?;
 
     let sha256 = Sha256::digest(bytes);
-    let content_type = request
-        .content_type
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(DEFAULT_CONTENT_TYPE)
-        .to_string();
 
     Ok(CodeModeArtifactReceipt {
         path: rel_path,
@@ -449,22 +443,79 @@ pub(in crate::dispatch::gateway::code_mode) async fn write_code_mode_artifact(
     })
 }
 
-/// Reject a `content_type` that would bloat the response. The receipt (and the
-/// truncation marker) carry this string into the model's context, so unlike the
-/// on-disk content it needs a small, fixed cap.
-fn reject_oversized_content_type(content_type: Option<&str>) -> Result<(), ToolError> {
-    if let Some(value) = content_type
-        && value.len() > MAX_CONTENT_TYPE_BYTES
-    {
+/// Normalize and validate the artifact receipt `content_type`.
+///
+/// The receipt (and the truncation marker) carry this string into the model's
+/// context, so unlike the on-disk content it needs a small fixed cap and a
+/// conservative media-type grammar.
+fn normalize_content_type(content_type: Option<&str>) -> Result<String, ToolError> {
+    let Some(value) = content_type else {
+        return Ok(DEFAULT_CONTENT_TYPE.to_string());
+    };
+    if value.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(invalid_content_type(
+            "artifact content_type must not contain ASCII control characters",
+        ));
+    }
+
+    let trimmed = value.trim_matches(' ');
+    if trimmed.is_empty() {
+        return Ok(DEFAULT_CONTENT_TYPE.to_string());
+    }
+    if trimmed.len() > MAX_CONTENT_TYPE_BYTES {
         return Err(ToolError::InvalidParam {
             message: format!(
                 "artifact content_type is {} bytes; maximum is {MAX_CONTENT_TYPE_BYTES} bytes",
-                value.len(),
+                trimmed.len(),
             ),
             param: "content_type".to_string(),
         });
     }
-    Ok(())
+    if !trimmed.is_ascii() {
+        return Err(invalid_content_type(
+            "artifact content_type must be ASCII type/subtype",
+        ));
+    }
+    if trimmed.bytes().any(|byte| byte.is_ascii_whitespace()) {
+        return Err(invalid_content_type(
+            "artifact content_type must not contain embedded whitespace",
+        ));
+    }
+
+    let Some((media_type, subtype)) = trimmed.split_once('/') else {
+        return Err(invalid_content_type(
+            "artifact content_type must use type/subtype syntax",
+        ));
+    };
+    if media_type.is_empty() || subtype.is_empty() || subtype.contains('/') {
+        return Err(invalid_content_type(
+            "artifact content_type must use type/subtype syntax",
+        ));
+    }
+    if !media_type.bytes().all(is_content_type_token_char)
+        || !subtype.bytes().all(is_content_type_token_char)
+    {
+        return Err(invalid_content_type(
+            "artifact content_type must contain only token characters",
+        ));
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn invalid_content_type(message: impl Into<String>) -> ToolError {
+    ToolError::InvalidParam {
+        message: message.into(),
+        param: "content_type".to_string(),
+    }
+}
+
+fn is_content_type_token_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
+        )
 }
 
 fn normalize_artifact_path(raw: &str) -> Result<String, ToolError> {

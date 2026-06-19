@@ -71,6 +71,10 @@ caller. A snippet can call `codemode.<upstream>.<tool>()`, `callTool()`,
 `writeArtifact()`, and other snippets, bounded by the same Code Mode timeout plus
 per-run snippet depth/count/byte budgets.
 
+`writeArtifact()` defaults `contentType` to `text/plain` when omitted or blank.
+When provided, it must be a simple ASCII `type/subtype` media type, up to 256
+bytes after trimming surrounding ASCII spaces.
+
 Snippet execution is admin/trusted-local only. Route-scoped Code Mode catalogs do
 not expose user snippets, and host-side snippet resolution repeats the permission
 check because discovery is not a security boundary.
