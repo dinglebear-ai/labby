@@ -59,9 +59,6 @@ impl LabMcpServer {
         let hide_raw_tools = visibility.hides_raw_tools();
         let visibility_mode = visibility.mode_label();
         let auth = auth_context_from_extensions(&context.extensions);
-        #[cfg(feature = "gateway")]
-        let oauth_subject =
-            oauth_upstream_subject_for_request(auth, self.request_subject(&context));
         let mut builtin_names = Vec::new();
         for svc in self.registry.services() {
             if self.route_scope.allows_service(svc.name)
@@ -177,6 +174,8 @@ impl LabMcpServer {
                     upstream_tool_count += 1;
                 }
             }
+            let oauth_subject =
+                oauth_upstream_subject_for_request(auth, self.request_subject(&context));
             if !hide_raw_tools && let Some(oauth_subject) = oauth_subject.as_ref() {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 for (_, upstream_tools) in pool

@@ -440,14 +440,11 @@ async fn list_tools_does_not_cold_connect_code_mode_catalog() {
         .list_tools_impl(None, context)
         .await
         .expect("list tools");
-    let names = result
-        .tools
-        .iter()
-        .map(|tool| tool.name.as_ref())
-        .collect::<Vec<_>>();
-
     assert!(
-        names.contains(&CODE_MODE_TOOL_NAME),
+        result
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == CODE_MODE_TOOL_NAME),
         "root list_tools must keep advertising Code Mode"
     );
 
