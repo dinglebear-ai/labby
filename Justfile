@@ -36,7 +36,7 @@ lint: skill-drift test-cargo-wrapper
 
 # Check hand-authored skills for known stale or unsafe patterns
 skill-drift:
-    scripts/check-dozzle-skill
+    plugins/scripts/check-dozzle-skill
 
 # License and vulnerability audit
 deny:
