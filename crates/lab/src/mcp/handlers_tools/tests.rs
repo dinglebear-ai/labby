@@ -414,9 +414,12 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
 #[tokio::test]
 async fn list_tools_does_not_cold_connect_code_mode_catalog() {
     let pool = Arc::new(UpstreamPool::new());
-    let manager =
-        code_mode_manager_with_pool(true, fixture_upstream_config("cold-apps"), Arc::clone(&pool))
-            .await;
+    let manager = code_mode_manager_with_pool(
+        true,
+        fixture_upstream_config("cold-apps"),
+        Arc::clone(&pool),
+    )
+    .await;
     let server = test_server(
         completion_test_registry(),
         Some(manager),
