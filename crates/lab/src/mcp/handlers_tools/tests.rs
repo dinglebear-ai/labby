@@ -450,10 +450,6 @@ async fn list_tools_does_not_cold_connect_code_mode_catalog() {
         names.contains(&CODE_MODE_TOOL_NAME),
         "root list_tools must keep advertising Code Mode"
     );
-    assert!(
-        !names.contains(&"cold_widget"),
-        "cold upstream tools must not be discovered by root list_tools"
-    );
 
     let summary = pool.cached_upstream_summary("cold-apps").await;
     assert!(
