@@ -34,86 +34,15 @@ use super::types::{
 };
 
 const ARTIFACT_WRITE_CALL_ID: &str = "code_mode::write_artifact";
-const MAX_SNIPPET_RESOLVES_PER_RUN: usize = 32;
-const MAX_SNIPPET_RESOLVED_BYTES_PER_RUN: usize = 256 * 1024;
 
-/// Default per-run `callTool` fan-out budget (lab-4dcil item 3).
-///
-/// A single `Promise.all([...thousands of callTool...])` enqueues every future
-/// before any settle, amplifying load against upstreams within the wall-clock
-/// window. Past this many `callTool` invocations in one run, further calls are
-/// rejected with the recoverable `call_budget_exceeded` kind (the in-sandbox
-/// promise rejects cleanly) rather than killing the run. Override with
-/// `LAB_CODE_MODE_MAX_CALLS_PER_RUN`; hard-clamped to [`MAX_CALLTOOL_PER_RUN_CEILING`]
-/// so a misconfigured value cannot re-open the amplification window.
-const DEFAULT_MAX_CALLTOOL_PER_RUN: u64 = 512;
-/// Hard ceiling on the configurable per-run `callTool` budget.
-const MAX_CALLTOOL_PER_RUN_CEILING: u64 = 2048;
+// Snippet per-run limits live in `config` so the host-side enforcement here and
+// the JS preamble in `runner.rs` share one definition (see lab-xvmti).
+use super::config::{MAX_SNIPPET_RESOLVED_BYTES_PER_RUN, MAX_SNIPPET_RESOLVES_PER_RUN};
 
-/// Default host-side byte ceiling on a single `callTool` RESULT before it enters
-/// the runner stdin pipe (lab-y966d item 1).
-///
-/// A large binary `Uint8Array` returned by an upstream tool would otherwise
-/// reach the runner and OOM the 64-MiB QuickJS heap during decode, surfacing as
-/// an opaque `server_error`. This pre-flight check on the serialized JSON bytes
-/// turns that into a clean, recoverable `result_too_large` kind. Mirrors the
-/// artifact content cap (`DEFAULT_ARTIFACT_MAX_MIB`). Override with
-/// `LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB`; keep it below ~64 to preserve the
-/// clean-error boundary.
-const DEFAULT_CALLTOOL_RESULT_MAX_MIB: usize = 8;
-
-/// Resolve the per-run `callTool` fan-out budget from the environment, falling
-/// back to [`DEFAULT_MAX_CALLTOOL_PER_RUN`] and clamping to
-/// [`MAX_CALLTOOL_PER_RUN_CEILING`]. Absent/blank → default silently;
-/// present-but-unparseable or `0` → warn and fall back (a 0 budget would reject
-/// every call).
-fn max_calltool_per_run() -> u64 {
-    let Some(raw) = crate::dispatch::helpers::env_non_empty("LAB_CODE_MODE_MAX_CALLS_PER_RUN")
-    else {
-        return DEFAULT_MAX_CALLTOOL_PER_RUN;
-    };
-    match raw.trim().parse::<u64>() {
-        Ok(value) if value > 0 => value.min(MAX_CALLTOOL_PER_RUN_CEILING),
-        _ => {
-            tracing::warn!(
-                surface = "dispatch",
-                service = "code_mode",
-                action = "codemode",
-                value = %raw,
-                default = DEFAULT_MAX_CALLTOOL_PER_RUN,
-                "ignoring invalid LAB_CODE_MODE_MAX_CALLS_PER_RUN; using default"
-            );
-            DEFAULT_MAX_CALLTOOL_PER_RUN
-        }
-    }
-}
-
-/// Resolve the per-result byte ceiling (in bytes) from the environment, falling
-/// back to [`DEFAULT_CALLTOOL_RESULT_MAX_MIB`]. The env value is in MiB
-/// (`LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB=16`); present-but-unparseable or `0`
-/// → warn and fall back (a 0 cap would reject every result).
-fn calltool_result_max_bytes() -> usize {
-    let default_bytes = DEFAULT_CALLTOOL_RESULT_MAX_MIB * 1024 * 1024;
-    let Some(raw) =
-        crate::dispatch::helpers::env_non_empty("LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB")
-    else {
-        return default_bytes;
-    };
-    match raw.trim().parse::<usize>() {
-        Ok(mib) if mib > 0 => mib.saturating_mul(1024 * 1024),
-        _ => {
-            tracing::warn!(
-                surface = "dispatch",
-                service = "code_mode",
-                action = "codemode",
-                value = %raw,
-                default_mib = DEFAULT_CALLTOOL_RESULT_MAX_MIB,
-                "ignoring invalid LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB; using default"
-            );
-            default_bytes
-        }
-    }
-}
+// Per-run `callTool` guards (fan-out budget + result byte ceiling) are
+// centralized in `crate::config::CodeModeCallConfig` (lab-xvmti). Both exist to
+// stop one run from amplifying upstream load (`call_budget_exceeded`) or OOMing
+// the 64-MiB QuickJS heap with an oversized result (`result_too_large`).
 
 // Concrete future type for pending tool calls.
 // Using Pin<Box<dyn Future>> keeps the FuturesUnordered type concrete so the
@@ -177,6 +106,7 @@ impl DriveState {
     fn new(artifact_run_id: &str) -> Self {
         let artifact_root = code_mode_artifact_root(artifact_run_id);
         let artifact_max_bytes = super::artifacts::artifact_max_bytes();
+        let call_config = crate::config::CodeModeCallConfig::from_env();
         Self {
             calls: Vec::new(),
             artifacts: Vec::new(),
@@ -186,8 +116,8 @@ impl DriveState {
             snippet_resolves: 0,
             snippet_resolved_bytes: 0,
             calls_enqueued: 0,
-            max_calls_per_run: max_calltool_per_run(),
-            calltool_result_max_bytes: calltool_result_max_bytes(),
+            max_calls_per_run: call_config.max_calls_per_run,
+            calltool_result_max_bytes: call_config.calltool_result_max_bytes,
         }
     }
 }
@@ -1333,19 +1263,26 @@ mod tests {
         assert_eq!(call.error_kind, None);
     }
 
-    /// The per-run fan-out budget env override parses and hard-clamps to the
-    /// ceiling; invalid/zero values fall back to the default.
+    /// The per-run fan-out budget env override (now resolved by
+    /// `CodeModeCallConfig`) parses and hard-clamps to the ceiling; invalid/zero
+    /// values fall back to the default. Exercises the shared config path.
     #[test]
     fn max_calltool_per_run_parses_and_clamps() {
+        use crate::config::CodeModeCallConfig;
         use crate::dispatch::helpers::with_env_override;
         use std::collections::HashMap;
+
+        let max_calls = || CodeModeCallConfig::from_env().max_calls_per_run;
+        let default = CodeModeCallConfig::default().max_calls_per_run;
+        // Hard ceiling enforced in `CodeModeCallConfig::resolve_max_calls`.
+        const CEILING: u64 = 2048;
 
         let parsed = with_env_override(
             HashMap::from([(
                 "LAB_CODE_MODE_MAX_CALLS_PER_RUN".to_string(),
                 "16".to_string(),
             )]),
-            max_calltool_per_run,
+            max_calls,
         );
         assert_eq!(parsed, 16);
 
@@ -1354,9 +1291,9 @@ mod tests {
                 "LAB_CODE_MODE_MAX_CALLS_PER_RUN".to_string(),
                 "999999".to_string(),
             )]),
-            max_calltool_per_run,
+            max_calls,
         );
-        assert_eq!(clamped, MAX_CALLTOOL_PER_RUN_CEILING);
+        assert_eq!(clamped, CEILING);
 
         for bad in ["0", "nope", "-5"] {
             let fallback = with_env_override(
@@ -1364,9 +1301,9 @@ mod tests {
                     "LAB_CODE_MODE_MAX_CALLS_PER_RUN".to_string(),
                     bad.to_string(),
                 )]),
-                max_calltool_per_run,
+                max_calls,
             );
-            assert_eq!(fallback, DEFAULT_MAX_CALLTOOL_PER_RUN, "bad value `{bad}`");
+            assert_eq!(fallback, default, "bad value `{bad}`");
         }
     }
 }

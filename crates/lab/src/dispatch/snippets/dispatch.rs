@@ -301,6 +301,9 @@ async fn execute_snippet(
     let code = code_for_snippet(&snippet)?;
     let input = merge_snippet_input(&snippet, input)?;
     let code = wrap_snippet_with_input(&code, &input)?;
+    // No recording context: a snippet runs as a host-side sub-execution of an
+    // already-recorded Code Mode run (`codemode.run`), so recording it as a
+    // separate top-level execution would double-count.
     let response = broker
         .execute(
             &code,
@@ -308,6 +311,7 @@ async fn execute_snippet(
             CodeModeSurface::Cli,
             config,
             CodeModeCapabilityFilter::default(),
+            None,
         )
         .await
         .map_err(|error| error.into_tool_error())?;

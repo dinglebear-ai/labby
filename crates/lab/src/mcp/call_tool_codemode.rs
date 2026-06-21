@@ -23,9 +23,8 @@ use serde_json::Value;
 
 use crate::dispatch::error::ToolError as DispatchToolError;
 use crate::dispatch::gateway::code_mode::{
-    CodeModeBroker, CodeModeCaller, CodeModeCapabilityFilter, CodeModeExecutionSource,
-    CodeModeHistoryEntry, CodeModeHistoryKind, MAX_SOURCE_BYTES, SERVICE as CODE_MODE_SERVICE,
-    code_mode_execute_trace,
+    CodeModeBroker, CodeModeCaller, CodeModeCapabilityFilter, CodeModeExecuteContext,
+    MAX_SOURCE_BYTES, SERVICE as CODE_MODE_SERVICE, code_mode_execute_trace,
 };
 use crate::mcp::context::{auth_context_from_extensions, tool_execute_scope_allowed};
 use crate::mcp::envelope::{build_error, build_error_extra};
@@ -324,14 +323,28 @@ impl LabMcpServer {
                 sub: self.request_subject(context).map(ToOwned::to_owned),
             }
         });
+        let is_admin = auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"));
+        // The broker records execution history + source uniformly for every
+        // surface (see `CodeModeBroker::execute`); this adapter only supplies the
+        // MCP-specific recording context and keeps its own surface tracing +
+        // catalog-change notifications.
+        let record_ctx = CodeModeExecuteContext {
+            execution_id: execution_id.clone(),
+            route_scope: self.route_scope.label(),
+            actor_key: actor_key.map(ToOwned::to_owned),
+            is_admin,
+            capability_filter_fingerprint,
+            input_tokens,
+        };
         let before = self.snapshot_catalog().await;
-        let mut response = match broker
+        let response = match broker
             .execute(
                 code,
                 caller,
                 self.code_mode_surface(),
                 config,
                 capability_filter,
+                Some(record_ctx),
             )
             .await
         {
@@ -364,26 +377,10 @@ impl LabMcpServer {
                     "gateway codemode failed"
                 );
                 let tool_error = err.into_tool_error();
-                manager
-                    .record_code_mode_history(CodeModeHistoryEntry {
-                        execution_id: Some(execution_id.clone()),
-                        seq: 0,
-                        route_scope: self.route_scope.label(),
-                        kind: CodeModeHistoryKind::Execute,
-                        ok: false,
-                        elapsed_ms,
-                        input_tokens: Some(input_tokens),
-                        output_tokens: Some(0),
-                        error_kind: Some(error_kind),
-                        calls,
-                        match_count: None,
-                    })
-                    .await;
                 let env = tool_error_envelope(service, "call_tool", &tool_error);
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             }
         };
-        response.execution_id = Some(execution_id.clone());
         // Mirror the upstream's `_meta.ui` verbatim onto the codemode result so
         // the host renders the native mcp-ui widget (last-wins). The widget
         // itself is driven by the `ui://` resource read, not by inline content,
@@ -412,41 +409,11 @@ impl LabMcpServer {
                 "mirroring upstream MCP App widget metadata onto codemode result"
             );
         }
+        // History + source were recorded inside `broker.execute` (uniform across
+        // surfaces). This adapter only needs the serialized output for the MCP
+        // result body and the success trace below.
         let output = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
         let output_tokens = estimate_tokens(&output);
-        manager
-            .record_code_mode_history(CodeModeHistoryEntry {
-                execution_id: Some(execution_id.clone()),
-                seq: 0,
-                route_scope: self.route_scope.label(),
-                kind: CodeModeHistoryKind::Execute,
-                ok: true,
-                elapsed_ms: started.elapsed().as_millis(),
-                input_tokens: Some(input_tokens),
-                output_tokens: Some(output_tokens),
-                error_kind: None,
-                calls: response.calls.clone(),
-                match_count: None,
-            })
-            .await;
-        let is_admin = auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"));
-        if is_admin && code.len() <= MAX_SOURCE_BYTES {
-            manager
-                .record_code_mode_source(CodeModeExecutionSource {
-                    execution_id: execution_id.clone(),
-                    created_at_ms: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|duration| duration.as_millis() as i64)
-                        .unwrap_or_default(),
-                    actor_key: actor_key.map(ToOwned::to_owned),
-                    is_admin,
-                    route_scope: self.route_scope.label(),
-                    surface: self.code_mode_surface(),
-                    capability_filter_fingerprint,
-                    code: code.to_string(),
-                })
-                .await;
-        }
         let mut structured = code_mode_execute_trace(&response);
         if let Some(object) = structured.as_object_mut() {
             object.insert(

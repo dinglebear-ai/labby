@@ -243,13 +243,10 @@ impl GatewayManager {
         // tool maps; without this the diff always reports tools_changed: ✗ even
         // when new upstreams were added, because both before and after snapshots
         // are empty (discovery is lazy and only triggered on the first list_tools
-        // call). Bounded by LAB_UPSTREAM_DISCOVERY_CONCURRENCY (default 3) to
-        // match the refresh path in code_mode_runtime.rs.
+        // call). Bounded by the canonical `LAB_UPSTREAM_DISCOVERY_CONCURRENCY`
+        // reader (default 3) to match the code-mode reprobe path.
         if let Some(ref pool) = fresh_pool {
-            let concurrency = std::env::var("LAB_UPSTREAM_DISCOVERY_CONCURRENCY")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(3);
+            let concurrency = crate::dispatch::upstream::pool::upstream_discovery_concurrency();
             let pool_arc = Arc::clone(pool);
             let enabled: Vec<_> = cfg.upstream.iter().filter(|u| u.enabled).cloned().collect();
             // Step 1: connect all upstreams and discover tools.

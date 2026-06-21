@@ -785,6 +785,359 @@ impl CodeModeConfig {
     }
 }
 
+/// Parse an env var into `T`, falling back to `default`.
+///
+/// Single generic replacement for the per-knob `parse_env` / `parse_env_u64`
+/// helpers that previously lived in `pool/config.rs` and `artifacts.rs`
+/// (lab-xvmti). Absent/blank/unparseable → `default` (callers that need a
+/// warn-on-garbage diagnostic or a clamp wrap this and apply their own policy).
+///
+/// Reads through [`crate::dispatch::helpers::env_non_empty`] so it honors the
+/// thread-local env override used by the test harness (`with_env_override`),
+/// exactly like the bespoke readers it replaces.
+pub(crate) fn parse_env_or_default<T: std::str::FromStr>(name: &str, default: T) -> T {
+    crate::dispatch::helpers::env_non_empty(name)
+        .and_then(|raw| raw.trim().parse::<T>().ok())
+        .unwrap_or(default)
+}
+
+// LEARNED (lab-xvmti): every Code Mode knob struct below resolves env values
+// through `crate::dispatch::helpers::env_non_empty` (directly or via
+// `parse_env_or_default`), NOT raw `std::env::var`. That helper consults the
+// thread-local `ENV_OVERRIDE` that `with_env_override` sets, so the test harness
+// (and any in-process override) sees the intended value. Reading the env
+// directly here silently bypasses the override and the resolver tests fail with
+// "got the default". Keep new knobs on the `env_non_empty` path.
+
+// --- Code Mode warm-runner pool knobs (env-sourced) ---
+
+/// Env var for the warm-runner pool size. `0` disables pooling.
+pub const LAB_CODE_MODE_POOL_SIZE_ENV: &str = "LAB_CODE_MODE_POOL_SIZE";
+/// Env var for the per-runner recycle-after-K count.
+pub const LAB_CODE_MODE_POOL_RECYCLE_AFTER_ENV: &str = "LAB_CODE_MODE_POOL_RECYCLE_AFTER";
+/// Env var for the max simultaneous ephemeral (overflow) runners.
+pub const LAB_CODE_MODE_POOL_MAX_OVERFLOW_ENV: &str = "LAB_CODE_MODE_POOL_MAX_OVERFLOW";
+
+const DEFAULT_CODE_MODE_POOL_SIZE: usize = 2;
+const MAX_CODE_MODE_POOL_SIZE: usize = 16;
+const DEFAULT_CODE_MODE_POOL_RECYCLE_AFTER: u64 = 100;
+const DEFAULT_CODE_MODE_POOL_MAX_OVERFLOW: usize = 8;
+const MAX_CODE_MODE_POOL_MAX_OVERFLOW: usize = 64;
+
+/// Resolved, clamped Code Mode warm-runner pool configuration.
+///
+/// Env-sourced (not `config.toml`-persisted) so it is centralized in one place
+/// and visible to `gateway code status`/doctor without changing the persisted
+/// config shape. The runner pool consumes this via `from_env`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeModePoolConfig {
+    /// Number of long-lived pooled runners. `0` means pooling is disabled.
+    pub size: usize,
+    /// Executions a pooled runner serves before being recycled.
+    pub recycle_after: u64,
+    /// Max simultaneous ephemeral runners spawned when the pool is saturated.
+    pub max_overflow: usize,
+}
+
+impl Default for CodeModePoolConfig {
+    fn default() -> Self {
+        Self {
+            size: DEFAULT_CODE_MODE_POOL_SIZE,
+            recycle_after: DEFAULT_CODE_MODE_POOL_RECYCLE_AFTER,
+            max_overflow: DEFAULT_CODE_MODE_POOL_MAX_OVERFLOW,
+        }
+    }
+}
+
+impl CodeModePoolConfig {
+    /// Read pool configuration from the environment, clamping to safe bounds so
+    /// a typo cannot fork hundreds of long-lived 64-MiB-capable processes.
+    #[must_use]
+    pub fn from_env() -> Self {
+        let size = parse_env_or_default(LAB_CODE_MODE_POOL_SIZE_ENV, DEFAULT_CODE_MODE_POOL_SIZE)
+            .min(MAX_CODE_MODE_POOL_SIZE);
+        let recycle_after = parse_env_or_default(
+            LAB_CODE_MODE_POOL_RECYCLE_AFTER_ENV,
+            DEFAULT_CODE_MODE_POOL_RECYCLE_AFTER,
+        )
+        .max(1);
+        let max_overflow = parse_env_or_default(
+            LAB_CODE_MODE_POOL_MAX_OVERFLOW_ENV,
+            DEFAULT_CODE_MODE_POOL_MAX_OVERFLOW,
+        )
+        .min(MAX_CODE_MODE_POOL_MAX_OVERFLOW);
+        Self {
+            size,
+            recycle_after,
+            max_overflow,
+        }
+    }
+
+    /// True when pooling is disabled (kill switch): every execution spawns a
+    /// fresh one-shot runner exactly as before this feature landed.
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        self.size == 0
+    }
+}
+
+// --- Code Mode artifact-store knobs (env-sourced) ---
+
+/// Env var for the per-run artifact retention count. `0` disables count pruning.
+pub const LAB_CODE_MODE_ARTIFACT_RETENTION_RUNS_ENV: &str = "LAB_CODE_MODE_ARTIFACT_RETENTION_RUNS";
+/// Env var for the per-artifact content cap, in MiB.
+pub const LAB_CODE_MODE_ARTIFACT_MAX_MIB_ENV: &str = "LAB_CODE_MODE_ARTIFACT_MAX_MIB";
+/// Env var for the total artifact-store byte budget, in MiB. `0` disables byte pruning.
+pub const LAB_CODE_MODE_ARTIFACT_MAX_STORE_MIB_ENV: &str = "LAB_CODE_MODE_ARTIFACT_MAX_STORE_MIB";
+
+const DEFAULT_CODE_MODE_ARTIFACT_MAX_MIB: usize = 8;
+const DEFAULT_CODE_MODE_ARTIFACT_RETENTION_RUNS: usize = 200;
+const DEFAULT_CODE_MODE_ARTIFACT_MAX_STORE_MIB: u64 = 4096;
+
+/// Resolved Code Mode artifact-store configuration (env-sourced).
+///
+/// Values are the resolved *byte* budgets / counts the artifact store enforces;
+/// MiB env knobs are converted on read. Centralized here so the same knobs that
+/// were split across `artifacts.rs` are visible to status/doctor tooling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeModeArtifactConfig {
+    /// Per-run artifact directories retained; `0` disables count pruning.
+    pub retention_runs: usize,
+    /// Per-artifact content cap, in bytes.
+    pub max_bytes: usize,
+    /// Total artifact-store byte budget; `0` disables byte pruning.
+    pub max_store_bytes: u64,
+}
+
+impl Default for CodeModeArtifactConfig {
+    fn default() -> Self {
+        Self {
+            retention_runs: DEFAULT_CODE_MODE_ARTIFACT_RETENTION_RUNS,
+            max_bytes: DEFAULT_CODE_MODE_ARTIFACT_MAX_MIB * 1024 * 1024,
+            max_store_bytes: DEFAULT_CODE_MODE_ARTIFACT_MAX_STORE_MIB * 1024 * 1024,
+        }
+    }
+}
+
+impl CodeModeArtifactConfig {
+    /// Resolve artifact-store config from the environment.
+    ///
+    /// Unparseable values warn (a fat-fingered cap shouldn't be silently
+    /// dropped) and fall back. `max_bytes` rejects `0` (a 0 cap would reject
+    /// every write); the count and store budgets accept `0` (meaning "disable
+    /// that pruning dimension"). Mirrors the prior per-function behavior.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            retention_runs: Self::resolve_count(
+                LAB_CODE_MODE_ARTIFACT_RETENTION_RUNS_ENV,
+                DEFAULT_CODE_MODE_ARTIFACT_RETENTION_RUNS,
+            ),
+            max_bytes: Self::resolve_max_bytes(),
+            max_store_bytes: Self::resolve_store_bytes(),
+        }
+    }
+
+    fn resolve_count(env_name: &str, default: usize) -> usize {
+        // Absent/blank → default silently; unparseable → warn + default.
+        let Some(raw) = crate::dispatch::helpers::env_non_empty(env_name) else {
+            return default;
+        };
+        raw.trim().parse::<usize>().unwrap_or_else(|_| {
+            warn_invalid_artifact_env(env_name, raw.trim(), default as u64);
+            default
+        })
+    }
+
+    fn resolve_max_bytes() -> usize {
+        let default_mib = DEFAULT_CODE_MODE_ARTIFACT_MAX_MIB;
+        let default_bytes = default_mib * 1024 * 1024;
+        let Some(raw) = crate::dispatch::helpers::env_non_empty(LAB_CODE_MODE_ARTIFACT_MAX_MIB_ENV)
+        else {
+            return default_bytes;
+        };
+        // `0` is rejected here (a 0 MiB cap would reject every write).
+        match raw.trim().parse::<usize>() {
+            Ok(mib) if mib > 0 => mib.saturating_mul(1024 * 1024),
+            _ => {
+                warn_invalid_artifact_env(
+                    LAB_CODE_MODE_ARTIFACT_MAX_MIB_ENV,
+                    raw.trim(),
+                    default_mib as u64,
+                );
+                default_bytes
+            }
+        }
+    }
+
+    fn resolve_store_bytes() -> u64 {
+        let default_mib = DEFAULT_CODE_MODE_ARTIFACT_MAX_STORE_MIB;
+        let default_bytes = default_mib * 1024 * 1024;
+        let Some(raw) =
+            crate::dispatch::helpers::env_non_empty(LAB_CODE_MODE_ARTIFACT_MAX_STORE_MIB_ENV)
+        else {
+            return default_bytes;
+        };
+        // `0` is meaningful here (disable byte pruning), unlike the per-artifact cap.
+        match raw.trim().parse::<u64>() {
+            Ok(mib) => mib.saturating_mul(1024 * 1024),
+            Err(_) => {
+                warn_invalid_artifact_env(
+                    LAB_CODE_MODE_ARTIFACT_MAX_STORE_MIB_ENV,
+                    raw.trim(),
+                    default_mib,
+                );
+                default_bytes
+            }
+        }
+    }
+}
+
+fn warn_invalid_artifact_env(env_name: &str, value: &str, default: u64) {
+    tracing::warn!(
+        surface = "dispatch",
+        service = "code_mode",
+        action = "codemode",
+        env = env_name,
+        value = %value,
+        default,
+        "ignoring invalid Code Mode artifact env var; using default"
+    );
+}
+
+// --- Code Mode per-run `callTool` knobs (env-sourced) ---
+
+/// Env var for the per-run `callTool` fan-out budget.
+pub const LAB_CODE_MODE_MAX_CALLS_PER_RUN_ENV: &str = "LAB_CODE_MODE_MAX_CALLS_PER_RUN";
+/// Env var for the per-`callTool`-result byte ceiling, in MiB.
+pub const LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB_ENV: &str = "LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB";
+
+const DEFAULT_CODE_MODE_MAX_CALLTOOL_PER_RUN: u64 = 512;
+const MAX_CODE_MODE_CALLTOOL_PER_RUN_CEILING: u64 = 2048;
+const DEFAULT_CODE_MODE_CALLTOOL_RESULT_MAX_MIB: usize = 8;
+
+/// Resolved per-run `callTool` guards (env-sourced).
+///
+/// Centralized here with the other Code Mode knobs (lab-xvmti). Both guards
+/// exist to keep a single run from amplifying load / OOMing the 64-MiB QuickJS
+/// heap — see `runner_drive.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeModeCallConfig {
+    /// Max `callTool` invocations enqueued in one run (recoverable rejection
+    /// past this; clamped to a hard ceiling).
+    pub max_calls_per_run: u64,
+    /// Host-side byte ceiling on a single `callTool` result before it enters
+    /// the runner stdin pipe.
+    pub calltool_result_max_bytes: usize,
+}
+
+impl Default for CodeModeCallConfig {
+    fn default() -> Self {
+        Self {
+            max_calls_per_run: DEFAULT_CODE_MODE_MAX_CALLTOOL_PER_RUN,
+            calltool_result_max_bytes: DEFAULT_CODE_MODE_CALLTOOL_RESULT_MAX_MIB * 1024 * 1024,
+        }
+    }
+}
+
+impl CodeModeCallConfig {
+    /// Resolve per-run `callTool` guards from the environment.
+    ///
+    /// `max_calls_per_run`: absent/blank → default silently; unparseable or `0`
+    /// → warn + default (a 0 budget would reject every call); valid → clamped to
+    /// the hard ceiling so a misconfig cannot re-open the amplification window.
+    /// `calltool_result_max_bytes`: env in MiB; unparseable or `0` → warn +
+    /// default.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            max_calls_per_run: Self::resolve_max_calls(),
+            calltool_result_max_bytes: Self::resolve_result_max_bytes(),
+        }
+    }
+
+    fn resolve_max_calls() -> u64 {
+        let Some(raw) =
+            crate::dispatch::helpers::env_non_empty(LAB_CODE_MODE_MAX_CALLS_PER_RUN_ENV)
+        else {
+            return DEFAULT_CODE_MODE_MAX_CALLTOOL_PER_RUN;
+        };
+        match raw.trim().parse::<u64>() {
+            Ok(value) if value > 0 => value.min(MAX_CODE_MODE_CALLTOOL_PER_RUN_CEILING),
+            _ => {
+                warn_invalid_call_env(
+                    LAB_CODE_MODE_MAX_CALLS_PER_RUN_ENV,
+                    raw.trim(),
+                    DEFAULT_CODE_MODE_MAX_CALLTOOL_PER_RUN,
+                );
+                DEFAULT_CODE_MODE_MAX_CALLTOOL_PER_RUN
+            }
+        }
+    }
+
+    fn resolve_result_max_bytes() -> usize {
+        let default_mib = DEFAULT_CODE_MODE_CALLTOOL_RESULT_MAX_MIB;
+        let default_bytes = default_mib * 1024 * 1024;
+        let Some(raw) =
+            crate::dispatch::helpers::env_non_empty(LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB_ENV)
+        else {
+            return default_bytes;
+        };
+        match raw.trim().parse::<usize>() {
+            Ok(mib) if mib > 0 => mib.saturating_mul(1024 * 1024),
+            _ => {
+                warn_invalid_call_env(
+                    LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB_ENV,
+                    raw.trim(),
+                    default_mib as u64,
+                );
+                default_bytes
+            }
+        }
+    }
+}
+
+fn warn_invalid_call_env(env_name: &str, value: &str, default: u64) {
+    tracing::warn!(
+        surface = "dispatch",
+        service = "code_mode",
+        action = "codemode",
+        env = env_name,
+        value = %value,
+        default,
+        "ignoring invalid Code Mode callTool env var; using default"
+    );
+}
+
+/// Complete resolved Code Mode configuration for status/doctor display.
+///
+/// Bundles the `config.toml`-persisted [`CodeModeConfig`] with the env-sourced
+/// pool/artifact/callTool knobs so `gateway code status` surfaces every knob in
+/// one place — previously the env-only knobs were invisible to status
+/// (lab-xvmti). This is a read-only view; the env knobs are still loaded from
+/// the environment, not persisted to `config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeModeFullConfig {
+    #[serde(flatten)]
+    pub config: CodeModeConfig,
+    pub pool: CodeModePoolConfig,
+    pub artifact: CodeModeArtifactConfig,
+    pub call: CodeModeCallConfig,
+}
+
+impl CodeModeFullConfig {
+    /// Combine the persisted Code Mode config with the env-sourced knobs.
+    #[must_use]
+    pub fn from_parts(config: CodeModeConfig) -> Self {
+        Self {
+            config,
+            pool: CodeModePoolConfig::from_env(),
+            artifact: CodeModeArtifactConfig::from_env(),
+            call: CodeModeCallConfig::from_env(),
+        }
+    }
+}
+
 /// Provenance record for an upstream imported from an external MCP config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportSource {
@@ -4171,5 +4524,132 @@ service_scope = "user"
 
         assert_eq!(file_mode(&env_path), 0o600, ".env must be healed");
         assert_eq!(file_mode(&bak_path), 0o600, ".env.bak.* must be healed");
+    }
+
+    // --- Code Mode env-sourced knob resolution (lab-xvmti) ---
+    //
+    // These cover the centralized pool/artifact/callTool config that replaced
+    // the per-module env readers. They exercise the shared resolution path:
+    // defaults, clamps, and the override-aware env read (`with_env_override`).
+
+    #[test]
+    fn code_mode_pool_config_default_is_conservative() {
+        let cfg = CodeModePoolConfig::default();
+        assert_eq!(cfg.size, 2);
+        assert_eq!(cfg.recycle_after, 100);
+        assert_eq!(cfg.max_overflow, 8);
+        assert!(!cfg.is_disabled());
+    }
+
+    #[test]
+    fn code_mode_pool_config_resolves_and_clamps_from_env() {
+        use crate::dispatch::helpers::with_env_override;
+        use std::collections::HashMap;
+
+        // Valid values are honored; `size=0` disables pooling.
+        let cfg = with_env_override(
+            HashMap::from([
+                ("LAB_CODE_MODE_POOL_SIZE".to_string(), "0".to_string()),
+                (
+                    "LAB_CODE_MODE_POOL_RECYCLE_AFTER".to_string(),
+                    "5".to_string(),
+                ),
+            ]),
+            CodeModePoolConfig::from_env,
+        );
+        assert_eq!(cfg.size, 0);
+        assert!(cfg.is_disabled());
+        assert_eq!(cfg.recycle_after, 5);
+
+        // Absurd values clamp to the hard ceilings (size 16, overflow 64);
+        // recycle_after floors at 1.
+        let clamped = with_env_override(
+            HashMap::from([
+                ("LAB_CODE_MODE_POOL_SIZE".to_string(), "1000".to_string()),
+                (
+                    "LAB_CODE_MODE_POOL_RECYCLE_AFTER".to_string(),
+                    "0".to_string(),
+                ),
+                (
+                    "LAB_CODE_MODE_POOL_MAX_OVERFLOW".to_string(),
+                    "99999".to_string(),
+                ),
+            ]),
+            CodeModePoolConfig::from_env,
+        );
+        assert_eq!(clamped.size, 16, "size clamps to MAX_CODE_MODE_POOL_SIZE");
+        assert_eq!(clamped.recycle_after, 1, "recycle_after floors at 1");
+        assert_eq!(
+            clamped.max_overflow, 64,
+            "overflow clamps to MAX_CODE_MODE_POOL_MAX_OVERFLOW"
+        );
+    }
+
+    #[test]
+    fn code_mode_artifact_config_resolves_from_env_with_zero_semantics() {
+        use crate::dispatch::helpers::with_env_override;
+        use std::collections::HashMap;
+
+        // Defaults.
+        let def = CodeModeArtifactConfig::default();
+        assert_eq!(def.retention_runs, 200);
+        assert_eq!(def.max_bytes, 8 * 1024 * 1024);
+        assert_eq!(def.max_store_bytes, 4096 * 1024 * 1024);
+
+        // `0` retention/store disables that pruning dimension; `0` max_bytes is
+        // rejected (a 0-byte cap would reject every write) → default.
+        let cfg = with_env_override(
+            HashMap::from([
+                (
+                    "LAB_CODE_MODE_ARTIFACT_RETENTION_RUNS".to_string(),
+                    "0".to_string(),
+                ),
+                (
+                    "LAB_CODE_MODE_ARTIFACT_MAX_MIB".to_string(),
+                    "0".to_string(),
+                ),
+                (
+                    "LAB_CODE_MODE_ARTIFACT_MAX_STORE_MIB".to_string(),
+                    "0".to_string(),
+                ),
+            ]),
+            CodeModeArtifactConfig::from_env,
+        );
+        assert_eq!(cfg.retention_runs, 0, "0 disables count pruning");
+        assert_eq!(
+            cfg.max_bytes,
+            8 * 1024 * 1024,
+            "0 MiB cap is rejected → default"
+        );
+        assert_eq!(cfg.max_store_bytes, 0, "0 disables byte pruning");
+    }
+
+    #[test]
+    fn code_mode_call_config_resolves_and_clamps_from_env() {
+        use crate::dispatch::helpers::with_env_override;
+        use std::collections::HashMap;
+
+        let def = CodeModeCallConfig::default();
+        assert_eq!(def.max_calls_per_run, 512);
+        assert_eq!(def.calltool_result_max_bytes, 8 * 1024 * 1024);
+
+        let cfg = with_env_override(
+            HashMap::from([
+                (
+                    "LAB_CODE_MODE_MAX_CALLS_PER_RUN".to_string(),
+                    "999999".to_string(),
+                ),
+                (
+                    "LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB".to_string(),
+                    "16".to_string(),
+                ),
+            ]),
+            CodeModeCallConfig::from_env,
+        );
+        assert_eq!(
+            cfg.max_calls_per_run, 2048,
+            "fan-out budget clamps to ceiling"
+        );
+        assert_eq!(cfg.calltool_result_max_bytes, 16 * 1024 * 1024);
     }
 }

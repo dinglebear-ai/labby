@@ -427,8 +427,8 @@ globalThis.__labSnippetStack = [];
 globalThis.__labSnippetResolveCount = 0;
 globalThis.__labSnippetResolvedBytes = 0;
 globalThis.__labSnippetMaxDepth = 8;
-globalThis.__labSnippetMaxResolves = 32;
-globalThis.__labSnippetMaxBytes = 262144;
+globalThis.__labSnippetMaxResolves = {snippet_max_resolves};
+globalThis.__labSnippetMaxBytes = {snippet_max_bytes};
 {codec}
 globalThis.callTool = (id, params = {{}}) => {{
   if (typeof id !== "string" || id.trim() === "") {{
@@ -539,6 +539,10 @@ globalThis.__labMainPromise = (async () => {{
         codec = CODE_MODE_VALUE_CODEC_JS,
         invoker = invoker,
         proxy = proxy,
+        // Interpolated from the Rust consts so the in-sandbox snippet guards
+        // can't drift from host-side enforcement in `runner_drive.rs` (lab-xvmti).
+        snippet_max_resolves = super::config::MAX_SNIPPET_RESOLVES_PER_RUN,
+        snippet_max_bytes = super::config::MAX_SNIPPET_RESOLVED_BYTES_PER_RUN,
     )
 }
 

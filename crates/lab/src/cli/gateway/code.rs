@@ -21,7 +21,12 @@ pub(super) async fn run_gateway_code(
 
     match args.command {
         GatewayCodeCommand::Status => {
-            crate::output::print(&manager.code_mode_config().await, format)?;
+            // Show the persisted config plus the env-sourced pool/artifact/
+            // callTool knobs so every Code Mode knob is visible in one place
+            // (lab-xvmti).
+            let full =
+                crate::config::CodeModeFullConfig::from_parts(manager.code_mode_config().await);
+            crate::output::print(&full, format)?;
         }
         GatewayCodeCommand::Enable => {
             let mut next = manager.code_mode_config().await;
@@ -38,13 +43,28 @@ pub(super) async fn run_gateway_code(
         GatewayCodeCommand::Exec { code, file } => {
             let code = read_code_mode_source(code, file, MAX_SOURCE_BYTES as u64)?;
             let config = manager.code_mode_config().await;
+            let capability_filter =
+                crate::dispatch::gateway::code_mode::CodeModeCapabilityFilter::default();
+            // CLI is a trusted-local admin caller with no per-actor key and the
+            // root route scope. Passing a recording context makes the broker
+            // record execution history + source for the CLI surface too, so the
+            // `gateway history` view is no longer MCP-only (lab-xvmti).
+            let record_ctx = crate::dispatch::gateway::code_mode::CodeModeExecuteContext {
+                execution_id: ulid::Ulid::new().to_string(),
+                route_scope: "root".to_string(),
+                actor_key: None,
+                is_admin: true,
+                capability_filter_fingerprint: capability_filter.fingerprint(),
+                input_tokens: crate::dispatch::helpers::estimate_tokens(&code),
+            };
             let response = broker
                 .execute(
                     &code,
                     caller,
                     surface,
                     config,
-                    crate::dispatch::gateway::code_mode::CodeModeCapabilityFilter::default(),
+                    capability_filter,
+                    Some(record_ctx),
                 )
                 .await?;
             crate::output::print(&response, format)?;

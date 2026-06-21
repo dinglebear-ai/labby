@@ -566,6 +566,30 @@ pub struct CodeModeSourceLookup {
     pub capability_filter_fingerprint: String,
 }
 
+/// Surface-supplied context for one Code Mode execution's telemetry.
+///
+/// `CodeModeBroker::execute` records the execution-history entry (always) and
+/// the source snapshot (admin + within source-size limit) for every surface, so
+/// each adapter (MCP, CLI, future HTTP) hands the broker the same recording
+/// context instead of re-implementing the recording calls. Fields not derivable
+/// from `(code, surface, config)` live here.
+#[derive(Debug, Clone)]
+pub(crate) struct CodeModeExecuteContext {
+    /// Stable id for this execution (also stamped onto the response).
+    pub execution_id: String,
+    /// Route-scope label for history/source bucketing (`"root"` for trusted
+    /// local CLI; `"protected:<name>"` for a scoped MCP route).
+    pub route_scope: String,
+    /// Per-actor key for source attribution, when the surface has one.
+    pub actor_key: Option<String>,
+    /// Whether the caller holds `lab:admin` — gates source recording.
+    pub is_admin: bool,
+    /// Capability-filter fingerprint stored alongside a recorded source.
+    pub capability_filter_fingerprint: String,
+    /// Estimated input tokens (computed by the surface from its raw arguments).
+    pub input_tokens: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct CodeModeSourceStore {
     entries: VecDeque<CodeModeExecutionSource>,

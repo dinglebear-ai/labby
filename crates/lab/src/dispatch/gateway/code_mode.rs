@@ -121,10 +121,17 @@ pub struct ProxyRenderCache {
     /// `generate_js_proxy_from_catalog(...)` output.
     pub namespace_js: String,
 }
+pub(crate) use types::CodeModeExecuteContext;
 #[cfg(test)]
 pub(crate) use types::{CodeModeExecutionError, CodeModeExecutionResponse};
 pub(crate) use types::{CodeModeExecutionSource, CodeModeSourceLookup, CodeModeSourceStore};
-pub(crate) use types::{CodeModeHistory, CodeModeHistoryEntry, CodeModeHistoryKind};
+pub(crate) use types::{CodeModeHistory, CodeModeHistoryEntry};
+// `CodeModeHistoryKind` has a single non-test variant (`Execute`) that callers
+// set via this re-export only from tests (the broker constructs the entry via
+// `super::types::` directly); gate the re-export so the non-test lib build does
+// not carry it as an unused `pub(crate) use` under `-D warnings`.
+#[cfg(test)]
+pub(crate) use types::CodeModeHistoryKind;
 
 // Re-exported for the in-crate test modules (`tests_*`), which reference these
 // types/helpers via `super::*`. Gated to the test build so the non-test lib does

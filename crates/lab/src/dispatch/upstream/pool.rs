@@ -48,7 +48,11 @@ mod tools_call;
 mod validate;
 
 use helpers::DEFAULT_REQUEST_TIMEOUT;
+// Re-exported at crate visibility so callers outside `pool::helpers` (e.g. the
+// gateway runtime + code-mode reprobe paths) resolve the single canonical
+// discovery-concurrency reader instead of re-implementing the env parse.
 pub(crate) use helpers::redact_resource_uri_for_logging;
+pub(crate) use helpers::upstream_discovery_concurrency;
 pub use helpers::{UpstreamCachedSummary, in_process_upstream_name};
 pub(crate) use tools::tool_has_mcp_app_ui_resource;
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.

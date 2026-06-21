@@ -301,14 +301,10 @@ impl GatewayManager {
             return;
         };
 
-        // P-M7: cap concurrency using the same LAB_UPSTREAM_DISCOVERY_CONCURRENCY
+        // P-M7: cap concurrency using the same `LAB_UPSTREAM_DISCOVERY_CONCURRENCY`
         // setting the rest of the codebase uses (default 3) to avoid a stdio
         // spawn storm when many upstreams are warming simultaneously.
-        let concurrency = std::env::var("LAB_UPSTREAM_DISCOVERY_CONCURRENCY")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|&v| v > 0)
-            .unwrap_or(3);
+        let concurrency = crate::dispatch::upstream::pool::upstream_discovery_concurrency();
 
         // Collect owned values so the closure passed to buffer_unordered can
         // satisfy the HRTB (`for<'a> FnOnce(&'a UpstreamConfig)`) required by

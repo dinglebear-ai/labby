@@ -20,6 +20,21 @@ pub(crate) const SERVICE: &str = "code_mode";
 /// used `20 * 1024` (20480) and the MCP path `20_000`; they are unified here.
 pub(crate) const MAX_SOURCE_BYTES: usize = 20_000;
 
+/// Maximum `codemode.run(...)` snippet resolutions allowed in a single run.
+///
+/// Enforced on the host side in `runner_drive.rs` AND interpolated into the JS
+/// preamble (`runner.rs::wrap_code_mode`, as `__labSnippetMaxResolves`) so the
+/// in-sandbox guard and the host guard cannot drift. Edit this one place.
+pub(in crate::dispatch::gateway::code_mode) const MAX_SNIPPET_RESOLVES_PER_RUN: usize = 32;
+
+/// Maximum total bytes of resolved snippet source allowed in a single run.
+///
+/// Like [`MAX_SNIPPET_RESOLVES_PER_RUN`], enforced host-side in
+/// `runner_drive.rs` and interpolated into the JS preamble (as
+/// `__labSnippetMaxBytes`) so both sides share one definition.
+pub(in crate::dispatch::gateway::code_mode) const MAX_SNIPPET_RESOLVED_BYTES_PER_RUN: usize =
+    256 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;

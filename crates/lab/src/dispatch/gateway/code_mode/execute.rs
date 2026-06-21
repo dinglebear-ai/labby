@@ -26,6 +26,16 @@ use super::types::{
 const UI_OPT_IN_KEY: &str = "__ui";
 
 impl CodeModeBroker<'_> {
+    /// Execute Code Mode source and (when a recording context is supplied)
+    /// record the execution-history entry + source snapshot uniformly for every
+    /// surface.
+    ///
+    /// Recording lives here, in the shared dispatch broker, rather than in the
+    /// MCP/CLI adapters: per `docs/dev/DISPATCH.md` the sandbox parent broker
+    /// owns Code Mode operation semantics while surfaces only adapt inputs and
+    /// outputs. `ctx = None` skips recording — used by the snippet host path
+    /// (`codemode.run`), which executes *inside* an already-recorded run, and by
+    /// unit tests that don't assert telemetry.
     pub(crate) async fn execute(
         &self,
         code: &str,
@@ -33,6 +43,33 @@ impl CodeModeBroker<'_> {
         surface: CodeModeSurface,
         config: crate::config::CodeModeConfig,
         capability_filter: CodeModeCapabilityFilter,
+        ctx: Option<super::types::CodeModeExecuteContext>,
+    ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
+        let started = std::time::Instant::now();
+        let mut result = self
+            .execute_inner(code, caller, surface, config, capability_filter, started)
+            .await;
+        if let Some(ctx) = ctx {
+            // Stamp the execution id onto the success response before recording
+            // so the recorded output-token estimate matches the response the
+            // surface returns (and surfaces no longer assign it themselves).
+            if let Ok(response) = &mut result {
+                response.execution_id = Some(ctx.execution_id.clone());
+            }
+            self.record_execution(code, surface, &result, &ctx, started.elapsed().as_millis())
+                .await;
+        }
+        result
+    }
+
+    async fn execute_inner(
+        &self,
+        code: &str,
+        caller: CodeModeCaller,
+        surface: CodeModeSurface,
+        config: crate::config::CodeModeConfig,
+        capability_filter: CodeModeCapabilityFilter,
+        started: std::time::Instant,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // `codemode` is exposed only when the gateway Code Mode surface is
         // enabled (code_mode.enabled -> RootSynthetic), and the MCP handler
@@ -44,7 +81,6 @@ impl CodeModeBroker<'_> {
             }
             .into());
         }
-        let started = std::time::Instant::now();
         let mut response = self
             .execute_sandboxed(
                 code,
@@ -90,6 +126,73 @@ impl CodeModeBroker<'_> {
             "code execution complete"
         );
         Ok(response)
+    }
+
+    /// Record execution history (always) and source (admin + within size limit)
+    /// for one execution, shared by every surface. No-op when the broker has no
+    /// `GatewayManager` (standalone/test brokers have nowhere to record).
+    async fn record_execution(
+        &self,
+        code: &str,
+        surface: CodeModeSurface,
+        result: &Result<CodeModeExecutionResponse, CodeModeExecutionError>,
+        ctx: &super::types::CodeModeExecuteContext,
+        elapsed_ms: u128,
+    ) {
+        use super::types::{CodeModeExecutionSource, CodeModeHistoryEntry, CodeModeHistoryKind};
+
+        let Some(manager) = self.gateway_manager else {
+            return;
+        };
+
+        let (ok, calls, error_kind, output_tokens) = match result {
+            Ok(response) => {
+                let output = serde_json::to_string(response).unwrap_or_else(|_| "{}".to_string());
+                (
+                    true,
+                    response.calls.clone(),
+                    None,
+                    crate::dispatch::helpers::estimate_tokens(&output),
+                )
+            }
+            Err(err) => (false, err.calls().to_vec(), Some(err.kind().to_string()), 0),
+        };
+
+        manager
+            .record_code_mode_history(CodeModeHistoryEntry {
+                execution_id: Some(ctx.execution_id.clone()),
+                seq: 0,
+                route_scope: ctx.route_scope.clone(),
+                kind: CodeModeHistoryKind::Execute,
+                ok,
+                elapsed_ms,
+                input_tokens: Some(ctx.input_tokens),
+                output_tokens: Some(output_tokens),
+                error_kind,
+                calls,
+                match_count: None,
+            })
+            .await;
+
+        // Source is recorded only for admins and only up to the shared
+        // source-size limit, matching the prior MCP-only behavior.
+        if ctx.is_admin && code.len() <= super::config::MAX_SOURCE_BYTES {
+            manager
+                .record_code_mode_source(CodeModeExecutionSource {
+                    execution_id: ctx.execution_id.clone(),
+                    created_at_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_millis() as i64)
+                        .unwrap_or_default(),
+                    actor_key: ctx.actor_key.clone(),
+                    is_admin: ctx.is_admin,
+                    route_scope: ctx.route_scope.clone(),
+                    surface,
+                    capability_filter_fingerprint: ctx.capability_filter_fingerprint.clone(),
+                    code: code.to_string(),
+                })
+                .await;
+        }
     }
 
     async fn build_code_mode_proxy(
@@ -574,6 +677,126 @@ mod tests {
     use super::*;
     use rmcp::model::{Content, Meta};
     use serde_json::json;
+
+    /// Broker-level recording parity (lab-xvmti): `record_execution` is the
+    /// single recording path every surface (MCP, CLI, future HTTP) drives, so a
+    /// success and a failure each record one history entry, and an admin caller
+    /// records one source snapshot per execution regardless of outcome. Driving
+    /// it directly proves the broker — not the surface — owns recording.
+    #[tokio::test]
+    async fn record_execution_records_history_and_admin_source_uniformly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = super::super::super::runtime::GatewayRuntimeHandle::default();
+        let manager = GatewayManager::new(dir.path().join("config.toml"), runtime);
+        let broker = CodeModeBroker::new(Some(&manager));
+
+        let ctx = super::super::types::CodeModeExecuteContext {
+            execution_id: "01XVMTI_OK".to_string(),
+            route_scope: "root".to_string(),
+            actor_key: Some("actor-1".to_string()),
+            is_admin: true,
+            capability_filter_fingerprint: "fp".to_string(),
+            input_tokens: 4,
+        };
+
+        // Success path: one history entry (ok=true) + one source snapshot.
+        let ok_response: Result<CodeModeExecutionResponse, CodeModeExecutionError> =
+            Ok(response_with_result(json!(1)));
+        broker
+            .record_execution("async () => 1", CodeModeSurface::Cli, &ok_response, &ctx, 7)
+            .await;
+
+        // Failure path with a fresh execution id: one more history entry
+        // (ok=false) + one more source snapshot (admin records on failure too).
+        let err_ctx = super::super::types::CodeModeExecuteContext {
+            execution_id: "01XVMTI_ERR".to_string(),
+            ..ctx.clone()
+        };
+        let err_response: Result<CodeModeExecutionResponse, CodeModeExecutionError> =
+            Err(ToolError::Sdk {
+                sdk_kind: "timeout".to_string(),
+                message: "boom".to_string(),
+            }
+            .into());
+        broker
+            .record_execution(
+                "async () => 2",
+                CodeModeSurface::Mcp,
+                &err_response,
+                &err_ctx,
+                9,
+            )
+            .await;
+
+        let history = manager.code_mode_history_snapshot().await;
+        assert_eq!(history.len(), 2, "both executions recorded a history entry");
+        assert!(history.iter().any(|h| h.ok), "success entry present");
+        assert!(history.iter().any(|h| !h.ok), "failure entry present");
+        assert!(
+            history
+                .iter()
+                .any(|h| h.error_kind.as_deref() == Some("timeout")),
+            "failure entry carries the error kind"
+        );
+
+        // Both source snapshots are resolvable for the admin actor.
+        let lookup = super::super::types::CodeModeSourceLookup {
+            actor_key: Some("actor-1".to_string()),
+            is_admin: true,
+            route_scope: "root".to_string(),
+            capability_filter_fingerprint: "fp".to_string(),
+        };
+        for id in ["01XVMTI_OK", "01XVMTI_ERR"] {
+            assert!(
+                manager.resolve_code_mode_source(id, &lookup).await.is_ok(),
+                "admin source recorded for {id}"
+            );
+        }
+    }
+
+    /// A non-admin caller records history but never a source snapshot.
+    #[tokio::test]
+    async fn record_execution_skips_source_for_non_admin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = super::super::super::runtime::GatewayRuntimeHandle::default();
+        let manager = GatewayManager::new(dir.path().join("config.toml"), runtime);
+        let broker = CodeModeBroker::new(Some(&manager));
+
+        let ctx = super::super::types::CodeModeExecuteContext {
+            execution_id: "01XVMTI_NOADMIN".to_string(),
+            route_scope: "root".to_string(),
+            actor_key: None,
+            is_admin: false,
+            capability_filter_fingerprint: String::new(),
+            input_tokens: 1,
+        };
+        let response: Result<CodeModeExecutionResponse, CodeModeExecutionError> =
+            Ok(response_with_result(json!(1)));
+        broker
+            .record_execution("async () => 1", CodeModeSurface::Cli, &response, &ctx, 3)
+            .await;
+
+        assert_eq!(
+            manager.code_mode_history_snapshot().await.len(),
+            1,
+            "history is recorded for non-admin callers"
+        );
+        // Look up as admin so an Err here means "no source recorded"
+        // (unknown_execution), not merely "reader lacks admin".
+        let lookup = super::super::types::CodeModeSourceLookup {
+            actor_key: None,
+            is_admin: true,
+            route_scope: "root".to_string(),
+            capability_filter_fingerprint: String::new(),
+        };
+        assert!(
+            manager
+                .resolve_code_mode_source("01XVMTI_NOADMIN", &lookup)
+                .await
+                .is_err(),
+            "no source snapshot recorded for a non-admin caller"
+        );
+    }
 
     fn result_with_meta_ui(ui: Value) -> CallToolResult {
         let mut meta = Map::new();
