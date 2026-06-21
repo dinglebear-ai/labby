@@ -5,7 +5,9 @@ use super::{
     CODE_MODE_DESCRIPTION, code_arg, code_mode_execute_trace, route_scoped_capability_filter,
     string_array_arg,
 };
-use crate::dispatch::gateway::code_mode::{CodeModeExecutedCall, CodeModeExecutionResponse};
+use crate::dispatch::gateway::code_mode::{
+    CodeModeExecutedCall, CodeModeExecutionResponse, MAX_SOURCE_BYTES,
+};
 use serde_json::{Value, json};
 
 #[test]
@@ -51,6 +53,30 @@ fn code_arg_rejects_missing_or_blank_code() {
     let mut args = serde_json::Map::new();
     args.insert("code".to_string(), Value::String("  \n\t ".to_string()));
     let err = code_arg(&args).expect_err("blank code must be invalid");
+    assert_eq!(err.kind(), "invalid_param");
+}
+
+// Surface-parity guard (lab-eozvy): the MCP source-size boundary is the shared
+// `MAX_SOURCE_BYTES` const, identical to the CLI `read_code_mode_source` check.
+// A change to the const must move both surfaces together.
+#[test]
+fn code_arg_source_limit_is_shared_const_boundary() {
+    let mut args = serde_json::Map::new();
+    args.insert(
+        "code".to_string(),
+        Value::String("a".repeat(MAX_SOURCE_BYTES)),
+    );
+    assert!(
+        code_arg(&args).is_ok(),
+        "code of exactly MAX_SOURCE_BYTES must be accepted by the MCP surface"
+    );
+
+    let mut args = serde_json::Map::new();
+    args.insert(
+        "code".to_string(),
+        Value::String("a".repeat(MAX_SOURCE_BYTES + 1)),
+    );
+    let err = code_arg(&args).expect_err("code of MAX_SOURCE_BYTES + 1 must be rejected");
     assert_eq!(err.kind(), "invalid_param");
 }
 

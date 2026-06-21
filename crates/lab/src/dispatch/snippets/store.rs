@@ -13,7 +13,8 @@ const SNIPPET_EXTENSIONS: &[&str] = &["md", "js"];
 
 /// Maximum size of a snippet's *executable* code — the extracted ```js block,
 /// or the whole file for bare `.js` snippets. This is what actually runs in
-/// code-mode, so it mirrors `CODE_MODE_CLI_MAX_SOURCE_BYTES` in `cli/gateway.rs`.
+/// code-mode; it is in the same ballpark as the Code Mode source-size limit
+/// (`code_mode::MAX_SOURCE_BYTES`) but is an independent snippet-storage cap.
 const MAX_SNIPPET_CODE_BYTES: usize = 20 * 1024;
 
 /// Generous upper bound on the whole snippet markdown file (frontmatter + prose

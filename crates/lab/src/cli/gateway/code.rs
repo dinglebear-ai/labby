@@ -4,7 +4,9 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::cli::gateway::{GatewayCodeArgs, GatewayCodeCommand};
-use crate::dispatch::gateway::code_mode::{CodeModeBroker, CodeModeCaller, CodeModeSurface};
+use crate::dispatch::gateway::code_mode::{
+    CodeModeBroker, CodeModeCaller, CodeModeSurface, MAX_SOURCE_BYTES,
+};
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::output::OutputFormat;
 
@@ -13,8 +15,6 @@ pub(super) async fn run_gateway_code(
     args: GatewayCodeArgs,
     format: OutputFormat,
 ) -> Result<ExitCode> {
-    const CODE_MODE_CLI_MAX_SOURCE_BYTES: u64 = 20 * 1024;
-
     let registry = manager.builtin_service_registry();
     let broker = CodeModeBroker::new(&registry, Some(manager.as_ref()));
     let caller = CodeModeCaller::TrustedLocal;
@@ -37,7 +37,7 @@ pub(super) async fn run_gateway_code(
             crate::output::print(&updated, format)?;
         }
         GatewayCodeCommand::Exec { code, file } => {
-            let code = read_code_mode_source(code, file, CODE_MODE_CLI_MAX_SOURCE_BYTES)?;
+            let code = read_code_mode_source(code, file, MAX_SOURCE_BYTES as u64)?;
             let config = manager.code_mode_config().await;
             let response = broker
                 .execute(
@@ -84,5 +84,28 @@ fn read_code_mode_source(
             Ok(buf)
         }
         _ => anyhow::bail!("provide exactly one of --code or --file"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Surface-parity guard (lab-eozvy): the CLI source-size boundary is the
+    // shared `MAX_SOURCE_BYTES` const, identical to the MCP `code_arg` check.
+    #[test]
+    fn cli_source_limit_is_shared_const_boundary() {
+        let limit = MAX_SOURCE_BYTES;
+        let at_limit = "a".repeat(limit);
+        assert!(
+            read_code_mode_source(Some(at_limit), None, limit as u64).is_ok(),
+            "code of exactly MAX_SOURCE_BYTES must be accepted by the CLI"
+        );
+
+        let over_limit = "a".repeat(limit + 1);
+        assert!(
+            read_code_mode_source(Some(over_limit), None, limit as u64).is_err(),
+            "code of MAX_SOURCE_BYTES + 1 must be rejected by the CLI"
+        );
     }
 }

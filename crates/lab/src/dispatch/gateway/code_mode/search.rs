@@ -133,7 +133,7 @@ impl CodeModeBroker<'_> {
         {
             tracing::debug!(
                 surface = "dispatch",
-                service = "codemode",
+                service = super::SERVICE,
                 action = "catalog.build",
                 entry_count = entries.len(),
                 "Code Mode discovery catalog served from render cache"

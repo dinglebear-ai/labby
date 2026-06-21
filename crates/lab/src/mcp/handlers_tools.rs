@@ -17,6 +17,7 @@ use rmcp::service::RequestContext;
 use serde_json::Value;
 
 #[cfg(feature = "gateway")]
+use crate::dispatch::gateway::code_mode::SERVICE as CODE_MODE_SERVICE;
 use crate::mcp::call_tool_codemode::CODE_MODE_DESCRIPTION;
 use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
 use crate::mcp::completion::action_schema;
@@ -111,7 +112,7 @@ impl LabMcpServer {
             debug_assert!(CODE_MODE_DESCRIPTION.len() < 8192);
             tracing::info!(
                 surface = "mcp",
-                service = "codemode",
+                service = CODE_MODE_SERVICE,
                 action = "tool.describe",
                 description_bytes = CODE_MODE_DESCRIPTION.len(),
                 "registered primary Code Mode description"
@@ -122,7 +123,7 @@ impl LabMcpServer {
                 .unwrap_or_else(|| "<missing>".to_string());
             tracing::info!(
                 surface = "mcp",
-                service = "codemode",
+                service = CODE_MODE_SERVICE,
                 action = "mcp_app.advertise",
                 resource_uri = %codemode_resource_uri,
                 skybridge_uri = %codemode_skybridge_uri,

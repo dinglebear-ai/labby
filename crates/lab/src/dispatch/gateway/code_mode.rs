@@ -13,6 +13,7 @@ pub(crate) use crate::registry::ToolRegistry;
 
 mod artifacts;
 pub(crate) mod catalog_cache;
+mod config;
 mod execute;
 mod normalize;
 mod pool;
@@ -60,6 +61,10 @@ mod tests_ts_signatures;
 #[cfg(test)]
 mod tests_types_legacy;
 
+// Shared Code Mode dispatch constants (tracing service label + source-size
+// limit). Re-exported so the CLI and MCP surface adapters import one canonical
+// definition instead of redeclaring point-of-use literals.
+pub(crate) use config::{MAX_SOURCE_BYTES, SERVICE};
 pub use normalize::normalize_user_code;
 // Re-export the pool type so `GatewayManager` (a sibling of `code_mode.rs`) can
 // hold the shared, long-lived warm-runner pool in a field.
