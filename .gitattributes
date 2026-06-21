@@ -1,0 +1,6 @@
+# Shell and Python tooling must stay LF on every checkout and plugin deploy.
+# Some deploy paths (marketplace cache, Windows checkouts) rewrote these to
+# CRLF, which broke shebang/`bash` execution of bundled skill scripts.
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.py    text eol=lf
