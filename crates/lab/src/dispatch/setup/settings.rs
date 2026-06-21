@@ -685,6 +685,17 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         ),
         number_editable(
             "advanced",
+            "upstream_relay_timeout_ms",
+            "Upstream relay (elicitation) timeout",
+            "Maximum time for one relayed upstream call that waits on a human \
+             answering an elicitation. Only used on the opt-in relay path.",
+            SettingsApplyMode::Restart,
+            1,
+            1_800_000,
+            Some("300000"),
+        ),
+        number_editable(
+            "advanced",
             "local_logs.retention_days",
             "Log retention days",
             "Local log retention window.",

@@ -225,8 +225,11 @@ impl GatewayManager {
             }
         };
 
-        let request_timeout = self.config.read().await.upstream_request_timeout();
-        let pool = self.new_base_pool(request_timeout);
+        let (request_timeout, relay_timeout) = {
+            let cfg = self.config.read().await;
+            (cfg.upstream_request_timeout(), cfg.upstream_relay_timeout())
+        };
+        let pool = self.new_base_pool(request_timeout, relay_timeout);
         let registry = self.builtin_service_registry();
         pool.discover_all_for_subject_ephemeral_with_in_process_peers(
             &[upstream.clone()],

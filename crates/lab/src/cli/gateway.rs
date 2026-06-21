@@ -52,6 +52,7 @@ async fn build_manager_with_upstream_oauth_runtime(
         // CLI commands only spawn the upstreams they actually touch.
         let mut pool_builder = UpstreamPool::new()
             .with_request_timeout(config.upstream_request_timeout())
+            .with_relay_timeout(config.upstream_relay_timeout())
             .with_in_process_connector(crate::mcp::in_process_peer::connector());
         if let Some(rt) = &upstream_oauth_runtime {
             pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());

@@ -96,13 +96,28 @@ OAuth/subject-scoped branch forwards the resolved `oauth_subject` so the
 dedicated connection authenticates as the caller. The relay forwards the
 upstream's request straight to `context.peer` (the agent).
 
-Relay connections are cached per `(upstream, session_id)`, where `session_id` is
-minted once per `LabMcpServer` session (`next_relay_session_id()`) and passed
-into `call_tool_relayed`. Because each session has exactly one downstream agent
-peer, the session-scoped key guarantees a cached relay connection is never
-reused across agents — so the first relayed call in a session pays the connect
-cost and subsequent calls reuse it, without risking misrouted elicitation. It
-stays opt-in (gated) so the default path is the untouched pooled `call_tool`.
+Relay connections are cached per `(upstream, session_id, subject)`. `session_id`
+is minted once per `LabMcpServer` session (`next_relay_session_id()`) and passed
+into `call_tool_relayed`; because each session has exactly one downstream agent
+peer, it guarantees a cached relay connection is never reused across agents — so
+the first relayed call in a session pays the connect cost and subsequent calls
+reuse it, without risking misrouted elicitation. `subject` (the OAuth identity,
+`None` on the raw branch) is part of the key so a connection authenticated as
+one identity is never reused for a call made as another within the same session.
+It stays opt-in (gated) so the default path is the untouched pooled `call_tool`.
+
+**Deadline.** A relayed call blocks on a *human* answering the forwarded
+elicitation, so it is bounded by the pool's `relay_timeout`
+(`upstream_relay_timeout_ms`, default 5 min) instead of the 30s
+`upstream_request_timeout_ms` the pooled path uses — otherwise a confirmation
+dialog left open would abort the upstream call. See `config.rs`
+(`upstream_relay_timeout`) and `dispatch/upstream/pool/relay.rs`.
+
+**Scope.** Only the proxied `call_tool` path is relay-handled. Upstream
+`read_resource` and `get_prompt` still run over the pooled `()` connection, so an
+upstream raising elicitation/sampling/roots *during* one of those has it
+declined. Tool calls are where interactive upstreams elicit in practice;
+widening the scope means routing those paths through a relay handler too.
 
 ## Built-in actions
 

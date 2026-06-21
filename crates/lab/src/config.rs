@@ -83,6 +83,17 @@ pub const DEFAULT_MCPREGISTRY_URL: &str = "https://registry.modelcontextprotocol
 pub const WEB_UI_AUTH_DISABLED_ENV: &str = "LAB_WEB_UI_AUTH_DISABLED";
 pub const WEB_UI_AUTH_DISABLED_LEGACY_ENV: &str = "LAB_WEB_UI_DISABLE_AUTH";
 const DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS: u64 = 30_000;
+/// Default deadline for a *relayed* upstream tool call (see
+/// [`LabConfig::upstream_relay_timeout`]).
+///
+/// Relayed calls carry a human-in-the-loop round trip — the upstream raises an
+/// `elicitation/create` that is forwarded to the downstream agent and answered
+/// by a person — so the ordinary 30s `upstream_request_timeout` would abort
+/// legitimate confirmations. The relay deadline defaults to 5 minutes to give a
+/// human time to respond while still bounding the dedicated connection's
+/// lifetime. Only the relay path uses this; the pooled hot path keeps
+/// [`DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS`].
+const DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 300_000;
 
 #[cfg(test)]
 static TEST_CONFIG_TOML_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -145,6 +156,14 @@ pub struct LabConfig {
     /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
+    /// Maximum time to wait for one *relayed* upstream tool call — the opt-in
+    /// path (`LAB_UPSTREAM_RELAY_ELICITATION`) that forwards an upstream's
+    /// `elicitation/create`/`sampling`/`roots` request down to the downstream
+    /// agent. Because a relayed call blocks on a human answering an elicitation,
+    /// it gets its own, longer deadline instead of `upstream_request_timeout_ms`
+    /// (default 5 minutes; see [`LabConfig::upstream_relay_timeout`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_relay_timeout_ms: Option<u64>,
     /// Upstream MCP servers to proxy through the gateway.
     #[serde(default)]
     pub upstream: Vec<UpstreamConfig>,
@@ -381,6 +400,13 @@ impl LabConfig {
         {
             return Err(ConfigError::InvalidUpstreamRequestTimeout { value });
         }
+        // The relay deadline allows a wider ceiling (30 min) than the pooled
+        // request timeout because it spans a human answering an elicitation.
+        if let Some(value) = self.upstream_relay_timeout_ms
+            && !(1..=1_800_000).contains(&value)
+        {
+            return Err(ConfigError::InvalidUpstreamRelayTimeout { value });
+        }
         for upstream in &self.upstream {
             upstream.validate()?;
         }
@@ -392,6 +418,19 @@ impl LabConfig {
         Duration::from_millis(
             self.upstream_request_timeout_ms
                 .unwrap_or(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS),
+        )
+    }
+
+    /// Deadline for a single *relayed* upstream tool call.
+    ///
+    /// Distinct from [`Self::upstream_request_timeout`] because the relay path
+    /// blocks on a human answering an elicitation forwarded from the upstream;
+    /// reusing the 30s request timeout would abort real confirmations. Defaults
+    /// to [`DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS`] (5 minutes) when unset.
+    pub fn upstream_relay_timeout(&self) -> Duration {
+        Duration::from_millis(
+            self.upstream_relay_timeout_ms
+                .unwrap_or(DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS),
         )
     }
 
@@ -1178,6 +1217,8 @@ pub enum ConfigError {
     InvalidCodeModeMaxLogBytes { value: usize },
     #[error("gateway upstream_request_timeout_ms={value} is invalid — expected 1..=300000")]
     InvalidUpstreamRequestTimeout { value: u64 },
+    #[error("gateway upstream_relay_timeout_ms={value} is invalid — expected 1..=1800000")]
+    InvalidUpstreamRelayTimeout { value: u64 },
     #[error("protected MCP route '{name}' has invalid {field}: {value}")]
     InvalidProtectedRoute {
         name: String,
@@ -2065,6 +2106,7 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "gateway_import_mode" => serde_json::json!(cfg.gateway_import_mode),
         "gateway.extra_stdio_commands" => serde_json::json!(cfg.gateway.extra_stdio_commands),
         "upstream_request_timeout_ms" => serde_json::json!(cfg.upstream_request_timeout_ms),
+        "upstream_relay_timeout_ms" => serde_json::json!(cfg.upstream_relay_timeout_ms),
         "node.controller" => {
             serde_json::json!(cfg.node.as_ref().and_then(|value| value.controller.clone()))
         }
@@ -3662,6 +3704,51 @@ upstream_request_timeout_ms = 60000
             Duration::from_millis(60_000)
         );
         cfg.validate().expect("timeout validates");
+    }
+
+    #[test]
+    fn upstream_relay_timeout_defaults_to_five_minutes_and_is_configurable() {
+        // Unset → 5 minute default (NOT the 30s request-timeout default), so a
+        // relayed elicitation is not aborted while a human is answering.
+        let default_cfg = LabConfig::default();
+        assert_eq!(default_cfg.upstream_relay_timeout_ms, None);
+        assert_eq!(
+            default_cfg.upstream_relay_timeout(),
+            Duration::from_millis(300_000)
+        );
+
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+upstream_relay_timeout_ms = 600000
+",
+        )
+        .expect("root upstream relay timeout parses");
+        assert_eq!(cfg.upstream_relay_timeout_ms, Some(600_000));
+        assert_eq!(cfg.upstream_relay_timeout(), Duration::from_millis(600_000));
+        cfg.validate().expect("relay timeout validates");
+    }
+
+    #[test]
+    fn upstream_relay_timeout_rejects_out_of_range() {
+        // Above the 30 min ceiling.
+        let too_big = LabConfig {
+            upstream_relay_timeout_ms: Some(1_800_001),
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            too_big.validate(),
+            Err(ConfigError::InvalidUpstreamRelayTimeout { value: 1_800_001 })
+        ));
+
+        // Zero is rejected just like the request timeout.
+        let zero = LabConfig {
+            upstream_relay_timeout_ms: Some(0),
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            zero.validate(),
+            Err(ConfigError::InvalidUpstreamRelayTimeout { value: 0 })
+        ));
     }
 
     #[test]

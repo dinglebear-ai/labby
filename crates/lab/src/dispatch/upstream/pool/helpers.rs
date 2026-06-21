@@ -39,6 +39,13 @@ pub(super) const IN_PROCESS_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15
 pub(super) const DEFAULT_UPSTREAM_DISCOVERY_CONCURRENCY: usize = 3;
 /// Per-request timeout for upstream tool/resource/prompt RPCs.
 pub(super) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Deadline for a *relayed* upstream tool call (the elicitation-relay path).
+///
+/// Five minutes, not 30 seconds: a relayed call blocks while the upstream's
+/// `elicitation/create` is forwarded to the downstream agent and answered by a
+/// human. The pool's `relay_timeout` field defaults to this; the binary
+/// overrides it from `upstream_relay_timeout_ms`. See `pool/relay.rs`.
+pub(super) const DEFAULT_RELAY_TIMEOUT: Duration = Duration::from_secs(300);
 pub(super) const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 /// Idle TTL for per-`(upstream, subject)` cached connections.
 ///

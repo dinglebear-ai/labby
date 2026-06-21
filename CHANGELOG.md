@@ -4,9 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Configurable upstream relay timeout** — new `upstream_relay_timeout_ms` gateway setting (default 5 minutes) bounds relayed upstream tool calls on the opt-in `LAB_UPSTREAM_RELAY_ELICITATION` elicitation-relay path. Exposed in the settings registry and `config get`, and folded into the pool-rebuild fingerprint so a reload applies it.
+
 ### Removed
 
 - **Bundled plugin marketplace** — Lab no longer ships its own plugin marketplace or the `labby marketplace generate` command that produced it. The marketplace moved to the dedicated [dendrite](https://github.com/jmagar/dendrite) repo, decoupling it from this Rust workspace. Removed the 23 migrated plugin directories (keeping `plugins/labby` and `plugins/scripts`), both the Claude (`.claude-plugin/marketplace.json`) and Codex (`.agents/plugins/marketplace.json`) catalogs, and the `marketplace` Justfile recipe. The marketplace browse/install dispatch service (`sources.*`, `plugins.*`, `plugin.install`, MCP Registry, ACP agents) is unchanged.
+
+### Fixed
+
+- **Relayed elicitations are no longer aborted mid-dialog** — relayed upstream calls now use the dedicated relay timeout (default 5 minutes) instead of the 30s `upstream_request_timeout_ms`, so an upstream elicitation forwarded to the downstream agent is not killed while a human is answering it.
+- **Upstream relay connections are isolated per OAuth subject** — the relay connection cache is now keyed by `(upstream, session_id, subject)` instead of `(upstream, session_id)`, so a dedicated connection authenticated as one identity can never be reused for a call made as another within the same session.
+- **Relay capability diagnostics** — `RelayClientHandler::get_info` now logs when the downstream peer info is unavailable rather than silently advertising no server→client capabilities, and the relay's `call_tool`-only scope is documented.
 
 ---
 
