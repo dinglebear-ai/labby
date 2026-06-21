@@ -1,0 +1,104 @@
+name: Sync marketplace-no-mcp
+
+# Regenerates the long-lived `marketplace-no-mcp` branch as a clean mirror of
+# `main` minus bundled MCP server registrations. The branch is a GENERATED
+# artifact: it is always exactly `main` + the deterministic no-mcp transform.
+# Do NOT hand-edit it — change `main` and/or plugins/scripts/apply-no-mcp-marketplace.
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "37 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-marketplace-no-mcp
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Regenerate marketplace-no-mcp from main
+        id: gen
+        run: |
+          git fetch origin main marketplace-no-mcp
+          main_sha=$(git rev-parse origin/main)
+          old_sha=$(git rev-parse origin/marketplace-no-mcp)
+          old_tree=$(git rev-parse "origin/marketplace-no-mcp^{tree}")
+          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+          echo "old_sha=$old_sha" >> "$GITHUB_OUTPUT"
+          # Start fresh from main so the branch never accumulates drift.
+          git switch -C marketplace-no-mcp origin/main
+          python3 plugins/scripts/apply-no-mcp-marketplace
+          git add -A
+          git commit -m "chore: regenerate marketplace-no-mcp from main ${main_sha}" || true
+          new_tree=$(git rev-parse "HEAD^{tree}")
+          echo "new_tree=$new_tree" >> "$GITHUB_OUTPUT"
+          echo "old_tree=$old_tree" >> "$GITHUB_OUTPUT"
+          if [ "$new_tree" = "$old_tree" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate manifests + no-MCP invariant
+        run: |
+          python3 - <<'PY'
+          import glob, json, sys
+          problems = []
+          for mk in (".claude-plugin/marketplace.json", ".agents/plugins/marketplace.json"):
+              try:
+                  data = json.load(open(mk))
+              except FileNotFoundError:
+                  continue
+              if not isinstance(data.get("plugins"), list):
+                  problems.append(f"{mk}: plugins must be a list")
+              if not str(data.get("name", "")).endswith("-no-mcp"):
+                  problems.append(f"{mk}: name must end with -no-mcp")
+          for f in sorted(glob.glob("plugins/*/.mcp.json")):
+              if json.load(open(f)).get("mcpServers"):
+                  problems.append(f"{f}: still ships mcpServers")
+          if problems:
+              print("FAIL:")
+              for p in problems:
+                  print("  -", p)
+              sys.exit(1)
+          print("ok: marketplaces valid; no local plugin ships an MCP server")
+          PY
+
+      - name: Force-push regenerated branch (only when content changed)
+        if: steps.gen.outputs.changed == 'true'
+        run: |
+          git push --force-with-lease=marketplace-no-mcp:${{ steps.gen.outputs.old_sha }} \
+            origin HEAD:marketplace-no-mcp
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## marketplace-no-mcp regenerate"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| main sha | \`${{ steps.gen.outputs.main_sha }}\` |"
+            echo "| old no-mcp sha | \`${{ steps.gen.outputs.old_sha }}\` |"
+            echo "| content changed | \`${{ steps.gen.outputs.changed }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

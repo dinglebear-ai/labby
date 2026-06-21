@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Apply lab's no-MCP marketplace variant rules.
+
+Deterministic transform so the long-lived `marketplace-no-mcp` branch can be
+refreshed from `main` by automation (.github/workflows/sync-marketplace-no-mcp.yml),
+instead of being hand-edited. Every plugin/skill entry stays intact; only bundled
+MCP server registrations are removed, for environments (e.g. OpenClaw on agent-os)
+where MCP is already provided centrally via the Labby gateway / agent config.
+
+Rules:
+  1. Local plugins (plugins/<name>/.mcp.json): set mcpServers to {} in place.
+     The file is kept (not deleted) so plugin.json's "./.mcp.json" reference
+     stays valid — OpenClaw tolerates an empty map but not always a missing file.
+  2. Marketplace manifests (.claude-plugin + .agents/plugins): append a -no-mcp
+     suffix to the marketplace name so the variant can be registered alongside
+     the full marketplace.
+  3. External plugins (git-subdir/github sources) can't have their .mcp.json
+     stripped from this repo. Add a plugin name to NO_MCP_REF_NAMES to repoint
+     its source.ref to NO_MCP_REF — only once that external repo actually ships
+     a marketplace-no-mcp branch, otherwise installs break.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+PLUGINS = ROOT / "plugins"
+MARKETPLACES = [
+    ROOT / ".claude-plugin" / "marketplace.json",
+    ROOT / ".agents" / "plugins" / "marketplace.json",
+]
+
+NO_MCP_SUFFIX = "-no-mcp"
+NO_MCP_REF = "marketplace-no-mcp"
+
+# External plugins (git-subdir/github sources) whose own repo ships a
+# marketplace-no-mcp branch. Their source.ref is repointed to NO_MCP_REF.
+# Keep empty until the external repo actually has the branch.
+NO_MCP_REF_NAMES: set[str] = set()
+
+
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text())
+
+
+def write_json(path: Path, data: Any) -> None:
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=True) + "\n")
+
+
+def empty_local_mcp_configs() -> list[Path]:
+    changed = []
+    for path in sorted(PLUGINS.glob("*/.mcp.json")):
+        data = read_json(path)
+        if isinstance(data, dict) and data.get("mcpServers"):
+            data["mcpServers"] = {}
+            write_json(path, data)
+            changed.append(path.relative_to(ROOT))
+    return changed
+
+
+def transform_marketplace(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    text = path.read_text()
+    data = json.loads(text)
+    changes: list[str] = []
+
+    # Format-preserving rename: targeted text replace of the (unique) top-level
+    # marketplace name, so the no-mcp branch diff stays minimal instead of a full
+    # reformat. The marketplace name never collides with a plugin name.
+    name = data.get("name")
+    if isinstance(name, str) and not name.endswith(NO_MCP_SUFFIX):
+        new_text, n = re.subn(
+            r'("name"\s*:\s*)"' + re.escape(name) + r'"',
+            lambda m: m.group(1) + json.dumps(name + NO_MCP_SUFFIX),
+            text,
+            count=1,
+        )
+        if n != 1:
+            raise SystemExit(f"{path.relative_to(ROOT)}: could not uniquely rewrite marketplace name {name!r}")
+        text = new_text
+        changes.append(f"{path.relative_to(ROOT)}: name -> {name}{NO_MCP_SUFFIX}")
+
+    # External git-subdir/github plugins that ship their own marketplace-no-mcp
+    # branch get source.ref repointed. Not implemented as a format-preserving
+    # edit yet — guard so populating NO_MCP_REF_NAMES can't silently reformat the
+    # whole manifest. Implement targeted ref edits before enabling.
+    if NO_MCP_REF_NAMES:
+        plugins = data.get("plugins", [])
+        targets = [
+            p.get("name")
+            for p in plugins
+            if isinstance(p, dict)
+            and p.get("name") in NO_MCP_REF_NAMES
+            and isinstance(p.get("source"), dict)
+            and p["source"].get("ref") != NO_MCP_REF
+        ]
+        if targets:
+            raise SystemExit(
+                "NO_MCP_REF_NAMES ref repointing is not implemented yet "
+                f"(would change: {', '.join(targets)}). Add a format-preserving edit first."
+            )
+
+    if changes:
+        path.write_text(text)
+    return changes
+
+
+def main() -> int:
+    emptied = empty_local_mcp_configs()
+    market: list[str] = []
+    for path in MARKETPLACES:
+        market += transform_marketplace(path)
+
+    for path in emptied:
+        print(f"emptied mcpServers: {path}")
+    for change in market:
+        print(f"marketplace: {change}")
+    if not emptied and not market:
+        print("no-MCP marketplace rules already applied")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
