@@ -218,7 +218,8 @@ impl GatewayManager {
         );
         crate::config::set_process_code_mode_enabled(cfg.code_mode.enabled);
         let fresh_pool = {
-            let base_pool = self.new_base_pool(cfg.upstream_request_timeout());
+            let base_pool =
+                self.new_base_pool(cfg.upstream_request_timeout(), cfg.upstream_relay_timeout());
             let pool = Arc::new(
                 base_pool
                     .with_runtime_origin(runtime_origin_tag(origin))
@@ -391,6 +392,8 @@ fn pool_settings_fingerprint(cfg: &LabConfig) -> String {
     hasher.update(serde_json::to_vec(&cfg.code_mode).unwrap_or_default());
     hasher.update([0u8]);
     hasher.update(cfg.upstream_request_timeout().as_millis().to_le_bytes());
+    hasher.update([0u8]);
+    hasher.update(cfg.upstream_relay_timeout().as_millis().to_le_bytes());
     hasher
         .finalize()
         .iter()

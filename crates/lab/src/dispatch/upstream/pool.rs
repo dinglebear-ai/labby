@@ -47,8 +47,8 @@ mod tools;
 mod tools_call;
 mod validate;
 
-use helpers::DEFAULT_REQUEST_TIMEOUT;
 pub(crate) use helpers::redact_resource_uri_for_logging;
+use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{UpstreamCachedSummary, in_process_upstream_name};
 pub(crate) use tools::tool_has_mcp_app_ui_resource;
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
@@ -101,17 +101,22 @@ pub struct UpstreamPool {
     /// for the same key do not open duplicate OAuth connections (mirrors the
     /// `lazy_connect_locks` gate used by the normal pool path).
     subject_connect_locks: Arc<RwLock<HashMap<(String, String), Arc<Mutex<()>>>>>,
-    /// Per-`(upstream, downstream-session)` cached **relay** connections.
+    /// Per-`(upstream, downstream-session, oauth-subject)` cached **relay**
+    /// connections.
     ///
     /// Distinct from `subject_connections` because the cached connection is
     /// served with a `RelayClientHandler` bound to one specific downstream
     /// agent peer (`UpstreamConnection<RelayClientHandler>`, a different type).
-    /// The session component of the key is what guarantees a cached relay
-    /// connection is never reused across agents — see `pool/relay.rs`.
-    relay_connections: Arc<RwLock<HashMap<(String, u64), relay::RelayCachedConnection>>>,
+    /// The session component of the key guarantees a cached relay connection is
+    /// never reused across agents; the `Option<String>` subject component
+    /// guarantees it is never reused across OAuth identities within a session,
+    /// so a connection authenticated as subject A can never serve a call made
+    /// as subject B (`None` = the non-OAuth/raw proxy path). See `pool/relay.rs`.
+    relay_connections:
+        Arc<RwLock<HashMap<(String, u64, Option<String>), relay::RelayCachedConnection>>>,
     /// Single-flight locks for the relay-connection cache, mirroring
-    /// `subject_connect_locks`.
-    relay_connect_locks: Arc<RwLock<HashMap<(String, u64), Arc<Mutex<()>>>>>,
+    /// `subject_connect_locks`. Keyed identically to `relay_connections`.
+    relay_connect_locks: Arc<RwLock<HashMap<(String, u64, Option<String>), Arc<Mutex<()>>>>>,
     /// Cancellation token for the background subject-connection sweep task.
     /// `None` until the first subject-scoped connect arms it; cancelled and
     /// cleared on `drain_for_swap` (P-H2). Mirrors the `probe_tasks` lifecycle.
@@ -122,6 +127,10 @@ pub struct UpstreamPool {
     runtime_owner: Option<UpstreamRuntimeOwner>,
     /// Maximum time to wait for an upstream tool/resource/prompt response.
     request_timeout: Duration,
+    /// Maximum time to wait for one *relayed* upstream tool call. Longer than
+    /// `request_timeout` because a relayed call blocks on a human answering an
+    /// elicitation forwarded from the upstream — see `pool/relay.rs`.
+    relay_timeout: Duration,
     /// Optional connector for in-process (built-in) service peers.
     /// When set, built-in lab services are reachable via the upstream pool.
     in_process_connector: Option<InProcessConnector>,
@@ -208,6 +217,7 @@ impl UpstreamPool {
             runtime_origin: None,
             runtime_owner: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            relay_timeout: DEFAULT_RELAY_TIMEOUT,
             in_process_connector: None,
             shared_http_client,
         }
@@ -247,6 +257,14 @@ impl UpstreamPool {
 
     pub(crate) fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;
+        self
+    }
+
+    /// Set the deadline for relayed upstream tool calls (the elicitation-relay
+    /// path). Defaults to [`DEFAULT_RELAY_TIMEOUT`] (5 minutes) so a human has
+    /// time to answer an elicitation without the call timing out.
+    pub(crate) fn with_relay_timeout(mut self, timeout: Duration) -> Self {
+        self.relay_timeout = timeout;
         self
     }
 

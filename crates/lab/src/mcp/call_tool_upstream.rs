@@ -176,6 +176,13 @@ impl LabMcpServer {
             } else {
                 None
             };
+            // When relaying, `call_tool_relayed`/`acquire_or_connect_relay` own
+            // all circuit-breaker recording for this call (success, call failure,
+            // AND connect failure). The pooled `call_tool` path does NOT record a
+            // connect failure itself (`acquire_peer` only logs), so the `None`
+            // arm below records it — but only for the pooled path, else a relayed
+            // connect failure would be counted twice.
+            let used_relay = relay_config.is_some();
             let call_outcome = if let Some(config) = relay_config {
                 tracing::debug!(
                     surface = "mcp",
@@ -304,12 +311,18 @@ impl LabMcpServer {
                 }
                 None => {
                     // Connection is gone — record failure so the circuit
-                    // breaker can eventually exclude this upstream.
-                    pool.record_failure(
-                        &upstream_name,
-                        format!("upstream `{upstream_name}` is not connected"),
-                    )
-                    .await;
+                    // breaker can eventually exclude this upstream. Skip when the
+                    // relay path was used: `acquire_or_connect_relay` already
+                    // recorded the connect failure, so recording again here would
+                    // double-count it (the pooled `call_tool` path does not record
+                    // connect failures itself, so it still needs this).
+                    if !used_relay {
+                        pool.record_failure(
+                            &upstream_name,
+                            format!("upstream `{upstream_name}` is not connected"),
+                        )
+                        .await;
+                    }
                     let after = self.snapshot_catalog().await;
                     self.notify_catalog_changes(&before, &after).await;
                     let elapsed_ms = start.elapsed().as_millis();
