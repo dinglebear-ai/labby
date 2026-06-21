@@ -87,7 +87,11 @@ use crate::config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::connect::connect_upstream_with_handler;
-use super::helpers::{SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES};
+use super::helpers::{SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, upstream_transport};
+use super::logging::{
+    UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish,
+    log_upstream_request_start,
+};
 use super::{UpstreamConnection, UpstreamPool};
 
 /// A client handler that relays an upstream server's server→client requests
@@ -147,13 +151,15 @@ impl ClientHandler for RelayClientHandler {
             // capabilities, so the relay silently behaves like the unit handler
             // (declines elicitation/sampling/roots). In practice the downstream
             // peer is always initialized by the time a relay connection opens
-            // mid-`call_tool`; log it so a genuinely uninitialized peer is
-            // diagnosable rather than an invisible no-op.
-            tracing::debug!(
+            // mid-`call_tool`, so reaching here is an invariant violation: warn
+            // (not debug) so it is visible at the default log level rather than
+            // being an invisible fleet-wide "declines all elicitation" no-op.
+            tracing::warn!(
                 surface = "dispatch",
                 service = "upstream.pool",
                 action = "upstream.relay",
                 upstream = %self.upstream_name,
+                kind = "relay_peer_uninitialized",
                 "downstream peer_info() unavailable; relay advertising no \
                  server->client capabilities for this connection",
             );
@@ -299,46 +305,74 @@ impl UpstreamPool {
         downstream: Peer<RoleServer>,
         session_id: u64,
     ) -> Option<Result<CallToolResult, String>> {
+        let started = Instant::now();
+        let tool_name = params.name.to_string();
         let peer = self
             .acquire_or_connect_relay(config, subject, downstream, session_id)
             .await?;
+
+        // Mirror the pooled path's observability + circuit-breaker contract (see
+        // `timed_capability_call`): emit `request.start`/`finish`/`error` and feed
+        // success/failure into the breaker, so a wedged relayed upstream is
+        // excluded just like a pooled one. This matters most for the
+        // subject-scoped branch, whose MCP arm records nothing itself — without
+        // this, a failing OAuth upstream reached over the relay would never trip
+        // the breaker. (`acquire_or_connect_relay` already records connect
+        // failures, so the raw MCP `None` arm skips its record when relaying.)
+        let event = UpstreamRequestLog::tool(&config.name, &tool_name, subject.is_some())
+            .with_transport(upstream_transport(config));
+        log_upstream_request_start(event);
 
         // Relayed calls block on a human answering the forwarded elicitation,
         // so they use the longer `relay_timeout` (default 5 min) rather than the
         // 30s `request_timeout` the pooled path uses — otherwise a confirmation
         // dialog left open for a minute would abort the whole upstream call.
         let timeout = self.relay_timeout;
-        let started = Instant::now();
-        let outcome = match tokio::time::timeout(timeout, peer.call_tool(params)).await {
-            Ok(Ok(result)) => Some(Ok(result)),
+        match tokio::time::timeout(timeout, peer.call_tool(params)).await {
+            Ok(Ok(result)) => {
+                self.record_success_for(&config.name, UpstreamCapability::Tools)
+                    .await;
+                log_upstream_request_finish(event, started.elapsed().as_millis(), None);
+                Some(Ok(result))
+            }
             Ok(Err(error)) => {
                 // A failed call may mean the cached connection went bad; drop it
                 // so the next call reconnects rather than reusing a dead peer.
+                let message = format!("relayed upstream call failed: {error}");
+                self.record_failure_for(&config.name, UpstreamCapability::Tools, message.clone())
+                    .await;
                 self.evict_relay_connection(&config.name, session_id, subject)
                     .await;
-                Some(Err(format!("relayed upstream call failed: {error}")))
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "upstream_error",
+                    Some(&error),
+                    None,
+                    None,
+                );
+                Some(Err(message))
             }
             Err(_) => {
-                self.evict_relay_connection(&config.name, session_id, subject)
-                    .await;
-                Some(Err(format!(
+                let message = format!(
                     "relayed upstream call timed out after {}ms",
                     timeout.as_millis()
-                )))
+                );
+                self.record_failure_for(&config.name, UpstreamCapability::Tools, message.clone())
+                    .await;
+                self.evict_relay_connection(&config.name, session_id, subject)
+                    .await;
+                log_upstream_request_error(
+                    event,
+                    started.elapsed().as_millis(),
+                    "timeout",
+                    None,
+                    None,
+                    None,
+                );
+                Some(Err(message))
             }
-        };
-
-        tracing::debug!(
-            surface = "dispatch",
-            service = "upstream.pool",
-            action = "upstream.relay.call",
-            upstream = %config.name,
-            session_id,
-            subject_scoped = subject.is_some(),
-            elapsed_ms = started.elapsed().as_millis(),
-            "relayed upstream tool call complete",
-        );
-        outcome
+        }
     }
 
     /// Return a cached relay peer for `(upstream, session_id)`, or open and
@@ -960,5 +994,132 @@ mod tests {
 
         let overridden = UpstreamPool::new().with_relay_timeout(Duration::from_secs(42));
         assert_eq!(overridden.relay_timeout, Duration::from_secs(42));
+    }
+
+    /// A relayed call that FAILS feeds the circuit breaker, exactly like the
+    /// pooled path does via `timed_capability_call`. Without this the
+    /// subject-scoped relay branch (whose MCP arm records nothing itself) would
+    /// let a wedged OAuth upstream stay "healthy" forever and never be excluded.
+    /// Regression guard for the relay circuit-breaker / observability fix.
+    #[tokio::test]
+    async fn relayed_call_failure_records_circuit_breaker_failure() {
+        use super::super::entries::healthy_in_process_entry;
+        use crate::dispatch::upstream::types::UpstreamHealth;
+        use std::collections::HashMap;
+
+        /// Upstream whose tool call always errors.
+        #[derive(Clone)]
+        struct FailingUpstream;
+        impl ServerHandler for FailingUpstream {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+            async fn call_tool(
+                &self,
+                _request: CallToolRequestParams,
+                _context: RequestContext<RoleServer>,
+            ) -> Result<CallToolResult, ErrorData> {
+                Err(ErrorData::internal_error("boom".to_string(), None))
+            }
+            async fn list_tools(
+                &self,
+                _request: Option<PaginatedRequestParams>,
+                _context: RequestContext<RoleServer>,
+            ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+                Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new(
+                        "echo".to_string(),
+                        "echoes".to_string(),
+                        Arc::new(serde_json::Map::new()),
+                    ),
+                ]))
+            }
+        }
+
+        let pool = UpstreamPool::new();
+        let config = super::super::testsupport::test_upstream_config(); // name = "test"
+
+        // Seed the catalog so `record_failure_for` has an entry to mark unhealthy.
+        let name_arc: Arc<str> = Arc::from(config.name.as_str());
+        pool.catalog.write().await.insert(
+            config.name.clone(),
+            healthy_in_process_entry(Arc::clone(&name_arc), HashMap::new()),
+        );
+
+        // Downstream agent + a relay connection to the failing upstream, seeded
+        // under (name, session=1, None) so `call_tool_relayed` takes the fast
+        // path (the test config has no url/command, so a real connect would fail).
+        let (gw_server_transport, agent_transport) =
+            tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        tokio::spawn(async move {
+            if let Ok(running) = ().serve(agent_transport).await {
+                running.waiting().await.ok();
+            }
+        });
+        let gw_server = TrivialServer
+            .serve(gw_server_transport)
+            .await
+            .expect("downstream server connects");
+        let downstream = gw_server.peer().clone();
+
+        let (upstream_transport, gw_client_transport) =
+            tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        tokio::spawn(async move {
+            if let Ok(running) = FailingUpstream.serve(upstream_transport).await {
+                running.waiting().await.ok();
+            }
+        });
+        let service = RelayClientHandler::new(downstream.clone(), Arc::from(config.name.as_str()))
+            .serve(gw_client_transport)
+            .await
+            .expect("relay client connects");
+        let peer = service.peer().clone();
+        let conn = UpstreamConnection {
+            _client_service: service,
+            _server_task: None,
+            peer: peer.clone(),
+            runtime: UpstreamRuntimeMetadata::default(),
+        };
+        pool.relay_connections.write().await.insert(
+            (config.name.clone(), 1, None),
+            RelayCachedConnection {
+                _connection: conn,
+                peer,
+                last_used: Instant::now(),
+            },
+        );
+
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("echo"),
+                downstream,
+                1,
+            )
+            .await;
+        assert!(
+            matches!(result, Some(Err(_))),
+            "a failing relayed upstream call should surface as Some(Err)"
+        );
+
+        let status = pool.upstream_status().await;
+        let health = status
+            .into_iter()
+            .find(|(name, _)| name == &config.name)
+            .map(|(_, health)| health)
+            .expect("upstream present in status");
+        assert!(
+            matches!(
+                health,
+                UpstreamHealth::Unhealthy {
+                    consecutive_failures: 1
+                }
+            ),
+            "a failed relayed call must record exactly one circuit-breaker failure, got {health:?}"
+        );
+
+        // Hold the downstream server alive until the relayed call completed.
+        drop(gw_server);
     }
 }

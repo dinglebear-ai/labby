@@ -16,7 +16,8 @@ All notable changes to this project will be documented in this file.
 
 - **Relayed elicitations are no longer aborted mid-dialog** — relayed upstream calls now use the dedicated relay timeout (default 5 minutes) instead of the 30s `upstream_request_timeout_ms`, so an upstream elicitation forwarded to the downstream agent is not killed while a human is answering it.
 - **Upstream relay connections are isolated per OAuth subject** — the relay connection cache is now keyed by `(upstream, session_id, subject)` instead of `(upstream, session_id)`, so a dedicated connection authenticated as one identity can never be reused for a call made as another within the same session.
-- **Relay capability diagnostics** — `RelayClientHandler::get_info` now logs when the downstream peer info is unavailable rather than silently advertising no server→client capabilities, and the relay's `call_tool`-only scope is documented.
+- **Relayed calls now feed the circuit breaker and emit request logs** — `call_tool_relayed` records success/failure into the upstream circuit breaker and emits `request.start`/`finish`/`error` events like the pooled path, so a wedged relayed upstream (especially on the subject-scoped branch, which previously recorded nothing) is excluded and observable. Connect failures are no longer double-counted by the raw proxy branch.
+- **Relay capability diagnostics** — `RelayClientHandler::get_info` now warns (was debug, below the default log level) when the downstream peer info is unavailable rather than silently advertising no server→client capabilities, and the relay's `call_tool`-only scope is documented.
 
 ---
 
