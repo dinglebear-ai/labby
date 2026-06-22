@@ -12,7 +12,8 @@ trait; any future server (e.g. a media/Servarr server that scripts REST APIs via
 Code Mode) becomes a second implementor without depending on the gateway runtime.
 
 **Relationship to the gateway extraction plan:** This plan is a dependency of,
-and a refinement to, the Standalone Gateway Extraction plan. It lands **after**
+and a refinement to, the Standalone Gateway Extraction plan
+(`2026-06-22-standalone-gateway-extraction.md`). It lands **after**
 that plan's Task 1 (`lab-runtime`, which owns the moved `ToolError`) and
 **replaces** the part of that plan's Task 5 that moves Code Mode into
 `lab-gateway/src/code_mode/**`. Instead, `lab-gateway` depends on `lab-codemode`

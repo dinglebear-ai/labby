@@ -1,5 +1,7 @@
 # Gateway Server Extraction Implementation Plan
 
+> **SUPERSEDED (2026-06-22):** This earlier rmcp-template-clone approach is replaced by `2026-06-22-standalone-gateway-extraction.md` (in-repo crate split) and its Code Mode sub-plan `2026-06-22-code-mode-crate-extraction.md`. Kept for history only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Create a fresh rmcp-template clone for Lab Gateway with CLI, MCP, HTTP API, protected-route OAuth/proxying, and an embedded product web UI.
