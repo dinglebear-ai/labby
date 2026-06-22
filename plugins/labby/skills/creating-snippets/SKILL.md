@@ -11,7 +11,7 @@ Labby snippets are saved Code Mode workflows: pick gateway MCP tools, fill their
 
 ## First Checks
 
-Use `using-labby` before authoring any snippet that calls upstream tools. Search the live catalog and copy the returned `id`, `schema`, `output_schema`, `signature`, and `dts`; never guess tool ids or params.
+Use `using-labby` before authoring any snippet that calls upstream tools. Search the live catalog with `codemode.search()` and `codemode.describe()`, then copy the returned `id`, schemas, and signature; never guess tool ids or params.
 
 Useful local references when the Lab checkout is present on the current host:
 
@@ -90,7 +90,7 @@ Rules:
 ## Authoring Workflow
 
 1. List existing snippets: `labby snippets list --json`.
-2. Search gateway tools with `search` and inspect schemas/signatures. If `labby` is not on `PATH`,
+2. Search gateway tools with `codemode.search()` / `codemode.describe()` and inspect schemas/signatures. If `labby` is not on `PATH`,
    locate the active Labby CLI before continuing instead of guessing command syntax.
 3. Pick tools and decide parallel vs chained execution.
 4. Draft Markdown with frontmatter, tutorial text, declared inputs, and one `js`/`javascript` fenced block.
@@ -134,7 +134,7 @@ Before calling the work done:
 - `name` is slug-like and matches filename/frontmatter.
 - Description is non-empty.
 - Body contains exactly the intended async arrow function.
-- All upstream tool ids came from live gateway `search`.
+- All upstream tool ids came from live gateway `codemode.search()`.
 - Tool params match upstream schemas.
 - Optional inputs have defaults or code fallbacks.
 - Required inputs fail fast with clear validation.

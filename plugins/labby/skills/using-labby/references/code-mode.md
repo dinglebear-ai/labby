@@ -1,20 +1,21 @@
 # Code Mode
 
 Use this reference when invoking upstream MCP tools through Labby's public Code
-Mode tools: `search` and `execute`.
+Mode tool: `codemode`.
 
 ## Public Tools
 
-`search` filters the live upstream MCP catalog inside a sandbox:
+`codemode.search()` filters the live upstream MCP catalog inside a sandbox:
 
 ```js
-async () => tools
-  .filter(t => t.upstream.includes("github"))
-  .map(t => ({ id: t.id, signature: t.signature, dts: t.dts }))
+async () => {
+  const hits = await codemode.search({ query: "github issues", limit: 5 });
+  return hits.results.map(t => ({ path: t.path, id: t.id, signature: t.signature }));
+}
 ```
 
-`execute` runs a JavaScript async function and lets that function call upstream
-MCP tools:
+`codemode` runs a JavaScript async function and lets that function call upstream
+MCP tools with `callTool()` or generated `codemode.<upstream>.<tool>()` helpers:
 
 ```js
 async () => {
@@ -23,12 +24,70 @@ async () => {
 }
 ```
 
-Always run `search` before `execute`. The live catalog is the authority for
-tool IDs, schemas, output schemas, signatures, and helper names.
+Always run `codemode.search()` before calling an upstream. The live catalog is
+the authority for tool IDs, schemas, output schemas, signatures, and helper
+names.
+
+## Complete Working Examples
+
+Search for candidate tools and return only compact catalog fields:
+
+```json
+{
+  "code": "async () => {\n    const hits = await codemode.search({ query: \"axon\", limit: 5 });\n    return hits.results.map(t => ({ path: t.path, id: t.id, signature: t.signature }));\n  }"
+}
+```
+
+Call a discovered tool by raw ID. Prefer this when the upstream/tool is selected
+from search results:
+
+```json
+{
+  "code": "async () => {\n    const help = await callTool(\"axon::axon\", { action: \"help\" });\n    return { ok: true, actions: help.actions ?? help };\n  }",
+  "tools": ["axon::axon"]
+}
+```
+
+Call an action-dispatched upstream using the shape from `codemode.search()` and
+`codemode.describe()`. Axon uses flat action fields:
+
+```json
+{
+  "code": "async () => {\n    const result = await callTool(\"axon::axon\", {\n      action: \"search\",\n      query: \"Labby Code Mode examples\",\n      limit: 5\n    });\n    const results = result.data?.data?.results ?? [];\n    return { count: results.length, results };\n  }",
+  "upstreams": ["axon"]
+}
+```
+
+Use a generated helper after `codemode.search()` confirms the exact helper path:
+
+```json
+{
+  "code": "async () => {\n    const help = await codemode.rustarr.sonarr({ action: \"help\" });\n    return { ok: true, help_type: typeof help };\n  }",
+  "upstreams": ["rustarr"]
+}
+```
+
+Fan out independent reads without throwing away partial successes:
+
+```json
+{
+  "code": "async () => {\n    const calls = await Promise.allSettled([\n      callTool(\"rustarr::sonarr\", { action: \"help\" }),\n      callTool(\"rustarr::radarr\", { action: \"help\" }),\n      callTool(\"rustarr::prowlarr\", { action: \"help\" })\n    ]);\n    return calls.map((r, index) => r.status === \"fulfilled\"\n      ? { index, ok: true, type: typeof r.value }\n      : { index, ok: false, error: JSON.parse(String(r.reason.message)) });\n  }",
+  "upstreams": ["rustarr"]
+}
+```
+
+Call a Windows helper through the live-confirmed helper path:
+
+```json
+{
+  "code": "async () => {\n    const result = await codemode.agent_os_windows_mcp.PowerShell({\n      command: \"$PSVersionTable.PSVersion.ToString()\"\n    });\n    return { ok: true, result };\n  }",
+  "tools": ["agent-os_windows-mcp::PowerShell"]
+}
+```
 
 ## Search Catalog Entries
 
-Each `search` entry contains:
+Each `codemode.search()` entry contains:
 
 | Field | Meaning |
 | --- | --- |
@@ -41,29 +100,25 @@ Each `search` entry contains:
 | `signature` | Compact callable signature. |
 | `dts` | TypeScript declaration for the `codemode.*` helper. |
 
-The catalog injected into `search` is complete and in-sandbox; only your
-filtered return value enters the model context.
+The catalog searched by `codemode.search()` is complete and in-sandbox; only
+your filtered return value enters the model context.
 
-## Execute Arguments
+## Codemode Arguments
 
-Top-level `execute` arguments:
+Top-level `codemode` arguments:
 
 ```json
 {
   "code": "async () => { ... }",
   "upstreams": ["optional-upstream-allowlist"],
-  "tools": ["optional-tool-or-id-allowlist"],
-  "max_tool_calls": 10,
-  "confirm": true
+  "tools": ["optional-tool-or-id-allowlist"]
 }
 ```
 
-Only `code` is required. The rest are Labby `execute` arguments:
+Only `code` is required. The rest are Labby `codemode` arguments:
 
 - `upstreams`: allow only named upstreams for this run.
 - `tools`: allow only raw tool names or `<upstream>::<tool>` IDs.
-- `max_tool_calls`: cap brokered tool calls for this execution; clamped by gateway config.
-- `confirm`: permit destructive upstream tools for this execution.
 
 Do not place these fields inside upstream tool params.
 
@@ -78,7 +133,7 @@ async () => {
 }
 ```
 
-Use `codemode.<upstream>.<tool>` only after `search` confirms the helper name:
+Use `codemode.<upstream>.<tool>` only after `codemode.search()` confirms the helper name:
 
 ```js
 async () => {
@@ -92,49 +147,48 @@ The host validates params against the upstream input schema before dispatching.
 
 Many upstreams expose a single action-dispatched tool instead of one tool per
 operation — `axon`, and the rmcp family (`unraid`, `unifi`, `sonarr`, `radarr`,
-`cortex`, ...). These take a single envelope, `{ action, params }`, and some add a
-`subaction`. Do not guess the envelope shape from memory.
+`cortex`, ...). They all take an `action`, but the rest of the envelope is
+upstream-specific. Do not guess the envelope shape from memory.
 
 - Discover operations with the tool's own `{ "action": "help" }`, or read the
-  `schema` entry returned by `search`.
-- Put operation arguments under `params`, never at the top level:
+  compact docs returned by `codemode.search()` and `codemode.describe()`.
+- Put operation arguments exactly where the upstream schema expects them:
 
 ```js
-// Right: action + nested params
-async () => callTool("axon::axon", { action: "research", params: { query: "mcpb" } });
+// Axon search uses flat action fields.
+async () => callTool("axon::axon", {
+  action: "search",
+  query: "mcpb",
+  limit: 5
+});
 
-// Wrong: guessed top-level fields — rejects with `invalid_param`
+// Wrong for Axon: guessed nested params rejects with `invalid_param`
 //   ("... must match exactly one schema").
-async () => callTool("axon::axon", { action: "research", subaction: "help" });
+async () => callTool("axon::axon", {
+  action: "search",
+  params: { query: "mcpb", limit: 5 }
+});
 ```
 
 An `invalid_param` that mentions `must match exactly one schema` means the
-envelope matched no action variant. Re-read the schema and nest the arguments
-under `params` — it is not a bug in the upstream tool.
+envelope matched no action variant. Re-read the schema and move arguments to the
+expected fields. It is not a bug in the upstream tool.
 
 ## Destructive Tools
 
-Destructive upstream tools require top-level `confirm` on `execute`:
-
-```json
-{
-  "code": "async () => { return await callTool(\"x::delete\", { id: \"1\" }); }",
-  "tools": ["x::delete"],
-  "confirm": true
-}
-```
+The MCP `codemode` tool currently accepts top-level `code`, `upstreams`, and
+`tools`. It does not accept a public top-level `confirm` field.
 
 Rules:
 
 - `lab` or `lab:admin` scope authorizes execution but does not confirm effects.
-- `confirm` belongs on the top-level Labby `execute` call.
+- If a call returns `confirmation_required`, inspect the upstream schema and
+  retry with the confirmation field exactly where that upstream expects it.
 - `allow_destructive_actions` is internal-only. Do not use it as a public param.
-- If the error says `confirmation_required`, retry `execute` with top-level
-  `"confirm": true`.
 
 ## Return Shape
 
-Successful `execute` returns:
+Successful `codemode` returns a trace envelope:
 
 ```json
 {
@@ -153,7 +207,7 @@ Upstream result unwrapping:
 - Else return text or the full mixed MCP result shape.
 - Per-call result payloads are not copied into `calls`.
 
-> **Reading the value back.** `execute` returns the envelope in the tool's text
+> **Reading the value back.** `codemode` returns the envelope in the tool's text
 > content block and a copy in `structuredContent` carrying both `result` and a
 > compact `result_shape`. Most MCP clients (Claude Code included) surface
 > `structuredContent` over text. If `result` comes back as a truncation marker —
@@ -184,12 +238,12 @@ Common error kinds:
 
 | Kind | Recovery |
 | --- | --- |
-| `missing_param` | Read `search` schema and include the required field. |
+| `missing_param` | Read `codemode.search()` / `codemode.describe()` output and include the required field. |
 | `invalid_param` | Fix type/shape against the schema. |
 | `validation_failed` | Fix nested schema validation errors. |
-| `confirmation_required` | Retry top-level `execute` with `"confirm": true`. |
-| `unknown_tool` | Rerun `search`; use `<upstream>::<tool>` IDs only. |
-| `tool_call_limit_exceeded` | Reduce fan-out or set top-level `max_tool_calls`. |
+| `confirmation_required` | Inspect the upstream schema and provide confirmation where that upstream expects it. |
+| `unknown_tool` | Rerun `codemode.search()`; use `<upstream>::<tool>` IDs only. |
+| `tool_call_limit_exceeded` | Reduce fan-out or split the work. |
 | `timeout` | Split work into smaller executions. |
 | `oauth_needs_reauth` | Check `labby gateway mcp auth status <upstream> --json`. |
 
@@ -197,14 +251,15 @@ Common error kinds:
 
 Implementation facts that affect operation:
 
-- `search` uses a 15s sandbox timeout and cannot call tools.
-- `execute` uses root `[code_mode]` config for timeout, tool-call, response,
+- `codemode.search()` runs inside the sandbox and cannot call tools.
+- `codemode` uses root `[code_mode]` config for timeout, tool-call, response,
   token, and log limits.
 - The runner process starts with a cleared environment and temp cwd.
 - The parent host brokers all tool calls, validates schemas, applies
   confirmations, and terminates runaway executions.
-- CLI `labby gateway code exec` is operator-driven and permits destructive
-  upstream tools; MCP `execute` requires top-level `confirm`.
+- CLI `labby gateway code exec` is operator-driven and has its own policy for
+  destructive upstream tools; MCP `codemode` exposes only `code`, `upstreams`,
+  and `tools` as top-level arguments.
 
 Current config defaults:
 
@@ -239,12 +294,11 @@ labby gateway code exec --file ./snippet.js --json
 ```
 
 The CLI mirrors execution only; there is no CLI `gateway code search`
-subcommand. Use MCP `search` for catalog filtering.
+subcommand. Use in-sandbox `codemode.search()` for catalog filtering.
 
 ## Safe Execution Pattern
 
-1. Run `search` and return only the candidate IDs/signatures needed.
+1. Run `codemode.search()` and return only the candidate IDs/signatures needed.
 2. Choose a narrow `upstreams` or `tools` allowlist.
-3. Set `max_tool_calls` for bounded fan-out.
-4. Use `Promise.allSettled` when independent calls may partially fail.
-5. Return a compact result object rather than raw large payloads.
+3. Use `Promise.allSettled` when independent calls may partially fail.
+4. Return a compact result object rather than raw large payloads.

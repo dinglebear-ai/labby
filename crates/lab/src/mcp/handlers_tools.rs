@@ -79,8 +79,9 @@ impl LabMcpServer {
         }
         #[cfg(feature = "gateway")]
         if visibility.exposes_synthetic_tools() {
-            // ── Gateway Code Mode tool. It takes `{ code: string }` and exposes
-            // in-sandbox discovery through `codemode.search()` / `describe()`.
+            // ── Gateway Code Mode tool. It takes `{ code, upstreams?, tools? }`
+            // and exposes in-sandbox discovery through `codemode.search()` /
+            // `codemode.describe()`.
             // See mcp/CLAUDE.md for the exception rationale and
             // dispatch/gateway/dispatch.rs guard.
             let trace_output_schema = code_mode_trace_output_schema();

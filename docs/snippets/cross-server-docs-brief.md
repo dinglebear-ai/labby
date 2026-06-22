@@ -39,7 +39,7 @@ This snippet is a small parallel research checklist. Each selected tool answers 
 | Library discovery | `context7::resolve-library-id` | Finds matching Context7 library ids | `libraryName`, `query` |
 | Library docs | `context7::query-docs` | Pulls focused docs from a known library id | `libraryId`, `query`, `tokens` |
 | Web search | `searxng::searxng_web_search` | Finds fresh public pages | `query`, `count` |
-| Cloudflare docs | `docs-mcp-cloudflare-com::search_cloudflare_documentation` | Adds a concrete vendor-doc example | `query`, `limit` |
+| Cloudflare docs | `cloudflare-docs::search_cloudflare_documentation` | Adds a concrete vendor-doc example | `query`, `limit` |
 | GitHub repos | `github::search_repositories` | Finds related code and libraries | `query`, `perPage` |
 | Axon search | `axon::axon` | Searches and indexes through the local RAG stack | `action`, `query`, `limit` |
 
@@ -73,7 +73,7 @@ Live smoke-tested tools before authoring:
 - `context7::resolve-library-id`
 - `context7::query-docs`
 - `searxng::searxng_web_search`
-- `docs-mcp-cloudflare-com::search_cloudflare_documentation`
+- `cloudflare-docs::search_cloudflare_documentation`
 - `github::search_repositories`
 - `axon::axon` with `action: "search"`
 
@@ -145,7 +145,7 @@ async (overrides = {}) => {
     ),
     timed(
       "cloudflare_docs",
-      "docs-mcp-cloudflare-com::search_cloudflare_documentation",
+      "cloudflare-docs::search_cloudflare_documentation",
       { query: input.cloudflareQuery, limit: input.maxResults },
       (result) => preview(result)
     ),
@@ -172,10 +172,27 @@ async (overrides = {}) => {
     )
   ]);
 
+  const requiredLabels = new Set([
+    "timestamp",
+    "context7_library_candidates",
+    "context7_docs",
+    "cloudflare_docs",
+    "github_repositories",
+    "axon_search"
+  ]);
+  const requiredOk = calls
+    .filter((call) => requiredLabels.has(call.label))
+    .every((call) => call.ok);
+  const degraded = calls
+    .filter((call) => !call.ok)
+    .map((call) => ({ label: call.label, id: call.id, error: call.error }));
+
   return {
     snippet: "cross_server_docs_brief",
     input,
-    ok: calls.every((call) => call.ok),
+    ok: requiredOk,
+    status: degraded.length ? "degraded" : "ok",
+    degraded,
     calls,
     notes: [
       "Context7 query_docs needs a concrete libraryId; update input.libraryId when changing libraryName.",

@@ -172,10 +172,20 @@ async (overrides = {}) => {
     )
   ]);
 
+  const requiredLabels = new Set(["timestamp", "semantic_search", "github_issues", "github_file"]);
+  const requiredOk = calls
+    .filter((call) => requiredLabels.has(call.label))
+    .every((call) => call.ok);
+  const degraded = calls
+    .filter((call) => !call.ok)
+    .map((call) => ({ label: call.label, id: call.id, error: call.error }));
+
   return {
     snippet: "repo_context_triage",
     input,
-    ok: calls.every((call) => call.ok),
+    ok: requiredOk,
+    status: degraded.length ? "degraded" : "ok",
+    degraded,
     calls,
     next_steps: [
       "Use the returned file paths, issue URLs, and semantic matches as follow-up targets.",

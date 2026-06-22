@@ -65,7 +65,7 @@ The gateway already knows every connected upstream tool. Each catalog entry incl
 - output schema when the upstream provides one
 - generated TypeScript signature and DTS help text
 
-The user should search this live catalog by service, tool name, or description, then select the tools they want the snippet to call.
+The user should search this live catalog with in-sandbox `codemode.search()` by service, tool name, or description, then select the tools they want the snippet to call.
 
 ### 2. Render a form from each selected tool schema
 
@@ -339,7 +339,7 @@ async () => {
 
 Use these rules when creating snippets:
 
-- Discover first with Code Mode `search`; use returned ids such as `axon::axon`.
+- Discover first with `codemode.search()` / `codemode.describe()`; use returned ids such as `axon::axon`.
 - Keep the top-level snippet as an async arrow function.
 - Put all user-editable parameters in a single `input` object near the top.
 - Bound fan-out with limits like `maxEvidenceUrls`, `maxResults`, or `maxToolCalls`.
@@ -412,7 +412,7 @@ The prompt should not duplicate the internals. If the workflow changes, update t
 
 A snippet is ready to reuse when:
 
-- It uses real Code Mode ids from `search`.
+- It uses real Code Mode ids from `codemode.search()`.
 - It runs as an `async () => { ... }` function.
 - It has explicit inputs and bounded fan-out.
 - It captures per-call timing and errors.
@@ -427,5 +427,5 @@ A snippet is ready to reuse when:
 - [`cross-server-docs-brief.md`](./cross-server-docs-brief.md) combines Context7, SearXNG, Cloudflare docs, GitHub, Axon, and time into a compact documentation brief.
 - [`repo-context-triage.md`](./repo-context-triage.md) combines local file reads, Lumen semantic search, Octocode local search, and GitHub issue/file lookups for repo orientation.
 - [`repo-status-gh-pulse.md`](./repo-status-gh-pulse.md) collects the GitHub PR/CI side of a repo-status evidence sweep and returns equivalent `gh` commands for shell parity.
-- [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Unraid, Gotify, and time for a read-only homelab status pulse.
+- [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Gotify, Synapse, and time for a read-only homelab status pulse.
 - [`cross-server-smoke-tests.md`](./cross-server-smoke-tests.md) records the live catalog count and the tool/action smoke-test results used to choose the snippets.

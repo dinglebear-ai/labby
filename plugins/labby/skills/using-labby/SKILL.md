@@ -48,7 +48,7 @@ For command details and workflows, read:
 
 - `references/operator-cli.md` for top-level CLI, setup, docs, doctor, logs, deploy, and marketplace workflows.
 - `references/gateway-operations.md` for gateway add/update/import/OAuth/protected routes/runtime operations.
-- `references/code-mode.md` for `search`/`execute`, schemas, confirmations, limits, and error recovery.
+- `references/code-mode.md` for `codemode`, schemas, confirmations, limits, and error recovery.
 - `references/config-reference.md` for `~/.lab/.env`, `config.toml`, and mutable gateway settings.
 - `references/service-catalog.md` for generated catalog sources and action-dispatch discovery.
 
@@ -67,11 +67,11 @@ For direct MCP stdio use, run `labby mcp`. For browser/API/admin workflows, run 
 
 ## Code Mode Gotchas
 
-Labby exposes the public Code Mode tools as `search` and `execute`. Use `search` first to inspect live upstream tool IDs, schemas, output schemas, TypeScript signatures, and `codemode.*` helper names. Do not guess parameter names from memory or older examples.
+Labby exposes the public Code Mode tool as `codemode`. Use `codemode.search()` inside the async function first to inspect live upstream tool IDs, schemas, output schemas, TypeScript signatures, and `codemode.*` helper names. Do not guess parameter names from memory or older examples.
 
-If another skill instructs you to call a tool you don't see in your tool list (e.g. `mcp__lab__<service>` or `mcp__<server>__<tool>`), that capability is almost certainly an upstream behind this gateway — not a missing tool. Translate the instruction: `search` for the tool, then `execute` it. Never conclude a capability is unavailable without searching first.
+If another skill instructs you to call a tool you don't see in your tool list (e.g. `mcp__lab__<service>` or `mcp__<server>__<tool>`), that capability is almost certainly an upstream behind this gateway, not a missing tool. Translate the instruction: search with `codemode.search()`, then call through `callTool()` or the generated helper. Never conclude a capability is unavailable without searching first.
 
-Use `execute` with JavaScript that evaluates to an async function:
+Use `codemode` with JavaScript that evaluates to an async function:
 
 ```js
 async () => {
@@ -80,29 +80,90 @@ async () => {
 }
 ```
 
-Prefer `callTool("<upstream>::<tool>", params)` when dynamically selecting tools. Use `codemode.<upstream>.<tool>(params)` only after `search` confirms the helper name.
+Prefer `callTool("<upstream>::<tool>", params)` when dynamically selecting tools. Use `codemode.<upstream>.<tool>(params)` only after `codemode.search()` confirms the helper name.
 
-Many upstreams are action-dispatched — one tool taking `{ action, params }` (e.g. `axon`, and the rmcp family: `unraid`, `sonarr`, `cortex`, ...). Put operation arguments under `params`, and discover actions with `{ "action": "help" }` or the `search` schema. Guessing top-level fields rejects as `invalid_param` (`params must match exactly one schema`). See `references/code-mode.md` for the full pattern.
+### Full Code Mode examples
 
-Destructive upstream tools require top-level confirmation on the Labby `execute` call:
+Use these as complete payloads for the Labby MCP `codemode` tool. Keep the
+outer JSON fields (`code`, `upstreams`, `tools`) on the Labby tool call, not
+inside upstream params.
+
+Discover the exact tool IDs, signatures, and helper names first:
 
 ```json
-{ "code": "async () => { ... }", "upstreams": ["agent-os_windows-mcp"], "confirm": true }
+{
+  "code": "async () => {\n    const hits = await codemode.search({ query: \"axon\", limit: 5 });\n    return hits.results.map(t => ({ path: t.path, id: t.id, signature: t.signature }));\n  }"
+}
 ```
 
-Do not put `confirm` inside upstream tool params, and do not try `allow_destructive_actions`; that is an internal flag surfaced by older error text, not the public MCP `execute` parameter. Scopes such as `lab` or `lab:admin` authorize execution but do not confirm destructive effects. If a call returns `confirmation_required`, retry the same top-level Labby `execute` call with `"confirm": true`.
+Call a discovered tool with the raw ID. This is the safest form when a tool ID
+or upstream name is selected dynamically:
+
+```json
+{
+  "code": "async () => {\n    const help = await callTool(\"axon::axon\", { action: \"help\" });\n    return { ok: true, actions: help.actions ?? help };\n  }",
+  "tools": ["axon::axon"]
+}
+```
+
+Call an action-dispatched upstream using the shape from `codemode.search()` and
+`codemode.describe()`. Axon uses flat action fields:
+
+```json
+{
+  "code": "async () => {\n    const result = await callTool(\"axon::axon\", {\n      action: \"search\",\n      query: \"Labby Code Mode examples\",\n      limit: 5\n    });\n    const results = result.data?.data?.results ?? [];\n    return { count: results.length, results };\n  }",
+  "upstreams": ["axon"]
+}
+```
+
+Use a generated helper only after `codemode.search()` confirms the helper path:
+
+```json
+{
+  "code": "async () => {\n    const help = await codemode.rustarr.sonarr({ action: \"help\" });\n    return { ok: true, help_type: typeof help };\n  }",
+  "upstreams": ["rustarr"]
+}
+```
+
+Fan out independent reads and keep partial failures instead of losing the whole
+run:
+
+```json
+{
+  "code": "async () => {\n    const calls = await Promise.allSettled([\n      callTool(\"rustarr::sonarr\", { action: \"help\" }),\n      callTool(\"rustarr::radarr\", { action: \"help\" }),\n      callTool(\"rustarr::prowlarr\", { action: \"help\" })\n    ]);\n    return calls.map((r, index) => r.status === \"fulfilled\"\n      ? { index, ok: true, type: typeof r.value }\n      : { index, ok: false, error: JSON.parse(String(r.reason.message)) });\n  }",
+  "upstreams": ["rustarr"]
+}
+```
+
+Call a Windows helper through the live-confirmed helper path:
+
+```json
+{
+  "code": "async () => {\n    const result = await codemode.agent_os_windows_mcp.PowerShell({\n      command: \"$PSVersionTable.PSVersion.ToString()\"\n    });\n    return { ok: true, result };\n  }",
+  "tools": ["agent-os_windows-mcp::PowerShell"]
+}
+```
+
+Many upstreams are action-dispatched — one tool taking an `action` plus
+action-specific fields (e.g. `axon`, and the rmcp family: `unraid`, `sonarr`,
+`cortex`, ...). The exact envelope is upstream-specific. Discover actions with
+`{ "action": "help" }`, `codemode.search()`, and `codemode.describe()` before
+calling. Guessing shapes rejects as `invalid_param` (`params must match exactly
+one schema`). See `references/code-mode.md` for the full pattern.
+
+If a call returns `confirmation_required`, inspect the upstream schema and retry
+with the confirmation field exactly where that upstream expects it. Do not try
+`allow_destructive_actions`; that is an internal flag surfaced by older error
+text, not a public MCP `codemode` parameter.
 
 Use `upstreams` or `tools` allowlists to narrow risky executions:
 
 ```json
 {
   "code": "async () => { return await codemode.agent_os_windows_mcp.Wait({ duration: 2 }); }",
-  "upstreams": ["agent-os_windows-mcp"],
-  "max_tool_calls": 3
+  "upstreams": ["agent-os_windows-mcp"]
 }
 ```
-
-`max_tool_calls` is a top-level `execute` budget override clamped by gateway config. It is not an upstream tool param.
 
 For `Wait`, use the live schema field:
 
@@ -110,7 +171,7 @@ For `Wait`, use the live schema field:
 await codemode.agent_os_windows_mcp.Wait({ duration: 2 });
 ```
 
-Do not use `{ seconds: ... }` unless the current `search` result explicitly shows that field.
+Do not use `{ seconds: ... }` unless the current `codemode.search()` result explicitly shows that field.
 
 For deeper Code Mode details, read `references/code-mode.md`.
 

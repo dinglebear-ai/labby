@@ -109,16 +109,31 @@ fn code_mode_description_contains_protocol_contract() {
 }
 
 #[test]
-fn codemode_input_schema_is_code_only() {
+fn codemode_input_schema_includes_optional_filters() {
     let schema = serde_json::json!({
         "type": "object",
-        "properties": { "code": { "type": "string", "minLength": 1 } },
+        "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "upstreams": { "type": "array", "items": { "type": "string" } },
+            "tools": { "type": "array", "items": { "type": "string" } }
+        },
         "required": ["code"]
     });
     let props = schema["properties"].as_object().expect("properties object");
     let prop_names: std::collections::BTreeSet<&str> = props.keys().map(String::as_str).collect();
-    assert_eq!(prop_names, std::collections::BTreeSet::from(["code"]));
+    assert_eq!(
+        prop_names,
+        std::collections::BTreeSet::from(["code", "tools", "upstreams"])
+    );
     assert_eq!(schema["properties"]["code"]["minLength"], json!(1));
+    assert_eq!(
+        schema["properties"]["upstreams"]["items"]["type"],
+        json!("string")
+    );
+    assert_eq!(
+        schema["properties"]["tools"]["items"]["type"],
+        json!("string")
+    );
 }
 
 #[test]
