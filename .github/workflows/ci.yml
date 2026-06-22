@@ -207,7 +207,24 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - run: cargo nextest run --workspace --all-features --locked --profile ci
+      - name: Run cargo nextest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $process = Start-Process `
+            -FilePath cargo `
+            -ArgumentList @("nextest", "run", "--workspace", "--all-features", "--locked", "--profile", "ci") `
+            -NoNewWindow `
+            -PassThru
+
+          while (-not $process.HasExited) {
+            Start-Sleep -Seconds 60
+            if (-not $process.HasExited) {
+              Write-Host "Windows nextest still running at $(Get-Date -Format o)"
+            }
+          }
+
+          exit $process.ExitCode
 
   release-smoke:
     name: Release smoke (${{ matrix.os }})
