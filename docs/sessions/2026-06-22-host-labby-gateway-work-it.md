@@ -28,6 +28,7 @@ Implemented a host `labby.service` path for running the gateway outside the dev 
 5. Ran lavra review, three simplifier passes, PR-review-toolkit style sweeps, and CodeRabbit comment resolution, then pushed focused fix commits for each batch.
 6. Ran targeted and full verification locally, then saved this session artifact for the final docs-only commit.
 7. Fixed Rust 1.94.1 CI-only Clippy failures in `host_service.rs`, then fixed a Windows-only unused-variable failure in `runner_exe.rs`, re-running local Clippy and focused tests after each patch.
+8. Investigated the Windows self-hosted runner failure, cleared an orphaned `Runner.Worker`/Cargo process tree after GitHub had already marked the job complete, reran the job, and fixed the workflow env override so CI disables the repo-local Cargo rustc wrapper through Cargo's config key.
 
 ## Key Findings
 
@@ -64,6 +65,8 @@ Implemented a host `labby.service` path for running the gateway outside the dev 
 | created | `docs/runtime/HOST_GATEWAY.md` | - | Added host gateway operator runbook. | `git diff --name-status main...HEAD` |
 | created | `docs/superpowers/plans/2026-06-22-host-labby-gateway.md` | - | Captured the implementation plan and review-informed follow-up scope. | `git diff --name-status main...HEAD` |
 | created | `docs/sessions/2026-06-22-host-labby-gateway-work-it.md` | - | Captures this session closeout. | This file |
+| modified | `.github/workflows/ci.yml` | - | Uses `CARGO_BUILD_RUSTC_WRAPPER` to disable the repo-local shell wrapper in CI, including Windows. | Manual Windows `cargo metadata` reproduction |
+| modified | `.github/workflows/release.yml` | - | Mirrors the CI wrapper override for release builds. | Manual Windows `cargo metadata` reproduction |
 
 ## Beads Activity
 
@@ -110,6 +113,7 @@ Updated `README.md`, `CLAUDE.md`, `docs/runtime/HOST_GATEWAY.md`, and `docs/gene
 | `cargo clippy --workspace --all-features --locked -- -D warnings` | Passed after fixing Rust 1.94.1 CI-only lints. |
 | `cargo nextest run --workspace --all-features` | Passed, 2200 passed and 14 skipped. |
 | `gh api graphql ... reviewThreads` | Confirmed all CodeRabbit inline review threads resolved. |
+| Windows `cargo metadata --format-version=1 --all-features --filter-platform x86_64-pc-windows-msvc --locked --no-deps` with `CARGO_BUILD_RUSTC_WRAPPER=""` | Passed on `agent-os`; confirmed the correct override for `.cargo/config.toml` `build.rustc-wrapper`. |
 
 ## Errors Encountered
 
@@ -119,6 +123,7 @@ Updated `README.md`, `CLAUDE.md`, `docs/runtime/HOST_GATEWAY.md`, and `docs/gene
 - Review found operator docs could hide public-route proof gaps. Replaced the generic public proof with `mcporter` and PID correlation guidance.
 - Remote CI Clippy on Rust 1.94.1 failed for `needless_raw_string_hashes` and `useless_let_if_seq` in `crates/lab/src/dispatch/setup/host_service.rs`. Removed the needless raw-string hashes and rewrote the `ExecMainStatus` assignment as an expression.
 - Remote Windows self-hosted CI failed because `reject_untrusted_permissions(path: &Path)` used `path` only under `#[cfg(unix)]`. Added a non-Unix use so Windows no longer trips `unused_variables` under `-D warnings`.
+- Remote Windows self-hosted CI then failed without a Rust diagnostic while compiling. The first attempt left an orphaned `Runner.Worker`/Cargo process tree after the job completed; after clearing it and rerunning, manual reproduction showed Cargo still reading `.cargo/config.toml` `build.rustc-wrapper = "scripts/cargo-rustc-wrapper"` when only `RUSTC_WRAPPER=""` was set. Setting `CARGO_BUILD_RUSTC_WRAPPER=""` made Windows `cargo metadata` succeed, so CI and release workflows now use the Cargo config override.
 
 ## Behavior Changes (Before/After)
 
@@ -142,6 +147,7 @@ Updated `README.md`, `CLAUDE.md`, `docs/runtime/HOST_GATEWAY.md`, and `docs/gene
 | `cargo clippy --workspace --all-features --locked -- -D warnings` | Matches CI Clippy gate. | Passed after CI lint fix. | pass |
 | `cargo nextest run --workspace --all-features` | Full test suite is green. | 2200 passed, 14 skipped. | pass |
 | `gh api graphql ... reviewThreads` | No unresolved actionable CodeRabbit threads. | All 4 threads returned `isResolved: true`. | pass |
+| Windows `cargo metadata` with `CARGO_BUILD_RUSTC_WRAPPER=""` | Cargo ignores the repo-local shell rustc wrapper on Windows. | Passed on `agent-os`. | pass |
 
 ## Risks and Rollback
 
@@ -166,5 +172,5 @@ Updated `README.md`, `CLAUDE.md`, `docs/runtime/HOST_GATEWAY.md`, and `docs/gene
 
 ## Next Steps
 
-1. Push the final CI fix.
+1. Push the final CI wrapper override fix.
 2. Wait for PR #152 checks after the final commit and fix any new CI or review findings before merge.
