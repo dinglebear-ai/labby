@@ -41,10 +41,7 @@ fn shape_policy_truncate_preserves_small_json() {
         4,
     );
     assert_eq!(shaped.result, input);
-    assert_eq!(
-        shaped.metadata.policy,
-        CodeModeResultShapePolicy::Truncate
-    );
+    assert_eq!(shaped.metadata.policy, CodeModeResultShapePolicy::Truncate);
     assert!(!shaped.metadata.changed);
 }
 
@@ -53,7 +50,9 @@ fn shape_policy_truncate_stringifies_large_object() {
     let input = Some(json!({"payload": "x".repeat(5000)}));
     let shaped = shape_final_result(input, CodeModeResultShapePolicy::Truncate, 1400, 6000, 4);
     let result = shaped.result.unwrap();
-    let text = result.as_str().expect("large shaped result is a marker string");
+    let text = result
+        .as_str()
+        .expect("large shaped result is a marker string");
     assert!(text.contains("[code mode result truncated]"), "{text}");
     assert!(text.contains("\"payload\""), "{text}");
     assert!(shaped.metadata.changed);

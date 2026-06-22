@@ -4154,9 +4154,7 @@ service_scope = "user"
             [code_mode]
             result_shape_policy = "summarize"
         "#;
-        let err = toml::from_str::<LabConfig>(toml)
-            .unwrap_err()
-            .to_string();
+        let err = toml::from_str::<LabConfig>(toml).unwrap_err().to_string();
         assert!(err.contains("result_shape_policy"), "{err}");
     }
 

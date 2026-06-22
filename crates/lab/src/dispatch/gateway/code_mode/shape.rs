@@ -82,8 +82,9 @@ fn shape_truncate(
         Value::String(text) => text.clone(),
         _ => serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
     };
-    let marker_prefix =
-        format!("[code mode result truncated]\noriginal_size_bytes={original_size_bytes}, max_size_bytes={budget}\n");
+    let marker_prefix = format!(
+        "[code mode result truncated]\noriginal_size_bytes={original_size_bytes}, max_size_bytes={budget}\n"
+    );
     let room = budget.saturating_sub(marker_prefix.len());
     let preview = serialized.chars().take(room).collect::<String>();
     let marker = format!("{marker_prefix}{preview}");

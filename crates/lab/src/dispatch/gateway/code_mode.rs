@@ -66,11 +66,11 @@ pub use normalize::normalize_user_code;
 // hold the shared, long-lived warm-runner pool in a field.
 pub(crate) use pool::RunnerPool;
 pub use runner::run_code_mode_runner_stdio;
+#[cfg(test)]
+pub(crate) use shape::CodeModeResultShapeMetadata;
 pub(crate) use trace::code_mode_execute_trace;
 pub(crate) use types::split_upstream_tool;
 pub use types::{CodeModeCaller, CodeModeCapabilityFilter, CodeModeSurface, upstream_tool_id}; // shared upstream::tool splitter
-#[cfg(test)]
-pub(crate) use shape::CodeModeResultShapeMetadata;
 // Re-export so `GatewayManager` (in `manager.rs`, a sibling of `code_mode.rs`)
 // can name the type in `cached_catalog_render`'s return signature without
 // reaching into the private `types` submodule.
@@ -102,11 +102,11 @@ pub(crate) struct SnippetMetadataCache {
     pub fingerprint: String,
     pub entries: Vec<crate::dispatch::snippets::store::SnippetInfo>,
 }
-pub(crate) use types::CodeModeExecutionResponse;
-#[cfg(test)]
-pub(crate) use types::CodeModeExecutionError;
 #[cfg(test)]
 pub(in crate::dispatch::gateway::code_mode) use shape::shape_final_result;
+#[cfg(test)]
+pub(crate) use types::CodeModeExecutionError;
+pub(crate) use types::CodeModeExecutionResponse;
 pub(crate) use types::{CodeModeExecutionSource, CodeModeSourceLookup, CodeModeSourceStore};
 pub(crate) use types::{CodeModeHistory, CodeModeHistoryEntry, CodeModeHistoryKind};
 
