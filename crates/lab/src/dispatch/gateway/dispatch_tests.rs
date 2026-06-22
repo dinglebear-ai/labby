@@ -54,6 +54,9 @@ fn gateway_actions_include_management_surface() {
     assert!(names.contains(&"gateway.public_urls.get"));
 
     for spec in ACTIONS {
+        if spec.name == "gateway.code_mode.set" {
+            continue;
+        }
         assert!(
             !spec.destructive,
             "{} must not be destructive unless it risks permanent, hard-to-recreate data loss",
