@@ -297,6 +297,7 @@ fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
                     "calls": { "type": "array", "items": { "type": "object" } },
                     "result": {},
                     "result_shape": { "type": "object" },
+                    "result_shaping": { "type": "object" },
                     "artifacts": {
                         "type": "array",
                         "items": {

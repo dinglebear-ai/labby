@@ -2,7 +2,10 @@ use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::config::{CodeModeConfig, ProtectedMcpRouteConfig, UpstreamConfig, UpstreamOauthConfig};
+use crate::config::{
+    CodeModeConfig, CodeModeResultShapePolicy, ProtectedMcpRouteConfig, UpstreamConfig,
+    UpstreamOauthConfig,
+};
 use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -248,6 +251,8 @@ pub struct CodeModeSetParams {
     pub enabled: Option<bool>,
     #[serde(default)]
     pub trace_params: Option<bool>,
+    #[serde(default)]
+    pub result_shape_policy: Option<CodeModeResultShapePolicy>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
     #[serde(default)]

@@ -13,6 +13,7 @@ use crate::dispatch::snippets::store::{SnippetInfo, SnippetInputSpec, SnippetInp
 use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
 
 use super::artifacts::CodeModeArtifactReceipt;
+use super::shape::CodeModeResultShapeMetadata;
 use super::util::{invalid_code_mode_id, lab_action_unknown_tool};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,6 +301,8 @@ pub struct CodeModeExecutionResponse {
     /// serializes as `"result": null`; undefined omits the field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_shaping: Option<CodeModeResultShapeMetadata>,
     /// Captured mcp-ui widget link (last-wins across the run). The MCP boundary
     /// attaches this as `_meta.ui` on the returned `CallToolResult` so the host
     /// renders the native widget. `None` when no widget-bearing call ran.
@@ -313,6 +316,12 @@ pub struct CodeModeExecutionResponse {
     pub logs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<CodeModeArtifactReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CodeModeExecutionOutcome {
+    pub raw_response: CodeModeExecutionResponse,
+    pub display_response: CodeModeExecutionResponse,
 }
 
 /// Lightweight metadata for one host-brokered tool call. Cloudflare parity:

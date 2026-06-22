@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+use crate::config::CodeModeResultShapePolicy;
+
 use super::artifacts::{
     CodeModeArtifactReceipt, CodeModeArtifactWrite, code_mode_artifact_root,
     write_code_mode_artifact,
@@ -18,6 +20,82 @@ use super::*;
 /// (path safety, content-type defaulting, persistence, I/O failure). The
 /// dedicated size test passes its own explicit cap.
 const TEST_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[test]
+fn shape_policy_off_preserves_result_exactly() {
+    let input = Some(json!({"ok": true, "items": [1, 2]}));
+    let shaped = shape_final_result(input.clone(), CodeModeResultShapePolicy::Off, 100, 100, 4);
+    assert_eq!(shaped.result, input);
+    assert_eq!(shaped.metadata.policy, CodeModeResultShapePolicy::Off);
+    assert!(!shaped.metadata.changed);
+}
+
+#[test]
+fn shape_policy_truncate_preserves_small_json() {
+    let input = Some(json!({"ok": true}));
+    let shaped = shape_final_result(
+        input.clone(),
+        CodeModeResultShapePolicy::Truncate,
+        4096,
+        1000,
+        4,
+    );
+    assert_eq!(shaped.result, input);
+    assert_eq!(shaped.metadata.policy, CodeModeResultShapePolicy::Truncate);
+    assert!(!shaped.metadata.changed);
+}
+
+#[test]
+fn shape_policy_truncate_stringifies_large_object() {
+    let input = Some(json!({"payload": "x".repeat(5000)}));
+    let shaped = shape_final_result(input, CodeModeResultShapePolicy::Truncate, 1400, 6000, 4);
+    let result = shaped.result.unwrap();
+    let text = result
+        .as_str()
+        .expect("large shaped result is a marker string");
+    assert!(text.contains("[code mode result truncated]"), "{text}");
+    assert!(text.contains("\"payload\""), "{text}");
+    assert!(shaped.metadata.changed);
+    assert!(shaped.metadata.truncated);
+    assert!(shaped.metadata.original_size_bytes > shaped.metadata.shaped_size_bytes);
+}
+
+#[test]
+fn shape_policy_truncates_utf8_by_bytes() {
+    let budget = 511;
+    let input = Some(json!({"payload": "€".repeat(5000)}));
+    let shaped = shape_final_result(input, CodeModeResultShapePolicy::Truncate, budget, 6000, 4);
+    let text = shaped
+        .result
+        .unwrap()
+        .as_str()
+        .expect("large shaped result is a marker string")
+        .to_string();
+
+    assert!(text.contains("[code mode result truncated]"), "{text}");
+    assert!(text.len() <= budget);
+    assert_eq!(
+        shaped.metadata.shaped_size_bytes,
+        serde_json::to_vec(&Value::String(text)).unwrap().len()
+    );
+    assert!(shaped.metadata.truncated);
+    assert!(shaped.metadata.original_size_bytes > shaped.metadata.shaped_size_bytes);
+}
+
+#[test]
+fn shape_policy_preserves_none_and_null_distinction() {
+    let none = shape_final_result(None, CodeModeResultShapePolicy::Truncate, 100, 100, 4);
+    assert!(none.result.is_none());
+
+    let null = shape_final_result(
+        Some(Value::Null),
+        CodeModeResultShapePolicy::Truncate,
+        100,
+        100,
+        4,
+    );
+    assert_eq!(null.result, Some(Value::Null));
+}
 
 #[test]
 fn snippet_runner_protocol_round_trips() {
@@ -224,6 +302,7 @@ fn truncates_codemode_final_result_when_oversized() {
         execution_id: None,
         ui: None,
         result: Some(json!({"payload": "x".repeat(5000)})),
+        result_shaping: None,
         calls: vec![
             CodeModeExecutedCall {
                 id: "github::search_issues".to_string(),
@@ -264,11 +343,45 @@ fn truncates_codemode_final_result_when_oversized() {
 }
 
 #[test]
+fn result_truncation_clears_stale_shape_metadata() {
+    let response = CodeModeExecutionResponse {
+        execution_id: None,
+        ui: None,
+        result: Some(json!(format!(
+            "[code mode result truncated]\n{}",
+            "x".repeat(5000)
+        ))),
+        result_shaping: Some(CodeModeResultShapeMetadata {
+            policy: CodeModeResultShapePolicy::Truncate,
+            changed: true,
+            truncated: true,
+            original_size_bytes: 6000,
+            shaped_size_bytes: 5000,
+        }),
+        calls: vec![CodeModeExecutedCall {
+            id: "test::ping".to_string(),
+            ok: true,
+            elapsed_ms: 2,
+            params: None,
+            error_kind: None,
+        }],
+        logs: Vec::new(),
+        artifacts: vec![],
+    };
+
+    let truncated = truncate_execution_response(response, 1400, 6000, 4);
+
+    assert_eq!(truncated.result.as_ref().unwrap()["truncated"], json!(true));
+    assert!(truncated.result_shaping.is_none());
+}
+
+#[test]
 fn does_not_truncate_when_final_result_within_budget() {
     let response = CodeModeExecutionResponse {
         execution_id: None,
         ui: None,
         result: Some(json!({"items": ["small"]})),
+        result_shaping: None,
         calls: vec![CodeModeExecutedCall {
             id: "github::search_issues".to_string(),
             ok: true,
@@ -293,6 +406,7 @@ fn truncates_oversized_logs_after_result() {
         execution_id: None,
         ui: None,
         result: Some(json!({"ok": true})),
+        result_shaping: None,
         calls: vec![CodeModeExecutedCall {
             id: "test::ping".to_string(),
             ok: true,
@@ -336,6 +450,7 @@ fn log_trimming_terminates_when_budget_unreachable() {
         execution_id: None,
         ui: None,
         result: Some(json!({"ok": true})),
+        result_shaping: None,
         calls: (0..200)
             .map(|i| CodeModeExecutedCall {
                 id: format!("test::tool_{i}"),
@@ -470,6 +585,7 @@ fn token_estimate_divisor_affects_truncation_decision() {
         execution_id: None,
         ui: None,
         result: Some(json!({"payload": payload.clone()})),
+        result_shaping: None,
         calls: vec![CodeModeExecutedCall {
             id: "test::large".to_string(),
             ok: true,
@@ -673,6 +789,7 @@ fn runner_protocol_preserves_null_distinct_from_undefined() {
         execution_id: None,
         ui: None,
         result: Some(Value::Null),
+        result_shaping: None,
         calls: Vec::new(),
         logs: Vec::new(),
         artifacts: vec![],
@@ -682,6 +799,7 @@ fn runner_protocol_preserves_null_distinct_from_undefined() {
         execution_id: None,
         ui: None,
         result: None,
+        result_shaping: None,
         calls: Vec::new(),
         logs: Vec::new(),
         artifacts: vec![],
@@ -729,6 +847,7 @@ fn truncation_preserves_artifact_receipts() {
                 "path": "code-mode-artifacts/run/brief.md"
             }
         })),
+        result_shaping: None,
         calls: vec![],
         logs: vec![],
         artifacts: vec![CodeModeArtifactReceipt {
@@ -755,6 +874,7 @@ fn execute_trace_surfaces_artifacts_when_present() {
         execution_id: None,
         ui: None,
         result: Some(json!({ "ok": true })),
+        result_shaping: None,
         calls: vec![],
         logs: vec![],
         artifacts: vec![CodeModeArtifactReceipt {
@@ -780,6 +900,7 @@ fn execute_trace_omits_artifacts_when_empty() {
         execution_id: None,
         ui: None,
         result: Some(json!({ "ok": true })),
+        result_shaping: None,
         calls: vec![],
         logs: vec![],
         artifacts: vec![],
@@ -1473,6 +1594,7 @@ fn binary_search_log_truncation_boundary_is_tight() {
         execution_id: None,
         ui: None,
         result: Some(json!({"ok": true})),
+        result_shaping: None,
         calls: vec![CodeModeExecutedCall {
             id: "test::ping".to_string(),
             ok: true,

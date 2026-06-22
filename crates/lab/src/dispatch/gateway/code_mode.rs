@@ -23,6 +23,7 @@ mod runner_drive;
 mod runner_io;
 mod schema;
 mod search;
+mod shape;
 mod trace;
 mod truncate;
 /// Live TypeScript signature / `.d.ts` generator for Code Mode catalog entries.
@@ -65,6 +66,8 @@ pub use normalize::normalize_user_code;
 // hold the shared, long-lived warm-runner pool in a field.
 pub(crate) use pool::RunnerPool;
 pub use runner::run_code_mode_runner_stdio;
+#[cfg(test)]
+pub(crate) use shape::CodeModeResultShapeMetadata;
 pub(crate) use trace::code_mode_execute_trace;
 pub(crate) use types::split_upstream_tool;
 pub use types::{CodeModeCaller, CodeModeCapabilityFilter, CodeModeSurface, upstream_tool_id}; // shared upstream::tool splitter
@@ -100,7 +103,10 @@ pub(crate) struct SnippetMetadataCache {
     pub entries: Vec<crate::dispatch::snippets::store::SnippetInfo>,
 }
 #[cfg(test)]
-pub(crate) use types::{CodeModeExecutionError, CodeModeExecutionResponse};
+pub(in crate::dispatch::gateway::code_mode) use shape::shape_final_result;
+#[cfg(test)]
+pub(crate) use types::CodeModeExecutionError;
+pub(crate) use types::CodeModeExecutionResponse;
 pub(crate) use types::{CodeModeExecutionSource, CodeModeSourceLookup, CodeModeSourceStore};
 pub(crate) use types::{CodeModeHistory, CodeModeHistoryEntry, CodeModeHistoryKind};
 

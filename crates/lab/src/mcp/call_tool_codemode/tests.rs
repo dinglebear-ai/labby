@@ -5,7 +5,10 @@ use super::{
     CODE_MODE_DESCRIPTION, code_arg, code_mode_execute_trace, route_scoped_capability_filter,
     string_array_arg,
 };
-use crate::dispatch::gateway::code_mode::{CodeModeExecutedCall, CodeModeExecutionResponse};
+use crate::config::CodeModeResultShapePolicy;
+use crate::dispatch::gateway::code_mode::{
+    CodeModeExecutedCall, CodeModeExecutionResponse, CodeModeResultShapeMetadata,
+};
 use serde_json::{Value, json};
 
 #[test]
@@ -137,6 +140,57 @@ fn codemode_input_schema_includes_optional_filters() {
 }
 
 #[test]
+fn code_mode_execute_trace_includes_shape_metadata_and_shaped_result() {
+    let response = CodeModeExecutionResponse {
+        execution_id: None,
+        result: Some(json!("[code mode result truncated]\n{}")),
+        result_shaping: Some(CodeModeResultShapeMetadata {
+            policy: CodeModeResultShapePolicy::Truncate,
+            changed: true,
+            truncated: true,
+            original_size_bytes: 5000,
+            shaped_size_bytes: 256,
+        }),
+        ui: None,
+        calls: vec![],
+        logs: vec![],
+        artifacts: vec![],
+    };
+
+    let text_json = serde_json::to_value(&response).expect("response serializes");
+    let structured_json = code_mode_execute_trace(&response);
+
+    assert_eq!(
+        text_json.get("result"),
+        structured_json.get("result"),
+        "MCP text JSON and structuredContent must use the same shaped result"
+    );
+    assert_eq!(
+        text_json.get("result_shaping"),
+        structured_json.get("result_shaping"),
+        "MCP text JSON and structuredContent must expose the same shaping metadata"
+    );
+    assert!(text_json.get("result_shape").is_none());
+    assert_eq!(structured_json["result_shape"]["type"], json!("string"));
+    assert_eq!(
+        structured_json["result_shaping"]["policy"],
+        json!("truncate")
+    );
+    assert_eq!(structured_json["result_shaping"]["changed"], json!(true));
+    assert_eq!(structured_json["result_shaping"]["truncated"], json!(true));
+    assert_eq!(
+        structured_json["result_shaping"]["original_size_bytes"],
+        json!(5000)
+    );
+    assert_eq!(
+        structured_json["result_shaping"]["shaped_size_bytes"],
+        json!(256)
+    );
+    assert!(structured_json["result_shape"].get("policy").is_none());
+    assert!(structured_json["result_shape"].get("truncated").is_none());
+}
+
+#[test]
 fn execute_trace_embeds_result_and_redacts_call_params() {
     let response = CodeModeExecutionResponse {
         execution_id: None,
@@ -145,6 +199,7 @@ fn execute_trace_embeds_result_and_redacts_call_params() {
             "answer": "the full research answer the model asked for",
             "items": ["a", "b", "c"]
         })),
+        result_shaping: None,
         calls: vec![CodeModeExecutedCall {
             id: "github::search_issues".to_string(),
             ok: true,
@@ -184,6 +239,7 @@ fn execute_trace_omits_result_when_function_returns_undefined() {
         execution_id: None,
         ui: None,
         result: None,
+        result_shaping: None,
         calls: vec![],
         logs: vec![],
         artifacts: vec![],
@@ -206,6 +262,7 @@ fn execute_trace_preserves_explicit_null_result() {
         execution_id: None,
         ui: None,
         result: Some(Value::Null),
+        result_shaping: None,
         calls: vec![],
         logs: vec![],
         artifacts: vec![],

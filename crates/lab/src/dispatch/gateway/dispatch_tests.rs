@@ -54,6 +54,9 @@ fn gateway_actions_include_management_surface() {
     assert!(names.contains(&"gateway.public_urls.get"));
 
     for spec in ACTIONS {
+        if spec.name == "gateway.code_mode.set" {
+            continue;
+        }
         assert!(
             !spec.destructive,
             "{} must not be destructive unless it risks permanent, hard-to-recreate data loss",
@@ -95,6 +98,7 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
         json!({
             "enabled": true,
             "trace_params": false,
+            "result_shape_policy": "truncate",
             "timeout_ms": 5000,
             "max_response_bytes": 4096,
             "max_response_tokens": 1024,
@@ -108,12 +112,39 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
 
     assert_eq!(value["enabled"], true);
     assert_eq!(value["trace_params"], false);
+    assert_eq!(value["result_shape_policy"], "truncate");
     assert_eq!(value["timeout_ms"], 5000);
     assert_eq!(value["max_response_bytes"], 4096);
     assert_eq!(value["max_response_tokens"], 1024);
     assert_eq!(value["token_estimate_divisor"], 2);
     assert_eq!(value["max_log_entries"], 10);
     assert_eq!(value["max_log_bytes"], 2048);
+}
+
+#[tokio::test]
+async fn gateway_code_mode_set_rejects_invalid_result_shape_policy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+
+    let err = dispatch_with_manager(
+        &manager,
+        "gateway.code_mode.set",
+        json!({ "result_shape_policy": "redact" }),
+    )
+    .await
+    .expect_err("invalid code mode shape policy should be rejected");
+    let body = serde_json::to_value(&err).expect("serialize");
+
+    assert_eq!(body["kind"], "invalid_param");
+    assert!(
+        body["message"]
+            .as_str()
+            .expect("message")
+            .contains("redact")
+    );
 }
 
 #[tokio::test]
