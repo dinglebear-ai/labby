@@ -45,7 +45,7 @@
         {
           "name": "gateway.code_mode.set",
           "description": "Configure gateway code execution limits",
-          "destructive": false,
+          "destructive": true,
           "params": [
             {
               "name": "enabled",

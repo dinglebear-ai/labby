@@ -412,18 +412,18 @@ impl LabMcpServer {
             .and_then(Value::as_str)
             .unwrap_or("<unknown>");
         let trace_has_result = structured.get("result").is_some();
-        let truncated = response
+        let shape_truncated = response
             .result_shaping
             .as_ref()
             .map(|shape| shape.truncated)
-            .or_else(|| {
-                response
-                    .result
-                    .as_ref()
-                    .and_then(|result| result.get("truncated"))
-                    .and_then(Value::as_bool)
-            })
             .unwrap_or(false);
+        let legacy_truncated = response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("truncated"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let truncated = shape_truncated || legacy_truncated;
         let result_shape_policy = response
             .result_shaping
             .as_ref()

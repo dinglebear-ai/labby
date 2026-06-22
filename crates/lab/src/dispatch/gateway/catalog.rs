@@ -48,7 +48,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.code_mode.set",
         description: "Configure gateway code execution limits",
-        destructive: false,
+        destructive: true,
         requires_admin: true,
         returns: "CodeModeConfig",
         params: &[
@@ -894,7 +894,7 @@ mod tests {
             .iter()
             .find(|spec| spec.name == "gateway.code_mode.set")
             .expect("gateway.code_mode.set catalog entry");
-        assert!(!set.destructive);
+        assert!(set.destructive);
         let params: Vec<&str> = set.params.iter().map(|param| param.name).collect();
         for param in [
             "enabled",

@@ -92,7 +92,9 @@ fn shape_truncate(
     let room = budget.saturating_sub(marker_prefix.len());
     let preview = utf8_prefix_by_bytes(&serialized, room);
     let marker = format!("{marker_prefix}{preview}");
-    let shaped_size_bytes = marker.len();
+    let shaped_size_bytes = serde_json::to_vec(&Value::String(marker.clone()))
+        .map(|bytes| bytes.len())
+        .unwrap_or_else(|_| marker.len());
 
     ShapedResult {
         result: Some(Value::String(marker)),

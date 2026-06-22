@@ -74,7 +74,12 @@ fn shape_policy_truncates_utf8_by_bytes() {
 
     assert!(text.contains("[code mode result truncated]"), "{text}");
     assert!(text.len() <= budget);
-    assert_eq!(shaped.metadata.shaped_size_bytes, text.len());
+    assert_eq!(
+        shaped.metadata.shaped_size_bytes,
+        serde_json::to_vec(&Value::String(text)).unwrap().len()
+    );
+    assert!(shaped.metadata.truncated);
+    assert!(shaped.metadata.original_size_bytes > shaped.metadata.shaped_size_bytes);
 }
 
 #[test]

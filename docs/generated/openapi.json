@@ -1513,7 +1513,13 @@
       },
       "GatewayGatewayCode_modeSetParams": {
         "type": "object",
+        "required": [
+          "confirm"
+        ],
         "properties": {
+          "confirm": {
+            "type": "boolean"
+          },
           "enabled": {
             "type": "boolean"
           },
