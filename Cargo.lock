@@ -2514,6 +2514,10 @@ dependencies = [
 name = "lab-runtime"
 version = "0.26.1"
 dependencies = [
+ "lab-apis",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
  "url",
 ]
 
