@@ -33,7 +33,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dest = Path::new(&out_dir).join("embedded_web_assets.rs");
 
     // Re-run when the bundle appears/disappears or its top level changes.
-    println!("cargo:rerun-if-changed={}", assets_dir.display());
+    // Cargo treats missing watched paths as stale on every build, so when the
+    // bundle is absent we watch the nearest existing parent instead.
+    let watch_path = rerun_watch_path_for_assets_dir(&assets_dir);
+    println!("cargo:rerun-if-changed={}", watch_path.display());
 
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     match fs::canonicalize(&assets_dir) {
@@ -83,6 +86,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn rerun_watch_path_for_assets_dir(assets_dir: &Path) -> PathBuf {
+    if assets_dir.exists() {
+        return assets_dir.to_path_buf();
+    }
+
+    assets_dir
+        .ancestors()
+        .find(|path| path.exists())
+        .unwrap_or(assets_dir)
+        .to_path_buf()
+}
+
 /// Recursively collect every file under `dir`, keying it by its forward-slash
 /// path relative to `base`. A read error (the directory or a single entry)
 /// propagates as `Err` so an incomplete bundle fails the build instead of
@@ -117,4 +132,22 @@ fn collect_files(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_assets_dir_watches_existing_parent_not_missing_dir() {
+        let root = std::env::temp_dir().join(format!("lab-build-rs-test-{}", std::process::id()));
+        let app_dir = root.join("apps/gateway-admin");
+        std::fs::create_dir_all(&app_dir).expect("create app dir");
+        let assets_dir = app_dir.join("out");
+
+        let watched = rerun_watch_path_for_assets_dir(&assets_dir);
+
+        assert_eq!(watched, app_dir);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
 }
