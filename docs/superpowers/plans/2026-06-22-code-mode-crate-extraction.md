@@ -141,7 +141,7 @@ that lands is named in neutral terms, and `GatewayManager` is merely Labby's
 
 ## File Structure
 
-```
+```text
 crates/lab-codemode/
   Cargo.toml            # tokio, serde, serde_json, thiserror, javy, nix, tempfile,
                         # tracing, lab-runtime. NO wasmtime/axum/rmcp/clap/anyhow.
@@ -162,7 +162,7 @@ crates/lab-codemode/
   src/normalize.rs      # result normalization.
   src/truncate.rs       # output caps.
   src/trace.rs          # tracing spans.
-  src/types.rs          # CodeModeRequest/Result/Caller/Surface/CapabilityFilter, etc.
+  src/types.rs          # CodeModeRequest/Result/Caller/Surface/ToolScope, etc.
   src/artifacts.rs      # artifact write: path containment, size cap, atomic write.
   src/util.rs           # JS wrapping, id gen.
   src/wrapper.rs        # async IIFE harness.

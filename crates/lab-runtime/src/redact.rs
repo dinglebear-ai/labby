@@ -137,7 +137,12 @@ fn redact_uri_or_path(value: &str) -> String {
         return redact_parsed_url(parsed);
     }
     let (path, query) = match value.split_once('?') {
-        Some((path, rest)) => (path.split('#').next().unwrap_or(path), Some(rest)),
+        // Strip any `#fragment` from BOTH the path and the query so fragment
+        // content cannot survive into redacted output (under-redaction guard).
+        Some((path, rest)) => (
+            path.split('#').next().unwrap_or(path),
+            Some(rest.split('#').next().unwrap_or(rest)),
+        ),
         None => (value.split('#').next().unwrap_or(value), None),
     };
     match query.map(redact_query_pairs) {
@@ -266,6 +271,16 @@ mod tests {
                 "lab://upstream/demo/https://example.com/items?page=2&api_key=abc"
             ),
             "lab://upstream/demo/https://example.com/items?page=2&api_key=[redacted]"
+        );
+    }
+
+    #[test]
+    fn redact_upstream_resource_uri_strips_fragment_after_query() {
+        // A `#fragment` following a query string must not survive into the
+        // redacted output (it could carry sensitive data into logs).
+        assert_eq!(
+            redact_upstream_resource_uri("lab://upstream/demo/items?page=2#token=leak"),
+            "lab://upstream/demo/items?page=2"
         );
     }
 }

@@ -146,8 +146,18 @@ mod tests {
 
     #[test]
     fn missing_assets_dir_watches_existing_parent_not_missing_dir() {
-        let root =
-            std::env::temp_dir().join(format!("lab-gw-web-build-rs-test-{}", std::process::id()));
+        // PID alone can collide with a stale dir from a prior run (PIDs are
+        // reused); add a per-invocation nanosecond suffix for real isolation.
+        // (Build scripts can't use the `tempfile` dev-dependency, so this stays
+        // std-only.)
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!(
+            "lab-gw-web-build-rs-test-{}-{unique}",
+            std::process::id()
+        ));
         let app_dir = root.join("apps/gateway-admin");
         std::fs::create_dir_all(&app_dir).expect("create app dir");
         let assets_dir = app_dir.join("out");

@@ -1264,6 +1264,15 @@ pub async fn dispatch_gateway(
 }
 ```
 
+> **`GatewayActionRequest` DTO:** the standalone gateway API mirrors the existing
+> MCP/HTTP `action + params` contract — `GatewayActionRequest { action: String,
+> params: serde_json::Value }` (`#[serde(default)]` params). It introduces no new
+> schema beyond what `lab_apis::core::ActionSpec` already governs; param
+> validation stays in shared dispatch. Define it alongside the other gateway DTOs
+> in `lab-runtime` (e.g. `lab_runtime::gateway_config`), not a new
+> `lab_runtime::gateway` module — adjust the import path in the snippet above
+> accordingly.
+
 - [ ] **Step 7: Preserve daemon-scoped gateway state**
 
 `GatewayState` must own one long-lived manager/pool pair:

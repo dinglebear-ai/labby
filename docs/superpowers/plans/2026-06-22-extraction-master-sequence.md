@@ -31,7 +31,7 @@ moving Code Mode runtime a second time. Do not invert these.
 
 ## Dependency graph
 
-```
+```text
 lab-runtime ──┬─> lab-codemode ───────────────────────────┐
               ├─> lab-auth (upstream OAuth) ─> lab-gateway ┤
               │                                  (pool)    │
