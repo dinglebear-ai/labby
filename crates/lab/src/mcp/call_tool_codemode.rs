@@ -413,11 +413,23 @@ impl LabMcpServer {
             .unwrap_or("<unknown>");
         let trace_has_result = structured.get("result").is_some();
         let truncated = response
-            .result
+            .result_shape
             .as_ref()
-            .and_then(|result| result.get("truncated"))
-            .and_then(Value::as_bool)
+            .map(|shape| shape.truncated)
+            .or_else(|| {
+                response
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.get("truncated"))
+                    .and_then(Value::as_bool)
+            })
             .unwrap_or(false);
+        let result_shape_policy = response
+            .result_shape
+            .as_ref()
+            .and_then(|shape| serde_json::to_value(shape.policy).ok())
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "legacy".to_string());
         tracing::info!(
             surface = "mcp",
             service = "codemode",
@@ -431,6 +443,7 @@ impl LabMcpServer {
             call_count = response.calls.len(),
             artifact_writes = response.artifacts.len(),
             truncated,
+            result_shape_policy,
             elapsed_ms = started.elapsed().as_millis(),
             input_tokens,
             output_tokens,

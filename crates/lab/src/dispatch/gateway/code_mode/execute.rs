@@ -9,10 +9,13 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::dispatch::upstream::types::UpstreamRuntimeOwner;
 
+use crate::config::CodeModeResultShapePolicy;
+
 use super::CodeModeBroker;
 use super::normalize_user_code;
 use super::runner_io::code_mode_upstream_error_info;
 use super::schema::{unwrap_code_mode_upstream_result, validate_code_mode_params_against_schema};
+use super::shape::shape_final_result;
 use super::truncate::{response_within_budget, truncate_execution_response};
 use super::types::{
     CodeModeCaller, CodeModeCapabilityFilter, CodeModeDiscoveryEntry, CodeModeExecutionError,
@@ -62,6 +65,21 @@ impl CodeModeBroker<'_> {
         // Done before truncation so the (tiny) `ui` field is preserved while
         // `result` may be capped.
         self.apply_ui_opt_in(&mut response);
+        let shaped = shape_final_result(
+            response.result.take(),
+            config.result_shape_policy,
+            config.max_response_bytes,
+            config.max_response_tokens,
+            config.token_estimate_divisor,
+        );
+        let result_shape_changed = shaped.metadata.changed;
+        let result_shape_truncated = shaped.metadata.truncated;
+        let result_shape_original_size_bytes = shaped.metadata.original_size_bytes;
+        let result_shape_shaped_size_bytes = shaped.metadata.shaped_size_bytes;
+        response.result = shaped.result;
+        if config.result_shape_policy != CodeModeResultShapePolicy::Off {
+            response.result_shape = Some(shaped.metadata);
+        }
         let was_truncated = !response_within_budget(
             &response,
             config.max_response_bytes,
@@ -85,6 +103,11 @@ impl CodeModeBroker<'_> {
                 .as_ref()
                 .map(|v| v.to_string().len())
                 .unwrap_or(0),
+            result_shape_policy = ?config.result_shape_policy,
+            result_shape_changed,
+            result_shape_truncated,
+            result_shape_original_size_bytes,
+            result_shape_shaped_size_bytes,
             logs_count = response.logs.len(),
             truncated = was_truncated,
             "code execution complete"

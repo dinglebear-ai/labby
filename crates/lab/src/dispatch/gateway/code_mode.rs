@@ -69,6 +69,8 @@ pub use runner::run_code_mode_runner_stdio;
 pub(crate) use trace::code_mode_execute_trace;
 pub(crate) use types::split_upstream_tool;
 pub use types::{CodeModeCaller, CodeModeCapabilityFilter, CodeModeSurface, upstream_tool_id}; // shared upstream::tool splitter
+#[cfg(test)]
+pub(crate) use shape::CodeModeResultShapeMetadata;
 // Re-export so `GatewayManager` (in `manager.rs`, a sibling of `code_mode.rs`)
 // can name the type in `cached_catalog_render`'s return signature without
 // reaching into the private `types` submodule.

@@ -94,14 +94,21 @@ pub(crate) fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> V
     if let Some(result) = &response.result {
         trace.insert("result".to_string(), result.clone());
     }
-    trace.insert(
-        "result_shape".to_string(),
-        response
-            .result
-            .as_ref()
-            .map(compact_result_shape)
-            .unwrap_or_else(|| json!({ "type": "undefined" })),
-    );
+    if let Some(shape) = &response.result_shape {
+        trace.insert(
+            "result_shape".to_string(),
+            serde_json::to_value(shape).unwrap_or_else(|_| json!({ "type": "unknown" })),
+        );
+    } else {
+        trace.insert(
+            "result_shape".to_string(),
+            response
+                .result
+                .as_ref()
+                .map(compact_result_shape)
+                .unwrap_or_else(|| json!({ "type": "undefined" })),
+        );
+    }
     // Surface artifact receipts so a structured-content-only client can follow
     // the "write large payloads to an artifact and read them back" path.
     if !response.artifacts.is_empty() {
