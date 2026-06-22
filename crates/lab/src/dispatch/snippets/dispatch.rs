@@ -368,7 +368,7 @@ mod tests {
         CodeModeExecutionResponse {
             execution_id: None,
             result,
-            result_shape: None,
+            result_shaping: None,
             ui: None,
             calls: vec![],
             logs: vec![],
@@ -380,7 +380,7 @@ mod tests {
         CodeModeExecutionResponse {
             execution_id: None,
             result: Some(json!("[code mode result truncated]\n{}")),
-            result_shape: Some(CodeModeResultShapeMetadata {
+            result_shaping: Some(CodeModeResultShapeMetadata {
                 policy: CodeModeResultShapePolicy::Truncate,
                 changed: true,
                 truncated: true,

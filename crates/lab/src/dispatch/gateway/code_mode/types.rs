@@ -302,7 +302,7 @@ pub struct CodeModeExecutionResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_shape: Option<CodeModeResultShapeMetadata>,
+    pub result_shaping: Option<CodeModeResultShapeMetadata>,
     /// Captured mcp-ui widget link (last-wins across the run). The MCP boundary
     /// attaches this as `_meta.ui` on the returned `CallToolResult` so the host
     /// renders the native widget. `None` when no widget-bearing call ran.

@@ -93,20 +93,24 @@ impl CodeModeBroker<'_> {
         let result_shape_shaped_size_bytes = shaped.metadata.shaped_size_bytes;
         response.result = shaped.result;
         if config.result_shape_policy != CodeModeResultShapePolicy::Off {
-            response.result_shape = Some(shaped.metadata);
+            response.result_shaping = Some(shaped.metadata);
         }
+        let shaped_result = response.result.clone();
         let was_truncated = !response_within_budget(
             &response,
             config.max_response_bytes,
             config.max_response_tokens,
             config.token_estimate_divisor,
         );
-        let response = truncate_execution_response(
+        let mut response = truncate_execution_response(
             response,
             config.max_response_bytes,
             config.max_response_tokens,
             config.token_estimate_divisor,
         );
+        if response.result != shaped_result {
+            response.result_shaping = None;
+        }
         tracing::info!(
             surface = "dispatch",
             service = "code_mode",
@@ -593,7 +597,7 @@ mod tests {
         CodeModeExecutionResponse {
             execution_id: None,
             result: Some(result),
-            result_shape: None,
+            result_shaping: None,
             ui: None,
             calls: Vec::new(),
             logs: Vec::new(),

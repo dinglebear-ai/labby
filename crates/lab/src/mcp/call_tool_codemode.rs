@@ -413,7 +413,7 @@ impl LabMcpServer {
             .unwrap_or("<unknown>");
         let trace_has_result = structured.get("result").is_some();
         let truncated = response
-            .result_shape
+            .result_shaping
             .as_ref()
             .map(|shape| shape.truncated)
             .or_else(|| {
@@ -425,7 +425,7 @@ impl LabMcpServer {
             })
             .unwrap_or(false);
         let result_shape_policy = response
-            .result_shape
+            .result_shaping
             .as_ref()
             .and_then(|shape| serde_json::to_value(shape.policy).ok())
             .and_then(|value| value.as_str().map(str::to_string))

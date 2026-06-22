@@ -297,7 +297,7 @@ fn truncates_codemode_final_result_when_oversized() {
         execution_id: None,
         ui: None,
         result: Some(json!({"payload": "x".repeat(5000)})),
-        result_shape: None,
+        result_shaping: None,
         calls: vec![
             CodeModeExecutedCall {
                 id: "github::search_issues".to_string(),
@@ -338,12 +338,45 @@ fn truncates_codemode_final_result_when_oversized() {
 }
 
 #[test]
+fn result_truncation_clears_stale_shape_metadata() {
+    let response = CodeModeExecutionResponse {
+        execution_id: None,
+        ui: None,
+        result: Some(json!(format!(
+            "[code mode result truncated]\n{}",
+            "x".repeat(5000)
+        ))),
+        result_shaping: Some(CodeModeResultShapeMetadata {
+            policy: CodeModeResultShapePolicy::Truncate,
+            changed: true,
+            truncated: true,
+            original_size_bytes: 6000,
+            shaped_size_bytes: 5000,
+        }),
+        calls: vec![CodeModeExecutedCall {
+            id: "test::ping".to_string(),
+            ok: true,
+            elapsed_ms: 2,
+            params: None,
+            error_kind: None,
+        }],
+        logs: Vec::new(),
+        artifacts: vec![],
+    };
+
+    let truncated = truncate_execution_response(response, 1400, 6000, 4);
+
+    assert_eq!(truncated.result.as_ref().unwrap()["truncated"], json!(true));
+    assert!(truncated.result_shaping.is_none());
+}
+
+#[test]
 fn does_not_truncate_when_final_result_within_budget() {
     let response = CodeModeExecutionResponse {
         execution_id: None,
         ui: None,
         result: Some(json!({"items": ["small"]})),
-        result_shape: None,
+        result_shaping: None,
         calls: vec![CodeModeExecutedCall {
             id: "github::search_issues".to_string(),
             ok: true,
@@ -368,7 +401,7 @@ fn truncates_oversized_logs_after_result() {
         execution_id: None,
         ui: None,
         result: Some(json!({"ok": true})),
-        result_shape: None,
+        result_shaping: None,
         calls: vec![CodeModeExecutedCall {
             id: "test::ping".to_string(),
             ok: true,
@@ -412,7 +445,7 @@ fn log_trimming_terminates_when_budget_unreachable() {
         execution_id: None,
         ui: None,
         result: Some(json!({"ok": true})),
-        result_shape: None,
+        result_shaping: None,
         calls: (0..200)
             .map(|i| CodeModeExecutedCall {
                 id: format!("test::tool_{i}"),
@@ -547,7 +580,7 @@ fn token_estimate_divisor_affects_truncation_decision() {
         execution_id: None,
         ui: None,
         result: Some(json!({"payload": payload.clone()})),
-        result_shape: None,
+        result_shaping: None,
         calls: vec![CodeModeExecutedCall {
             id: "test::large".to_string(),
             ok: true,
@@ -751,7 +784,7 @@ fn runner_protocol_preserves_null_distinct_from_undefined() {
         execution_id: None,
         ui: None,
         result: Some(Value::Null),
-        result_shape: None,
+        result_shaping: None,
         calls: Vec::new(),
         logs: Vec::new(),
         artifacts: vec![],
@@ -761,7 +794,7 @@ fn runner_protocol_preserves_null_distinct_from_undefined() {
         execution_id: None,
         ui: None,
         result: None,
-        result_shape: None,
+        result_shaping: None,
         calls: Vec::new(),
         logs: Vec::new(),
         artifacts: vec![],
@@ -809,7 +842,7 @@ fn truncation_preserves_artifact_receipts() {
                 "path": "code-mode-artifacts/run/brief.md"
             }
         })),
-        result_shape: None,
+        result_shaping: None,
         calls: vec![],
         logs: vec![],
         artifacts: vec![CodeModeArtifactReceipt {
@@ -836,7 +869,7 @@ fn execute_trace_surfaces_artifacts_when_present() {
         execution_id: None,
         ui: None,
         result: Some(json!({ "ok": true })),
-        result_shape: None,
+        result_shaping: None,
         calls: vec![],
         logs: vec![],
         artifacts: vec![CodeModeArtifactReceipt {
@@ -862,7 +895,7 @@ fn execute_trace_omits_artifacts_when_empty() {
         execution_id: None,
         ui: None,
         result: Some(json!({ "ok": true })),
-        result_shape: None,
+        result_shaping: None,
         calls: vec![],
         logs: vec![],
         artifacts: vec![],
@@ -1556,7 +1589,7 @@ fn binary_search_log_truncation_boundary_is_tight() {
         execution_id: None,
         ui: None,
         result: Some(json!({"ok": true})),
-        result_shape: None,
+        result_shaping: None,
         calls: vec![CodeModeExecutedCall {
             id: "test::ping".to_string(),
             ok: true,

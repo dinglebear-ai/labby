@@ -32,6 +32,7 @@ pub(in crate::dispatch::gateway::code_mode) fn truncate_execution_response(
         let marker_len = serde_json::to_string(&marker).map(|s| s.len()).unwrap_or(0);
         if marker_len < original_len {
             response.result = Some(marker);
+            response.result_shaping = None;
         }
     }
 
