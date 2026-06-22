@@ -86,7 +86,7 @@ fn shape_truncate(
         "[code mode result truncated]\noriginal_size_bytes={original_size_bytes}, max_size_bytes={budget}\n"
     );
     let room = budget.saturating_sub(marker_prefix.len());
-    let preview = serialized.chars().take(room).collect::<String>();
+    let preview = utf8_prefix_by_bytes(&serialized, room);
     let marker = format!("{marker_prefix}{preview}");
     let shaped_size_bytes = marker.len();
 
@@ -100,4 +100,18 @@ fn shape_truncate(
             shaped_size_bytes,
         },
     }
+}
+
+fn utf8_prefix_by_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+
+    let end = value
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .take_while(|idx| *idx <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    &value[..end]
 }

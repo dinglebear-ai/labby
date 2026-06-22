@@ -165,8 +165,12 @@ fn code_mode_execute_trace_includes_shape_metadata_and_shaped_result() {
         structured_json.get("result"),
         "MCP text JSON and structuredContent must use the same shaped result"
     );
-    assert_eq!(structured_json["result_shape"]["policy"], json!("truncate"));
-    assert_eq!(structured_json["result_shape"]["truncated"], json!(true));
+    assert_eq!(structured_json["result_shape"]["type"], json!("string"));
+    assert_eq!(
+        structured_json["result_shaping"]["policy"],
+        json!("truncate")
+    );
+    assert_eq!(structured_json["result_shaping"]["truncated"], json!(true));
 }
 
 #[test]

@@ -61,6 +61,22 @@ fn shape_policy_truncate_stringifies_large_object() {
 }
 
 #[test]
+fn shape_policy_truncates_utf8_by_bytes() {
+    let input = Some(json!({"payload": "é".repeat(5000)}));
+    let shaped = shape_final_result(input, CodeModeResultShapePolicy::Truncate, 512, 6000, 4);
+    let text = shaped
+        .result
+        .unwrap()
+        .as_str()
+        .expect("large shaped result is a marker string")
+        .to_string();
+
+    assert!(text.contains("[code mode result truncated]"), "{text}");
+    assert!(text.len() <= 512);
+    assert_eq!(shaped.metadata.shaped_size_bytes, text.len());
+}
+
+#[test]
 fn shape_policy_preserves_none_and_null_distinction() {
     let none = shape_final_result(None, CodeModeResultShapePolicy::Truncate, 100, 100, 4);
     assert!(none.result.is_none());
