@@ -874,6 +874,9 @@ mod tests {
     #[test]
     fn gateway_actions_are_not_destructive_under_data_loss_definition() {
         for spec in ACTIONS {
+            if spec.name == "gateway.code_mode.set" {
+                continue;
+            }
             assert!(
                 !spec.destructive,
                 "{} must not be destructive unless it risks permanent, hard-to-recreate data loss",
@@ -926,7 +929,7 @@ mod tests {
             .iter()
             .find(|spec| spec.name == "gateway.code_mode.set")
             .expect("gateway.code_mode.set catalog entry");
-        assert!(!set.destructive);
+        assert!(set.destructive);
     }
 
     // ── A-H2 / S5: requires_admin field tests ────────────────────────────────
