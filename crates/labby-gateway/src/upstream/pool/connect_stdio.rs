@@ -288,11 +288,11 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         .map(super::super::process_guard::JobObjectGuard::disarm)
         .unwrap_or(0);
 
-    let conn = UpstreamConnection {
-        _client_service: service,
-        _server_task: None,
+    let conn = UpstreamConnection::new(
+        service,
+        None,
         peer,
-        runtime: UpstreamRuntimeMetadata {
+        UpstreamRuntimeMetadata {
             pid,
             pgid: pgid_for_runtime,
             #[cfg(windows)]
@@ -301,7 +301,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
             origin: runtime_origin_label(runtime_origin, runtime_owner),
             owner: runtime_owner.cloned(),
         },
-    };
+    );
 
     Ok((conn, tools))
 }

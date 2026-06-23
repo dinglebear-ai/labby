@@ -195,7 +195,7 @@ mod tests {
             true
         }
 
-        fn as_any(self: Box<Self>) -> Box<dyn Any> {
+        fn as_any(self: Box<Self>) -> Box<dyn Any + Send> {
             self
         }
     }

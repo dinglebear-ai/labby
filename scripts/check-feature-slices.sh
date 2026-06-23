@@ -16,6 +16,11 @@ run cargo check -p labby-auth --no-default-features --features http-axum --all-t
 run cargo check -p labby-auth --no-default-features --features upstream-oauth-rmcp --all-targets
 run cargo check -p labby-auth --no-default-features --features http-axum,upstream-oauth-rmcp --all-targets
 
+run cargo check -p labby-codemode --all-targets
+run cargo check -p labby-gateway --all-targets
+run cargo check -p labby-web --all-targets
+run cargo check -p labby-winjob --all-targets
+
 labby_runtime_features=(
   ""
   "marketplace"

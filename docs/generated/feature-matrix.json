@@ -246,8 +246,12 @@
     },
     {
       "crate_name": "labby-auth",
-      "feature": "test",
-      "dependencies": [],
+      "feature": "upstream-oauth-rmcp",
+      "dependencies": [
+        "dep:rmcp-client",
+        "dep:oauth2",
+        "dep:anyhow"
+      ],
       "included_in_default": false,
       "included_in_all": false,
       "classification": "extracted_crate",
@@ -255,13 +259,19 @@
       "exception_reason": "extracted crate feature"
     },
     {
-      "crate_name": "labby-auth",
-      "feature": "upstream-oauth-rmcp",
-      "dependencies": [
-        "dep:rmcp-client",
-        "dep:oauth2",
-        "dep:anyhow"
-      ],
+      "crate_name": "labby-codemode",
+      "feature": "no_features",
+      "dependencies": [],
+      "included_in_default": false,
+      "included_in_all": false,
+      "classification": "extracted_crate",
+      "mapped_crate_feature": null,
+      "exception_reason": "extracted crate has no Cargo features"
+    },
+    {
+      "crate_name": "labby-gateway",
+      "feature": "testkit",
+      "dependencies": [],
       "included_in_default": false,
       "included_in_all": false,
       "classification": "extracted_crate",
@@ -303,6 +313,26 @@
       "classification": "extracted_crate",
       "mapped_crate_feature": null,
       "exception_reason": "extracted crate feature"
+    },
+    {
+      "crate_name": "labby-web",
+      "feature": "default",
+      "dependencies": [],
+      "included_in_default": false,
+      "included_in_all": false,
+      "classification": "aggregate_default",
+      "mapped_crate_feature": null,
+      "exception_reason": "aggregate/default feature"
+    },
+    {
+      "crate_name": "labby-winjob",
+      "feature": "no_features",
+      "dependencies": [],
+      "included_in_default": false,
+      "included_in_all": false,
+      "classification": "extracted_crate",
+      "mapped_crate_feature": null,
+      "exception_reason": "extracted crate has no Cargo features"
     }
   ],
   "mismatches": []

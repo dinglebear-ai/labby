@@ -64,16 +64,15 @@ pub struct UpstreamRuntimeOwner {
 /// the struct stays `Send + Sync` with no unsafe trait impls. The value is cast
 /// back to `HANDLE` only at the `CloseHandle` boundary inside `close_job`.
 ///
-/// `#[derive(Clone)]` is safe because every field is `Clone` (and `isize` is
-/// `Copy`). The clone in `shutdown()` is used only to read `pid` for log fields;
-/// the original field remains the authoritative owner of the handle, and the
-/// handle is closed exactly once.
+/// Cloning runtime metadata deliberately does not clone the Windows Job Object
+/// handle ownership. Cloned metadata is used for logging and shutdown bookkeeping
+/// only; the original value remains the authoritative owner and is closed once.
 ///
 /// On Windows, `job_handle` zero-initialises to `0` via `#[derive(Default)]`.
 /// `close_job` treats `0` as the "no job" sentinel, so default-constructed
 /// instances (HTTP/WebSocket/in-process connections that never own a Job
 /// Object) are safe. Only stdio-spawned connections have a non-zero handle.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct UpstreamRuntimeMetadata {
     pub pid: Option<u32>,
     pub pgid: Option<u32>,
@@ -82,10 +81,24 @@ pub struct UpstreamRuntimeMetadata {
     /// stdio-spawned connections. Owned here; closed in
     /// `UpstreamConnection::Drop` and `shutdown()` via `close_job`.
     #[cfg(windows)]
-    pub job_handle: isize,
+    pub(crate) job_handle: isize,
     pub started_at: Option<SystemTime>,
     pub origin: Option<String>,
     pub owner: Option<UpstreamRuntimeOwner>,
+}
+
+impl Clone for UpstreamRuntimeMetadata {
+    fn clone(&self) -> Self {
+        Self {
+            pid: self.pid,
+            pgid: self.pgid,
+            #[cfg(windows)]
+            job_handle: 0,
+            started_at: self.started_at,
+            origin: self.origin.clone(),
+            owner: self.owner.clone(),
+        }
+    }
 }
 
 /// Runtime exposure policy applied to one upstream's discovered tools.

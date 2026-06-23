@@ -11,9 +11,9 @@
 //! nearest OS equivalent: the kernel associates a child process (and, when
 //! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is set, its entire descendant tree)
 //! with the job. Closing the last handle to the job with that flag set causes
-//! the OS to terminate every process in the job — including grandchildren such
-//! as `cmd → node → python` that would otherwise orphan when only the direct
-//! child is killed.
+//! the OS to terminate every process in the job — including descendants created
+//! after the direct child is assigned to the job. Descendants born before the
+//! direct child is assigned are not retroactively captured by Windows.
 //!
 //! ## Design choice: raw `windows-sys` + `AssignProcessToJobObject`
 //!
@@ -68,16 +68,58 @@
 
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+    },
     System::{
         JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-            QueryInformationJobObject, SetInformationJobObject,
+            SetInformationJobObject,
         },
         Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
     },
 };
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WinJobError {
+    pub operation: &'static str,
+    pub code: u32,
+}
+
+#[cfg(windows)]
+impl WinJobError {
+    #[must_use]
+    pub fn last(operation: &'static str) -> Self {
+        Self {
+            operation,
+            code: unsafe { GetLastError() },
+        }
+    }
+}
+
+#[cfg(windows)]
+impl std::fmt::Display for WinJobError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} failed with Win32 error {}",
+            self.operation, self.code
+        )
+    }
+}
+
+#[cfg(windows)]
+impl std::error::Error for WinJobError {}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessLiveness {
+    Alive,
+    Exited,
+    NotFound,
+}
 
 /// Create a new Windows Job Object, assign the given PID to it, and set
 /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so every descendant is terminated
@@ -109,9 +151,11 @@ pub fn create_job_for_pid(pid: u32) -> isize {
         )
     };
     if proc_handle.is_null() || proc_handle == INVALID_HANDLE_VALUE {
+        let error = WinJobError::last("OpenProcess");
         tracing::warn!(
             target: "labby_winjob",
             pid,
+            code = error.code,
             "OpenProcess failed — job object not created; falling back to per-PID kill"
         );
         return 0;
@@ -119,58 +163,52 @@ pub fn create_job_for_pid(pid: u32) -> isize {
 
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
     if job.is_null() || job == INVALID_HANDLE_VALUE {
+        let error = WinJobError::last("CreateJobObjectW");
         tracing::warn!(
             target: "labby_winjob",
             pid,
+            code = error.code,
             "CreateJobObjectW failed — falling back to per-PID kill"
         );
         unsafe { CloseHandle(proc_handle) };
         return 0;
     }
 
-    // Read current extended limit info, flip on KILL_ON_JOB_CLOSE, write back.
+    // Fresh job: set KILL_ON_JOB_CLOSE directly. A non-zero returned handle
+    // must mean the kill-on-close contract is active.
     let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-    let ok = unsafe {
-        QueryInformationJobObject(
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let set_ok = unsafe {
+        SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,
-            std::ptr::addr_of_mut!(info).cast(),
+            std::ptr::addr_of!(info).cast(),
             u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()).unwrap_or(u32::MAX),
-            std::ptr::null_mut(),
         )
     };
-    if ok == 0 {
+    if set_ok == 0 {
+        let error = WinJobError::last("SetInformationJobObject");
         tracing::warn!(
             target: "labby_winjob",
+            code = error.code,
             pid,
-            "QueryInformationJobObject failed — killing job without KILL_ON_JOB_CLOSE"
+            "SetInformationJobObject failed — KILL_ON_JOB_CLOSE not set; closing job"
         );
-    } else {
-        info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let set_ok = unsafe {
-            SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                std::ptr::addr_of!(info).cast(),
-                u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
-                    .unwrap_or(u32::MAX),
-            )
-        };
-        if set_ok == 0 {
-            tracing::warn!(
-                target: "labby_winjob",
-                pid,
-                "SetInformationJobObject failed — KILL_ON_JOB_CLOSE not set"
-            );
+        unsafe {
+            CloseHandle(proc_handle);
+            CloseHandle(job);
         }
+        return 0;
     }
 
     let assigned = unsafe { AssignProcessToJobObject(job, proc_handle) };
     unsafe { CloseHandle(proc_handle) };
     if assigned == 0 {
+        let error = WinJobError::last("AssignProcessToJobObject");
         tracing::warn!(
             target: "labby_winjob",
             pid,
+            code = error.code,
             "AssignProcessToJobObject failed — job created but child not assigned; closing job"
         );
         unsafe { CloseHandle(job) };
@@ -231,9 +269,14 @@ pub fn close_job(job: isize, pid: u32) {
 #[cfg(windows)]
 #[must_use]
 pub fn pid_is_alive(pid: u32) -> bool {
+    matches!(pid_liveness(pid), Ok(ProcessLiveness::Alive))
+}
+
+#[cfg(windows)]
+pub fn pid_liveness(pid: u32) -> Result<ProcessLiveness, WinJobError> {
     // `WAIT_OBJECT_0` is a `WAIT_EVENT` constant in `Win32::Foundation` (not
     // `Threading`) in windows-sys 0.59; `WaitForSingleObject` returns it.
-    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Threading::{
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
@@ -246,12 +289,24 @@ pub fn pid_is_alive(pid: u32) -> bool {
         )
     };
     if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-        return false; // Process already gone or no permission.
+        let error = WinJobError::last("OpenProcess");
+        if error.code == ERROR_INVALID_PARAMETER {
+            return Ok(ProcessLiveness::NotFound);
+        }
+        return Err(error);
     }
     // Zero timeout: an already-exited process signals immediately (WAIT_OBJECT_0).
     let result = unsafe { WaitForSingleObject(handle, 0) };
     unsafe { CloseHandle(handle) };
-    result != WAIT_OBJECT_0
+    match result {
+        WAIT_OBJECT_0 => Ok(ProcessLiveness::Exited),
+        WAIT_TIMEOUT => Ok(ProcessLiveness::Alive),
+        WAIT_FAILED => Err(WinJobError::last("WaitForSingleObject")),
+        other => Err(WinJobError {
+            operation: "WaitForSingleObject",
+            code: other,
+        }),
+    }
 }
 
 /// Find the PID of the first child process whose parent is `parent_pid`.

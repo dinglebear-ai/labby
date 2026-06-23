@@ -118,12 +118,12 @@ async fn connect_in_process_service_peer(
     );
 
     Ok(InProcessRegistration {
-        connection: Some(UpstreamConnection {
-            _client_service: client_service,
-            _server_task: Some(server_task),
+        connection: Some(UpstreamConnection::new(
+            client_service,
+            Some(server_task),
             peer,
-            runtime: UpstreamRuntimeMetadata::default(),
-        }),
+            UpstreamRuntimeMetadata::default(),
+        )),
         tools,
         entry_name,
         upstream_name,

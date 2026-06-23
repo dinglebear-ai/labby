@@ -69,9 +69,7 @@ wiremock.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["process", "test-util"] }
 proptest = "1"
-# Enable labby-auth's `test` feature in test builds so gateway OAuth-manager tests
-# can seed the upstream OAuth client cache via `OauthClientCache::insert_for_tests`.
-labby-auth = { path = "../labby-auth", features = ["upstream-oauth-rmcp", "test"] }
+labby-auth = { path = "../labby-auth", features = ["upstream-oauth-rmcp"] }
 
 [lints]
 workspace = true

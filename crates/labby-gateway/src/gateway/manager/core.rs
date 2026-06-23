@@ -222,11 +222,17 @@ impl GatewayManager {
         // legacy upstream config when the root [code_mode] is explicitly disabled.
         normalize_config(&mut config)?;
         validate_config(&config)?;
-        self.seed_config(config).await;
+        self.seed_config_unchecked(config).await;
         Ok(())
     }
 
-    pub async fn seed_config(&self, config: GatewayConfig) {
+    pub async fn seed_config(&self, mut config: GatewayConfig) {
+        normalize_config(&mut config).expect("gateway seed config should normalize");
+        validate_config(&config).expect("gateway seed config should validate");
+        self.seed_config_unchecked(config).await;
+    }
+
+    async fn seed_config_unchecked(&self, config: GatewayConfig) {
         self.store
             .set_process_code_mode_enabled(config.code_mode.enabled);
         *self.protected_route_index.write().await =

@@ -119,9 +119,7 @@ sd-notify = { version = "0.5", optional = true }
 labby-winjob = { path = "../labby-winjob" }
 
 [dev-dependencies]
-# Enable labby-auth's test-only seams (e.g. `OauthClientCache::insert_for_tests`)
-# for `lab`'s test build only — never compiled into the production binary.
-labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp", "test"] }
+labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp"] }
 # Enable labby-gateway's testkit pool inspection helpers for `lab`'s gateway
 # tests only — never compiled into the production binary.
 labby-gateway = { path = "../labby-gateway", features = ["testkit"] }

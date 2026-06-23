@@ -35,7 +35,7 @@ pub trait InProcessService: Any + Send + 'static {
     fn has_actions(&self) -> bool;
 
     /// Upcast for the connector to recover the concrete registration payload.
-    fn as_any(self: Box<Self>) -> Box<dyn Any>;
+    fn as_any(self: Box<Self>) -> Box<dyn Any + Send>;
 }
 
 /// A registry that can enumerate the in-process services to register.

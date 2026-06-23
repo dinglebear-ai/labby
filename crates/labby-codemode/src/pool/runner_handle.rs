@@ -324,23 +324,51 @@ fn spawn_stderr_drain(
         // are applied downstream.
         const CAP_ENTRIES: usize = 100_000;
         const CAP_BYTES: usize = 8 * 1024 * 1024;
+        const TRUNCATION_MARKER: &str =
+            "[labby] runner stderr truncated after 100000 lines or 8 MiB";
         let mut lines = TokioBufReader::new(stderr).lines();
         let mut total_bytes = 0usize;
         let mut capped = false;
-        while let Ok(Some(line)) = lines.next_line().await {
-            if capped {
-                continue;
-            }
-            total_bytes += line.len() + 1;
-            {
-                let mut buf = buffer.lines.lock().await;
-                if buf.len() >= CAP_ENTRIES || total_bytes > CAP_BYTES {
-                    capped = true;
-                } else {
-                    buf.push(line);
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if capped {
+                        continue;
+                    }
+                    total_bytes += line.len() + 1;
+                    {
+                        let mut buf = buffer.lines.lock().await;
+                        if buf.len() >= CAP_ENTRIES || total_bytes > CAP_BYTES {
+                            capped = true;
+                            if buf.last().is_none_or(|last| last != TRUNCATION_MARKER) {
+                                if buf.len() >= CAP_ENTRIES {
+                                    buf.pop();
+                                }
+                                buf.push(TRUNCATION_MARKER.to_string());
+                            }
+                        } else {
+                            buf.push(line);
+                        }
+                    }
+                    buffer.notify.notify_waiters();
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "labby_codemode.runner",
+                        error = %error,
+                        "runner stderr drain failed"
+                    );
+                    {
+                        let mut buf = buffer.lines.lock().await;
+                        if buf.len() < CAP_ENTRIES {
+                            buf.push(format!("[labby] runner stderr drain failed: {error}"));
+                        }
+                    }
+                    buffer.notify.notify_waiters();
+                    break;
                 }
             }
-            buffer.notify.notify_waiters();
         }
     })
 }

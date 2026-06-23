@@ -187,10 +187,10 @@ A service is not fully online until one successful path and one failing path are
 
 ### Auth
 
-Use the `Auth` enum from `lab_apis::core`. Never hardcode auth handling in a service module.
+Use the `Auth` enum from `labby_apis::core`. Never hardcode auth handling in a service module.
 
 ```rust
-use lab_apis::core::{Auth, HttpClient};
+use labby_apis::core::{Auth, HttpClient};
 
 impl FooClient {
     pub fn new(base_url: &str, auth: Auth) -> Self {
@@ -265,7 +265,7 @@ HTTP dispatch additionally carries `request_id` when available. Outbound request
 - `ERROR` — unhandled / fatal errors (panics, internal_error)
 
 **Environment variables:**
-- `LAB_LOG` — tracing filter directive (default: `labby=info,lab_apis=warn`)
+- `LAB_LOG` — tracing filter directive (default: `labby=info,labby_apis=warn`)
 - `LAB_LOG_FORMAT=json` — emit newline-delimited JSON (for prod/CI)
 - `LAB_LOG_COLOR=force` — force ANSI colors even without a TTY (e.g. `docker compose logs -f`); also accepts `plain`/`never`/`0` to disable colors
 

@@ -84,8 +84,8 @@ Do not create adapter-local conversion paths.
 Every `dispatch/<service>/client.rs` must follow this exact shape:
 
 ```rust
-use lab_apis::<service>::<Service>Client;
-use lab_apis::core::Auth;
+use labby_apis::<service>::<Service>Client;
+use labby_apis::core::Auth;
 
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::env_non_empty;
@@ -222,7 +222,7 @@ needs MCP-specific behavior. A pass-through shim that only delegates to dispatch
 adds indirection without value.
 
 There is no `Category::Acp` variant. ACP uses `Category::Ai` (set in
-`lab_apis::acp::META`), which is coherent: ACP is the agent protocol layer
+`labby_apis::acp::META`), which is coherent: ACP is the agent protocol layer
 that fronts AI providers. Adding a new category variant for a single service
 would violate the stable 10-variant catalog defined in `core/plugin.rs`.
 

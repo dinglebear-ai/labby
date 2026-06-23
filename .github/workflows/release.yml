@@ -23,6 +23,7 @@ env:
   # (os error 193) and the cross/aarch64 container cannot either, so disable
   # it for all release jobs (mirrors ci.yml).
   RUSTC_WRAPPER: ""
+  CARGO_BUILD_RUSTC_WRAPPER: ""
 
 jobs:
   frontend-assets:

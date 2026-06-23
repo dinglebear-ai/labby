@@ -153,23 +153,42 @@ pub struct UpstreamPool {
 /// a dedicated, ephemeral connection that forwards elicitation/sampling/roots to
 /// the downstream agent. Only the `serve()` handler differs; every field below
 /// (peer ops, process reaping, shutdown) is handler-agnostic.
-// The `_`-prefixed fields are held purely to keep the running service / server
-// task alive for the connection's lifetime; they are public so the `lab`
-// in-process-peer connector can construct an `UpstreamConnection`. The
-// underscore-prefix-but-public combination is intentional.
-#[allow(clippy::pub_underscore_fields)]
 pub struct UpstreamConnection<H = ()>
 where
     H: rmcp::ClientHandler,
 {
     /// The running client service handle — kept alive to maintain the connection.
-    pub _client_service: rmcp::service::RunningService<RoleClient, H>,
+    _client_service: rmcp::service::RunningService<RoleClient, H>,
     /// Background task holding an in-process server alive when applicable.
-    pub _server_task: Option<tokio::task::JoinHandle<()>>,
+    _server_task: Option<tokio::task::JoinHandle<()>>,
     /// The peer handle for making requests.
-    pub peer: rmcp::service::Peer<RoleClient>,
+    pub(crate) peer: rmcp::service::Peer<RoleClient>,
     /// Runtime metadata for process-backed upstreams.
-    pub runtime: UpstreamRuntimeMetadata,
+    pub(crate) runtime: UpstreamRuntimeMetadata,
+}
+
+impl<H> UpstreamConnection<H>
+where
+    H: rmcp::ClientHandler,
+{
+    /// Build a live upstream connection from its rmcp handles.
+    ///
+    /// The running service and optional server task are intentionally retained
+    /// as private keepalive fields for the connection's lifetime.
+    #[must_use]
+    pub fn new(
+        client_service: rmcp::service::RunningService<RoleClient, H>,
+        server_task: Option<tokio::task::JoinHandle<()>>,
+        peer: rmcp::service::Peer<RoleClient>,
+        runtime: UpstreamRuntimeMetadata,
+    ) -> Self {
+        Self {
+            _client_service: client_service,
+            _server_task: server_task,
+            peer,
+            runtime,
+        }
+    }
 }
 
 pub struct InProcessRegistration {

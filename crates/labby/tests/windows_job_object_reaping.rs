@@ -15,7 +15,7 @@
 //! This test is `#[ignore]` because it requires a real Windows host to
 //! exercise the Win32 Job Object API. It is intended to be run on the
 //! `windows-lab` self-hosted CI runner (the "Test (windows self-hosted)"
-//! job in `.github/workflows/test-windows.yml`), which compiles and runs
+//! job in `.github/workflows/ci.yml`), which compiles and runs
 //! the full test suite on a genuine Windows environment.
 //!
 //! On Linux/macOS the test cannot run the Windows-only code, so the entire
@@ -24,10 +24,11 @@
 //! `--include-ignored` flag.
 //!
 //! All Win32 FFI used here is routed through the SAFE API exposed by the
-//! `lab-winjob` crate (`create_job_for_pid`, `close_job`, `pid_is_alive`,
-//! `find_first_child_pid`). `lab` (and therefore this test target) forbids
-//! `unsafe`, so the test contains zero `unsafe` blocks — the unsafe lives
-//! inside `lab-winjob`, the sanctioned FFI boundary.
+//! `labby-winjob` crate and through the production
+//! `labby_gateway::upstream::process_guard::JobObjectGuard`. `lab` (and
+//! therefore this test target) forbids `unsafe`, so the test contains zero
+//! `unsafe` blocks — the unsafe lives inside `labby-winjob`, the sanctioned FFI
+//! boundary.
 //!
 //! ## What is verified
 //!
@@ -39,42 +40,101 @@
 //!        └─ ping -n 60 127.0.0.1  (grandchild — long-lived "sleep" equivalent)
 //! ```
 //!
-//! The grandchild PID is captured before the Job Object handle is closed.
-//! After closing the handle, the test polls process liveness to confirm the
-//! grandchild has been terminated by the OS (not just the direct child).
+//! The direct child is assigned to a Job Object before it starts the long-lived
+//! grandchild. The grandchild PID is then captured before the Job Object handle
+//! is closed. After closing the handle, the test polls process liveness to
+//! confirm the grandchild has been terminated by the OS (not just the direct
+//! child).
 //!
 //! This mirrors the production scenario where an upstream MCP server like
 //! `npx → node` or `cmd → python` would orphan without Job Object reaping.
 
 #[cfg(windows)]
 mod windows_job_reaping {
+    use labby_gateway::upstream::process_guard::JobObjectGuard;
+    use labby_winjob::ProcessLiveness;
+    use std::process::Child;
     use std::time::Duration;
 
-    /// Spawn `cmd /c ping -n 60 127.0.0.1` as a two-level tree.
+    /// Spawn a `cmd /c ...` process that delays briefly before starting a
+    /// long-lived `ping` grandchild.
     ///
-    /// `ping -n 60 127.0.0.1` (60 one-second pings) is a portable Windows
-    /// "sleep 60" substitute requiring no extra tools. `cmd /c` is the direct
-    /// child; `ping` is the grandchild discovered via `find_first_child_pid`.
+    /// The delay gives the test time to assign the direct child to the Job
+    /// Object before the long-lived grandchild is born. That matches production
+    /// `JobObjectGuard::arm` usage, where the guard is armed immediately after
+    /// spawn. Assigning a process to a job after it has already spawned a child
+    /// does not retroactively capture that existing child.
     ///
-    /// Returns `(direct_child, grandchild_pid)`.
-    fn spawn_two_level_tree() -> Option<(std::process::Child, u32)> {
+    /// Returns the direct child.
+    fn spawn_delayed_two_level_tree() -> std::io::Result<Child> {
         use std::process::{Command, Stdio};
 
-        let child = Command::new("cmd")
-            .args(["/c", "ping -n 60 127.0.0.1 > nul"])
+        Command::new("cmd")
+            .args([
+                "/c",
+                "ping -n 2 127.0.0.1 > nul & ping -n 60 127.0.0.1 > nul",
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .ok()?;
+    }
 
-        let parent_pid = child.id();
+    fn wait_for_child_pid(parent_pid: u32, timeout: Duration) -> Option<u32> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(pid) = labby_winjob::find_first_child_pid(parent_pid) {
+                return Some(pid);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
 
-        // Give cmd time to spawn ping.
-        std::thread::sleep(Duration::from_millis(800));
+    fn assert_alive(pid: u32, label: &str) {
+        match labby_winjob::pid_liveness(pid) {
+            Ok(ProcessLiveness::Alive) => {}
+            Ok(state) => panic!("{label} pid {pid} should be alive, got {state:?}"),
+            Err(error) => panic!("could not query {label} pid {pid}: {error}"),
+        }
+    }
 
-        let grandchild_pid = labby_winjob::find_first_child_pid(parent_pid)?;
-        Some((child, grandchild_pid))
+    fn assert_not_alive(pid: u32, label: &str) {
+        match labby_winjob::pid_liveness(pid) {
+            Ok(ProcessLiveness::Exited | ProcessLiveness::NotFound) => {}
+            Ok(ProcessLiveness::Alive) => panic!("{label} pid {pid} should be dead"),
+            Err(error) => panic!("could not query {label} pid {pid}: {error}"),
+        }
+    }
+
+    fn wait_for_child_to_stop(pid: u32, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match labby_winjob::pid_liveness(pid) {
+                Ok(ProcessLiveness::Alive) => {}
+                Ok(ProcessLiveness::Exited | ProcessLiveness::NotFound) => return true,
+                Err(error) => panic!("could not query child pid {pid}: {error}"),
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn wait_for_long_lived_child_pid(parent_pid: u32, timeout: Duration) -> Option<u32> {
+        let first_child_pid = wait_for_child_pid(parent_pid, timeout)?;
+
+        // The first child should be the short delay ping. If it is still alive
+        // after the transition window, treat it as the long-lived child instead
+        // of relying on a fixed sleep.
+        if !wait_for_child_to_stop(first_child_pid, Duration::from_secs(3)) {
+            return Some(first_child_pid);
+        }
+
+        wait_for_child_pid(parent_pid, timeout)
     }
 
     /// Verify that closing a Job Object handle with `KILL_ON_JOB_CLOSE` terminates
@@ -88,27 +148,31 @@ mod windows_job_reaping {
     #[test]
     #[ignore = "requires real Windows host; run on windows-lab CI runner"]
     fn job_object_kills_grandchild_on_close() {
-        let Some((mut direct_child, grandchild_pid)) = spawn_two_level_tree() else {
-            eprintln!("SKIP: could not spawn two-level process tree (ping not available?)");
-            return;
-        };
+        let mut direct_child =
+            spawn_delayed_two_level_tree().expect("spawn delayed two-level Windows process tree");
 
         let parent_pid = direct_child.id();
 
-        // Confirm grandchild is alive before we do anything.
-        assert!(
-            labby_winjob::pid_is_alive(grandchild_pid),
-            "grandchild (pid {grandchild_pid}) should be alive before job-object close"
-        );
-
-        // Create a Job Object for the direct child (same API as production code).
-        // `create_job_for_pid` returns the handle as `isize`; `0` is the failure
-        // sentinel.
-        let job: isize = labby_winjob::create_job_for_pid(parent_pid);
+        // Arm the same production guard used immediately after spawning stdio
+        // upstream processes, before the long-lived grandchild has started.
+        // `disarm` mirrors the successful connect path, where ownership moves
+        // into `UpstreamConnection::runtime.job_handle`.
+        let job: isize = JobObjectGuard::arm(parent_pid).disarm();
         assert!(
             job != 0,
-            "create_job_for_pid should succeed; got sentinel handle {job}"
+            "JobObjectGuard::arm should succeed; got sentinel handle {job}"
         );
+
+        let Some(grandchild_pid) =
+            wait_for_long_lived_child_pid(parent_pid, Duration::from_secs(5))
+        else {
+            let _kill = direct_child.kill();
+            let _wait = direct_child.wait();
+            panic!("direct child pid {parent_pid} did not spawn a long-lived grandchild");
+        };
+
+        // Confirm grandchild is alive before we close the job.
+        assert_alive(grandchild_pid, "grandchild");
 
         // Close the job handle → OS terminates the whole tree.
         labby_winjob::close_job(job, parent_pid);
@@ -119,8 +183,12 @@ mod windows_job_reaping {
         // Poll grandchild: it should be gone.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
-            if !labby_winjob::pid_is_alive(grandchild_pid) {
-                break; // Pass — grandchild was reaped.
+            match labby_winjob::pid_liveness(grandchild_pid) {
+                Ok(ProcessLiveness::Exited | ProcessLiveness::NotFound) => {
+                    break; // Pass — grandchild was reaped.
+                }
+                Ok(ProcessLiveness::Alive) => {}
+                Err(error) => panic!("could not query grandchild pid {grandchild_pid}: {error}"),
             }
             if std::time::Instant::now() >= deadline {
                 // Force-clean the tree so subsequent test runs start fresh.
@@ -135,10 +203,7 @@ mod windows_job_reaping {
         }
 
         // Also ensure the direct child is gone (belt-and-suspenders).
-        assert!(
-            !labby_winjob::pid_is_alive(parent_pid),
-            "direct child (pid {parent_pid}) should also be dead after job-object close"
-        );
+        assert_not_alive(parent_pid, "direct child");
         // Reap to avoid zombie handle.
         let _wait = direct_child.wait();
     }

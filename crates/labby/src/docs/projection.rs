@@ -19,6 +19,12 @@ const LABBY_CRATE: &str = "labby";
 const LABBY_APIS_CRATE: &str = "labby-apis";
 const LABBY_APIS_PREFIX: &str = "labby-apis/";
 const EXTRACTED_FEATURE_CRATES: &[&str] = &["labby-auth", "labby-runtime"];
+const EXTRACTED_FEATURELESS_CRATES: &[&str] = &[
+    "labby-codemode",
+    "labby-gateway",
+    "labby-web",
+    "labby-winjob",
+];
 
 pub fn build_docs_projection(repo_root: &Path) -> Result<DocsProjection> {
     let registry = build_docs_registry();
@@ -250,6 +256,10 @@ fn build_feature_matrix(repo_root: &Path) -> Result<FeatureMatrix> {
         let manifest = read_manifest(&repo_root.join(format!("crates/{crate_name}/Cargo.toml")))?;
         push_extracted_crate_features(crate_name, manifest.features, &mut features);
     }
+    for crate_name in EXTRACTED_FEATURELESS_CRATES {
+        let manifest = read_manifest(&repo_root.join(format!("crates/{crate_name}/Cargo.toml")))?;
+        push_extracted_featureless_crate(crate_name, manifest.features, &mut features);
+    }
 
     features.sort_by(|a, b| {
         (a.crate_name.as_str(), a.feature.as_str())
@@ -285,6 +295,27 @@ fn push_extracted_crate_features(
             mapped_crate_feature: None,
             exception_reason: exception_reason(classification).map(str::to_string),
         });
+    }
+}
+
+fn push_extracted_featureless_crate(
+    crate_name: &str,
+    crate_features: BTreeMap<String, Vec<String>>,
+    features: &mut Vec<FeatureDoc>,
+) {
+    if crate_features.is_empty() {
+        features.push(FeatureDoc {
+            crate_name: crate_name.to_string(),
+            feature: "no_features".to_string(),
+            dependencies: Vec::new(),
+            included_in_default: false,
+            included_in_all: false,
+            classification: FeatureClass::ExtractedCrate,
+            mapped_crate_feature: None,
+            exception_reason: Some("extracted crate has no Cargo features".to_string()),
+        });
+    } else {
+        push_extracted_crate_features(crate_name, crate_features, features);
     }
 }
 

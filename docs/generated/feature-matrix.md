@@ -27,8 +27,11 @@ Feature invariant status: clean.
 | labby-apis | `test-utils` | HelperInternal | false | false | labby/test-utils |  |
 | labby-auth | `default` | AggregateDefault | false | false | - |  |
 | labby-auth | `http-axum` | ExtractedCrate | false | false | - | `dep:axum`<br>`dep:tower` |
-| labby-auth | `test` | ExtractedCrate | false | false | - |  |
 | labby-auth | `upstream-oauth-rmcp` | ExtractedCrate | false | false | - | `dep:rmcp-client`<br>`dep:oauth2`<br>`dep:anyhow` |
+| labby-codemode | `no_features` | ExtractedCrate | false | false | - |  |
+| labby-gateway | `testkit` | ExtractedCrate | false | false | - |  |
 | labby-runtime | `acp_registry` | ExtractedCrate | false | false | - | `labby-apis/acp_registry` |
 | labby-runtime | `deploy` | ExtractedCrate | false | false | - | `labby-apis/deploy` |
 | labby-runtime | `marketplace` | ExtractedCrate | false | false | - | `labby-apis/mcpregistry` |
+| labby-web | `default` | AggregateDefault | false | false | - |  |
+| labby-winjob | `no_features` | ExtractedCrate | false | false | - |  |

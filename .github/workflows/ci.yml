@@ -25,6 +25,7 @@ env:
   # script: Windows runners cannot exec it (os error 193) and its side effects
   # are pointless in CI, so disable it for all CI jobs.
   RUSTC_WRAPPER: ""
+  CARGO_BUILD_RUSTC_WRAPPER: ""
 
 jobs:
   secret-scan:
@@ -143,6 +144,10 @@ jobs:
             command: cargo check -p labby-auth --no-default-features --features upstream-oauth-rmcp --all-targets --locked
           - name: labby-auth-all-runtime-features
             command: cargo check -p labby-auth --no-default-features --features http-axum,upstream-oauth-rmcp --all-targets --locked
+          - name: labby-codemode
+            command: cargo check -p labby-codemode --all-targets --locked
+          - name: labby-gateway
+            command: cargo check -p labby-gateway --all-targets --locked
           - name: labby-runtime-minimal
             command: cargo check -p labby-runtime --no-default-features --all-targets --locked
           - name: labby-runtime-marketplace
@@ -153,6 +158,10 @@ jobs:
             command: cargo check -p labby-runtime --no-default-features --features deploy --all-targets --locked
           - name: labby-runtime-all-features
             command: cargo check -p labby-runtime --no-default-features --features marketplace,acp_registry,deploy --all-targets --locked
+          - name: labby-web
+            command: cargo check -p labby-web --all-targets --locked
+          - name: labby-winjob
+            command: cargo check -p labby-winjob --all-targets --locked
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.1
@@ -240,6 +249,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - name: Check Windows Job Object helper crate
+        shell: pwsh
+        run: cargo check -p labby-winjob --all-targets --locked
       - name: Run cargo nextest
         shell: pwsh
         run: |

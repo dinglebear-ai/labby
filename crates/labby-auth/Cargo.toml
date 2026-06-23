@@ -19,9 +19,6 @@ default = []
 # Gated because it pulls in the rmcp client/auth transport stack and oauth2, which
 # pure-auth consumers (browser/API OAuth) do not need.
 upstream-oauth-rmcp = ["dep:rmcp-client", "dep:oauth2", "dep:anyhow"]
-# Exposes test-only seams (e.g. `OauthClientCache::insert_for_tests`) to
-# downstream crates' test builds. Never enable in production builds.
-test = []
 # Axum HTTP middleware and OAuth route handlers. Runtime crates that only need
 # auth storage or outbound upstream OAuth should leave this off.
 http-axum = ["dep:axum", "dep:tower"]
