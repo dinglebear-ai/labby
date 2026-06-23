@@ -8,7 +8,7 @@ Feature invariant status: clean.
 | --- | --- | --- | --- | --- | --- | --- |
 | labby | `acp_registry` | ServicePassthrough | true | true | labby-apis/acp_registry | `labby-apis/acp_registry`<br>`labby-runtime/acp_registry` |
 | labby | `all` | AggregateDefault | true | true | labby-apis/all | `labby-apis/all`<br>`lab-admin`<br>`acp_registry`<br>`deploy`<br>`gateway`<br>`marketplace` |
-| labby | `default` | AggregateDefault | false | false | labby-apis/default | `all` |
+| labby | `default` | AggregateDefault | false | false | - | `all` |
 | labby | `deploy` | ServicePassthrough | true | true | labby-apis/deploy | `labby-apis/deploy`<br>`labby-runtime/deploy` |
 | labby | `fs` | ProductSlice | false | false | - | `dep:walkdir`<br>`dep:globset`<br>`dep:unicode-normalization`<br>`dep:rustix` |
 | labby | `gateway` | ProductSlice | true | true | - |  |
@@ -18,7 +18,7 @@ Feature invariant status: clean.
 | labby | `node-runtime` | BinaryOnly | false | false | - |  |
 | labby | `services-all` | IntentionalException | false | false | - |  |
 | labby | `systemd` | HelperInternal | false | false | - | `dep:sd-notify` |
-| labby | `test-utils` | IntentionalException | false | false | labby-apis/test-utils |  |
+| labby | `test-utils` | IntentionalException | false | false | - |  |
 | labby-apis | `acp_registry` | ServicePassthrough | false | true | labby/acp_registry |  |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all | `deploy`<br>`mcpregistry`<br>`acp_registry` |
 | labby-apis | `default` | AggregateDefault | false | false | labby/default |  |

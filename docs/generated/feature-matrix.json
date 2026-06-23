@@ -39,7 +39,7 @@
       "included_in_default": false,
       "included_in_all": false,
       "classification": "aggregate_default",
-      "mapped_crate_feature": "labby-apis/default",
+      "mapped_crate_feature": null,
       "exception_reason": "aggregate/default feature"
     },
     {
@@ -154,7 +154,7 @@
       "included_in_default": false,
       "included_in_all": false,
       "classification": "intentional_exception",
-      "mapped_crate_feature": "labby-apis/test-utils",
+      "mapped_crate_feature": null,
       "exception_reason": "intentional crate-local exception"
     },
     {
