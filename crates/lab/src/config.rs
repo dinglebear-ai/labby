@@ -208,24 +208,7 @@ pub struct LabConfig {
     pub gateway: GatewayPreferences,
 }
 
-/// Controls the stdio spawn-guard that validates upstream MCP server commands.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayPreferences {
-    /// Extra commands allowed as stdio upstream programs beyond the built-in list
-    /// (npx, uvx, docker, node, python, python3, deno, pipx, dnx).
-    ///
-    /// ```toml
-    /// [gateway]
-    /// extra_stdio_commands = ["labby", "runarr", "rgotify"]
-    /// ```
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_stdio_commands: Vec<String>,
-    /// Disable all stdio spawn-guard command validation.
-    /// Any command may be used as a stdio upstream when true.
-    /// Only set this when you control all gateway write access.
-    #[serde(default)]
-    pub disable_spawn_guard: bool,
-}
+// `GatewayPreferences` moved to `lab_runtime::gateway_config`; re-exported above.
 
 impl LabConfig {
     /// Resolve the canonical public URL pair after env-over-config merge.
@@ -257,6 +240,46 @@ impl LabConfig {
         });
 
         ResolvedPublicUrls { app, mcp_gateway }
+    }
+
+    /// Project the gateway-relevant slice of this config into the surface-neutral
+    /// [`GatewayConfig`] DTO the `GatewayManager` owns in memory.
+    #[must_use]
+    pub fn to_gateway_config(&self) -> GatewayConfig {
+        GatewayConfig {
+            code_mode: self.code_mode.clone(),
+            upstream_request_timeout_ms: self.upstream_request_timeout_ms,
+            upstream_relay_timeout_ms: self.upstream_relay_timeout_ms,
+            upstream: self.upstream.clone(),
+            upstream_import_tombstones: self.upstream_import_tombstones.clone(),
+            upstream_pending: self.upstream_pending.clone(),
+            protected_mcp_routes: self.protected_mcp_routes.clone(),
+            virtual_servers: self.virtual_servers.clone(),
+            quarantined_virtual_servers: self.quarantined_virtual_servers.clone(),
+            gateway: self.gateway.clone(),
+        }
+    }
+
+    /// Overwrite the gateway-owned sections of this config from `gw`, leaving
+    /// every non-gateway section (and any foreign top-level keys preserved by
+    /// the toml_edit render path) untouched.
+    pub fn apply_gateway_config(&mut self, gw: &GatewayConfig) {
+        self.code_mode = gw.code_mode.clone();
+        self.upstream_request_timeout_ms = gw.upstream_request_timeout_ms;
+        self.upstream_relay_timeout_ms = gw.upstream_relay_timeout_ms;
+        self.upstream = gw.upstream.clone();
+        self.upstream_import_tombstones = gw.upstream_import_tombstones.clone();
+        self.upstream_pending = gw.upstream_pending.clone();
+        self.protected_mcp_routes = gw.protected_mcp_routes.clone();
+        self.virtual_servers = gw.virtual_servers.clone();
+        self.quarantined_virtual_servers = gw.quarantined_virtual_servers.clone();
+        self.gateway = gw.gateway.clone();
+    }
+}
+
+impl From<&LabConfig> for GatewayConfig {
+    fn from(cfg: &LabConfig) -> Self {
+        cfg.to_gateway_config()
     }
 }
 
@@ -714,12 +737,12 @@ fn invalid_protected_route(
 // this module and all external callers keep their existing import paths.
 // Serde shape (defaults, renames, skip rules) is preserved exactly there.
 pub use lab_runtime::gateway_config::{
-    CodeModeConfig, ConfigError, GatewayImportMode, ImportSource, ProtectedGatewaySubsetTarget,
-    ProtectedMcpRouteConfig, ProtectedMcpRouteEffectiveTarget, ProtectedMcpRouteTarget,
-    UpstreamConfig, UpstreamImportTombstone, UpstreamOauthConfig, UpstreamOauthMode,
-    UpstreamOauthRegistration, VirtualServerConfig, VirtualServerMcpPolicyConfig,
-    VirtualServerSurfacesConfig, WebPreferences, default_mcp_path, default_true,
-    normalize_protected_backend_url,
+    CodeModeConfig, ConfigError, GatewayConfig, GatewayImportMode, GatewayPreferences, ImportSource,
+    ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig, ProtectedMcpRouteEffectiveTarget,
+    ProtectedMcpRouteTarget, ResolvedPublicUrls, UpstreamConfig, UpstreamImportTombstone,
+    UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration, VirtualServerConfig,
+    VirtualServerMcpPolicyConfig, VirtualServerSurfacesConfig, WebPreferences, default_mcp_path,
+    default_true, normalize_protected_backend_url,
 };
 // Re-exported for the public `labby::config` API surface (consumed by the
 // `upstream_oauth` integration test); not referenced within the binary build,
@@ -781,22 +804,7 @@ pub struct PublicUrlsConfig {
     pub mcp_gateway: Option<String>,
 }
 
-/// Resolved public URLs after env-over-config merge.
-#[derive(Debug, Clone)]
-pub struct ResolvedPublicUrls {
-    /// Public app URL.  May be `None` when the operator has not configured one.
-    pub app: Option<String>,
-    /// Public MCP gateway URL.  Falls back to `app` when not separately configured.
-    pub mcp_gateway: Option<String>,
-}
-
-impl ResolvedPublicUrls {
-    /// Convenience: return the effective MCP gateway URL, preferring a
-    /// separately configured gateway URL over the app URL.
-    pub fn effective_mcp_gateway(&self) -> Option<&str> {
-        self.mcp_gateway.as_deref().or(self.app.as_deref())
-    }
-}
+// `ResolvedPublicUrls` moved to `lab_runtime::gateway_config`; re-exported above.
 
 /// File-backed auth preferences merged with environment variables at startup.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
