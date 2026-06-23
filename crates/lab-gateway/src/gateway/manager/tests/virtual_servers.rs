@@ -2,55 +2,10 @@
 
 use lab_runtime::gateway_config::{VirtualServerConfig, VirtualServerSurfacesConfig};
 use crate::gateway::projection::{ServiceHealth, server_view_from_virtual_server};
-use crate::gateway::service_registry::{
-    EmptyServiceRegistry, GatewayServiceRegistry, ServiceActionInfo,
-};
-use crate::registry::{InProcessService, InProcessServiceRegistry};
+use crate::gateway::service_registry::EmptyServiceRegistry;
 use crate::upstream::pool::UpstreamCachedSummary;
 
 use super::*;
-
-/// Minimal stub registry that knows a single service `deploy` with a stable
-/// `PluginMeta`. The default-registry builder lives in `lab`, so projection tests
-/// that need `service_meta(..).is_some()` (i.e. `service_known == true`) inject
-/// this instead of weakening the projection's registry parameter.
-struct DeployKnownRegistry;
-
-static DEPLOY_META: lab_apis::core::PluginMeta = lab_apis::core::PluginMeta {
-    name: "deploy",
-    display_name: "Deploy",
-    description: "deploy (test stub)",
-    category: lab_apis::core::Category::Bootstrap,
-    docs_url: "",
-    required_env: &[],
-    optional_env: &[],
-    default_port: None,
-    supports_multi_instance: false,
-};
-
-impl InProcessServiceRegistry for DeployKnownRegistry {
-    fn in_process_services(&self) -> Vec<Box<dyn InProcessService>> {
-        Vec::new()
-    }
-}
-
-impl GatewayServiceRegistry for DeployKnownRegistry {
-    fn service_names(&self) -> Vec<&'static str> {
-        vec!["deploy"]
-    }
-
-    fn contains_service(&self, name: &str) -> bool {
-        name == "deploy"
-    }
-
-    fn service_actions(&self, name: &str) -> Option<Vec<ServiceActionInfo>> {
-        (name == "deploy").then(Vec::new)
-    }
-
-    fn service_meta(&self, name: &str) -> Option<&'static lab_apis::core::PluginMeta> {
-        (name == "deploy").then_some(&DEPLOY_META)
-    }
-}
 
 #[tokio::test]
 async fn configured_service_appears_in_list_before_virtual_server_enablement() {
@@ -224,7 +179,7 @@ fn healthy_informational_probe_messages_do_not_create_gateway_warnings() {
             reachable: true,
             auth_ok: true,
         }),
-        &DeployKnownRegistry,
+        deploy_known_registry().as_ref(),
     );
 
     assert!(view.connected);
@@ -264,7 +219,8 @@ async fn managed_services_are_hidden_on_surfaces_until_enabled() {
 async fn enabled_virtual_server_only_exposes_enabled_surfaces() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
-    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default())
+        .with_builtin_service_registry(deploy_known_registry());
 
     manager
         .seed_config(GatewayConfig {
@@ -370,7 +326,8 @@ fn virtual_server_mcp_policy_reduces_exposed_tool_count() {
 async fn mcp_action_policy_restricts_actions_to_allowlist() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
-    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default())
+        .with_builtin_service_registry(deploy_known_registry());
 
     manager
         .seed_config(GatewayConfig {

@@ -130,12 +130,29 @@ impl FsGatewayConfigStore {
                 ToolError::internal_message(format!("failed to create env dir: {e}"))
             })?;
         }
+        // Values may contain spaces (e.g. `Bearer <token>`); double-quote them so
+        // `dotenvy` round-trips the value back on read. The host store (`lab`)
+        // owns the richer backup-first writer; this default is for tests/standalone.
         let body: String = existing
             .iter()
-            .map(|(k, v)| format!("{k}={v}\n"))
+            .map(|(k, v)| format!("{k}={}\n", quote_env_value(v)))
             .collect();
         std::fs::write(&self.env_path, body)
             .map_err(|e| ToolError::internal_message(format!("failed to write env file: {e}")))
+    }
+}
+
+/// Double-quote an env value when it contains whitespace or shell metacharacters
+/// so `dotenvy` can read it back. Mirrors `lab`'s host-side `quote_env_value`.
+fn quote_env_value(v: &str) -> String {
+    let needs_quotes = v
+        .chars()
+        .any(|c| matches!(c, ' ' | '\t' | '#' | '$' | '\\' | '"' | '\'' | '`'));
+    if needs_quotes {
+        let escaped = v.replace('\\', r"\\").replace('"', r#"\""#);
+        format!("\"{escaped}\"")
+    } else {
+        v.to_owned()
     }
 }
 

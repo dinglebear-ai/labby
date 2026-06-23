@@ -75,10 +75,70 @@ fn gateway_actions_include_servers_and_schema() {
     );
 }
 
+/// Test stub registry that knows a single `deploy` service with a small action
+/// catalog. The host's real default-registry builder lives in `lab`, not
+/// `lab-gateway`; gateway dispatch tests that exercise service-aware behavior
+/// (`gateway.service_actions`, virtual-server enable/policy validation) inject
+/// this so `service_meta`/`service_actions`/`contains_service` resolve `deploy`.
+struct DeployTestRegistry;
+
+static DEPLOY_TEST_META: lab_apis::core::PluginMeta = lab_apis::core::PluginMeta {
+    name: "deploy",
+    display_name: "Deploy",
+    description: "deploy (test stub)",
+    category: lab_apis::core::Category::Bootstrap,
+    docs_url: "",
+    required_env: &[],
+    optional_env: &[],
+    default_port: None,
+    supports_multi_instance: false,
+};
+
+impl crate::registry::InProcessServiceRegistry for DeployTestRegistry {
+    fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+        Vec::new()
+    }
+}
+
+impl crate::gateway::service_registry::GatewayServiceRegistry for DeployTestRegistry {
+    fn service_names(&self) -> Vec<&'static str> {
+        vec!["deploy"]
+    }
+
+    fn contains_service(&self, name: &str) -> bool {
+        name == "deploy"
+    }
+
+    fn service_actions(
+        &self,
+        name: &str,
+    ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+        (name == "deploy").then(|| {
+            vec![
+                crate::gateway::service_registry::ServiceActionInfo {
+                    name: "deploy.plan",
+                    description: "Plan a deployment",
+                    destructive: false,
+                },
+                crate::gateway::service_registry::ServiceActionInfo {
+                    name: "deploy.apply",
+                    description: "Apply a deployment",
+                    destructive: true,
+                },
+            ]
+        })
+    }
+
+    fn service_meta(&self, name: &str) -> Option<&'static lab_apis::core::PluginMeta> {
+        (name == "deploy").then_some(&DEPLOY_TEST_META)
+    }
+}
+
 fn test_manager() -> GatewayManager {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
     GatewayManager::new(path, GatewayRuntimeHandle::default())
+        .with_builtin_service_registry(std::sync::Arc::new(DeployTestRegistry))
 }
 
 #[tokio::test]

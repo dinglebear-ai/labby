@@ -155,7 +155,8 @@ async fn reload_quarantines_virtual_servers_for_unregistered_services() {
     )
     .expect("write config");
 
-    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default())
+        .with_builtin_service_registry(deploy_known_registry());
     manager
         .reload_with_origin(None, None)
         .await

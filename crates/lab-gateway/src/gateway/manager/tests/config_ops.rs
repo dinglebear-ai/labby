@@ -206,7 +206,8 @@ async fn concurrent_gateway_adds_persist_both_gateways() {
 async fn concurrent_root_and_virtual_server_mutations_both_persist() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
-    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default())
+        .with_builtin_service_registry(deploy_known_registry());
     manager
         .seed_config(GatewayConfig {
             virtual_servers: vec![VirtualServerConfig {

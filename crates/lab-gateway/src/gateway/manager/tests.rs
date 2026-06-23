@@ -32,6 +32,70 @@ mod oauth;
 mod views;
 mod virtual_servers;
 
+/// Shared test stub registry knowing a single `deploy` service. The host's real
+/// default-registry builder lives in `lab`, not `lab-gateway`; manager tests that
+/// need `deploy` to be a registered/known service (quarantine retention, surface
+/// gating, MCP action-policy enforcement) inject this so the registry seam
+/// resolves `deploy` instead of the default `EmptyServiceRegistry`.
+struct DeployKnownRegistry;
+
+static DEPLOY_KNOWN_META: lab_apis::core::PluginMeta = lab_apis::core::PluginMeta {
+    name: "deploy",
+    display_name: "Deploy",
+    description: "deploy (test stub)",
+    category: lab_apis::core::Category::Bootstrap,
+    docs_url: "",
+    required_env: &[],
+    optional_env: &[],
+    default_port: None,
+    supports_multi_instance: false,
+};
+
+impl crate::registry::InProcessServiceRegistry for DeployKnownRegistry {
+    fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+        Vec::new()
+    }
+}
+
+impl crate::gateway::service_registry::GatewayServiceRegistry for DeployKnownRegistry {
+    fn service_names(&self) -> Vec<&'static str> {
+        vec!["deploy"]
+    }
+
+    fn contains_service(&self, name: &str) -> bool {
+        name == "deploy"
+    }
+
+    fn service_actions(
+        &self,
+        name: &str,
+    ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+        (name == "deploy").then(|| {
+            vec![
+                crate::gateway::service_registry::ServiceActionInfo {
+                    name: "deploy.plan",
+                    description: "Plan a deployment",
+                    destructive: false,
+                },
+                crate::gateway::service_registry::ServiceActionInfo {
+                    name: "deploy.apply",
+                    description: "Apply a deployment",
+                    destructive: true,
+                },
+            ]
+        })
+    }
+
+    fn service_meta(&self, name: &str) -> Option<&'static lab_apis::core::PluginMeta> {
+        (name == "deploy").then_some(&DEPLOY_KNOWN_META)
+    }
+}
+
+/// Build an `Arc<dyn GatewayServiceRegistry>` that knows `deploy`.
+fn deploy_known_registry() -> Arc<dyn crate::gateway::service_registry::GatewayServiceRegistry> {
+    Arc::new(DeployKnownRegistry)
+}
+
 async fn dummy_auth_client() -> Arc<AuthClient<reqwest::Client>> {
     let manager = AuthorizationManager::new("http://localhost")
         .await
