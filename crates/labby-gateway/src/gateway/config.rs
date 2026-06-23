@@ -548,13 +548,13 @@ pub fn validate_protected_mcp_routes(routes: &[ProtectedMcpRouteConfig]) -> Resu
     Ok(())
 }
 
-fn validate_config(cfg: &GatewayConfig) -> Result<(), ToolError> {
+pub(crate) fn validate_config(cfg: &GatewayConfig) -> Result<(), ToolError> {
     validate_code_mode(&cfg.code_mode)?;
     validate_upstreams(&cfg.upstream, &cfg.gateway)?;
     validate_protected_mcp_routes(&cfg.protected_mcp_routes)
 }
 
-fn normalize_config(cfg: &mut GatewayConfig) -> Result<(), ToolError> {
+pub(crate) fn normalize_config(cfg: &mut GatewayConfig) -> Result<(), ToolError> {
     for route in &mut cfg.protected_mcp_routes {
         normalize_protected_mcp_route(route)?;
     }

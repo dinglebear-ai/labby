@@ -332,6 +332,7 @@ mod host_config {
             sdk_kind: "internal_error".to_string(),
             message: format!("failed to persist {}: {}", path.display(), e.error),
         })?;
+        restrict_config_file_permissions(path)?;
 
         Ok(())
     }
@@ -365,6 +366,22 @@ mod host_config {
         }
 
         Ok(existing.to_string())
+    }
+
+    fn restrict_config_file_permissions(path: &Path) -> Result<(), ToolError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |e| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: format!("failed to chmod {}: {e}", path.display()),
+                },
+            )?;
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+        Ok(())
     }
 }
 
@@ -430,5 +447,31 @@ url = \"https://alpha.example.com/mcp\"
             rendered.contains("foo = 1"),
             "foreign section value must survive, got:\n{rendered}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_restricts_host_config_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[gateway]\n").expect("write initial config");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("loosen config permissions");
+
+        let loaded = load_gateway_config(&path).expect("load config");
+        let store = LabConfigStore::new(Arc::new(RwLock::new(loaded.clone())), path.clone());
+
+        store
+            .persist(&loaded.to_gateway_config())
+            .expect("persist gateway config");
+
+        let mode = std::fs::metadata(&path)
+            .expect("config metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

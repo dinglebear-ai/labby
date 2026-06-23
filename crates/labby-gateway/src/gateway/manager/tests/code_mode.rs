@@ -1,7 +1,9 @@
 //! Code Mode runtime readiness + tool resolution tests.
 #![allow(clippy::panic)]
 
+use labby_codemode::{CodeModeCaller, CodeModeHost, CodeModeSurface, ToolScope};
 use labby_runtime::error::ToolError;
+use serde_json::json;
 
 use super::*;
 
@@ -241,4 +243,70 @@ async fn code_mode_enabled_reads_code_mode_config() {
         manager.code_mode_enabled().await,
         "code_mode_enabled() must return true when code_mode.enabled = true"
     );
+}
+
+#[tokio::test]
+async fn code_mode_host_list_tools_honors_scoped_namespaces() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
+        .await;
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "pong"))
+        .await;
+
+    let render = CodeModeHost::list_tools(
+        &manager,
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new()),
+        false,
+        false,
+    )
+    .await
+    .expect("scoped Code Mode host catalog");
+
+    let ids = render
+        .entries
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["alpha::ping"]);
+}
+
+#[tokio::test]
+async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
+    let mut entry = healthy_entry_with_tool("alpha", "delete");
+    entry
+        .tools
+        .get_mut("delete")
+        .expect("fixture tool")
+        .destructive = true;
+    pool.insert_entry_for_tests("alpha", entry).await;
+
+    let err = CodeModeHost::call_tool(
+        &manager,
+        "alpha::delete",
+        json!({}),
+        &CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+            sub: Some("user-1".to_string()),
+        },
+        CodeModeSurface::Mcp,
+        &ToolScope::new(Vec::new(), Vec::new()),
+    )
+    .await
+    .expect_err("read-only caller must not execute destructive tool");
+
+    match err {
+        ToolError::Sdk { sdk_kind, message } => {
+            assert_eq!(sdk_kind, "forbidden");
+            assert!(message.contains("alpha::delete"));
+        }
+        other => panic!("expected forbidden sdk error, got {other:?}"),
+    }
 }

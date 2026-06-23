@@ -416,8 +416,15 @@ fn normalize_user_code_strips_trailing_line_comment_after_semicolon() {
 // ── destructive_permitted: caller capability gate ─────────────────────────
 
 fn scoped(scopes: &[&str]) -> super::CodeModeCaller {
+    let is_admin = scopes.contains(&"lab:admin");
     super::CodeModeCaller::Scoped {
-        scopes: scopes.iter().map(ToString::to_string).collect(),
+        capabilities: super::CodeModeCallerCapabilities {
+            can_execute: scopes
+                .iter()
+                .any(|scope| matches!(*scope, "lab" | "lab:admin")),
+            can_use_snippets: is_admin,
+            is_admin,
+        },
         sub: None,
     }
 }
@@ -460,7 +467,10 @@ fn destructive_denied_for_read_scope() {
 #[test]
 fn scoped_caller_can_execute_with_lab_scope() {
     let caller = super::CodeModeCaller::Scoped {
-        scopes: vec!["lab".to_string()],
+        capabilities: super::CodeModeCallerCapabilities {
+            can_execute: true,
+            ..super::CodeModeCallerCapabilities::default()
+        },
         sub: None,
     };
     assert!(caller.can_execute());
@@ -469,7 +479,7 @@ fn scoped_caller_can_execute_with_lab_scope() {
 #[test]
 fn scoped_caller_read_only_cannot_execute() {
     let caller = super::CodeModeCaller::Scoped {
-        scopes: vec!["lab:read".to_string()],
+        capabilities: super::CodeModeCallerCapabilities::default(),
         sub: None,
     };
     assert!(

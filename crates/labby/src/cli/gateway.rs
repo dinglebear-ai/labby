@@ -91,7 +91,10 @@ async fn build_manager_with_upstream_oauth_runtime(
         runtime,
     );
     let manager = Arc::new(manager);
-    manager.seed_config(config.to_gateway_config()).await;
+    manager
+        .try_seed_config(config.to_gateway_config())
+        .await
+        .expect("loaded gateway config must normalize and validate");
     install_gateway_manager(Arc::clone(&manager));
     manager
 }

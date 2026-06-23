@@ -712,12 +712,24 @@ fn entry_serialized_size(entry: &CodeModeHistoryEntry) -> usize {
 pub enum CodeModeCaller {
     TrustedLocal,
     Scoped {
-        scopes: Vec<String>,
+        capabilities: CodeModeCallerCapabilities,
         /// JWT `sub` claim for the caller, when available. The host decides how
         /// to map this onto its own credential/identity model when resolving
         /// and calling tools; the kernel itself never interprets it.
         sub: Option<String>,
     },
+}
+
+/// Host-computed authorization facts for a scoped Code Mode caller.
+///
+/// The Code Mode kernel stays independent of Lab's OAuth scope names; surface
+/// adapters translate their own auth model into these booleans before calling
+/// into the kernel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CodeModeCallerCapabilities {
+    pub can_execute: bool,
+    pub can_use_snippets: bool,
+    pub is_admin: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -755,7 +767,7 @@ impl CodeModeCaller {
     pub fn can_use_snippets(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { scopes, .. } => scopes.iter().any(|scope| scope == "lab:admin"),
+            Self::Scoped { capabilities, .. } => capabilities.can_use_snippets,
         }
     }
 
@@ -763,9 +775,7 @@ impl CodeModeCaller {
     pub fn can_execute(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { scopes, .. } => scopes
-                .iter()
-                .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin")),
+            Self::Scoped { capabilities, .. } => capabilities.can_execute,
         }
     }
 
@@ -776,7 +786,7 @@ impl CodeModeCaller {
     pub fn is_admin(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { scopes, .. } => scopes.iter().any(|scope| scope == "lab:admin"),
+            Self::Scoped { capabilities, .. } => capabilities.is_admin,
         }
     }
 

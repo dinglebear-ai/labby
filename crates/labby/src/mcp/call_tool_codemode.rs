@@ -20,8 +20,8 @@ use serde_json::Value;
 
 use crate::dispatch::error::ToolError as DispatchToolError;
 use crate::dispatch::gateway::code_mode::{
-    CodeModeBroker, CodeModeCaller, CodeModeCapabilityFilter, CodeModeExecutionSource,
-    CodeModeHistoryEntry, CodeModeHistoryKind, code_mode_execute_trace,
+    CodeModeBroker, CodeModeCaller, CodeModeCallerCapabilities, CodeModeCapabilityFilter,
+    CodeModeExecutionSource, CodeModeHistoryEntry, CodeModeHistoryKind, code_mode_execute_trace,
 };
 use crate::mcp::context::{auth_context_from_extensions, tool_execute_scope_allowed};
 use crate::mcp::envelope::{build_error, build_error_extra};
@@ -267,7 +267,7 @@ impl LabMcpServer {
         let broker = CodeModeBroker::new(Some(manager.as_ref()));
         let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
             CodeModeCaller::Scoped {
-                scopes: auth.scopes.clone(),
+                capabilities: code_mode_capabilities_for_scopes(&auth.scopes),
                 sub: self.request_subject(context).map(ToOwned::to_owned),
             }
         });
@@ -453,6 +453,17 @@ impl LabMcpServer {
             "gateway codemode ok"
         );
         Ok(call_result_with_structured(output, structured, ui_meta))
+    }
+}
+
+fn code_mode_capabilities_for_scopes(scopes: &[String]) -> CodeModeCallerCapabilities {
+    let is_admin = scopes.iter().any(|scope| scope == "lab:admin");
+    CodeModeCallerCapabilities {
+        can_execute: scopes
+            .iter()
+            .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin")),
+        can_use_snippets: is_admin,
+        is_admin,
     }
 }
 

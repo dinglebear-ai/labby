@@ -499,7 +499,7 @@ impl GatewayManager {
     /// Called by Code Mode catalog discovery after a cache miss so subsequent
     /// lookups within the same healthy-tool fingerprint skip `generate_tool_types`
     /// per entry.
-    pub async fn store_catalog_render_cache(
+    pub(crate) async fn store_catalog_render_cache(
         &self,
         cache: crate::gateway::code_mode::CatalogRenderCache,
     ) {
@@ -511,7 +511,7 @@ impl GatewayManager {
     ///
     /// Returns `Some((entries, catalog_json, serialized_size))` on a hit,
     /// `None` on a miss (caller must rebuild and call `store_catalog_render_cache`).
-    pub async fn cached_catalog_render(
+    pub(crate) async fn cached_catalog_render(
         &self,
         fingerprint: &str,
     ) -> Option<(

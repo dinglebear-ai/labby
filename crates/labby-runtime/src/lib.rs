@@ -8,6 +8,7 @@
 //! product/transport layers (`axum`, `clap`, `rmcp`, `javy`, `wasmtime`,
 //! `utoipa`) or on Labby product registry builders.
 
+pub mod backoff;
 pub mod dispatch_helpers;
 pub mod error;
 pub mod gateway_config;

@@ -38,22 +38,15 @@ COPY crates/labby-gateway/Cargo.toml crates/labby-gateway/Cargo.toml
 COPY crates/labby-web/Cargo.toml crates/labby-web/Cargo.toml
 COPY crates/labby-winjob/Cargo.toml crates/labby-winjob/Cargo.toml
 
-# Create stub source + test files so cargo can parse ALL manifests without error.
+# Create stub source files so cargo can parse ALL manifests without error.
 #
-# lab-apis/Cargo.toml declares explicit [[test]] targets with required-features:
-#   plex_client, gotify_client, openacp_client, jellyfin_client → need matching
-#   files under crates/labby-apis/tests/
-# Cargo validates file existence at manifest-parse time even when the required
-# feature is disabled, so we must stub them.
-#
-# lab/ has both [[bin]] (main.rs) and [lib] (lib.rs) targets — stub both.
+# labby has both [[bin]] (main.rs) and [lib] (lib.rs) targets — stub both.
 #
 # We also need apps/gateway-admin/out/ to exist for include_dir!() in web.rs,
 # but we copy the real one below — for the dep-cache step a stub dir suffices.
 RUN mkdir -p \
       crates/labby/src \
       crates/labby-apis/src \
-      crates/labby-apis/tests \
       crates/labby-auth/src \
       crates/labby-runtime/src \
       crates/labby-codemode/src \
@@ -66,10 +59,6 @@ RUN mkdir -p \
  && touch \
       crates/labby/src/lib.rs \
       crates/labby-apis/src/lib.rs \
-      crates/labby-apis/tests/plex_client.rs \
-      crates/labby-apis/tests/gotify_client.rs \
-      crates/labby-apis/tests/openacp_client.rs \
-      crates/labby-apis/tests/jellyfin_client.rs \
       crates/labby-auth/src/lib.rs \
       crates/labby-runtime/src/lib.rs \
       crates/labby-codemode/src/lib.rs \
@@ -87,7 +76,6 @@ RUN mkdir -p \
  && cargo clean -p labby-winjob \
  && rm -rf \
       crates/*/src \
-      crates/labby-apis/tests \
       apps/gateway-admin/out \
       target/release/labby
 

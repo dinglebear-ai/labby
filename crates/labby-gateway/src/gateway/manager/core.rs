@@ -10,9 +10,11 @@ use tokio::sync::{Mutex, RwLock};
 use labby_auth::upstream::cache::OauthClientCache;
 use labby_auth::upstream::encryption::EncryptionKey;
 use labby_auth::upstream::manager::UpstreamOauthManager;
+use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
 
 use crate::gateway::code_mode::{CodeModeHistory, CodeModeSourceStore};
+use crate::gateway::config::{normalize_config, validate_config};
 use crate::gateway::config_store::{FsGatewayConfigStore, GatewayConfigStore};
 use crate::gateway::protected_routes::ProtectedRouteIndex;
 use crate::gateway::service_registry::{EmptyServiceRegistry, GatewayServiceRegistry};
@@ -200,11 +202,17 @@ impl GatewayManager {
         self.notifier = Some(notifier);
     }
 
-    pub async fn seed_config(&self, config: GatewayConfig) {
+    pub async fn try_seed_config(&self, mut config: GatewayConfig) -> Result<(), ToolError> {
         // config.rs normalizes legacy code_mode before calling seed_config;
         // do not re-normalize here with false — that would incorrectly promote
         // legacy upstream config when the root [code_mode] is explicitly disabled.
+        normalize_config(&mut config)?;
+        validate_config(&config)?;
+        self.seed_config(config).await;
+        Ok(())
+    }
 
+    pub async fn seed_config(&self, config: GatewayConfig) {
         self.store
             .set_process_code_mode_enabled(config.code_mode.enabled);
         *self.protected_route_index.write().await =

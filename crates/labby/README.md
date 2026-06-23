@@ -1,11 +1,12 @@
 # labby Binary Crate
 
-`crates/lab` builds the `labby` product binary. It owns the CLI, MCP server,
+`crates/labby` builds the `labby` product binary. It owns the CLI, MCP server,
 HTTP API, Labby web serving, config loading, output rendering, generated docs,
 and shared product dispatch.
 
-Pure SDK/data types live in `crates/lab-apis`. HTTP/OAuth middleware lives in
-`crates/lab-auth`. Windows process-tree reaping lives in `crates/lab-winjob`.
+Pure SDK/data types live in `crates/labby-apis`. HTTP/OAuth middleware lives in
+`crates/labby-auth`. Windows process-tree reaping lives in
+`crates/labby-winjob`.
 
 ## Build
 

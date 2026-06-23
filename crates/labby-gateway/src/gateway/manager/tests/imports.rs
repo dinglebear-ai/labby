@@ -108,3 +108,67 @@ fn auto_import_partition_does_not_tombstone_same_source_when_fingerprint_changes
     assert_eq!(specs_to_add.len(), 1);
     assert_eq!(specs_to_add[0].name, "fingerprinted");
 }
+
+#[tokio::test]
+async fn approve_pending_import_persists_through_injected_store() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(SlowPersistStore {
+        calls: Arc::clone(&calls),
+        delay: Duration::from_millis(0),
+    });
+    let manager = GatewayManager::with_store(
+        PathBuf::from("config.toml"),
+        GatewayRuntimeHandle::default(),
+        store,
+    );
+    manager
+        .seed_config(GatewayConfig {
+            upstream_pending: vec![fixture_http_upstream("pending")],
+            ..GatewayConfig::default()
+        })
+        .await;
+
+    manager
+        .approve_pending_import("pending")
+        .await
+        .expect("approve pending import");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let cfg = manager.current_config().await;
+    assert!(
+        cfg.upstream
+            .iter()
+            .any(|upstream| upstream.name == "pending")
+    );
+    assert!(cfg.upstream_pending.is_empty());
+}
+
+#[tokio::test]
+async fn reject_pending_import_persists_through_injected_store() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(SlowPersistStore {
+        calls: Arc::clone(&calls),
+        delay: Duration::from_millis(0),
+    });
+    let manager = GatewayManager::with_store(
+        PathBuf::from("config.toml"),
+        GatewayRuntimeHandle::default(),
+        store,
+    );
+    manager
+        .seed_config(GatewayConfig {
+            upstream_pending: vec![fixture_discovered_http("pending").spec],
+            ..GatewayConfig::default()
+        })
+        .await;
+
+    manager
+        .reject_pending_import("pending")
+        .await
+        .expect("reject pending import");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let cfg = manager.current_config().await;
+    assert!(cfg.upstream_pending.is_empty());
+    assert_eq!(cfg.upstream_import_tombstones.len(), 1);
+}

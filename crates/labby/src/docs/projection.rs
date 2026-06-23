@@ -341,11 +341,20 @@ fn mapped_lab_feature(
         .filter_map(|dep| dep.strip_prefix(LABBY_APIS_PREFIX))
         .find(|dep| api_features.contains_key(*dep))
         .map(|dep| format!("{LABBY_APIS_PREFIX}{dep}"))
-        .or_else(|| {
-            api_features
-                .contains_key(feature)
-                .then(|| format!("{LABBY_APIS_PREFIX}{feature}"))
-        })
+        .or_else(|| compatibility_api_feature(feature, api_features))
+}
+
+fn compatibility_api_feature(
+    feature: &str,
+    api_features: &BTreeMap<String, Vec<String>>,
+) -> Option<String> {
+    let api_feature = match feature {
+        "mcpregistry" => "mcpregistry",
+        _ => return None,
+    };
+    api_features
+        .contains_key(api_feature)
+        .then(|| format!("{LABBY_APIS_PREFIX}{api_feature}"))
 }
 
 fn exception_reason(classification: FeatureClass) -> Option<&'static str> {

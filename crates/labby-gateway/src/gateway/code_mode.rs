@@ -1,7 +1,7 @@
-//! Gateway adapter over the extracted `lab-codemode` crate.
+//! Gateway adapter over the extracted `labby-codemode` crate.
 //!
 //! The Code Mode JS execution kernel, broker, result-shaping helpers, and
-//! snippet engine now live in `lab-codemode`. This module is the gateway's
+//! snippet engine now live in `labby-codemode`. This module is the gateway's
 //! thin adapter: it re-exports the crate's public surface under the historical
 //! `crate::gateway::code_mode::*` import paths, owns the host-side
 //! render caches, and hosts `impl CodeModeHost for GatewayManager`
@@ -21,9 +21,9 @@ mod search;
 
 pub use labby_codemode::run_code_mode_runner_stdio;
 pub use labby_codemode::{
-    CodeModeBroker, CodeModeCaller, CodeModeHistory, CodeModeHistoryEntry, CodeModeHistoryKind,
-    CodeModeSourceLookup, CodeModeSourceStore, CodeModeSurface, RunnerPool,
-    code_mode_execute_trace, validate_code_mode_params_against_schema,
+    CodeModeBroker, CodeModeCaller, CodeModeCallerCapabilities, CodeModeHistory,
+    CodeModeHistoryEntry, CodeModeHistoryKind, CodeModeSourceLookup, CodeModeSourceStore,
+    CodeModeSurface, RunnerPool, code_mode_execute_trace, validate_code_mode_params_against_schema,
 };
 #[cfg(any(test, feature = "testkit"))]
 pub use labby_codemode::{CodeModeExecutedCall, CodeModeExecutionResponse};
@@ -44,7 +44,7 @@ pub(crate) use labby_codemode::split_namespaced_id as split_upstream_tool;
 /// plus the snippet fingerprint). When the pool's healthy tool set has not
 /// changed between lookups, this avoids re-running `generate_tool_types`,
 /// re-serializing the catalog JSON, and re-generating the JS proxy.
-pub struct CatalogRenderCache {
+pub(crate) struct CatalogRenderCache {
     /// Fingerprint of the healthy tool list when this cache was built.
     pub fingerprint: String,
     /// Rendered catalog entries (includes `.signature` / `.dts`).

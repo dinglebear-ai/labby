@@ -10,7 +10,7 @@ use labby_web::{AssetResponse, AssetSource, serve_asset};
 
 /// Whether the embedded SPA bundle (`index.html`) shipped in this binary.
 ///
-/// Delegates to `lab-gateway-web`, which owns the build-time embedded asset
+/// Delegates to `labby-web`, which owns the build-time embedded asset
 /// table. Used by the serve path and router tests to decide whether the
 /// embedded fallback is meaningful.
 pub fn embedded_web_assets_available() -> bool {
@@ -60,7 +60,7 @@ pub async fn serve_web_request(State(state): State<AppState>, request: Request) 
     // Source precedence is product policy and stays here: a configured directory
     // always wins; the embedded bundle is the no-config fallback. When neither
     // is available there is nothing to serve. Asset lookup, symlink-escape
-    // rejection, and header derivation live in `lab-gateway-web`.
+    // rejection, and header derivation live in `labby-web`.
     let source = if let Some(base_dir) = state.web_assets_dir.as_deref() {
         AssetSource::Directory(base_dir.to_path_buf())
     } else if state.embedded_web_assets {

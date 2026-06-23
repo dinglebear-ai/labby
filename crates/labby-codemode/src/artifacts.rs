@@ -417,11 +417,20 @@ pub(crate) async fn write_code_mode_artifact(
                 message: format!("failed to create artifact directory: {err}"),
             })?;
     }
+    reject_existing_symlink_ancestors(root, &destination)?;
 
-    let mut file = tokio::fs::File::create(&destination)
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
         .await
         .map_err(|err| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
+            sdk_kind: if err.kind() == std::io::ErrorKind::AlreadyExists {
+                "invalid_param"
+            } else {
+                "internal_error"
+            }
+            .to_string(),
             message: format!("failed to create artifact file: {err}"),
         })?;
     file.write_all(bytes).await.map_err(|err| ToolError::Sdk {

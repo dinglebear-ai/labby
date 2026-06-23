@@ -1153,8 +1153,9 @@ async fn build_gateway_runtime(
     // runtime path as HTTP; only recursive stdio children suppress upstream
     // spawning.
     gateway_manager
-        .seed_config(config.to_gateway_config())
-        .await;
+        .try_seed_config(config.to_gateway_config())
+        .await
+        .expect("loaded gateway config must normalize and validate");
     install_gateway_manager(Arc::clone(&gateway_manager));
     if !suppress_upstream_runtime {
         match config.gateway_import_mode {

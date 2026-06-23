@@ -39,8 +39,6 @@ mod truncate;
 /// Live TypeScript signature / `.d.ts` generator for Code Mode tool descriptors.
 pub mod ts_signatures;
 mod types;
-#[cfg(test)]
-mod types_legacy;
 mod util;
 mod wrapper;
 
@@ -50,8 +48,6 @@ mod tests_ids_schema;
 mod tests_normalize;
 #[cfg(test)]
 mod tests_ts_signatures;
-#[cfg(test)]
-mod tests_types_legacy;
 
 // ── Public surface ──────────────────────────────────────────────────────────
 
@@ -70,10 +66,10 @@ pub use schema::validate_code_mode_params_against_schema;
 pub use shape::CodeModeResultShapeMetadata;
 pub use trace::code_mode_execute_trace;
 pub use types::{
-    CodeModeCaller, CodeModeCatalogKind, CodeModeExecutedCall, CodeModeExecutionError,
-    CodeModeExecutionResponse, CodeModeExecutionSource, CodeModeHistory, CodeModeHistoryEntry,
-    CodeModeHistoryKind, CodeModeSnippetInputEntry, CodeModeSourceLookup, CodeModeSourceStore,
-    CodeModeSurface, ToolDescriptor, ToolScope, UiLink, destructive_permitted, namespaced_tool_id,
-    split_namespaced_id,
+    CodeModeCaller, CodeModeCallerCapabilities, CodeModeCatalogKind, CodeModeExecutedCall,
+    CodeModeExecutionError, CodeModeExecutionResponse, CodeModeExecutionSource, CodeModeHistory,
+    CodeModeHistoryEntry, CodeModeHistoryKind, CodeModeSnippetInputEntry, CodeModeSourceLookup,
+    CodeModeSourceStore, CodeModeSurface, ToolDescriptor, ToolScope, UiLink, destructive_permitted,
+    namespaced_tool_id, split_namespaced_id,
 };
 pub use util::serialized_catalog_size;

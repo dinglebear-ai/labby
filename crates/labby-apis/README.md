@@ -1,4 +1,4 @@
-# lab-apis
+# labby-apis
 
 Pure Rust SDK/data layer for Lab capability modules. This crate is reusable by
 other Rust binaries and intentionally has no product-surface dependencies such
@@ -27,7 +27,7 @@ modules.
 
 ## Contracts
 
-- `lab-apis` never reads config files or ambient env vars on its own.
+- `labby-apis` never reads config files or ambient env vars on its own.
 - Callers provide URLs, auth, paths, and runtime config explicitly.
 - HTTP-backed modules use the shared `core::HttpClient`.
 - Wire-facing types use `serde` and keep presentation concerns out of the SDK.
@@ -43,9 +43,9 @@ metadata.
 ## Testing
 
 ```bash
-cargo test -p lab-apis
-cargo check -p lab-apis --no-default-features
-cargo check -p lab-apis --no-default-features --features all
+cargo test -p labby-apis
+cargo check -p labby-apis --no-default-features
+cargo check -p labby-apis --no-default-features --features all
 ```
 
 See the workspace README and `docs/` for the current product surface and

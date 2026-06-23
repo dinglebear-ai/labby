@@ -1,7 +1,7 @@
 //! Discovery import orchestration: auto-import, the pending-import queue, and
 //! import tombstone management.
 
-use crate::gateway::config::{insert_upstream, write_gateway_config};
+use crate::gateway::config::insert_upstream;
 use crate::gateway::types::{
     GatewayView, ImportErrorView, ImportResultView, ImportSkipReason, ImportSkipView,
     ImportTombstoneView, PendingDiscoveryOutcome, PendingImportView,
@@ -194,14 +194,7 @@ impl GatewayManager {
 
         if queued > 0 {
             cap_pending_imports(&mut cfg);
-            let path = self.path.clone();
-            let cfg_clone = cfg.clone();
-            tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
-                .await
-                .map_err(|e| {
-                    ToolError::internal_message(format!("config write task failed: {e}"))
-                })??;
-            *self.config.write().await = cfg;
+            self.persist_config(cfg).await?;
         }
 
         Ok(PendingDiscoveryOutcome { queued, skipped })
@@ -236,12 +229,7 @@ impl GatewayManager {
 
         spec.enabled = false;
         cfg.upstream.push(spec);
-        let path = self.path.clone();
-        let cfg_clone = cfg.clone();
-        tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
-            .await
-            .map_err(|e| ToolError::internal_message(format!("config write task failed: {e}")))??;
-        *self.config.write().await = cfg;
+        self.persist_config(cfg).await?;
 
         Ok(view)
     }
@@ -270,12 +258,7 @@ impl GatewayManager {
             cap_import_tombstones(&mut cfg);
         }
 
-        let path = self.path.clone();
-        let cfg_clone = cfg.clone();
-        tokio::task::spawn_blocking(move || write_gateway_config(&path, &cfg_clone))
-            .await
-            .map_err(|e| ToolError::internal_message(format!("config write task failed: {e}")))??;
-        *self.config.write().await = cfg;
+        self.persist_config(cfg).await?;
 
         Ok(view)
     }

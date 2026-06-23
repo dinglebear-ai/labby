@@ -107,6 +107,38 @@ fn lab_gateway_manifest_does_not_depend_on_product_surfaces() {
     }
 }
 
+#[test]
+fn extracted_crates_do_not_depend_on_product_surfaces() {
+    let crate_manifests: &[(&str, &[&str])] = &[
+        ("labby-codemode", &["axum", "clap", "rmcp", "utoipa"]),
+        (
+            "labby-runtime",
+            &["axum", "clap", "rmcp", "utoipa", "javy", "wasmtime"],
+        ),
+        (
+            "labby-web",
+            &["axum", "clap", "rmcp", "utoipa", "javy", "wasmtime"],
+        ),
+    ];
+
+    for (crate_name, banned_deps) in crate_manifests {
+        let manifest = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(*crate_name)
+                .join("Cargo.toml"),
+        )
+        .expect("read extracted crate manifest");
+
+        for banned in *banned_deps {
+            assert!(
+                !manifest_declares_dependency(&manifest, banned),
+                "{crate_name} must not depend on product-surface crate {banned}"
+            );
+        }
+    }
+}
+
 /// `lab-gateway` receives its registry/service composition by injection through
 /// the `InProcessServiceRegistry` trait; it must never reach for Labby's default
 /// registry builder.
