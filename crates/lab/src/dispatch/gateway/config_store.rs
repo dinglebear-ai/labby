@@ -398,7 +398,7 @@ url = \"https://alpha.example.com/mcp\"
         std::fs::write(&path, initial).expect("write initial config");
 
         // Load the full LabConfig and seed the store with it.
-        let loaded = host_config::load_gateway_config(&path).expect("load config");
+        let loaded = load_gateway_config(&path).expect("load config");
         let store = LabConfigStore::new(
             Arc::new(RwLock::new(loaded.clone())),
             path.clone(),
@@ -412,7 +412,7 @@ url = \"https://alpha.example.com/mcp\"
         let rendered = std::fs::read_to_string(&path).expect("read persisted config");
 
         // The gateway mutation landed.
-        let reloaded = host_config::load_gateway_config(&path).expect("reload config");
+        let reloaded = load_gateway_config(&path).expect("reload config");
         assert!(
             !reloaded.upstream[0].enabled,
             "gateway upstream mutation must persist"

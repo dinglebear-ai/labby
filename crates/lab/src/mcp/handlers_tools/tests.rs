@@ -2211,7 +2211,7 @@ async fn snapshot_catalog_hides_mcp_disabled_virtual_services() {
             std::path::PathBuf::from("config.toml"),
             runtime,
         )
-        .with_builtin_service_registry(std::sync::Arc::new(
+        .with_builtin_service_registry(Arc::new(
             crate::registry::build_default_registry(),
         )),
     );
