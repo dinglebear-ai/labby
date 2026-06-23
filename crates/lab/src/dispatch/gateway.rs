@@ -1,24 +1,10 @@
-mod catalog;
-mod client;
-pub mod code_mode;
-pub(crate) mod config;
-mod config_mutation;
-pub mod discovery;
-mod dispatch;
-pub mod manager;
-pub mod oauth;
-mod oauth_lifecycle;
-mod params;
-mod projection;
-pub(crate) mod protected_routes;
-mod runtime;
-mod service_catalog;
-pub(crate) mod shared;
-pub(crate) mod types;
-pub(crate) mod view_models;
-mod virtual_servers;
+//! Compatibility shim: the gateway runtime moved into the `lab-gateway` crate.
+//!
+//! Business logic now lives in `lab_gateway::gateway`. This module re-exports
+//! it so existing `crate::dispatch::gateway::*` callers keep working. The
+//! host-owned config-store implementation (which keeps `LabConfig` and the
+//! `config.toml` render path in `lab`) lives in `config_store`.
 
-pub use catalog::ACTIONS;
-pub use client::{current_gateway_manager, install_gateway_manager, require_gateway_manager};
-pub use dispatch::{dispatch, dispatch_with_manager};
-pub(crate) use shared::SHARED_GATEWAY_OAUTH_SUBJECT;
+pub use lab_gateway::gateway::*;
+
+pub mod config_store;

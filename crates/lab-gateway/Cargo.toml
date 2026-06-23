@@ -22,6 +22,16 @@ testkit = []
 lab-apis = { path = "../lab-apis", default-features = false }
 lab-runtime = { path = "../lab-runtime" }
 lab-auth = { path = "../lab-auth", features = ["upstream-oauth-rmcp"] }
+lab-codemode = { path = "../lab-codemode" }
+dirs = "5"
+toml = { workspace = true }
+toml_edit = "0.23"
+base64 = { workspace = true }
+sha2 = "0.11"
+jiff = { workspace = true }
+hex = "0.4"
+regex = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 tokio = { workspace = true, features = ["process"] }
 tokio-util = { version = "0.7", features = ["rt", "compat", "codec"] }
 futures.workspace = true
@@ -59,6 +69,9 @@ wiremock.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["process", "test-util"] }
 proptest = "1"
+# Enable lab-auth's `test` feature in test builds so gateway OAuth-manager tests
+# can seed the upstream OAuth client cache via `OauthClientCache::insert_for_tests`.
+lab-auth = { path = "../lab-auth", features = ["upstream-oauth-rmcp", "test"] }
 
 [lints]
 workspace = true

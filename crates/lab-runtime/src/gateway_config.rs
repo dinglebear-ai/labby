@@ -644,6 +644,218 @@ pub struct WebPreferences {
     pub disable_auth: Option<bool>,
 }
 
+// ─── Gateway spawn-guard preferences ─────────────────────────────────────────
+
+/// Controls the stdio spawn-guard that validates upstream MCP server commands.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GatewayPreferences {
+    /// Extra commands allowed as stdio upstream programs beyond the built-in list
+    /// (npx, uvx, docker, node, python, python3, deno, pipx, dnx).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_stdio_commands: Vec<String>,
+    /// Disable all stdio spawn-guard command validation.
+    /// Any command may be used as a stdio upstream when true.
+    /// Only set this when you control all gateway write access.
+    #[serde(default)]
+    pub disable_spawn_guard: bool,
+}
+
+// ─── Resolved public URLs ────────────────────────────────────────────────────
+
+/// Canonical public URL pair after env-over-config merge.
+///
+/// Produced by the host's config layer (which owns env precedence and the
+/// legacy `[auth].public_url` fallback) and handed to the gateway runtime.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedPublicUrls {
+    /// Public app URL. May be `None` when the operator has not configured one.
+    pub app: Option<String>,
+    /// Public MCP gateway URL. Falls back to `app` when not separately configured.
+    pub mcp_gateway: Option<String>,
+}
+
+impl ResolvedPublicUrls {
+    /// Return the effective MCP gateway URL, preferring a separately configured
+    /// gateway URL over the app URL.
+    #[must_use]
+    pub fn effective_mcp_gateway(&self) -> Option<&str> {
+        self.mcp_gateway.as_deref().or(self.app.as_deref())
+    }
+}
+
+// ─── Gateway config DTO ──────────────────────────────────────────────────────
+
+/// Default request timeout for one proxied upstream MCP response (30s).
+pub const DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS: u64 = 30_000;
+/// Default deadline for a single *relayed* upstream tool call (5 minutes).
+pub const DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 300_000;
+
+/// Surface-neutral gateway configuration the [`GatewayManager`] reads and
+/// mutates.
+///
+/// This is the gateway-relevant slice of the host's full `LabConfig`. It is the
+/// **in-memory** model only: persistence (TOML render with foreign-key
+/// preservation, atomic write, env-credential side effects) is owned by the
+/// host through the `GatewayConfigStore` seam in `lab-gateway`. There is
+/// intentionally **no** `#[serde(flatten)]` bag here — preservation of unrelated
+/// `config.toml` keys stays the host's job, because the host keeps `LabConfig`.
+///
+/// [`GatewayManager`]: ../../lab_gateway/gateway/struct.GatewayManager.html
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GatewayConfig {
+    /// Gateway-wide Code Mode exposure and execution settings.
+    #[serde(default)]
+    pub code_mode: CodeModeConfig,
+    /// Maximum time to wait for one proxied upstream MCP response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_request_timeout_ms: Option<u64>,
+    /// Maximum time to wait for one *relayed* upstream tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_relay_timeout_ms: Option<u64>,
+    /// Upstream MCP servers to proxy through the gateway.
+    #[serde(default)]
+    pub upstream: Vec<UpstreamConfig>,
+    /// Imported upstreams removed by an operator.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstream_import_tombstones: Vec<UpstreamImportTombstone>,
+    /// Discovered upstreams waiting for operator approval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstream_pending: Vec<UpstreamConfig>,
+    /// Public HTTP MCP routes protected by Lab OAuth and proxied by Lab.
+    #[serde(default)]
+    pub protected_mcp_routes: Vec<ProtectedMcpRouteConfig>,
+    /// Virtual MCP servers backed by canonically configured Lab services.
+    #[serde(default)]
+    pub virtual_servers: Vec<VirtualServerConfig>,
+    /// Virtual servers whose backing service is no longer registered.
+    #[serde(default)]
+    pub quarantined_virtual_servers: Vec<VirtualServerConfig>,
+    /// Gateway spawn-guard and command-allowlist preferences.
+    #[serde(default)]
+    pub gateway: GatewayPreferences,
+}
+
+impl GatewayConfig {
+    /// Resolved request timeout for one proxied upstream MCP response.
+    #[must_use]
+    pub fn upstream_request_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.upstream_request_timeout_ms
+                .unwrap_or(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS),
+        )
+    }
+
+    /// Resolved deadline for a single *relayed* upstream tool call.
+    #[must_use]
+    pub fn upstream_relay_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.upstream_relay_timeout_ms
+                .unwrap_or(DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS),
+        )
+    }
+
+    /// Normalize protected MCP route targets, trim whitespace, and validate.
+    ///
+    /// Ported verbatim from the host's `LabConfig::normalize_protected_mcp_routes`
+    /// for the gateway-owned slice so the standalone (FS-store) load path matches
+    /// the host's load path byte-for-byte.
+    pub fn normalize_protected_mcp_routes(&mut self) -> Result<(), ConfigError> {
+        for route in &mut self.protected_mcp_routes {
+            route.upstream = route
+                .upstream
+                .take()
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty());
+            if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+                normalize_string_list(&mut target.upstreams, "target.upstreams").map_err(
+                    |field| ConfigError::InvalidProtectedRoute {
+                        name: route.name.clone(),
+                        field,
+                        value: "gateway_subset target entries must not be empty".to_string(),
+                    },
+                )?;
+                normalize_string_list(&mut target.services, "target.services").map_err(
+                    |field| ConfigError::InvalidProtectedRoute {
+                        name: route.name.clone(),
+                        field,
+                        value: "gateway_subset target entries must not be empty".to_string(),
+                    },
+                )?;
+            }
+            if route.target.is_some()
+                && (route.upstream.is_some() || !route.backend_url.trim().is_empty())
+            {
+                return Err(ConfigError::InvalidProtectedRoute {
+                    name: route.name.clone(),
+                    field: "target",
+                    value:
+                        "protected MCP route target cannot be combined with upstream or backend_url"
+                            .to_string(),
+                });
+            }
+            if route.target.is_some() {
+                route.backend_url = String::new();
+                route.backend_mcp_path = default_mcp_path();
+                continue;
+            }
+            if route.upstream.is_some() && route.backend_url.trim().is_empty() {
+                route.backend_url = String::new();
+            } else {
+                route.backend_url =
+                    normalize_protected_backend_url(&route.backend_url, &route.backend_mcp_path)
+                        .map_err(|_| ConfigError::InvalidProtectedRoute {
+                            name: route.name.clone(),
+                            field: "backend_url",
+                            value: route.backend_url.clone(),
+                        })?;
+            }
+            route.backend_mcp_path = default_mcp_path();
+        }
+        validate_gateway_subset_paths_are_unique(&self.protected_mcp_routes)?;
+        Ok(())
+    }
+}
+
+fn normalize_string_list(
+    values: &mut Vec<String>,
+    field: &'static str,
+) -> Result<(), &'static str> {
+    let mut normalized = Vec::new();
+    for value in std::mem::take(values) {
+        let name = value.trim().to_string();
+        if name.is_empty() {
+            return Err(field);
+        }
+        if !normalized.contains(&name) {
+            normalized.push(name);
+        }
+    }
+    *values = normalized;
+    Ok(())
+}
+
+fn validate_gateway_subset_paths_are_unique(
+    routes: &[ProtectedMcpRouteConfig],
+) -> Result<(), ConfigError> {
+    let mut paths = std::collections::HashSet::new();
+    for route in routes
+        .iter()
+        .filter(|route| route.enabled && route.is_gateway_subset())
+    {
+        if !paths.insert(route.public_path.clone()) {
+            return Err(ConfigError::InvalidProtectedRoute {
+                name: route.name.clone(),
+                field: "public_path",
+                value: format!(
+                    "gateway_subset routes must use unique public_path values; `{}` is already mounted",
+                    route.public_path
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

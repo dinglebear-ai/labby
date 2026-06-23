@@ -7,10 +7,14 @@
 //! on transport/runtime layers (`axum`, `clap`, `rmcp`, `javy`, `wasmtime`,
 //! `utoipa`) or on Labby product registry builders.
 
+pub mod dispatch_helpers;
 pub mod error;
 pub mod gateway_config;
+pub mod helpers;
 pub mod path_safety;
 pub mod redact;
+
+pub use helpers::{env_non_empty, home_dir, lab_home};
 
 /// Code Mode runtime configuration, re-exported at the crate root so consumers
 /// that must stay free of host/transport vocabulary can name it without the
