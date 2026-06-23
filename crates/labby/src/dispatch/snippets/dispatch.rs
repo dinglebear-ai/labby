@@ -3,10 +3,10 @@ use serde_json::{Value, json};
 
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::code_mode::{
-    CodeModeBroker, CodeModeCaller, CodeModeCapabilityFilter, CodeModeExecutionResponse,
-    CodeModeSourceLookup, CodeModeSurface,
+    CodeModeBroker, CodeModeCaller, CodeModeCapabilityFilter, CodeModeSourceLookup, CodeModeSurface,
 };
 use crate::dispatch::helpers::{action_schema, help_payload, lab_home, require_str, to_json};
+use labby_codemode::CodeModeExecutionResponse;
 
 use super::catalog::ACTIONS;
 use super::store::{

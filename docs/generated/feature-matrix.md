@@ -12,15 +12,15 @@ Feature invariant status: clean.
 | lab-apis | `deploy` | ServicePassthrough | false | true | labby/deploy |  |
 | lab-apis | `mcpregistry` | ServicePassthrough | false | true | labby/mcpregistry |  |
 | lab-apis | `test-utils` | HelperInternal | false | false | labby/test-utils |  |
-| labby | `acp_registry` | ServicePassthrough | true | true | lab-apis/acp_registry | `lab-apis/acp_registry` |
-| labby | `all` | AggregateDefault | true | true | lab-apis/all | `lab-apis/all`<br>`lab-admin`<br>`acp_registry`<br>`deploy`<br>`gateway`<br>`marketplace` |
+| labby | `acp_registry` | IntentionalException | true | true | lab-apis/acp_registry | `labby-apis/acp_registry`<br>`labby-runtime/acp_registry` |
+| labby | `all` | AggregateDefault | true | false | lab-apis/all | `labby-apis/all`<br>`lab-admin`<br>`acp_registry`<br>`deploy`<br>`gateway`<br>`marketplace` |
 | labby | `default` | AggregateDefault | false | false | lab-apis/default | `all` |
-| labby | `deploy` | ServicePassthrough | true | true | lab-apis/deploy | `lab-apis/deploy` |
+| labby | `deploy` | IntentionalException | true | true | lab-apis/deploy | `labby-apis/deploy`<br>`labby-runtime/deploy` |
 | labby | `fs` | ProductSlice | false | false | - | `dep:walkdir`<br>`dep:globset`<br>`dep:unicode-normalization`<br>`dep:rustix` |
-| labby | `gateway` | ProductSlice | true | true | - | `dep:javy`<br>`dep:wasmtime` |
+| labby | `gateway` | ProductSlice | true | true | - |  |
 | labby | `lab-admin` | ProductSlice | true | true | - |  |
-| labby | `marketplace` | ProductSlice | true | true | lab-apis/mcpregistry | `lab-apis/mcpregistry` |
-| labby | `mcpregistry` | IntentionalException | true | true | lab-apis/mcpregistry | `marketplace` |
+| labby | `marketplace` | ProductSlice | true | true | - | `labby-apis/mcpregistry`<br>`labby-runtime/marketplace` |
+| labby | `mcpregistry` | IntentionalException | false | false | lab-apis/mcpregistry | `marketplace` |
 | labby | `node-runtime` | BinaryOnly | false | false | - |  |
 | labby | `services-all` | IntentionalException | false | false | - |  |
 | labby | `systemd` | HelperInternal | false | false | - | `dep:sd-notify` |
