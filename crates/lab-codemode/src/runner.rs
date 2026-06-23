@@ -276,9 +276,6 @@ fn add_code_mode_hint(kind: &str, message: &str) -> String {
     }
 }
 
-
-
-
 fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
     // Read the next Start. EOF here is the normal pool-shutdown path (the parent
     // dropped this runner), NOT an error — return InputClosed so the caller can
