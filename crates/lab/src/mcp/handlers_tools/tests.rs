@@ -2206,10 +2206,15 @@ async fn server_reads_current_pool_from_gateway_manager() {
 #[tokio::test]
 async fn snapshot_catalog_hides_mcp_disabled_virtual_services() {
     let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
-    let manager = Arc::new(crate::dispatch::gateway::manager::GatewayManager::new(
-        std::path::PathBuf::from("config.toml"),
-        runtime,
-    ));
+    let manager = Arc::new(
+        crate::dispatch::gateway::manager::GatewayManager::new(
+            std::path::PathBuf::from("config.toml"),
+            runtime,
+        )
+        .with_builtin_service_registry(std::sync::Arc::new(
+            crate::registry::build_default_registry(),
+        )),
+    );
     manager
         .seed_config(
             crate::config::LabConfig {

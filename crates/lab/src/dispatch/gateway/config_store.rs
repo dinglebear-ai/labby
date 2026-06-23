@@ -365,3 +365,71 @@ mod host_config {
         Ok(existing.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Trust invariant: persisting a gateway mutation through the host store must
+    /// preserve a FOREIGN top-level section (one `LabConfig` does not model),
+    /// including its operator comment and formatting, byte-for-byte.
+    ///
+    /// `[deploy]`/`[device]` are intentionally NOT covered here: they are in
+    /// `KNOWN_LAB_CONFIG_KEYS` and are rewritten from the struct by design.
+    #[test]
+    fn persist_preserves_foreign_top_level_section_byte_for_byte() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+
+        // A foreign section LabConfig does not model + a gateway section the
+        // manager owns.
+        let initial = "\
+[experimental_external_tool]
+# operator comment must survive
+foo = 1
+
+[gateway]
+
+[[upstream]]
+name = \"alpha\"
+enabled = true
+url = \"https://alpha.example.com/mcp\"
+";
+        std::fs::write(&path, initial).expect("write initial config");
+
+        // Load the full LabConfig and seed the store with it.
+        let loaded = host_config::load_gateway_config(&path).expect("load config");
+        let store = LabConfigStore::new(
+            Arc::new(RwLock::new(loaded.clone())),
+            path.clone(),
+        );
+
+        // Mutate a gateway-owned upstream and persist through the host store.
+        let mut gw = loaded.to_gateway_config();
+        gw.upstream[0].enabled = false;
+        store.persist(&gw).expect("persist gateway mutation");
+
+        let rendered = std::fs::read_to_string(&path).expect("read persisted config");
+
+        // The gateway mutation landed.
+        let reloaded = host_config::load_gateway_config(&path).expect("reload config");
+        assert!(
+            !reloaded.upstream[0].enabled,
+            "gateway upstream mutation must persist"
+        );
+
+        // The foreign section's comment + formatting survived byte-for-byte.
+        assert!(
+            rendered.contains("[experimental_external_tool]"),
+            "foreign section header must survive, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("# operator comment must survive"),
+            "foreign section operator comment must survive byte-for-byte, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("foo = 1"),
+            "foreign section value must survive, got:\n{rendered}"
+        );
+    }
+}
