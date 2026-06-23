@@ -6,14 +6,15 @@ use serde_json::Value;
 
 use crate::error::ToolError;
 use crate::host::CodeModeHost;
-use labby_runtime::CodeModeConfig;
+use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
 
 use super::CodeModeBroker;
 use super::normalize_user_code;
+use super::shape::shape_final_result;
 use super::truncate::{response_within_budget, truncate_execution_response};
 use super::types::{
-    CodeModeCaller, CodeModeDiscoveryEntry, CodeModeExecutionError, CodeModeExecutionResponse,
-    CodeModeSurface, CodeModeToolId, CodeModeToolRef, ToolScope,
+    CodeModeCaller, CodeModeDiscoveryEntry, CodeModeExecutionError, CodeModeExecutionOutcome,
+    CodeModeExecutionResponse, CodeModeSurface, CodeModeToolId, CodeModeToolRef, ToolScope,
 };
 
 /// Compatibility key a Code Mode snippet can return
@@ -30,6 +31,20 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         config: CodeModeConfig,
         scope: ToolScope,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
+        Ok(self
+            .execute_with_raw_response(code, caller, surface, config, scope)
+            .await?
+            .display_response)
+    }
+
+    pub async fn execute_with_raw_response(
+        &self,
+        code: &str,
+        caller: CodeModeCaller,
+        surface: CodeModeSurface,
+        config: CodeModeConfig,
+        scope: ToolScope,
+    ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
         // `codemode` is exposed only when the host's Code Mode surface is
         // enabled; the surface handler gates on that before reaching here.
         if !caller.can_execute() {
@@ -57,18 +72,38 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // Done before truncation so the (tiny) `ui` field is preserved while
         // `result` may be capped.
         self.apply_ui_opt_in(&mut response);
+        let raw_response = response.clone();
+        let shaped = shape_final_result(
+            response.result.take(),
+            config.result_shape_policy,
+            config.max_response_bytes,
+            config.max_response_tokens,
+            config.token_estimate_divisor,
+        );
+        let result_shape_changed = shaped.metadata.changed;
+        let result_shape_truncated = shaped.metadata.truncated;
+        let result_shape_original_size_bytes = shaped.metadata.original_size_bytes;
+        let result_shape_shaped_size_bytes = shaped.metadata.shaped_size_bytes;
+        response.result = shaped.result;
+        if config.result_shape_policy != CodeModeResultShapePolicy::Off {
+            response.result_shaping = Some(shaped.metadata);
+        }
+        let shaped_result = response.result.clone();
         let was_truncated = !response_within_budget(
             &response,
             config.max_response_bytes,
             config.max_response_tokens,
             config.token_estimate_divisor,
         );
-        let response = truncate_execution_response(
+        let mut response = truncate_execution_response(
             response,
             config.max_response_bytes,
             config.max_response_tokens,
             config.token_estimate_divisor,
         );
+        if response.result != shaped_result {
+            response.result_shaping = None;
+        }
         tracing::info!(
             surface = "dispatch",
             service = "code_mode",
@@ -80,11 +115,19 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 .as_ref()
                 .map(|v| v.to_string().len())
                 .unwrap_or(0),
+            result_shape_policy = ?config.result_shape_policy,
+            result_shape_changed,
+            result_shape_truncated,
+            result_shape_original_size_bytes,
+            result_shape_shaped_size_bytes,
             logs_count = response.logs.len(),
             truncated = was_truncated,
             "code execution complete"
         );
-        Ok(response)
+        Ok(CodeModeExecutionOutcome {
+            raw_response,
+            display_response: response,
+        })
     }
 
     async fn build_code_mode_proxy(
@@ -353,6 +396,7 @@ mod tests {
         CodeModeExecutionResponse {
             execution_id: None,
             result: Some(result),
+            result_shaping: None,
             ui: None,
             calls: Vec::new(),
             logs: Vec::new(),

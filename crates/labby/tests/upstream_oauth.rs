@@ -21,8 +21,6 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use labby_auth::sqlite::SqliteStore;
-use labby_auth::types::UpstreamOauthCredentialRow;
 use labby::config::{
     UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
     canonicalize_upstream_url,
@@ -30,6 +28,8 @@ use labby::config::{
 use labby::oauth::upstream::encryption::load_key;
 use labby::oauth::upstream::manager::UpstreamOauthManager;
 use labby::oauth::upstream::types::OauthError;
+use labby_auth::sqlite::SqliteStore;
+use labby_auth::types::UpstreamOauthCredentialRow;
 use serde_json::json;
 use tempfile::TempDir;
 use tracing_subscriber::fmt::MakeWriter;

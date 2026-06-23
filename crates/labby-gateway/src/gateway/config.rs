@@ -890,10 +890,12 @@ fn validate_upstream(
             }
         }
         labby_runtime::gateway_config::ConfigError::MissingOauthUrl { .. }
-        | labby_runtime::gateway_config::ConfigError::InvalidUrl { .. } => ToolError::InvalidParam {
-            message: e.to_string(),
-            param: "url".to_string(),
-        },
+        | labby_runtime::gateway_config::ConfigError::InvalidUrl { .. } => {
+            ToolError::InvalidParam {
+                message: e.to_string(),
+                param: "url".to_string(),
+            }
+        }
         other => ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
             message: other.to_string(),

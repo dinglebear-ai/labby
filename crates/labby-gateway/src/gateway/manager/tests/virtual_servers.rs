@@ -295,9 +295,11 @@ fn virtual_server_mcp_policy_reduces_exposed_tool_count() {
                 mcp: true,
                 webui: true,
             },
-            mcp_policy: Some(labby_runtime::gateway_config::VirtualServerMcpPolicyConfig {
-                allowed_actions: vec!["server.info".to_string()],
-            }),
+            mcp_policy: Some(
+                labby_runtime::gateway_config::VirtualServerMcpPolicyConfig {
+                    allowed_actions: vec!["server.info".to_string()],
+                },
+            ),
         },
         UpstreamCachedSummary {
             discovered_tool_count: 5,
@@ -341,9 +343,11 @@ async fn mcp_action_policy_restricts_actions_to_allowlist() {
                     mcp: true,
                     webui: false,
                 },
-                mcp_policy: Some(labby_runtime::gateway_config::VirtualServerMcpPolicyConfig {
-                    allowed_actions: vec!["server.info".to_string()],
-                }),
+                mcp_policy: Some(
+                    labby_runtime::gateway_config::VirtualServerMcpPolicyConfig {
+                        allowed_actions: vec!["server.info".to_string()],
+                    },
+                ),
             }],
             ..GatewayConfig::default()
         })

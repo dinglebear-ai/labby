@@ -835,7 +835,8 @@ fn collect_forks(plugin_id: Option<String>) -> Result<Vec<ForkRecord>, ToolError
     let store = crate::dispatch::stash::store::StashStore::new(root);
     let mut forks = Vec::new();
     for component in store.list_components()? {
-        let Some(labby_apis::stash::StashOrigin::Marketplace(origin)) = component.origin_meta.clone()
+        let Some(labby_apis::stash::StashOrigin::Marketplace(origin)) =
+            component.origin_meta.clone()
         else {
             continue;
         };

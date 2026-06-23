@@ -90,6 +90,7 @@ pub(crate) fn truncate_execution_response(
         let marker_len = serde_json::to_string(&marker).map(|s| s.len()).unwrap_or(0);
         if marker_len < original_len {
             response.result = Some(marker);
+            response.result_shaping = None;
         }
     }
 
@@ -227,7 +228,7 @@ fn truncation_marker(
     artifacts: &[CodeModeArtifactReceipt],
 ) -> Value {
     let serialized = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
-    let preview = serialized.chars().take(1024).collect::<String>();
+    let preview = utf8_prefix_by_bytes(&serialized, 1024).to_string();
     json!({
         "truncated": true,
         "original_size": serialized.len(),
@@ -236,6 +237,20 @@ fn truncation_marker(
         "artifacts": artifacts,
         "next_action": "Use a narrower query, request fewer fields, or split the work across multiple codemode calls."
     })
+}
+
+fn utf8_prefix_by_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+
+    let end = value
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .take_while(|idx| *idx <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    &value[..end]
 }
 
 /// Enforce `max_log_entries` and `max_log_bytes` caps on captured log lines.

@@ -19,4 +19,4 @@ pub use helpers::{env_non_empty, home_dir, lab_home};
 /// Code Mode runtime configuration, re-exported at the crate root so consumers
 /// that must stay free of host/transport vocabulary can name it without the
 /// module path.
-pub use gateway_config::CodeModeConfig;
+pub use gateway_config::{CodeModeConfig, CodeModeResultShapePolicy};

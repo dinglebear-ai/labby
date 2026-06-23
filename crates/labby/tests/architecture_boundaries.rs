@@ -75,8 +75,15 @@ fn dispatch_layer_does_not_import_mcp_surface_modules() {
 fn lab_gateway_src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("lab-gateway")
+        .join("labby-gateway")
         .join("src")
+}
+
+fn manifest_declares_dependency(manifest: &str, name: &str) -> bool {
+    manifest.lines().map(str::trim_start).any(|line| {
+        line.strip_prefix(name)
+            .is_some_and(|rest| rest.starts_with(' ') || rest.starts_with('='))
+    })
 }
 
 /// The standalone gateway runtime crate must stay free of product-surface
@@ -88,13 +95,13 @@ fn lab_gateway_manifest_does_not_depend_on_product_surfaces() {
     let manifest = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
-            .join("lab-gateway")
+            .join("labby-gateway")
             .join("Cargo.toml"),
     )
     .expect("read lab-gateway manifest");
     for banned in ["axum", "clap", "utoipa", "javy", "wasmtime", "labby"] {
         assert!(
-            !manifest.contains(banned),
+            !manifest_declares_dependency(&manifest, banned),
             "lab-gateway runtime crate must not depend on {banned}"
         );
     }

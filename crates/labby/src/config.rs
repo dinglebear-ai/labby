@@ -741,8 +741,8 @@ fn invalid_protected_route(
 // bin-target unused-import lint.
 #[allow(unused_imports)]
 pub use labby_runtime::gateway_config::{
-    CodeModeConfig, ConfigError, GatewayConfig, GatewayImportMode, GatewayPreferences,
-    ImportSource, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
+    CodeModeConfig, CodeModeResultShapePolicy, ConfigError, GatewayConfig, GatewayImportMode,
+    GatewayPreferences, ImportSource, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
     ProtectedMcpRouteEffectiveTarget, ProtectedMcpRouteTarget, ResolvedPublicUrls, UpstreamConfig,
     UpstreamImportTombstone, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
     VirtualServerConfig, VirtualServerMcpPolicyConfig, VirtualServerSurfacesConfig, WebPreferences,

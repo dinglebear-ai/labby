@@ -15,12 +15,12 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use labby_auth::config::{AuthConfig, AuthMode, GoogleConfig};
 use labby::{
     api::{router::build_router_with_bearer, state::AppState},
     config::NodeRole,
     node::store::NodeStore,
 };
+use labby_auth::config::{AuthConfig, AuthMode, GoogleConfig};
 use tower::ServiceExt;
 
 #[tokio::test]

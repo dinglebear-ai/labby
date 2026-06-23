@@ -32,6 +32,7 @@ mod runner;
 mod runner_drive;
 mod runner_io;
 mod schema;
+mod shape;
 pub mod snippet;
 mod trace;
 mod truncate;
@@ -66,6 +67,7 @@ pub use pool::{RunnerPool, RunnerSpawn};
 /// subcommand.
 pub use runner::run_code_mode_runner_stdio;
 pub use schema::validate_code_mode_params_against_schema;
+pub use shape::CodeModeResultShapeMetadata;
 pub use trace::code_mode_execute_trace;
 pub use types::{
     CodeModeCaller, CodeModeCatalogKind, CodeModeExecutedCall, CodeModeExecutionError,

@@ -951,7 +951,8 @@ mod tests {
             .as_secs() as i64
     }
 
-    async fn callback_test_state() -> (tempfile::TempDir, labby_auth::sqlite::SqliteStore, AppState) {
+    async fn callback_test_state() -> (tempfile::TempDir, labby_auth::sqlite::SqliteStore, AppState)
+    {
         let dir = tempfile::tempdir().unwrap();
         let store = labby_auth::sqlite::SqliteStore::open(dir.path().join("auth.db"))
             .await

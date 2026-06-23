@@ -96,6 +96,12 @@ pub fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
             .map(compact_result_shape)
             .unwrap_or_else(|| json!({ "type": "undefined" })),
     );
+    if let Some(shape) = &response.result_shaping {
+        trace.insert(
+            "result_shaping".to_string(),
+            serde_json::to_value(shape).unwrap_or_else(|_| json!({ "type": "unknown" })),
+        );
+    }
     // Surface artifact receipts so a structured-content-only client can follow
     // the "write large payloads to an artifact and read them back" path.
     if !response.artifacts.is_empty() {

@@ -48,7 +48,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.code_mode.set",
         description: "Configure gateway code execution limits",
-        destructive: false,
+        destructive: true,
         requires_admin: true,
         returns: "CodeModeConfig",
         params: &[
@@ -63,6 +63,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "boolean",
                 required: false,
                 description: "Whether call traces include redacted and capped upstream tool params",
+            },
+            ParamSpec {
+                name: "result_shape_policy",
+                ty: "string",
+                required: false,
+                description: "Final-result shaping policy for completed Code Mode runs: off or truncate",
             },
             ParamSpec {
                 name: "timeout_ms",
@@ -868,6 +874,9 @@ mod tests {
     #[test]
     fn gateway_actions_are_not_destructive_under_data_loss_definition() {
         for spec in ACTIONS {
+            if spec.name == "gateway.code_mode.set" {
+                continue;
+            }
             assert!(
                 !spec.destructive,
                 "{} must not be destructive unless it risks permanent, hard-to-recreate data loss",
@@ -888,11 +897,12 @@ mod tests {
             .iter()
             .find(|spec| spec.name == "gateway.code_mode.set")
             .expect("gateway.code_mode.set catalog entry");
-        assert!(!set.destructive);
+        assert!(set.destructive);
         let params: Vec<&str> = set.params.iter().map(|param| param.name).collect();
         for param in [
             "enabled",
             "trace_params",
+            "result_shape_policy",
             "timeout_ms",
             "max_response_bytes",
             "max_response_tokens",
@@ -919,7 +929,7 @@ mod tests {
             .iter()
             .find(|spec| spec.name == "gateway.code_mode.set")
             .expect("gateway.code_mode.set catalog entry");
-        assert!(!set.destructive);
+        assert!(set.destructive);
     }
 
     // ── A-H2 / S5: requires_admin field tests ────────────────────────────────

@@ -70,6 +70,14 @@ fn default_mcp_scopes() -> Vec<String> {
 
 // ─── Code Mode ───────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeModeResultShapePolicy {
+    #[default]
+    Off,
+    Truncate,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
@@ -78,6 +86,10 @@ pub struct CodeModeConfig {
     /// Whether Code Mode call traces include redacted/capped tool params.
     #[serde(default = "default_code_mode_trace_params")]
     pub trace_params: bool,
+    /// Optional model-facing final-result shaping policy.
+    /// This never affects sandbox-visible callTool results.
+    #[serde(default)]
+    pub result_shape_policy: CodeModeResultShapePolicy,
     /// Maximum wall-clock time for one Code Mode execution.
     #[serde(default = "default_code_mode_timeout_ms")]
     pub timeout_ms: u64,
@@ -107,6 +119,7 @@ impl Default for CodeModeConfig {
         Self {
             enabled: false,
             trace_params: default_code_mode_trace_params(),
+            result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
             max_response_bytes: default_code_mode_max_response_bytes(),
             max_response_tokens: default_code_mode_max_response_tokens(),

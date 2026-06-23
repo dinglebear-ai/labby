@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use crate::upstream::types::UpstreamRuntimeOwner;
 use labby_runtime::gateway_config::{
-    CodeModeConfig, ProtectedMcpRouteConfig, UpstreamConfig, UpstreamOauthConfig,
+    CodeModeConfig, CodeModeResultShapePolicy, ProtectedMcpRouteConfig, UpstreamConfig,
+    UpstreamOauthConfig,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -250,6 +251,8 @@ pub(crate) struct CodeModeSetParams {
     pub enabled: Option<bool>,
     #[serde(default)]
     pub trace_params: Option<bool>,
+    #[serde(default)]
+    pub result_shape_policy: Option<CodeModeResultShapePolicy>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
     #[serde(default)]

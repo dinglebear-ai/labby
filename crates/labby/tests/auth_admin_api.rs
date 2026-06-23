@@ -29,12 +29,12 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
+use labby::api::{router::build_router, state::AppState};
 use labby_auth::{
     config::{AuthConfig, AuthMode, GoogleConfig},
     state::AuthState,
     types::BrowserSessionRow,
 };
-use labby::api::{router::build_router, state::AppState};
 use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;

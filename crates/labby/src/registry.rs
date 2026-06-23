@@ -300,7 +300,9 @@ impl labby_gateway::registry::InProcessServiceRegistry for ToolRegistry {
             .iter()
             .cloned()
             .map(
-                |service| -> Box<dyn labby_gateway::registry::InProcessService> { Box::new(service) },
+                |service| -> Box<dyn labby_gateway::registry::InProcessService> {
+                    Box::new(service)
+                },
             )
             .collect()
     }

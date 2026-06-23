@@ -173,8 +173,8 @@ fn env_docs(
 }
 
 fn build_feature_matrix(repo_root: &Path) -> Result<FeatureMatrix> {
-    let lab = read_manifest(&repo_root.join("crates/lab/Cargo.toml"))?;
-    let apis = read_manifest(&repo_root.join("crates/lab-apis/Cargo.toml"))?;
+    let lab = read_manifest(&repo_root.join("crates/labby/Cargo.toml"))?;
+    let apis = read_manifest(&repo_root.join("crates/labby-apis/Cargo.toml"))?;
     let lab_features = lab.features;
     let api_features = apis.features;
     let lab_all = feature_set(&lab_features, "all");

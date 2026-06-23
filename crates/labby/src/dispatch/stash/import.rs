@@ -417,7 +417,9 @@ fn import_blocking_with_origin(
         labby_apis::stash::types::StashWorkspaceShape::File => {
             temp_workspace.join(filename.as_deref().unwrap_or("file"))
         }
-        labby_apis::stash::types::StashWorkspaceShape::Directory if is_dir => temp_workspace.clone(),
+        labby_apis::stash::types::StashWorkspaceShape::Directory if is_dir => {
+            temp_workspace.clone()
+        }
         labby_apis::stash::types::StashWorkspaceShape::Directory => {
             temp_workspace.join(filename.as_deref().unwrap_or("file"))
         }

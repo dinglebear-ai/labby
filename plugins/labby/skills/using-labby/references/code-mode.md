@@ -209,15 +209,29 @@ Upstream result unwrapping:
 
 > **Reading the value back.** `codemode` returns the envelope in the tool's text
 > content block and a copy in `structuredContent` carrying both `result` and a
-> compact `result_shape`. Most MCP clients (Claude Code included) surface
-> `structuredContent` over text. If `result` comes back as a truncation marker —
-> an object with `"truncated": true`, plus `preview` and `next_action` — the
-> value exceeded the response budget (24 KB / 6000 tokens). Reduce the data
-> inside the sandbox before returning, or write large payloads to an artifact and
-> read them back — do not rely on a large `result` reaching the model verbatim.
+> compact `result_shape`; shaped runs also include `result_shaping` metadata.
+> Most MCP clients (Claude Code included) surface `structuredContent` over text.
+> If `result` comes back as a truncation marker — an object with `"truncated":
+> true`, plus `preview` and `next_action` — the value exceeded the response
+> budget (24 KB / 6000 tokens). Reduce the data inside the sandbox before
+> returning, or write large payloads to an artifact and read them back — do not
+> rely on a large `result` reaching the model verbatim.
 
 Oversized final responses are replaced with a truncation marker. Reduce data in
 the sandbox before returning large values.
+
+## Final Result Shaping
+
+`[code_mode].result_shape_policy` defaults to `"off"`. When set to
+`"truncate"`, Labby shapes only the successful completed final `result` after
+the sandbox returns and after the `__ui` compatibility unwrap. It then applies
+the normal envelope budget and builds MCP text JSON plus `structuredContent`
+from that same shaped response.
+
+This does not change values seen inside the sandbox through `callTool()` or
+`codemode.<upstream>.<tool>()`, and it does not add raw-result audit retention.
+Use `writeArtifact()` for large detailed payloads. Truncation bounds output; it
+is not redaction and must not be used to sanitize secrets.
 
 ## Error Recovery
 
@@ -252,8 +266,8 @@ Common error kinds:
 Implementation facts that affect operation:
 
 - `codemode.search()` runs inside the sandbox and cannot call tools.
-- `codemode` uses root `[code_mode]` config for timeout, tool-call, response,
-  token, and log limits.
+- `codemode` uses root `[code_mode]` config for timeout, response, token, log,
+  and final-result shaping limits.
 - The runner process starts with a cleared environment and temp cwd.
 - The parent host brokers all tool calls, validates schemas, applies
   confirmations, and terminates runaway executions.
@@ -265,8 +279,10 @@ Current config defaults:
 
 ```toml
 [code_mode]
+enabled = true
+trace_params = true
+result_shape_policy = "off"
 timeout_ms = 30000
-max_tool_calls = 1000
 max_response_bytes = 24576
 max_response_tokens = 6000
 token_estimate_divisor = 4
@@ -274,15 +290,8 @@ max_log_entries = 1000
 max_log_bytes = 65536
 ```
 
-`gateway.code_mode.set` currently updates only:
-
-- `timeout_ms`
-- `max_tool_calls`
-- `max_response_bytes`
-- `max_response_tokens`
-
-Edit `config.toml` for other Code Mode config fields unless the generated
-action catalog has changed.
+`gateway.code_mode.set` accepts the public fields in the generated action
+catalog, including `result_shape_policy`.
 
 ## CLI Code Mode
 

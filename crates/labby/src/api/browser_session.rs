@@ -32,7 +32,10 @@ fn unauthenticated_session_response(login_available: bool) -> Response {
     }))
 }
 
-fn session_cookie(headers: &HeaderMap, auth_state: &labby_auth::state::AuthState) -> Option<String> {
+fn session_cookie(
+    headers: &HeaderMap,
+    auth_state: &labby_auth::state::AuthState,
+) -> Option<String> {
     labby_auth::session::read_cookie(headers, &auth_state.config.session_cookie_name)
 }
 

@@ -198,8 +198,9 @@ impl HostIo for TimedIo {
         remote_path: &str,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<Option<String>, labby_apis::deploy::DeployError>>
-                + Send
+            dyn std::future::Future<
+                    Output = Result<Option<String>, labby_apis::deploy::DeployError>,
+                > + Send
                 + 'static,
         >,
     > {
@@ -481,10 +482,10 @@ async fn unknown_host_alias_in_factory_path_is_separate_from_plan_validation() {
 /// host — `plan_impl` only validates aliases against the inventory.
 #[tokio::test]
 async fn plan_artifacts_includes_per_role_entries() {
-    use labby_apis::core::ssh::SshHostTarget;
-    use labby_apis::deploy::DeployRequest;
     use labby::config::{ArtifactRole, DeployDefaults, DeployHostOverride, DeployPreferences};
     use labby::dispatch::deploy::runner::DefaultRunner;
+    use labby_apis::core::ssh::SshHostTarget;
+    use labby_apis::deploy::DeployRequest;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 

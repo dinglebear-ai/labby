@@ -274,14 +274,12 @@ async fn auth_browser_login(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     query: Query<labby_auth::types::BrowserLoginQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(
-        labby_auth::authorize::browser_login(
-            State(app_auth_state(&state)?),
-            ConnectInfo(addr),
-            query,
-        )
-        .await?,
+    Ok(labby_auth::authorize::browser_login(
+        State(app_auth_state(&state)?),
+        ConnectInfo(addr),
+        query,
     )
+    .await?)
 }
 
 async fn auth_callback(

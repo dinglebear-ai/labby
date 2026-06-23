@@ -468,7 +468,7 @@ mod tests {
         let root = workspace_root();
         assert!(root.join("Cargo.toml").exists(), "got {}", root.display());
         assert!(
-            root.join("crates/lab/Cargo.toml").exists(),
+            root.join("crates/labby/Cargo.toml").exists(),
             "got {}",
             root.display()
         );

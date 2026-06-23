@@ -1513,7 +1513,13 @@
       },
       "GatewayGatewayCode_modeSetParams": {
         "type": "object",
+        "required": [
+          "confirm"
+        ],
         "properties": {
+          "confirm": {
+            "type": "boolean"
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -1528,6 +1534,9 @@
           },
           "max_response_tokens": {
             "type": "integer"
+          },
+          "result_shape_policy": {
+            "type": "string"
           },
           "timeout_ms": {
             "type": "integer"

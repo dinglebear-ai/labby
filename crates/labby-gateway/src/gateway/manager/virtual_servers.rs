@@ -203,9 +203,11 @@ impl GatewayManager {
         virtual_server.mcp_policy = if allowed_actions.is_empty() {
             None
         } else {
-            Some(labby_runtime::gateway_config::VirtualServerMcpPolicyConfig {
-                allowed_actions: allowed_actions.to_vec(),
-            })
+            Some(
+                labby_runtime::gateway_config::VirtualServerMcpPolicyConfig {
+                    allowed_actions: allowed_actions.to_vec(),
+                },
+            )
         };
 
         self.persist_config(cfg).await?;
