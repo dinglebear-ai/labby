@@ -18,7 +18,7 @@ use crate::upstream::pool::{UpstreamCachedSummary, UpstreamPool};
 /// `ServerView` can surface upstream-service reachability without forcing the
 /// caller to thread separate fields.
 #[derive(Debug, Clone)]
-pub struct ServiceHealth {
+pub(crate) struct ServiceHealth {
     pub reachable: bool,
     pub auth_ok: bool,
 }

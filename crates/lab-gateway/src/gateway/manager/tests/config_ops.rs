@@ -3,7 +3,6 @@
 use std::collections::BTreeSet;
 
 use lab_runtime::gateway_config::{VirtualServerConfig, VirtualServerSurfacesConfig};
-use crate::dispatch::clients::SharedServiceClients;
 use crate::gateway::config::load_gateway_config;
 use crate::gateway::config_mutation::read_env_values;
 
@@ -253,36 +252,37 @@ async fn concurrent_root_and_virtual_server_mutations_both_persist() {
     assert!(plex.surfaces.mcp);
 }
 
-// CANNOT be re-fixtured without a production-code change (out of test-only scope).
-// This asserts that a real env-credential write through `set_service_config`
-// triggers exactly one service-client refresh. The refresh only fires when
-// `values_to_service_creds` is non-empty, which requires `set_service_config` to
-// accept at least one declared field. Post-pivot the only `service_meta`-resolvable
-// service is `deploy`, which declares zero env fields — so every accepted call
-// produces empty creds and zero refreshes. A secret/url-bearing service (e.g. `acp`)
-// is rejected by `set_service_config` because it is absent from
-// `registry::service_meta`. Re-enabling requires adding such a service to
-// `service_meta` (a production change). Unlike the redaction/empty/configured tests
-// above, this one asserts a *side effect* of the manager write path and cannot be
-// rerouted through the `service_config_view` projection.
+// Store-seam env persistence guard (rewritten in the gateway extraction).
+//
+// The host-owned service-client cache + `refresh_count()` instrumentation moved
+// out of `lab-gateway` into `lab`'s `LabConfigStore`, so the manager no longer
+// exposes `with_service_clients`. The credential-write half of that contract is
+// now owned by the `GatewayConfigStore` seam: env vars are persisted through
+// `store.persist_*`, exercised here against the default `FsGatewayConfigStore`
+// (injected via `with_env_path`). This asserts a real env-credential write lands
+// in the backing `.env` file through the store seam.
 #[tokio::test]
-#[ignore = "set_service_config accepts only `deploy` (zero env fields) post-pivot, so no creds are written and no refresh fires — needs a service_meta prod change"]
-async fn service_clients_refresh_after_service_config_update() {
+async fn bearer_token_credential_write_persists_through_store_seam() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
-    let shared_clients =
-        SharedServiceClients::from_clients(crate::dispatch::clients::ServiceClients::default());
-    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default())
-        .with_service_clients(shared_clients.clone());
-
-    let mut values = BTreeMap::new();
-    values.insert("PLEX_URL".to_string(), "http://127.0.0.1:32400".to_string());
-    values.insert("PLEX_TOKEN".to_string(), "token".to_string());
+    let env_path = dir.path().join(".env");
+    let manager =
+        GatewayManager::new(path, GatewayRuntimeHandle::default()).with_env_path(env_path.clone());
 
     manager
-        .set_service_config("deploy", &values)
+        .add(
+            fixture_stdio_upstream("plex"),
+            Some("plex-token".to_string()),
+            None,
+            None,
+        )
         .await
-        .expect("set service config");
+        .expect("add gateway with bearer token");
 
-    assert_eq!(shared_clients.refresh_count(), 1);
+    let values = read_env_values(&env_path).expect("read env values written via store seam");
+    assert_eq!(
+        values.get("LAB_GW_PLEX_AUTH_HEADER").map(String::as_str),
+        Some("Bearer plex-token"),
+        "bearer credential must be persisted to the .env file through the store seam"
+    );
 }

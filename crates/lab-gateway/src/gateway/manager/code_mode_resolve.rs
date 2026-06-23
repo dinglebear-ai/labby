@@ -11,14 +11,14 @@ use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use super::GatewayManager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CallbackToolLookup {
+pub enum CallbackToolLookup {
     LegacyAnyExposed,
     DirectMcpApp,
     SiblingOfMcpApp,
 }
 
 impl GatewayManager {
-    pub(crate) async fn resolve_widget_callback_tool_candidates_scoped(
+    pub async fn resolve_widget_callback_tool_candidates_scoped(
         &self,
         tool: &str,
         allowed_upstreams: Option<&std::collections::BTreeSet<String>>,

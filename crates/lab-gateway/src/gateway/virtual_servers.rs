@@ -5,12 +5,12 @@ use lab_runtime::gateway_config::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VirtualServerSource {
+pub(crate) enum VirtualServerSource {
     LabService { service: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VirtualServerRecord {
+pub(crate) struct VirtualServerRecord {
     pub id: String,
     pub source: VirtualServerSource,
     pub enabled: bool,

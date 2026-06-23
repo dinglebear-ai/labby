@@ -2,7 +2,7 @@ use lab_apis::core::PluginMeta;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceFieldView {
+pub(crate) struct ServiceFieldView {
     pub name: String,
     pub description: String,
     pub example: String,
@@ -11,7 +11,7 @@ pub struct ServiceFieldView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SupportedServiceView {
+pub(crate) struct SupportedServiceView {
     pub key: String,
     pub display_name: String,
     pub category: String,
@@ -24,7 +24,7 @@ pub struct SupportedServiceView {
     pub default_port: Option<u16>,
 }
 
-pub fn supported_services_from_registry(
+pub(crate) fn supported_services_from_registry(
     registry: &dyn crate::gateway::service_registry::GatewayServiceRegistry,
 ) -> Vec<SupportedServiceView> {
     registry

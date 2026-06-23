@@ -6,7 +6,7 @@ use lab_runtime::gateway_config::{CodeModeConfig, ProtectedMcpRouteConfig, Upstr
 use crate::upstream::types::UpstreamRuntimeOwner;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayRuntimeOwnerParams {
+pub(crate) struct GatewayRuntimeOwnerParams {
     pub surface: String,
     #[serde(default)]
     pub subject: Option<String>,
@@ -34,7 +34,7 @@ impl From<GatewayRuntimeOwnerParams> for UpstreamRuntimeOwner {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GatewayNameParams {
+pub(crate) struct GatewayNameParams {
     pub name: String,
     #[serde(default)]
     pub origin: Option<String>,
@@ -43,7 +43,7 @@ pub struct GatewayNameParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GatewayImportTombstoneParams {
+pub(crate) struct GatewayImportTombstoneParams {
     pub name: String,
     #[serde(default)]
     pub source_client: Option<String>,
@@ -60,57 +60,57 @@ pub struct GatewayImportTombstoneParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GatewayClientConfigParams {
+pub(crate) struct GatewayClientConfigParams {
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProtectedRouteNameParams {
+pub(crate) struct ProtectedRouteNameParams {
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProtectedRouteSpecParams {
+pub(crate) struct ProtectedRouteSpecParams {
     pub route: ProtectedMcpRouteConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProtectedRouteUpdateParams {
+pub(crate) struct ProtectedRouteUpdateParams {
     pub name: String,
     pub route: ProtectedMcpRouteConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VirtualServerNameParams {
+pub(crate) struct VirtualServerNameParams {
     pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceConfigGetParams {
+pub(crate) struct ServiceConfigGetParams {
     pub service: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceConfigSetParams {
+pub(crate) struct ServiceConfigSetParams {
     pub service: String,
     pub values: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VirtualServerSurfaceParams {
+pub(crate) struct VirtualServerSurfaceParams {
     pub id: String,
     pub surface: String,
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VirtualServerMcpPolicyParams {
+pub(crate) struct VirtualServerMcpPolicyParams {
     pub id: String,
     pub allowed_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayTestParams {
+pub(crate) struct GatewayTestParams {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -118,7 +118,7 @@ pub struct GatewayTestParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GatewayAddParams {
+pub(crate) struct GatewayAddParams {
     pub spec: UpstreamConfig,
     #[serde(default)]
     pub bearer_token_value: Option<String>,
@@ -129,7 +129,7 @@ pub struct GatewayAddParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayUpdatePatch {
+pub(crate) struct GatewayUpdatePatch {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -188,7 +188,7 @@ mod tests {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GatewayUpdateParams {
+pub(crate) struct GatewayUpdateParams {
     pub name: String,
     pub patch: GatewayUpdatePatch,
     #[serde(default)]
@@ -200,7 +200,7 @@ pub struct GatewayUpdateParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayReloadParams {
+pub(crate) struct GatewayReloadParams {
     #[serde(default)]
     pub origin: Option<String>,
     #[serde(default)]
@@ -208,13 +208,13 @@ pub struct GatewayReloadParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayStatusParams {
+pub(crate) struct GatewayStatusParams {
     #[serde(default)]
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayMcpToggleParams {
+pub(crate) struct GatewayMcpToggleParams {
     pub name: String,
     #[serde(default)]
     pub cleanup: bool,
@@ -227,7 +227,7 @@ pub struct GatewayMcpToggleParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayMcpCleanupParams {
+pub(crate) struct GatewayMcpCleanupParams {
     pub name: String,
     #[serde(default)]
     pub aggressive: bool,
@@ -236,14 +236,14 @@ pub struct GatewayMcpCleanupParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GatewayOauthNameParams {
+pub(crate) struct GatewayOauthNameParams {
     pub upstream: String,
     #[serde(default)]
     pub subject: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CodeModeSetParams {
+pub(crate) struct CodeModeSetParams {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
@@ -264,7 +264,7 @@ pub struct CodeModeSetParams {
 
 /// Parameters for `gateway.discover` — read-only scan of external MCP configs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayDiscoverParams {
+pub(crate) struct GatewayDiscoverParams {
     /// Limit discovery to these client kinds (e.g. `["cursor", "vscode"]`).
     /// Empty means scan all supported clients.
     #[serde(default)]
@@ -276,7 +276,7 @@ pub struct GatewayDiscoverParams {
 
 /// Parameters for `gateway.import` — import discovered servers (disabled by default).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GatewayImportParams {
+pub(crate) struct GatewayImportParams {
     /// Specific server names to import. Mutually exclusive with `all`.
     #[serde(default)]
     pub names: Vec<String>,

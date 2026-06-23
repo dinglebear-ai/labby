@@ -598,10 +598,10 @@ async fn supported_services_payload_includes_plex_when_feature_enabled() {
 #[tokio::test]
 #[ignore = "filter_built_in_upstream_apis is a no-op post-pivot (no BuiltInUpstreamApi services left); deploy/setup are never omitted — prod change required"]
 async fn supported_services_omits_upstreams_when_policy_disabled() {
-    let registry = crate::registry::filter_built_in_upstream_apis(
-        crate::registry::build_default_registry(),
-        false,
-    );
+    // NOTE: the default-registry builder + upstream-API filter live in the `lab`
+    // binary, not `lab-gateway`. This test is permanently `#[ignore]`d (the filter
+    // is a no-op post-pivot), so an `EmptyServiceRegistry` keeps it compiling here.
+    let registry = std::sync::Arc::new(crate::gateway::service_registry::EmptyServiceRegistry);
     let manager = test_manager().with_builtin_service_registry(registry);
     let value = dispatch_with_manager(&manager, "gateway.supported_services", json!({}))
         .await
@@ -620,10 +620,8 @@ async fn supported_services_omits_upstreams_when_policy_disabled() {
 #[tokio::test]
 #[ignore = "filter_built_in_upstream_apis is a no-op post-pivot; deploy is never filtered out so service_actions does not error — prod change required"]
 async fn service_actions_rejects_disabled_upstream_service() {
-    let registry = crate::registry::filter_built_in_upstream_apis(
-        crate::registry::build_default_registry(),
-        false,
-    );
+    // See note above: builder + filter live in `lab`; permanently ignored here.
+    let registry = std::sync::Arc::new(crate::gateway::service_registry::EmptyServiceRegistry);
     let manager = test_manager().with_builtin_service_registry(registry);
     let err = dispatch_with_manager(
         &manager,
@@ -644,10 +642,8 @@ async fn service_actions_rejects_disabled_upstream_service() {
 #[tokio::test]
 #[ignore = "filter_built_in_upstream_apis is a no-op post-pivot; deploy stays registered so virtual_server.enable succeeds — prod change required"]
 async fn virtual_server_enable_rejects_disabled_upstream_service() {
-    let registry = crate::registry::filter_built_in_upstream_apis(
-        crate::registry::build_default_registry(),
-        false,
-    );
+    // See note above: builder + filter live in `lab`; permanently ignored here.
+    let registry = std::sync::Arc::new(crate::gateway::service_registry::EmptyServiceRegistry);
     let manager = test_manager().with_builtin_service_registry(registry);
     manager
         .seed_config(lab_runtime::gateway_config::GatewayConfig {

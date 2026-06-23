@@ -206,7 +206,7 @@ pub fn insert_upstream(cfg: &mut GatewayConfig, upstream: UpstreamConfig) -> Res
     Ok(())
 }
 
-pub fn update_upstream(
+pub(crate) fn update_upstream(
     cfg: &mut GatewayConfig,
     name: &str,
     patch: GatewayUpdatePatch,

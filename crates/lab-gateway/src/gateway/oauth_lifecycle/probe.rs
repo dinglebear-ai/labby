@@ -19,7 +19,7 @@ use super::{OauthRuntime, should_use_dynamic_registration};
 
 // ── public validators (also used by tests in the parent module) ──────────────
 
-pub fn validate_probe_url(raw: &str) -> Result<Url, ToolError> {
+pub(crate) fn validate_probe_url(raw: &str) -> Result<Url, ToolError> {
     let parsed = Url::parse(raw).map_err(|_| ToolError::InvalidParam {
         message: "invalid upstream URL".to_string(),
         param: "url".to_string(),
@@ -40,7 +40,7 @@ pub fn validate_probe_url(raw: &str) -> Result<Url, ToolError> {
     Ok(parsed)
 }
 
-pub fn validate_probe_upstream_name(raw: &str) -> Result<String, ToolError> {
+pub(crate) fn validate_probe_upstream_name(raw: &str) -> Result<String, ToolError> {
     let name = raw.trim();
     if name.is_empty() {
         return Err(ToolError::InvalidParam {
@@ -61,7 +61,7 @@ pub fn validate_probe_upstream_name(raw: &str) -> Result<String, ToolError> {
     Ok(name.to_string())
 }
 
-pub fn probe_manager_key(parsed: &Url) -> String {
+pub(crate) fn probe_manager_key(parsed: &Url) -> String {
     let host = parsed.host_str().unwrap_or("upstream");
     let mut key = match parsed.port() {
         Some(port) => format!("{host}-{port}"),
@@ -314,7 +314,7 @@ fn register_transient_manager(
 
 /// Top-level probe entry point. Delegates to named helpers and is intentionally
 /// kept short so the overall flow is easy to follow.
-pub async fn run(
+pub(crate) async fn run(
     manager: &GatewayManager,
     url: &str,
     upstream_name: Option<&str>,

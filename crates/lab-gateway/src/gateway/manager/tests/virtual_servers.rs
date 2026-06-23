@@ -2,9 +2,55 @@
 
 use lab_runtime::gateway_config::{VirtualServerConfig, VirtualServerSurfacesConfig};
 use crate::gateway::projection::{ServiceHealth, server_view_from_virtual_server};
+use crate::gateway::service_registry::{
+    EmptyServiceRegistry, GatewayServiceRegistry, ServiceActionInfo,
+};
+use crate::registry::{InProcessService, InProcessServiceRegistry};
 use crate::upstream::pool::UpstreamCachedSummary;
 
 use super::*;
+
+/// Minimal stub registry that knows a single service `deploy` with a stable
+/// `PluginMeta`. The default-registry builder lives in `lab`, so projection tests
+/// that need `service_meta(..).is_some()` (i.e. `service_known == true`) inject
+/// this instead of weakening the projection's registry parameter.
+struct DeployKnownRegistry;
+
+static DEPLOY_META: lab_apis::core::PluginMeta = lab_apis::core::PluginMeta {
+    name: "deploy",
+    display_name: "Deploy",
+    description: "deploy (test stub)",
+    category: lab_apis::core::Category::Bootstrap,
+    docs_url: "",
+    required_env: &[],
+    optional_env: &[],
+    default_port: None,
+    supports_multi_instance: false,
+};
+
+impl InProcessServiceRegistry for DeployKnownRegistry {
+    fn in_process_services(&self) -> Vec<Box<dyn InProcessService>> {
+        Vec::new()
+    }
+}
+
+impl GatewayServiceRegistry for DeployKnownRegistry {
+    fn service_names(&self) -> Vec<&'static str> {
+        vec!["deploy"]
+    }
+
+    fn contains_service(&self, name: &str) -> bool {
+        name == "deploy"
+    }
+
+    fn service_actions(&self, name: &str) -> Option<Vec<ServiceActionInfo>> {
+        (name == "deploy").then(Vec::new)
+    }
+
+    fn service_meta(&self, name: &str) -> Option<&'static lab_apis::core::PluginMeta> {
+        (name == "deploy").then_some(&DEPLOY_META)
+    }
+}
 
 #[tokio::test]
 async fn configured_service_appears_in_list_before_virtual_server_enablement() {
@@ -151,6 +197,7 @@ fn disabled_virtual_server_reports_disconnected_even_when_health_is_ok() {
             reachable: true,
             auth_ok: true,
         }),
+        &EmptyServiceRegistry,
     );
 
     assert!(!view.connected);
@@ -177,6 +224,7 @@ fn healthy_informational_probe_messages_do_not_create_gateway_warnings() {
             reachable: true,
             auth_ok: true,
         }),
+        &DeployKnownRegistry,
     );
 
     assert!(view.connected);
@@ -269,6 +317,7 @@ fn enabled_virtual_server_reports_compiled_tool_counts() {
             reachable: true,
             auth_ok: true,
         }),
+        &EmptyServiceRegistry,
     );
 
     assert!(view.discovered_tool_count > 0);
@@ -307,6 +356,7 @@ fn virtual_server_mcp_policy_reduces_exposed_tool_count() {
             reachable: true,
             auth_ok: true,
         }),
+        &EmptyServiceRegistry,
     );
 
     assert!(view.discovered_tool_count > view.exposed_tool_count);

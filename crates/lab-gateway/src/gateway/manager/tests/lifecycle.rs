@@ -218,7 +218,10 @@ fn quarantine_migration_is_noop_when_only_existing_quarantine_remains() {
         mcp_policy: None,
     };
 
-    let registry = crate::registry::build_default_registry();
+    // The default-registry builder lives in `lab`; this test only exercises the
+    // already-quarantined branch (no active virtual servers), so an empty registry
+    // is sufficient — nothing is looked up.
+    let registry = crate::gateway::service_registry::EmptyServiceRegistry;
     let (migrated, migration) = quarantine_unregistered_virtual_servers(
         GatewayConfig {
             quarantined_virtual_servers: vec![stale],

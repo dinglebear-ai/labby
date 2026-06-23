@@ -229,7 +229,7 @@ impl GatewayManager {
         Ok(BatchAddOutcome { views, errors })
     }
 
-    pub async fn update(
+    pub(crate) async fn update(
         &self,
         name: &str,
         patch: GatewayUpdatePatch,

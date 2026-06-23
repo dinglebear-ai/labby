@@ -17,7 +17,7 @@ pub const SHARED_GATEWAY_OAUTH_SUBJECT: &str = "gateway";
 ///   "raw": "api:<sub>:<request_id>"
 /// }
 /// ```
-pub(crate) fn make_api_runtime_owner(
+pub fn make_api_runtime_owner(
     subject: Option<&str>,
     request_id: Option<&str>,
 ) -> UpstreamRuntimeOwner {
@@ -42,7 +42,7 @@ pub(crate) fn make_api_runtime_owner(
 /// Mirrors [`make_api_runtime_owner`] for the MCP transport.  Called from
 /// `mcp/context.rs` so both surfaces share identical construction semantics
 /// (Q-L5 fix).
-pub(crate) fn make_mcp_runtime_owner(subject: Option<&str>) -> UpstreamRuntimeOwner {
+pub fn make_mcp_runtime_owner(subject: Option<&str>) -> UpstreamRuntimeOwner {
     let raw = Some(
         subject
             .map(|s| format!("mcp:{s}"))

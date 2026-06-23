@@ -8,7 +8,7 @@ use lab_auth::upstream::encryption::EncryptionKey;
 use lab_auth::upstream::manager::UpstreamOauthManager;
 use lab_auth::upstream::types::{BeginAuthorization, OauthError};
 
-pub mod probe;
+pub(crate) mod probe;
 #[cfg(test)]
 mod tests;
 
