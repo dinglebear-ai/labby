@@ -21,6 +21,7 @@ lab-apis = { path = "../lab-apis", default-features = false }
 lab-auth = { path = "../lab-auth", features = ["upstream-oauth-rmcp"] }
 lab-runtime = { path = "../lab-runtime" }
 lab-codemode = { path = "../lab-codemode" }
+lab-gateway = { path = "../lab-gateway" }
 lab-gateway-web = { path = "../lab-gateway-web" }
 
 tokio = { workspace = true, features = ["process"] }
