@@ -29,53 +29,58 @@ RUN apt-get update \
 # Copy only manifests so the heavy dep-compile layer is invalidated only when
 # Cargo.toml / Cargo.lock changes, not on every src edit.
 COPY Cargo.toml Cargo.lock ./
-COPY crates/lab/Cargo.toml      crates/lab/Cargo.toml
-COPY crates/lab-apis/Cargo.toml crates/lab-apis/Cargo.toml
-COPY crates/lab-auth/Cargo.toml crates/lab-auth/Cargo.toml
-COPY crates/lab-winjob/Cargo.toml crates/lab-winjob/Cargo.toml
+COPY crates/labby/Cargo.toml      crates/labby/Cargo.toml
+COPY crates/labby-apis/Cargo.toml crates/labby-apis/Cargo.toml
+COPY crates/labby-auth/Cargo.toml crates/labby-auth/Cargo.toml
+COPY crates/labby-runtime/Cargo.toml crates/labby-runtime/Cargo.toml
+COPY crates/labby-codemode/Cargo.toml crates/labby-codemode/Cargo.toml
+COPY crates/labby-gateway/Cargo.toml crates/labby-gateway/Cargo.toml
+COPY crates/labby-web/Cargo.toml crates/labby-web/Cargo.toml
+COPY crates/labby-winjob/Cargo.toml crates/labby-winjob/Cargo.toml
 
-# Create stub source + test files so cargo can parse ALL manifests without error.
+# Create stub source files so cargo can parse ALL manifests without error.
 #
-# lab-apis/Cargo.toml declares explicit [[test]] targets with required-features:
-#   plex_client, gotify_client, openacp_client, jellyfin_client → need matching
-#   files under crates/lab-apis/tests/
-# Cargo validates file existence at manifest-parse time even when the required
-# feature is disabled, so we must stub them.
-#
-# lab/ has both [[bin]] (main.rs) and [lib] (lib.rs) targets — stub both.
+# labby has both [[bin]] (main.rs) and [lib] (lib.rs) targets — stub both.
 #
 # We also need apps/gateway-admin/out/ to exist for include_dir!() in web.rs,
 # but we copy the real one below — for the dep-cache step a stub dir suffices.
 RUN mkdir -p \
-      crates/lab/src \
-      crates/lab-apis/src \
-      crates/lab-apis/tests \
-      crates/lab-auth/src \
-      crates/lab-winjob/src \
+      crates/labby/src \
+      crates/labby-apis/src \
+      crates/labby-auth/src \
+      crates/labby-runtime/src \
+      crates/labby-codemode/src \
+      crates/labby-gateway/src \
+      crates/labby-web/src \
+      crates/labby-winjob/src \
       apps/gateway-admin/out \
- && echo 'fn main(){}' > crates/lab/src/main.rs \
+ && echo 'fn main(){}' > crates/labby/src/main.rs \
+ && echo 'fn main(){}' > crates/labby-web/build.rs \
  && touch \
-      crates/lab/src/lib.rs \
-      crates/lab-apis/src/lib.rs \
-      crates/lab-apis/tests/plex_client.rs \
-      crates/lab-apis/tests/gotify_client.rs \
-      crates/lab-apis/tests/openacp_client.rs \
-      crates/lab-apis/tests/jellyfin_client.rs \
-      crates/lab-auth/src/lib.rs \
-      crates/lab-winjob/src/lib.rs \
+      crates/labby/src/lib.rs \
+      crates/labby-apis/src/lib.rs \
+      crates/labby-auth/src/lib.rs \
+      crates/labby-runtime/src/lib.rs \
+      crates/labby-codemode/src/lib.rs \
+      crates/labby-gateway/src/lib.rs \
+      crates/labby-web/src/lib.rs \
+      crates/labby-winjob/src/lib.rs \
  && cargo build --workspace --all-features --release \
  && cargo clean -p labby \
- && cargo clean -p lab-apis \
- && cargo clean -p lab-auth \
- && cargo clean -p lab-winjob \
+ && cargo clean -p labby-apis \
+ && cargo clean -p labby-auth \
+ && cargo clean -p labby-runtime \
+ && cargo clean -p labby-codemode \
+ && cargo clean -p labby-gateway \
+ && cargo clean -p labby-web \
+ && cargo clean -p labby-winjob \
  && rm -rf \
       crates/*/src \
-      crates/lab-apis/tests \
       apps/gateway-admin/out \
       target/release/labby
 
 # ── Real source + frontend assets ─────────────────────────────────────────────
-# crates/lab/build.rs embeds the Next.js static export (apps/gateway-admin/out)
+# crates/labby/build.rs embeds the Next.js static export (apps/gateway-admin/out)
 # into the binary via include_bytes!. The out/ dir must exist before `cargo build`.
 # (.dockerignore excludes apps/gateway-admin/{node_modules,.next,...} — only
 # apps/gateway-admin/out is sent in the build context.)

@@ -25,6 +25,7 @@ env:
   # script: Windows runners cannot exec it (os error 193) and its side effects
   # are pointless in CI, so disable it for all CI jobs.
   RUSTC_WRAPPER: ""
+  CARGO_BUILD_RUSTC_WRAPPER: ""
 
 jobs:
   secret-scan:
@@ -124,7 +125,48 @@ jobs:
           path: apps/gateway-admin/out
       - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p labby --no-default-features --features ${{ matrix.slice }} --locked
+      - run: cargo check -p labby --no-default-features --features ${{ matrix.slice }} --all-targets --locked
+
+  extracted-crate-slices:
+    name: Extracted crate slice (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: labby-auth-minimal
+            command: cargo check -p labby-auth --no-default-features --all-targets --locked
+          - name: labby-auth-http-axum
+            command: cargo check -p labby-auth --no-default-features --features http-axum --all-targets --locked
+          - name: labby-auth-upstream-oauth-rmcp
+            command: cargo check -p labby-auth --no-default-features --features upstream-oauth-rmcp --all-targets --locked
+          - name: labby-auth-all-runtime-features
+            command: cargo check -p labby-auth --no-default-features --features http-axum,upstream-oauth-rmcp --all-targets --locked
+          - name: labby-codemode
+            command: cargo check -p labby-codemode --all-targets --locked
+          - name: labby-gateway
+            command: cargo check -p labby-gateway --all-targets --locked
+          - name: labby-runtime-minimal
+            command: cargo check -p labby-runtime --no-default-features --all-targets --locked
+          - name: labby-runtime-marketplace
+            command: cargo check -p labby-runtime --no-default-features --features marketplace --all-targets --locked
+          - name: labby-runtime-acp-registry
+            command: cargo check -p labby-runtime --no-default-features --features acp_registry --all-targets --locked
+          - name: labby-runtime-deploy
+            command: cargo check -p labby-runtime --no-default-features --features deploy --all-targets --locked
+          - name: labby-runtime-all-features
+            command: cargo check -p labby-runtime --no-default-features --features marketplace,acp_registry,deploy --all-targets --locked
+          - name: labby-web
+            command: cargo check -p labby-web --all-targets --locked
+          - name: labby-winjob
+            command: cargo check -p labby-winjob --all-targets --locked
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - run: ${{ matrix.command }}
 
   docs-check:
     name: Generated docs
@@ -207,6 +249,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - name: Check Windows Job Object helper crate
+        shell: pwsh
+        run: cargo check -p labby-winjob --all-targets --locked
       - name: Run cargo nextest
         shell: pwsh
         run: |
@@ -225,6 +270,9 @@ jobs:
           }
 
           exit $process.ExitCode
+      - name: Run Windows Job Object reaping integration test
+        shell: pwsh
+        run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci --run-ignored ignored-only
 
   release-smoke:
     name: Release smoke (${{ matrix.os }})
