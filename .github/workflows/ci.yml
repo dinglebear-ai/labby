@@ -246,7 +246,40 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: taiki-e/install-action@nextest
+      - name: Install cargo-nextest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "0.9.138"
+          $target = "x86_64-pc-windows-msvc"
+          $base = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$version"
+          $zip = Join-Path $env:RUNNER_TEMP "cargo-nextest.zip"
+          $shaFile = Join-Path $env:RUNNER_TEMP "cargo-nextest.sha256"
+          $extractDir = Join-Path $env:RUNNER_TEMP "cargo-nextest"
+          $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+
+          Invoke-WebRequest "$base/cargo-nextest-$version-$target.zip" -OutFile $zip
+          Invoke-WebRequest "$base/cargo-nextest-$version-$target.sha256" -OutFile $shaFile
+
+          $expected = (Get-Content $shaFile -Raw).Split(" ")[0].Trim().ToLowerInvariant()
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "cargo-nextest checksum mismatch: expected $expected, got $actual"
+          }
+
+          if (Test-Path $extractDir) {
+            Remove-Item -Recurse -Force $extractDir
+          }
+          Expand-Archive -Path $zip -DestinationPath $extractDir -Force
+          $exe = Get-ChildItem -Path $extractDir -Recurse -Filter cargo-nextest.exe | Select-Object -First 1
+          if (-not $exe) {
+            throw "cargo-nextest.exe not found in release archive"
+          }
+
+          New-Item -ItemType Directory -Force -Path $cargoBin | Out-Null
+          Copy-Item $exe.FullName (Join-Path $cargoBin "cargo-nextest.exe") -Force
+          $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $cargoBin "cargo-nextest.exe") --version
       - name: Check Windows Job Object helper crate
         shell: pwsh
         run: cargo check -p labby-winjob --all-targets --locked
