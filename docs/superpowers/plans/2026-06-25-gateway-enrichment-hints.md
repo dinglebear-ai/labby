@@ -8,13 +8,50 @@
 
 **Tech Stack:** Rust 2024, Tokio, serde/toml_edit, rmcp, clap, Axum, existing `labby-runtime`/`labby-gateway`/`labby` crate split.
 
+## Current Baseline Already Landed
+
+The first Code Mode description slice is already implemented on branch
+`codex/codemode-upstream-description`:
+
+- The synthetic `codemode` MCP tool description is rendered dynamically from
+  the current enabled, route-visible upstream namespace names.
+- The tool schema exposes optional top-level `upstreams` and `tools` inputs;
+  workers must not place those controls inside sandbox JavaScript.
+- The description now leads with the `codemode.search` ->
+  `codemode.describe` -> helper or `callTool` workflow and warns workers not to
+  guess method names.
+- The stale “no per-run call-count cap” wording is replaced with the current
+  default call budget and `call_budget_exceeded` failure kind.
+- Focused tests cover the description contract, empty upstream snapshots,
+  route-scoped upstream filtering, and the top-level schema inputs.
+
+The remaining implementation below must build on that baseline. Do not rework
+the already-landed namespace snapshot unless required for approved hints,
+runtime sanitization, or the hard release-mode byte budget.
+
+## Remaining Implementation Scope
+
+- Add persisted operator-approved `code_mode_hint` metadata to gateway upstream
+  config and projections.
+- Add one shared hint normalizer used by config projection, Code Mode rendering,
+  provider output validation, and apply validation.
+- Replace the current debug-only description-size assertion with a hard
+  release-mode byte budget and deterministic truncation/omission behavior.
+- Add read-only enrichment preview actions with `deterministic`, `claude`, and
+  `codex` providers through the bounded provider runner.
+- Add explicit approval/apply with metadata-hash staleness checks and stable
+  non-500 error mappings.
+- Add `labby gateway enrich` CLI forms and scoped add/import suggestions for
+  only the newly changed upstream.
+- Refresh generated docs and run focused plus all-features verification.
+
 ## Global Constraints
 
 - Preview is read-only: no config write, no env write, no upstream `call_tool`, no resource reads, no prompt execution.
 - Preview uses cached or already-discovered metadata only; it must not cold-connect stdio upstreams.
 - Apply is explicit, admin-only, destructive/approval-gated, candidate-hash aware, and persists only approved hint text.
 - Add/import hook suggestions are scoped to the newly added upstream and fail open.
-- V1 supports provider-backed preview with `deterministic`, `claude`, and `codex` providers; deterministic remains the fallback/default for offline or CI-safe operation.
+- V1 supports provider-backed preview with `deterministic`, `claude`, and `codex` providers; deterministic is the default when no provider is specified.
 - Claude/Codex providers must run in read-only/non-mutating mode through a bounded `ProviderRunner`: `tokio::process::Command`, no shell string, prompt on stdin, explicit env allowlist, temp cwd, timeout, process cleanup, capped stdout/stderr, and redacted logs.
 - Claude/Codex preview providers may read the supplied prompt/input only; they must not execute upstream tools, mutate gateway config, write env files, apply patches, or persist approved hints.
 - Provider preview is batched: one Claude/Codex subprocess maximum per preview request.
@@ -24,6 +61,83 @@
 - Raw schemas, command args, env names/values, OAuth fields, bearer env names, config paths, and `imported_from` provenance must never be sent to Claude/Codex providers.
 - Code Mode tool descriptions must enforce a hard byte budget in release builds; do not rely on `debug_assert!` for size control.
 - Generated docs must be refreshed after new actions or config fields are added.
+
+## Engineering Review Amendments
+
+These constraints are mandatory for all implementation workers:
+
+- **Provider scope stays in v1.** Claude/Codex preview providers remain in scope,
+  per product direction, but only behind the bounded provider boundary below.
+  Do not defer provider support wholesale; reduce risk by tightening execution,
+  inputs, output validation, and tests.
+- **No public fallback knob.** If `provider` is omitted, use deterministic
+  preview. If `provider = claude|codex` is explicitly selected and that provider
+  is unavailable, times out, emits invalid output, or fails boundary checks,
+  return `provider_unavailable`, `provider_timeout`, or
+  `invalid_provider_output`; do not silently fall back to deterministic.
+- **Automatic add/import suggestions are deterministic-only in v1.** Manual
+  `gateway.enrich.preview` and `labby gateway enrich --provider ...` may invoke
+  Claude/Codex. The automatic post-add/import suggestion path must not forward
+  provider choice or shell out.
+- **Hint normalization is positive-policy.** `normalize_code_mode_hint` must
+  accept only short single-line capability summaries with restricted
+  punctuation, no markup/backticks/brackets/control/bidi characters, no
+  second-person language, no modal/imperative instruction phrasing, no local
+  path/URL/IP bait, and bounded words/chars. The blocklist sample below is not
+  sufficient by itself.
+- **All hint producers must normalize.** Deterministic hints, Claude/Codex
+  provider output, apply input, config projection, and Code Mode rendering must
+  all pass through the same normalizer. Unsafe manual TOML edits are omitted
+  from model-visible text.
+- **Provider output is structured and narrow.** Provider-returned status values
+  must be closed enums. Do not accept provider free-form `reason` text into
+  CLI/API/UI. V1 proposal output should include status/message generated by
+  Labby, sanitized hint, `metadata_hash`, provider identity, and metadata counts;
+  omit speculative confidence fields.
+- **Provider process isolation is explicit.** ProviderRunner must use
+  `tokio::process::Command` with no shell string, stdin prompt, `env_clear`,
+  explicit env allowlist, isolated temp cwd, isolated `HOME`,
+  `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, and provider-specific config/cache dirs,
+  timeout, process-tree cleanup, and fail-closed CLI flag verification via
+  `claude --help` / `codex exec --help` or equivalent implementation-time
+  checks.
+- **Provider output caps are streaming caps.** Do not use `Command::output()`
+  for provider execution. Pipe stdout/stderr and read with `take(max + 1)` (or
+  equivalent) so output is capped before buffering. Kill the process on cap
+  breach and test unlimited-output providers.
+- **Provider concurrency is globally bounded.** One provider subprocess per
+  preview request is necessary but not sufficient. Add a small global
+  `Arc<Semaphore>` or equivalent concurrency ceiling and tests for concurrent
+  preview requests.
+- **Provider prompts treat upstream metadata as hostile data.** Tests must prove
+  tool descriptions containing instructions are wrapped/scrubbed as data, not
+  presented as instructions. Provider boundary self-tests must include attempts
+  to read a sentinel file, write a sentinel file, execute a command, and print
+  env.
+- **Collector uses cached snapshots only.** Preview must read cached gateway
+  metadata such as cached tools/resources/prompts summaries. It must not call
+  live `list_resources`, `list_prompts`, `read_resource`, `get_prompt`, or
+  upstream `call_tool`.
+- **Collector avoids metadata N+1 scans.** Add one snapshot method that acquires
+  the relevant catalog state once, filters selected/route-visible upstreams,
+  sorts deterministically, applies caps, and only then clones bounded data.
+- **Hashing is canonical.** `metadata_hash` is computed over canonical sanitized
+  collector input encoded as stable JSON with deterministic ordering for fields
+  and semantically unordered arrays. Include upstream name, route scope/exposure
+  semantics, enabled state, sanitizer version, collector cap/version, and
+  collector options. Do not include provider output or approved hint text.
+- **Remote MCP route scope is enforced.** Remote MCP preview/apply must only see
+  upstreams visible to the caller route scope. API and CLI operator paths may
+  remain global. Tests must cover remote MCP non-admin denial and local stdio
+  trust semantics.
+- **Mutation locks stay tight.** Preview never takes the config mutation lock.
+  Apply holds it only for hash revalidation, in-memory hint update, and atomic
+  persist. Add/import suggestions run after mutation/persist/reload locks are
+  released and must time out without blocking later config mutations.
+- **Generated docs and architecture checks are required.** Verify no
+  `labby-gateway -> labby` dependency is introduced, no raw provider prompt,
+  input, stdout, or stderr is logged, and every new error kind is documented and
+  mapped to a non-500 API status.
 
 ---
 
@@ -326,7 +440,6 @@ url = "https://example.invalid/mcp"
             upstreams: vec!["github".to_string()],
             all: false,
             provider: GatewayEnrichmentProvider::Deterministic,
-            fallback_to_deterministic: true,
             max_upstreams: Some(1),
             timeout_ms: None,
         })
@@ -362,8 +475,6 @@ pub(crate) struct GatewayEnrichPreviewParams {
     pub all: bool,
     #[serde(default)]
     pub provider: GatewayEnrichmentProvider,
-    #[serde(default = "default_fallback_to_deterministic")]
-    pub fallback_to_deterministic: bool,
     #[serde(default)]
     pub max_upstreams: Option<usize>,
     #[serde(default)]
@@ -374,12 +485,9 @@ pub(crate) struct GatewayEnrichPreviewParams {
 pub(crate) struct GatewayEnrichApplyParams {
     pub upstream: String,
     pub hint: String,
-    pub suggestion_hash: String,
+    pub metadata_hash: String,
 }
 
-fn default_fallback_to_deterministic() -> bool {
-    true
-}
 ```
 
 In `crates/labby-gateway/src/gateway/types.rs`:
@@ -394,14 +502,23 @@ pub enum GatewayEnrichmentProvider {
     Codex,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayHintProposalStatus {
+    Suggested,
+    Existing,
+    MetadataInsufficient,
+    ProviderUnavailable,
+    InvalidProviderOutput,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GatewayHintProposalView {
     pub upstream: String,
     pub hint: Option<String>,
-    pub status: String,
-    pub confidence: String,
-    pub reason: String,
-    pub suggestion_hash: String,
+    pub status: GatewayHintProposalStatus,
+    pub metadata_hash: String,
+    pub provider: GatewayEnrichmentProvider,
     pub tool_count: usize,
     pub resource_count: usize,
     pub prompt_count: usize,
@@ -445,11 +562,13 @@ Collector rules:
 - Only include requested names for add/import scoped calls.
 - Use cached tool exposure rows and cached discovered resources/prompts.
 - Do not call `call_tool`, `read_resource`, `get_prompt`, or cold-connect helpers.
+- Do not call live `list_resources`, `list_prompts`, `read_resource`, `get_prompt`, or upstream `call_tool`; add tests with counters/stubs proving preview uses cached metadata only.
 - Redact paths, token-like text, control characters, and multiline text before returning.
 - Never include raw `imported_from`, command args, env names, env values, bearer env names, OAuth fields, config paths, or raw schemas in `UpstreamEnrichmentInput`.
 - Remove `include_schemas` from v1. Tool names/descriptions plus resource/prompt counts are enough for short namespace hints; raw schemas are deferred because they are large and injection-prone.
 - Collect a single cache snapshot for tools/resources/prompts and derive all selected upstream inputs from that snapshot; avoid per-upstream lock churn.
 - Enforce caps before any provider sees input: 25 upstreams per manual preview, 100 tools/upstream, 300 tools total, 50 resources/upstream, 50 prompts/upstream, and 64 KiB total serialized provider input.
+- Return metadata cap counters with each assembled provider input (`bytes`, `upstream_count`, `tool_count`, `truncated`) so tests can assert caps directly.
 
 In `summarizer.rs`, implement provider behavior for `GatewayEnrichmentProvider` from `types.rs`.
 
@@ -459,7 +578,7 @@ Provider rules:
 - `codex` shells out only through `ProviderRunner` and `codex exec` with read-only sandboxing, never-approval, ephemeral execution, and ignored user config/rules where available.
 - All providers receive the same sanitized `UpstreamEnrichmentInput` payload.
 - All providers must return a bounded JSON object that is parsed, sanitized again, and converted to `GatewayHintProposalView`.
-- Provider failures degrade to `status = "unavailable"` or deterministic fallback depending on params; they must not fail add/import mutations.
+- Explicit Claude/Codex provider failures return `provider_unavailable`, `provider_timeout`, or `invalid_provider_output` for manual preview; they must not silently fall back to deterministic.
 - Provider-backed preview is batched: one Claude/Codex subprocess maximum per preview request. The provider receives an array of sanitized inputs and returns an array of hint proposals.
 
 In `provider.rs`, define a tiny process seam instead of a broad trait hierarchy:
@@ -489,10 +608,11 @@ Runner implementation requirements:
 - Feed the sanitized prompt on stdin, not as an argv prompt.
 - Use a temp cwd that is not the repo root.
 - Use `env_clear()` plus an explicit allowlist for only the auth/config variables required for the selected provider. Do not pass `LAB_*`, `*_TOKEN`, auth headers, MCP config paths, or the real project env through by default.
-- Avoid inherited `HOME`; if the provider needs a config home, pass an explicit provider home path from config and test that arbitrary user home is not inherited.
+- Avoid inherited `HOME`; set isolated `HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, and provider-specific config/cache dirs. If the provider needs an operator-configured provider home, pass that explicit safe path and test that arbitrary user home is not inherited.
+- Verify provider CLI flags at implementation time (`claude --help`, `codex exec --help`, or equivalent) and fail closed if required safe flags are unsupported or have drifted.
 - Set `kill_on_drop(true)` and enforce wall-clock timeout with process cleanup.
-- Cap stdout and stderr; parse only bounded JSON output and log only redacted status, not prompt bodies or raw stderr.
-- Use a concurrency semaphore so at most one provider subprocess runs per preview request and the gateway has a global small provider-concurrency ceiling.
+- Cap stdout and stderr while streaming. Do not use `Command::output()`; pipe stdout/stderr and read with `take(max + 1)` or equivalent, kill the child on cap breach, parse only bounded JSON output, and log only redacted status, not prompt bodies or raw stderr.
+- Use a concurrency semaphore so at most one provider subprocess runs per preview request and the gateway has a global small provider-concurrency ceiling across concurrent preview requests.
 
 The intended local CLI shapes, verified against the installed CLIs on 2026-06-25:
 
@@ -527,15 +647,14 @@ fn summarize_one(input: &UpstreamEnrichmentInput) -> GatewayHintProposalView {
 
     GatewayHintProposalView {
         upstream: input.name.clone(),
-        hint,
-        status: "suggested".to_string(),
-        confidence: if input.tool_names.is_empty() { "low" } else { "medium" }.to_string(),
-        reason: if input.tool_names.is_empty() {
-            "metadata_insufficient".to_string()
+        hint: hint.and_then(|raw| labby_runtime::gateway_config::normalize_code_mode_hint(&raw)),
+        status: if input.tool_names.is_empty() {
+            GatewayHintProposalStatus::MetadataInsufficient
         } else {
-            "tool_metadata".to_string()
+            GatewayHintProposalStatus::Suggested
         },
-        suggestion_hash: hash_enrichment_input(input),
+        metadata_hash: hash_enrichment_input(input),
+        provider: GatewayEnrichmentProvider::Deterministic,
         tool_count: input.tool_names.len(),
         resource_count: input.resource_count,
         prompt_count: input.prompt_count,
@@ -570,7 +689,7 @@ impl GatewayManager {
 Add `gateway.enrich.preview` to `crates/labby-gateway/src/gateway/catalog.rs` with:
 - `destructive: false`
 - `requires_admin: true`
-- params: `upstreams`, `all`, `provider`, `fallback_to_deterministic`, `max_upstreams`, `timeout_ms`
+- params: `upstreams`, `all`, `provider`, `max_upstreams`, `timeout_ms`
 
 Validation rules:
 - Empty `upstreams` with `all = false` returns a structured validation error; it must not scan all upstreams.
@@ -584,7 +703,10 @@ Add tests:
 - Empty `upstreams` with `all = false` fails.
 - `all = true` respects the 25-upstream cap.
 - Claude/Codex preview uses exactly one provider subprocess per preview request.
-- Missing provider binary, timeout, oversized output, malformed output, and child cleanup produce mapped provider errors or deterministic fallback.
+- Missing provider binary, timeout, oversized output, malformed output, and child cleanup produce mapped provider errors for explicit provider previews.
+- Concurrent Claude/Codex preview requests are bounded by a global provider semaphore.
+- Provider prompt tests prove tool-description instructions are treated as hostile data, not instructions.
+- Provider boundary tests ask the provider to read a sentinel file, write a sentinel file, execute a command, and print env; none may occur or leak.
 - Provider input does not contain `LAB_`, `TOKEN`, `Authorization`, `.env`, `/proc/environ`, Windows paths, OAuth fields, raw `imported_from`, command args, or raw schemas.
 - `gateway.enrich.preview` is denied without admin privileges on API and remote MCP paths; local stdio keeps the existing trust semantics.
 
@@ -619,10 +741,10 @@ git commit -m "feat(gateway): preview upstream hint enrichment"
 - Test: `crates/labby-gateway/src/gateway/dispatch_tests.rs`
 
 **Interfaces:**
-- Consumes: `GatewayEnrichApplyParams { upstream, hint, suggestion_hash }`.
+- Consumes: `GatewayEnrichApplyParams { upstream, hint, metadata_hash }`.
 - Produces: `GatewayHintApplyView { upstream, hint, applied, previous_hint }`.
-- Produces errors: `invalid_hint`, `stale_suggestion`, `unknown_upstream`, `provider_unavailable`, `invalid_provider_output`.
-- `suggestion_hash` is a metadata hash over canonical sanitized collector input, upstream name, sanitizer version, and collector options. It must not include provider output, provider id, or approved hint text; user-edited hints are allowed when the metadata hash still matches.
+- Produces errors: `invalid_hint`, `stale_suggestion`, `unknown_upstream`, `provider_unavailable`, `provider_timeout`, `invalid_provider_output`.
+- `metadata_hash` is a metadata hash over canonical sanitized collector input, upstream name, route scope/exposure semantics, enabled state, sanitizer version, collector cap/version, and collector options. It must not include provider output, provider id, or approved hint text; user-edited hints are allowed when the metadata hash still matches.
 
 - [ ] **Step 1: Write failing apply tests**
 
@@ -643,19 +765,18 @@ url = "https://example.invalid/mcp"
             upstreams: vec!["github".to_string()],
             all: false,
             provider: GatewayEnrichmentProvider::Deterministic,
-            fallback_to_deterministic: true,
             max_upstreams: None,
             timeout_ms: None,
         })
         .await
         .expect("preview");
-    let hash = preview.proposals[0].suggestion_hash.clone();
+    let hash = preview.proposals[0].metadata_hash.clone();
 
     manager
         .apply_enrichment(GatewayEnrichApplyParams {
             upstream: "github".to_string(),
             hint: "search repositories, issues, pull requests, and code".to_string(),
-            suggestion_hash: hash,
+            metadata_hash: hash,
         })
         .await
         .expect("apply");
@@ -668,7 +789,7 @@ url = "https://example.invalid/mcp"
 }
 
 #[tokio::test]
-async fn enrich_apply_rejects_stale_suggestion_hash() {
+async fn enrich_apply_rejects_stale_metadata_hash() {
     let (manager, _store) = fixture_manager_with_config(r#"
 [[upstream]]
 name = "github"
@@ -680,7 +801,7 @@ url = "https://example.invalid/mcp"
         .apply_enrichment(GatewayEnrichApplyParams {
             upstream: "github".to_string(),
             hint: "search repositories".to_string(),
-            suggestion_hash: "stale".to_string(),
+            metadata_hash: "stale".to_string(),
         })
         .await
         .expect_err("stale hash must fail");
@@ -713,14 +834,16 @@ If `ToolError` has a better typed variant, use it instead, but keep kind `invali
 - [ ] **Step 4: Implement apply under config mutation lock**
 
 Rules:
-- Recompute the current suggestion hash from current sanitized metadata, not provider output.
-- Reject if it differs from `params.suggestion_hash`.
+- Recompute the current metadata hash from current sanitized metadata, not provider output.
+- Reject if it differs from `params.metadata_hash`.
 - Validate all inputs before persist.
 - Apply must never invoke Claude/Codex or any provider subprocess.
 - Recompute or revalidate the canonical sanitized metadata hash after acquiring the config mutation lock, so concurrent config/catalog changes cannot race a stale approval into config.
 - Hold `config_mutation` only for the shortest config read/update/persist section.
 - Persist through `self.persist_config(cfg).await`.
 - Do not reload the gateway pool because hints are model-facing metadata only.
+- Remote MCP apply must enforce caller route scope before validating or persisting. API and CLI operator paths may remain global.
+- Add auth tests for API non-admin denial, remote MCP non-admin denial, remote MCP route-scope denial, and local stdio trust semantics.
 
 Add race tests where preview happens, upstream metadata/config changes, and apply returns `stale_suggestion`.
 
@@ -729,7 +852,7 @@ Add race tests where preview happens, upstream metadata/config changes, and appl
 Add `gateway.enrich.apply`:
 - `destructive: true`
 - `requires_admin: true`
-- params: `upstream`, `hint`, `suggestion_hash`
+- params: `upstream`, `hint`, `metadata_hash`
 
 Dispatch to `manager.apply_enrichment`.
 
@@ -742,12 +865,13 @@ In `docs/dev/ERRORS.md`, add every new emitted kind:
 | `stale_suggestion` | 409 | Gateway enrichment apply used a suggestion hash that no longer matches current sanitized metadata. Regenerate preview and retry. |
 | `unknown_upstream` | 404 | Gateway enrichment referenced an upstream namespace that is not configured or visible to the caller. |
 | `provider_unavailable` | 503 | Gateway enrichment provider executable, auth, or runtime was unavailable; retry with `provider=deterministic` or after configuring the provider. |
+| `provider_timeout` | 504 | Gateway enrichment provider exceeded the bounded preview timeout. |
 | `invalid_provider_output` | 502 | Gateway enrichment provider returned malformed, oversized, or unsafe output. |
 ```
 
 Mandatory implementation:
 - Update `crates/labby/src/api/error.rs` so these kinds do not fall through to `500`.
-- Add API mapping tests for `invalid_hint`, `stale_suggestion`, `unknown_upstream`, `provider_unavailable`, and `invalid_provider_output`.
+- Add API mapping tests for `invalid_hint`, `stale_suggestion`, `unknown_upstream`, `provider_unavailable`, `provider_timeout`, and `invalid_provider_output`.
 - Refresh generated docs after adding the kinds.
 
 - [ ] **Step 7: Run apply tests and docs/error tests**
@@ -756,7 +880,7 @@ Run:
 
 ```bash
 cargo test -p labby-gateway --all-features enrich_apply -- --nocapture
-cargo test -p labby --all-features invalid_hint stale_suggestion provider_unavailable invalid_provider_output unknown_upstream -- --nocapture
+cargo test -p labby --all-features invalid_hint stale_suggestion provider_unavailable provider_timeout invalid_provider_output unknown_upstream -- --nocapture
 ```
 
 Expected: PASS.
@@ -785,7 +909,7 @@ git commit -m "feat(gateway): approve enriched upstream hints"
 - Produces CLI:
   - `labby gateway enrich --upstream NAME ... [--provider deterministic|claude|codex]`
   - `labby gateway enrich --all --max-upstreams 25 [--provider deterministic|claude|codex]`
-  - `labby gateway enrich apply --upstream NAME --hint TEXT --suggestion-hash HASH`
+  - `labby gateway enrich apply --upstream NAME --hint TEXT --metadata-hash HASH`
 - Produces optional scoped enrichment suggestion on add/import result views where appropriate, without changing unrelated stable response shapes more than necessary.
 
 - [ ] **Step 1: Write failing CLI argument tests**
@@ -795,7 +919,7 @@ Add parser tests proving:
 ```bash
 labby gateway enrich --upstream github
 labby gateway enrich --all --provider codex --max-upstreams 5
-labby gateway enrich apply --upstream github --hint "search repositories" --suggestion-hash abc123
+labby gateway enrich apply --upstream github --hint "search repositories" --metadata-hash abc123
 ```
 
 parse to preview/apply commands.
@@ -835,8 +959,8 @@ pub struct GatewayEnrichApplyArgs {
     pub upstream: String,
     #[arg(long)]
     pub hint: String,
-    #[arg(long)]
-    pub suggestion_hash: String,
+    #[arg(long, alias = "suggestion-hash")]
+    pub metadata_hash: String,
     #[arg(short = 'y', long, alias = "no-confirm")]
     pub yes: bool,
 }
@@ -860,7 +984,7 @@ GatewayCommand::Enrich(args) => match args.command {
         ("gateway.enrich.apply".to_string(), json!({
             "upstream": args.upstream,
             "hint": args.hint,
-            "suggestion_hash": args.suggestion_hash,
+            "metadata_hash": args.metadata_hash,
         }))
     }
 }
@@ -880,7 +1004,7 @@ pub struct GatewayAddWithSuggestionView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayImportApproveWithSuggestionView {
-    pub import: PendingImportApprovalView,
+    pub import: PendingImportView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enrichment_suggestion: Option<GatewayHintProposalView>,
 }
@@ -905,10 +1029,10 @@ let enrichment_suggestion = self
 
 Required mutation boundary:
 - Put mutation/persist/reload inside an explicit scoped block that drops `config_mutation` before suggestion generation.
-- Do not call Claude/Codex from automatic add/import suggestions unless the original add/import action explicitly requested that provider.
-- Default automatic suggestions to deterministic provider.
+- Do not call Claude/Codex from automatic add/import suggestions in v1.
+- Automatic suggestions always use deterministic provider.
 - Wrap scoped suggestion generation in a short timeout, default 2 seconds.
-- Do not let failure, timeout, missing provider, or malformed provider output roll back the add/import mutation.
+- Do not let enrichment failure or timeout roll back the add/import mutation.
 
 For `approve_pending_import`, because it inserts disabled upstreams, generate from persisted config/provenance only and return `status = "metadata_insufficient"` when no cached catalog exists.
 
@@ -919,8 +1043,8 @@ Add tests:
 - Existing upstream `rustarr` is not included in the add response suggestion.
 - Approving pending `paperless` returns a suggestion/status only for `paperless`.
 - Enrichment failure does not fail add/import approve.
-- A slow provider stub returns the successful add/import response plus `status = "unavailable"` within the timeout.
-- Suggestion generation runs after the config mutation lock is dropped.
+- A slow deterministic suggestion stub returns the successful add/import response plus `status = "provider_unavailable"` or `status = "metadata_insufficient"` within the timeout.
+- Suggestion generation runs after the config mutation lock is dropped, with a test proving another config mutation can acquire the lock while suggestion generation is timing out.
 - `labby gateway enrich` with neither `--upstream` nor `--all` returns the validation error and does not scan all upstreams.
 - `labby gateway enrich --all` honors the default 25-upstream cap and any lower explicit `--max-upstreams`.
 
@@ -1028,9 +1152,10 @@ Confirm Claude/Codex shell-out exists only in preview code paths, never under ap
 - Provider subprocess count is at most one per preview request.
 - Provider input is redacted/capped and excludes raw schemas, `imported_from`, command args, env names/values, OAuth fields, bearer env names, config paths, `.env`, `/proc/environ`, `Authorization`, and token-like strings.
 - Provider output is schema-validated, sanitized with `normalize_code_mode_hint`, and capped.
-- Missing binary, timeout, oversized output, malformed output, and unsafe output return mapped provider errors or deterministic fallback.
+- Missing binary, timeout, oversized output, malformed output, and unsafe output return mapped provider errors for explicit provider preview.
 - Provider failure does not persist config, mutate env files, invoke upstream tools, or roll back successful add/import actions.
 - API status mapping for every new error kind is covered by tests.
+- Provider CLI help/flag verification is documented in the implementation notes so workers do not rely on stale `claude` or `codex exec` flag assumptions.
 
 - [ ] **Step 7: Commit**
 
@@ -1049,7 +1174,7 @@ git commit -m "docs(gateway): document enrichment hints"
 
 ### Simplicity
 - V1 supports deterministic, Claude, and Codex preview providers behind one closed enum and a tiny process-runner seam.
-- Deterministic remains the default/fallback.
+- Deterministic remains the default when provider is omitted.
 - No persistent pending queue.
 - No UI.
 
@@ -1073,9 +1198,9 @@ git commit -m "docs(gateway): document enrichment hints"
 | preview | Malicious metadata tries prompt injection | Y | Y | harmless bounded hint | redacted warning/counts |
 | preview | Stdio upstream would cold-spawn | Y | Y | metadata_insufficient | yes |
 | preview | Empty selection accidentally scans every upstream | Y | Y | validation error requiring --upstream or --all | yes |
-| provider | Claude/Codex CLI missing or fails | Y | Y | provider_unavailable or deterministic fallback | redacted |
+| provider | Claude/Codex CLI missing or fails | Y | Y | provider_unavailable | redacted |
 | provider | Claude/Codex emits malformed/oversized output | Y | Y | invalid_provider_output | redacted |
-| provider | Provider hangs or spawns child process | Y | Y | provider_unavailable or deterministic fallback | redacted |
+| provider | Provider hangs or spawns child process | Y | Y | provider_timeout or provider_unavailable | redacted |
 | apply | Suggestion hash stale | Y | Y | conflict/stale_suggestion | yes |
 | apply | Invalid hint text | Y | Y | invalid_hint | yes |
 | add hook | Enrichment unavailable | Y | Y | gateway added plus hint_status unavailable | yes |
