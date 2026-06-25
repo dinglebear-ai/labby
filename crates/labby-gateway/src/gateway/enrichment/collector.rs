@@ -45,6 +45,7 @@ pub(crate) struct EnrichmentInputStats {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CollectedEnrichmentInputs {
     pub(crate) inputs: Vec<UpstreamEnrichmentInput>,
+    pub(crate) omitted_inputs: Vec<UpstreamEnrichmentInput>,
     pub(crate) stats: EnrichmentInputStats,
 }
 
@@ -186,13 +187,21 @@ pub(crate) async fn collect_enrichment_inputs(
         inputs.push(input);
     }
 
+    let mut omitted_inputs = Vec::new();
     let mut stats = input_stats(&inputs, truncated);
     while stats.bytes > MAX_PROVIDER_INPUT_BYTES && !inputs.is_empty() {
         truncated = true;
-        inputs.pop();
+        if let Some(input) = inputs.pop() {
+            omitted_inputs.push(input);
+        }
         stats = input_stats(&inputs, truncated);
     }
-    Ok(CollectedEnrichmentInputs { inputs, stats })
+    omitted_inputs.reverse();
+    Ok(CollectedEnrichmentInputs {
+        inputs,
+        omitted_inputs,
+        stats,
+    })
 }
 
 fn input_stats(inputs: &[UpstreamEnrichmentInput], truncated: bool) -> EnrichmentInputStats {

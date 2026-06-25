@@ -798,9 +798,9 @@ sleep 2
             .into_temp_path();
         let pid_path = pid_file.to_string_lossy().to_string();
         let (_dir, script) = write_script(&format!(
-            r#"cat >/dev/null
-(sleep 30) &
+            r#"(sleep 30) &
 echo $! > '{}'
+cat >/dev/null
 sleep 30
 "#,
             pid_path
@@ -810,7 +810,7 @@ sleep 30
             run_provider_preview(
                 GatewayEnrichmentProvider::Codex,
                 &[sample_input()],
-                &runner(script, 100, 1_024),
+                &runner(script, 1_000, 1_024),
             )
             .await,
         );

@@ -1,14 +1,15 @@
 use labby_runtime::error::ToolError;
 
 use crate::gateway::enrichment::collector::{
-    EnrichmentInputStats, MAX_MANUAL_UPSTREAMS, SelectedUpstream, collect_enrichment_inputs,
-    select_upstreams_for_preview,
+    EnrichmentInputStats, MAX_MANUAL_UPSTREAMS, SelectedUpstream, UpstreamEnrichmentInput,
+    collect_enrichment_inputs, select_upstreams_for_preview,
 };
 use crate::gateway::enrichment::provider::{ProviderRunner, run_provider_preview};
 use crate::gateway::params::{GatewayEnrichApplyParams, GatewayEnrichPreviewParams};
 use crate::gateway::types::{
     GatewayCatalogDiff, GatewayEnrichmentPreviewStatsView, GatewayEnrichmentPreviewView,
-    GatewayEnrichmentProvider, GatewayHintApplyView, GatewayHintProposalView,
+    GatewayEnrichmentProvider, GatewayHintApplyView, GatewayHintProposalStatus,
+    GatewayHintProposalView,
 };
 
 use super::GatewayManager;
@@ -50,7 +51,14 @@ impl GatewayManager {
         if let Some(timeout_ms) = params.timeout_ms.take() {
             runner.timeout_ms = timeout_ms;
         }
-        let proposals = run_provider_preview(params.provider, &collected.inputs, &runner).await?;
+        let mut proposals =
+            run_provider_preview(params.provider, &collected.inputs, &runner).await?;
+        proposals.extend(
+            collected
+                .omitted_inputs
+                .iter()
+                .map(|input| omitted_input_proposal(input, params.provider)),
+        );
         Ok(GatewayEnrichmentPreviewView {
             provider: params.provider,
             stats: collected.stats.into(),
@@ -171,4 +179,27 @@ fn validate_hint(hint: &str) -> Result<String, ToolError> {
             "code mode hint must be plain, non-instructional text from 1-240 characters on one line"
                 .to_string(),
     })
+}
+
+fn omitted_input_proposal(
+    input: &UpstreamEnrichmentInput,
+    provider: GatewayEnrichmentProvider,
+) -> GatewayHintProposalView {
+    let existing_hint = input.existing_hint.clone();
+    let status = if existing_hint.is_some() {
+        GatewayHintProposalStatus::Existing
+    } else {
+        GatewayHintProposalStatus::MetadataInsufficient
+    };
+    GatewayHintProposalView {
+        upstream: input.name.clone(),
+        hint: existing_hint.clone(),
+        status,
+        metadata_hash: input.metadata_hash.clone(),
+        provider,
+        tool_count: input.tool_names.len(),
+        resource_count: input.resource_count,
+        prompt_count: input.prompt_count,
+        existing_hint,
+    }
 }

@@ -156,6 +156,44 @@ async fn enrich_preview_all_reports_explicit_max_truncation_stats() {
 }
 
 #[tokio::test]
+async fn enrich_preview_returns_placeholders_for_explicit_inputs_dropped_by_byte_cap() {
+    let upstreams = (0..3)
+        .map(|idx| fixture_http_upstream(&format!("up-{idx}")))
+        .collect::<Vec<_>>();
+    let (manager, pool) = code_mode_manager_with_upstreams(upstreams).await;
+    for idx in 0..3 {
+        let name = format!("up-{idx}");
+        pool.insert_entry_for_tests(&name, large_enrichment_entry(&name))
+            .await;
+    }
+
+    let preview = manager
+        .preview_enrichment(GatewayEnrichPreviewParams {
+            upstreams: vec!["up-0".to_string(), "up-1".to_string(), "up-2".to_string()],
+            all: false,
+            provider: GatewayEnrichmentProvider::Deterministic,
+            max_upstreams: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("preview");
+
+    assert!(preview.stats.truncated);
+    assert_eq!(preview.proposals.len(), 3);
+    let dropped = preview
+        .proposals
+        .iter()
+        .find(|proposal| proposal.upstream == "up-2")
+        .expect("dropped explicit upstream remains visible");
+    assert_eq!(
+        dropped.status,
+        GatewayHintProposalStatus::MetadataInsufficient
+    );
+    assert!(dropped.hint.is_none());
+    assert!(dropped.metadata_hash.starts_with("sha256:"));
+}
+
+#[tokio::test]
 async fn enrich_preview_uses_cached_snapshot_only() {
     let (manager, pool) =
         code_mode_manager_with_upstreams(vec![fixture_stdio_upstream("stdio")]).await;
@@ -179,6 +217,35 @@ async fn enrich_preview_uses_cached_snapshot_only() {
         preview.proposals[0].status,
         GatewayHintProposalStatus::MetadataInsufficient
     );
+}
+
+fn large_enrichment_entry(upstream: &str) -> UpstreamEntry {
+    let upstream_name: Arc<str> = Arc::from(upstream);
+    let description = format!(
+        "{} {}",
+        "metadata rich capability summary".repeat(4),
+        "describes catalog operations and typed arguments".repeat(3)
+    );
+    let tools = (0..100)
+        .map(|idx| {
+            let tool_name = format!("tool_{idx:03}_{}", "capability_segment_".repeat(6));
+            let tool = rmcp::model::Tool::new(
+                tool_name.clone(),
+                description.clone(),
+                Arc::new(serde_json::Map::new()),
+            );
+            let upstream_tool = UpstreamTool {
+                tool,
+                input_schema: None,
+                output_schema: None,
+                upstream_name: Arc::clone(&upstream_name),
+                destructive: false,
+            };
+            (tool_name, upstream_tool)
+        })
+        .collect::<HashMap<_, _>>();
+
+    fixture_upstream_entry(upstream, tools)
 }
 
 #[tokio::test]
