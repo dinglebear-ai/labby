@@ -158,7 +158,10 @@ fn spawn_provider_child(command: Command) -> Result<Box<dyn ChildWrapper>, ToolE
         let mut command = command;
         command
             .spawn()
-            .map(|child| Box::new(child) as Box<dyn ChildWrapper>)
+            .map(|child| {
+                let child: Box<dyn ChildWrapper> = Box::new(child);
+                child
+            })
             .map_err(|err| ToolError::Sdk {
                 sdk_kind: "provider_unavailable".to_string(),
                 message: format!("gateway enrichment provider could not start: {err}"),
