@@ -538,11 +538,8 @@ jobs:
             -NoNewWindow `
             -PassThru
 
-          while (-not $process.HasExited) {
-            Start-Sleep -Seconds 60
-            if (-not $process.HasExited) {
-              Write-Host "Windows nextest still running at $(Get-Date -Format o)"
-            }
+          while (-not $process.WaitForExit(5000)) {
+            Write-Host "Windows nextest still running at $(Get-Date -Format o)"
           }
 
           exit $process.ExitCode
