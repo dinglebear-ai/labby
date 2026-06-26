@@ -1,11 +1,12 @@
 #!/bin/sh
-# Bootstrap Labby into an Incus Debian 13 system container.
+# Bootstrap Labby into an Incus Ubuntu 24.04 system container.
 
 set -eu
 
 NAME="labby"
-IMAGE="images:debian/13"
+IMAGE="images:ubuntu/24.04"
 VERSION="${LAB_INSTALL_VERSION:-}"
+LOCAL_BINARY=""
 DRY_RUN=0
 TAILSCALE_SSH=0
 ALLOW_SOURCE_FALLBACK=0
@@ -20,8 +21,9 @@ Usage: scripts/incus-bootstrap.sh --version vX.Y.Z [options]
 
 Options:
   --name NAME                 Container name (default: labby)
-  --image IMAGE               Incus image alias (default: images:debian/13)
+  --image IMAGE               Incus image alias (default: images:ubuntu/24.04)
   --version TAG               Labby release tag to install, e.g. v0.22.2
+  --local-binary PATH          Push a locally built labby binary instead of downloading a release
   --dry-run                   Print commands only
   --tailscale-ssh             Run tailscale up with --ssh when TS_AUTHKEY is set
   --allow-source-fallback     Allow install.sh cargo fallback if release asset is unavailable
@@ -53,6 +55,7 @@ while [ "$#" -gt 0 ]; do
         --name) NAME="${2:?missing --name value}"; shift 2 ;;
         --image) IMAGE="${2:?missing --image value}"; shift 2 ;;
         --version) VERSION="${2:?missing --version value}"; shift 2 ;;
+        --local-binary) LOCAL_BINARY="${2:?missing --local-binary value}"; shift 2 ;;
         --dry-run|--print-only) DRY_RUN=1; shift ;;
         --tailscale-ssh) TAILSCALE_SSH=1; shift ;;
         --allow-source-fallback) ALLOW_SOURCE_FALLBACK=1; shift ;;
@@ -61,7 +64,12 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -n "$VERSION" ] || fail "--version is required so bootstrap installs a pinned release"
+if [ -z "$VERSION" ] && [ -z "$LOCAL_BINARY" ]; then
+    fail "--version is required unless --local-binary is provided"
+fi
+if [ -n "$LOCAL_BINARY" ] && [ "$DRY_RUN" -eq 0 ] && [ ! -f "$LOCAL_BINARY" ]; then
+    fail "--local-binary path does not exist: $LOCAL_BINARY"
+fi
 
 INCUS_AVAILABLE=1
 if ! command -v incus >/dev/null 2>&1; then
@@ -79,21 +87,31 @@ MISSING
 fi
 
 if [ "$INCUS_AVAILABLE" -eq 1 ] && ! incus info >/dev/null 2>&1; then
-    fail "incus is present but not initialized or reachable; run 'incus admin init' explicitly"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        err "Incus is present but not initialized or reachable; dry-run will still print the command plan."
+        INCUS_AVAILABLE=0
+    else
+        fail "incus is present but not initialized or reachable; run 'incus admin init' explicitly"
+    fi
 fi
 
 if [ "$INCUS_AVAILABLE" -eq 0 ] && [ "$DRY_RUN" -eq 1 ]; then
-    run incus launch "$IMAGE" "$NAME" -c security.idmap.isolated=true -c security.nesting=false
+    run incus launch "$IMAGE" "$NAME" -c security.privileged=true -c security.nesting=false
 elif ! incus list "$NAME" -c n --format csv 2>/dev/null | grep -qx "$NAME"; then
-    run incus launch "$IMAGE" "$NAME" -c security.idmap.isolated=true -c security.nesting=false
+    run incus launch "$IMAGE" "$NAME" -c security.privileged=true -c security.nesting=false
 else
     say "container exists: $NAME"
-    run incus config set "$NAME" security.idmap.isolated true
+    run incus config set "$NAME" security.privileged true
     run incus config set "$NAME" security.nesting false
+    if ! incus list "$NAME" -c s --format csv 2>/dev/null | grep -qx RUNNING; then
+        run incus start "$NAME"
+    fi
 fi
 
 if [ "$INCUS_AVAILABLE" -eq 0 ] && [ "$DRY_RUN" -eq 1 ]; then
     run incus config device add "$NAME" tun unix-char path=/dev/net/tun
+elif [ "$DRY_RUN" -eq 0 ] && incus exec "$NAME" -- test -c /dev/net/tun 2>/dev/null; then
+    say "TUN device already present in container"
 elif ! incus config device show "$NAME" | grep -q '^tun:'; then
     run incus config device add "$NAME" tun unix-char path=/dev/net/tun
 else
@@ -104,16 +122,24 @@ if [ "$DRY_RUN" -eq 0 ]; then
     incus exec "$NAME" -- test -c /dev/net/tun || fail "$NAME is missing /dev/net/tun"
 fi
 
-fallback="$ALLOW_SOURCE_FALLBACK"
-run incus file push scripts/install.sh "$NAME/tmp/labby-install.sh"
-run incus exec "$NAME" -- env \
-    LAB_INSTALL_DIR=/usr/local/bin \
-    LAB_INSTALL_REPO=jmagar/lab \
-    LAB_INSTALL_VERSION="$VERSION" \
-    LAB_REQUIRE_CHECKSUM=1 \
-    LAB_ALLOW_SOURCE_FALLBACK="$fallback" \
-    sh /tmp/labby-install.sh
-run incus exec "$NAME" -- rm -f /tmp/labby-install.sh
+if [ -n "$LOCAL_BINARY" ]; then
+    remote_tmp="/usr/local/bin/.labby-upload-$$"
+    run incus exec "$NAME" -- mkdir -p /usr/local/bin
+    run incus file push "$LOCAL_BINARY" "$NAME$remote_tmp"
+    run incus exec "$NAME" -- chmod 0755 "$remote_tmp"
+    run incus exec "$NAME" -- mv -f "$remote_tmp" /usr/local/bin/labby
+else
+    fallback="$ALLOW_SOURCE_FALLBACK"
+    run incus file push scripts/install.sh "$NAME/tmp/labby-install.sh"
+    run incus exec "$NAME" -- env \
+        LAB_INSTALL_DIR=/usr/local/bin \
+        LAB_INSTALL_REPO=jmagar/lab \
+        LAB_INSTALL_VERSION="$VERSION" \
+        LAB_REQUIRE_CHECKSUM=1 \
+        LAB_ALLOW_SOURCE_FALLBACK="$fallback" \
+        sh /tmp/labby-install.sh
+    run incus exec "$NAME" -- rm -f /tmp/labby-install.sh
+fi
 
 run incus exec "$NAME" -- labby setup --provision --yes
 

@@ -1,6 +1,6 @@
 # Labby Gateway Runtime
 
-The primary supported self-hosted Labby gateway runtime is an **amd64 Debian 13
+The primary supported self-hosted Labby gateway runtime is an **amd64 Ubuntu 24.04
 Incus system container**. Labby launches stdio MCP servers and agent CLIs at
 runtime, so the deployment needs a persistent system environment with normal
 package installation, systemd, SSH, and user caches. Docker remains useful for
@@ -29,9 +29,9 @@ scripts/incus-bootstrap.sh --version vX.Y.Z
 ```
 
 The bootstrap is idempotent. It creates or reuses the `labby` container, launches
-`images:debian/13`, enforces isolated idmap and non-nesting settings, passes
-exactly one host device (`/dev/net/tun`), installs `/usr/local/bin/labby`, and
-runs:
+`images:ubuntu/24.04`, configures a privileged non-nesting system container,
+passes exactly one host device (`/dev/net/tun`), installs
+`/usr/local/bin/labby`, and runs:
 
 ```bash
 incus exec labby -- labby setup --provision --yes
@@ -49,6 +49,23 @@ Add `--tailscale-ssh` only when you intentionally want Tailscale SSH enabled for
 the container. Tailscale SSH is governed by tailnet ACLs; enabling it changes who
 can reach the container over SSH.
 
+The container is privileged because this host's unprivileged Incus containers
+deny signal delivery even for same-UID processes. `systemctl restart
+labby.service` needs normal signal semantics; without them, a stale Labby
+process can keep answering `/ready` while systemd reports the unit as failed.
+The service itself still runs as the unprivileged `lab` user inside the
+container.
+
+For local PR validation before a release exists, push a built checkout binary
+instead of downloading a GitHub release:
+
+```bash
+cargo build --workspace --all-features --bin labby
+scripts/incus-bootstrap.sh --local-binary target/debug/labby
+```
+
+The release path should still use `--version vX.Y.Z`.
+
 ## In-Box Provisioning
 
 Inside the container, `labby setup --provision` owns the bounded environment
@@ -61,10 +78,12 @@ labby setup --provision --yes
 labby setup --provision --yes --skip-deps
 ```
 
-The plan is explicit about privilege. Root actions are limited to the Debian
-package floor, `lab` user creation, writing `/etc/systemd/system/labby.service`,
-and enabling/restarting the service. User-space actions run as `lab` and install
-Node v24.x, `uv` plus Python, `claude`, and `codex`.
+The plan is explicit about privilege. Root actions are limited to the apt
+package floor (`git`, `openssh-client`, `gh`, `ca-certificates`, `curl`,
+`xz-utils`, `zsh`), `lab` user creation, writing
+`/etc/systemd/system/labby.service`, and enabling/restarting the service.
+User-space actions run as `lab` and install Node v24.x, `uv` plus Python,
+`claude`, `codex`, and `gemini`.
 
 Provisioning does not install or initialize Incus, silently install leaf
 packages such as `ffmpeg`, or expose root package/user/systemd mutation through
@@ -102,6 +121,10 @@ It also applies the hardening baseline from the implementation plan, including
 `ProtectSystem=strict`, `NoNewPrivileges=true`, `PrivateTmp=true`, restricted
 address families, and explicit `ReadWritePaths` for the `lab` user's runtime
 state.
+
+Readiness verification requires both an active `labby.service` unit and a
+successful loopback `/ready` response. This prevents stale processes from
+masking failed service restarts.
 
 ## Post-Provision Checklist
 

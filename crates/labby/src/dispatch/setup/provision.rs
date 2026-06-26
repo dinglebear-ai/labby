@@ -3,6 +3,7 @@
 //! This module is intentionally not routed through the setup action catalog:
 //! callers reach it only through `labby setup --provision`.
 
+use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,7 +16,7 @@ use tokio::process::Command;
 
 use crate::dispatch::error::ToolError;
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 const CAPTURE_BYTES: usize = 16 * 1024;
 const STALE_LOCK_AFTER: Duration = Duration::from_secs(60 * 60);
 const LOCK_PATH: &str = "/var/lock/labby-provision.lock";
@@ -39,6 +40,7 @@ const APT_FLOOR: &[&str] = &[
     "gh",
     "ca-certificates",
     "curl",
+    "xz-utils",
     "zsh",
 ];
 
@@ -68,7 +70,7 @@ enum Privilege {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProvisionAction {
     privilege: Privilege,
-    label: &'static str,
+    label: Cow<'static, str>,
     kind: ActionKind,
 }
 
@@ -171,37 +173,39 @@ fn build_plan(skip_deps: bool) -> Vec<ProvisionAction> {
     if !skip_deps {
         actions.push(ProvisionAction {
             privilege: Privilege::Root,
-            label: "apt install: git openssh-client gh ca-certificates curl zsh",
+            label: Cow::Owned(format!("apt install: {}", APT_FLOOR.join(" "))),
             kind: ActionKind::AptFloor,
         });
     }
     actions.push(ProvisionAction {
         privilege: Privilege::Root,
-        label: "useradd lab (if absent)",
+        label: Cow::Borrowed("useradd lab (if absent)"),
         kind: ActionKind::LabUser,
     });
     if !skip_deps {
         actions.extend([
             ProvisionAction {
                 privilege: Privilege::Lab,
-                label: "install node v24.x (official static tarball, on PATH)",
+                label: Cow::Borrowed("install node v24.x (official static tarball, on PATH)"),
                 kind: ActionKind::Node,
             },
             ProvisionAction {
                 privilege: Privilege::Lab,
-                label: "install uv + python (user-space)",
+                label: Cow::Borrowed("install uv + python (user-space)"),
                 kind: ActionKind::UvPython,
             },
             ProvisionAction {
                 privilege: Privilege::Lab,
-                label: "install claude + codex (npm, user-space)",
+                label: Cow::Borrowed("install claude + codex + gemini (npm, user-space)"),
                 kind: ActionKind::AgentClis,
             },
         ]);
     }
     actions.push(ProvisionAction {
         privilege: Privilege::Root,
-        label: "write /etc/systemd/system/labby.service and systemctl enable --now labby",
+        label: Cow::Borrowed(
+            "write /etc/systemd/system/labby.service and systemctl enable --now labby",
+        ),
         kind: ActionKind::HostService,
     });
     actions
@@ -215,7 +219,7 @@ fn render_plan(actions: &[ProvisionAction]) -> String {
             Privilege::Root => "[root] ",
             Privilege::Lab => "[lab ] ",
         });
-        out.push_str(action.label);
+        out.push_str(&action.label);
         out.push('\n');
     }
     out.push_str(
@@ -415,12 +419,13 @@ async fn lab_user_ready() -> Result<bool, ToolError> {
 }
 
 async fn apt_floor_installed() -> Result<bool, ToolError> {
-    let query = APT_FLOOR.join(" ");
-    command_success(
-        "sh",
-        &["-c", &format!("dpkg-query -W {query} >/dev/null 2>&1")],
-    )
-    .await
+    for package in APT_FLOOR {
+        let output = run_command("dpkg-query", &["-W", "-f=${db:Status-Abbrev}", package]).await?;
+        if !output.status.success() || !output.stdout.starts_with("ii ") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 async fn lab_command_success(script: &str) -> Result<bool, ToolError> {
@@ -450,7 +455,9 @@ async fn run_as_lab(script: &str) -> Result<CommandCapture, ToolError> {
 }
 
 fn lab_shell_script(script: &str) -> String {
-    format!("export HOME={LAB_HOME}; export PATH={LAB_PATH}; {script}")
+    format!(
+        "export HOME={LAB_HOME}; export PATH={LAB_PATH}; export XDG_CONFIG_HOME={LAB_HOME}/.config; export XDG_CACHE_HOME={LAB_HOME}/.cache; cd {LAB_HOME}; {script}"
+    )
 }
 
 async fn run_checked(program: &str, args: &[&str]) -> Result<CommandCapture, ToolError> {
@@ -653,10 +660,11 @@ mod tests {
     fn dry_run_plan_renders_privilege_and_non_actions() {
         let text = provision_plan_text(false);
 
-        assert!(
-            text.contains("[root] apt install: git openssh-client gh ca-certificates curl zsh")
-        );
+        assert!(text.contains(
+            "[root] apt install: git openssh-client gh ca-certificates curl xz-utils zsh"
+        ));
         assert!(text.contains("[lab ] install node v24.x"));
+        assert!(text.contains("[lab ] install claude + codex + gemini"));
         assert!(text.contains("[root] write /etc/systemd/system/labby.service"));
         assert!(text.contains("It will NOT:"));
         assert!(text.contains("install or modify Incus"));

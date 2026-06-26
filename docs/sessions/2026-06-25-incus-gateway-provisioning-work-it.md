@@ -114,6 +114,13 @@ Implemented PR #158 for the Incus-primary Labby gateway deployment path. The PR 
 - GitGuardian initially flagged scanner-looking fake tokens in tests. The fixtures now assemble token-shaped values from fragments, and GitGuardian later reported no secrets remaining.
 - CodeRabbit flagged several real issues. Fixes included stderr prompting, stale-lock cleanup, stronger idempotency checks, Node architecture rejection, Gemini install alignment, Tailscale auth-key cleanup, safer bootstrap examples, and explicit Dozzle skip gating.
 - CodeRabbit later became rate-limited/pending after the final push, so no fresh automated review summary was available at close-out.
+- Live Incus validation found additional setup bugs that dry-runs missed:
+  - Fresh Ubuntu 24.04 containers needed `xz-utils` for the Node `.tar.xz` install.
+  - `dpkg-query -W` was too weak for idempotency because known-but-not-installed packages still returned success; the check now requires installed `ii` status.
+  - `runuser` inherited `/root` as cwd, causing `uv` to look for `/root/uv.toml`; lab user commands now `cd /home/lab` and set lab-owned XDG paths.
+  - First-run downloads can exceed two minutes, so provisioning command timeout increased to 10 minutes.
+  - Unprivileged Incus containers on this host denied signal delivery even for same-UID child processes; the bootstrap now uses a privileged system container while the service still runs as `lab`.
+  - `ss -ltnp` in Incus may omit process ownership; service readiness verification now has `/proc` socket fallback and also requires `labby.service` to be active.
 
 ## Behavior Changes (Before/After)
 
@@ -132,6 +139,12 @@ Implemented PR #158 for the Incus-primary Labby gateway deployment path. The PR 
 | `git diff --check` | No whitespace errors. | No output. | pass |
 | `target/debug/labby setup --provision --dry-run` | Non-mutating plan. | Printed root/lab plan and "dry-run complete". | pass |
 | `scripts/incus-bootstrap.sh --version v0.0.0 --dry-run` | Non-mutating Incus command plan. | Printed missing-Incus notice and dry-run commands. | pass |
+| `scripts/incus-bootstrap.sh --local-binary target/debug/labby` | Clean Incus bootstrap from no container to ready service. | `provision complete: executed=6, skipped=0` in privileged `images:ubuntu/24.04` container. | pass |
+| `incus exec labby-e2e -- systemctl is-active labby.service` | Service active after bootstrap. | `active`. | pass |
+| `incus exec labby-e2e -- curl -fsS http://127.0.0.1:8765/ready` | Readiness endpoint reports ready. | `{"status":"ready"}`. | pass |
+| `incus exec labby-e2e -- runuser -u lab -- sh -lc 'node --version && npm --version && uv --version && python3 --version && claude --version && codex --version && gemini --version'` | Provisioned runtime and agent CLIs available as `lab`. | Node v24.18.0, npm 11.16.0, uv 0.11.24, Python 3.12.3, Claude Code 2.1.193, codex-cli 0.142.2, Gemini 0.49.0. | pass |
+| `incus exec labby-e2e -- systemctl restart labby.service` plus ready check | Restart keeps service active and ready. | `active`, `{"status":"ready"}`, `ExecMainStatus=0`. | pass |
+| Re-run `scripts/incus-bootstrap.sh --local-binary target/debug/labby` | Idempotent rerun skips completed provision steps. | `provision complete: executed=0, skipped=6`. | pass |
 | `just check` | Workspace all-features check passes. | Finished successfully. | pass |
 | `just docs-check` | Generated docs fresh. | Checked 15 docs artifacts: fresh. | pass |
 | `just lint` | Skill drift, wrapper test, clippy, fmt pass. | Finished successfully. | pass |
@@ -139,7 +152,7 @@ Implemented PR #158 for the Incus-primary Labby gateway deployment path. The PR 
 
 ## Risks and Rollback
 
-- Risk: full live Incus mutation was not executed in this environment because Incus is not installed here. Rollback for an attempted container is documented as `incus stop labby` and `incus delete labby`.
+- Risk: the tested Incus path uses `images:ubuntu/24.04` and a privileged system container. Earlier Debian 13 attempts on this host did not receive working container networking, and unprivileged containers denied signal delivery needed for service restarts.
 - Risk: CodeRabbit final status is pending/rate-limited after the last push. Review threads visible through GitHub were resolved, but a later bot run may produce new comments.
 - Rollback: revert PR #158 or remove the Incus container and restore the prior host-service runtime path from `main`.
 
@@ -166,4 +179,4 @@ Implemented PR #158 for the Incus-primary Labby gateway deployment path. The PR 
 - Wait for PR #158 checks and bot review to finish.
 - Merge PR #158 when external checks are acceptable.
 - After merge, decide whether to close `lab-fh1wv.1` through `lab-fh1wv.5` and leave `lab-fh1wv.6` as follow-up.
-- Run a live Incus bootstrap on a host with Incus installed before announcing the path as operational beyond dry-run/local verification.
+- Decide whether the privileged Incus container requirement is acceptable for the primary runtime or whether a future VM/distrobuilder path should replace it.

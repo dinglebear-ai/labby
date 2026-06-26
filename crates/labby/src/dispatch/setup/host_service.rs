@@ -1,6 +1,6 @@
 //! CLI-only management helpers for the system `labby.service`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
@@ -11,6 +11,7 @@ use tokio::process::Command;
 use crate::dispatch::error::ToolError;
 
 const SERVICE_NAME: &str = "labby.service";
+const LAB_USER: &str = "lab";
 const LAB_HOME: &str = "/home/lab";
 const SYSTEM_UNIT_DIR: &str = "/etc/systemd/system";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -267,6 +268,8 @@ fn unit_text() -> &'static str {
 Description=Labby host gateway
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -297,8 +300,6 @@ TasksMax=1000
 MemoryMax=4G
 Restart=on-failure
 RestartSec=3
-StartLimitIntervalSec=60
-StartLimitBurst=5
 KillSignal=SIGINT
 
 [Install]
@@ -361,6 +362,14 @@ async fn preflight_port_available(operation: &str) -> Result<(), ToolError> {
     } else {
         (None, None)
     };
+    if docker_running != Some(true)
+        && holder.is_some()
+        && active_state.as_deref() == Some("active")
+        && (main_pid.is_some_and(|pid| process_listens_on_port(pid, port))
+            || lab_user_listens_on_port(port))
+    {
+        return Ok(());
+    }
     preflight_decision(
         operation,
         port,
@@ -475,7 +484,10 @@ async fn readiness_owner_matches(main_pid: Option<u32>) -> Result<bool, ToolErro
     let Some(holder) = port_holder(configured_local_port()).await? else {
         return Ok(false);
     };
-    Ok(holder_contains_pid(&holder, pid))
+    let port = configured_local_port();
+    Ok(holder_contains_pid(&holder, pid)
+        || process_listens_on_port(pid, port)
+        || lab_user_listens_on_port(port))
 }
 
 fn holder_can_be_host_service_from(
@@ -504,6 +516,90 @@ fn holder_contains_pid(holder: &str, pid: u32) -> bool {
     })
 }
 
+fn process_listens_on_port(pid: u32, port: u16) -> bool {
+    let inodes = listener_socket_inodes(port);
+    !inodes.is_empty() && process_has_socket_inode(pid, &inodes)
+}
+
+fn listener_socket_inodes(port: u16) -> BTreeSet<String> {
+    let mut inodes = BTreeSet::new();
+    for (_, inode) in listener_socket_entries(port) {
+        inodes.insert(inode);
+    }
+    inodes
+}
+
+fn lab_user_listens_on_port(port: u16) -> bool {
+    let Some(uid) = lab_uid() else {
+        return false;
+    };
+    listener_socket_entries(port)
+        .into_iter()
+        .any(|(listener_uid, _)| listener_uid == uid)
+}
+
+fn lab_uid() -> Option<u32> {
+    std::fs::read_to_string("/etc/passwd")
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split(':');
+            let name = fields.next()?;
+            let uid = fields.nth(1)?;
+            (name == LAB_USER).then(|| uid.parse().ok()).flatten()
+        })
+}
+
+fn listener_socket_entries(port: u16) -> Vec<(u32, String)> {
+    let mut entries = Vec::new();
+    collect_listener_socket_entries("/proc/net/tcp", port, &mut entries);
+    collect_listener_socket_entries("/proc/net/tcp6", port, &mut entries);
+    entries
+}
+
+fn collect_listener_socket_entries(path: &str, port: u16, entries: &mut Vec<(u32, String)>) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    for line in text.lines().skip(1) {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() <= 9 || fields[3] != "0A" {
+            continue;
+        }
+        let Some((_, port_hex)) = fields[1].rsplit_once(':') else {
+            continue;
+        };
+        if u16::from_str_radix(port_hex, 16).ok() == Some(port) {
+            let Ok(uid) = fields[7].parse::<u32>() else {
+                continue;
+            };
+            entries.push((uid, fields[9].to_string()));
+        }
+    }
+}
+
+fn process_has_socket_inode(pid: u32, inodes: &BTreeSet<String>) -> bool {
+    let fd_dir = format!("/proc/{pid}/fd");
+    let Ok(entries) = std::fs::read_dir(fd_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let Ok(target) = std::fs::read_link(entry.path()) else {
+            return false;
+        };
+        let Some(target) = target.to_str() else {
+            return false;
+        };
+        let Some(inode) = target
+            .strip_prefix("socket:[")
+            .and_then(|rest| rest.strip_suffix(']'))
+        else {
+            return false;
+        };
+        inodes.contains(inode)
+    })
+}
+
 async fn docker_labby_master_running() -> Result<Option<bool>, ToolError> {
     match run_command(
         "docker",
@@ -523,16 +619,24 @@ async fn poll_ready() -> Result<(), String> {
     let mut last_err = String::new();
     while tokio::time::Instant::now() < deadline {
         match check_ready().await {
-            Ok(true) => match systemctl_main_pid().await {
-                Ok(main_pid) => match readiness_owner_matches(main_pid).await {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => {
-                        last_err =
-                            "ready endpoint responded, but the listener is not labby.service"
-                                .to_string();
+            Ok(true) => match systemctl_service_identity().await {
+                Ok((active_state, main_pid)) if active_state.as_deref() == Some("active") => {
+                    match readiness_owner_matches(main_pid).await {
+                        Ok(true) => return Ok(()),
+                        Ok(false) => {
+                            last_err =
+                                "ready endpoint responded, but the listener is not labby.service"
+                                    .to_string();
+                        }
+                        Err(err) => last_err = err.to_string(),
                     }
-                    Err(err) => last_err = err.to_string(),
-                },
+                }
+                Ok((active_state, _)) => {
+                    last_err = format!(
+                        "ready endpoint responded, but {SERVICE_NAME} is not active ({})",
+                        active_state.unwrap_or_else(|| "unknown".to_string())
+                    );
+                }
                 Err(err) => last_err = err.to_string(),
             },
             Ok(false) => last_err = "ready endpoint returned non-success".to_string(),
@@ -541,10 +645,6 @@ async fn poll_ready() -> Result<(), String> {
         tokio::time::sleep(READY_POLL_INTERVAL).await;
     }
     Err(last_err)
-}
-
-async fn systemctl_main_pid() -> Result<Option<u32>, ToolError> {
-    Ok(systemctl_service_identity().await?.1)
 }
 
 async fn systemctl_service_identity() -> Result<(Option<String>, Option<u32>), ToolError> {
