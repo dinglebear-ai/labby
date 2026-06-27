@@ -122,7 +122,7 @@ Browser evidence:
 agent-browser open http://127.0.0.1:8765/chat/
 snapshot: heading "Sign in to Labby", button "Sign in"
 agent-browser click Sign in
-snapshot: Google OAuth sign-in page for tootie.tv
+snapshot: Google OAuth sign-in page for controller.tv
 ```
 
 The browser could verify the auth gate but not authenticated chat reload/route behavior.

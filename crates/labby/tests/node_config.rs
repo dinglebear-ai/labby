@@ -15,13 +15,13 @@ use labby::config::{ArtifactRole, LabConfig, NodeRuntimeRole, RestartModel};
 fn parses_node_controller_config_block() {
     let raw = r#"
         [node]
-        controller = "tootie"
+        controller = "controller"
     "#;
 
     let parsed: LabConfig = toml::from_str(raw).unwrap();
     assert_eq!(
         parsed.node.as_ref().unwrap().controller.as_deref(),
-        Some("tootie")
+        Some("controller")
     );
 }
 
@@ -37,7 +37,7 @@ fn parses_node_role_controller() {
         r#"
         [node]
         role = "controller"
-        controller = "dookie"
+        controller = "node-a"
     "#,
     )
     .unwrap();
@@ -50,7 +50,7 @@ fn parses_node_role_node() {
         r#"
         [node]
         role = "node"
-        controller = "dookie"
+        controller = "node-a"
     "#,
     )
     .unwrap();
@@ -110,7 +110,7 @@ fn parses_artifact_role_controller() {
         [deploy.defaults]
         artifact_role = "controller"
 
-        [deploy.hosts.dookie]
+        [deploy.hosts.node-a]
         artifact_role = "controller"
     "#,
     )

@@ -46,7 +46,7 @@ const MOCK_REGISTRY_SERVERS: RawServerResponse[] = [
         statusChangedAt: '2026-04-20T12:00:00Z',
         updatedAt: '2026-04-21T10:00:00Z',
       },
-      'tv.tootie.lab/registry': {
+      'dev.labby/registry': {
         curation: { featured: true, hidden: false, tags: ['audit', 'gateway'] },
         trust: { reviewed: true, source_verified: true, maintainer_known: true },
         ux: { recommended_for_homelab: true, works_in_lab: true, setup_difficulty: 'easy' },
@@ -73,7 +73,7 @@ const MOCK_REGISTRY_SERVERS: RawServerResponse[] = [
         statusChangedAt: '2026-04-18T12:00:00Z',
         updatedAt: '2026-04-18T12:00:00Z',
       },
-      'tv.tootie.lab/registry': {
+      'dev.labby/registry': {
         curation: { featured: false, hidden: false, tags: ['logs'] },
         trust: { reviewed: true },
         ux: { recommended_for_homelab: false, works_in_lab: true, setup_difficulty: 'easy' },
@@ -100,7 +100,7 @@ const MOCK_REGISTRY_SERVERS: RawServerResponse[] = [
         statusChangedAt: '2026-04-16T12:00:00Z',
         updatedAt: '2026-04-17T09:00:00Z',
       },
-      'tv.tootie.lab/registry': {
+      'dev.labby/registry': {
         curation: { featured: false, hidden: false, tags: ['registry', 'metadata'] },
         trust: { reviewed: false },
         ux: { recommended_for_homelab: true, works_in_lab: true, setup_difficulty: 'medium' },
@@ -133,7 +133,7 @@ function mergeMockMetadata(server: RawServerResponse): RawServerResponse {
     ...cloneValue(server),
     _meta: {
       ...(server._meta ?? {}),
-      'tv.tootie.lab/registry': metadata,
+      'dev.labby/registry': metadata,
     },
   }
 }
@@ -219,11 +219,11 @@ export async function listServers(
         const updatedAt = response._meta?.['io.modelcontextprotocol.registry/official']?.updatedAt
         return updatedAt ? updatedAt >= params.updated_since : true
       })
-      .filter((response) => params.featured == null || Boolean(response._meta?.['tv.tootie.lab/registry']?.curation?.featured) === params.featured)
-      .filter((response) => params.reviewed == null || Boolean(response._meta?.['tv.tootie.lab/registry']?.trust?.reviewed) === params.reviewed)
-      .filter((response) => params.recommended == null || Boolean(response._meta?.['tv.tootie.lab/registry']?.ux?.recommended_for_homelab) === params.recommended)
-      .filter((response) => params.hidden == null || Boolean(response._meta?.['tv.tootie.lab/registry']?.curation?.hidden) === params.hidden)
-      .filter((response) => !params.tag || (response._meta?.['tv.tootie.lab/registry']?.curation?.tags ?? []).includes(params.tag))
+      .filter((response) => params.featured == null || Boolean(response._meta?.['dev.labby/registry']?.curation?.featured) === params.featured)
+      .filter((response) => params.reviewed == null || Boolean(response._meta?.['dev.labby/registry']?.trust?.reviewed) === params.reviewed)
+      .filter((response) => params.recommended == null || Boolean(response._meta?.['dev.labby/registry']?.ux?.recommended_for_homelab) === params.recommended)
+      .filter((response) => params.hidden == null || Boolean(response._meta?.['dev.labby/registry']?.curation?.hidden) === params.hidden)
+      .filter((response) => !params.tag || (response._meta?.['dev.labby/registry']?.curation?.tags ?? []).includes(params.tag))
 
     const limit = params.limit ?? 20
     const offset = params.cursor ? Number.parseInt(params.cursor, 10) || 0 : 0
@@ -328,8 +328,8 @@ export async function getServerLocalMetadata(
     return {
       name,
       version: version ?? server?.server.version ?? 'latest',
-      namespace: 'tv.tootie.lab/registry',
-      metadata: server?._meta?.['tv.tootie.lab/registry'] ?? null,
+      namespace: 'dev.labby/registry',
+      metadata: server?._meta?.['dev.labby/registry'] ?? null,
     }
   }
 
@@ -353,7 +353,7 @@ export async function setServerLocalMetadata(
     return {
       name,
       version: options?.version ?? server?.server.version ?? 'latest',
-      namespace: 'tv.tootie.lab/registry',
+      namespace: 'dev.labby/registry',
       metadata: cloneValue(metadata),
     }
   }
@@ -377,7 +377,7 @@ export async function deleteServerLocalMetadata(
     return {
       name,
       version: version ?? server?.server.version ?? 'latest',
-      namespace: 'tv.tootie.lab/registry',
+      namespace: 'dev.labby/registry',
       deleted: true,
     }
   }

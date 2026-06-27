@@ -2,7 +2,7 @@
 // JSON field names follow serde rename annotations in the Rust source.
 
 export const REGISTRY_META_KEY = 'io.modelcontextprotocol.registry/official'
-export const LAB_REGISTRY_META_KEY = 'tv.tootie.lab/registry'
+export const LAB_REGISTRY_META_KEY = 'dev.labby/registry'
 
 export interface ListServersParams {
   search?: string
@@ -51,7 +51,7 @@ export function normalizeServerJSON(server: ServerJSON): NormalizedServerJSON {
 
 export interface ResponseMeta {
   'io.modelcontextprotocol.registry/official'?: RegistryExtensions | null
-  'tv.tootie.lab/registry'?: LabRegistryMetadata | null
+  'dev.labby/registry'?: LabRegistryMetadata | null
   [key: string]: unknown
 }
 

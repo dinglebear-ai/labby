@@ -79,7 +79,7 @@ mod tests {
             "oauth",
             "relay-local",
             "--machine",
-            "dookie",
+            "node-a",
             "--port",
             "38935",
         ])
@@ -94,7 +94,7 @@ mod tests {
                         port,
                     }),
             }) => {
-                assert_eq!(machine.as_deref(), Some("dookie"));
+                assert_eq!(machine.as_deref(), Some("node-a"));
                 assert!(forward_base.is_none());
                 assert_eq!(port, 38935);
             }
@@ -109,7 +109,7 @@ mod tests {
             "oauth",
             "relay-local",
             "--forward-base",
-            "http://100.88.16.79:38935/callback/dookie",
+            "http://100.64.0.10:38935/callback/node-a",
             "--port",
             "38935",
         ])
@@ -127,7 +127,7 @@ mod tests {
                 assert!(machine.is_none());
                 assert_eq!(
                     forward_base.as_deref(),
-                    Some("http://100.88.16.79:38935/callback/dookie")
+                    Some("http://100.64.0.10:38935/callback/node-a")
                 );
                 assert_eq!(port, 38935);
             }
@@ -142,9 +142,9 @@ mod tests {
             "oauth",
             "relay-local",
             "--machine",
-            "dookie",
+            "node-a",
             "--forward-base",
-            "http://100.88.16.79:38935/callback/dookie",
+            "http://100.64.0.10:38935/callback/node-a",
             "--port",
             "38935",
         ]);
@@ -155,13 +155,13 @@ mod tests {
     #[test]
     fn oauth_relay_local_cli_resolves_explicit_target() {
         let resolved =
-            resolve_explicit_target("http://100.88.16.79:38935/callback/dookie", Some(38935))
+            resolve_explicit_target("http://100.64.0.10:38935/callback/node-a", Some(38935))
                 .expect("explicit target should resolve");
 
         assert_eq!(resolved.machine_id, None);
         assert_eq!(
             resolved.target_url.as_str(),
-            "http://100.88.16.79:38935/callback/dookie"
+            "http://100.64.0.10:38935/callback/node-a"
         );
         assert_eq!(resolved.default_port, Some(38935));
     }

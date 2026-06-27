@@ -35,13 +35,13 @@ Investigate MCP startup failures for `axon` and `syslog`, then continue with a s
 
 ## Key Findings
 
-- `axon` and `syslog` were configured in Codex as path-based MCP resources: `https://mcp.tootie.tv/axon` and `https://mcp.tootie.tv/syslog`, each with a matching `oauth_resource`.
+- `axon` and `syslog` were configured in Codex as path-based MCP resources: `https://mcp.example.com/axon` and `https://mcp.example.com/syslog`, each with a matching `oauth_resource`.
 - Their unauthenticated MCP `initialize` requests returned expected `401` JSON with `WWW-Authenticate` and protected-resource metadata, not a dead endpoint.
-- Their protected-resource metadata advertised `authorization_servers: ["https://lab.tootie.tv"]`, and the canonical authorization server metadata at `https://lab.tootie.tv/.well-known/oauth-authorization-server` returned JSON.
-- Service-scoped authorization-server URLs under `https://mcp.tootie.tv/.well-known/oauth-authorization-server/{axon,syslog}` returned the Labby HTML app, matching the class of "failed to parse server response" errors if a client derives that URL.
+- Their protected-resource metadata advertised `authorization_servers: ["https://lab.example.com"]`, and the canonical authorization server metadata at `https://lab.example.com/.well-known/oauth-authorization-server` returned JSON.
+- Service-scoped authorization-server URLs under `https://mcp.example.com/.well-known/oauth-authorization-server/{axon,syslog}` returned the Labby HTML app, matching the class of "failed to parse server response" errors if a client derives that URL.
 - Current Codex credentials for the path-based `axon` and `syslog` entries had expired access tokens, forcing refresh.
-- `swag` was configured directly as `https://swag.tootie.tv/mcp` with no `oauth_resource` override.
-- `swag` OAuth metadata was valid JSON at both `https://swag.tootie.tv/.well-known/oauth-protected-resource` and `https://swag.tootie.tv/.well-known/oauth-authorization-server`.
+- `swag` was configured directly as `https://swag.example.com/mcp` with no `oauth_resource` override.
+- `swag` OAuth metadata was valid JSON at both `https://swag.example.com/.well-known/oauth-protected-resource` and `https://swag.example.com/.well-known/oauth-authorization-server`.
 - `swag-mcp` Docker logs showed uvicorn shutdown and cancelled active SSE tasks during a container recreate; Cloudflare returned `502` during that backend gap.
 
 ## Technical Decisions
@@ -56,16 +56,16 @@ Investigate MCP startup failures for `axon` and `syslog`, then continue with a s
 
 ## Commands Executed
 
-- `rg -n "swag|SWAG|MCP startup|oauth|OAuth token refresh|mcp.tootie.tv/swag" /home/jmagar/.codex/memories/MEMORY.md` - found prior SWAG/OAuth metadata fallthrough context.
+- `rg -n "swag|SWAG|MCP startup|oauth|OAuth token refresh|mcp.example.com/swag" /home/jmagar/.codex/memories/MEMORY.md` - found prior SWAG/OAuth metadata fallthrough context.
 - `rg -n "\[mcp_servers\.swag\]|url =|oauth_resource" /home/jmagar/.codex/config.toml` - confirmed Codex MCP server URL configuration.
-- `curl -sS -i -X POST https://mcp.tootie.tv/axon ... initialize` - confirmed unauthenticated `axon` MCP returns `401` JSON.
-- `curl -sS -i -X POST https://mcp.tootie.tv/syslog ... initialize` - confirmed unauthenticated `syslog` MCP returns `401` JSON.
-- `curl -sS https://mcp.tootie.tv/.well-known/oauth-protected-resource/{axon,syslog}` - confirmed protected-resource metadata advertised `https://lab.tootie.tv`.
-- `curl -sS -i https://mcp.tootie.tv/.well-known/oauth-authorization-server/{axon,syslog}` - found HTML instead of OAuth JSON at the service-scoped auth-server URLs.
-- `curl -sS https://lab.tootie.tv/.well-known/oauth-authorization-server` - confirmed the canonical Lab authorization server metadata returned JSON.
+- `curl -sS -i -X POST https://mcp.example.com/axon ... initialize` - confirmed unauthenticated `axon` MCP returns `401` JSON.
+- `curl -sS -i -X POST https://mcp.example.com/syslog ... initialize` - confirmed unauthenticated `syslog` MCP returns `401` JSON.
+- `curl -sS https://mcp.example.com/.well-known/oauth-protected-resource/{axon,syslog}` - confirmed protected-resource metadata advertised `https://lab.example.com`.
+- `curl -sS -i https://mcp.example.com/.well-known/oauth-authorization-server/{axon,syslog}` - found HTML instead of OAuth JSON at the service-scoped auth-server URLs.
+- `curl -sS https://lab.example.com/.well-known/oauth-authorization-server` - confirmed the canonical Lab authorization server metadata returned JSON.
 - `docker logs --since 3h swag-mcp` - showed `swag-mcp` MCP requests before restart and uvicorn shutdown/restart evidence.
 - `docker events --since '2026-05-10T02:45:00Z' --until '2026-05-10T02:53:00Z' --filter container=swag-mcp ...` - showed `kill`, `stop`, `die`, `destroy`, `create`, and `start` events for `swag-mcp`.
-- `curl -sS -i -X POST https://swag.tootie.tv/mcp ... initialize` with the cached bearer token - first hit Cloudflare `502` during recreate, then returned `HTTP/2 200` with a valid MCP `initialize` result after restart.
+- `curl -sS -i -X POST https://swag.example.com/mcp ... initialize` with the cached bearer token - first hit Cloudflare `502` during recreate, then returned `HTTP/2 200` with a valid MCP `initialize` result after restart.
 
 ## Errors Encountered
 
@@ -84,12 +84,12 @@ Investigate MCP startup failures for `axon` and `syslog`, then continue with a s
 
 | command | expected | actual | status |
 | --- | --- | --- | --- |
-| `curl -sS https://lab.tootie.tv/.well-known/oauth-authorization-server` | OAuth authorization server JSON | JSON with issuer `https://lab.tootie.tv` and token endpoint `/token` | pass |
-| `curl -sS -i https://mcp.tootie.tv/.well-known/oauth-authorization-server/axon` | OAuth JSON if client derives service-scoped metadata | `HTTP/2 200` HTML Labby app | fail, explains parse-risk |
-| `curl -sS -i https://mcp.tootie.tv/.well-known/oauth-authorization-server/syslog` | OAuth JSON if client derives service-scoped metadata | `HTTP/2 200` HTML Labby app | fail, explains parse-risk |
-| `curl -sS -i https://swag.tootie.tv/.well-known/oauth-authorization-server` | OAuth JSON | JSON from `https://mcp-auth.tootie.tv` metadata | pass |
+| `curl -sS https://lab.example.com/.well-known/oauth-authorization-server` | OAuth authorization server JSON | JSON with issuer `https://lab.example.com` and token endpoint `/token` | pass |
+| `curl -sS -i https://mcp.example.com/.well-known/oauth-authorization-server/axon` | OAuth JSON if client derives service-scoped metadata | `HTTP/2 200` HTML Labby app | fail, explains parse-risk |
+| `curl -sS -i https://mcp.example.com/.well-known/oauth-authorization-server/syslog` | OAuth JSON if client derives service-scoped metadata | `HTTP/2 200` HTML Labby app | fail, explains parse-risk |
+| `curl -sS -i https://swag.example.com/.well-known/oauth-authorization-server` | OAuth JSON | JSON from `https://mcp-auth.example.com` metadata | pass |
 | `curl -sS -i http://127.0.0.1:8012/health` | Local `swag-mcp` health is healthy | `HTTP/1.1 200 OK` with `{"status":"healthy"}` | pass |
-| Authenticated `initialize` to `https://swag.tootie.tv/mcp` after restart | MCP initialize succeeds | `HTTP/2 200` event stream with `serverInfo.name = "SWAG Configuration Manager"` | pass |
+| Authenticated `initialize` to `https://swag.example.com/mcp` after restart | MCP initialize succeeds | `HTTP/2 200` event stream with `serverInfo.name = "SWAG Configuration Manager"` | pass |
 | `docker inspect swag-mcp` | Running healthy container after recreate | status `running`, health `healthy`, started `2026-05-10T02:52:32Z` | pass |
 
 ## Risks and Rollback
@@ -101,7 +101,7 @@ Investigate MCP startup failures for `axon` and `syslog`, then continue with a s
 ## Decisions Not Taken
 
 - Did not delete or regenerate Codex OAuth credentials for `axon`, `syslog`, or `swag`.
-- Did not change reverse-proxy metadata routes for `mcp.tootie.tv` or `swag.tootie.tv`.
+- Did not change reverse-proxy metadata routes for `mcp.example.com` or `swag.example.com`.
 - Did not restart `swag-mcp`; the observed recreate was already caused by an active Docker Compose rebuild process.
 
 ## References
@@ -109,15 +109,15 @@ Investigate MCP startup failures for `axon` and `syslog`, then continue with a s
 - `/home/jmagar/.codex/config.toml`
 - `/home/jmagar/.codex/.credentials.json`
 - `/home/jmagar/.codex/logs_2.sqlite`
-- `https://mcp.tootie.tv/.well-known/oauth-protected-resource/axon`
-- `https://mcp.tootie.tv/.well-known/oauth-protected-resource/syslog`
-- `https://lab.tootie.tv/.well-known/oauth-authorization-server`
-- `https://swag.tootie.tv/.well-known/oauth-protected-resource`
-- `https://swag.tootie.tv/.well-known/oauth-authorization-server`
+- `https://mcp.example.com/.well-known/oauth-protected-resource/axon`
+- `https://mcp.example.com/.well-known/oauth-protected-resource/syslog`
+- `https://lab.example.com/.well-known/oauth-authorization-server`
+- `https://swag.example.com/.well-known/oauth-protected-resource`
+- `https://swag.example.com/.well-known/oauth-authorization-server`
 
 ## Open Questions
 
-- Whether Codex/rmcp is actually deriving `https://mcp.tootie.tv/.well-known/oauth-authorization-server/{service}` during refresh was inferred from the parse failure and live endpoint behavior; the Codex logs inspected did not show the exact metadata URL used internally.
+- Whether Codex/rmcp is actually deriving `https://mcp.example.com/.well-known/oauth-authorization-server/{service}` during refresh was inferred from the parse failure and live endpoint behavior; the Codex logs inspected did not show the exact metadata URL used internally.
 - The session identified an active `docker compose up -d --build` process for `swag-mcp`, but did not trace which user action or automation started it.
 - The repo already had unrelated dirty files before saving this note; those changes were not investigated in this session.
 
@@ -129,6 +129,6 @@ Started but not completed:
 
 Follow-on tasks not yet started:
 
-- For `axon` and `syslog`, either clear only the affected Codex credential entries to force fresh auth or make the service-scoped `mcp.tootie.tv/.well-known/oauth-authorization-server/{axon,syslog}` routes return valid OAuth JSON.
+- For `axon` and `syslog`, either clear only the affected Codex credential entries to force fresh auth or make the service-scoped `mcp.example.com/.well-known/oauth-authorization-server/{axon,syslog}` routes return valid OAuth JSON.
 - For `swag-mcp`, consider adding deployment/recreate coordination or health-aware retry guidance so MCP clients do not start during a compose rebuild gap.
 - Review why `swag-mcp` logs `SWAG_MCP_NO_AUTH=true` and confirm the proxy/auth boundary is intentionally the only public enforcement layer.

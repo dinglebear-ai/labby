@@ -10,7 +10,7 @@ Head: `57805b99`
 The operator pasted Docker logs showing repeated warnings:
 
 ```text
-WARN rejecting non-loopback Host header kind=host_validation_failed host=lab.tootie.tv path=/ surface=api
+WARN rejecting non-loopback Host header kind=host_validation_failed host=lab.example.com path=/ surface=api
 ```
 
 They asked why Labby was rejecting a non-loopback Host header when OAuth was enabled, and whether it was a CORS issue.
@@ -24,7 +24,7 @@ The relevant route was `/v1/marketplace`; under Axum nesting the middleware logs
 The local effective config already had:
 
 ```text
-LAB_PUBLIC_URL=https://lab.tootie.tv
+LAB_PUBLIC_URL=https://lab.example.com
 ```
 
 and `/home/jmagar/.lab/config.toml` had OAuth mode enabled:
@@ -95,4 +95,4 @@ This note is under `docs/sessions/`, which is ignored in this repo unless force-
 ## Open Questions
 
 - The running `labby-master-1` container still needs a rebuild/restart or hot-swap before the log behavior changes in production.
-- No live curl against `https://lab.tootie.tv/v1/marketplace` was run in this session.
+- No live curl against `https://lab.example.com/v1/marketplace` was run in this session.

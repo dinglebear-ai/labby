@@ -1,4 +1,4 @@
-# Shart Live Test Services Design
+# Backup Node Live Test Services Design
 
 Date: 2026-04-12
 Status: Proposed
@@ -8,7 +8,7 @@ Scope: opt-in live end-to-end test infrastructure for `lab`
 
 `lab` already distinguishes between CI-safe tests and opt-in live verification. The missing piece is a reproducible live environment that can exercise the real public surfaces of the project without pointing tests at personal homelab services.
 
-This design establishes SSH host `shart` as the dedicated remote fixture host for live end-to-end testing. Test services run there as disposable Docker stacks backed by per-run ZFS clones created from prebuilt golden snapshots. Each run gets isolated service state, stable connection details, and deterministic teardown.
+This design establishes SSH host `backup-node` as the dedicated remote fixture host for live end-to-end testing. Test services run there as disposable Docker stacks backed by per-run ZFS clones created from prebuilt golden snapshots. Each run gets isolated service state, stable connection details, and deterministic teardown.
 
 The goal is broad live coverage against real service processes:
 
@@ -49,7 +49,7 @@ The existing repo contracts already require:
 
 ## Chosen Approach
 
-Use `shart` as a dedicated remote fixture host. For each live test run:
+Use `backup-node` as a dedicated remote fixture host. For each live test run:
 
 1. create a unique run ID
 2. clone service datasets from read-only ZFS golden snapshots
@@ -63,7 +63,7 @@ This yields real end-to-end testing against live services while keeping reset ch
 
 ## Alternatives Considered
 
-### 1. Long-lived shared services on `shart`
+### 1. Long-lived shared services on `backup-node`
 
 Rejected.
 
@@ -113,7 +113,7 @@ Declarative service fixture definitions describe:
 
 These definitions should be small and versioned in the repo.
 
-### 2. Host Orchestrator on `shart`
+### 2. Host Orchestrator on `backup-node`
 
 The host orchestrator owns:
 
@@ -131,7 +131,7 @@ This logic belongs in test infrastructure, not in `lab-apis` or normal runtime d
 The repo-side live runner owns:
 
 - selecting a fixture profile
-- establishing the SSH control connection to `shart`
+- establishing the SSH control connection to `backup-node`
 - invoking the host orchestrator
 - exporting run credentials and URLs into the test process
 - launching live CLI, MCP, and API test passes
@@ -175,7 +175,7 @@ The output should support both machine-readable processing and human review.
 
 - remote orchestration over SSH
 - ZFS clone and destroy lifecycle
-- Docker or Compose startup on `shart`
+- Docker or Compose startup on `backup-node`
 - fixture manifests
 - readiness checks
 - live result collection
@@ -183,7 +183,7 @@ The output should support both machine-readable processing and human review.
 
 ### Out of Scope for Product Runtime Code
 
-- hardcoding `shart` knowledge into normal service clients
+- hardcoding `backup-node` knowledge into normal service clients
 - embedding fixture lifecycle in CLI, MCP, or API dispatch
 - teaching `extract` to provision remote services
 - coupling production code paths to live test host assumptions
@@ -192,7 +192,7 @@ This keeps the product architecture clean while allowing rich external verificat
 
 ## Environment Model
 
-`shart` is the dedicated live fixture host.
+`backup-node` is the dedicated live fixture host.
 
 Each run:
 
@@ -411,7 +411,7 @@ Mitigation:
 ## Recommended Implementation Sequence
 
 1. define the fixture definition format
-2. implement the `shart` host orchestration contract
+2. implement the `backup-node` host orchestration contract
 3. implement manifest emission and teardown
 4. stand up one profile end to end
 5. implement catalog-driven live case generation
@@ -430,4 +430,4 @@ These questions do not block the design but should be resolved during planning:
 
 ## Decision
 
-Proceed with a dedicated ephemeral live test environment on SSH host `shart`, using per-run Docker stacks backed by ZFS clones from golden fixture snapshots. Treat that environment as the canonical automated live target for end-to-end testing across CLI, MCP, and API surfaces.
+Proceed with a dedicated ephemeral live test environment on SSH host `backup-node`, using per-run Docker stacks backed by ZFS clones from golden fixture snapshots. Treat that environment as the canonical automated live target for end-to-end testing across CLI, MCP, and API surfaces.

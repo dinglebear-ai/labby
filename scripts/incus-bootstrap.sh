@@ -50,6 +50,41 @@ run() {
     fi
 }
 
+verify_container_substrate() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+
+    arch="$(incus exec "$NAME" -- uname -m | tr -d '\r')"
+    case "$arch" in
+        x86_64 | amd64) ;;
+        *) fail "$NAME must be amd64/x86_64 for the supported Labby runtime; found architecture: $arch" ;;
+    esac
+
+    os_release="$(incus exec "$NAME" -- sh -c ". /etc/os-release; printf '%s %s' \"\$ID\" \"\$VERSION_ID\"")"
+    [ "$os_release" = "ubuntu 24.04" ] \
+        || fail "$NAME must be Ubuntu 24.04 for the supported Labby runtime; found: $os_release"
+}
+
+ensure_tun_device() {
+    if [ "$INCUS_AVAILABLE" -eq 0 ] && [ "$DRY_RUN" -eq 1 ]; then
+        run incus config device add "$NAME" tun unix-char path=/dev/net/tun
+        return
+    fi
+
+    tun_type="$(incus config device get "$NAME" tun type 2>/dev/null || true)"
+    tun_path="$(incus config device get "$NAME" tun path 2>/dev/null || true)"
+    if [ -z "$tun_type" ] && [ -z "$tun_path" ]; then
+        run incus config device add "$NAME" tun unix-char path=/dev/net/tun
+    elif [ "$tun_type" = "unix-char" ] && [ "$tun_path" = "/dev/net/tun" ]; then
+        say "TUN passthrough already configured"
+    else
+        fail "existing Incus device '$NAME/tun' is not /dev/net/tun unix-char passthrough (type=$tun_type path=$tun_path)"
+    fi
+
+    if [ "$DRY_RUN" -eq 0 ]; then
+        incus exec "$NAME" -- test -c /dev/net/tun || fail "$NAME is missing /dev/net/tun"
+    fi
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --name) NAME="${2:?missing --name value}"; shift 2 ;;
@@ -108,19 +143,8 @@ else
     fi
 fi
 
-if [ "$INCUS_AVAILABLE" -eq 0 ] && [ "$DRY_RUN" -eq 1 ]; then
-    run incus config device add "$NAME" tun unix-char path=/dev/net/tun
-elif [ "$DRY_RUN" -eq 0 ] && incus exec "$NAME" -- test -c /dev/net/tun 2>/dev/null; then
-    say "TUN device already present in container"
-elif ! incus config device show "$NAME" | grep -q '^tun:'; then
-    run incus config device add "$NAME" tun unix-char path=/dev/net/tun
-else
-    say "TUN passthrough already configured"
-fi
-
-if [ "$DRY_RUN" -eq 0 ]; then
-    incus exec "$NAME" -- test -c /dev/net/tun || fail "$NAME is missing /dev/net/tun"
-fi
+verify_container_substrate
+ensure_tun_device
 
 if [ -n "$LOCAL_BINARY" ]; then
     remote_tmp="/usr/local/bin/.labby-upload-$$"
@@ -152,10 +176,8 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
 	if [ "$DRY_RUN" -eq 1 ]; then
 		say "+ incus exec $(quote "$NAME") -- tailscale up $ts_args"
 	else
-		incus exec "$NAME" -- sh -c "umask 077; cat > /run/labby-ts-authkey" <<EOF
-$TS_AUTHKEY
-EOF
 		trap 'incus exec "$NAME" -- rm -f /run/labby-ts-authkey >/dev/null 2>&1 || true' EXIT INT TERM
+		printf '%s' "$TS_AUTHKEY" | incus exec "$NAME" -- sh -c "umask 077; cat > /run/labby-ts-authkey"
 		set +e
 		# shellcheck disable=SC2086
 		incus exec "$NAME" -- tailscale up $ts_args

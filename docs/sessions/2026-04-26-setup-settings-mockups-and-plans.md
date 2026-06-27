@@ -24,7 +24,7 @@ Built two complete interactive HTML mockups for the Setup wizard and Settings pa
 2. Added a `/dev` route to the axum router to serve HTML mockup files from `~/.superpowers/brainstorm/content/` — fought repeated linter stripping for the majority of the session
 3. Debugged the `/dev/setup` and `/dev/settings` download-instead-of-render issue — root cause was `app/dev/route.ts` generating an `out/dev` static file with no extension, served as `application/octet-stream`
 4. Fixed the trailing slash mismatch (`/dev/settings` vs `/dev/settings/`) causing the SPA to win over the mockup routes
-5. Added `mcporter` Chrome DevTools integration, configured it to use the remote Chrome instance at `100.120.242.29:9222`
+5. Added `mcporter` Chrome DevTools integration, configured it to use the remote Chrome instance at `100.64.0.11:9222`
 6. Generated six Labby logo concepts; user selected Concept D (network-node hub with 6 satellite nodes)
 7. Wired the logo into `apps/gateway-admin/public/icon.svg` using `sharp` for PNG generation
 8. Built the Setup wizard mockup (`setup.html`) — 7-step flow, phase 1/2 mechanics, Aurora design system, service icons from selfhst CDN with brand color backgrounds
@@ -93,10 +93,10 @@ node -e "const sharp = require('...'); ..." # generates 4 files
 
 # Verify nodeinfo returns env values
 wget -qO- http://localhost:8765/dev/api/nodeinfo | python3 -c "..."
-# Result: env keys: 52, RADARR_URL: http://100.120.242.29:7878
+# Result: env keys: 52, RADARR_URL: http://100.64.0.11:7878
 
 # Configure mcporter for Chrome DevTools
-mcporter config add chrome-devtools --command "npx" --arg "-y" --arg "chrome-devtools-mcp@latest" --arg "--browserUrl=http://100.120.242.29:9222" --scope home
+mcporter config add chrome-devtools --command "npx" --arg "-y" --arg "chrome-devtools-mcp@latest" --arg "--browserUrl=http://100.64.0.11:9222" --scope home
 
 # Build and commit after code review fixes
 cargo build --release --all-features --manifest-path crates/lab/Cargo.toml
@@ -132,7 +132,7 @@ git commit -m "fix(dev): address code review findings"
 |---------|----------|--------|--------|
 | `wget -qO- http://localhost:8765/dev/setup \| wc -c` | ~100000 (setup.html) | 114517 | ✅ |
 | `wget -qO- http://localhost:8765/dev/settings \| wc -c` | ~50000 (settings.html) | 51508 | ✅ |
-| `wget -qO- http://localhost:8765/dev/api/nodeinfo` | JSON with controller="dookie" | `{"local_host":"dookie","controller":"dookie","master_url":"http://dookie:8765","env":{...52 keys...}}` | ✅ |
+| `wget -qO- http://localhost:8765/dev/api/nodeinfo` | JSON with controller="node-a" | `{"local_host":"node-a","controller":"node-a","master_url":"http://node-a:8765","env":{...52 keys...}}` | ✅ |
 | PreFlight 1 in browser | All 5 checks pass, transition to phase 2 | All pass, sidebar slides in | ✅ |
 | Code review build | No errors | Exit code 0 | ✅ |
 
@@ -145,7 +145,7 @@ git commit -m "fix(dev): address code review findings"
 ## Decisions Not Taken
 
 - **Python mockup server** as permanent solution: We built `~/.superpowers/brainstorm/serve.py` as a fallback, but the Rust handler is the correct approach per `component-development.md`. The Python server is only needed when the linter strips routes.
-- **SSHing to tootie** to restart `lab serve`: I wasted time assuming the server ran on the remote host. It runs locally on `dookie`; `lab.tootie.tv` is a Cloudflare tunnel.
+- **SSHing to controller** to restart `lab serve`: I wasted time assuming the server ran on the remote host. It runs locally on `node-a`; `lab.example.com` is a Cloudflare tunnel.
 - **Separate `dev_mockups.rs` module**: Tried to extract handlers to a separate file in `api/`, but the concurrent session stripped it. Handlers must remain inline in `router.rs`.
 
 ## References

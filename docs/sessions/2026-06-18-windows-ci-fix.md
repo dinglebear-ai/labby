@@ -29,7 +29,7 @@ This session centered on Cloudflare-aligned Code Mode changes, snippet integrati
 ## Key Findings
 
 - The failing Windows test was `dispatch::gateway::code_mode::runner_drive::tests::drive_runner_times_out_and_marks_runner_unhealthy`.
-- GitHub Actions logs did not expose the assertion detail while the job was running; direct SSH repro on `agent-os` was blocked by the repo-local Cargo wrapper being a Unix script in `.cargo/config.toml`.
+- GitHub Actions logs did not expose the assertion detail while the job was running; direct SSH repro on `agent-workstation` was blocked by the repo-local Cargo wrapper being a Unix script in `.cargo/config.toml`.
 - Windows test stubs are spawned under `env_clear()`, so PATH-dependent commands are unsafe on self-hosted CI.
 - The final stable silent stub is in `crates/lab/src/dispatch/gateway/code_mode/pool/runner_handle.rs:237`.
 - The active `docs/plans/fleet-ws-plan-lab-n07n.md` plan remains open and was not moved to `docs/plans/complete/`.
@@ -88,7 +88,7 @@ No bead activity was observed for the Windows CI fix/save workflow. The maintena
 - **Skill.** `vibin:save-to-md` for session documentation, maintenance pass, artifact commit, and push.
 - **Shell commands.** Used `git`, `gh`, `cargo`, `ssh`, `jq`, `find`, `sed`, `nl`, `bd`, and `tail` for investigation, verification, maintenance, and CI watching.
 - **GitHub CLI.** Used `gh run list` and `gh run view` to identify failing and passing CI runs.
-- **SSH to Windows runner.** Used `ssh agent-os` to inspect the self-hosted Windows runner process state and attempt targeted repro.
+- **SSH to Windows runner.** Used `ssh agent-workstation` to inspect the self-hosted Windows runner process state and attempt targeted repro.
 - **File edit tool.** Used patch-based edits for Rust changes and this session artifact.
 
 ## Commands Executed
@@ -96,7 +96,7 @@ No bead activity was observed for the Windows CI fix/save workflow. The maintena
 | command | result |
 | --- | --- |
 | `gh run list --branch main --limit 5 --json ...` | Identified failing run `27791455314` and later passing run `27793481832`. |
-| `ssh agent-os ... cargo test --package labby --all-features drive_runner_times_out_and_marks_runner_unhealthy -- --nocapture` | Repro attempt blocked by Windows SSH/Cargo wrapper issue: `%1 is not a valid Win32 application`. |
+| `ssh agent-workstation ... cargo test --package labby --all-features drive_runner_times_out_and_marks_runner_unhealthy -- --nocapture` | Repro attempt blocked by Windows SSH/Cargo wrapper issue: `%1 is not a valid Win32 application`. |
 | `cargo test --package labby --all-features drive_runner_times_out_and_marks_runner_unhealthy` | Passed locally after the Windows stub changes. |
 | `cargo test --package labby --all-features code_mode_runner` | Passed locally after the Windows stub changes. |
 | `cargo fmt --all -- --check` | Passed. |

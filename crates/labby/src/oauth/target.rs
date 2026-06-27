@@ -186,19 +186,19 @@ mod tests {
     #[test]
     fn resolve_machine_target_returns_configured_machine() {
         let machines = BTreeMap::from([(
-            "dookie".to_string(),
+            "node-a".to_string(),
             OauthMachineConfig {
-                target_url: "http://100.88.16.79:38935/callback/dookie".to_string(),
+                target_url: "http://100.64.0.10:38935/callback/node-a".to_string(),
                 description: None,
                 default_port: Some(38935),
             },
         )]);
 
-        let resolved = resolve_machine_target(&machines, "dookie").expect("machine should resolve");
-        assert_eq!(resolved.machine_id.as_deref(), Some("dookie"));
+        let resolved = resolve_machine_target(&machines, "node-a").expect("machine should resolve");
+        assert_eq!(resolved.machine_id.as_deref(), Some("node-a"));
         assert_eq!(
             resolved.target_url.as_str(),
-            "http://100.88.16.79:38935/callback/dookie"
+            "http://100.64.0.10:38935/callback/node-a"
         );
         assert_eq!(resolved.default_port, Some(38935));
     }
@@ -207,17 +207,17 @@ mod tests {
     fn resolve_machine_target_lists_available_machine_ids() {
         let machines = BTreeMap::from([
             (
-                "dookie".to_string(),
+                "node-a".to_string(),
                 OauthMachineConfig {
-                    target_url: "http://100.88.16.79:38935/callback/dookie".to_string(),
+                    target_url: "http://100.64.0.10:38935/callback/node-a".to_string(),
                     description: None,
                     default_port: Some(38935),
                 },
             ),
             (
-                "squirts".to_string(),
+                "node-b".to_string(),
                 OauthMachineConfig {
-                    target_url: "http://127.0.0.1:38935/callback/squirts".to_string(),
+                    target_url: "http://127.0.0.1:38935/callback/node-b".to_string(),
                     description: None,
                     default_port: Some(38935),
                 },
@@ -227,14 +227,14 @@ mod tests {
         let error = resolve_machine_target(&machines, "missing").expect_err("lookup should fail");
         let message = error.to_string();
         assert!(message.contains("missing"));
-        assert!(message.contains("dookie"));
-        assert!(message.contains("squirts"));
+        assert!(message.contains("node-a"));
+        assert!(message.contains("node-b"));
     }
 
     #[test]
     fn build_forward_url_appends_suffix_path_and_query() {
         let url = build_forward_url(
-            &Url::parse("http://100.88.16.79:38935/callback/dookie").unwrap(),
+            &Url::parse("http://100.64.0.10:38935/callback/node-a").unwrap(),
             "foo/bar",
             &[("code", "abc"), ("state", "xyz")],
         )
@@ -242,7 +242,7 @@ mod tests {
 
         assert_eq!(
             url.as_str(),
-            "http://100.88.16.79:38935/callback/dookie/foo/bar?code=abc&state=xyz"
+            "http://100.64.0.10:38935/callback/node-a/foo/bar?code=abc&state=xyz"
         );
     }
 

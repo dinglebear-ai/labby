@@ -74,7 +74,7 @@ fn parses_node_role_controller() {
     let config: LabConfig = toml::from_str(r#"
         [node]
         role = "controller"
-        controller = "dookie"
+        controller = "node-a"
     "#).unwrap();
     assert_eq!(config.node.unwrap().role, Some(NodeRuntimeRole::Controller));
 }
@@ -84,7 +84,7 @@ fn parses_node_role_node() {
     let config: LabConfig = toml::from_str(r#"
         [node]
         role = "node"
-        controller = "dookie"
+        controller = "node-a"
     "#).unwrap();
     assert_eq!(config.node.unwrap().role, Some(NodeRuntimeRole::Node));
 }
@@ -440,14 +440,14 @@ Add TOML tests:
 artifact_role = "node"
 target_triple = "x86_64-unknown-linux-gnu"
 
-[deploy.hosts.dookie]
+[deploy.hosts.node-a]
 artifact_role = "controller"
 ```
 
 Expected parsed roles:
 
 - defaults role `Node`
-- host `dookie` role `Controller`
+- host `node-a` role `Controller`
 
 - [ ] **Step 2: Add artifact model types**
 
@@ -536,7 +536,7 @@ Expected response shape:
 
 ```json
 {
-  "id": "tootie",
+  "id": "controller",
   "connected": true
 }
 ```

@@ -1,6 +1,6 @@
 # System Service Audit - 2026-05-15
 
-Audit run from `/home/jmagar/workspace/lab` on host `dookie`.
+Audit run from `/home/jmagar/workspace/lab` on host `node-a`.
 
 ## Executive Summary
 

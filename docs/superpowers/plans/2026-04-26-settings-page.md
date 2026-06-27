@@ -693,8 +693,8 @@ interface DiscoveredCred {
 
 // Mock data representing extract.scan results
 const MOCK_CREDS: DiscoveredCred[] = [
-  { key: 'RADARR_URL',        value: 'http://100.120.242.29:7878', source: 'docker label', include: true  },
-  { key: 'SONARR_URL',        value: 'https://sonarr.tootie.tv',   source: 'docker label', include: true  },
+  { key: 'RADARR_URL',        value: 'http://100.64.0.11:7878', source: 'docker label', include: true  },
+  { key: 'SONARR_URL',        value: 'https://sonarr.example.com',   source: 'docker label', include: true  },
   { key: 'RADARR_API_KEY',    value: '••••••••••••••••',           source: 'docker label', include: true  },
   { key: 'PLEX_TOKEN',        value: '••••••••••••••••',           source: '.env file',    include: true  },
   { key: 'UNRAID_API_KEY',    value: '••••••••••••••••',           source: 'config file',  include: false },

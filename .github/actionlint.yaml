@@ -1,5 +1,5 @@
 # Custom labels for self-hosted runners so actionlint's runner-label check
-# recognizes them. tootie-lab-linux carries linux-lab, and agent-os-lab carries
+# recognizes them. linux-ci-runner carries linux-lab, and windows-ci carries
 # windows-lab.
 self-hosted-runner:
   labels:

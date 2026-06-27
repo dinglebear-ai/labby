@@ -65,7 +65,7 @@ Examples:
 
 - `github::search_issues`
 - `cortex::cortex`
-- `agent-os_windows-mcp::screenshot`
+- `windows_windows-mcp::screenshot`
 
 Do not prefix IDs with `upstream::`; the gateway already knows these are upstream tools. `lab::...` IDs are reserved and rejected because Lab built-in service actions are not available inside Code Mode.
 

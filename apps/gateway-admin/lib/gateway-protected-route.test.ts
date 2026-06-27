@@ -37,7 +37,7 @@ function route(overrides: Partial<ProtectedMcpRoute> = {}): ProtectedMcpRoute {
   return {
     name: 'repomix',
     enabled: true,
-    public_host: 'mcp.tootie.tv',
+    public_host: 'mcp.example.com',
     public_path: '/tools',
     upstream: 'repomix',
     backend_url: '',
@@ -55,7 +55,7 @@ test('protectedRouteForGateway matches an enabled route by upstream and host', (
       route({ name: 'other', upstream: 'other', public_path: '/other' }),
       route(),
     ],
-    'mcp.tootie.tv',
+    'mcp.example.com',
   )
 
   assert.equal(found?.public_path, '/tools')
@@ -66,27 +66,27 @@ test('protectedRouteForGateway falls back to route name for older route records'
   const found = protectedRouteForGateway(
     gateway(),
     [route({ upstream: null })],
-    'mcp.tootie.tv',
+    'mcp.example.com',
   )
 
   assert.equal(found?.name, 'repomix')
 })
 
 test('protectedRouteForGateway returns null for null gateway', () => {
-  assert.equal(protectedRouteForGateway(null, [route()], 'mcp.tootie.tv'), null)
+  assert.equal(protectedRouteForGateway(null, [route()], 'mcp.example.com'), null)
 })
 
 test('protectedRouteForGateway returns null for in_process gateway', () => {
-  assert.equal(protectedRouteForGateway(gateway({ source: 'in_process' } as any), [route()], 'mcp.tootie.tv'), null)
+  assert.equal(protectedRouteForGateway(gateway({ source: 'in_process' } as any), [route()], 'mcp.example.com'), null)
 })
 
 test('protectedRouteForGateway ignores disabled routes', () => {
-  const found = protectedRouteForGateway(gateway(), [route({ enabled: false })], 'mcp.tootie.tv')
+  const found = protectedRouteForGateway(gateway(), [route({ enabled: false })], 'mcp.example.com')
   assert.equal(found, null)
 })
 
 test('protectedRouteForGateway ignores routes on a different host', () => {
-  const found = protectedRouteForGateway(gateway(), [route({ public_host: 'other.example.com' })], 'mcp.tootie.tv')
+  const found = protectedRouteForGateway(gateway(), [route({ public_host: 'other.example.com' })], 'mcp.example.com')
   assert.equal(found, null)
 })
 
@@ -95,7 +95,7 @@ test('protectedRouteForGateway does not match when upstream differs even if name
   const found = protectedRouteForGateway(
     gateway(),
     [route({ upstream: 'other-gateway' })],
-    'mcp.tootie.tv',
+    'mcp.example.com',
   )
   assert.equal(found, null)
 })
@@ -126,6 +126,6 @@ test('initialGatewayAuthMode prefers oauth_enabled over bearer_token_env', () =>
 test('normalizeProtectedPublicPath accepts slugs and URLs', () => {
   assert.equal(normalizeProtectedPublicPath('tools'), '/tools')
   assert.equal(normalizeProtectedPublicPath('/tools/'), '/tools')
-  assert.equal(normalizeProtectedPublicPath('https://mcp.tootie.tv/tools'), '/tools')
+  assert.equal(normalizeProtectedPublicPath('https://mcp.example.com/tools'), '/tools')
   assert.throws(() => normalizeProtectedPublicPath('/'), /non-root/)
 })

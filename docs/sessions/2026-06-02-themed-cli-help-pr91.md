@@ -61,7 +61,7 @@ removed the worktree, and pulled `main`.
 ## Key Findings
 
 - **boa_engine + sccache-dist trap is real and active.** sccache-dist is enabled
-  (`~/.config/sccache/config` `[dist]`, scheduler `http://100.75.111.118:10600`).
+  (`~/.config/sccache/config` `[dist]`, scheduler `http://100.64.0.20:10600`).
   `boa_engine` (cdylib) is non-distributable, producing spurious `code_mode.rs`
   type-inference errors + "Compiler killed by signal 1" on remote compiles. Local
   builds via `CARGO_BUILD_RUSTC_WRAPPER=""` pass. (PR #90, merged this same day,

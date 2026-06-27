@@ -27,8 +27,8 @@ A multi-phase session covering: (1) debugging and fixing 3 separate root causes 
 1. Investigated why only `vivobook` was checking in despite 5 nodes being deployed — found 3 distinct bugs
 2. Fixed `serve.rs` reading wrong config key (`device.master` vs `node.controller`)
 3. Fixed `identity.rs` not reading `/etc/HOSTNAME` (uppercase) on Unraid systems
-4. Manually corrected stale `node-token` on `tootie` and deployed fixed binary to all nodes
-5. Started `lab serve` on each node; confirmed squirts, tootie, steamy, vivobook all checking in
+4. Manually corrected stale `node-token` on `controller` and deployed fixed binary to all nodes
+5. Started `lab serve` on each node; confirmed node-b, controller, workstation, vivobook all checking in
 6. Investigated why `/nodes` page showed all `—` for metrics — found `send_status_update_async` hardcoded `Value::Null` for all fields
 7. Implemented `sysmetrics.rs` using `sysinfo` crate for CPU, memory, disk, IPs, uptime, CPU temp
 8. Extended `NodeStatus` with `health`, `version`, `uptime_seconds`, `cores`, `cpu_clock_mhz`, `cpu_temp_c`, `total_memory_bytes`, `total_storage_bytes`
@@ -46,7 +46,7 @@ A multi-phase session covering: (1) debugging and fixing 3 separate root causes 
 
 - **Bug 1** (`crates/lab/src/cli/serve.rs:129`): `serve.rs` read `config.device.master` but `normalize_remote_runtime` writes `[node]\ncontroller`. The `device` key is explicitly set to `None` during normalization, so all nodes resolved as `NodeRole::Master` and never connected.
 - **Bug 2** (`crates/lab/src/node/identity.rs:17`): `resolve_local_hostname` only tried `/etc/hostname` (lowercase). Unraid stores hostname at `/etc/HOSTNAME` (uppercase), causing `local_host = "localhost"`.
-- **Bug 3** (tootie only): `/root/.lab/node-token` contained a different token than the enrolled record on the controller, causing `auth_failed` on every WS connect attempt.
+- **Bug 3** (controller only): `/root/.lab/node-token` contained a different token than the enrolled record on the controller, causing `auth_failed` on every WS connect attempt.
 - **Metrics gap** (`crates/lab/src/node/ws_client.rs:480`): `send_status_update_async` hardcoded `Value::Null` for `cpu_percent`, `memory_used_bytes`, `storage_used_bytes`, and `[]` for `ips`. No metrics collection existed.
 - **Binary logs gap**: `POST /v1/nodes/logs/search` returns only `source: "syslog"` entries. The lab binary's tracing output goes to `/tmp/lab-serve.log` and is never pushed to the controller. `LogIngestLayer` intercepts all events locally but has no forwarding path.
 - **sysinfo 0.38 API**: `Disks::refresh()` and `Networks::refresh()` both require a `bool` argument (remove_not_listed) in 0.38.4 — differs from earlier versions.
@@ -88,22 +88,22 @@ A multi-phase session covering: (1) debugging and fixing 3 separate root causes 
 # Key diagnostic commands
 target/release/lab nodes list --json
 target/release/lab nodes enrollments list --json
-ssh squirts 'head -10 /tmp/lab-serve.log'  # revealed master_host=squirts, node_role=Master
+ssh node-b 'head -10 /tmp/lab-serve.log'  # revealed master_host=node-b, node_role=Master
 
-# Fix tootie node-token
-ssh tootie 'sudo sh -c "printf \"d9bc460a-a11b-4d0a-bbe8-3d98280596df\" > /root/.lab/node-token"'
+# Fix controller node-token
+ssh controller 'sudo sh -c "printf \"d9bc460a-a11b-4d0a-bbe8-3d98280596df\" > /root/.lab/node-token"'
 
 # Verify metrics API
 LAB_TOKEN=$(grep LAB_MCP_HTTP_TOKEN ~/.lab/.env | cut -d= -f2)
-curl -s -H "Authorization: Bearer $LAB_TOKEN" http://localhost:8765/v1/nodes/squirts
+curl -s -H "Authorization: Bearer $LAB_TOKEN" http://localhost:8765/v1/nodes/node-b
 
 # Deploy after each fix
-target/release/lab deploy run --yes squirts tootie steamy-wsl vivobook-wsl
+target/release/lab deploy run --yes node-b controller workstation-wsl vivobook-wsl
 
 # Verify log endpoint
 curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json" \
   -X POST http://localhost:8765/v1/nodes/logs/search \
-  -d '{"node_id":"squirts","query":"","limit":5}'
+  -d '{"node_id":"node-b","query":"","limit":5}'
 ```
 
 ---
@@ -113,8 +113,8 @@ curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json
 | Error | Root Cause | Resolution |
 |-------|-----------|------------|
 | `node_role=Master` on all deployed nodes | `serve.rs` read `config.device.master` (always `None`) instead of `config.node.controller` | Fixed `serve.rs:129` to prefer `node.controller` |
-| `local_host=localhost` on tootie (Unraid) | `/etc/hostname` doesn't exist on Unraid; only `/etc/HOSTNAME` exists | Added uppercase path check in `identity.rs:17` |
-| `auth_failed: node tootie presented unexpected token` | `/root/.lab/node-token` had a different UUID than the enrolled token on dookie | Overwrote with the correct enrolled token |
+| `local_host=localhost` on controller (Unraid) | `/etc/hostname` doesn't exist on Unraid; only `/etc/HOSTNAME` exists | Added uppercase path check in `identity.rs:17` |
+| `auth_failed: node controller presented unexpected token` | `/root/.lab/node-token` had a different UUID than the enrolled token on node-a | Overwrote with the correct enrolled token |
 | `sysinfo 0.38 compile error: takes 1 argument but 0 supplied` | `Disks::refresh()` and `Networks::refresh()` gained a required `bool` argument in 0.38 | Added `refresh(false)` calls |
 | Log dialog not scrollable, tabs invisible | `flex-1 overflow-y-auto` requires parent to have concrete height; `max-h` doesn't provide this | Changed dialog to `h-[80vh]`, added `min-h-0` to scroll container |
 | Binary logs tab empty | Lab binary logs to `/tmp/lab-serve.log`, not syslog; no `source: "application"` events exist | Temporary workaround (`query: "lab"`); permanent fix planned as `lab-aid2` |
@@ -125,7 +125,7 @@ curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json
 
 | Area | Before | After |
 |------|--------|-------|
-| Node connectivity | Only `vivobook` connected; others resolved as `Master` | All 4 nodes (squirts, tootie, steamy, vivobook) connected as `NonMaster` |
+| Node connectivity | Only `vivobook` connected; others resolved as `Master` | All 4 nodes (node-b, controller, workstation, vivobook) connected as `NonMaster` |
 | Nodes page metrics | All metric cards showed `—` | Real CPU%, memory, disk, uptime, temp, cores, IPs per node |
 | Node status | All nodes showed `UNKNOWN`, healthy count = 0 | All nodes show `HEALTHY`, healthy count = 4 |
 | Log viewer | Full-screen inline `NodeLogConsole` with filters/pills embedded in each card | Compact "Logs" button per card; dialog opens terminal-style stream |
@@ -138,8 +138,8 @@ curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json
 
 | Command | Expected | Actual | Status |
 |---------|----------|--------|--------|
-| `target/release/lab nodes list --json` | 4 connected nodes | squirts, steamy, tootie, vivobook all `connected: true` | ✓ |
-| `GET /v1/nodes/squirts` (with auth) | `cpu_percent` non-null | `cpu_percent: 7.97, memory_used_bytes: 9400700928, health: "healthy"` | ✓ |
+| `target/release/lab nodes list --json` | 4 connected nodes | node-b, workstation, controller, vivobook all `connected: true` | ✓ |
+| `GET /v1/nodes/node-b` (with auth) | `cpu_percent` non-null | `cpu_percent: 7.97, memory_used_bytes: 9400700928, health: "healthy"` | ✓ |
 | `cd apps/gateway-admin && pnpm build` | `✓ Compiled successfully` | `✓ Compiled successfully in 2.3s` | ✓ |
 | `cargo build --release --all-features` | No errors | `(1 crates compiled)` / success | ✓ |
 | `target/release/lab nodes list --json` (post-metrics) | health field present | `health: "healthy"` on all nodes | ✓ |
@@ -150,7 +150,7 @@ curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json
 
 - **Controller restart**: The debug `target/debug/lab serve` process was killed and replaced with `target/release/lab serve`. If the new binary has issues, the old process is gone. Rollback: build and start the previous binary or revert commits.
 - **sysmetrics blocking**: `sysmetrics::collect()` sleeps 250ms inside `spawn_blocking`. If the thread pool is exhausted under heavy load, status updates will be delayed. Unlikely at current fleet size.
-- **tootie running as root**: `lab serve` on tootie runs as root (binary at `/usr/local/bin/lab`), reading `/root/.lab/`. Other nodes run as `jmagar`. If tootie is rebooted, the service must restart as root or the token/config won't be found.
+- **controller running as root**: `lab serve` on controller runs as root (binary at `/usr/local/bin/lab`), reading `/root/.lab/`. Other nodes run as `jmagar`. If controller is rebooted, the service must restart as root or the token/config won't be found.
 
 ---
 
@@ -165,9 +165,9 @@ curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json
 
 ## Open Questions
 
-- Should `tootie` have a systemd service configured so it auto-restarts? Currently requires manual `nohup sudo /usr/local/bin/lab serve` after reboot.
-- `steamy` (bare metal, not WSL) is SSH-unreachable — unclear if it's offline or firewall-blocked. Deploy targets `steamy-wsl` instead.
-- `shart` SSH preflight keeps failing — unknown root cause, not investigated this session.
+- Should `controller` have a systemd service configured so it auto-restarts? Currently requires manual `nohup sudo /usr/local/bin/lab serve` after reboot.
+- `workstation` (bare metal, not WSL) is SSH-unreachable — unclear if it's offline or firewall-blocked. Deploy targets `workstation-wsl` instead.
+- `backup-node` SSH preflight keeps failing — unknown root cause, not investigated this session.
 - The `cpu_clock_mhz` field is populated from `sysinfo` but the UI's "CPU Temp · Clock" detail row in the old card design referenced it. The new compact card design dropped the clock display — intentional or oversight?
 
 ---
@@ -181,6 +181,6 @@ curl -s -H "Authorization: Bearer $LAB_TOKEN" -H "Content-Type: application/json
 
 **Follow-on (not yet started):**
 - Set up systemd user services on each node so `lab serve` auto-starts on reboot
-- Investigate `shart` SSH preflight failures
+- Investigate `backup-node` SSH preflight failures
 - Add `source` filter parameter to `POST /v1/nodes/logs/search` to enable server-side filtering by source (removes need for client-side filter in `lab-aid2.3`)
 - Consider periodic syslog collection (not just bootstrap) — currently nodes push syslog once at startup only

@@ -213,7 +213,7 @@ On successful upstream callback in the browser-login flow:
 - create session row
 - persist it
 - attach `Set-Cookie`
-- redirect to `https://lab.tootie.tv/` or same-origin app root
+- redirect to `https://lab.example.com/` or same-origin app root
 
 In `crates/lab/src/api/router.rs`, wire:
 

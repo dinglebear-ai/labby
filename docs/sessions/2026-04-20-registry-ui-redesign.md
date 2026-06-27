@@ -147,5 +147,5 @@ Verified with `cargo check --all-features`, `tsc --noEmit`, and `pnpm build`.
 
 ## Next Steps
 
-- Browser verification on `lab.tootie.tv/registry/` while authed — not yet done in this session.
+- Browser verification on `lab.example.com/registry/` while authed — not yet done in this session.
 - Optional follow-ups (not started): typed `clap` CLI shim for `mcpregistry config`; copy-to-clipboard affordance for the URL pill and package `fileSha256`.

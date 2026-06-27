@@ -331,8 +331,9 @@ Default verification targets the all-features build. If you run a reduced featur
 
 ### Labby gateway runtime
 
-The primary supported self-hosted Labby gateway runtime is an amd64 Debian 13
-Incus system container. The host-side entrypoint is
+The recommended self-hosted Labby gateway runtime is an amd64 Ubuntu 24.04
+Incus system container, with bare metal as the secondary supported shape for a
+dedicated gateway host or VM. The host-side Incus entrypoint is
 `scripts/incus-bootstrap.sh --version vX.Y.Z`; the in-box converger is
 `labby setup --provision`. The provision command is intentionally local
 CLI-only and must not be exposed through MCP, HTTP, Code Mode, or remote admin

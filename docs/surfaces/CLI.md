@@ -268,8 +268,8 @@ loopback callback but keep the real OAuth listener on another machine.
 Supported forms:
 
 ```bash
-labby oauth relay-local --machine dookie --port 38935
-labby oauth relay-local --forward-base http://node.internal.example:38935/callback/dookie --port 38935
+labby oauth relay-local --machine node-a --port 38935
+labby oauth relay-local --forward-base http://node.internal.example:38935/callback/node-a --port 38935
 ```
 
 Flags:
@@ -293,9 +293,9 @@ Rules:
 Example named-machine config:
 
 ```toml
-[oauth.machines.dookie]
-target_url = "http://node.internal.example:38935/callback/dookie"
-description = "dookie Codex callback listener"
+[oauth.machines.node-a]
+target_url = "http://node.internal.example:38935/callback/node-a"
+description = "node-a Codex callback listener"
 default_port = 38935
 ```
 

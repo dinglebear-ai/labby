@@ -647,14 +647,14 @@ mod tests {
             ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
             (
                 "LAB_AUTH_ALLOWED_REDIRECT_URIS",
-                "https://callback.tootie.tv/callback/*,https://claude.ai/api/mcp/auth_callback",
+                "https://callback.example.com/callback/*,https://claude.ai/api/mcp/auth_callback",
             ),
         ]))
         .unwrap();
         assert_eq!(
             cfg.allowed_client_redirect_uris,
             vec![
-                "https://callback.tootie.tv/callback/*".to_string(),
+                "https://callback.example.com/callback/*".to_string(),
                 "https://claude.ai/api/mcp/auth_callback".to_string()
             ]
         );

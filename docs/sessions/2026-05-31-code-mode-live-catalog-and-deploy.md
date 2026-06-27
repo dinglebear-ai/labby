@@ -16,20 +16,20 @@ pr: PR #86 Fix Code Mode live catalog freshness https://github.com/jmagar/lab/pu
 
 ## User Request
 
-Investigate why Code Mode/tool search saw a stale `agent-os_windows-mcp` catalog, plan the fix with Lavra, merge the prior Code Mode parity PR, dispatch a worker to implement the new epic, rebuild the Docker container, install the latest `labby` release binary, and save the session.
+Investigate why Code Mode/tool search saw a stale `windows_windows-mcp` catalog, plan the fix with Lavra, merge the prior Code Mode parity PR, dispatch a worker to implement the new epic, rebuild the Docker container, install the latest `labby` release binary, and save the session.
 
 ## Session Overview
 
 - Confirmed PR #85 was still open, merged it into `main`, and pulled the updated branch.
-- Created and refined Lavra epic `lab-armkl` for Code Mode live catalog freshness and agent-os tool naming.
+- Created and refined Lavra epic `lab-armkl` for Code Mode live catalog freshness and agent-workstation tool naming.
 - Ran Lavra research/design passes and updated all bead bodies with the findings.
 - Created a clean worktree from updated `main`, dispatched a worker to implement the epic, and received PR #86.
 - Built and installed `labby 0.21.0` to `/home/jmagar/.local/bin/labby`, rebuilt `labby:dev`, and restarted the `labby` container.
 
 ## Sequence of Events
 
-1. Investigated the stale catalog symptom: live execute/gateway saw 18 `agent-os_windows-mcp` tools while `mcp__labby.search` saw fewer.
-2. Created Lavra epic `lab-armkl` and four child beads for regression tests, implementation, agent-os docs, and diagnostics docs.
+1. Investigated the stale catalog symptom: live execute/gateway saw 18 `windows_windows-mcp` tools while `mcp__labby.search` saw fewer.
+2. Created Lavra epic `lab-armkl` and four child beads for regression tests, implementation, agent-workstation docs, and diagnostics docs.
 3. Ran `lavra-research` with six domain-matched agents and logged findings back to the beads.
 4. Ran `lavra-design` manually because the plugin referenced but did not install a `lavra-design` skill; updated the epic and child bead bodies.
 5. Started to create a worktree from `fix/code-mode-cloudflare-parity-gaps`, then stopped when the user noticed PR #85 had not been merged.
@@ -39,10 +39,10 @@ Investigate why Code Mode/tool search saw a stale `agent-os_windows-mcp` catalog
 
 ## Key Findings
 
-- `mcp__labby.execute` saw 18 live `agent-os_windows-mcp` tools including `FileSystem`, `PowerShell`, `Snapshot`, and `Wait`.
+- `mcp__labby.execute` saw 18 live `windows_windows-mcp` tools including `FileSystem`, `PowerShell`, `Snapshot`, and `Wait`.
 - `mcp__labby.search` saw a stale catalog missing those new sentinel tools before the fix.
 - The plan identified `CodeModeBroker::search` using `allow_cold_connect = caller.can_execute()` and upstream pool healthy-tool early returns as the stale-catalog shape.
-- Research found active agent-os docs used stale `Shell` terminology while live tool naming is `PowerShell`; legitimate `WScript.Shell` references should remain.
+- Research found active agent-workstation docs used stale `Shell` terminology while live tool naming is `PowerShell`; legitimate `WScript.Shell` references should remain.
 - PR #86 was opened to implement live catalog refresh, tool naming docs, and diagnostic docs.
 
 ## Technical Decisions
@@ -50,7 +50,7 @@ Investigate why Code Mode/tool search saw a stale `agent-os_windows-mcp` catalog
 - Code Mode search should use a transient live catalog derived from gateway metadata, not a durable vector/lexical index.
 - `GatewayManager` should own catalog freshness policy, while `UpstreamPool` should own low-level connect/reprobe mechanics.
 - Do not delete unrelated gateway-owned tool-search infrastructure unless it has no non-Code-Mode consumers.
-- Keep docs fixes scoped to active `plugins/agent-os` paths; do not recreate deleted `plugins/vibin/skills/agent-os` paths.
+- Keep docs fixes scoped to active `plugins/agent-workstation` paths; do not recreate deleted `plugins/vibin/skills/agent-workstation` paths.
 - Build Docker from the dirty main checkout because the user clarified the dirty state was expected skill/plugin work.
 
 ## Files Modified
@@ -107,7 +107,7 @@ Investigate why Code Mode/tool search saw a stale `agent-os_windows-mcp` catalog
 ## Decisions Not Taken
 
 - Did not blindly remove all gateway tool-search vector/lexical infrastructure; the design only removes or bypasses it for Code Mode paths unless no non-Code-Mode consumers remain.
-- Did not recreate deleted `plugins/vibin/skills/agent-os` paths; docs work was scoped to active plugin paths.
+- Did not recreate deleted `plugins/vibin/skills/agent-workstation` paths; docs work was scoped to active plugin paths.
 - Did not base the new worktree on unmerged PR #85 after the user noticed it was still open.
 
 ## References

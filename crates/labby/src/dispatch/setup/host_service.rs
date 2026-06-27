@@ -2,10 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use serde::Serialize;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::dispatch::error::ToolError;
@@ -17,6 +18,7 @@ const SYSTEM_UNIT_DIR: &str = "/etc/systemd/system";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
+const CAPTURE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct HostServiceStatus {
@@ -711,8 +713,18 @@ async fn run_systemctl(args: &[&str]) -> Result<CommandCapture, ToolError> {
 async fn run_command(program: &str, args: &[&str]) -> Result<CommandCapture, ToolError> {
     let command_display = command_display(program, args);
     let mut command = Command::new(program);
-    command.args(args).kill_on_drop(true);
-    let output = tokio::time::timeout(COMMAND_TIMEOUT, command.output())
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn().map_err(|err| ToolError::Sdk {
+        sdk_kind: "internal_error".into(),
+        message: format!("failed to run `{command_display}`: {err}"),
+    })?;
+    let stdout = tokio::spawn(read_capped(child.stdout.take()));
+    let stderr = tokio::spawn(read_capped(child.stderr.take()));
+    let status = tokio::time::timeout(COMMAND_TIMEOUT, child.wait())
         .await
         .map_err(|_| ToolError::Sdk {
             sdk_kind: "internal_error".into(),
@@ -720,29 +732,126 @@ async fn run_command(program: &str, args: &[&str]) -> Result<CommandCapture, Too
         })?
         .map_err(|err| ToolError::Sdk {
             sdk_kind: "internal_error".into(),
-            message: format!("failed to run `{command_display}`: {err}"),
+            message: format!("failed to wait for `{command_display}`: {err}"),
         })?;
+    let stdout = stdout
+        .await
+        .unwrap_or_else(|err| format!("failed to join command output reader: {err}"));
+    let stderr = stderr
+        .await
+        .unwrap_or_else(|err| format!("failed to join command output reader: {err}"));
     let captured = CommandCapture {
-        status: output.status,
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        status,
+        stdout,
+        stderr,
     };
     if captured.status.success() {
         Ok(captured)
     } else {
+        let stdout = redact_command_output(&captured.stdout);
+        let stderr = redact_command_output(&captured.stderr);
         Err(ToolError::Sdk {
             sdk_kind: "internal_error".into(),
             message: format!(
                 "command failed: {command_display}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-                captured.status, captured.stdout, captured.stderr
+                captured.status, stdout, stderr
             ),
         })
     }
 }
 
+async fn read_capped<R>(reader: Option<R>) -> String
+where
+    R: AsyncRead + Unpin,
+{
+    let Some(mut reader) = reader else {
+        return String::new();
+    };
+    let mut captured = Vec::new();
+    let mut truncated = false;
+    let mut chunk = [0; 1024];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => {
+                captured.extend_from_slice(&chunk[..n]);
+                if captured.len() > CAPTURE_BYTES {
+                    let excess = captured.len() - CAPTURE_BYTES;
+                    captured.drain(..excess);
+                    truncated = true;
+                }
+            }
+            Err(err) => return format!("failed to read command output: {err}"),
+        }
+    }
+    let mut text = String::from_utf8_lossy(&captured).to_string();
+    if truncated {
+        text.insert_str(0, "...[truncated]\n");
+    }
+    text
+}
+
 fn command_display(program: &str, args: &[&str]) -> String {
     std::iter::once(program)
         .chain(args.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn redact_command_output(output: &str) -> String {
+    const MAX_LINES: usize = 40;
+    const MAX_BYTES: usize = 4096;
+    let joined = output
+        .lines()
+        .rev()
+        .take(MAX_LINES)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let capped = if joined.len() > MAX_BYTES {
+        let mut cut = MAX_BYTES;
+        while cut > 0 && !joined.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}...[truncated]", &joined[..cut])
+    } else {
+        joined
+    };
+    labby_runtime::redact::redact_stdio_value(&capped)
+        .lines()
+        .map(|line| {
+            if let Some((prefix, _)) = line.split_once("Authorization: Bearer ") {
+                format!("{prefix}Authorization: Bearer [redacted]")
+            } else if line.contains("TS_AUTHKEY=") {
+                "TS_AUTHKEY=[redacted]".to_string()
+            } else {
+                redact_secret_like_segments(line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn redact_secret_like_segments(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|segment| {
+            let looks_secret = segment.starts_with("sk-")
+                || segment.starts_with("ghp_")
+                || segment.starts_with("github_pat_")
+                || segment.starts_with("glpat-")
+                || segment.starts_with("xoxb-")
+                || segment.starts_with("xoxp-")
+                || segment.starts_with("tskey-")
+                || segment.starts_with("eyJ");
+            if looks_secret {
+                "[redacted]".to_string()
+            } else {
+                segment.to_string()
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }

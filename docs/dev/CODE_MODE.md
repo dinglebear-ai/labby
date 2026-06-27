@@ -149,7 +149,7 @@ aligned.
 
 `gateway.reload` swaps in a freshly seeded lazy upstream pool. The next Code Mode
 execution or compatibility catalog call reprobes the relevant live upstreams and
-should see tool-list changes such as the agent-os Windows-MCP `PowerShell`,
+should see tool-list changes such as the agent-workstation Windows-MCP `PowerShell`,
 `FileSystem`, `Snapshot`, and `Wait` tools without requiring a process restart.
 
 ## Catalog Drift Diagnostics
@@ -171,13 +171,13 @@ When search results do not match live execution, check the layers in order:
    async () => Object.keys(codemode.agent_os_windows_mcp).sort()
    ```
 
-   For agent-os, the list should include `PowerShell`, `FileSystem`, `Snapshot`,
+   For agent-workstation, the list should include `PowerShell`, `FileSystem`, `Snapshot`,
    and `Wait`.
 
 3. Direct callability:
 
    ```ts
-   async () => callTool("agent-os_windows-mcp::PowerShell", {
+   async () => callTool("windows_windows-mcp::PowerShell", {
      command: "Write-Output MCP_OK"
    })
    ```
@@ -189,7 +189,7 @@ When search results do not match live execution, check the layers in order:
 
    ```ts
    async () => tools
-     .filter(t => t.upstream === "agent-os_windows-mcp")
+     .filter(t => t.upstream === "windows_windows-mcp")
      .map(t => t.name)
      .sort()
    ```

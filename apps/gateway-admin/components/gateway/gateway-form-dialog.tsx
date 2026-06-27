@@ -87,7 +87,7 @@ interface GatewayFormDialogProps {
 type FormMode = 'custom' | 'lab'
 type GatewayAuthSource = 'paste' | 'env'
 
-const PROTECTED_MCP_PUBLIC_HOST = process.env.NEXT_PUBLIC_PROTECTED_MCP_HOST || 'mcp.tootie.tv'
+const PROTECTED_MCP_PUBLIC_HOST = process.env.NEXT_PUBLIC_PROTECTED_MCP_HOST || 'mcp.example.com'
 const PROTECTED_ROUTE_SCOPES = ['mcp:read', 'mcp:write']
 const gatewayInputClassName =
   'border-aurora-border-strong bg-aurora-page-bg/80 shadow-[var(--aurora-highlight-medium)] placeholder:text-aurora-text-muted/70 hover:border-aurora-accent-primary/35 focus-visible:bg-aurora-control-surface'

@@ -158,7 +158,7 @@ The returned value must be JSON-serializable. The sandbox has `callTool` and, wh
 CLI execution passes repeated `--param key=value` flags as the `input` object:
 
 ```bash
-labby snippets exec homelab-readonly-pulse --param host=dookie
+labby snippets exec homelab-readonly-pulse --param host=node-a
 ```
 
 MCP and API callers pass the same shape through `params`:
@@ -168,7 +168,7 @@ MCP and API callers pass the same shape through `params`:
   "action": "snippets.exec",
   "params": {
     "name": "homelab-readonly-pulse",
-    "params": { "host": "dookie" }
+    "params": { "host": "node-a" }
   }
 }
 ```
@@ -177,7 +177,7 @@ Snippet code should provide defaults for omitted optional fields:
 
 ```js
 async (input) => {
-  const host = input.host || "dookie";
+  const host = input.host || "node-a";
   return { ok: true, host };
 }
 ```
@@ -190,7 +190,7 @@ validates types, and fails fast when a required param is missing.
 inputs:
   host:
     type: string
-    default: dookie
+    default: node-a
     required: false
     description: Host alias to inspect
   limit:

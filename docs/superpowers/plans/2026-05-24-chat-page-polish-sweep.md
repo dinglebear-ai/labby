@@ -688,7 +688,7 @@ If executing inline with one agent, do them in numerical order (1 → 4 → 2 �
 
   ```bash
   TOKEN=$(grep "LAB_MCP_HTTP_TOKEN" /home/jmagar/.lab/.env | cut -d= -f2 | tr -d '"')
-  agent-browser --session lab-acp open "https://lab.tootie.tv/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
+  agent-browser --session lab-acp open "https://lab.example.com/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
   agent-browser --session lab-acp screenshot /tmp/wave1-task1.png
   ```
 
@@ -1024,7 +1024,7 @@ If executing inline with one agent, do them in numerical order (1 → 4 → 2 �
 
   ```bash
   TOKEN=$(grep "LAB_MCP_HTTP_TOKEN" /home/jmagar/.lab/.env | cut -d= -f2 | tr -d '"')
-  agent-browser --session lab-acp open "https://lab.tootie.tv/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
+  agent-browser --session lab-acp open "https://lab.example.com/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
   # Pick a codex session, open the model picker
   agent-browser --session lab-acp click "button[aria-label*='Selected model']"
   agent-browser --session lab-acp screenshot /tmp/task4-grouped.png
@@ -1139,7 +1139,7 @@ If executing inline with one agent, do them in numerical order (1 → 4 → 2 �
 - [ ] **Step 5: Browser smoke**
 
   ```bash
-  agent-browser --session lab-acp open "https://lab.tootie.tv/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
+  agent-browser --session lab-acp open "https://lab.example.com/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
   agent-browser --session lab-acp screenshot /tmp/task2-titles.png
   ```
 
@@ -1335,7 +1335,7 @@ If executing inline with one agent, do them in numerical order (1 → 4 → 2 �
 - [ ] **Step 8: Browser smoke**
 
   ```bash
-  agent-browser --session lab-acp open "https://lab.tootie.tv/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
+  agent-browser --session lab-acp open "https://lab.example.com/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
   agent-browser --session lab-acp screenshot /tmp/task3-badges.png
   ```
 
@@ -1609,7 +1609,7 @@ This is the largest single edit in the plan. Read `bd show lab-de6yc.5` once mor
   ```bash
   # Scenario A: click New, close tab → 0 server rows created
   COUNT_BEFORE=$(curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:8765/v1/acp/sessions | jq '.sessions | length')
-  agent-browser --session lab-acp open "https://lab.tootie.tv/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
+  agent-browser --session lab-acp open "https://lab.example.com/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
   agent-browser --session lab-acp click "button[aria-label*='Start new session']"
   agent-browser --session lab-acp close
   sleep 2
@@ -1880,7 +1880,7 @@ This is the largest single edit in the plan. Read `bd show lab-de6yc.5` once mor
 - [ ] **Step 5: Browser end-to-end latency measurement**
 
   ```bash
-  agent-browser --session lab-acp open "https://lab.tootie.tv/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
+  agent-browser --session lab-acp open "https://lab.example.com/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
   # Measure time from Send click to first assistant token rendering
   # Expected: < 1.2s for the warmest provider (was 2.1-3.1s pre-orchestrator)
   ```
@@ -1927,7 +1927,7 @@ After all tasks complete:
 
   ```bash
   TOKEN=$(grep "LAB_MCP_HTTP_TOKEN" /home/jmagar/.lab/.env | cut -d= -f2 | tr -d '"')
-  agent-browser --session lab-acp open "https://lab.tootie.tv/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
+  agent-browser --session lab-acp open "https://lab.example.com/chat" --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
   agent-browser --session lab-acp screenshot /tmp/chat-final.png
   ```
 

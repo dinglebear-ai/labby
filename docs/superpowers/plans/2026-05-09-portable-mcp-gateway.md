@@ -60,7 +60,7 @@ Docs and UI:
 - Create `docs/deploy/SWAG_MIGRATION.md`
   - Classify old `oauth.conf` setups into migrate-to-Lab, keep-native-upstream, or keep-legacy.
 - Modify `apps/gateway-admin/components/gateway/gateway-form-dialog.tsx`
-  - Remove `mcp.tootie.tv` fallback and require configured/entered MCP host for inline protected route creation.
+  - Remove `mcp.example.com` fallback and require configured/entered MCP host for inline protected route creation.
 - Modify `apps/gateway-admin/components/gateway/protected-mcp-routes-panel.tsx`
   - Clarify config validation vs external proxy verification.
 - Add or modify gateway UI deployment panel files after backend safety and doctor land.
@@ -907,7 +907,7 @@ test('custom gateway form does not render personal protected route host fallback
     />,
   )
 
-  expect(screen.queryByText(/mcp\.tootie\.tv/i)).toBeNull()
+  expect(screen.queryByText(/mcp\.controller\.tv/i)).toBeNull()
   expect(document.body.textContent).not.toContain('syslog')
   expect(document.body.textContent).not.toContain('axon')
 })
@@ -921,14 +921,14 @@ Run:
 pnpm --dir apps/gateway-admin test -- gateway-form-dialog protected-mcp-routes-panel
 ```
 
-Expected: fails while the form still renders `mcp.tootie.tv`.
+Expected: fails while the form still renders `mcp.example.com`.
 
 - [ ] **Step 3: Remove constant fallback**
 
 In `gateway-form-dialog.tsx`, replace:
 
 ```ts
-const PROTECTED_MCP_PUBLIC_HOST = process.env.NEXT_PUBLIC_PROTECTED_MCP_HOST || 'mcp.tootie.tv'
+const PROTECTED_MCP_PUBLIC_HOST = process.env.NEXT_PUBLIC_PROTECTED_MCP_HOST || 'mcp.example.com'
 ```
 
 with state derived from a backend/config hook:
@@ -1009,7 +1009,7 @@ git commit -m "fix(gateway-ui): remove protected route host fallback"
 Create a shell or Rust doc test if one exists locally. Minimal shell check:
 
 ```bash
-rg -n "oauth\\.conf|auth_request|mcp\\.tootie\\.tv|syslog\\.tootie\\.tv|100\\.|/syslog" docs/deploy/REVERSE_PROXY.md docs/services/GATEWAY.md
+rg -n "oauth\\.conf|auth_request|mcp\\.controller\\.tv|syslog\\.controller\\.tv|100\\.|/syslog" docs/deploy/REVERSE_PROXY.md docs/services/GATEWAY.md
 ```
 
 Expected after docs are updated: no matches in canonical sections. If legacy migration sections need those terms, mark them with headings containing `Legacy` and exclude them in the check script.
@@ -1087,7 +1087,7 @@ These are not the recommended Lab gateway deployment model.
 Run:
 
 ```bash
-rg -n "mcp\\.tootie\\.tv|syslog\\.tootie\\.tv|100\\.88|auth_request|oauth\\.conf" docs/deploy/REVERSE_PROXY.md
+rg -n "mcp\\.controller\\.tv|syslog\\.controller\\.tv|100\\.88|auth_request|oauth\\.conf" docs/deploy/REVERSE_PROXY.md
 rg -n "MCP-Protocol-Version|MCP-Session-Id|Last-Event-ID|proxy_buffering off|proxy_request_buffering off" docs/deploy/REVERSE_PROXY.md
 ```
 
@@ -1205,7 +1205,7 @@ Expected: all frontend tests pass.
 Run:
 
 ```bash
-rg -n "mcp\\.tootie\\.tv|syslog\\.tootie\\.tv|axon\\.tootie\\.tv|100\\.88|oauth\\.conf|auth_request" apps/gateway-admin docs/deploy/REVERSE_PROXY.md docs/services/GATEWAY.md docs/runtime/OAUTH.md docs/runtime/CONFIG.md
+rg -n "mcp\\.controller\\.tv|syslog\\.controller\\.tv|axon\\.controller\\.tv|100\\.88|oauth\\.conf|auth_request" apps/gateway-admin docs/deploy/REVERSE_PROXY.md docs/services/GATEWAY.md docs/runtime/OAUTH.md docs/runtime/CONFIG.md
 ```
 
 Expected: no personal host/private IP matches in UI or canonical docs. `oauth.conf`/`auth_request` may appear only in SWAG migration or legacy sections.

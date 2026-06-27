@@ -176,4 +176,4 @@ Net: 9 commits on `main`, 4 doc updates, 1 vendored upstream crate fork, 1 image
 - Open an upstream PR against `agent-client-protocol` adding a public `models()` accessor on `ActiveSession` so we can drop `crates/vendor/agent-client-protocol/`.
 - Decide whether to tighten the `claude-agent-sdk` pin in `config/Dockerfile.fast` from `^0.2.131` to `~0.2.131` once the current SDK soaks for a few days.
 - Consider extracting the agent-browser-with-bearer pattern into a `just` recipe (e.g. `just chat-headed`) so onboarding contributors don't have to re-derive the env-token-extract incantation.
-- Verify on lab.tootie.tv (production reverse proxy) that the bearer `/auth/session` change doesn't conflict with any 2FA proxy header rewrites.
+- Verify on lab.example.com (production reverse proxy) that the bearer `/auth/session` change doesn't conflict with any 2FA proxy header rewrites.

@@ -16,14 +16,14 @@ Create scripts to test OAuth configuration (MCP endpoints, env/config, secured w
 
 ## Session Overview
 
-Explored the full HTTP auth middleware stack, clarified the OAuth + bearer token model, created `scripts/check-oauth.sh` (external black-box probe), ran it against `https://lab.tootie.tv` (31/31 pass), updated `docs/OAUTH.md` and `docs/OPERATIONS.md`, then added `lab doctor auth`, `lab doctor system`, `lab doctor service <name>`, and `lab doctor services` subcommands with grouped section output and remediation hints. Fixed a pre-existing build break in `router.rs` and a HTML-dump UX bug in service findings.
+Explored the full HTTP auth middleware stack, clarified the OAuth + bearer token model, created `scripts/check-oauth.sh` (external black-box probe), ran it against `https://lab.example.com` (31/31 pass), updated `docs/OAUTH.md` and `docs/OPERATIONS.md`, then added `lab doctor auth`, `lab doctor system`, `lab doctor service <name>`, and `lab doctor services` subcommands with grouped section output and remediation hints. Fixed a pre-existing build break in `router.rs` and a HTML-dump UX bug in service findings.
 
 ## Sequence of Events
 
 1. Read `router.rs`, `oauth.rs`, `serve.rs`, `.env.example` to map the full auth middleware and config surface.
 2. Clarified the auth model: API and MCP both accept static bearer OR OAuth JWT; MCP rejects session cookies by design.
 3. Created `scripts/check-oauth.sh` — 10-section curl-based external probe.
-4. Ran script against `https://lab.tootie.tv`: 30 pass / 1 fail / 1 warn.
+4. Ran script against `https://lab.example.com`: 30 pass / 1 fail / 1 warn.
 5. Diagnosed the failure: `/auth/upstream/callback` probe sent forged `?state=csrf` which triggered real SQLite state lookup and returned `auth_failed` — not an auth gate failure. Fixed probe to send no params (expects 400/422).
 6. Re-ran: 31/31 pass, 1 warn (MCP GET→400 expected).
 7. Updated `docs/OAUTH.md` with "Verifying Auth Configuration" section; updated `docs/OPERATIONS.md` with `scripts/check-oauth.sh` entry.
@@ -79,11 +79,11 @@ Explored the full HTTP auth middleware stack, clarified the OAuth + bearer token
 
 ```bash
 # External probe — first run
-LAB_BASE_URL=https://lab.tootie.tv bash scripts/check-oauth.sh
+LAB_BASE_URL=https://lab.example.com bash scripts/check-oauth.sh
 # → 30 pass / 1 fail / 1 warn
 
 # External probe — after fixing callback check
-LAB_BASE_URL=https://lab.tootie.tv bash scripts/check-oauth.sh
+LAB_BASE_URL=https://lab.example.com bash scripts/check-oauth.sh
 # → 31 pass / 0 fail / 1 warn
 
 # Full test suite
@@ -125,7 +125,7 @@ cargo test --workspace --all-features
 
 | Command | Expected | Actual | Status |
 |---------|----------|--------|--------|
-| `bash scripts/check-oauth.sh https://lab.tootie.tv` | 31 pass, 0 fail | 31 pass, 0 fail, 1 warn | ✓ |
+| `bash scripts/check-oauth.sh https://lab.example.com` | 31 pass, 0 fail | 31 pass, 0 fail, 1 warn | ✓ |
 | `cargo test --workspace --all-features` | All pass | 2292 passed, 3 ignored | ✓ |
 | `lab doctor auth` | 10 checks, grouped | 10 checks, 5 groups | ✓ |
 | `lab doctor system` | System checks only | 43 findings grouped | ✓ |

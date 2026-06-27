@@ -25,7 +25,7 @@ Expanded goals during the session:
 
 - Fixed multiple frontend/backend ACP contract mismatches in the chat UI so session creation no longer crashes on valid backend responses.
 - Identified and fixed backend `codex-acp` launch fragility by moving the service to a dedicated wrapper command instead of relying on `npx` in the systemd PATH.
-- Verified local no-auth chat flow through Chrome DevTools, including successful `POST /v1/acp/sessions` and visible session creation on `http://dookie:8766/chat/`.
+- Verified local no-auth chat flow through Chrome DevTools, including successful `POST /v1/acp/sessions` and visible session creation on `http://node-a:8766/chat/`.
 - Added stale-web-asset detection to `lab serve` so it rebuilds `apps/gateway-admin/out` only when the frontend source tree is newer than the exported assets, otherwise it skips the build.
 - Verified `lab serve` live on the normal port `8765`, including both asset rebuild behavior and stale-`lab` port reclaim behavior.
 - Fixed the `node/update.rs` controller verification break and cleaned the workspace until both `just check` and `just build` passed.
@@ -194,7 +194,7 @@ Critical shell commands and observed results:
 
 | command | expected | actual | status |
 |---|---|---|---|
-| `Chrome DevTools: open http://dookie:8766/chat/ and click Start new session` | page stays live and a new thread appears | `ACP live`, `POST /v1/acp/sessions [200]`, visible `lab / New session`, no console errors | pass |
+| `Chrome DevTools: open http://node-a:8766/chat/ and click Start new session` | page stays live and a new thread appears | `ACP live`, `POST /v1/acp/sessions [200]`, visible `lab / New session`, no console errors | pass |
 | `just check` | all-features workspace compiles | passed after warning/error cleanup | pass |
 | `just build` | all-features workspace builds | passed after warning/error cleanup | pass |
 | `target/debug/lab serve --host 127.0.0.1 --port 8777` after touching a frontend source file | stale assets trigger rebuild | logs showed `assets.build.start`, `assets.build.finish`, then `lab serve ready` | pass |

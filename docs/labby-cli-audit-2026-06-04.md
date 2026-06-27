@@ -55,7 +55,7 @@ Source version: **0.22.1** (does not currently build — see Compile Errors)
 | `labby stash targets.list` | ✅ PASS — empty result (∅) |
 | `labby deploy config-list` | ✅ PASS — hosts and defaults |
 | `labby deploy --help` | ✅ PASS |
-| `labby nodes list` | ✅ PASS — shows 1 node (tootie) |
+| `labby nodes list` | ✅ PASS — shows 1 node (controller) |
 | `labby nodes enrollments list/approve/deny --help` | ✅ PASS |
 | `labby completions bash` | ✅ PASS — 6907 lines of completions |
 | `labby help gateway` | ✅ PASS — falls through to Clap help |
@@ -116,7 +116,7 @@ labby deploy plan
 # error: the following required arguments were not provided: <TARGETS>...
 ```
 
-`labby deploy config-list` already shows all configured hosts. A `--all` flag or defaulting to all configured hosts would improve usability. Minor because `deploy plan dookie` works as expected.
+`labby deploy config-list` already shows all configured hosts. A `--all` flag or defaulting to all configured hosts would improve usability. Minor because `deploy plan node-a` works as expected.
 
 **Issue 4: Missing `--help` descriptions (cosmetic)**
 
@@ -151,5 +151,5 @@ Multiple flags and positional args have no description text in `--help`, making 
 ```
 labby 0.21.4 (installed at /home/jmagar/.local/bin/labby)
 source v0.22.1 at /home/jmagar/workspace/lab (does not build)
-platform: linux, dookie (dev box)
+platform: linux, node-a (dev box)
 ```

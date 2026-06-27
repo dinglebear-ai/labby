@@ -35,7 +35,7 @@ Review Docker logs, then fix all containers running on this machine to run on `j
 ## Key Findings
 
 - `labby` logs included `semantic search unavailable, falling back to lexical results` because TEI was configured as `http://127.0.0.1:52000/embed` from inside the container.
-- Before the fix, missed containers included `syslog-mcp`, `axon`, `axon-qdrant`, `axon-tei`, `axon-chrome`, `agentmemory-iii-engine-1`, and `agent-os-win11`.
+- Before the fix, missed containers included `syslog-mcp`, `axon`, `axon-qdrant`, `axon-tei`, `axon-chrome`, `agentmemory-iii-engine-1`, and `windows-runner-win11`.
 - `labby` could not initially resolve `axon-tei` or `axon-qdrant` because the Axon stack was on the `axon` network while Lab was on `jakenet`/Lab networks.
 - Auth warnings seen during log review:
   - `oauth token rejected: unknown or expired refresh token`
@@ -71,7 +71,7 @@ Review Docker logs, then fix all containers running on this machine to run on `j
 | modified | `/home/jmagar/workspace/arcane-mcp/docker-compose.yaml` |  | Replaced hardcoded/fallback network with variable-backed project default. | Rendered `app=jakenet external=true`. |
 | modified | `/home/jmagar/workspace/arcane-mcp/.env` |  | Existing host-local `DOCKER_NETWORK=jakenet` preserved. | Final grep found no hardcoded `jakenet` in Compose files. |
 | modified | `/home/jmagar/compose/windows/docker-compose.yml` |  | Added variable-backed external network. | Rendered `app=jakenet external=true`; running Windows container moved to `jakenet` only. |
-| created | `/home/jmagar/compose/windows/.env` |  | Host-local Windows network override. | `agent-os-win11` final network list was only `jakenet`. |
+| created | `/home/jmagar/compose/windows/.env` |  | Host-local Windows network override. | `windows-runner-win11` final network list was only `jakenet`. |
 | modified | `/home/jmagar/workspace/agentmemory/docker-compose.yml` |  | Added both init and engine services to variable-backed `app` network. | Rendered `app=jakenet external=true`. |
 | created | `/home/jmagar/workspace/agentmemory/.env` |  | Host-local AgentMemory network override. | Workspace config rendered `jakenet`. |
 | modified | `/home/jmagar/.npm/_npx/6ac3254aa17f4a19/node_modules/@agentmemory/agentmemory/docker-compose.yml` |  | Patched active npx Compose source for future recreates. | Running container labels pointed at this path. |

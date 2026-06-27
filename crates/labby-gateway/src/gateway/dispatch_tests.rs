@@ -518,10 +518,10 @@ fn protected_route_fixture(name: &str) -> ProtectedMcpRouteConfig {
     ProtectedMcpRouteConfig {
         name: name.to_string(),
         enabled: true,
-        public_host: "mcp.tootie.tv".to_string(),
+        public_host: "mcp.example.com".to_string(),
         public_path: "/syslog".to_string(),
         upstream: None,
-        backend_url: "http://100.88.16.79:3100".to_string(),
+        backend_url: "http://100.64.0.10:3100".to_string(),
         backend_mcp_path: "/mcp".to_string(),
         scopes: Vec::new(),
         health_path: None,
@@ -533,7 +533,7 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
     ProtectedMcpRouteConfig {
         name: name.to_string(),
         enabled: true,
-        public_host: "mcp.tootie.tv".to_string(),
+        public_host: "mcp.example.com".to_string(),
         public_path: "/media".to_string(),
         upstream: None,
         backend_url: String::new(),
@@ -567,7 +567,7 @@ async fn protected_route_dispatch_add_list_and_test_share_gateway_actions() {
     )
     .await
     .expect("test route");
-    assert_eq!(tested["resource"], "https://mcp.tootie.tv/syslog");
+    assert_eq!(tested["resource"], "https://mcp.example.com/syslog");
 
     let added = dispatch_with_manager(
         &manager,
@@ -582,7 +582,7 @@ async fn protected_route_dispatch_add_list_and_test_share_gateway_actions() {
         .await
         .expect("list routes");
     assert_eq!(listed.as_array().expect("array").len(), 1);
-    assert_eq!(listed[0]["public_host"], "mcp.tootie.tv");
+    assert_eq!(listed[0]["public_host"], "mcp.example.com");
 }
 
 #[tokio::test]

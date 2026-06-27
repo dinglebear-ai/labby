@@ -61,12 +61,12 @@ const MOCK_AGENTS: Array<{
   weight: number
   ips: string[]
 }> = [
-  { id: 'claude-code', label: 'Claude Code', kind: 'agent', weight: 34, ips: ['100.88.16.79', '100.74.16.82'] },
-  { id: 'codex-cli', label: 'Codex CLI', kind: 'agent', weight: 22, ips: ['100.88.16.79'] },
-  { id: 'dookie', label: 'dookie', kind: 'device', weight: 18, ips: ['100.88.16.79'] },
-  { id: 'zed-acp', label: 'Zed ACP', kind: 'agent', weight: 14, ips: ['100.74.16.82'] },
-  { id: 'steamy-wsl', label: 'steamy-wsl', kind: 'device', weight: 8, ips: ['100.74.16.82'] },
-  { id: 'agent-os', label: 'agent-os', kind: 'device', weight: 4, ips: ['100.109.125.128'] },
+  { id: 'claude-code', label: 'Claude Code', kind: 'agent', weight: 34, ips: ['100.64.0.10', '100.64.0.30'] },
+  { id: 'codex-cli', label: 'Codex CLI', kind: 'agent', weight: 22, ips: ['100.64.0.10'] },
+  { id: 'node-a', label: 'node-a', kind: 'device', weight: 18, ips: ['100.64.0.10'] },
+  { id: 'zed-acp', label: 'Zed ACP', kind: 'agent', weight: 14, ips: ['100.64.0.30'] },
+  { id: 'workstation-wsl', label: 'workstation-wsl', kind: 'device', weight: 8, ips: ['100.64.0.30'] },
+  { id: 'agent-workstation', label: 'agent-workstation', kind: 'device', weight: 4, ips: ['100.64.0.40'] },
 ]
 
 const SURFACES_BY_TOOL: Record<string, CallSurface[]> = {

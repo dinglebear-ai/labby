@@ -55,7 +55,7 @@ Each tick attempts a TCP connect to `<host>:<port>` (defaulting to port `22`). A
 One newline-delimited JSON object per emit, written to stdout:
 
 ```jsonc
-{ "ts": 1777176765, "host": "tootie", "status": "online", "addr": "tootie:29229" }
+{ "ts": 1777176765, "host": "controller", "status": "online", "addr": "controller:29229" }
 ```
 
 | Field | Meaning |

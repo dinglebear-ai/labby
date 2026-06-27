@@ -43,20 +43,20 @@ async fn device_store_marks_hello_devices_connected_and_tracks_status() {
     let store = NodeStore::default();
     store
         .record_hello(NodeHello {
-            node_id: "tootie".into(),
+            node_id: "controller".into(),
             role: "master".into(),
             version: "1.0.0".into(),
         })
         .await;
 
-    let snapshot = store.node("tootie").await.unwrap();
+    let snapshot = store.node("controller").await.unwrap();
     assert!(snapshot.connected);
 
-    store.record_status(test_node_status("tootie")).await;
+    store.record_status(test_node_status("controller")).await;
 
-    let snapshot = store.node("tootie").await.unwrap();
+    let snapshot = store.node("controller").await.unwrap();
     assert!(snapshot.connected);
-    assert_eq!(snapshot.node_id, "tootie");
+    assert_eq!(snapshot.node_id, "controller");
 }
 
 #[tokio::test]
@@ -69,7 +69,7 @@ async fn non_master_runtime_uploads_discovered_ai_cli_inventory() {
     .unwrap();
 
     let runtime = NodeRuntime::non_master_for_test_with_home(
-        "dookie",
+        "node-a",
         "http://master:8765".to_string(),
         temp.path(),
     )
@@ -82,7 +82,7 @@ async fn non_master_runtime_uploads_discovered_ai_cli_inventory() {
     let drained = queue.drain_batch(10).await.unwrap();
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].kind, "metadata");
-    assert_eq!(drained[0].payload["node_id"], "dookie");
+    assert_eq!(drained[0].payload["node_id"], "node-a");
     assert_eq!(
         drained[0].payload["discovered_configs"][0]["path"],
         ".claude.json"
@@ -100,9 +100,9 @@ async fn master_store_keeps_uploaded_logs_by_device() {
     let store = NodeStore::default();
     store
         .record_logs(
-            "dookie",
+            "node-a",
             vec![NodeLogEvent {
-                node_id: "dookie".into(),
+                node_id: "node-a".into(),
                 source: "journald".into(),
                 timestamp_unix_ms: 1,
                 level: Some("info".into()),
@@ -112,7 +112,7 @@ async fn master_store_keeps_uploaded_logs_by_device() {
         )
         .await;
 
-    let snapshot = store.node("dookie").await.unwrap();
+    let snapshot = store.node("node-a").await.unwrap();
     assert_eq!(snapshot.logs.len(), 1);
 }
 
@@ -120,14 +120,14 @@ async fn master_store_keeps_uploaded_logs_by_device() {
 async fn queue_syslog_batch_appends_entries_for_websocket_delivery() {
     let temp = tempfile::tempdir().unwrap();
     let runtime = NodeRuntime::non_master_for_test_with_home(
-        "dookie",
+        "node-a",
         "http://master:8765".to_string(),
         temp.path(),
     )
     .unwrap();
     runtime
         .queue_syslog_batch(vec![NodeLogEvent {
-            node_id: "dookie".into(),
+            node_id: "node-a".into(),
             source: "journald".into(),
             timestamp_unix_ms: 1,
             level: Some("info".into()),
@@ -138,7 +138,7 @@ async fn queue_syslog_batch_appends_entries_for_websocket_delivery() {
         .unwrap();
     runtime
         .queue_syslog_batch(vec![NodeLogEvent {
-            node_id: "dookie".into(),
+            node_id: "node-a".into(),
             source: "journald".into(),
             timestamp_unix_ms: 2,
             level: Some("warn".into()),
@@ -163,9 +163,9 @@ async fn device_store_search_logs_applies_offset_limit_and_retention() {
     for index in 0..10_100 {
         store
             .record_logs(
-                "dookie",
+                "node-a",
                 vec![NodeLogEvent {
-                    node_id: "dookie".into(),
+                    node_id: "node-a".into(),
                     source: "journald".into(),
                     timestamp_unix_ms: index,
                     level: Some("info".into()),
@@ -176,11 +176,11 @@ async fn device_store_search_logs_applies_offset_limit_and_retention() {
             .await;
     }
 
-    let retained = store.node("dookie").await.unwrap().logs;
+    let retained = store.node("node-a").await.unwrap().logs;
     assert_eq!(retained.len(), 10_000);
     assert_eq!(retained.front().unwrap().message, "hello-100");
 
-    let searched = store.search_logs_for_node("dookie", "hello", 5, 3).await;
+    let searched = store.search_logs_for_node("node-a", "hello", 5, 3).await;
     assert_eq!(searched.len(), 3);
     assert_eq!(searched.first().unwrap().message, "hello-105");
 }

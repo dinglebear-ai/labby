@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.28.0] - 2026-06-27
+
+---
+
 ## [0.27.0] - 2026-06-25
 
 ### Added
@@ -227,7 +231,7 @@ All notable changes to this project will be documented in this file.
 |--------|--------|
 | `091b1c3d` | docs: save session log |
 | `ca834476` | test(acp): add principal-isolation (IDOR) tests for session actions |
-| `bb675cb8` | fix(plugins): clean up agent-os README and notebooklm SKILL.md |
+| `bb675cb8` | fix(plugins): clean up agent-workstation README and notebooklm SKILL.md |
 | `2c139784` | fix(acp): constant-time HMAC verify in persistence + rustfmt cleanup |
 | `5b2b3150` | Fix nvidia-skills, qdrant-skills, redis-development, mcp-apps with correct sources |
 | `b43d21fe` | Remove nvidia-skills, qdrant-skills, redis-development, mcp-apps — paths not found |
@@ -1060,7 +1064,7 @@ All notable changes to this project will be documented in this file.
 - **Marketplace security hardening P1 (lab-kvji.10)** — path traversal via plugin ID blocked at parse time; symlink following eliminated from all four filesystem walkers; `installPath` from `installed_plugins.json` validated against `plugins_root` before use
 - **AI component library** — 26 new TSX components under `components/ai/` covering agents, artifacts, attachments, code blocks, reasoning, tool calls, and more
 - **Fleet websocket runtime** — initial `feat: add websocket fleet runtime`; ACP provider, session registry, SSE transport, design docs
-- **Registry metadata curation** — Lab-owned `_meta["tv.tootie.lab/registry"]` contract, validation, audit fields, server-side metadata filters, typed CLI metadata commands, gateway-admin structured metadata editing
+- **Registry metadata curation** — Lab-owned `_meta["dev.labby/registry"]` contract, validation, audit fields, server-side metadata filters, typed CLI metadata commands, gateway-admin structured metadata editing
 - **Marketplace and upstream hardening** — marketplace client/dispatch cleanup, upstream pool adjustments, browser session auth fixes, large batch of PR-review-driven repairs across gateway, registry, marketplace, chat, and deploy
 
 ### Version bumps

@@ -20,7 +20,7 @@ I verified the current `/nodes` and `/v1/nodes` behavior against the deployed/en
 
 1. `/nodes` in the UI reflects `/v1/nodes` only.
 2. `/v1/nodes` currently returns only `vivobook` as connected/active.
-3. `lab nodes enrollments list` still shows additional approved device enrollments (`shart`, `tootie`, `squirts`, `steamy`, `vivobook`).
+3. `lab nodes enrollments list` still shows additional approved device enrollments (`backup-node`, `controller`, `node-b`, `workstation`, `vivobook`).
 4. This means deployment and enrollment are not equal to active reporting; some nodes have not completed check-in yet or are offline.
 
 ## Commands Executed
@@ -43,16 +43,16 @@ target/release/lab nodes enrollments list
 
 ```text
 ▸ approved
-  ▸ shart
-  ▸ squirts
-  ▸ steamy
-  ▸ tootie
+  ▸ backup-node
+  ▸ node-b
+  ▸ workstation
+  ▸ controller
   ▸ vivobook
 ```
 
 ## Operational Context
 
-Recent deploy operations were rerun to target the node set and then focused on nodes that were not reporting check-in. `shart` remained unreachable during deploy preflight due to SSH timeout on port 22, indicating connectivity/infrastructure issue rather than deployment packaging.
+Recent deploy operations were rerun to target the node set and then focused on nodes that were not reporting check-in. `backup-node` remained unreachable during deploy preflight due to SSH timeout on port 22, indicating connectivity/infrastructure issue rather than deployment packaging.
 
 ## Root-Cause Summary
 
@@ -62,13 +62,13 @@ Recent deploy operations were rerun to target the node set and then focused on n
 
 ## Next Steps
 
-1. Validate the runtime environment on each non-connected approved node (`shart`, `squirts`, `steamy`, `tootie`) and confirm the node service is running.
+1. Validate the runtime environment on each non-connected approved node (`backup-node`, `node-b`, `workstation`, `controller`) and confirm the node service is running.
 2. Check each node for websocket connectivity to the central server (port/protocol/firewall and network ACL checks).
 3. Confirm node binary startup order/logs on each target once service is launched.
 4. Re-run `lab nodes list --json` after each remediation to verify node moves from enrolled-only to active.
 
 ## Open Questions
 
-- Is `shart` intentionally firewalled from SSH (needed for deploy and first contact)?
+- Is `backup-node` intentionally firewalled from SSH (needed for deploy and first contact)?
 - Are the non-Vivobook nodes expected to report heartbeats on a periodic schedule or only after reboot?
 - Should `lab nodes list` include an explicit “enrolled not checked-in” view or row to make this distinction explicit in the UI?

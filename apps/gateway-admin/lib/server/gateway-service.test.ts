@@ -41,7 +41,7 @@ test('testResultFromProbe keeps real connection failures as failures', () => {
       healthy: false,
       last_error: 'Auth required by upstream server',
     },
-    'Authentication is required by https://swag.tootie.tv/mcp. Configure `bearer_token_env` with a valid upstream token, then reload this gateway.',
+    'Authentication is required by https://gateway.example.com/mcp. Configure `bearer_token_env` with a valid upstream token, then reload this gateway.',
   )
 
   assert.equal(result.success, false)
@@ -49,7 +49,7 @@ test('testResultFromProbe keeps real connection failures as failures', () => {
   assert.equal(result.message, 'Connection test failed')
   assert.equal(
     result.error,
-    'Authentication is required by https://swag.tootie.tv/mcp. Configure `bearer_token_env` with a valid upstream token, then reload this gateway.',
+    'Authentication is required by https://gateway.example.com/mcp. Configure `bearer_token_env` with a valid upstream token, then reload this gateway.',
   )
 })
 

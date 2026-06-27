@@ -13,7 +13,7 @@ pr: "#25 — fix(auth): gateway admin auth, upstream OAuth, and dispatch fixes �
 
 ## User Request
 
-Fix phone-home 401 auth failures and deploy the `lab` binary to `steamy-wsl`, `vivobook-wsl`, `shart`, `squirts`, and `tootie`. Deployed hosts should self-register with the master (`dookie:8765`) after successful install.
+Fix phone-home 401 auth failures and deploy the `lab` binary to `workstation-wsl`, `vivobook-wsl`, `backup-node`, `node-b`, and `controller`. Deployed hosts should self-register with the master (`node-a:8765`) after successful install.
 
 ## Session Overview
 
@@ -28,10 +28,10 @@ The prior session had wired up a phone-home stage in the deploy pipeline that ru
 5. Split `routes()` into `public_routes()` (just `/hello`) and `routes()` (everything else)
 6. In `router.rs`, mounted `public_routes()` at `/v1/device` on the outer unauthenticated router, alongside `/health` and `/ready`
 7. Built release binary — succeeded with no warnings
-8. Copied new binary to dookie (`/usr/local/bin/lab`), killed old debug master process (PID 745988), restarted with new release binary
-9. Tested from squirts: `lab device hello --master http://dookie:8765` — succeeded (no error output)
-10. Verified `lab device list` — squirts appeared in the fleet store
-11. Ran full 5-host deploy: `lab deploy run -y steamy-wsl vivobook-wsl shart squirts tootie`
+8. Copied new binary to node-a (`/usr/local/bin/lab`), killed old debug master process (PID 745988), restarted with new release binary
+9. Tested from node-b: `lab device hello --master http://node-a:8765` — succeeded (no error output)
+10. Verified `lab device list` — node-b appeared in the fleet store
+11. Ran full 5-host deploy: `lab deploy run -y workstation-wsl vivobook-wsl backup-node node-b controller`
 12. All 5 hosts reached `phone_home` stage with `succeeded: ✓`; 3 devices visible in fleet store post-deploy
 
 ## Key Findings
@@ -39,8 +39,8 @@ The prior session had wired up a phone-home stage in the deploy pipeline that ru
 - `crates/lab/src/api/router.rs:447-462` — the `v1_protected` router wraps the **entire** `/v1` tree with `route_layer(authenticate_request)`, including `/v1/device/hello`
 - `crates/lab/src/api/device.rs:20-34` — all device routes were in a single `routes()` function; no split between public and protected
 - `/health` and `/ready` escape auth because they're mounted directly on the outer `Router::new()` before the `v1_protected` merge — the same pattern now used for `/v1/device/hello`
-- The master on dookie was running `target/debug/lab serve` (PID 745988) in a terminal session, not a systemd service — it had to be manually killed and restarted after binary update
-- `deploy.phone_home.failed` WARN for `steamy-wsl` is non-fatal; the deploy still reported `succeeded: ✓` because phone-home errors are caught and logged, not propagated
+- The master on node-a was running `target/debug/lab serve` (PID 745988) in a terminal session, not a systemd service — it had to be manually killed and restarted after binary update
+- `deploy.phone_home.failed` WARN for `workstation-wsl` is non-fatal; the deploy still reported `succeeded: ✓` because phone-home errors are caught and logged, not propagated
 
 ## Technical Decisions
 
@@ -64,30 +64,30 @@ The prior session had wired up a phone-home stage in the deploy pipeline that ru
 cargo build --all-features          # → success (debug, quick verification)
 cargo build --release --all-features # → success (28 MB binary)
 
-# Update master on dookie
-scp target/release/lab dookie:/tmp/lab-new
-ssh dookie 'sudo mv /tmp/lab-new /usr/local/bin/lab && sudo chmod 755 /usr/local/bin/lab'
-ssh dookie 'kill 745988'           # kill old debug process
+# Update master on node-a
+scp target/release/lab node-a:/tmp/lab-new
+ssh node-a 'sudo mv /tmp/lab-new /usr/local/bin/lab && sudo chmod 755 /usr/local/bin/lab'
+ssh node-a 'kill 745988'           # kill old debug process
 # restart: lab serve (new process PID 1288224 listening on :8765)
 
-# Test phone-home from squirts
-ssh squirts '/home/jmagar/.local/bin/lab device hello --master http://dookie:8765 2>&1'
+# Test phone-home from node-b
+ssh node-b '/home/jmagar/.local/bin/lab device hello --master http://node-a:8765 2>&1'
 # → (no output = success)
 
 # Verify registration
 lab device list
-# → squirts  ✓  non-master  0  0
+# → node-b  ✓  non-master  0  0
 
 # Full 5-host deploy
-lab deploy run -y steamy-wsl vivobook-wsl shart squirts tootie
+lab deploy run -y workstation-wsl vivobook-wsl backup-node node-b controller
 # → all 5: reached_stage=phone_home  succeeded=✓
-# → device list shows: localhost, squirts, vivobook
+# → device list shows: localhost, node-b, vivobook
 ```
 
 ## Errors Encountered
 
 **Phone-home 401 (prior session, root cause of this session)**
-- `ssh squirts 'lab device hello --master http://dookie:8765 2>&1'` → `status=401 kind="auth_failed"`
+- `ssh node-b 'lab device hello --master http://node-a:8765 2>&1'` → `status=401 kind="auth_failed"`
 - Root cause: `/v1/device/hello` was inside the auth-protected `/v1` router
 - Fix: moved to unauthenticated outer router via `public_routes()`
 
@@ -110,10 +110,10 @@ lab deploy run -y steamy-wsl vivobook-wsl shart squirts tootie
 |---------|----------|--------|--------|
 | `cargo build --all-features` | success | success | ✓ |
 | `cargo build --release --all-features` | success | success | ✓ |
-| `ssh squirts 'lab device hello --master http://dookie:8765 2>&1'` | no output (success) | no output | ✓ |
-| `lab device list` (after squirts phone-home) | squirts in list | squirts ✓ non-master | ✓ |
-| `lab deploy run -y steamy-wsl vivobook-wsl shart squirts tootie` | 5/5 succeeded | 5/5 succeeded | ✓ |
-| `lab device list` (after full deploy) | devices registered | localhost, squirts, vivobook | ✓ (partial) |
+| `ssh node-b 'lab device hello --master http://node-a:8765 2>&1'` | no output (success) | no output | ✓ |
+| `lab device list` (after node-b phone-home) | node-b in list | node-b ✓ non-master | ✓ |
+| `lab deploy run -y workstation-wsl vivobook-wsl backup-node node-b controller` | 5/5 succeeded | 5/5 succeeded | ✓ |
+| `lab device list` (after full deploy) | devices registered | localhost, node-b, vivobook | ✓ (partial) |
 
 ## Risks and Rollback
 
@@ -122,14 +122,14 @@ lab deploy run -y steamy-wsl vivobook-wsl shart squirts tootie
 
 ## Open Questions
 
-- `steamy-wsl` phone-home reported `deploy.phone_home.failed` with `error=verify_failed`. The binary deployed successfully (reached `phone_home` stage), but the phone-home SSH command itself failed. Possible cause: `steamy-wsl` may not have TCP connectivity to `dookie:8765` (different WSL network namespace), or the binary ran on a version that couldn't read the config. Not investigated.
+- `workstation-wsl` phone-home reported `deploy.phone_home.failed` with `error=verify_failed`. The binary deployed successfully (reached `phone_home` stage), but the phone-home SSH command itself failed. Possible cause: `workstation-wsl` may not have TCP connectivity to `node-a:8765` (different WSL network namespace), or the binary ran on a version that couldn't read the config. Not investigated.
 - Only 3 devices appeared in the fleet store after deploying 5 hosts. Some hosts may have registered under unexpected short hostnames (e.g., `vivobook` instead of `vivobook-wsl`). `resolve_local_hostname()` returns the OS hostname, not the SSH alias.
-- The master on dookie is running as a manually-started process (not systemd). If dookie reboots, the device fleet store is lost and the master does not auto-restart. No systemd unit exists for it.
+- The master on node-a is running as a manually-started process (not systemd). If node-a reboots, the device fleet store is lost and the master does not auto-restart. No systemd unit exists for it.
 
 ## Next Steps
 
 **Not yet started:**
-- Fix `steamy-wsl` phone-home failure — investigate network connectivity from steamy-wsl to dookie:8765
+- Fix `workstation-wsl` phone-home failure — investigate network connectivity from workstation-wsl to node-a:8765
 - Investigate `resolve_local_hostname()` returning short hostnames that don't match SSH config aliases
-- Add systemd unit for `lab serve` on dookie so the master auto-starts on boot and survives reboots
+- Add systemd unit for `lab serve` on node-a so the master auto-starts on boot and survives reboots
 - Fix pre-existing test failure in `crates/lab/src/dispatch/upstream/pool.rs` — `UpstreamConfig` struct missing `proxy_prompts` field in test fixtures

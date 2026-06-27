@@ -35,13 +35,13 @@ Fleet log search is available on the controller through:
 Example:
 
 ```bash
-labby logs search dookie oauth
+labby logs search node-a oauth
 ```
 
 ```json
 POST /v1/nodes/logs/search
 {
-  "node_id": "dookie",
+  "node_id": "node-a",
   "query": "oauth"
 }
 ```

@@ -32,7 +32,7 @@ The session began as `/lavra-design` to "integrate rmcp-mux into the lab gateway
 3. Launched `lavra-brainstorm`; surfaced that gateway-internal sharing was already solved and external sharing was the real target. User clarified external front-doors connect over HTTP, collapsing the socket-exposure scope.
 4. On user request, audited running processes: found ~10–11 `claude-in-mobile` servers, traced each leaf to its root.
 5. Traced parents: 9–10 came from `lab mcp` stdio servers parented by Zed's `codex-acp`; 1 from `copilot`; 0 from `labby serve`.
-6. User corrected: no stdio lab is configured in Zed; codex `[mcp_servers.labby]` uses `url = https://lab.tootie.tv/mcp`. Tracked the bare `lab mcp` emitter to the **codex plugin cache**.
+6. User corrected: no stdio lab is configured in Zed; codex `[mcp_servers.labby]` uses `url = https://lab.example.com/mcp`. Tracked the bare `lab mcp` emitter to the **codex plugin cache**.
 7. Confirmed root cause: the lab plugin migrated stdio→HTTP, but `~/.codex/plugins/cache/labby-marketplace/lab/local/.mcp.json` (dated 2026-05-08) still declares `command: lab, args: ["mcp"]`; all `codex-acp` were orphaned (PPID 1, 1–2.5 days old).
 8. User uninstalled the plugin; verified running processes persisted (uninstall cannot reap orphans).
 9. Performed guarded host cleanup (orphan trees, then idle tmux servers), after discovering and fixing a zsh word-splitting bug in the kill scripts.

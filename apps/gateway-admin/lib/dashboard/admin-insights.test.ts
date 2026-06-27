@@ -48,23 +48,23 @@ test('activity subsystem query includes app, gateway, node, MCP, and auth source
 
 test('buildActivityItemsFromLogs describes gateway and device activity as first-class activity', () => {
   const items = buildActivityItemsFromLogs([
-    logEvent({ action: 'gateway.add', message: 'Added tootie gateway' }),
+    logEvent({ action: 'gateway.add', message: 'Added controller gateway' }),
     logEvent({
       event_id: 'evt-node',
       subsystem: 'syslog',
       surface: 'core_runtime',
       action: 'node.status',
-      message: 'tootie is online',
-      source_node_id: 'tootie',
+      message: 'controller is online',
+      source_node_id: 'controller',
     }),
   ])
 
   assert.equal(items[0]?.kind, 'gateway')
   assert.equal(items[0]?.title, 'Added gateway')
-  assert.match(items[0]?.detail ?? '', /Added tootie gateway/)
+  assert.match(items[0]?.detail ?? '', /Added controller gateway/)
   assert.equal(items[1]?.kind, 'device')
   assert.equal(items[1]?.title, 'Device status changed')
-  assert.match(items[1]?.detail ?? '', /node=tootie/)
+  assert.match(items[1]?.detail ?? '', /node=controller/)
 })
 
 test('buildGatewayActivityFeed sorts the newest gateway events first', () => {

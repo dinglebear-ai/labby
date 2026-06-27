@@ -22,7 +22,7 @@ Add the Webwright plugin to both marketplaces and push to main; then a series of
 - Replaced a hardcoded Docker bridge IP (`172.19.0.1`) with the portable `host.docker.internal` alias for in-container access to host services (adb server + LM Studio/Ollama/TEI), made the adb client bind-mount opt-in via `ADB_PATH`, and verified the path end to end.
 - Rebased and merged PR #127 (snippets test + dev portability) and recovered, verified, and merged PR #128 (Code Mode warm-runner pool, Perf H1) from orphaned WIP left by a dead agent.
 - Verified claude-in-mobile is healthy through the Labby gateway using mcporter Code Mode (`execute` → `device(list)` returned `emulator-5554`).
-- Root-caused a `lab.tootie.tv/mcp` timeout to first-use lazy upstream discovery after a container recreate (cold-start), not Cloudflare/SWAG/auth/config.
+- Root-caused a `lab.example.com/mcp` timeout to first-use lazy upstream discovery after a container recreate (cold-start), not Cloudflare/SWAG/auth/config.
 - Repeated branch/worktree cleanup so the repo ended with only `main` locally and remotely.
 
 ## Sequence of Events
@@ -42,7 +42,7 @@ Add the Webwright plugin to both marketplaces and push to main; then a series of
 - Webwright entries already existed: `.claude-plugin/marketplace.json:496` and `.agents/plugins/marketplace.json:885`, both pinned to `microsoft/Webwright.git` at the current HEAD sha; cached marketplace clone at `~/.claude/plugins/marketplaces/labby-marketplace` already on `main` with the entry.
 - The adb mount works only because the host adb server listens on `*:5037` (all interfaces) and `:52000` on `0.0.0.0` — so a gateway-IP change is transparent. `host.docker.internal` resolved to `172.17.0.1`, not the previously hardcoded `172.19.0.1`, proving the pin was wrong.
 - The warm-runner pool WIP was complete and wired, not half-built: `runner_drive.rs` `run_in_runner_with_config` routes to `run_via_pool` when a `GatewayManager` is present, else `run_standalone`; the pool is constructed at `manager/core.rs:106` via `RunnerPool::from_env()`.
-- The `lab.tootie.tv/mcp` 30s timeout was a cold-start artifact: the gateway defers upstream discovery until first use (`discovery.lazy`), and the first client after the recreate paid the cost of cold-spawning 44 upstreams (several `npx`/`uvx` stdio servers), exceeding mcporter's 30s per-server timeout. Warm, both public and local respond in 1–3s.
+- The `lab.example.com/mcp` 30s timeout was a cold-start artifact: the gateway defers upstream discovery until first use (`discovery.lazy`), and the first client after the recreate paid the cost of cold-spawning 44 upstreams (several `npx`/`uvx` stdio servers), exceeding mcporter's 30s per-server timeout. Warm, both public and local respond in 1–3s.
 
 ## Technical Decisions
 
@@ -128,7 +128,7 @@ No other bead activity occurred this session.
 | `docker compose config` (ADB_PATH set/unset) | real path / `/dev/null` | matched both | pass |
 | `getent hosts host.docker.internal` (in container) | resolves to host | `172.17.0.1` | pass |
 | gateway `execute` → `device(list)` | lists emulator | `emulator-5554` | pass |
-| `curl https://lab.tootie.tv/mcp` initialize (warm) | 200 + SSE result | 200, ~66ms | pass |
+| `curl https://lab.example.com/mcp` initialize (warm) | 200 + SSE result | 200, ~66ms | pass |
 | `cargo nextest --all-features` (code_mode/pool) | all pass | 288 passed | pass |
 | `cargo clippy -D warnings` | clean | clean | pass |
 

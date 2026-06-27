@@ -320,7 +320,7 @@ fn role_node_with_controller_host_succeeds() {
     let config = LabConfig {
         node: Some(NodePreferences {
             role: None,
-            controller: Some("dookie".to_string()),
+            controller: Some("node-a".to_string()),
             log_retention_days: None,
         }),
         ..LabConfig::default()
