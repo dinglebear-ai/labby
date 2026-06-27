@@ -77,12 +77,28 @@ container temp usage cache-backed by bind-mounting container `/tmp` to
 `/mnt/cache/appdata/actions-runner/lab/tmp`, avoiding Unraid's RAM-backed host
 `/tmp`.
 
+The cache-backed temp directory must preserve normal `/tmp` semantics:
+
+```bash
+chmod 1777 /mnt/cache/appdata/actions-runner/lab/tmp
+```
+
+On startup, `start.sh` ensures the Linux build dependencies required by this
+Rust workspace are installed in the runner container:
+
+- `build-essential` for `cc`, `gcc`, `g++`, and libc headers
+- `pkg-config`
+- `cmake`
+- `clang` and `libclang-dev`
+- `nasm`
+
 ### Validation
 
 ```bash
 cd /mnt/cache/compose/actions-runner/lab
 docker compose logs -f
 docker exec lab-linux-runner df -h /tmp /home/runner /home/runner/_work
+docker exec lab-linux-runner sh -lc 'command -v cc pkg-config cmake clang nasm'
 ```
 
 From GitHub, confirm the runner is online with labels:
