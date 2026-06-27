@@ -202,7 +202,37 @@ jobs:
 
   test:
     name: Test
+    # Self-hosted Linux runner on a PUBLIC repo: fork PRs must NEVER reach it.
+    # Run on self-hosted for trusted events and same-repo PRs only.
+    # Fork PRs are routed to `test-fork` on github-hosted Ubuntu.
+    runs-on: [self-hosted, linux-lab]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: frontend-assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gateway-admin-out
+          path: apps/gateway-admin/out
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --all-features --locked --profile ci
+      - name: Upload nextest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-junit
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  test-fork:
+    name: Test
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
     needs: frontend-assets
     steps:
       - uses: actions/checkout@v4

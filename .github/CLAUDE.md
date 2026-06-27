@@ -24,12 +24,15 @@ Every push and PR to `main` must pass all jobs:
 | clippy | `cargo clippy --workspace --all-features -- -D warnings` |
 | deny | `cargo deny check` (via `EmbarkStudios/cargo-deny-action`) |
 | docs-check (name: `Generated docs`) | `just docs-check` — the generated-docs freshness gate; fails if `docs/generated/*` (action catalog, MCP help, CLI help) drift from the registry. This is the only freshness check; there is **no** standalone `doc-freshness.yml` or `code-conventions.yml` workflow — only `ci.yml` and `release.yml` exist. |
-| test | `cargo nextest run --workspace --all-features --profile ci` |
+| test | `cargo nextest run --workspace --all-features --profile ci` (`self-hosted` `linux-lab` runner for trusted events) |
+| test-fork | same `cargo nextest` command on `ubuntu-latest` for fork PRs only |
 | test-windows | same nextest run on the self-hosted `agent-os-lab` runner (label `windows-lab`); skipped on PRs — push/schedule/dispatch only |
 | release-smoke | `cargo build --workspace --all-features --release` — Linux always; Windows skipped on PRs (see below) |
 | container | Docker build with `config/Dockerfile` |
 
-Most jobs run on `ubuntu-latest`. Windows is a supported target; the release
+Most jobs run on `ubuntu-latest`. Linux test runs on `linux-lab` for trusted
+events and `test-fork` uses `ubuntu-latest` for fork PRs. Windows is a
+supported target; the release
 smoke matrix includes `windows-latest` to prove the native MSVC release binary
 builds, but ONLY on pushes to main, the weekly schedule, and manual dispatch —
 it is skipped on PRs (20-25 min of runner time per PR, and a Linux cross-check

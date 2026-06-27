@@ -18,6 +18,8 @@ Every push and pull request must pass all of the following:
 | Lint | `cargo clippy --workspace --all-features -- -D warnings` |
 | Deny | `cargo deny check` |
 | Tests | `cargo nextest run --workspace --all-features --profile ci` |
+| Tests (Linux) | same nextest run on the self-hosted `linux-lab` runner (`self-hosted`, `linux-lab`) for trusted events |
+| Tests (Linux fork PR fallback) | same nextest run on `ubuntu-latest` for fork PRs |
 | Tests (Windows) | same nextest run on the self-hosted `agent-os-lab` Windows runner; skipped on PRs (fork code must not reach a self-hosted runner) — runs on pushes to main, the weekly schedule, and manual dispatch |
 | Release smoke | `cargo build --workspace --all-features --release` — Linux on every run; Windows only on pushes to main, the weekly schedule, and manual dispatch (skipped on PRs: 20-25 min runner time, and Linux cross-checking is blocked by aws-lc-sys needing a Windows C toolchain) |
 | Container smoke | Docker build using `config/Dockerfile` |
@@ -41,6 +43,15 @@ Labby assets. It is a production build gate, not a TypeScript strictness gate:
   - Fast checks (actionlint, frontend-assets, check, fmt, clippy, deny, test, release-smoke, container) on every push and PR
   - Release builds on `vX.Y.Z` tags only
   - Container image publishing and GitHub Release publishing after successful tag builds
+
+## Linux Self-hosted Runner
+
+The Linux full test job now runs on a self-hosted runner with labels `self-hosted` and
+`linux-lab` for trusted events.
+
+- Fork PRs are still validated on `ubuntu-latest` via `test-fork`.
+- Runner setup and containerized registration are documented in
+  [Actions runner setup](./ACTIONS_RUNNER.md).
 
 ## Build Matrix
 
