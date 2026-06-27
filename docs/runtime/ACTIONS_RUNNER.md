@@ -25,6 +25,20 @@ survive reboot.
 - Startup script: `/mnt/cache/compose/actions-runner/lab/start.sh`
 - Runner state: `/mnt/cache/appdata/actions-runner/lab/`
 
+Runner state is on a dedicated ZFS dataset with a hard quota so CI artifacts
+cannot grow until they consume the whole Unraid cache pool:
+
+```bash
+zfs create -o mountpoint=/mnt/cache/appdata/actions-runner cache/appdata/actions-runner
+zfs create \
+  -o mountpoint=/mnt/cache/appdata/actions-runner/lab \
+  -o quota=60G \
+  cache/appdata/actions-runner/lab
+```
+
+If the runner exceeds the quota, jobs fail with disk-full errors inside the
+runner dataset instead of filling `/mnt/cache`.
+
 The container uses GitHub's official runner image and JIT registration. Store a
 repo-scoped PAT with runner admin permissions in
 `/mnt/cache/compose/actions-runner/lab/.env`:
@@ -77,6 +91,17 @@ container temp usage cache-backed by bind-mounting container `/tmp` to
 `/mnt/cache/appdata/actions-runner/lab/tmp`, avoiding Unraid's RAM-backed host
 `/tmp`.
 
+The script prunes transient runner storage before each JIT registration:
+
+- `/tmp` direct children: removed every startup
+- `${RUNNER_WORKDIR}/_temp` direct children: removed every startup
+- old workspaces in `${RUNNER_WORKDIR}`: removed after
+  `RUNNER_WORK_RETENTION_DAYS` (default `7`)
+- `/home/runner/_diag` files: removed after `RUNNER_DIAG_RETENTION_DAYS`
+  (default `14`)
+- cargo registry cache files and cargo git checkouts: removed after
+  `RUNNER_CARGO_RETENTION_DAYS` (default `30`)
+
 The cache-backed temp directory must preserve normal `/tmp` semantics:
 
 ```bash
@@ -99,6 +124,8 @@ cd /mnt/cache/compose/actions-runner/lab
 docker compose logs -f
 docker exec lab-linux-runner df -h /tmp /home/runner /home/runner/_work
 docker exec lab-linux-runner sh -lc 'command -v cc pkg-config cmake clang nasm'
+zfs list -o name,mountpoint,quota,used,available cache/appdata/actions-runner/lab
+du -sh /mnt/cache/appdata/actions-runner/lab/*
 ```
 
 From GitHub, confirm the runner is online with labels:
