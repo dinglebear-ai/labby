@@ -43,16 +43,20 @@ jobs:
           main_sha=$(git rev-parse origin/main)
           old_sha=$(git rev-parse origin/marketplace-no-mcp)
           old_tree=$(git rev-parse "origin/marketplace-no-mcp^{tree}")
-          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
-          echo "old_sha=$old_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "main_sha=$main_sha"
+            echo "old_sha=$old_sha"
+          } >> "$GITHUB_OUTPUT"
           # Start fresh from main so the branch never accumulates drift.
           git switch -C marketplace-no-mcp origin/main
           python3 plugins/scripts/apply-no-mcp-marketplace
           git add -A
           git commit -m "chore: regenerate marketplace-no-mcp from main ${main_sha}" || true
           new_tree=$(git rev-parse "HEAD^{tree}")
-          echo "new_tree=$new_tree" >> "$GITHUB_OUTPUT"
-          echo "old_tree=$old_tree" >> "$GITHUB_OUTPUT"
+          {
+            echo "new_tree=$new_tree"
+            echo "old_tree=$old_tree"
+          } >> "$GITHUB_OUTPUT"
           if [ "$new_tree" = "$old_tree" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
