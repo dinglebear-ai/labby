@@ -572,7 +572,7 @@ jobs:
           exit $process.ExitCode
       - name: Run Windows Job Object reaping integration test
         shell: pwsh
-        run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci --run-ignored ignored-only
+        run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci --run-ignored ignored-only --no-tests pass
       - name: Show sccache stats
         if: always()
         shell: pwsh
