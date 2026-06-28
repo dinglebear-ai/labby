@@ -1,4 +1,5 @@
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,11 @@ use super::quota::StateWorkspaceLimits;
 pub(crate) struct StateWorkspace {
     root: PathBuf,
     limits: StateWorkspaceLimits,
+}
+
+struct WalkFilesResult {
+    files: Vec<String>,
+    truncated: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -255,7 +261,6 @@ impl StateWorkspace {
         }
         Ok(dir.join(format!("{}.tmp", ulid::Ulid::new())))
     }
-
     async fn check_total_bytes_after_write(
         &self,
         path: &VirtualPath,
@@ -514,8 +519,9 @@ impl StateWorkspace {
                     kind: kind.to_string(),
                     bytes: metadata.len(),
                 });
-                if entries.len() >= limit {
+                if entries.len() > limit {
                     entries.sort_by(|left, right| left.path.cmp(&right.path));
+                    entries.truncate(limit);
                     return Ok(WalkTreeResult {
                         entries,
                         truncated: true,
@@ -762,13 +768,15 @@ impl StateWorkspace {
     pub(crate) async fn glob(&self, pattern: &str, limit: usize) -> Result<GlobResult, ToolError> {
         let limit = normalize_limit(limit);
         let matcher = glob_pattern_regex(pattern)?;
-        let mut files = self.walk_files(self.limits.max_entries as usize).await?;
+        let walked = self.walk_files(self.limits.max_entries as usize).await?;
+        let mut files = walked.files;
         files.sort();
         let mut matches = Vec::new();
         for file in files {
             if matcher.is_match(&file) {
                 matches.push(file);
-                if matches.len() >= limit {
+                if matches.len() > limit {
+                    matches.truncate(limit);
                     return Ok(GlobResult {
                         matches,
                         truncated: true,
@@ -778,7 +786,7 @@ impl StateWorkspace {
         }
         Ok(GlobResult {
             matches,
-            truncated: false,
+            truncated: walked.truncated,
         })
     }
 
@@ -807,7 +815,8 @@ impl StateWorkspace {
                         line: index + 1,
                         text: cap_line_preview(line),
                     });
-                    if matches.len() >= limit {
+                    if matches.len() > limit {
+                        matches.truncate(limit);
                         return Ok(SearchFilesResult {
                             matches,
                             truncated: true,
@@ -837,6 +846,12 @@ impl StateWorkspace {
             });
         }
         let glob = self.glob(pattern, self.limits.max_entries as usize).await?;
+        if glob.truncated {
+            return Err(ToolError::Sdk {
+                sdk_kind: "response_too_large".to_string(),
+                message: "state replace input exceeded max entries".to_string(),
+            });
+        }
         let mut changed = Vec::new();
         for path in glob.matches {
             let virtual_path = VirtualPath::parse(&path)?;
@@ -941,8 +956,9 @@ impl StateWorkspace {
             .join(format!("{plan_id}.json"))
     }
 
-    async fn walk_files(&self, limit: usize) -> Result<Vec<String>, ToolError> {
+    async fn walk_files(&self, limit: usize) -> Result<WalkFilesResult, ToolError> {
         let mut files = Vec::new();
+        let mut truncated = false;
         let mut stack = vec![self.root.clone()];
         while let Some(dir) = stack.pop() {
             let mut read_dir = match tokio::fs::read_dir(&dir).await {
@@ -975,12 +991,20 @@ impl StateWorkspace {
                 } else if metadata.is_file() {
                     files.push(virtual_path);
                     if files.len() > limit {
-                        return Ok(files);
+                        truncated = true;
+                        break;
                     }
                 }
             }
+            if truncated {
+                break;
+            }
         }
-        Ok(files)
+        files.sort();
+        if truncated {
+            files.truncate(limit);
+        }
+        Ok(WalkFilesResult { files, truncated })
     }
 }
 
@@ -1073,8 +1097,9 @@ fn list_tar_archive(path: &Path, limit: usize) -> Result<(Vec<String>, bool), To
         let value = labby_runtime::path_safety::rel_to_unix_string(&path);
         validate_archive_member_path(&value)?;
         entries.push(value);
-        if entries.len() >= limit {
+        if entries.len() > limit {
             entries.sort();
+            entries.truncate(limit);
             return Ok((entries, true));
         }
     }
@@ -1473,5 +1498,53 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind(), "response_too_large");
         assert!(!temp.path().join("out/src.tar").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_create_rejects_symlinked_source_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join("src/a.txt"), "a").unwrap();
+        std::os::unix::fs::symlink(outside.path(), temp.path().join("src/link")).unwrap();
+        let ws = StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+            .unwrap();
+
+        let err = ws
+            .archive_create(
+                &VirtualPath::parse("src").unwrap(),
+                &VirtualPath::parse("out/src.tar").unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "permission_denied");
+    }
+
+    #[tokio::test]
+    async fn archive_list_exact_limit_is_not_truncated() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+            .unwrap();
+        ws.write_file(&VirtualPath::parse("src/a.txt").unwrap(), "a")
+            .await
+            .unwrap();
+        ws.write_file(&VirtualPath::parse("src/b.txt").unwrap(), "b")
+            .await
+            .unwrap();
+        ws.archive_create(
+            &VirtualPath::parse("src").unwrap(),
+            &VirtualPath::parse("out/src.tar").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let listed = ws
+            .archive_list(&VirtualPath::parse("out/src.tar").unwrap(), 2)
+            .await
+            .unwrap();
+        assert_eq!(listed.entries, vec!["a.txt", "b.txt"]);
+        assert!(!listed.truncated);
     }
 }

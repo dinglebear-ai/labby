@@ -12,6 +12,7 @@ pub(crate) struct GitCommandSpec {
     pub(crate) args: Vec<String>,
     pub(crate) cwd: Option<VirtualPath>,
     pub(crate) remote_preflight: Option<String>,
+    pub(crate) push_remote_preflight: Option<String>,
     pub(crate) branch_preflight: Option<String>,
 }
 
@@ -21,6 +22,7 @@ impl GitCommandSpec {
             args: git_base_args(["status", "--short"]),
             cwd: None,
             remote_preflight: None,
+            push_remote_preflight: None,
             branch_preflight: None,
         }
     }
@@ -31,6 +33,7 @@ impl GitCommandSpec {
                 args: git_base_args(["init"]),
                 cwd: parse_cwd(params)?,
                 remote_preflight: None,
+                push_remote_preflight: None,
                 branch_preflight: None,
             }),
             "status" => {
@@ -49,6 +52,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    push_remote_preflight: None,
                     branch_preflight: None,
                 })
             }
@@ -77,6 +81,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    push_remote_preflight: None,
                     branch_preflight: None,
                 })
             }
@@ -89,6 +94,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    push_remote_preflight: None,
                     branch_preflight: None,
                 })
             }
@@ -102,6 +108,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    push_remote_preflight: None,
                     branch_preflight: None,
                 })
             }
@@ -118,6 +125,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    push_remote_preflight: None,
                     branch_preflight: Some(params.name),
                 })
             }
@@ -134,6 +142,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    push_remote_preflight: None,
                     branch_preflight: Some(params.git_ref),
                 })
             }
@@ -141,6 +150,7 @@ impl GitCommandSpec {
                 args: git_base_args(["remote", "-v"]),
                 cwd: parse_cwd(params)?,
                 remote_preflight: None,
+                push_remote_preflight: None,
                 branch_preflight: None,
             }),
             "remoteAdd" => {
@@ -154,6 +164,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    push_remote_preflight: None,
                     branch_preflight: None,
                 })
             }
@@ -166,6 +177,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    push_remote_preflight: None,
                     branch_preflight: None,
                 })
             }
@@ -181,6 +193,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    push_remote_preflight: None,
                     branch_preflight: None,
                 })
             }
@@ -194,6 +207,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: Some(remote),
+                    push_remote_preflight: None,
                     branch_preflight: None,
                 })
             }
@@ -210,6 +224,7 @@ impl GitCommandSpec {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: Some(remote),
+                    push_remote_preflight: None,
                     branch_preflight: branch_preflight(branch),
                 })
             }
@@ -225,7 +240,8 @@ impl GitCommandSpec {
                 Ok(Self {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
-                    remote_preflight: Some(remote),
+                    remote_preflight: None,
+                    push_remote_preflight: Some(remote),
                     branch_preflight: branch_preflight(branch),
                 })
             }

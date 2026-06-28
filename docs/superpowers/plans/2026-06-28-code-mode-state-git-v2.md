@@ -542,7 +542,7 @@ Add structured argv arms:
 
 ```text
 branch: git branch <name> or git branch -D <name>
-checkout: git checkout -- <ref> or git checkout -b <ref>
+checkout: git checkout <ref> or git checkout -b <ref>
 remoteList: git remote -v
 remoteAdd: git remote add <name> <url>
 remoteRemove: git remote remove <name>
@@ -599,8 +599,8 @@ git commit -m "feat: add guarded code mode git v2 commands"
 - Modify: `docs/superpowers/plans/2026-06-28-code-mode-state-git-v2.md`
 
 **Interfaces:**
-- Consumes: all V2 state and git methods from Tasks 1-4.
-- Produces: user-facing V2 documentation, smoke proof, and completed plan checklist.
+- Consumes: representative V2 state and git methods from Tasks 1-4.
+- Produces: user-facing V2 documentation, representative smoke proof, and completed plan checklist.
 
 - [x] **Step 1: Update docs with exact V2 surface**
 

@@ -21,7 +21,10 @@ pub(crate) async fn dispatch_git_method(
     let spec = GitCommandSpec::for_method(method, params)?;
     let workdir = git_workdir(workspace, spec.cwd.as_ref()).await?;
     if let Some(remote) = &spec.remote_preflight {
-        ensure_remote_url_allowed(&workdir, remote).await?;
+        ensure_remote_urls_allowed(&workdir, remote, RemoteUrlMode::Fetch).await?;
+    }
+    if let Some(remote) = &spec.push_remote_preflight {
+        ensure_remote_urls_allowed(&workdir, remote, RemoteUrlMode::Push).await?;
     }
     if let Some(branch) = &spec.branch_preflight {
         ensure_branch_ref_allowed(&workdir, branch).await?;
@@ -75,11 +78,26 @@ async fn ensure_branch_ref_allowed(workspace_root: &Path, branch: &str) -> Resul
         })
 }
 
-async fn ensure_remote_url_allowed(workspace_root: &Path, remote: &str) -> Result<(), ToolError> {
-    let mut args = git_base_args(["remote", "get-url"]);
+#[derive(Clone, Copy)]
+enum RemoteUrlMode {
+    Fetch,
+    Push,
+}
+
+async fn ensure_remote_urls_allowed(
+    workspace_root: &Path,
+    remote: &str,
+    mode: RemoteUrlMode,
+) -> Result<(), ToolError> {
+    let mut args = match mode {
+        RemoteUrlMode::Fetch => git_base_args(["remote", "get-url", "--all"]),
+        RemoteUrlMode::Push => git_base_args(["remote", "get-url", "--push", "--all"]),
+    };
     args.push(remote.to_string());
-    let url = run_git(workspace_root, &args).await?;
-    validate_remote_url(url.trim(), "remote")?;
+    let urls = run_git(workspace_root, &args).await?;
+    for url in urls.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        validate_remote_url(url, "remote")?;
+    }
     Ok(())
 }
 
@@ -390,6 +408,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn git_v2_rejects_existing_unsafe_pushurl_before_push() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+        dispatch_git_method(&workspace, "init", json!({}))
+            .await
+            .unwrap();
+        run_git(
+            workspace.root_path(),
+            &[
+                "config".to_string(),
+                "remote.origin.url".to_string(),
+                "https://github.com/jmagar/example.git".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+        run_git(
+            workspace.root_path(),
+            &[
+                "config".to_string(),
+                "remote.origin.pushurl".to_string(),
+                "ssh://github.com/jmagar/example.git".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let err = dispatch_git_method(
+            &workspace,
+            "push",
+            json!({"branch": "HEAD", "remote": "origin"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[tokio::test]
     async fn git_v2_rejects_refs_that_git_rejects_before_command() {
         let temp = tempfile::tempdir().unwrap();
         let workspace =
@@ -454,6 +512,22 @@ mod tests {
         assert_eq!(status["stdout"], "");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_v2_rejects_symlink_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), temp.path().join("link")).unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+
+        let err = dispatch_git_method(&workspace, "status", json!({"cwd": "link"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "symlink_rejected");
+    }
+
     #[tokio::test]
     async fn git_v2_remote_list_preserves_plain_https_urls() {
         let temp = tempfile::tempdir().unwrap();
@@ -480,9 +554,13 @@ mod tests {
                 .unwrap()
                 .contains("https://github.com/")
         );
-        assert_eq!(
-            remotes["remotes"][0]["url"],
-            "https://github.com/jmagar/example.git"
-        );
+        let rows = remotes["remotes"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["name"], "origin");
+        assert_eq!(rows[0]["url"], "https://github.com/jmagar/example.git");
+        assert_eq!(rows[0]["kind"], "fetch");
+        assert_eq!(rows[1]["name"], "origin");
+        assert_eq!(rows[1]["url"], "https://github.com/jmagar/example.git");
+        assert_eq!(rows[1]["kind"], "push");
     }
 }
