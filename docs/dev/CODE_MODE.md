@@ -45,12 +45,12 @@ V1 state methods:
 
 V1 git methods:
 
-- `git.init({})`
-- `git.status({})`
-- `git.add({ path })`
-- `git.commit({ message, authorName, authorEmail })`
-- `git.log({ limit })`
-- `git.diff({ path })`
+- `git.init({ cwd })`
+- `git.status({ cwd })`
+- `git.add({ path, cwd })`
+- `git.commit({ message, authorName, authorEmail, cwd })`
+- `git.log({ limit, cwd })`
+- `git.diff({ path, cwd })`
 
 V2 state methods add:
 
@@ -59,14 +59,14 @@ V2 state methods add:
 - `state.stat({ path })`
 - `state.mkdir({ path })`
 - `state.rm({ path, recursive })`
-- `state.cp({ from, to })`
+- `state.cp({ from, to })` for files
 - `state.mv({ from, to })`
 - `state.walkTree({ path, limit })` / `state.summarizeTree({ path, limit })`
 - `state.readJson({ path })`
 - `state.writeJson({ path, value, pretty })`
 - `state.hashFile({ path, algorithm: "sha256" })`
 - `state.detectFile({ path })`
-- `state.archiveCreate({ source, destination })`
+- `state.archiveCreate({ source, destination })` to a `.tar` destination
 - `state.archiveList({ path, limit })`
 
 V2 git methods add:
@@ -84,7 +84,8 @@ V2 git methods add:
 Remote git URLs must be explicit `https://github.com/...` URLs without embedded
 credentials. Labby does not inject hidden credentials or host git config into
 Code Mode. Use `cwd` to run git commands inside a workspace-relative child repo,
-for example after cloning into `directory: "repo"`.
+for example after cloning into `directory: "repo"`. Clones are shallow
+(`--depth 1`).
 
 Example:
 
@@ -453,10 +454,13 @@ run, so isolation holds by construction.
   fresh `javy::Runtime` → run → emit `done`/`error` → reset and read the next
   `start`. It exits only when the parent closes stdin.
 - **Per-execution isolation.** Each run resets the `callTool` sequence counter and
-  creates a fresh, empty per-execution working-directory jail (removing the prior
-  one), so a long-lived process never accumulates JS or filesystem state across
-  callers. The 64 MiB heap, 30 s wall-clock timeout, and stack limit are enforced
-  per execution.
+  creates a fresh, empty per-execution QuickJS working-directory jail (removing
+  the prior one), so a long-lived process never accumulates JS runtime state
+  across callers. Code Mode's `state.*` and `git.*` local providers deliberately
+  use a separate persistent workspace under `LAB_HOME/code-mode-workspaces/`;
+  persistence is scoped to that workspace and guarded by virtual path, symlink,
+  quota, archive, and git remote restrictions. The 64 MiB heap, 30 s wall-clock
+  timeout, and stack limit are enforced per execution.
 - **Bounded pool, one execution per runner.** `N` runners serve `N` concurrent
   executions. When all are busy, an extra request is served by a bounded
   ephemeral (overflow) runner rather than queueing unboundedly.

@@ -23,5 +23,10 @@ cargo run --all-features -- --json gateway code exec --code 'async () => {
   await git.branch({ name: "feature/v2-smoke" });
   await git.checkout({ ref: "feature/v2-smoke" });
   const status = await git.status({});
-  return { hash: hash.hex.length, json: detect.json, archive: archive.entries.length, status: status.stdout };
+  const result = { hash: hash.hex.length, json: detect.json, archive: archive.entries.length, status: status.stdout };
+  if (result.hash !== 64) throw new Error("sha256 hash length mismatch");
+  if (result.json !== true) throw new Error("detectFile did not report JSON");
+  if (result.archive !== 2) throw new Error("archive entry count mismatch");
+  if (!result.status.includes("src/config.json")) throw new Error("git status missing untracked JSON file");
+  return result;
 }'

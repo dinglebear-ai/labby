@@ -8,7 +8,7 @@ use tokio::process::Command;
 use crate::error::ToolError;
 use crate::state::workspace::StateWorkspace;
 
-use super::command::{GitCommandSpec, validate_remote_url};
+use super::command::{GitCommandSpec, git_base_args, validate_remote_url};
 
 const MAX_GIT_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_GIT_STDERR_BYTES: usize = 16 * 1024;
@@ -64,16 +64,7 @@ async fn git_workdir(
 }
 
 async fn ensure_branch_ref_allowed(workspace_root: &Path, branch: &str) -> Result<(), ToolError> {
-    let mut args = vec![
-        "-c".to_string(),
-        "core.hooksPath=/dev/null".to_string(),
-        "-c".to_string(),
-        "protocol.file.allow=never".to_string(),
-        "-c".to_string(),
-        "protocol.ext.allow=never".to_string(),
-        "check-ref-format".to_string(),
-        "--branch".to_string(),
-    ];
+    let mut args = git_base_args(["check-ref-format", "--branch"]);
     args.push(branch.to_string());
     run_git(workspace_root, &args)
         .await
@@ -85,16 +76,7 @@ async fn ensure_branch_ref_allowed(workspace_root: &Path, branch: &str) -> Resul
 }
 
 async fn ensure_remote_url_allowed(workspace_root: &Path, remote: &str) -> Result<(), ToolError> {
-    let mut args = vec![
-        "-c".to_string(),
-        "core.hooksPath=/dev/null".to_string(),
-        "-c".to_string(),
-        "protocol.file.allow=never".to_string(),
-        "-c".to_string(),
-        "protocol.ext.allow=never".to_string(),
-        "remote".to_string(),
-        "get-url".to_string(),
-    ];
+    let mut args = git_base_args(["remote", "get-url"]);
     args.push(remote.to_string());
     let url = run_git(workspace_root, &args).await?;
     validate_remote_url(url.trim(), "remote")?;
@@ -391,10 +373,20 @@ mod tests {
         .await
         .unwrap();
 
-        let err = dispatch_git_method(&workspace, "fetch", json!({}))
+        for method in ["fetch", "pull", "push"] {
+            let err = dispatch_git_method(
+                &workspace,
+                method,
+                json!({"branch": "HEAD", "remote": "origin"}),
+            )
             .await
             .unwrap_err();
-        assert_eq!(err.kind(), "invalid_param");
+            assert_eq!(
+                err.kind(),
+                "invalid_param",
+                "{method} should preflight remote URL"
+            );
+        }
     }
 
     #[tokio::test]

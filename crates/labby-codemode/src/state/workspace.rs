@@ -1472,5 +1472,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.kind(), "response_too_large");
+        assert!(!temp.path().join("out/src.tar").exists());
     }
 }
