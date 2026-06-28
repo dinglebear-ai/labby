@@ -54,7 +54,7 @@
 - Produces: `try_parse_local_provider_call(id: &str) -> Result<Option<LocalProviderCall>, ToolError>`.
 - Produces: top-level JS globals `state` and `git` that call reserved IDs such as `state::readFile`.
 
-- [ ] **Step 1: Add failing ID parsing tests**
+- [x] **Step 1: Add failing ID parsing tests**
 
 Add tests in `crates/labby-codemode/src/tests_ids_schema.rs`:
 
@@ -88,13 +88,13 @@ fn local_provider_ids_reject_bad_methods() {
 }
 ```
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run: `cargo test -p labby-codemode local_provider_ids --all-features`
 
 Expected: FAIL with unresolved module or function `local_provider`.
 
-- [ ] **Step 3: Implement local provider parser**
+- [x] **Step 3: Implement local provider parser**
 
 Create `crates/labby-codemode/src/local_provider.rs`:
 
@@ -161,7 +161,7 @@ Modify `crates/labby-codemode/src/lib.rs`:
 mod local_provider;
 ```
 
-- [ ] **Step 4: Add state/git proxy generation tests**
+- [x] **Step 4: Add state/git proxy generation tests**
 
 Add tests in `crates/labby-codemode/src/tests_normalize.rs` or existing preamble tests:
 
@@ -176,7 +176,7 @@ fn state_and_git_globals_are_present_in_preamble() {
 }
 ```
 
-- [ ] **Step 5: Implement local provider proxy JS**
+- [x] **Step 5: Implement local provider proxy JS**
 
 Modify `crates/labby-codemode/src/preamble.rs`:
 
@@ -219,7 +219,7 @@ let local_provider_proxy = crate::preamble::generate_local_provider_js();
 
 and evaluate it after `callTool` exists and before user code runs.
 
-- [ ] **Step 6: Route local providers before upstream host calls**
+- [x] **Step 6: Route local providers before upstream host calls**
 
 In `runner_drive.rs`, before `enqueue_tool_call(...)`, branch on `try_parse_local_provider_call(&id)`. For now, return `unknown_tool` for recognized providers until Tasks 3 and 4 implement dispatch:
 
@@ -233,7 +233,7 @@ if let Some(local) = crate::local_provider::try_parse_local_provider_call(&id)? 
 
 If the exact future type of `pending_tool_calls` makes this awkward, implement a `dispatch_tool_call(...)` helper that returns the same future output type as upstream tool calls.
 
-- [ ] **Step 7: Run tests**
+- [x] **Step 7: Run tests**
 
 Run: `cargo test -p labby-codemode local_provider --all-features`
 
@@ -243,7 +243,7 @@ Run: `cargo test -p labby-codemode --all-features`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/labby-codemode/src

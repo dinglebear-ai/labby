@@ -17,6 +17,7 @@ use ulid::Ulid;
 
 use crate::error::ToolError;
 use crate::host::CodeModeHost;
+use crate::local_provider::LocalProviderCall;
 
 use super::CodeModeBroker;
 use super::artifacts::{
@@ -334,15 +335,39 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                     return DriveOutcome::RunnerUnhealthy(err);
                                 }
                             } else {
-                                enqueue_tool_call(
-                                    self,
-                                    seq,
-                                    id,
-                                    params,
-                                    deadline,
-                                    cfg,
-                                    &mut pending_tool_calls,
-                                );
+                                match crate::local_provider::try_parse_local_provider_call(&id) {
+                                    Ok(Some(local)) => {
+                                        enqueue_local_provider_call(
+                                            seq,
+                                            id,
+                                            local,
+                                            params,
+                                            cfg,
+                                            &mut pending_tool_calls,
+                                        );
+                                    }
+                                    Ok(None) => {
+                                        enqueue_tool_call(
+                                            self,
+                                            seq,
+                                            id,
+                                            params,
+                                            deadline,
+                                            cfg,
+                                            &mut pending_tool_calls,
+                                        );
+                                    }
+                                    Err(err) => {
+                                        enqueue_rejected_tool_call(
+                                            seq,
+                                            id,
+                                            params,
+                                            err,
+                                            cfg,
+                                            &mut pending_tool_calls,
+                                        );
+                                    }
+                                }
                             }
                         }
                         CodeModeRunnerOutput::ArtifactWrite {
@@ -542,6 +567,53 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
         let elapsed_ms = call_start.elapsed().as_millis();
         (seq, call_id, redacted_params, result, elapsed_ms)
     }));
+}
+
+fn enqueue_local_provider_call<'a>(
+    seq: u64,
+    id: String,
+    local: LocalProviderCall,
+    params: Value,
+    cfg: &RunnerConfig,
+    pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
+) {
+    let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
+    pending_tool_calls.push(Box::pin(async move {
+        let call_start = std::time::Instant::now();
+        let result = dispatch_local_provider_stub(local, params).await;
+        let elapsed_ms = call_start.elapsed().as_millis();
+        (seq, id, redacted_params, result, elapsed_ms)
+    }));
+}
+
+fn enqueue_rejected_tool_call<'a>(
+    seq: u64,
+    id: String,
+    params: Value,
+    err: ToolError,
+    cfg: &RunnerConfig,
+    pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
+) {
+    let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
+    pending_tool_calls.push(Box::pin(
+        async move { (seq, id, redacted_params, Err(err), 0) },
+    ));
+}
+
+async fn dispatch_local_provider_stub(
+    local: LocalProviderCall,
+    params: Value,
+) -> Result<Value, ToolError> {
+    let provider = local.provider.as_str();
+    drop(params);
+    drop(local.params);
+    Err(ToolError::Sdk {
+        sdk_kind: "unknown_tool".to_string(),
+        message: format!(
+            "Code Mode local provider `{provider}` method `{}` is not implemented yet",
+            local.method
+        ),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

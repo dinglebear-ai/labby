@@ -2,6 +2,15 @@
 #![cfg(test)]
 
 #[test]
+fn state_and_git_globals_are_present_in_preamble() {
+    let js = crate::preamble::generate_local_provider_js();
+    assert!(js.contains("globalThis.state"));
+    assert!(js.contains("globalThis.git"));
+    assert!(js.contains("state::readFile"));
+    assert!(js.contains("git::status"));
+}
+
+#[test]
 fn normalize_user_code_strips_javascript_markdown_fences() {
     let fenced = "```javascript\nconsole.log('hi');\n```";
     let result = super::normalize_user_code(fenced);

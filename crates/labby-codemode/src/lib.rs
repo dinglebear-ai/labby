@@ -25,6 +25,7 @@ mod broker;
 mod config;
 mod execute;
 pub mod host;
+mod local_provider;
 mod normalize;
 mod pool;
 mod preamble;
