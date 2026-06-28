@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -97,6 +97,18 @@ impl StateWorkspace {
         self.root.join(path.as_str())
     }
 
+    async fn reject_existing_symlink_path(&self, path: &Path) -> Result<(), ToolError> {
+        match tokio::fs::symlink_metadata(path).await {
+            Ok(metadata) if metadata.file_type().is_symlink() => Err(ToolError::Sdk {
+                sdk_kind: "permission_denied".to_string(),
+                message: "state path is denied because it is a symlink".to_string(),
+            }),
+            Ok(_) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(internal_io("read state path metadata")(err)),
+        }
+    }
+
     pub(crate) async fn write_file(
         &self,
         path: &VirtualPath,
@@ -117,17 +129,18 @@ impl StateWorkspace {
 
         let destination = self.resolve(path);
         labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&destination).await?;
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(internal_io("create state directory"))?;
         }
         labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&destination).await?;
 
-        let tmp = destination.with_extension("tmp-labby-state");
+        let tmp = self.create_temp_path().await?;
         let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .write(true)
             .open(&tmp)
             .await
@@ -139,10 +152,40 @@ impl StateWorkspace {
             .await
             .map_err(internal_io("flush state temp file"))?;
         drop(file);
+        let tmp_metadata = tokio::fs::symlink_metadata(&tmp)
+            .await
+            .map_err(internal_io("inspect state temp file"))?;
+        if !tmp_metadata.is_file() || tmp_metadata.file_type().is_symlink() {
+            drop(tokio::fs::remove_file(&tmp).await);
+            return Err(ToolError::Sdk {
+                sdk_kind: "permission_denied".to_string(),
+                message: "state temp path is not a regular file".to_string(),
+            });
+        }
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&destination).await?;
         tokio::fs::rename(&tmp, &destination)
             .await
             .map_err(internal_io("move state temp file"))?;
         Ok(())
+    }
+
+    async fn create_temp_path(&self) -> Result<PathBuf, ToolError> {
+        let dir = self.root.join(".labby-state").join("tmp");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(internal_io("create state temp directory"))?;
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &dir)?;
+        let metadata = tokio::fs::symlink_metadata(&dir)
+            .await
+            .map_err(internal_io("inspect state temp directory"))?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "permission_denied".to_string(),
+                message: "state temp directory is not a directory".to_string(),
+            });
+        }
+        Ok(dir.join(format!("{}.tmp", ulid::Ulid::new())))
     }
 
     async fn check_total_bytes_after_write(
@@ -174,6 +217,7 @@ impl StateWorkspace {
     pub(crate) async fn read_file(&self, path: &VirtualPath) -> Result<ReadFileResult, ToolError> {
         let destination = self.resolve(path);
         labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&destination).await?;
         let file = tokio::fs::File::open(&destination)
             .await
             .map_err(not_found_or_internal("open state file"))?;
@@ -198,6 +242,7 @@ impl StateWorkspace {
     pub(crate) async fn list(&self, path: &VirtualPath) -> Result<ListResult, ToolError> {
         let dir = self.resolve(path);
         labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &dir)?;
+        self.reject_existing_symlink_path(&dir).await?;
         let mut read_dir = tokio::fs::read_dir(&dir)
             .await
             .map_err(not_found_or_internal("read state directory"))?;
@@ -222,7 +267,7 @@ impl StateWorkspace {
     pub(crate) async fn glob(&self, pattern: &str, limit: usize) -> Result<GlobResult, ToolError> {
         let limit = normalize_limit(limit);
         let matcher = glob_pattern_regex(pattern)?;
-        let mut files = self.walk_files(limit.saturating_add(1)).await?;
+        let mut files = self.walk_files(self.limits.max_entries as usize).await?;
         files.sort();
         let mut matches = Vec::new();
         for file in files {
@@ -380,7 +425,7 @@ impl StateWorkspace {
 
     async fn restore_rollbacks(
         &self,
-        rollback_root: &PathBuf,
+        rollback_root: &Path,
         changed: &[String],
     ) -> Result<(), ToolError> {
         for path in changed.iter().rev() {
@@ -421,13 +466,15 @@ impl StateWorkspace {
                     Err(_) => continue,
                 };
                 let virtual_path = labby_runtime::path_safety::rel_to_unix_string(relative);
-                if virtual_path.starts_with(".labby-state/") {
+                if is_reserved_metadata_path(&virtual_path) {
                     continue;
                 }
-                let metadata = entry
-                    .metadata()
+                let metadata = tokio::fs::symlink_metadata(&path)
                     .await
                     .map_err(internal_io("read state workspace metadata"))?;
+                if metadata.file_type().is_symlink() {
+                    continue;
+                }
                 if metadata.is_dir() {
                     stack.push(path);
                 } else if metadata.is_file() {
@@ -461,9 +508,9 @@ fn not_found_or_internal(action: &'static str) -> impl FnOnce(std::io::Error) ->
     }
 }
 
-async fn workspace_total_bytes(root: &PathBuf) -> Result<u64, ToolError> {
+async fn workspace_total_bytes(root: &Path) -> Result<u64, ToolError> {
     let mut total = 0_u64;
-    let mut stack = vec![root.clone()];
+    let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let mut read_dir = match tokio::fs::read_dir(&dir).await {
             Ok(read_dir) => read_dir,
@@ -475,18 +522,36 @@ async fn workspace_total_bytes(root: &PathBuf) -> Result<u64, ToolError> {
             .await
             .map_err(internal_io("scan state workspace entry"))?
         {
-            let metadata = entry
-                .metadata()
+            let path = entry.path();
+            let relative = match path.strip_prefix(root) {
+                Ok(relative) => relative,
+                Err(_) => continue,
+            };
+            let virtual_path = labby_runtime::path_safety::rel_to_unix_string(relative);
+            if is_reserved_metadata_path(&virtual_path) {
+                continue;
+            }
+            let metadata = tokio::fs::symlink_metadata(&path)
                 .await
                 .map_err(internal_io("read state workspace metadata"))?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
             if metadata.is_dir() {
-                stack.push(entry.path());
+                stack.push(path);
             } else if metadata.is_file() {
                 total = total.saturating_add(metadata.len());
             }
         }
     }
     Ok(total)
+}
+
+fn is_reserved_metadata_path(path: &str) -> bool {
+    path == ".git"
+        || path.starts_with(".git/")
+        || path == ".labby-state"
+        || path.starts_with(".labby-state/")
 }
 
 fn normalize_limit(limit: usize) -> usize {
@@ -689,6 +754,45 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.kind(), "symlink_rejected");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workspace_walkers_skip_symlinked_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("src")).unwrap();
+        std::fs::write(outside.path().join("src/outside.rs"), "fn outside() {}\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), temp.path().join("linked")).unwrap();
+        let ws = StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+            .unwrap();
+
+        let glob = ws.glob("**/*.rs", 10).await.unwrap();
+
+        assert!(glob.matches.is_empty(), "{:?}", glob.matches);
+    }
+
+    #[tokio::test]
+    async fn workspace_glob_scans_past_nonmatching_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+            .unwrap();
+        for index in 0..5 {
+            ws.write_file(
+                &VirtualPath::parse(&format!("docs/{index}.txt")).unwrap(),
+                "not rust\n",
+            )
+            .await
+            .unwrap();
+        }
+        ws.write_file(&VirtualPath::parse("src/app.rs").unwrap(), "fn main() {}\n")
+            .await
+            .unwrap();
+
+        let glob = ws.glob("src/**/*.rs", 1).await.unwrap();
+
+        assert_eq!(glob.matches, vec!["src/app.rs"]);
+        assert!(glob.truncated);
     }
 
     #[tokio::test]

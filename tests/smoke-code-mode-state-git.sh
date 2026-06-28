@@ -11,7 +11,7 @@ mkdir -p "$LAB_HOME"
 cd "$ROOT"
 cargo run --all-features -- --json gateway code exec --code '
 async () => {
-  await state.writeFile({ path: "/src/app.rs", content: "fn main() { println(\"hi\"); }\n" });
+  await state.writeFile({ path: "/src/app.rs", content: "fn main() { println!(\"hi\"); }\n" });
   const read = await state.readFile({ path: "/src/app.rs" });
   const matches = await state.searchFiles({ pattern: "src/**/*.rs", query: "println" });
   await git.init({});

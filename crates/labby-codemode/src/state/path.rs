@@ -70,11 +70,19 @@ fn path_traversal(raw: &str) -> ToolError {
 
 fn reject_credential_like_path(path: &str) -> Result<(), ToolError> {
     let lower = path.to_ascii_lowercase();
+    if lower
+        .split('/')
+        .any(|segment| segment == ".git" || segment == ".labby-state")
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "permission_denied".to_string(),
+            message: "state path is denied because it targets provider metadata".to_string(),
+        });
+    }
+
     let denied = [
         ".env",
         ".ssh/",
-        ".git/config",
-        ".git/credentials",
         ".aws/",
         ".config/gcloud/",
         ".netrc",
@@ -126,9 +134,25 @@ mod tests {
 
     #[test]
     fn virtual_path_rejects_credential_like_paths() {
-        for raw in [".env", "src/.env", ".ssh/id_ed25519", ".git/config"] {
+        for raw in [
+            ".env",
+            "src/.env",
+            ".ssh/id_ed25519",
+            ".git/config",
+            ".git/HEAD",
+            "src/.git/config",
+            ".labby-state/plans/abc.json",
+        ] {
             let err = VirtualPath::parse(raw).expect_err("credential path should fail");
             assert_eq!(err.kind(), "permission_denied");
         }
+    }
+
+    #[test]
+    fn virtual_path_allows_git_substrings_outside_reserved_segments() {
+        assert_eq!(
+            VirtualPath::parse("docs/foo.gitkeep").unwrap().as_str(),
+            "docs/foo.gitkeep"
+        );
     }
 }
