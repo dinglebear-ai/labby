@@ -1024,7 +1024,7 @@ git commit -m "feat: add local code mode git provider"
 - Consumes: all V1 `state.*` and `git.*` methods.
 - Produces: smoke proof and user-facing docs that match implemented schema.
 
-- [ ] **Step 1: Update docs with exact V1 surface**
+- [x] **Step 1: Update docs with exact V1 surface**
 
 In `docs/dev/CODE_MODE.md`, add a section:
 
@@ -1056,7 +1056,7 @@ Remote git operations, hidden git auth, checkout/branch/remotes, archive/hash/de
 and advanced JSON helpers are not V1.
 ```
 
-- [ ] **Step 2: Add smoke script**
+- [x] **Step 2: Add smoke script**
 
 Create `tests/smoke-code-mode-state-git.sh`:
 
@@ -1087,7 +1087,7 @@ return { read: read.content, matches: matches.matches.length, status, log };
 
 Adjust the CLI invocation to the repo's actual Code Mode command if it differs. Keep `LAB_HOME` isolated.
 
-- [ ] **Step 3: Add negative smoke or integration checks**
+- [x] **Step 3: Add negative smoke or integration checks**
 
 Add test cases for:
 
@@ -1098,7 +1098,11 @@ git.status({ dir: "/../outside" }) => path_traversal or invalid_param
 upstream named state/git cannot shadow local providers
 ```
 
-- [ ] **Step 4: Run focused verification**
+Covered by focused unit tests in `labby-codemode` for path traversal,
+credential path rejection, symlink escapes, local-provider namespace routing,
+state provider failures, and git command validation.
+
+- [x] **Step 4: Run focused verification**
 
 Run: `cargo test -p labby-codemode --all-features`
 
@@ -1112,7 +1116,7 @@ Run: `bash tests/smoke-code-mode-state-git.sh`
 
 Expected: PASS and output includes committed git log/status data.
 
-- [ ] **Step 5: Run full verification**
+- [x] **Step 5: Run full verification**
 
 Run: `cargo nextest run --workspace --all-features`
 
@@ -1122,10 +1126,10 @@ Run: `cargo build --workspace --all-features`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
-git add docs/dev/CODE_MODE.md tests/smoke-code-mode-state-git.sh crates/labby-codemode/src/tests_ts_signatures.rs crates/labby-codemode/src/tests_ids_schema.rs CHANGELOG.md
+git add docs/dev/CODE_MODE.md tests/smoke-code-mode-state-git.sh crates/labby-codemode/src/state/provider.rs CHANGELOG.md docs/superpowers/plans/2026-06-28-code-mode-state-git-v1.md
 git commit -m "docs: document code mode state git v1"
 ```
 

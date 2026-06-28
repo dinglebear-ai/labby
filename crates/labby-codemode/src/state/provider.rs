@@ -46,6 +46,7 @@ struct PlanEditsParams {
 
 #[derive(Deserialize)]
 struct ApplyEditPlanParams {
+    #[serde(rename = "planId", alias = "plan_id")]
     plan_id: String,
 }
 
@@ -221,7 +222,7 @@ mod tests {
         .await
         .unwrap();
         let plan_id = plan["plan_id"].as_str().unwrap();
-        dispatch_state_method(&workspace, "applyEditPlan", json!({"plan_id": plan_id}))
+        dispatch_state_method(&workspace, "applyEditPlan", json!({"planId": plan_id}))
             .await
             .unwrap();
         let result = dispatch_state_method(&workspace, "readFile", json!({"path": "src/app.rs"}))
