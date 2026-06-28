@@ -23,6 +23,8 @@ const LOCK_PATH: &str = "/var/lock/labby-provision.lock";
 const LAB_USER: &str = "lab";
 const LAB_HOME: &str = "/home/lab";
 const LAB_PATH: &str = "/home/lab/.local/bin:/usr/local/bin:/usr/bin:/bin";
+const TS_AUTHKEY_ENV: &str = "TS_AUTHKEY";
+const TS_AUTHKEY_PATH: &str = "/run/labby-ts-authkey";
 const LAB_USER_DIRS: &[&str] = &[
     "/home/lab/.lab",
     "/home/lab/.local/bin",
@@ -81,6 +83,7 @@ enum ActionKind {
     Node,
     UvPython,
     AgentClis,
+    TailscaleJoin,
     HostService,
 }
 
@@ -200,6 +203,13 @@ fn build_plan(skip_deps: bool) -> Vec<ProvisionAction> {
                 kind: ActionKind::AgentClis,
             },
         ]);
+        if tailscale_authkey().is_some() {
+            actions.push(ProvisionAction {
+                privilege: Privilege::Root,
+                label: Cow::Borrowed("install tailscale and join tailnet using TS_AUTHKEY"),
+                kind: ActionKind::TailscaleJoin,
+            });
+        }
     }
     actions.push(ProvisionAction {
         privilege: Privilege::Root,
@@ -225,6 +235,12 @@ fn render_plan(actions: &[ProvisionAction]) -> String {
     out.push_str(
         "\nIt will NOT:\n  - install or modify Incus\n  - touch any package outside the list above\n  - modify anything on the host outside this container\n  - transmit anything off-box except explicit package/runtime downloads\n",
     );
+    if actions
+        .iter()
+        .any(|action| action.kind == ActionKind::TailscaleJoin)
+    {
+        out.push_str("  - print or persist the Tailscale auth key after join\n");
+    }
     out
 }
 
@@ -245,6 +261,7 @@ impl ProvisionAction {
                 )
                 .await
             }
+            ActionKind::TailscaleJoin => command_success("tailscale", &["ip", "-4"]).await,
             ActionKind::HostService => super::host_service::installed_and_ready().await,
         }
     }
@@ -319,6 +336,9 @@ npm config set prefix "$HOME/.local"
 npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli"#,
                 )
                 .await?;
+            }
+            ActionKind::TailscaleJoin => {
+                install_and_join_tailscale().await?;
             }
             ActionKind::HostService => {
                 drop(run_checked("systemctl", &["reset-failed", "labby.service"]).await);
@@ -434,6 +454,57 @@ async fn apt_floor_installed() -> Result<bool, ToolError> {
         }
     }
     Ok(true)
+}
+
+async fn install_and_join_tailscale() -> Result<(), ToolError> {
+    let authkey = tailscale_authkey().ok_or_else(|| ToolError::MissingParam {
+        param: TS_AUTHKEY_ENV.into(),
+        message: "TS_AUTHKEY is required to join Tailscale during provisioning".into(),
+    })?;
+    let result = async {
+        run_checked(
+            "sh",
+            &["-c", "curl -fsSL https://tailscale.com/install.sh | sh"],
+        )
+        .await?;
+        write_tailscale_authkey(&authkey)?;
+        run_checked(
+            "tailscale",
+            &["up", &format!("--auth-key=file:{TS_AUTHKEY_PATH}")],
+        )
+        .await?;
+        Ok(())
+    }
+    .await;
+    drop(std::fs::remove_file(TS_AUTHKEY_PATH));
+    result
+}
+
+fn tailscale_authkey() -> Option<String> {
+    std::env::var(TS_AUTHKEY_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn write_tailscale_authkey(authkey: &str) -> Result<(), ToolError> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(TS_AUTHKEY_PATH).map_err(io_error)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(io_error)?;
+    }
+    file.write_all(authkey.as_bytes()).map_err(io_error)?;
+    file.sync_all().map_err(io_error)?;
+    Ok(())
 }
 
 async fn lab_command_success(script: &str) -> Result<bool, ToolError> {

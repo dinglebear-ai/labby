@@ -34,6 +34,16 @@ labby setup --provision --yes
 labby setup --provision --yes --skip-deps
 ```
 
+To auto-join the gateway to Tailscale during provisioning, provide an
+ephemeral, preauthorized auth key:
+
+```bash
+TS_AUTHKEY=tskey-auth-... labby setup --provision --yes
+```
+
+The key is passed to `tailscale up` through a root-only runtime file and removed
+after the join. Leave `TS_AUTHKEY` unset to skip Tailscale.
+
 The plan is explicit about privilege. Root actions are limited to the apt
 package floor (`git`, `openssh-client`, `gh`, `ca-certificates`, `curl`,
 `xz-utils`, `zsh`), `lab` user creation, writing

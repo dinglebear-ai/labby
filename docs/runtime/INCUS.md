@@ -112,6 +112,9 @@ key:
 TS_AUTHKEY=tskey-... scripts/incus-bootstrap.sh --version vX.Y.Z
 ```
 
+The same `TS_AUTHKEY` variable is honored by `labby setup --provision --yes`
+for bare-metal or already-running container provisioning.
+
 Add `--tailscale-ssh` only when you intentionally want Tailscale SSH enabled for
 the container. Tailscale SSH is governed by tailnet ACLs; enabling it changes
 who can reach the container over SSH.
