@@ -1,16 +1,16 @@
-# Shart Live Test Services Implementation Plan
+# Backup Node Live Test Services Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a reproducible live end-to-end test environment on SSH host `shart` that provisions disposable real service stacks from ZFS golden snapshots, runs catalog-driven CLI/MCP/API coverage, and records structured artifacts.
+**Goal:** Build a reproducible live end-to-end test environment on SSH host `backup-node` that provisions disposable real service stacks from ZFS golden snapshots, runs catalog-driven CLI/MCP/API coverage, and records structured artifacts.
 
-**Architecture:** The implementation splits into four layers: declarative fixture definitions in-repo, a host-side orchestration contract executed over SSH on `shart`, a repo-side live runner that requests environments and executes test matrices, and catalog-driven case generation plus reporting. All 15 services are covered across 7 profiles (`servarr-core`, `media`, `download`, `notes`, `notifications`, `ai`, `all`). The first vertical slice targets `servarr-core` so the environment model, manifest contract, teardown, and one full-surface execution path are proven before broader onboarding — but all fixture definitions and host provisioning logic are built for the full 15-service set from the start.
+**Architecture:** The implementation splits into four layers: declarative fixture definitions in-repo, a host-side orchestration contract executed over SSH on `backup-node`, a repo-side live runner that requests environments and executes test matrices, and catalog-driven case generation plus reporting. All 15 services are covered across 7 profiles (`servarr-core`, `media`, `download`, `notes`, `notifications`, `ai`, `all`). The first vertical slice targets `servarr-core` so the environment model, manifest contract, teardown, and one full-surface execution path are proven before broader onboarding — but all fixture definitions and host provisioning logic are built for the full 15-service set from the start.
 
-**Tech Stack:** Rust 2024 (`lab` crate), `serde`/`serde_json`, `tokio`, `tracing`, existing CLI/MCP/API surfaces, `just`, SSH, Docker or Docker Compose on `shart`, ZFS snapshots/clones, shell helpers in `bin/` where appropriate.
+**Tech Stack:** Rust 2024 (`lab` crate), `serde`/`serde_json`, `tokio`, `tracing`, existing CLI/MCP/API surfaces, `just`, SSH, Docker or Docker Compose on `backup-node`, ZFS snapshots/clones, shell helpers in `bin/` where appropriate.
 
 ---
 
-## Shart Host Reconnaissance (2026-04-14)
+## Backup Node Host Reconnaissance (2026-04-14)
 
 ### What we found
 
@@ -22,10 +22,10 @@
 | **ZFS version** | zfs-2.3.4-1 |
 | **Docker** | 27.5.1, Compose v2.40.3 |
 | **jq** | 1.6 |
-| **Network** | LAN 10.1.0.3/24, Tailscale 100.118.209.1, Docker 172.17.0.1/16 |
+| **Network** | LAN 10.1.0.3/24, Tailscale 100.64.0.50, Docker 172.17.0.1/16 |
 | **PATH** | `/usr/local/sbin:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:/bin` — `~/.local/bin` exists and IS in PATH |
 | **Existing containers** | arcane-agent, dockersocket, portainer_agent only |
-| **Existing backups** | syncoid backups from `squirts` and `tootie` (production data — do NOT use for testing) |
+| **Existing backups** | syncoid backups from `node-b` and `controller` (production data — do NOT use for testing) |
 
 ### Golden snapshots — CREATED
 
@@ -99,15 +99,15 @@ Full round-trip proven:
 
 ### Plan corrections required
 
-1. **Pool name:** Original plan referenced `tank/lab/live/...` everywhere — corrected to `backup/lab/live/...`. The `tank` pool does not exist on shart.
-2. **Images:** Plan references `lscr.io/linuxserver/radarr:latest` generically. Actual images are `lscr.io/linuxserver/{radarr,sonarr,prowlarr}:latest` (hotio is what tootie uses for radarr, but linuxserver is fine for golden instances).
-3. **Prowlarr config path:** Prowlarr's config.xml lives at `/config/config.xml` (not nested in `/config/prowlarr/` like the tootie backup layout). The linuxserver image uses `/config` directly.
+1. **Pool name:** Original plan referenced `tank/lab/live/...` everywhere — corrected to `backup/lab/live/...`. The `tank` pool does not exist on backup-node.
+2. **Images:** Plan references `lscr.io/linuxserver/radarr:latest` generically. Actual images are `lscr.io/linuxserver/{radarr,sonarr,prowlarr}:latest` (hotio is what controller uses for radarr, but linuxserver is fine for golden instances).
+3. **Prowlarr config path:** Prowlarr's config.xml lives at `/config/config.xml` (not nested in `/config/prowlarr/` like the controller backup layout). The linuxserver image uses `/config` directly.
 4. **Auth:** Golden instances have `AuthenticationMethod=None` — API key auth works but no forms login. This is ideal for testing (no login flow to deal with).
 5. **`--internal` network is INCOMPATIBLE with `-p` port mapping.** Docker internal networks block host port binding entirely — containers get no `Ports` entries. **Fix:** Use a regular bridge network (`docker network create lab-live-$RUN_ID` without `--internal`). Loopback binding (`127.0.0.1:0:<port>`) already prevents LAN exposure. Tested and confirmed.
 6. **No `tank` pool** means `bin/live-host` ZFS paths must all use `backup/lab/live/...` prefix.
 7. **`docker port` for port extraction.** `docker inspect --format` with Go templates fails when ports aren't mapped. Use `docker port <name> <port>/tcp | cut -d: -f2` instead — simpler and reliable.
-8. **SSH automation:** shart is already in `~/.ssh/known_hosts` (ed25519 + rsa). SSH config maps `shart` → `User root, HostName SHART`. BatchMode works. The plan's `~/.lab/known_hosts` approach is unnecessary — standard known_hosts is fine.
-9. **Bash on shart:** 5.3.3, supports arrays, `timeout` (coreutils 9.8), `grep -E` regex — all script features work.
+8. **SSH automation:** backup-node is already in `~/.ssh/known_hosts` (ed25519 + rsa). SSH config maps `backup-node` → `User root, HostName backup-node`. BatchMode works. The plan's `~/.lab/known_hosts` approach is unnecessary — standard known_hosts is fine.
+9. **Bash on backup-node:** 5.3.3, supports arrays, `timeout` (coreutils 9.8), `grep -E` regex — all script features work.
 10. **Dynamic ports start at 32768** (kernel ephemeral range). Confirmed `127.0.0.1:0:<port>` allocates correctly.
 11. **Startup latency:** All 3 services ready in ~6s from `docker run` (one failed poll, second succeeds). Readiness timeout of 120s is very conservative.
 
@@ -160,13 +160,13 @@ Full round-trip proven:
 
 > **Deferred to Task 10:** `live/catalog.rs`, `live/matrix.rs`, `tests/live_catalog.rs`, `tests/live_matrix.rs` — catalog-driven gap analysis and matrix classification belong after the runner is proven end-to-end. Adding them before Task 9 adds ~390 LOC with no milestone impact.
 - `tests/live_host_contract_test.sh`
-  Opt-in live host contract smoke test against `shart`.
+  Opt-in live host contract smoke test against `backup-node`.
 - `tests/live_servarr_core_e2e_test.sh`
   Opt-in full vertical-slice test for `servarr-core`.
 - `bin/live-host`
-  Host-side orchestration script invoked over SSH on `shart`.
+  Host-side orchestration script invoked over SSH on `backup-node`.
 - `bin/live-cleanup`
-  Host-side orphan cleanup script for stale runs on `shart`.
+  Host-side orphan cleanup script for stale runs on `backup-node`.
 - `fixtures/live/profiles/servarr-core.json`
   First live profile definition — Radarr, Sonarr, Prowlarr.
 - `fixtures/live/profiles/media.json`
@@ -229,13 +229,13 @@ Full round-trip proven:
 - `crates/lab/Cargo.toml`
   Add any minimal dependencies required by the live infrastructure.
 - `Justfile`
-  Add `live-env-up`, `live-env-down`, `live-test`, `live-test-integration`, orphan cleanup targets, and `install-live-host HOST=shart` (two-line scp + chmod; replaces Task 3.5 — no CLI subcommand needed).
+  Add `live-env-up`, `live-env-down`, `live-test`, `live-test-integration`, orphan cleanup targets, and `install-live-host HOST=backup-node` (two-line scp + chmod; replaces Task 3.5 — no CLI subcommand needed).
 - `docs/README.md`
   Add `LIVE_TESTING.md` to the topic map.
 - `docs/TESTING.md`
   Link the live E2E system as the canonical automated live environment.
 - `docs/OPERATIONS.md`
-  Add operator workflow for `shart` fixture host management.
+  Add operator workflow for `backup-node` fixture host management.
 - `docs/OBSERVABILITY.md`
   Add expectations for live-run artifact fields if new ones are introduced.
 - `.gitignore`
@@ -550,12 +550,12 @@ git commit -m "feat: add live fixture definitions and validation for all 15 serv
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Use staged invocation (bin/live-host must be installed on shart first — see Task 3.5)
+# Use staged invocation (bin/live-host must be installed on backup-node first — see Task 3.5)
 manifest=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 \
-    -o ServerAliveCountMax=3 shart live-host up servarr-core test-run-123)
+    -o ServerAliveCountMax=3 backup-node live-host up servarr-core test-run-123)
 echo "$manifest" | jq -e '.run_id == "test-run-123"'
 echo "$manifest" | jq -e '.services.radarr.url | startswith("http")'
-ssh -o BatchMode=yes -o ConnectTimeout=10 shart live-host down test-run-123 >/dev/null
+ssh -o BatchMode=yes -o ConnectTimeout=10 backup-node live-host down test-run-123 >/dev/null
 ```
 
 - [ ] **Step 2: Run the script to verify it fails**
@@ -646,9 +646,9 @@ declare -A SERVICE_SIDECARS=(
 )
 ```
 
-**SSH one-time setup requirement:** The SSH calls in this script require `shart`'s host key to be in a known-hosts file. One-time setup (add to `docs/LIVE_TESTING.md`):
+**SSH one-time setup requirement:** The SSH calls in this script require `backup-node`'s host key to be in a known-hosts file. One-time setup (add to `docs/LIVE_TESTING.md`):
 ```bash
-ssh-keyscan shart >> ~/.lab/known_hosts
+ssh-keyscan backup-node >> ~/.lab/known_hosts
 ```
 All SSH calls must include `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.lab/known_hosts`.
 
@@ -707,7 +707,7 @@ Manifest fields:
 - `artifacts_dir`
 - `snapshot_versions`
 
-**Manifest delivery:** Emit the full manifest (including the `secrets` key) to stdout ONLY. Do NOT write a manifest file on shart — the Rust caller captures stdout and holds credentials in memory. The Rust caller strips `secrets` before writing `artifacts/live/<run_id>/manifest.json`. All other output from `bin/live-host` (Docker pull progress, ZFS output, debug messages) MUST be redirected to stderr — a single byte on stdout that is not the JSON manifest will corrupt the parse.
+**Manifest delivery:** Emit the full manifest (including the `secrets` key) to stdout ONLY. Do NOT write a manifest file on backup-node — the Rust caller captures stdout and holds credentials in memory. The Rust caller strips `secrets` before writing `artifacts/live/<run_id>/manifest.json`. All other output from `bin/live-host` (Docker pull progress, ZFS output, debug messages) MUST be redirected to stderr — a single byte on stdout that is not the JSON manifest will corrupt the parse.
 
 **stdout-only rule:** Add this at the top of the `up` subcommand, after initial validation:
 ```bash
@@ -726,15 +726,15 @@ Add SSH timeout and host key options on every invocation:
 live-env-up PROFILE RUN_ID:
     ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 \
         -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.lab/known_hosts \
-        -o ServerAliveCountMax=3 shart live-host up {{PROFILE}} {{RUN_ID}}
+        -o ServerAliveCountMax=3 backup-node live-host up {{PROFILE}} {{RUN_ID}}
 
 live-env-down RUN_ID:
     ssh -o BatchMode=yes -o ConnectTimeout=10 \
         -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.lab/known_hosts \
-        shart live-host down {{RUN_ID}}
+        backup-node live-host down {{RUN_ID}}
 
-# One-time setup: stage bin/live-host onto shart (no CLI subcommand needed)
-install-live-host HOST="shart":
+# One-time setup: stage bin/live-host onto backup-node (no CLI subcommand needed)
+install-live-host HOST="backup-node":
     scp bin/live-host {{HOST}}:~/.local/bin/live-host.tmp
     ssh {{HOST}} 'chmod +x ~/.local/bin/live-host.tmp && mv ~/.local/bin/live-host.tmp ~/.local/bin/live-host'
     @echo "Installed. Verify PATH: ssh {{HOST}} which live-host"
@@ -748,7 +748,7 @@ Expected: PASS for placeholder orchestration contract and teardown.
 - [ ] **Step 7: Document the contract**
 
 Document:
-- required tools on `shart` (zfs, docker/docker compose, jq)
+- required tools on `backup-node` (zfs, docker/docker compose, jq)
 - expected ZFS layout
 - expected Docker privileges
 - manifest shape
@@ -758,12 +758,12 @@ Document:
 
 ```bash
 git add bin/live-host bin/live-cleanup tests/live_host_contract_test.sh fixtures/live/README.md docs/LIVE_TESTING.md Justfile
-git commit -m "feat: add shart live host contract"
+git commit -m "feat: add backup-node live host contract"
 ```
 
 ## ~~Task 3.5: Add `lab live install-host` Subcommand~~ — ELIMINATED
 
-> Replaced by `just install-live-host HOST=shart` (added to Justfile in Task 3 Step 5). The `install-host` concern is a one-time developer setup — a two-line Justfile target is the correct level of abstraction. No CLI subcommand, no `host.rs` method, no test needed.
+> Replaced by `just install-live-host HOST=backup-node` (added to Justfile in Task 3 Step 5). The `install-host` concern is a one-time developer setup — a two-line Justfile target is the correct level of abstraction. No CLI subcommand, no `host.rs` method, no test needed.
 >
 > Document in `docs/LIVE_TESTING.md`: "Run `just install-live-host` once after cloning the repo or after updating `bin/live-host`."
 
@@ -806,7 +806,7 @@ Expected: FAIL because host client parsing does not exist yet.
 - Use `.arg()` calls only — no string interpolation into the remote command
 
 ```rust
-/// Execute a live-host command on shart and return stdout as a string.
+/// Execute a live-host command on backup-node and return stdout as a string.
 /// Enforces wall-clock timeout and kills the child on drop.
 async fn run_host_command(args: &[&str]) -> anyhow::Result<String> {
     let mut child = tokio::process::Command::new("ssh")
@@ -814,7 +814,7 @@ async fn run_host_command(args: &[&str]) -> anyhow::Result<String> {
                "-o", "ConnectTimeout=10",
                "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3",
-               "shart"])
+               "backup-node"])
         .args(["live-host"])
         .args(args)
         .kill_on_drop(true)
@@ -893,7 +893,7 @@ This reduces worst-case `up` latency for servarr-core from 360s (3 × 120s seque
 /// Wraps a run_id and guarantees teardown on drop.
 /// This is the only mechanism that ensures ZFS clones are destroyed under panic or early return.
 /// kill_on_drop(true) only kills the SSH client process, not the remote bash session —
-/// without RunGuard, orphaned ZFS datasets accumulate on shart until the 48h cleanup window.
+/// without RunGuard, orphaned ZFS datasets accumulate on backup-node until the 48h cleanup window.
 pub struct RunGuard {
     run_id: String,
     host: String,
@@ -1041,7 +1041,7 @@ git commit -m "feat: add live environment cli"
 - [ ] **Step 1: Extend the host contract test to assert real readiness**
 
 Assertions:
-- returned URLs are reachable from `shart`
+- returned URLs are reachable from `backup-node`
 - returned credentials are present for each service
 - `down` removes the run resources idempotently
 
@@ -1139,7 +1139,7 @@ Requirements:
 
 - [ ] **Step 5: Emit a real manifest**
 
-Manifest must include credentials under `secrets` (stripped by Rust before writing `artifacts/`). No separate `.secrets.json` file on shart — credentials live only in the stdout pipe and Rust process memory.
+Manifest must include credentials under `secrets` (stripped by Rust before writing `artifacts/`). No separate `.secrets.json` file on backup-node — credentials live only in the stdout pipe and Rust process memory.
 
 ```json
 {
@@ -1233,7 +1233,7 @@ extract_secrets() {
 - [ ] **Step 6: Re-run the host contract test**
 
 Run: `bash tests/live_host_contract_test.sh`
-Expected: PASS against real `shart` provisioning.
+Expected: PASS against real `backup-node` provisioning.
 
 - [ ] **Step 7: Run contract tests for multiple profiles**
 
@@ -1258,7 +1258,7 @@ Verify the manifest includes `paperless` with a valid URL and `secrets.paperless
 
 ```bash
 git add bin/live-host fixtures/live/profiles/ fixtures/live/services/ tests/live_host_contract_test.sh
-git commit -m "feat: provision all 15 live services on shart with profile-driven orchestration"
+git commit -m "feat: provision all 15 live services on backup-node with profile-driven orchestration"
 ```
 
 ## Task 9: Implement the Live Runner and First End-to-End Slice
@@ -1492,19 +1492,19 @@ Expected: match. If not, something went wrong in Task 1 Step 0 — fix before co
 - [ ] **Step 2: Write docs assertions**
 
 Document:
-- `shart` is the canonical automated live environment
+- `backup-node` is the canonical automated live environment
 - live tests are opt-in and excluded from normal CI
 - artifacts live under `artifacts/live/<run_id>/` (gitignored since Task 1)
 - destructive live tests require `--allow-destructive` flag; MCP destructive cases are always `SkipNoElicitation` until elicitation is implemented
 - golden snapshots must use clean-seed test-only credentials — never snapshot a production service
-- one-time setup: `just install-live-host` (stages `bin/live-host` onto shart) and `ssh-keyscan shart >> ~/.lab/known_hosts` (adds shart host key)
+- one-time setup: `just install-live-host` (stages `bin/live-host` onto backup-node) and `ssh-keyscan backup-node >> ~/.lab/known_hosts` (adds backup-node host key)
 
 - [ ] **Step 3: Update the docs**
 
 Touch:
 - docs index
 - testing contract
-- operations workflow (one-time setup: `just install-live-host`, `ssh-keyscan shart >> ~/.lab/known_hosts`)
+- operations workflow (one-time setup: `just install-live-host`, `ssh-keyscan backup-node >> ~/.lab/known_hosts`)
 - observability contract if artifact fields are now part of verification
 - new live coverage doc with current fixture/gap status
 
@@ -1513,7 +1513,7 @@ Touch:
 Targets:
 - `live-test PROFILE` — full run: up, test, down
 - `live-test-integration` — alias for the first real live profile
-- `live-cleanup` — run orphan cleanup on shart
+- `live-cleanup` — run orphan cleanup on backup-node
 
 All targets must include SSH timeout options.
 
@@ -1521,7 +1521,7 @@ All targets must include SSH timeout options.
 
 Run:
 - `just live-test servarr-core`
-- `rg -n "LIVE_TESTING|shart|artifacts/live" docs Justfile`
+- `rg -n "LIVE_TESTING|backup-node|artifacts/live" docs Justfile`
 - `git check-ignore artifacts/live/test-run-123/manifest.json`
 
 Expected:
@@ -1561,14 +1561,14 @@ Run:
 - `bash tests/live_host_contract_test.sh`
 - `bash tests/live_servarr_core_e2e_test.sh`
 
-Expected: PASS against `shart`.
+Expected: PASS against `backup-node`.
 
 - [ ] **Step 4: Inspect artifacts and teardown behavior**
 
 Verify:
 - artifact directory exists and contains manifest/results/summary
 - repeated `live down` or `cleanup` calls are idempotent
-- no leaked per-run datasets or networks remain on `shart`
+- no leaked per-run datasets or networks remain on `backup-node`
 
 - [ ] **Step 5: Record any pending gaps explicitly**
 
@@ -1583,13 +1583,13 @@ git status --short
 # Stage specific files only — never git add -A (would stage artifacts/ if gitignore missed)
 git add crates/lab/src/live/ crates/lab/src/cli/live.rs crates/lab/tests/live_*.rs \
     bin/live-host bin/live-cleanup fixtures/live/ tests/live_*.sh docs/ Justfile
-git commit -m “feat: add shart-backed live end-to-end test infrastructure”
+git commit -m “feat: add backup-node-backed live end-to-end test infrastructure”
 ```
 
 ## Notes for the Implementer
 
 - Keep TDD real. Write the failing test or shell contract check first for each task.
-- Do not push `shart` orchestration logic into `lab-apis`.
+- Do not push `backup-node` orchestration logic into `lab-apis`.
 - Prefer small, typed Rust modules for in-repo logic and thin shell for host-side orchestration.
 - Treat fixture manifests and service fixture files as product contracts for the test system.
 - Use `ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.lab/known_hosts` for all automation — never bare `ssh`.
@@ -1600,7 +1600,7 @@ git commit -m “feat: add shart-backed live end-to-end test infrastructure”
 - Credentials live only in the stdout pipe and Rust process memory. Never write credentials to disk on any host.
 - Never use `git add -A` — always stage specific paths to avoid committing artifacts/.
 - The first milestone is not “all services”; it is “one profile works end to end with teardown and artifacts.” Expand only after that is solid.
-- All 15 services have golden snapshots on shart — see the recon section for credentials and mount paths.
+- All 15 services have golden snapshots on backup-node — see the recon section for credentials and mount paths.
 - Services with limited API (Plex unclaimed, Overseerr setup-pending) should have minimal fixture cases that test what IS available.
 - Paperless requires a Redis sidecar — `bin/live-host` must start redis before paperless and inject the IP via `PAPERLESS_REDIS` env var.
 - Volume mount paths vary by service — see the readiness endpoints table in the recon section. The `VMOUNT` case statement in `bin/live-host` is the single source of truth for mount paths.

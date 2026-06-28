@@ -29,7 +29,7 @@ async fn hello_endpoint_updates_master_store() {
     let (app, _store, _enrollment_store) = test_device_router();
     let response = app
         .oneshot(hello_request(
-            r#"{"node_id":"dookie","role":"non-master","version":"1.0.0"}"#,
+            r#"{"node_id":"node-a","role":"non-master","version":"1.0.0"}"#,
         ))
         .await
         .unwrap();
@@ -42,13 +42,13 @@ async fn hello_endpoint_normalizes_node_id_before_storage() {
     let (app, store, _enrollment_store) = test_device_router();
     let response = app
         .oneshot(hello_request(
-            r#"{"node_id":"  dookie  ","role":"non-master","version":"1.0.0"}"#,
+            r#"{"node_id":"  node-a  ","role":"non-master","version":"1.0.0"}"#,
         ))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(store.node("dookie").await.is_some());
+    assert!(store.node("node-a").await.is_some());
 }
 
 #[tokio::test]
@@ -56,13 +56,13 @@ async fn syslog_batch_endpoint_accepts_normalized_events() {
     let (app, store, _enrollment_store) = test_device_router();
     let response = app
         .oneshot(syslog_request(
-            r#"{"node_id":"dookie","events":[{"node_id":"dookie","source":"journald","timestamp_unix_ms":1,"message":"hello","fields":{}}]}"#,
+            r#"{"node_id":"node-a","events":[{"node_id":"node-a","source":"journald","timestamp_unix_ms":1,"message":"hello","fields":{}}]}"#,
         ))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let snapshot = store.node("dookie").await.unwrap();
+    let snapshot = store.node("node-a").await.unwrap();
     assert_eq!(snapshot.logs.len(), 1);
 }
 
@@ -88,7 +88,7 @@ async fn syslog_batch_endpoint_rejects_invalid_node_id() {
     let (app, _store, _enrollment_store) = test_device_router();
     let response = app
         .oneshot(syslog_request(
-            r#"{"node_id":"   ","events":[{"node_id":"dookie","source":"journald","timestamp_unix_ms":1,"message":"hello","fields":{}}]}"#,
+            r#"{"node_id":"   ","events":[{"node_id":"node-a","source":"journald","timestamp_unix_ms":1,"message":"hello","fields":{}}]}"#,
         ))
         .await
         .unwrap();
@@ -101,7 +101,7 @@ async fn syslog_batch_endpoint_rejects_mismatched_event_node_id() {
     let (app, _store, _enrollment_store) = test_device_router();
     let response = app
         .oneshot(syslog_request(
-            r#"{"node_id":"dookie","events":[{"node_id":"tootie","source":"journald","timestamp_unix_ms":1,"message":"hello","fields":{}}]}"#,
+            r#"{"node_id":"node-a","events":[{"node_id":"controller","source":"journald","timestamp_unix_ms":1,"message":"hello","fields":{}}]}"#,
         ))
         .await
         .unwrap();
@@ -159,16 +159,16 @@ async fn existing_fleet_logs_search_still_works() {
     let (app, store, _enrollment_store) = test_device_router();
     store
         .record_hello(NodeHello {
-            node_id: "dookie".to_string(),
+            node_id: "node-a".to_string(),
             role: "non-master".to_string(),
             version: "1.0.0".to_string(),
         })
         .await;
     store
         .record_logs(
-            "dookie",
+            "node-a",
             vec![NodeLogEvent {
-                node_id: "dookie".to_string(),
+                node_id: "node-a".to_string(),
                 timestamp_unix_ms: 1,
                 source: "journald".to_string(),
                 level: Some("info".to_string()),
@@ -186,7 +186,7 @@ async fn existing_fleet_logs_search_still_works() {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "node_id":"dookie",
+                        "node_id":"node-a",
                         "query":"hello"
                     })
                     .to_string(),

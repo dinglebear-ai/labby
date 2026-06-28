@@ -223,7 +223,7 @@ pub const MCP_ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "mcp.meta.set",
-        description: "Set Lab-owned local metadata for a stored registry server version under `_meta[\"tv.tootie.lab/registry\"]`.",
+        description: "Set Lab-owned local metadata for a stored registry server version under `_meta[\"dev.labby/registry\"]`.",
         destructive: false,
         requires_admin: false,
         returns: "RegistryLocalMeta",
@@ -244,7 +244,7 @@ pub const MCP_ACTIONS: &[ActionSpec] = &[
                 name: "metadata",
                 ty: "object",
                 required: true,
-                description: "Lab-owned metadata object stored under `_meta[\"tv.tootie.lab/registry\"]`",
+                description: "Lab-owned metadata object stored under `_meta[\"dev.labby/registry\"]`",
             },
             ParamSpec {
                 name: "updated_by",
@@ -256,7 +256,7 @@ pub const MCP_ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "mcp.meta.delete",
-        description: "Delete Lab-owned local metadata for a stored registry server version under `_meta[\"tv.tootie.lab/registry\"]`.",
+        description: "Delete Lab-owned local metadata for a stored registry server version under `_meta[\"dev.labby/registry\"]`.",
         destructive: false,
         requires_admin: false,
         returns: "RegistryLocalMetaDeleteResult",

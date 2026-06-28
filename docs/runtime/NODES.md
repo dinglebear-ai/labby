@@ -15,7 +15,7 @@ Canonical CLI:
 
 ```bash
 labby nodes list
-labby nodes get squirts
+labby nodes get node-b
 labby nodes enrollments list
 ```
 
@@ -51,7 +51,7 @@ Canonical config:
 
 ```toml
 [node]
-controller = "tootie"
+controller = "controller"
 ```
 
 ## Serialization Boundary

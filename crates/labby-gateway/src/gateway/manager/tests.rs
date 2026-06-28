@@ -338,10 +338,10 @@ fn fixture_protected_route(name: &str) -> ProtectedMcpRouteConfig {
     ProtectedMcpRouteConfig {
         name: name.to_string(),
         enabled: true,
-        public_host: "mcp.tootie.tv".to_string(),
+        public_host: "mcp.example.com".to_string(),
         public_path: "/syslog".to_string(),
         upstream: None,
-        backend_url: "http://100.88.16.79:3100".to_string(),
+        backend_url: "http://100.64.0.10:3100".to_string(),
         backend_mcp_path: "/mcp".to_string(),
         scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
         health_path: Some("/health".to_string()),

@@ -82,7 +82,7 @@ Call a Windows helper through the live-confirmed helper path:
 ```json
 {
   "code": "async () => {\n    const result = await codemode.agent_os_windows_mcp.PowerShell({\n      command: \"$PSVersionTable.PSVersion.ToString()\"\n    });\n    return { ok: true, result };\n  }",
-  "tools": ["agent-os_windows-mcp::PowerShell"]
+  "tools": ["windows_windows-mcp::PowerShell"]
 }
 ```
 

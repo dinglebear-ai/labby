@@ -222,11 +222,18 @@ export function SessionSidebar({
 }: SessionSidebarProps) {
   const activeProjectId = selectedProjectId
   const [search, setSearch] = React.useState('')
+  const [cleanupBusy, setCleanupBusy] = React.useState(false)
+  const cleanupBusyRef = React.useRef(false)
   const deferredSearch = React.useDeferredValue(search)
 
   const handleCleanup = React.useCallback(() => {
-    if (!onBulkCloseHidden || hiddenRunCount === 0) return
-    void onBulkCloseHidden()
+    if (!onBulkCloseHidden || hiddenRunCount === 0 || cleanupBusyRef.current) return
+    cleanupBusyRef.current = true
+    setCleanupBusy(true)
+    void onBulkCloseHidden().finally(() => {
+      cleanupBusyRef.current = false
+      setCleanupBusy(false)
+    })
   }, [hiddenRunCount, onBulkCloseHidden])
 
   const visibleProjects = React.useMemo(() => {
@@ -293,6 +300,7 @@ export function SessionSidebar({
             <button
               type="button"
               onClick={handleCleanup}
+              disabled={cleanupBusy}
               className="hover:text-aurora-error transition-colors"
             >
               Clean up

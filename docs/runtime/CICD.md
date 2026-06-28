@@ -35,9 +35,9 @@ jobs when their changed-path category is enabled:
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
 | Lint | `rust_compile` | `cargo clippy --workspace --all-features -- -D warnings` |
 | Deny | `security` | `cargo deny check` |
-| Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the self-hosted `linux-lab` runner for trusted events |
+| Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the self-hosted `linux-ci` runner for trusted events |
 | Tests (Linux fork PR fallback) | `rust_test` | same nextest run on `ubuntu-latest` for fork PRs |
-| Tests (Windows) | `rust_test` | same nextest run on the self-hosted `agent-os-lab` Windows runner, with fork PRs excluded from self-hosted runners |
+| Tests (Windows) | `rust_test` | same nextest run on the self-hosted `windows-ci` Windows runner, with fork PRs excluded from self-hosted runners |
 | Release smoke | `release` | `cargo build --workspace --all-features --release`; Windows release smoke still skips PRs via the matrix |
 | Container smoke | `docker` | Docker build using `config/Dockerfile` |
 
@@ -65,7 +65,7 @@ Labby assets. It is a production build gate, not a TypeScript strictness gate:
 ## Linux Self-hosted Runner
 
 The Linux full test job runs on a self-hosted runner with labels `self-hosted`
-and `linux-lab` for trusted events.
+and `linux-ci` for trusted events.
 
 - Fork PRs are still validated on `ubuntu-latest` via `test-fork`.
 - Runner setup and containerized registration are documented in

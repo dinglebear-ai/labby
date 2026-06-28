@@ -40,8 +40,8 @@ Implemented all 16 tasks of the node runtime split plan using subagent-driven de
 16. lavra-review dispatched — found 4 P1 + 7 P2 + 8 P3 findings, created child beads
 17. lavra-work on P1 beads (lab-686q.1–4) — fixed run_impl panic, replaced symbol-check test, added retry/timeout/error-path tests
 18. Wave review found CRITICAL: `node_connected` 404 guard too broad (string match) — fixed with typed downcast
-19. Attempted P2 work, discovered beads DB unreachable (squirts dolt server password auth)
-20. Diagnosed connectivity: squirts (100.75.111.118) dolt requires `BEADS_DOLT_PASSWORD`; added env vars to `~/.claude/settings.json` and `~/.codex/config.toml`
+19. Attempted P2 work, discovered beads DB unreachable (node-b dolt server password auth)
+20. Diagnosed connectivity: node-b (100.64.0.20) dolt requires `BEADS_DOLT_PASSWORD`; added env vars to `~/.claude/settings.json` and `~/.codex/config.toml`
 21. Enabled Codex `apps = true` experimental feature
 
 ## Key Findings
@@ -50,8 +50,8 @@ Implemented all 16 tasks of the node runtime split plan using subagent-driven de
 - `node_connected` 404 guard used `msg.contains("not_found")` but `ApiError::NotFound` displays as `"not found"` (space). Silent mis-classification of non-404 proxy errors. Fixed with `error.downcast_ref::<ApiError>()` typed check (`master_client.rs:51`).
 - `run_impl` in `dispatch/deploy/runner.rs` was not updated when `run_jobs` was changed to accept `HashMap<ArtifactRole, Arc<BuildOutcome>>`. Always produced `Controller` role → panicked on any `Node`-role host. Fixed by collecting `needed_roles` and calling `build_artifact()` per role.
 - Live rollout: `controller-deploy` (sha `2e3c83a8`) and `node-deploy` (sha `4aac7aee`) artifacts both built once. Remote nodes showed `skipped_transfer: true` (binary already current). `controller_verify` timed out for all nodes — expected: nodes not yet enrolled, `wait_for_node_connected` correctly returns 404→false.
-- Local controller update failed with "local controller update requires an explicit deploy restart policy" — `[deploy.hosts.dookie]` needs a restart policy in config.
-- vivobook-wsl/steamy-wsl failed `verify` due to OpenSSL 3.2/3.3 version mismatch — pre-existing infrastructure gap.
+- Local controller update failed with "local controller update requires an explicit deploy restart policy" — `[deploy.hosts.node-a]` needs a restart policy in config.
+- vivobook-wsl/workstation-wsl failed `verify` due to OpenSSL 3.2/3.3 version mismatch — pre-existing infrastructure gap.
 - Pre-existing flaky test: `api::nodes::fleet::tests::node_methods_before_initialize_return_request_error_without_closing_socket` — fails intermittently in both lib and bin suites, not introduced by this work.
 
 ## Technical Decisions
@@ -130,7 +130,7 @@ just build
 
 # DB connectivity fix
 BEADS_DOLT_PASSWORD=... bd list --status=open
-# Result: connected to squirts:3311
+# Result: connected to node-b:3311
 ```
 
 ## Errors Encountered
@@ -139,7 +139,7 @@ BEADS_DOLT_PASSWORD=... bd list --status=open
 - **`run_jobs` HashMap but `run_impl` still uses single `Arc<BuildOutcome>`** — Task 13 agent truncated mid-work; the `run_jobs` signature was updated but call sites still passed `build_outcome.clone()` (wrong type). Fixed: wrapped `build_outcome` in `HashMap` at call sites; later Task 13 fully refactored to per-role build loop.
 - **`build_release()` dead-code lint** — after `run_impl` was migrated to `build_artifact()`, `build_release()` had no callers. Added `#[allow(dead_code)]` since it's an explicit backward-compat wrapper.
 - **`jitter_window` unused import warning** — re-exported in `websocket.rs` but no callers use it from there. Removed from re-export.
-- **Beads DB "Access denied for user 'root'"** — squirts dolt server requires `BEADS_DOLT_PASSWORD` env var. Fixed: added password and other `BEADS_DOLT_*` vars to `~/.claude/settings.json` and `~/.codex/config.toml`.
+- **Beads DB "Access denied for user 'root'"** — node-b dolt server requires `BEADS_DOLT_PASSWORD` env var. Fixed: added password and other `BEADS_DOLT_*` vars to `~/.claude/settings.json` and `~/.codex/config.toml`.
 - **`SshHostTarget` missing `identity_file` field** — `deploy_runner.rs` tests used struct literal without the field added in a prior session. Fixed: added `identity_file: None` to test initializers.
 
 ## Behavior Changes (Before / After)
@@ -165,13 +165,13 @@ BEADS_DOLT_PASSWORD=... bd list --status=open
 | `cargo test --test deploy_runner` | 7 passing | 7 passing | ✅ |
 | `cargo test --test nodes_api` | 4+ behavioral tests | 17 passing (4 wiremock tests added) | ✅ |
 | `cargo test --test nodes_master_only` | Role error tests pass | 14 passing | ✅ |
-| `bd list --status=open` | Connected to squirts DB | Lists 50 open beads | ✅ |
+| `bd list --status=open` | Connected to node-b DB | Lists 50 open beads | ✅ |
 
 ## Risks and Rollback
 
 - **`start_background_tasks()` blocks before health server** (P2 open): node process doesn't signal systemd readiness until metadata upload + bootstrap log collection complete. On a slow network this delays readiness by several seconds. Rollback: wrap in `tokio::spawn` like the controller path does.
 - **Node artifacts still use `--features all`**: `ArtifactProfile::node()` builds a full all-features binary. No actual runtime slim-down until `node-runtime` feature is fully wired (Tasks 11–12 are partial). Current behavior is functionally correct but doesn't reduce binary size.
-- **Local controller update (`dookie`) needs restart policy**: `[deploy.hosts.dookie]` is missing `restart` config. `nodes update --all` will fail the local controller update until this is added.
+- **Local controller update (`node-a`) needs restart policy**: `[deploy.hosts.node-a]` is missing `restart` config. `nodes update --all` will fail the local controller update until this is added.
 
 ## Decisions Not Taken
 
@@ -205,9 +205,9 @@ BEADS_DOLT_PASSWORD=... bd list --status=open
 - `lab-686q.11` — `run_node_mode` startup log uses `subsystem`/`phase` instead of `surface`/`service`/`action`
 
 **Infrastructure follow-up:**
-- Add `[deploy.hosts.dookie]` restart policy so local controller update works
-- Add `[node].role = "controller"` to dookie config (or confirm hostname inference is sufficient)
-- Fix OpenSSL version on vivobook-wsl and steamy-wsl for binary compatibility
+- Add `[deploy.hosts.node-a]` restart policy so local controller update works
+- Add `[node].role = "controller"` to node-a config (or confirm hostname inference is sufficient)
+- Fix OpenSSL version on vivobook-wsl and workstation-wsl for binary compatibility
 
 **Epic closure:**
 - Once P2s are resolved: `bd close lab-686q`

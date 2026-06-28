@@ -53,7 +53,7 @@
   - Adds host-first `host-sync`, `host-service-install`, `host-service-restart`, and `host-service-status`.
   - Keeps container workflows under explicit names.
 - Modify: `README.md`
-  - Documents host gateway as the normal local/dookie runtime.
+  - Documents host gateway as the normal local/node-a runtime.
   - Demotes the Docker dev container section.
 - Modify: `CLAUDE.md`
   - Updates development instructions so agents prefer the host service for Labby gateway work.
@@ -1194,7 +1194,7 @@ Add this paragraph before the Dev Container section:
 ```markdown
 ### Host Gateway Runtime
 
-The default local and dookie gateway runtime is the host user service:
+The default local and node-a gateway runtime is the host user service:
 `~/.local/bin/labby serve` managed by `systemd --user` as `labby.service`.
 This keeps stdio MCP tools, SSH config, local binaries, agent caches, and
 credentials in the same namespace as the gateway. Use `just host-service-install`
@@ -1210,7 +1210,7 @@ In `CLAUDE.md`, replace the Docker-first development paragraph with:
 ```markdown
 ### Host Labby gateway
 
-The normal local/dookie Labby gateway should run on the host as
+The normal local/node-a Labby gateway should run on the host as
 `systemd --user` service `labby.service`, executing `~/.local/bin/labby serve`.
 This is preferred over the Docker dev container because the gateway launches
 stdio MCP tools and depends on host SSH config, agent credentials, local
@@ -1270,7 +1270,7 @@ labby gateway code exec --json --code 'async () => 1'
 
 ```bash
 TOKEN=$(awk -F= '/^LAB_MCP_HTTP_TOKEN=/{print $2}' ~/.lab/.env)
-curl -fsS -H "Authorization: Bearer $TOKEN" https://lab.tootie.tv/mcp
+curl -fsS -H "Authorization: Bearer $TOKEN" https://lab.example.com/mcp
 ```
 
 Then verify from Codex by calling the Labby Code Mode MCP tool through the
@@ -1356,7 +1356,7 @@ git commit -m "docs: make host labby gateway the default"
 - Uses: `~/.local/bin/labby`
 - Uses: `~/.lab/.env`
 - Uses: `~/.config/systemd/user/labby.service`
-- Uses: Codex config entry for `mcp_servers.labby.url = "https://lab.tootie.tv/mcp"`
+- Uses: Codex config entry for `mcp_servers.labby.url = "https://lab.example.com/mcp"`
 
 **Interfaces:**
 - Consumes: `just host-service-install`, `just host-sync`
@@ -1444,12 +1444,12 @@ labby gateway code exec --json --code 'async () => {
 }'
 ```
 
-Expected: `count` is at least `1` and `names` includes `dookie`.
+Expected: `count` is at least `1` and `names` includes `node-a`.
 
 - [ ] **Step 8: Verify the public MCP route**
 
 Use mcporter or an equivalent MCP client to initialize and call Code Mode
-through `https://lab.tootie.tv/mcp` with the bearer token from `~/.lab/.env`.
+through `https://lab.example.com/mcp` with the bearer token from `~/.lab/.env`.
 Do not treat public `/health` as sufficient proof.
 
 Expected: MCP initialize succeeds, then the Code Mode call returns
@@ -1518,7 +1518,7 @@ git commit -m "docs: record host gateway migration verification"
 | Service status was too lossy | Task 2 requires `LoadState`, `ActiveState`, `SubState`, `MainPID`, `ExecMainStatus`, process exe, readiness, and Docker state. |
 | Unit writes and path rendering were unsafe | Task 2 uses a fixed `%h` unit template and atomic writes, with optional `systemd-analyze --user verify`. |
 | `host-sync` could leave a deleted parent executable after failed restart | Task 3 copies a durable binary, keeps a previous binary, and makes restart/readiness visible. |
-| Public verification could pass while MCP was broken or still routed to Docker | Task 4 verifies MCP initialize/call through `https://lab.tootie.tv/mcp` and checks the host service process. |
+| Public verification could pass while MCP was broken or still routed to Docker | Task 4 verifies MCP initialize/call through `https://lab.example.com/mcp` and checks the host service process. |
 | Port conflicts and restart loops were under-specified | Task 2 and Task 4 add port-holder preflight, readiness polling, and systemd start-limit settings. |
 
 ### Failure Modes To Prove

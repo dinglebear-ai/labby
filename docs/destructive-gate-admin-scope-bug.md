@@ -10,7 +10,7 @@ Through the MCP Code Mode surface (`mcp__plugin_lab_lab__execute`), read-only up
 `Type`, …) returns:
 
 ```
-confirmation_required: "Tool `agent-os_windows-mcp::PowerShell` has destructive=true.
+confirmation_required: "Tool `windows_windows-mcp::PowerShell` has destructive=true.
 Set allow_destructive_actions=true in the Code Mode surface to proceed."
 ```
 

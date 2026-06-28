@@ -12,7 +12,7 @@ Some MCP clients, notably Claude Code, allow operators to pin the OAuth callback
 
 Today the working patterns are split across separate tools:
 
-- the public callback relay on `squirts` forwards machine-specific callback URLs to registered targets
+- the public callback relay on `node-b` forwards machine-specific callback URLs to registered targets
 - helper scripts manage SSH localhost tunnels for browser-local redirects
 - Codex can avoid this problem entirely when its callback URL is configurable
 
@@ -98,9 +98,9 @@ Supported resolution modes in the first cut:
 
 The resolved target is a base URL such as:
 
-- `http://100.88.16.79:38935/callback/dookie`
-- `https://dookie.tailnet.ts.net/callback/dookie`
-- `https://callback.tootie.tv/callback/dookie`
+- `http://100.64.0.10:38935/callback/node-a`
+- `https://node-a.tailnet.ts.net/callback/node-a`
+- `https://callback.example.com/callback/node-a`
 
 When the incoming request path contains additional suffix segments, they are appended to the target base in the same way as the existing Python relay.
 
@@ -135,9 +135,9 @@ Follow-on machine management commands can be added later, but the first implemen
 Proposed shape:
 
 ```toml
-[oauth.machines.dookie]
-target_url = "https://dookie.tailnet.ts.net/callback/dookie"
-description = "Dookie Claude callback target"
+[oauth.machines.node-a]
+target_url = "https://node-a.tailnet.ts.net/callback/node-a"
+description = "Node A Claude callback target"
 default_port = 38935
 ```
 
@@ -158,15 +158,15 @@ The transport behavior should intentionally mirror the existing Python relay.
 
 If the configured target base is:
 
-`http://100.88.16.79:38935/callback/dookie`
+`http://100.64.0.10:38935/callback/node-a`
 
 and the browser hits:
 
-`http://127.0.0.1:38935/callback/dookie/foo/bar?code=1&state=2`
+`http://127.0.0.1:38935/callback/node-a/foo/bar?code=1&state=2`
 
 the forwarded request should target:
 
-`http://100.88.16.79:38935/callback/dookie/foo/bar?code=1&state=2`
+`http://100.64.0.10:38935/callback/node-a/foo/bar?code=1&state=2`
 
 If the configured target base already contains a query string, the incoming query string should be appended after it, matching the Python implementation.
 
@@ -250,8 +250,8 @@ The first-cut UX should prioritize reliability and clarity over feature breadth.
 Recommended commands:
 
 ```bash
-lab oauth relay-local --forward-base http://100.88.16.79:38935/callback/dookie --port 38935
-lab oauth relay-local --machine dookie --port 38935
+lab oauth relay-local --forward-base http://100.64.0.10:38935/callback/node-a --port 38935
+lab oauth relay-local --machine node-a --port 38935
 ```
 
 Behavior:

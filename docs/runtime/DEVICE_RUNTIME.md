@@ -33,10 +33,10 @@ Example:
 
 ```toml
 [node]
-controller = "tootie"
+controller = "controller"
 ```
 
-On `tootie`, `labby serve` runs as the controller. On any other host, it runs as a non-controller node and reports to `tootie`.
+On `controller`, `labby serve` runs as the controller. On any other host, it runs as a non-controller node and reports to `controller`.
 
 ## Startup Behavior
 
@@ -162,7 +162,7 @@ Request body:
 ```json
 {
   "bind_addr": "127.0.0.1:38935",
-  "target_url": "http://node.internal.example:38935/callback/dookie",
+  "target_url": "http://node.internal.example:38935/callback/node-a",
   "default_port": 38935,
   "request_timeout_ms": 30000
 }

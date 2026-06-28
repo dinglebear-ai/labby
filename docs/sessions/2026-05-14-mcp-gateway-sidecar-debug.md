@@ -27,7 +27,7 @@ Systematically debug why the upstream MCP servers `apprise-api`, `unrust`, `rust
 ## Sequence of Events
 
 1. Inspected `~/.lab/config.toml` and `~/.lab/.env` to confirm Lab gateway upstream definitions, public MCP URLs, and bearer token env wiring.
-2. Checked SWAG reverse-proxy configuration for `unraid.tootie.tv` and confirmed `/mcp` was routed to `100.88.16.79:40010`.
+2. Checked SWAG reverse-proxy configuration for `unraid.example.com` and confirmed `/mcp` was routed to `100.64.0.10:40010`.
 3. Tested direct ports and public `/mcp` endpoints; found `40010` and `40020` initially refused while `40030`, `40040`, `40050`, and `40060` were open but rejected reverse-proxy Host headers.
 4. Added allowed-host configuration to the sidecar `.env` files and recreated the sidecar Docker Compose services.
 5. Investigated the unexpected `unrust` tool list and found the running `unraid-mcp` image was the wrong legacy Python/FastMCP image, not the current Rust repo.
@@ -37,12 +37,12 @@ Systematically debug why the upstream MCP servers `apprise-api`, `unrust`, `rust
 
 ## Key Findings
 
-- Lab gateway upstreams were configured to public MCP URLs such as `https://unraid.tootie.tv/mcp`, `https://gotify.tootie.tv/mcp`, `https://unifi.tootie.tv/mcp`, `https://ts.tootie.tv/mcp`, `https://apprise.tootie.tv/mcp`, and `https://rmcp.tootie.tv/mcp`.
-- SWAG `unraid.subdomain.conf` had the correct MCP upstream target: app `100.88.16.79`, port `40010`, protocol `http`.
+- Lab gateway upstreams were configured to public MCP URLs such as `https://unraid.example.com/mcp`, `https://gotify.example.com/mcp`, `https://unifi.example.com/mcp`, `https://ts.example.com/mcp`, `https://apprise.example.com/mcp`, and `https://rmcp.example.com/mcp`.
+- SWAG `unraid.subdomain.conf` had the correct MCP upstream target: app `100.64.0.10`, port `40010`, protocol `http`.
 - The current `/home/jmagar/workspace/unrust` repo has no Python implementation and defines a single MCP tool, `unraid`; the earlier four-tool result came from the wrong legacy image.
 - The running `unrust` container had been using `ghcr.io/jmagar/unraid-mcp:latest`; it now uses `ghcr.io/jmagar/unrust:latest`.
 - The running `rustify` container had been using `ghcr.io/jmagar/gotify-mcp:latest`; it now uses `ghcr.io/jmagar/rustify:latest`.
-- Gotify itself is healthy: `http://100.75.111.118:8070/health` returned `{"health":"green","database":"green"}`.
+- Gotify itself is healthy: `http://100.64.0.20:8070/health` returned `{"health":"green","database":"green"}`.
 
 ## Technical Decisions
 
@@ -69,7 +69,7 @@ The Lab worktree already contained unrelated dirty files before this note was wr
 - `docker ps`, `docker inspect`, and `docker logs` for `unraid-mcp`, `gotify-mcp`, and the other sidecar containers.
 - `docker compose up -d --build` in `/home/jmagar/workspace/unrust` and `/home/jmagar/workspace/rustify` after image metadata fixes.
 - `./target/debug/labby gateway reload --json`, `./target/debug/labby gateway test --name unrust --json`, and `./target/debug/labby gateway test --name rustify --json` to verify Lab gateway discovery.
-- `curl http://100.88.16.79:40020/health` and `curl http://100.75.111.118:8070/health` to verify Gotify sidecar and app health.
+- `curl http://100.64.0.10:40020/health` and `curl http://100.64.0.20:8070/health` to verify Gotify sidecar and app health.
 
 ## Errors Encountered
 
@@ -98,12 +98,12 @@ The Lab worktree already contained unrelated dirty files before this note was wr
 | `gateway.discovered_tools rustify` through Lab API | Only current `gotify` tool | Returned `gotify true` | Pass |
 | `docker ps --filter name=gotify-mcp` | Healthy Rustify image on `40020` | `Up ... (healthy)`, `0.0.0.0:40020->40020/tcp`, `ghcr.io/jmagar/rustify:latest` | Pass |
 | `docker inspect gotify-mcp` | No restart loop | `restart=0 health=healthy` | Pass |
-| `curl http://100.88.16.79:40020/health` | MCP sidecar health 200 | `200`, `{"status":"ok"}` | Pass |
-| `curl http://100.75.111.118:8070/health` | Gotify app health 200 | `200`, `{"health":"green","database":"green"}` | Pass |
+| `curl http://100.64.0.10:40020/health` | MCP sidecar health 200 | `200`, `{"status":"ok"}` | Pass |
+| `curl http://100.64.0.20:8070/health` | Gotify app health 200 | `200`, `{"health":"green","database":"green"}` | Pass |
 
 ## Risks and Rollback
 
-- The `.env` edits are machine-local and ignored by git; they must be preserved on `dookie` for these sidecars to keep accepting reverse-proxy Host headers.
+- The `.env` edits are machine-local and ignored by git; they must be preserved on `node-a` for these sidecars to keep accepting reverse-proxy Host headers.
 - `unrust` and `rustify` tracked image metadata changes should be committed in their respective repos if the new image names are the desired canonical deployment identities.
 - Rollback for `unrust`: restore `ghcr.io/jmagar/unraid-mcp` in `docker-compose.yml` and `server.json`, then rebuild/recreate the container.
 - Rollback for `rustify`: restore `ghcr.io/jmagar/gotify-mcp` and repository URL `https://github.com/jmagar/gotify-mcp`, then rebuild/recreate the container.
@@ -111,7 +111,7 @@ The Lab worktree already contained unrelated dirty files before this note was wr
 ## Decisions Not Taken
 
 - Did not change Lab gateway URLs from public domains to direct Tailscale IPs; the supplied infra map indicates SWAG is the intended gateway route.
-- Did not change SWAG upstream routing after it was confirmed correct for `unraid.tootie.tv` and the symptoms pointed at sidecar/runtime state.
+- Did not change SWAG upstream routing after it was confirmed correct for `unraid.example.com` and the symptoms pointed at sidecar/runtime state.
 - Did not commit or push sidecar repo changes during this session.
 
 ## Open Questions

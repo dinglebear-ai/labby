@@ -45,8 +45,8 @@ The pushed change makes upstream MCP App tools visible and callable as top-level
    - Fixed by reloading the gateway with `labby gateway reload --json`.
 
 2. **MCP App load failure**
-   - Public MCP endpoint `mcp.tootie.tv` failed with `Forbidden: Host header is not allowed`.
-   - Added `mcp.tootie.tv` and `lab.tootie.tv` to `[mcp].allowed_hosts` in `/home/jmagar/.lab/config.toml`.
+   - Public MCP endpoint `mcp.example.com` failed with `Forbidden: Host header is not allowed`.
+   - Added `mcp.example.com` and `lab.example.com` to `[mcp].allowed_hosts` in `/home/jmagar/.lab/config.toml`.
    - Restarted the `labby` container.
    - Verified public `resources/read ui://lab/code-mode/search` returned `text/html;profile=mcp-app`.
 
@@ -128,7 +128,7 @@ The pushed change makes upstream MCP App tools visible and callable as top-level
 | symptom | cause | fix |
 |---|---|---|
 | spawn guard still rejected Synapse stdio path | stale gateway runtime prefs | `labby gateway reload --json` |
-| public MCP App load failed | host guard rejected `mcp.tootie.tv` | added allowed hosts and restarted Labby |
+| public MCP App load failed | host guard rejected `mcp.example.com` | added allowed hosts and restarted Labby |
 | rebuild seemed necessary despite source fix | mounted `bin/labby` was stale | `just dev-debug` |
 | `ytdl-mcp` returned UI URI but resource read failed | resource owner lookup depended on a prior cached `resources/list` | fallback owner lookup from `ui://` URI authority |
 | first live smoke parser failed on large HTML | script mishandled SSE framing | adjusted smoke parser |

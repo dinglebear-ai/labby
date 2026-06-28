@@ -683,18 +683,18 @@ Together, these turn the WS plumbing from P1–P3 into a working fleet control p
 
 [fleet.enrollment]
 # Explicit allowlist. Devices not listed are connected but not enrolled in the catalog.
-allow = ["tootie", "squirts", "steamy-wsl"]
+allow = ["controller", "node-b", "workstation-wsl"]
 # Optional: tailnet-ACL-based (if unset, falls back to `allow`)
 # require_tailnet_tag = "tag:lab-fleet"
 
 [[fleet.peer_policy]]
 # Device A can invoke action X on device B
-source = "tootie"
-target = "squirts"
+source = "controller"
+target = "node-b"
 actions = ["radarr.queue.list", "sonarr.*"]
 
 [[fleet.peer_policy]]
-source = "steamy-wsl"
+source = "workstation-wsl"
 target = "*"
 actions = ["marketplace.install"]  # power user: install anywhere
 ```
@@ -789,8 +789,8 @@ Deny-by-default: if no matching `peer_policy` entry, the call is rejected.
 Add to the TOML schema:
 ```toml
 [[fleet.peer_policy]]
-source = "tootie"
-target = "squirts"
+source = "controller"
+target = "node-b"
 actions = ["radarr.*"]
 allow_destructive = false  # default: false. Explicit opt-in required.
 ```
@@ -822,7 +822,7 @@ Deny-by-default for destructive actions regardless of action glob match.
 - Every peer.invoke audit entry MUST log: `source_device`, `target_device`, `action`, `destructive: bool`, `decision: allow|deny`, `reason`, `correlation_id` (for tracing join).
 
 ### Additional tests (append to Testing)
-- [ ] Confused-deputy: policy allows `(tootie → squirts, radarr.*)` with `allow_destructive=false`; invoking `radarr.movie.delete` returns `denied` with `reason: destructive_not_permitted`.
+- [ ] Confused-deputy: policy allows `(controller → node-b, radarr.*)` with `allow_destructive=false`; invoking `radarr.movie.delete` returns `denied` with `reason: destructive_not_permitted`.
 - [ ] Hot-reload race: start a long-running `fleet/peer.invoke`; reload policy mid-flight; request completes under the snapshot it started with, subsequent requests see new policy.
 - [ ] Concurrent-map baseline regression: with the P1 DashMap swap already in place, concurrent 1000-device enrollment bench shows no deadlocks, no lost updates, and clippy remains clean.
 - [ ] Semaphore backpressure: spam 10k peer.invoke from one source; concurrent in-flight caps at 64; excess returns `rate_limited` kind, not 503.

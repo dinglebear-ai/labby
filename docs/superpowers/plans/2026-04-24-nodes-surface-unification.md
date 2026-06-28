@@ -131,7 +131,7 @@ This rename is a clean break:
 
 ```toml
 [node]
-controller = "100.88.16.79"
+controller = "100.64.0.10"
 
 [mcp]
 host = "127.0.0.1"
@@ -409,9 +409,9 @@ git commit -m "refactor: replace fleet websocket contract with nodes"
 ```rust
 let cfg = parse_config(r#"
 [node]
-controller = "100.88.16.79"
+controller = "100.64.0.10"
 "#)?;
-assert_eq!(cfg.node.as_ref().and_then(|n| n.controller.as_deref()), Some("100.88.16.79"));
+assert_eq!(cfg.node.as_ref().and_then(|n| n.controller.as_deref()), Some("100.64.0.10"));
 ```
 
 - [ ] **Step 2: Add canonical `NodePreferences` and `LabConfig::controller_host()`**

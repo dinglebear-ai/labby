@@ -834,7 +834,7 @@ Expected: compiles.
 
 - [ ] **Step 2: Live test against the local gateway**
 
-Assuming a running `labby serve` instance (e.g. `lab-prod` at `https://lab.tootie.tv/mcp`):
+Assuming a running `labby serve` instance (e.g. `lab-prod` at `https://lab.example.com/mcp`):
 
 Run:
 ```bash

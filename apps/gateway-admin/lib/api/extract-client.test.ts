@@ -42,12 +42,12 @@ test('extractApi.scan performs a targeted scan when uri is provided', async () =
     requestInit = init
     return new Response(
       JSON.stringify({
-        target: { mode: 'targeted', uri: { host: 'squirts', path: '/mnt/appdata' } },
+        target: { mode: 'targeted', uri: { host: 'node-b', path: '/mnt/appdata' } },
         found: ['overseerr'],
         creds: [
           {
             service: 'overseerr',
-            url: 'http://100.75.111.118:5055/login',
+            url: 'http://100.64.0.20:5055/login',
             env_field: 'OVERSEERR_API_KEY',
             secret_present: true,
           },
@@ -58,11 +58,11 @@ test('extractApi.scan performs a targeted scan when uri is provided', async () =
     )
   }
 
-  await extractApi.scan({ uri: 'squirts:/mnt/appdata' })
+  await extractApi.scan({ uri: 'node-b:/mnt/appdata' })
 
   assert.deepEqual(JSON.parse(String(requestInit?.body)), {
     action: 'scan',
-    params: { uri: 'squirts:/mnt/appdata', redact_secrets: true },
+    params: { uri: 'node-b:/mnt/appdata', redact_secrets: true },
   })
 })
 
@@ -114,13 +114,13 @@ test('extract target supports structured ssh uri payloads', async () => {
   const report: ExtractReport = {
     target: {
       mode: 'targeted',
-      uri: { host: 'squirts', path: '/mnt/appdata' },
+      uri: { host: 'node-b', path: '/mnt/appdata' },
     },
     found: [],
     creds: [
       {
         service: 'overseerr',
-        url: 'http://100.75.111.118:5055/login',
+        url: 'http://100.64.0.20:5055/login',
         env_field: 'OVERSEERR_API_KEY',
         secret_present: true,
       },
@@ -128,7 +128,7 @@ test('extract target supports structured ssh uri payloads', async () => {
     warnings: [],
   }
 
-  assert.deepEqual(report.target.uri, { host: 'squirts', path: '/mnt/appdata' })
+  assert.deepEqual(report.target.uri, { host: 'node-b', path: '/mnt/appdata' })
   assert.equal(report.creds[0]?.secret_present, true)
 })
 

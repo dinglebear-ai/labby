@@ -6,7 +6,7 @@ Lab does not mutate upstream registry fields. All Lab-owned metadata lives under
 
 ```json
 "_meta": {
-  "tv.tootie.lab/registry": { ... }
+  "dev.labby/registry": { ... }
 }
 ```
 

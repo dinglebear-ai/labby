@@ -126,7 +126,7 @@
 # Hostname or IP of the master lab instance this node should phone home to.
 # Determines whether this device operates as master or non-master.
 # No env var override — config-file only.
-# controller = "http://dookie:8765"
+# controller = "http://node-a:8765"
 
 # How many days to retain node logs in the SQLite store.
 # log_retention_days = 30                # default: 30
@@ -171,9 +171,9 @@
 # ── OAuth Relay Machines ─────────────────────────────────────────────────────
 
 # Full callback base URL for a named remote OAuth listener.
-# [oauth.machines.dookie]
-# target_url = "http://100.88.16.79:38935/callback/dookie"
-# description = "Dookie Claude callback target"
+# [oauth.machines.node-a]
+# target_url = "http://100.64.0.10:38935/callback/node-a"
+# description = "Node A Claude callback target"
 # default_port = 38935
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
@@ -206,7 +206,7 @@
 
 # Optional redirect URI patterns for non-loopback MCP OAuth callbacks.
 # Override with LAB_AUTH_ALLOWED_REDIRECT_URIS.
-# allowed_client_redirect_uris = ["https://callback.tootie.tv/callback/*"]
+# allowed_client_redirect_uris = ["https://callback.example.com/callback/*"]
 
 # Optional Google scopes override.
 # Override with LAB_GOOGLE_SCOPES.

@@ -95,7 +95,7 @@ mod tests {
             public_host: host.to_string(),
             public_path: path.to_string(),
             upstream: None,
-            backend_url: "http://100.88.16.79:3100".to_string(),
+            backend_url: "http://100.64.0.10:3100".to_string(),
             backend_mcp_path: "/mcp".to_string(),
             scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
             health_path: None,
@@ -106,39 +106,39 @@ mod tests {
     #[test]
     fn resolves_by_host_and_longest_path_prefix() {
         let index = ProtectedRouteIndex::from_routes(&[
-            route("mcp", "mcp.tootie.tv", "/mcp"),
-            route("openapi", "mcp.tootie.tv", "/mcp/openapi/foo"),
-            route("other-host", "other.tootie.tv", "/mcp/openapi/foo"),
+            route("mcp", "mcp.example.com", "/mcp"),
+            route("openapi", "mcp.example.com", "/mcp/openapi/foo"),
+            route("other-host", "other.example.com", "/mcp/openapi/foo"),
         ]);
 
         assert_eq!(
             index
-                .resolve("mcp.tootie.tv", "/mcp/openapi/foo")
+                .resolve("mcp.example.com", "/mcp/openapi/foo")
                 .expect("exact nested")
                 .name,
             "openapi"
         );
         assert_eq!(
             index
-                .resolve("mcp.tootie.tv", "/mcp/openapi/foo/sse")
+                .resolve("mcp.example.com", "/mcp/openapi/foo/sse")
                 .expect("nested prefix")
                 .name,
             "openapi"
         );
         assert_eq!(
             index
-                .resolve("mcp.tootie.tv", "/mcp/other")
+                .resolve("mcp.example.com", "/mcp/other")
                 .expect("root prefix")
                 .name,
             "mcp"
         );
         assert_eq!(
             index
-                .resolve("other.tootie.tv", "/mcp/openapi/foo")
+                .resolve("other.example.com", "/mcp/openapi/foo")
                 .expect("host scoped")
                 .name,
             "other-host"
         );
-        assert!(index.resolve("mcp.tootie.tv", "/mcproxy").is_none());
+        assert!(index.resolve("mcp.example.com", "/mcproxy").is_none());
     }
 }

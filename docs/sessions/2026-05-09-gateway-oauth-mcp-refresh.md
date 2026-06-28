@@ -12,7 +12,7 @@ Note: the interrupted chat summary referenced a prior commit hash, `412d8c83 Fix
 
 ## User Goal
 
-Configure all MCP servers from the local Codex and Claude configs into the Labby gateway, enable them, verify that the web UI at `lab.tootie.tv` accurately reports availability/tool exposure, then fix stale OAuth status handling so expired or invalid upstream credentials do not appear healthy.
+Configure all MCP servers from the local Codex and Claude configs into the Labby gateway, enable them, verify that the web UI at `lab.example.com` accurately reports availability/tool exposure, then fix stale OAuth status handling so expired or invalid upstream credentials do not appear healthy.
 
 ## What Changed During The Session
 
@@ -32,7 +32,7 @@ Configure all MCP servers from the local Codex and Claude configs into the Labby
 - `just dev-debug` built the development binary.
 - `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --force-recreate labby-master` redeployed the live service.
 - Readiness endpoint returned `{"status":"ready"}`.
-- Agent-browser verification on `https://lab.tootie.tv/gateways` showed:
+- Agent-browser verification on `https://lab.example.com/gateways` showed:
   - `syslog`: `Connected`, `1 of 1 tools exposed`
   - `axon`: `Disconnected`
   - `swag`: `Disconnected`

@@ -83,8 +83,8 @@ The gateway review findings were implemented on `gateway-destructive-semantics`,
 | modified | docs/surfaces/MCP.md | - | MCP surface docs | PR #138 |
 | modified | plugins/acp/.codex-plugin/plugin.json | - | Accidental no-MCP merge and revert | commits `de4e60a9`, `6a7ea9d1` |
 | deleted, restored | plugins/acp/.mcp.json | - | Accidental no-MCP merge removed it; revert restored it | commits `de4e60a9`, `6a7ea9d1` |
-| modified | plugins/agent-os/.codex-plugin/plugin.json | - | Accidental no-MCP merge and revert | commits `de4e60a9`, `6a7ea9d1` |
-| deleted, restored | plugins/agent-os/.mcp.json | - | Accidental no-MCP merge removed it; revert restored it | commits `de4e60a9`, `6a7ea9d1` |
+| modified | plugins/agent-workstation/.codex-plugin/plugin.json | - | Accidental no-MCP merge and revert | commits `de4e60a9`, `6a7ea9d1` |
+| deleted, restored | plugins/agent-workstation/.mcp.json | - | Accidental no-MCP merge removed it; revert restored it | commits `de4e60a9`, `6a7ea9d1` |
 | modified | plugins/bitwarden/.codex-plugin/plugin.json | - | Accidental no-MCP merge and revert | commits `de4e60a9`, `6a7ea9d1` |
 | deleted, restored | plugins/bitwarden/.mcp.json | - | Accidental no-MCP merge removed it; revert restored it | commits `de4e60a9`, `6a7ea9d1` |
 | modified | plugins/dozzle/.claude-plugin/plugin.json | - | Accidental no-MCP merge and revert | commits `de4e60a9`, `6a7ea9d1` |

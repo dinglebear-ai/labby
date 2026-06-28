@@ -333,40 +333,40 @@ Replace `resolves_by_host_and_first_path_segment` with:
 #[test]
 fn resolves_by_host_and_longest_path_prefix() {
     let index = ProtectedRouteIndex::from_routes(&[
-        route("mcp", "mcp.tootie.tv", "/mcp"),
-        route("openapi", "mcp.tootie.tv", "/mcp/openapi/foo"),
-        route("other-host", "other.tootie.tv", "/mcp/openapi/foo"),
+        route("mcp", "mcp.example.com", "/mcp"),
+        route("openapi", "mcp.example.com", "/mcp/openapi/foo"),
+        route("other-host", "other.example.com", "/mcp/openapi/foo"),
     ]);
 
     assert_eq!(
         index
-            .resolve("mcp.tootie.tv", "/mcp/openapi/foo")
+            .resolve("mcp.example.com", "/mcp/openapi/foo")
             .expect("exact nested")
             .name,
         "openapi"
     );
     assert_eq!(
         index
-            .resolve("mcp.tootie.tv", "/mcp/openapi/foo/sse")
+            .resolve("mcp.example.com", "/mcp/openapi/foo/sse")
             .expect("nested prefix")
             .name,
         "openapi"
     );
     assert_eq!(
         index
-            .resolve("mcp.tootie.tv", "/mcp/other")
+            .resolve("mcp.example.com", "/mcp/other")
             .expect("root prefix")
             .name,
         "mcp"
     );
     assert_eq!(
         index
-            .resolve("other.tootie.tv", "/mcp/openapi/foo")
+            .resolve("other.example.com", "/mcp/openapi/foo")
             .expect("host scoped")
             .name,
         "other-host"
     );
-    assert!(index.resolve("mcp.tootie.tv", "/mcproxy").is_none());
+    assert!(index.resolve("mcp.example.com", "/mcproxy").is_none());
 }
 ```
 
@@ -1433,7 +1433,7 @@ fn protected_gateway_subset_route() -> crate::config::ProtectedMcpRouteConfig {
     crate::config::ProtectedMcpRouteConfig {
         name: "media".to_string(),
         enabled: true,
-        public_host: "mcp.tootie.tv".to_string(),
+        public_host: "mcp.example.com".to_string(),
         public_path: "/media".to_string(),
         upstream: None,
         backend_url: String::new(),
@@ -1451,7 +1451,7 @@ fn protected_gateway_subset_route() -> crate::config::ProtectedMcpRouteConfig {
 }
 ```
 
-Add a test that sends an unauthenticated `POST /media` with host `mcp.tootie.tv` and asserts it gets the existing OAuth challenge for `https://mcp.tootie.tv/media`. Add a second test that authenticates with the route scope and asserts the request is not sent to a backend proxy server. Use the existing bearer/OAuth protected-route test helpers in this file.
+Add a test that sends an unauthenticated `POST /media` with host `mcp.example.com` and asserts it gets the existing OAuth challenge for `https://mcp.example.com/media`. Add a second test that authenticates with the route scope and asserts the request is not sent to a backend proxy server. Use the existing bearer/OAuth protected-route test helpers in this file.
 
 - [ ] **Step 2: Run the API tests and verify they fail**
 

@@ -50,10 +50,10 @@ fn sample_protected_route(name: &str) -> ProtectedMcpRouteConfig {
     ProtectedMcpRouteConfig {
         name: name.to_string(),
         enabled: true,
-        public_host: "MCP.Tootie.TV".to_string(),
+        public_host: "MCP.EXAMPLE.COM".to_string(),
         public_path: "/syslog/".to_string(),
         upstream: None,
-        backend_url: "http://100.88.16.79:3100".to_string(),
+        backend_url: "http://100.64.0.10:3100".to_string(),
         backend_mcp_path: "/mcp".to_string(),
         scopes: vec![],
         health_path: None,
@@ -629,11 +629,11 @@ fn insert_protected_route_normalizes_defaults_and_lan_backend() {
     let route = insert_protected_mcp_route(&mut cfg, sample_protected_route("syslog"))
         .expect("insert route");
 
-    assert_eq!(route.public_host, "mcp.tootie.tv");
+    assert_eq!(route.public_host, "mcp.example.com");
     assert_eq!(route.public_path, "/syslog");
-    assert_eq!(route.backend_url, "http://100.88.16.79:3100/mcp");
+    assert_eq!(route.backend_url, "http://100.64.0.10:3100/mcp");
     assert_eq!(route.scopes, ["mcp:read", "mcp:write"]);
-    assert_eq!(route.public_resource(), "https://mcp.tootie.tv/syslog");
+    assert_eq!(route.public_resource(), "https://mcp.example.com/syslog");
     assert_eq!(cfg.protected_mcp_routes.len(), 1);
 }
 
@@ -649,7 +649,7 @@ fn insert_protected_route_accepts_named_upstream_without_backend_url() {
 
     assert_eq!(route.upstream.as_deref(), Some("axon"));
     assert_eq!(route.backend_url, "");
-    assert_eq!(route.public_resource(), "https://mcp.tootie.tv/axon");
+    assert_eq!(route.public_resource(), "https://mcp.example.com/axon");
 }
 
 #[test]
@@ -725,7 +725,7 @@ fn insert_protected_route_rejects_unsafe_backend_targets() {
         "http://localhost:3100",
         "http://127.0.0.1:3100",
         "http://169.254.169.254",
-        "http://100.88.16.79:3100/mcp?token=secret",
+        "http://100.64.0.10:3100/mcp?token=secret",
     ] {
         let mut cfg = GatewayConfig::default();
         let mut route = sample_protected_route("bad");

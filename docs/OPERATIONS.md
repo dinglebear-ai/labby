@@ -78,14 +78,14 @@ the actual listener.
 Named-machine workflow:
 
 ```bash
-labby oauth relay-local --machine dookie --port 38935
+labby oauth relay-local --machine node-a --port 38935
 ```
 
 Ad hoc workflow:
 
 ```bash
 labby oauth relay-local \
-  --forward-base http://node.internal.example:38935/callback/dookie \
+  --forward-base http://node.internal.example:38935/callback/node-a \
   --port 38935
 ```
 
@@ -102,9 +102,9 @@ Recommended setup checklist:
 1. Configure the browser-side machine target in `~/.lab/config.toml`:
 
 ```toml
-[oauth.machines.dookie]
-target_url = "http://node.internal.example:38935/callback/dookie"
-description = "dookie Codex callback listener"
+[oauth.machines.node-a]
+target_url = "http://node.internal.example:38935/callback/node-a"
+description = "node-a Codex callback listener"
 default_port = 38935
 ```
 
@@ -213,7 +213,7 @@ Setup order:
 
 ```toml
 [node]
-controller = "tootie"
+controller = "controller"
 ```
 
 4. Start each non-master with `labby serve`.
@@ -229,8 +229,8 @@ Useful commands:
 
 ```bash
 labby nodes list
-labby nodes get dookie
-labby logs search dookie oauth
+labby nodes get node-a
+labby logs search node-a oauth
 ```
 
 Useful HTTP checks:

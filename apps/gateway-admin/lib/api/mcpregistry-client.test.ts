@@ -190,7 +190,7 @@ test('getServerLocalMetadata uses marketplace mcp.meta.get action', async () => 
       return jsonResponse({
         name: SERVER_NAME,
         version: '1.2.3',
-        namespace: 'tv.tootie.lab/registry',
+        namespace: 'dev.labby/registry',
         metadata: LOCAL_METADATA,
       })
     },
@@ -214,7 +214,7 @@ test('setServerLocalMetadata uses marketplace mcp.meta.set action', async () => 
       return jsonResponse({
         name: SERVER_NAME,
         version: '1.2.3',
-        namespace: 'tv.tootie.lab/registry',
+        namespace: 'dev.labby/registry',
         metadata: LOCAL_METADATA,
       })
     },
@@ -233,7 +233,7 @@ test('deleteServerLocalMetadata uses marketplace mcp.meta.delete action', async 
       return jsonResponse({
         name: SERVER_NAME,
         version: '1.2.3',
-        namespace: 'tv.tootie.lab/registry',
+        namespace: 'dev.labby/registry',
         deleted: true,
       })
     },
@@ -291,14 +291,14 @@ test('mcpregistry client exports do not call removed /v1/mcpregistry endpoint', 
               return jsonResponse({
                 name: SERVER_NAME,
                 version: '1.2.3',
-                namespace: 'tv.tootie.lab/registry',
+                namespace: 'dev.labby/registry',
                 metadata: LOCAL_METADATA,
               })
             case 'mcp.meta.delete':
               return jsonResponse({
                 name: SERVER_NAME,
                 version: '1.2.3',
-                namespace: 'tv.tootie.lab/registry',
+                namespace: 'dev.labby/registry',
                 deleted: true,
               })
             case 'mcp.install':

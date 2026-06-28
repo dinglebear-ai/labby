@@ -22,7 +22,7 @@ The existing `shadcn` gateway upstream was updated to launch from `/home/jmagar/
 
 1. Confirmed the current `shadcn` gateway upstream existed and was connected as stdio with `npx shadcn@latest mcp`.
 2. Checked official shadcn MCP documentation and confirmed custom registries are read from the consuming project's `components.json`.
-3. Verified `/home/jmagar/workspace/aurora-design-system/components.json` already includes `"@aurora": "https://aurora.tootie.tv/r/{name}.json"`.
+3. Verified `/home/jmagar/workspace/aurora-design-system/components.json` already includes `"@aurora": "https://aurora.example.com/r/{name}.json"`.
 4. Updated the Labby upstream first with a shell `cd` wrapper, then tested shadcn's native `--cwd` option.
 5. Reproduced that native `--cwd` was not reliable through the MCP launch path, while the shell wrapper returned both registries.
 6. Restored the saved upstream to the proven shell wrapper and verified the registry through Labby Code Mode.

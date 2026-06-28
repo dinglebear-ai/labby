@@ -2582,8 +2582,12 @@ mod tests {
                 crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
             ),
         );
-        let config =
-            protected_route_config("syslog", "mcp.tootie.tv", "/syslog", "http://10.0.0.2:3100");
+        let config = protected_route_config(
+            "syslog",
+            "mcp.example.com",
+            "/syslog",
+            "http://10.0.0.2:3100",
+        );
         manager
             .seed_config_unchecked_for_tests(config.to_gateway_config())
             .await;
@@ -2598,7 +2602,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/.well-known/oauth-protected-resource/syslog")
-                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::HOST, "mcp.example.com")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2610,7 +2614,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["resource"], "https://mcp.tootie.tv/syslog");
+        assert_eq!(json["resource"], "https://mcp.example.com/syslog");
     }
 
     #[cfg(feature = "gateway")]
@@ -2623,8 +2627,12 @@ mod tests {
                 crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
             ),
         );
-        let config =
-            protected_route_config("syslog", "mcp.tootie.tv", "/syslog", "http://10.0.0.2:3100");
+        let config = protected_route_config(
+            "syslog",
+            "mcp.example.com",
+            "/syslog",
+            "http://10.0.0.2:3100",
+        );
         manager
             .seed_config_unchecked_for_tests(config.to_gateway_config())
             .await;
@@ -2639,7 +2647,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/syslog/.well-known/oauth-protected-resource")
-                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::HOST, "mcp.example.com")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2651,7 +2659,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["resource"], "https://mcp.tootie.tv/syslog");
+        assert_eq!(json["resource"], "https://mcp.example.com/syslog");
     }
 
     #[cfg(feature = "gateway")]
@@ -2664,8 +2672,12 @@ mod tests {
                 crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
             ),
         );
-        let config =
-            protected_route_config("syslog", "mcp.tootie.tv", "/syslog", "http://10.0.0.2:3100");
+        let config = protected_route_config(
+            "syslog",
+            "mcp.example.com",
+            "/syslog",
+            "http://10.0.0.2:3100",
+        );
         manager
             .seed_config_unchecked_for_tests(config.to_gateway_config())
             .await;
@@ -2680,7 +2692,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/syslog")
-                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::HOST, "mcp.example.com")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2690,7 +2702,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
-            "Bearer resource_metadata=\"https://mcp.tootie.tv/.well-known/oauth-protected-resource/syslog\", scope=\"mcp:read mcp:write\""
+            "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/syslog\", scope=\"mcp:read mcp:write\""
         );
     }
 
@@ -2715,7 +2727,7 @@ mod tests {
                 crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
             ),
         );
-        let config = protected_route_config("syslog", "mcp.tootie.tv", "/syslog", &backend.uri());
+        let config = protected_route_config("syslog", "mcp.example.com", "/syslog", &backend.uri());
         manager
             .seed_config_unchecked_for_tests(config.to_gateway_config())
             .await;
@@ -2723,7 +2735,7 @@ mod tests {
             .with_config(config)
             .with_gateway_manager(manager);
         let auth_state = test_lab_auth_state().await;
-        let token = issue_test_route_token(&auth_state, "https://mcp.tootie.tv/syslog");
+        let token = issue_test_route_token(&auth_state, "https://mcp.example.com/syslog");
         let app = build_router(
             state,
             Some("static-token".to_string()),
@@ -2737,7 +2749,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/syslog")
-                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::HOST, "mcp.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
@@ -2799,7 +2811,7 @@ mod tests {
             protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
                 name: "axon".to_string(),
                 enabled: true,
-                public_host: "mcp.tootie.tv".to_string(),
+                public_host: "mcp.example.com".to_string(),
                 public_path: "/axon".to_string(),
                 upstream: Some("axon".to_string()),
                 backend_url: String::new(),
@@ -2817,7 +2829,7 @@ mod tests {
             .with_config(config)
             .with_gateway_manager(manager);
         let auth_state = test_lab_auth_state().await;
-        let token = issue_test_route_token(&auth_state, "https://mcp.tootie.tv/axon");
+        let token = issue_test_route_token(&auth_state, "https://mcp.example.com/axon");
         let app = build_router(
             state,
             Some("static-token".to_string()),
@@ -2831,7 +2843,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/axon/extra")
-                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::HOST, "mcp.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
@@ -2871,7 +2883,7 @@ mod tests {
                 crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
             ),
         );
-        let config = protected_route_config("syslog", "syslog.tootie.tv", "/mcp", &backend.uri());
+        let config = protected_route_config("syslog", "syslog.example.com", "/mcp", &backend.uri());
         manager
             .seed_config_unchecked_for_tests(config.to_gateway_config())
             .await;
@@ -2879,7 +2891,7 @@ mod tests {
             .with_config(config)
             .with_gateway_manager(manager);
         let auth_state = test_lab_auth_state().await;
-        let token = issue_test_route_token(&auth_state, "https://syslog.tootie.tv/mcp");
+        let token = issue_test_route_token(&auth_state, "https://syslog.example.com/mcp");
         let local_mcp = Router::new().route(
             "/mcp",
             post(|| async { Json(serde_json::json!({"local": true})) }),
@@ -2897,7 +2909,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/mcp")
-                    .header(header::HOST, "syslog.tootie.tv")
+                    .header(header::HOST, "syslog.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
@@ -2941,7 +2953,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/media")
-                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::HOST, "mcp.example.com")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2951,7 +2963,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
-            "Bearer resource_metadata=\"https://mcp.tootie.tv/.well-known/oauth-protected-resource/media\", scope=\"mcp:media\""
+            "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/media\", scope=\"mcp:media\""
         );
     }
 
@@ -2978,7 +2990,7 @@ mod tests {
             .with_gateway_manager(manager)
             .with_protected_mcp_router(scoped_router);
         let auth_state = test_lab_auth_state().await;
-        let token = issue_test_token(&auth_state, "https://mcp.tootie.tv/media", "mcp:media");
+        let token = issue_test_token(&auth_state, "https://mcp.example.com/media", "mcp:media");
         let app = build_router(
             state,
             Some("static-token".to_string()),
@@ -2992,7 +3004,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/media")
-                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::HOST, "mcp.example.com")
                     .header("x-request-id", "protected-subset-test")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
@@ -3030,7 +3042,7 @@ mod tests {
             protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
                 name: "bad".to_string(),
                 enabled: true,
-                public_host: "mcp.tootie.tv".to_string(),
+                public_host: "mcp.example.com".to_string(),
                 public_path: "/bad".to_string(),
                 upstream: None,
                 backend_url: "://not-a-url".to_string(),
@@ -3048,7 +3060,7 @@ mod tests {
             .with_config(config)
             .with_gateway_manager(manager);
         let auth_state = test_lab_auth_state().await;
-        let token = issue_test_token(&auth_state, "https://mcp.tootie.tv/bad", "mcp:read");
+        let token = issue_test_token(&auth_state, "https://mcp.example.com/bad", "mcp:read");
         let app = build_router(
             state,
             Some("static-token".to_string()),
@@ -3062,7 +3074,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/bad")
-                    .header(header::HOST, "mcp.tootie.tv")
+                    .header(header::HOST, "mcp.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
@@ -3379,7 +3391,7 @@ mod tests {
             protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
                 name: "media".to_string(),
                 enabled: true,
-                public_host: "mcp.tootie.tv".to_string(),
+                public_host: "mcp.example.com".to_string(),
                 public_path: "/media".to_string(),
                 upstream: None,
                 backend_url: String::new(),

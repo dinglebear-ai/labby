@@ -777,7 +777,7 @@ pub mod tests {
         let mut config = test_auth_config();
         config.enable_dynamic_registration = true;
         config.allowed_client_redirect_uris =
-            vec!["https://callback.tootie.tv/callback/*".to_string()];
+            vec!["https://callback.example.com/callback/*".to_string()];
         let app = router(test_auth_state_with_config(config).await);
         let response = app
             .oneshot(
@@ -787,7 +787,7 @@ pub mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({
-                            "redirect_uris": ["https://callback.tootie.tv/callback/dookie"]
+                            "redirect_uris": ["https://callback.example.com/callback/node-a"]
                         })
                         .to_string(),
                     ))
@@ -846,19 +846,22 @@ pub mod tests {
     #[test]
     fn wildcard_redirect_patterns_support_leading_and_infix_matches() {
         assert!(wildcard_matches(
-            "https://callback.tootie.tv/callback/*",
-            "https://callback.tootie.tv/callback/dookie"
+            "https://callback.example.com/callback/*",
+            "https://callback.example.com/callback/node-a"
         ));
         assert!(wildcard_matches(
-            "https://callback.*.tv/callback/*",
-            "https://callback.tootie.tv/callback/dookie"
+            "https://callback.*.com/callback/*",
+            "https://callback.example.com/callback/node-a"
         ));
         assert!(!wildcard_matches("/callback", "/callback/extra"));
     }
 
     #[test]
     fn host_patterns_support_full_label_wildcards_only() {
-        assert!(host_pattern_matches("callback.*.tv", "callback.tootie.tv"));
+        assert!(host_pattern_matches(
+            "callback.*.com",
+            "callback.example.com"
+        ));
         assert!(host_pattern_matches(
             "*.example.com",
             "callback.example.com"
@@ -876,8 +879,8 @@ pub mod tests {
     #[test]
     fn wildcard_redirect_patterns_do_not_overmatch_similar_hosts() {
         assert!(!is_allowed_redirect_uri(
-            "https://callback.tootie.tv.evil.example/callback/dookie",
-            &[String::from("https://callback.tootie.tv/callback/*")]
+            "https://callback.example.com.evil.example/callback/node-a",
+            &[String::from("https://callback.example.com/callback/*")]
         ));
         assert!(!is_allowed_redirect_uri(
             "https://callback.example.com.evil.example/callback",

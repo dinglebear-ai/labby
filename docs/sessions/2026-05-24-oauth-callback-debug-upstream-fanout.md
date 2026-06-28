@@ -19,7 +19,7 @@ Debug why an OAuth callback to `127.0.0.1:3793/callback` timed out from a Window
 ## Session Overview
 
 - Diagnosed the failed OAuth callback as a misaligned RFC 8252 loopback redirect: labby completed the flow correctly but the Zed-spawned listener was not reachable from the Windows browser where the consent screen finished.
-- User pivoted to bearer-token auth, which works against `lab.tootie.tv/mcp` without the loopback step.
+- User pivoted to bearer-token auth, which works against `lab.example.com/mcp` without the loopback step.
 - Investigated whether the gateway parallelizes upstream MCP server initialization. Confirmed it does, but defaults to 3 concurrent connects with a 15s per-upstream timeout.
 - Bumped `LAB_UPSTREAM_DISCOVERY_CONCURRENCY` from default 3 → 16 in both `docker-compose.yml` and `docker-compose.prod.yml` so ~20 upstreams warm in roughly one 15s window instead of seven.
 
@@ -28,7 +28,7 @@ Debug why an OAuth callback to `127.0.0.1:3793/callback` timed out from a Window
 1. User shared a screenshot of `ERR_TIMED_OUT` at `http://127.0.0.1:3793/callback?code=...&state=...` and asked for systematic debugging.
 2. Loaded the `superpowers:systematic-debugging` skill and gathered evidence: `docker ps`, `docker logs labby`, `ss -tlnp` for port 3793.
 3. Confirmed labby logged a clean OAuth round-trip at `01:16:07 → 01:16:20 UTC`: DCR accepted, Google round-trip, local code minted, 302 to the registered loopback URI.
-4. Confirmed nothing was listening on `127.0.0.1:3793` on dookie (only `codex` on 4500). Concluded the Zed listener and the browser were on different machines, or the listener had already exited.
+4. Confirmed nothing was listening on `127.0.0.1:3793` on node-a (only `codex` on 4500). Concluded the Zed listener and the browser were on different machines, or the listener had already exited.
 5. User confirmed Zed initiated the auth, then said it was fine — they had switched to bearer token.
 6. User asked about Zed MCP OAuth config knobs; attempted `axon ask` via `lab tool execute` (subcommand does not exist) and direct curl to `http://localhost:8001/v1/ask` (auth_failed; bearer token mismatch from `~/.axon/config.toml` vs runtime expectation). User interrupted.
 7. User asked whether MCP server init was being fanned out. Read `crates/lab/src/dispatch/upstream/pool.rs`, found `discover_all_inner` uses `buffer_unordered(discovery_concurrency)` with default 3, and reported worst-case warmup math.
@@ -62,7 +62,7 @@ Pre-existing dirty files left untouched: `crates/lab/src/cli/gateway.rs`, `crate
 
 - `docker ps --format ...` — confirmed `labby` container Up 7 minutes on 8765.
 - `docker logs labby --tail 500 | grep -iE "oauth|callback|3793"` — surfaced the full OAuth log trail and the exact registered redirect URI.
-- `ss -tlnp | grep :3793` — empty, confirming no local loopback listener on dookie.
+- `ss -tlnp | grep :3793` — empty, confirming no local loopback listener on node-a.
 - `grep -n -E "buffer_unordered|DEFAULT_UPSTREAM_DISCOVERY|DISCOVERY_TIMEOUT" crates/lab/src/dispatch/upstream/pool.rs` — located the fan-out site and tunables.
 
 ## Errors Encountered

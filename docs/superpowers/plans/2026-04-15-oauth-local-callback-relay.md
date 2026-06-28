@@ -53,17 +53,17 @@
 Add tests in `crates/lab/src/config.rs` that deserialize a config snippet with:
 
 ```toml
-[oauth.machines.dookie]
-target_url = "http://100.88.16.79:38935/callback/dookie"
-description = "Dookie Claude callback target"
+[oauth.machines.node-a]
+target_url = "http://100.64.0.10:38935/callback/node-a"
+description = "Node A Claude callback target"
 default_port = 38935
 ```
 
 and assert:
 
 ```rust
-assert_eq!(cfg.oauth.machines["dookie"].target_url, "http://100.88.16.79:38935/callback/dookie");
-assert_eq!(cfg.oauth.machines["dookie"].default_port, Some(38935));
+assert_eq!(cfg.oauth.machines["node-a"].target_url, "http://100.64.0.10:38935/callback/node-a");
+assert_eq!(cfg.oauth.machines["node-a"].default_port, Some(38935));
 ```
 
 - [ ] **Step 2: Run the config tests to verify they fail**
@@ -114,17 +114,17 @@ Create `crates/lab/src/oauth/target.rs` tests that assert:
 
 ```rust
 let machines = BTreeMap::from([(
-    "dookie".to_string(),
+    "node-a".to_string(),
     OauthMachineConfig {
-        target_url: "http://100.88.16.79:38935/callback/dookie".to_string(),
+        target_url: "http://100.64.0.10:38935/callback/node-a".to_string(),
         description: None,
         default_port: Some(38935),
     },
 )]);
 
-let resolved = resolve_machine_target(&machines, "dookie")?;
-assert_eq!(resolved.machine_id.as_deref(), Some("dookie"));
-assert_eq!(resolved.target_url.as_str(), "http://100.88.16.79:38935/callback/dookie");
+let resolved = resolve_machine_target(&machines, "node-a")?;
+assert_eq!(resolved.machine_id.as_deref(), Some("node-a"));
+assert_eq!(resolved.target_url.as_str(), "http://100.64.0.10:38935/callback/node-a");
 ```
 
 and a missing-machine test that expects the error to include the requested ID plus available IDs.
@@ -180,11 +180,11 @@ Add tests for the Python-relay-compatible behavior:
 ```rust
 assert_eq!(
     build_forward_url(
-        &Url::parse("http://100.88.16.79:38935/callback/dookie").unwrap(),
+        &Url::parse("http://100.64.0.10:38935/callback/node-a").unwrap(),
         "foo/bar",
         &[("code", "abc"), ("state", "xyz")],
     )?.as_str(),
-    "http://100.88.16.79:38935/callback/dookie/foo/bar?code=abc&state=xyz"
+    "http://100.64.0.10:38935/callback/node-a/foo/bar?code=abc&state=xyz"
 );
 ```
 
@@ -300,11 +300,11 @@ Create an integration-style unit test in `crates/lab/src/oauth/local_relay.rs` t
 3. sends:
 
 ```http
-POST /callback/dookie/extra?code=abc&state=xyz
+POST /callback/node-a/extra?code=abc&state=xyz
 Content-Type: application/x-www-form-urlencoded
 ```
 
-4. asserts the mock upstream receives `/callback/dookie/extra?code=abc&state=xyz`
+4. asserts the mock upstream receives `/callback/node-a/extra?code=abc&state=xyz`
 5. asserts the mock upstream receives the exact request body once and only once
 6. asserts the relay returns the upstream status, body, and content type unchanged
 
@@ -312,7 +312,7 @@ Use an assertion shape like:
 
 ```rust
 assert_eq!(seen_requests.len(), 1);
-assert_eq!(seen_requests[0].path_and_query, "/callback/dookie/extra?code=abc&state=xyz");
+assert_eq!(seen_requests[0].path_and_query, "/callback/node-a/extra?code=abc&state=xyz");
 assert_eq!(seen_requests[0].body, b"grant_type=authorization_code");
 assert_eq!(response.status(), StatusCode::CREATED);
 assert_eq!(response_body, "ok-from-upstream");
@@ -406,7 +406,7 @@ tracing::info!(
 and a concise stdout line such as:
 
 ```text
-OAuth relay listening on http://127.0.0.1:38935 -> http://100.88.16.79:38935/callback/dookie
+OAuth relay listening on http://127.0.0.1:38935 -> http://100.64.0.10:38935/callback/node-a
 ```
 
 so operators can confirm the forwarding target before the first callback arrives.
@@ -480,7 +480,7 @@ let cli = Cli::try_parse_from([
     "oauth",
     "relay-local",
     "--machine",
-    "dookie",
+    "node-a",
     "--port",
     "38935",
 ])?;
@@ -498,7 +498,7 @@ let cli = Cli::try_parse_from([
     "oauth",
     "relay-local",
     "--forward-base",
-    "http://100.88.16.79:38935/callback/dookie",
+    "http://100.64.0.10:38935/callback/node-a",
     "--port",
     "38935",
 ])?;
@@ -512,11 +512,11 @@ Add a test for the target resolver path that proves:
 
 ```rust
 let resolved = resolve_explicit_target(
-    "http://100.88.16.79:38935/callback/dookie",
+    "http://100.64.0.10:38935/callback/node-a",
     Some(38935),
 )?;
 assert_eq!(resolved.machine_id, None);
-assert_eq!(resolved.target_url.as_str(), "http://100.88.16.79:38935/callback/dookie");
+assert_eq!(resolved.target_url.as_str(), "http://100.64.0.10:38935/callback/node-a");
 ```
 
 - [ ] **Step 4: Run the parsing tests to verify they fail**
@@ -618,9 +618,9 @@ git commit -m "feat: add oauth relay-local cli command"
 Document:
 
 ```toml
-[oauth.machines.dookie]
-target_url = "http://100.88.16.79:38935/callback/dookie"
-description = "Dookie Claude callback target"
+[oauth.machines.node-a]
+target_url = "http://100.64.0.10:38935/callback/node-a"
+description = "Node A Claude callback target"
 default_port = 38935
 ```
 
@@ -631,9 +631,9 @@ and explain that `target_url` is the callback base URL, not just a host.
 Add a small commented example:
 
 ```toml
-[oauth.machines.dookie]
-target_url = "http://100.88.16.79:38935/callback/dookie"
-description = "Dookie Claude callback target"
+[oauth.machines.node-a]
+target_url = "http://100.64.0.10:38935/callback/node-a"
+description = "Node A Claude callback target"
 default_port = 38935
 ```
 
@@ -651,7 +651,7 @@ Document:
 Add an explicit section covering:
 
 - why localhost-only callback clients need the relay-local helper
-- `lab oauth relay-local --machine dookie --port 38935`
+- `lab oauth relay-local --machine node-a --port 38935`
 - ad hoc explicit-target usage
 - the requirement that the remote callback listener is already running
 - the fact that `lab` does not mint tokens or complete PKCE itself
@@ -693,19 +693,19 @@ Expected:
 In one terminal, run a tiny target server that records requests. In another, start:
 
 ```bash
-cargo run -- oauth relay-local --forward-base http://127.0.0.1:48081/callback/dookie --port 38935
+cargo run -- oauth relay-local --forward-base http://127.0.0.1:48081/callback/node-a --port 38935
 ```
 
 Then send:
 
 ```bash
-curl -i 'http://127.0.0.1:38935/callback/dookie/extra?code=abc&state=xyz'
+curl -i 'http://127.0.0.1:38935/callback/node-a/extra?code=abc&state=xyz'
 ```
 
 Expected:
 
 - local relay returns the upstream response
-- target server sees `/callback/dookie/extra?code=abc&state=xyz`
+- target server sees `/callback/node-a/extra?code=abc&state=xyz`
 
 - [ ] **Step 9: Commit**
 

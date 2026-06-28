@@ -23,7 +23,7 @@ const event: LogEvent = {
   instance: null,
   auth_flow: null,
   outcome_kind: null,
-  fields_json: { host: 'tautulli.tootie.tv' },
+  fields_json: { host: 'media.example.com' },
   source_kind: null,
   source_node_id: null,
   source_device_id: null,

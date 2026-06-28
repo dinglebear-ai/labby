@@ -598,7 +598,7 @@ pub struct ProtectedMcpRouteConfig {
     /// Whether this route is active for metadata, auth, and proxy resolution.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Public host that reaches Lab through the edge proxy, e.g. `mcp.tootie.tv`.
+    /// Public host that reaches Lab through the edge proxy, e.g. `mcp.example.com`.
     pub public_host: String,
     /// Public path prefix on that host, e.g. `/syslog`.
     pub public_path: String,
@@ -607,7 +607,7 @@ pub struct ProtectedMcpRouteConfig {
     /// auth instead of proxying directly to `backend_url`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
-    /// Full backend MCP endpoint URL, e.g. `http://100.88.16.79:3100/mcp`.
+    /// Full backend MCP endpoint URL, e.g. `http://100.64.0.10:3100/mcp`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub backend_url: String,
     /// Deprecated compatibility field. New configs put the MCP path in

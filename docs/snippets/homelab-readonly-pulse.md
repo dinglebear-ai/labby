@@ -25,7 +25,7 @@ inputs:
     description: Maximum containers to sample
   identity_hosts:
     type: array
-    default: ["dookie", "squirts"]
+    default: ["node-a", "node-b"]
     required: false
     description: Host aliases for read-only identity checks
 ---
@@ -58,7 +58,7 @@ The authoring pattern is still simple: pick read-only tools, fill their schema f
 - `container_sample` controls how many containers are included in the sample after counting all containers.
 - `identity_hosts` expands into one read-only Synapse `hostname` command per host.
 
-These defaults let the snippet run with no arguments. Users only change inputs when they want to focus the pulse, for example `--param log_query=oauth` or `--param identity_hosts='["dookie","squirts","tootie"]'`.
+These defaults let the snippet run with no arguments. Users only change inputs when they want to focus the pulse, for example `--param log_query=oauth` or `--param identity_hosts='["node-a","node-b","controller"]'`.
 
 ## What Validation Should Catch
 
@@ -105,7 +105,7 @@ async (overrides = {}) => {
     logQuery: overrides.log_query ?? "error",
     logLimit: overrides.log_limit ?? 5,
     containerSample: overrides.container_sample ?? 12,
-    identityHosts: overrides.identity_hosts ?? ["dookie", "squirts"],
+    identityHosts: overrides.identity_hosts ?? ["node-a", "node-b"],
     ...overrides
   };
 

@@ -2,7 +2,7 @@
 
 Last updated: 2026-06-27
 
-## Linux self-hosted runner (`linux-lab`) on tootie
+## Linux self-hosted runner (`linux-lab`) on controller
 
 CI now runs the full Linux `nextest` lane on a self-hosted runner with labels
 `self-hosted` and `linux-lab`.
@@ -15,10 +15,10 @@ Fork PRs remain on GitHub-hosted `ubuntu-latest` via `test-fork`.
 - `linux-lab` is listed in `.github/actionlint.yaml` so actionlint accepts the
   custom label.
 
-### Container setup (tootie)
+### Container setup (controller)
 
-The runner runs as a Docker container on tootie. Keep Compose files on the
-cache pool, not under `/opt`, because tootie is Unraid and `/opt` does not
+The runner runs as a Docker container on controller. Keep Compose files on the
+cache pool, not under `/opt`, because controller is Unraid and `/opt` does not
 survive reboot.
 
 - Compose: `/mnt/cache/compose/actions-runner/lab/docker-compose.yml`
@@ -58,7 +58,7 @@ services:
     working_dir: /home/runner
     environment:
       - RUNNER_REPO=jmagar/lab
-      - RUNNER_NAME=tootie-lab-linux
+      - RUNNER_NAME=linux-ci-runner
       - RUNNER_LABELS=linux-lab,self-hosted,linux,x64
       - RUNNER_WORKDIR=/home/runner/_work
       - RUNNER_URL=https://github.com/jmagar/lab

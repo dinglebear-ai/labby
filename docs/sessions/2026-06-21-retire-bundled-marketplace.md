@@ -46,7 +46,7 @@ Confirmed that the Lab/Labby plugin marketplace was migrated to a dedicated repo
 | deleted | `.claude-plugin/marketplace.json` | — | remove Claude catalog (superseded by dendrite) | `git rm`; 0 `marketplace.json` left in repo |
 | deleted | `.agents/plugins/marketplace.json` | — | remove Codex catalog (superseded by dendrite) | git-tracked, confirmed dendrite has its own |
 | deleted | `crates/lab/src/cli/marketplace/generator.rs` | — | remove obsolete catalog generator | clippy green after removal |
-| deleted | `plugins/{acp,adguard,agent-os,arrs,bitwarden,bytestash,dozzle,immich,linkding,loggifly,memos,navidrome,neo4j,notebooklm,plexus,qdrant,radicale,scrutiny,swag,tei,testing,uptime-kuma,vibin}/**` | — | 23 migrated plugin dirs (stale duplicates) | each verified present in dendrite (bulk: 596 files in first commit) |
+| deleted | `plugins/{acp,adguard,agent-workstation,arrs,bitwarden,bytestash,dozzle,immich,linkding,loggifly,memos,navidrome,neo4j,notebooklm,plexus,qdrant,radicale,scrutiny,swag,tei,testing,uptime-kuma,vibin}/**` | — | 23 migrated plugin dirs (stale duplicates) | each verified present in dendrite (bulk: 596 files in first commit) |
 | modified | `crates/lab/src/cli/marketplace.rs` | — | drop `Generate` subcommand; preserve dispatch path | smoke: `marketplace help` ok, `marketplace generate` rejected |
 | modified | `Justfile` | — | remove `marketplace` recipe that ran the generator | no remaining `marketplace` refs |
 | modified | `docs/PLUGINS.md` | — | "Generated marketplace tree" → "Marketplace distribution" (dendrite) | comment-analyzer verified accurate |

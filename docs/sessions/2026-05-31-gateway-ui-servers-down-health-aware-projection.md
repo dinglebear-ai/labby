@@ -16,14 +16,14 @@ Four chained requests in one session: (1) fix the `mise WARN missing: pnpm@9.15.
 
 ## Session Overview
 - Resolved the mise warning: the `lab` project pins `pnpm = "9.15.9"` in `~/workspace/lab/.mise.toml`; installed that exact version (`mise install pnpm@9.15.9`).
-- Root-caused the syslog 403 spam: labby's upstream pointed at the legacy host `syslog.tootie.tv`, but the renamed backend (`cortex` container) only allowlists `cortex.tootie.tv` in rmcp's DNS-rebinding guard. The on-disk config had already been repointed to `cortex`; the running container held a stale in-memory `syslog` upstream. A container restart cleared the zombie reprobe loop.
+- Root-caused the syslog 403 spam: labby's upstream pointed at the legacy host `syslog.example.com`, but the renamed backend (`cortex` container) only allowlists `cortex.example.com` in rmcp's DNS-rebinding guard. The on-disk config had already been repointed to `cortex`; the running container held a stale in-memory `syslog` upstream. A container restart cleared the zombie reprobe loop.
 - Root-caused the web UI "all servers down": the gateway runs **lazy discovery** (catalog empty until first `search`/`execute`), and `server_view_from_upstream` derived `connected` solely from `exposed_tool_count > 0`, so at rest the fleet rendered all-Disconnected even though servers were reachable (health heartbeats succeeding).
 - Implemented a health-aware fix in `projection.rs`, added two unit tests, built with `just dev-debug`, hot-swapped the container, and verified the UI shows 24/26 healthy at rest.
 
 ## Sequence of Events
 1. Diagnosed the mise warning to the project-level `.mise.toml` pin and installed `pnpm@9.15.9`; verified `mise current pnpm` → `9.15.9`.
 2. Reproduced the syslog 403 with `curl` (unauth → 401 at Cloudflare OAuth; authed → 403 "Host header is not allowed" from the rmcp backend); traced the string to `rmcp .../streamable_http_server/tower.rs:241` and `syslog-mcp`/`cortex` `with_allowed_hosts`.
-3. Found the deployed backend is the `cortex` container (`CORTEX_PUBLIC_URL=https://cortex.tootie.tv`, no `CORTEX_ALLOWED_HOSTS`); confirmed `cortex.tootie.tv/mcp` returns 200 with the bearer.
+3. Found the deployed backend is the `cortex` container (`CORTEX_PUBLIC_URL=https://cortex.example.com`, no `CORTEX_ALLOWED_HOSTS`); confirmed `cortex.example.com/mcp` returns 200 with the bearer.
 4. Discovered the on-disk `~/.lab/config.toml` upstream was already `cortex`; the running container still reprobed a stale `syslog` upstream. `lab gateway reload` only refreshes catalogs, not the pool. `docker restart labby` cleared the zombie.
 5. Used `/vibin:webwright` (Playwright via uv venv + firefox) to load `http://localhost:8765`; captured that the fleet data is server-rendered (RSC) from `POST /v1/gateway {action:gateway.list}`, showing `26 total / 0 healthy / all Disconnected`.
 6. Traced the metric to `projection.rs:250` (`connected = exposed_tool_count > 0`) reading a global catalog that is empty under lazy discovery ("discovery deferred until first use" log line). Confirmed: a `search` tool call warmed discovery → 21/26 connected, 143 tools.
@@ -32,7 +32,7 @@ Four chained requests in one session: (1) fix the `mise WARN missing: pnpm@9.15.
 9. Verified at rest: container `gateway.list` 24/26 connected; UI headline "Healthy Connections: 24" (was 0). Removed the 78M `outputs/labby-ui-debug/` investigation workspace.
 
 ## Key Findings
-- `rmcp` host-allowlist rejection text originates at `crates/.../streamable_http_server/tower.rs:241` (`forbidden_response("Forbidden: Host header is not allowed")`); the backend allowlist is built from `CORTEX_PUBLIC_URL` only — `syslog.tootie.tv` is not included.
+- `rmcp` host-allowlist rejection text originates at `crates/.../streamable_http_server/tower.rs:241` (`forbidden_response("Forbidden: Host header is not allowed")`); the backend allowlist is built from `CORTEX_PUBLIC_URL` only — `syslog.example.com` is not included.
 - The host `lab` CLI builds its **own** in-process `GatewayManager` (`crates/lab/src/cli/gateway.rs:357` `build_manager`), so `lab gateway list` never reflects the running container — an earlier "20 connected" check measured the wrong process.
 - `connected` for upstreams was `summary.exposed_tool_count > 0 || resources || prompts` (`crates/lab/src/dispatch/gateway/projection.rs:250`), reading the global catalog via `cached_upstream_summary` (`crates/lab/src/dispatch/upstream/pool.rs:2218`) — empty under lazy discovery.
 - The virtual-server path already honored health: `connected = service_known && enabled && (peer_connected || health_connected)` (`projection.rs:331`). The upstream path ignored health — the asymmetry that caused the regression.
@@ -42,7 +42,7 @@ Four chained requests in one session: (1) fix the `mise WARN missing: pnpm@9.15.
 - Made the upstream projection health-aware rather than disabling lazy discovery or eager-connecting all upstreams: `connected = exposing_capabilities || (last_error.is_none() && tool_health.is_routable())`. This keeps lazy discovery's startup benefit while making the fleet view reflect reachability.
 - Used the already-computed operator-visible `last_error` for the health gate so benign capability errors (e.g. "method not found" for prompts/resources) do not mark a server down.
 - Accepted optimistic semantics (seeded/unprobed → connected until a probe records a failure) because the user explicitly wanted "not everything Disconnected until first use." Logged the alternative (explicit tri-state) as bead lab-yuc0q.
-- For the syslog issue, chose Option A (repoint labby to the canonical `cortex.tootie.tv/mcp`) over Option B (add `CORTEX_ALLOWED_HOSTS=syslog.tootie.tv`); the repoint was already on disk, so the remaining fix was clearing stale runtime state.
+- For the syslog issue, chose Option A (repoint labby to the canonical `cortex.example.com/mcp`) over Option B (add `CORTEX_ALLOWED_HOSTS=syslog.example.com`); the repoint was already on disk, so the remaining fix was clearing stale runtime state.
 
 ## Files Changed
 | status | path | previous path | purpose | evidence |
@@ -81,8 +81,8 @@ No other bead was created, closed, claimed, or commented during the session.
 | command | result |
 |---|---|
 | `mise install pnpm@9.15.9` | installed; `mise current pnpm` → `9.15.9` |
-| `curl -H "Authorization: $AUTH" https://syslog.tootie.tv/mcp` (initialize) | HTTP 403 `Forbidden: Host header is not allowed` |
-| `curl … https://cortex.tootie.tv/mcp` (initialize) | HTTP 200, MCP init result |
+| `curl -H "Authorization: $AUTH" https://syslog.example.com/mcp` (initialize) | HTTP 403 `Forbidden: Host header is not allowed` |
+| `curl … https://cortex.example.com/mcp` (initialize) | HTTP 200, MCP init result |
 | `docker restart labby` | cleared stale `syslog` reprobe loop |
 | `cargo check --workspace --all-features` | Finished, clean |
 | `cargo nextest run … -E 'test(lazily_seeded…) or test(errored_upstream…)'` | 2 passed |
@@ -105,7 +105,7 @@ No other bead was created, closed, claimed, or commented during the session.
 | command | expected | actual | status |
 |---|---|---|---|
 | `mise current pnpm` | 9.15.9 | 9.15.9 | pass |
-| authed `curl cortex.tootie.tv/mcp` | 200 MCP init | 200 init result | pass |
+| authed `curl cortex.example.com/mcp` | 200 MCP init | 200 init result | pass |
 | `cargo check --workspace --all-features` | clean | Finished, no errors | pass |
 | `nextest` two new tests | pass | 2 passed | pass |
 | container `gateway.list` after deploy | most servers connected | 24/26 connected | pass |
@@ -118,7 +118,7 @@ No other bead was created, closed, claimed, or commented during the session.
 
 ## Decisions Not Taken
 - Did not disable gateway-wide tool_search mode or force eager discovery — would defeat the lazy-discovery design and broaden scope.
-- Did not add `CORTEX_ALLOWED_HOSTS=syslog.tootie.tv` to the cortex container (Option B) — the canonical repoint to `cortex.tootie.tv` was already in config.
+- Did not add `CORTEX_ALLOWED_HOSTS=syslog.example.com` to the cortex container (Option B) — the canonical repoint to `cortex.example.com` was already in config.
 - Did not edit shared docs (`CODE_MODE.md` etc.) — under active concurrent edit.
 
 ## References
@@ -128,7 +128,7 @@ No other bead was created, closed, claimed, or commented during the session.
 
 ## Open Questions
 - Does the user want the explicit tri-state UI (lab-yuc0q) or is the optimistic boolean sufficient?
-- Should the cortex deployment also add `CORTEX_ALLOWED_HOSTS=syslog.tootie.tv` to keep the legacy alias usable for other clients, or is the canonical host the only supported entry point now?
+- Should the cortex deployment also add `CORTEX_ALLOWED_HOSTS=syslog.example.com` to keep the legacy alias usable for other clients, or is the canonical host the only supported entry point now?
 
 ## Next Steps
 - Commit this session's source change with a path-limited stage: `git add -- crates/lab/src/dispatch/gateway/projection.rs crates/lab/src/dispatch/gateway/manager.rs` then commit — explicitly excluding the concurrent agent's dirty files. Verify with `git diff --cached --name-only` before committing.

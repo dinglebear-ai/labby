@@ -594,7 +594,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             SettingsControl::StringList,
             SettingsApplyMode::Restart,
             Some("LAB_MCP_ALLOWED_HOSTS"),
-            Some("lab.tootie.tv"),
+            Some("lab.example.com"),
         ),
         editable(
             "surfaces",
@@ -743,7 +743,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             SettingsControl::Text,
             SettingsApplyMode::Restart,
             None,
-            Some("dookie"),
+            Some("node-a"),
         ),
         number_editable(
             "advanced",
@@ -782,7 +782,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             SettingsControl::Text,
             SettingsApplyMode::Restart,
             None,
-            Some("dookie"),
+            Some("node-a"),
         ),
         number_editable(
             "advanced",

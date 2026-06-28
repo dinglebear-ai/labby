@@ -17,7 +17,7 @@ async fn protected_route_add_updates_live_resolver_index() {
 
     assert_eq!(
         manager
-            .resolve_protected_route("mcp.tootie.tv", "/syslog")
+            .resolve_protected_route("mcp.example.com", "/syslog")
             .await
             .expect("route should be live")
             .name,
@@ -26,7 +26,7 @@ async fn protected_route_add_updates_live_resolver_index() {
     assert_eq!(
         manager
             .resolve_protected_route_metadata(
-                "mcp.tootie.tv",
+                "mcp.example.com",
                 "/.well-known/oauth-protected-resource/syslog",
             )
             .await

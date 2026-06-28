@@ -177,7 +177,7 @@ Example:
 
 ```toml
 [node]
-controller = "tootie"
+controller = "controller"
 ```
 
 Rules:
@@ -374,16 +374,16 @@ Named OAuth callback forwarding targets for `labby oauth relay-local`.
 Example:
 
 ```toml
-[oauth.machines.dookie]
-target_url = "http://node.internal.example:38935/callback/dookie"
-description = "dookie Codex callback listener"
+[oauth.machines.node-a]
+target_url = "http://node.internal.example:38935/callback/node-a"
+description = "node-a Codex callback listener"
 default_port = 38935
 ```
 
 This is used by:
 
 ```bash
-labby oauth relay-local --machine dookie --port 38935
+labby oauth relay-local --machine node-a --port 38935
 ```
 
 `oauth.machines` config is TOML-only. There is no env-var override for the named machine map.
@@ -463,8 +463,8 @@ UNRAID_API_KEY=...
 Named instance:
 
 ```env
-UNRAID_SHART_URL=https://other.local/graphql
-UNRAID_SHART_API_KEY=...
+UNRAID_BACKUP_URL=https://other.local/graphql
+UNRAID_BACKUP_API_KEY=...
 ```
 
 Jellyfin follows the same pattern:
@@ -570,13 +570,13 @@ Fleet websocket sessions are separate from that bearer auth path. Node-to-contro
 There is not a separate `[node]` auth block in this implementation.
 
 ```toml
-[oauth.machines.dookie]
-target_url = "http://node.internal.example:38935/callback/dookie"
-description = "Dookie Claude callback target"
+[oauth.machines.node-a]
+target_url = "http://node.internal.example:38935/callback/node-a"
+description = "Node A Claude callback target"
 default_port = 38935
 ```
 
-Machine IDs are stable config keys. When `labby oauth relay-local --machine dookie --port 38935`
+Machine IDs are stable config keys. When `labby oauth relay-local --machine node-a --port 38935`
 runs, it resolves the forwarding target from this map and preserves the incoming suffix path and
 query string when proxying the callback.
 
@@ -795,7 +795,12 @@ surfaces as `oauth_needs_reauth`, never as an internal error.
 
 Full details in [TRANSPORT.md](../surfaces/TRANSPORT.md).
 
-## Docker Deployment
+## Docker Compatibility Deployment
+
+The recommended self-hosted gateway deployment is Incus, with bare metal as the
+secondary supported shape for a dedicated host or VM. See [INCUS.md](./INCUS.md)
+for the recommended runbook. The Docker path below is retained for development,
+compatibility, image smoke, and Docker-specific ACP adapter work.
 
 `docker-compose.yml` mounts config and secrets from the host user's `~/.lab/`
 directory so the container and a local `labby serve` process share the same

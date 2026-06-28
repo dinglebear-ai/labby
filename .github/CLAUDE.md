@@ -39,7 +39,7 @@ their category is enabled:
 | docs-check (name: `Generated docs`) | `docs_check` | `just docs-check` — the generated-docs freshness gate; fails if `docs/generated/*` (action catalog, MCP help, CLI help) drift from the registry. This is the only freshness check; there is **no** standalone `doc-freshness.yml` or `code-conventions.yml` workflow — only `ci.yml` and `release.yml` exist. |
 | test | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` (`self-hosted` `linux-lab` runner for trusted events) |
 | test-fork | `rust_test` | same `cargo nextest` command on `ubuntu-latest` for fork PRs only |
-| test-windows | `rust_test` | same nextest run on the self-hosted `agent-os-lab` runner (label `windows-lab`); fork PRs never reach this runner |
+| test-windows | `rust_test` | same nextest run on the self-hosted `windows-ci` runner (label `windows-lab`); fork PRs never reach this runner |
 | release-smoke | `release` | `cargo build --workspace --all-features --release` — Windows skipped on PRs (see below) |
 | container | `docker` | Docker build with `config/Dockerfile` |
 

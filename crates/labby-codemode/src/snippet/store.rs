@@ -1069,7 +1069,7 @@ mod tests {
 
     #[test]
     fn merge_snippet_input_rejects_unknown_declared_inputs() {
-        let body = "---\nname: demo\ndescription: Demo snippet\ninputs:\n  host:\n    type: string\n    default: dookie\n---\n\n```js\nasync (input) => input\n```\n";
+        let body = "---\nname: demo\ndescription: Demo snippet\ninputs:\n  host:\n    type: string\n    default: node-a\n---\n\n```js\nasync (input) => input\n```\n";
         let metadata = frontmatter(body)
             .expect("frontmatter parsed")
             .expect("metadata");

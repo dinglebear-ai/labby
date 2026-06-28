@@ -149,7 +149,7 @@ git commit -m "feat(lab): add binary entry point with clap + tokio + tracing"
 //!
 //! Multi-instance services follow the `S_<LABEL>_URL` pattern: a service
 //! like `unraid` reads `UNRAID_URL` as the default instance and
-//! `UNRAID_SHART_URL` as an additional instance labeled `shart`.
+//! `UNRAID_BACKUP_URL` as an additional instance labeled `backup-node`.
 
 use std::{collections::HashMap, path::PathBuf};
 
@@ -233,8 +233,8 @@ fn toml_path() -> Option<PathBuf> {
 ///
 /// Returns a map from instance label (`"default"` or `"<label>"`) to the
 /// set of `(suffix, value)` pairs. Example: for prefix `UNRAID`, env vars
-/// `UNRAID_URL`, `UNRAID_API_KEY`, `UNRAID_SHART_URL`, `UNRAID_SHART_API_KEY`
-/// yield two entries keyed `"default"` and `"shart"`.
+/// `UNRAID_URL`, `UNRAID_API_KEY`, `UNRAID_BACKUP_URL`, `UNRAID_BACKUP_API_KEY`
+/// yield two entries keyed `"default"` and `"backup-node"`.
 #[must_use]
 pub fn scan_instances(prefix: &str) -> HashMap<String, HashMap<String, String>> {
     let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
