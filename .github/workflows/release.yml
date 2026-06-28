@@ -155,10 +155,36 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}:latest
 
+  incus-image:
+    name: Incus image
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: lab-x86_64-unknown-linux-gnu
+      - name: Install distrobuilder
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y debootstrap gpg rsync squashfs-tools
+          sudo snap install distrobuilder --classic
+      - name: Build Incus image
+        run: scripts/ci/build-incus-image.sh "${{ github.ref_name }}" lab-x86_64-unknown-linux-gnu.tar.gz
+      - name: Upload Incus image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-incus-image
+          path: |
+            target/incus-image-dist/labby-incus-*.tar.xz
+            target/incus-image-dist/labby-incus-*.tar.xz.sha256
+          if-no-files-found: error
+
   release:
     name: Create Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, container]
+    needs: [build, container, incus-image]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -172,4 +198,6 @@ jobs:
             lab-*.tar.gz.sha256
             lab-*.zip
             lab-*.zip.sha256
+            labby-incus-*.tar.xz
+            labby-incus-*.tar.xz.sha256
           generate_release_notes: true
