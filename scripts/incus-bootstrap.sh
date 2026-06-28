@@ -9,6 +9,7 @@ PROFILE_NAME="labby-gateway"
 PROFILE_FILE="config/incus/labby-gateway-profile.yaml"
 STORAGE_POOL_NAME="labby-zfs"
 STORAGE_POOL_SOURCE="${LABBY_INCUS_ZFS_SOURCE:-rpool/labby-incus}"
+RUNTIME_PROFILE_NAME=""
 VERSION="${LAB_INSTALL_VERSION:-}"
 LOCAL_BINARY=""
 DRY_RUN=0
@@ -28,6 +29,7 @@ Options:
   --image IMAGE               Incus image alias (default: images:ubuntu/24.04)
   --profile-name NAME          Incus profile name (default: labby-gateway)
   --profile-file PATH          Incus profile YAML (default: config/incus/labby-gateway-profile.yaml)
+  --runtime-profile-name NAME  Rootless profile for existing containers with a different root pool
   --storage-pool NAME          ZFS Incus storage pool used by the profile root disk (default: labby-zfs)
   --zfs-source DATASET          ZFS dataset for the storage pool (default: rpool/labby-incus)
   --version TAG               Labby release tag to install, e.g. v0.22.2
@@ -160,9 +162,43 @@ ensure_profile() {
     fi
 }
 
+write_rootless_profile() {
+    runtime_name="$1"
+    awk -v runtime="$runtime_name" '
+        /^name:/ { print "name: " runtime; next }
+        /^used_by:/ { print "used_by: []"; next }
+        /^devices:/ { in_devices = 1; print; next }
+        in_devices && /^  root:/ { skip = 1; next }
+        skip && /^  [^ ]/ { skip = 0 }
+        skip && /^[^ ]/ { skip = 0; in_devices = 0 }
+        in_devices && /^[^ ]/ { in_devices = 0 }
+        !skip { print }
+    ' "$PROFILE_FILE"
+}
+
+ensure_runtime_profile() {
+    runtime_name="$1"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        say "+ incus profile show $(quote "$runtime_name") >/dev/null 2>&1 || incus profile create $(quote "$runtime_name")"
+        say "+ derive $(quote "$runtime_name") from $(quote "$PROFILE_FILE") without devices.root, then incus profile edit $(quote "$runtime_name")"
+        return
+    fi
+
+    if ! incus profile show "$runtime_name" >/dev/null 2>&1; then
+        run incus profile create "$runtime_name"
+    fi
+
+    profile_tmp="$(mktemp)"
+    write_rootless_profile "$runtime_name" > "$profile_tmp"
+    incus profile edit "$runtime_name" < "$profile_tmp"
+    rm -f "$profile_tmp"
+}
+
 container_has_profile() {
+    profile="$1"
     incus config show "$NAME" |
-        awk -v profile="$PROFILE_NAME" '
+        awk -v profile="$profile" '
             /^profiles:/ { in_profiles = 1; next }
             in_profiles && /^- / { if (substr($0, 3) == profile) found = 1; next }
             in_profiles && /^[^ ]/ { in_profiles = 0 }
@@ -170,16 +206,44 @@ container_has_profile() {
         '
 }
 
+container_root_pool() {
+    incus config show "$NAME" --expanded |
+        awk '
+            /^devices:/ { in_devices = 1; next }
+            in_devices && /^  root:/ { in_root = 1; next }
+            in_root && /^    pool:/ { print $2; exit }
+            in_root && /^  [^ ]/ { in_root = 0 }
+            in_devices && /^[^ ]/ { in_devices = 0 }
+        '
+}
+
+profile_root_pool() {
+    incus profile device get "$PROFILE_NAME" root pool 2>/dev/null || true
+}
+
 ensure_container_profile() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        say "+ incus profile add $(quote "$NAME") $(quote "$PROFILE_NAME") # if missing"
+        say "+ add $(quote "$PROFILE_NAME") unless existing root pool differs; then add rootless runtime profile"
         return
     fi
 
-    if container_has_profile; then
+    container_pool="$(container_root_pool)"
+    profile_pool="$(profile_root_pool)"
+    profile_to_add="$PROFILE_NAME"
+
+    if [ -n "$container_pool" ] && [ -n "$profile_pool" ] && [ "$container_pool" != "$profile_pool" ]; then
+        runtime_name="${RUNTIME_PROFILE_NAME:-$PROFILE_NAME-runtime}"
+        say "container root pool '$container_pool' differs from profile root pool '$profile_pool'; using rootless runtime profile: $runtime_name"
+        ensure_runtime_profile "$runtime_name"
+        profile_to_add="$runtime_name"
+    fi
+
+    if container_has_profile "$profile_to_add"; then
+        say "profile already applied: $profile_to_add"
+    elif container_has_profile "$PROFILE_NAME" && [ "$profile_to_add" = "$PROFILE_NAME" ]; then
         say "profile already applied: $PROFILE_NAME"
     else
-        run incus profile add "$NAME" "$PROFILE_NAME"
+        run incus profile add "$NAME" "$profile_to_add"
     fi
 }
 
@@ -189,6 +253,7 @@ while [ "$#" -gt 0 ]; do
         --image) IMAGE="${2:?missing --image value}"; shift 2 ;;
         --profile-name) PROFILE_NAME="${2:?missing --profile-name value}"; shift 2 ;;
         --profile-file) PROFILE_FILE="${2:?missing --profile-file value}"; shift 2 ;;
+        --runtime-profile-name) RUNTIME_PROFILE_NAME="${2:?missing --runtime-profile-name value}"; shift 2 ;;
         --storage-pool) STORAGE_POOL_NAME="${2:?missing --storage-pool value}"; shift 2 ;;
         --zfs-source) STORAGE_POOL_SOURCE="${2:?missing --zfs-source value}"; shift 2 ;;
         --version) VERSION="${2:?missing --version value}"; shift 2 ;;
