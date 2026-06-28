@@ -12,6 +12,7 @@ STORAGE_POOL_SOURCE="${LABBY_INCUS_ZFS_SOURCE:-rpool/labby-incus}"
 RUNTIME_PROFILE_NAME=""
 VERSION="${LAB_INSTALL_VERSION:-}"
 LOCAL_BINARY=""
+SKIP_INSTALL=0
 DRY_RUN=0
 TAILSCALE_SSH=0
 ALLOW_SOURCE_FALLBACK=0
@@ -34,6 +35,7 @@ Options:
   --zfs-source DATASET          ZFS dataset for the storage pool (default: rpool/labby-incus)
   --version TAG               Labby release tag to install, e.g. v0.22.2
   --local-binary PATH          Push a locally built labby binary instead of downloading a release
+  --skip-install              Use the labby binary already baked into the selected image
   --dry-run                   Print commands only
   --tailscale-ssh             Run tailscale up with --ssh when TS_AUTHKEY is set
   --allow-source-fallback     Allow install.sh cargo fallback if release asset is unavailable
@@ -258,6 +260,7 @@ while [ "$#" -gt 0 ]; do
         --zfs-source) STORAGE_POOL_SOURCE="${2:?missing --zfs-source value}"; shift 2 ;;
         --version) VERSION="${2:?missing --version value}"; shift 2 ;;
         --local-binary) LOCAL_BINARY="${2:?missing --local-binary value}"; shift 2 ;;
+        --skip-install) SKIP_INSTALL=1; shift ;;
         --dry-run|--print-only) DRY_RUN=1; shift ;;
         --tailscale-ssh) TAILSCALE_SSH=1; shift ;;
         --allow-source-fallback) ALLOW_SOURCE_FALLBACK=1; shift ;;
@@ -266,8 +269,11 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ -z "$VERSION" ] && [ -z "$LOCAL_BINARY" ]; then
-    fail "--version is required unless --local-binary is provided"
+if [ -z "$VERSION" ] && [ -z "$LOCAL_BINARY" ] && [ "$SKIP_INSTALL" -eq 0 ]; then
+    fail "--version is required unless --local-binary or --skip-install is provided"
+fi
+if [ "$SKIP_INSTALL" -eq 1 ] && [ -n "$LOCAL_BINARY" ]; then
+    fail "--skip-install cannot be combined with --local-binary"
 fi
 if [ -n "$LOCAL_BINARY" ] && [ "$DRY_RUN" -eq 0 ] && [ ! -f "$LOCAL_BINARY" ]; then
     fail "--local-binary path does not exist: $LOCAL_BINARY"
@@ -315,7 +321,9 @@ fi
 verify_container_substrate
 ensure_tun_device
 
-if [ -n "$LOCAL_BINARY" ]; then
+if [ "$SKIP_INSTALL" -eq 1 ]; then
+    run incus exec "$NAME" -- test -x /usr/local/bin/labby
+elif [ -n "$LOCAL_BINARY" ]; then
     remote_tmp="/usr/local/bin/.labby-upload-$$"
     run incus exec "$NAME" -- mkdir -p /usr/local/bin
     run incus file push "$LOCAL_BINARY" "$NAME$remote_tmp"

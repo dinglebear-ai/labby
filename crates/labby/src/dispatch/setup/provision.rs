@@ -25,6 +25,7 @@ const LAB_HOME: &str = "/home/lab";
 const LAB_PATH: &str = "/home/lab/.local/bin:/usr/local/bin:/usr/bin:/bin";
 const TS_AUTHKEY_ENV: &str = "TS_AUTHKEY";
 const TS_AUTHKEY_PATH: &str = "/run/labby-ts-authkey";
+const LAB_ZPROFILE: &str = "/home/lab/.zprofile";
 const LAB_USER_DIRS: &[&str] = &[
     "/home/lab/.lab",
     "/home/lab/.local/bin",
@@ -44,6 +45,12 @@ const APT_FLOOR: &[&str] = &[
     "curl",
     "xz-utils",
     "zsh",
+    "ffmpeg",
+    "adb",
+    "android-sdk",
+    "android-sdk-platform-tools",
+    "android-sdk-platform-tools-common",
+    "android-sdk-build-tools",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,6 +292,23 @@ impl ProvisionAction {
                 let mut args = vec!["-p"];
                 args.extend_from_slice(LAB_USER_DIRS);
                 run_checked("mkdir", &args).await?;
+                run_checked(
+                    "sh",
+                    &[
+                        "-c",
+                        r#"set -eu
+profile=/home/lab/.zprofile
+touch "$profile"
+if ! grep -q "LABBY managed PATH" "$profile"; then
+    cat >> "$profile" <<'EOF'
+
+# LABBY managed PATH
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+EOF
+fi"#,
+                    ],
+                )
+                .await?;
                 run_checked("chown", &["-R", "lab:lab", "/home/lab"]).await?;
             }
             ActionKind::Node => {
@@ -441,6 +465,12 @@ async fn lab_user_ready() -> Result<bool, ToolError> {
             .map(|meta| meta.is_dir())
             .unwrap_or(false)
     }) {
+        return Ok(false);
+    }
+    let zprofile_ok = std::fs::read_to_string(LAB_ZPROFILE)
+        .map(|profile| profile.contains("LABBY managed PATH"))
+        .unwrap_or(false);
+    if !zprofile_ok {
         return Ok(false);
     }
     lab_command_success("test -w \"$HOME/.lab\" && test -w \"$HOME/.local/bin\"").await
@@ -739,9 +769,10 @@ mod tests {
     fn dry_run_plan_renders_privilege_and_non_actions() {
         let text = provision_plan_text(false);
 
-        assert!(text.contains(
-            "[root] apt install: git openssh-client gh ca-certificates curl xz-utils zsh"
-        ));
+        assert!(text.contains("[root] apt install: git openssh-client gh"));
+        assert!(text.contains("ffmpeg"));
+        assert!(text.contains("adb"));
+        assert!(text.contains("android-sdk"));
         assert!(text.contains("[lab ] install node v24.x"));
         assert!(text.contains("[lab ] install claude + codex + gemini"));
         assert!(text.contains("[root] write /etc/systemd/system/labby.service"));

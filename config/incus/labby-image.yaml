@@ -1,0 +1,51 @@
+image:
+  distribution: ubuntu
+  release: noble
+  architecture: amd64
+  variant: default
+  name: labby-incus
+  description: Labby gateway Incus image {{ image.release }} {{ image.architecture }} ({{ image.serial }})
+  serial: local
+
+source:
+  downloader: debootstrap
+  same_as: gutsy
+  url: http://archive.ubuntu.com/ubuntu/
+
+packages:
+  manager: apt
+  update: true
+  cleanup: true
+  repositories:
+    - name: ubuntu
+      url: |-
+        deb http://archive.ubuntu.com/ubuntu {{ image.release }} main restricted universe multiverse
+        deb http://archive.ubuntu.com/ubuntu {{ image.release }}-updates main restricted universe multiverse
+        deb http://security.ubuntu.com/ubuntu {{ image.release }}-security main restricted universe multiverse
+  sets:
+    - action: install
+      packages:
+        - git
+        - openssh-client
+        - gh
+        - ca-certificates
+        - curl
+        - xz-utils
+        - zsh
+        - ffmpeg
+        - adb
+        - android-sdk
+        - android-sdk-platform-tools
+        - android-sdk-platform-tools-common
+        - android-sdk-build-tools
+
+files:
+  - generator: copy
+    source: "@@LABBY_BINARY@@"
+    path: /usr/local/bin/labby
+    mode: "0755"
+  - generator: dump
+    path: /etc/labby-image-release
+    mode: "0644"
+    content: |-
+      {{ image.serial }}

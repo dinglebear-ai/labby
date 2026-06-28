@@ -107,6 +107,26 @@ scripts/incus-bootstrap.sh --local-binary target/debug/labby
 
 The release path should still use `--version vX.Y.Z`.
 
+The distrobuilder image definition lives at `config/incus/labby-image.yaml`.
+Release CI builds it as a prebuilt Incus container image:
+`labby-incus-x86_64-unknown-linux-gnu.tar.xz` plus a `.sha256` file. Import it
+locally and launch it with the normal profile/provision converger:
+
+```bash
+sha256sum -c labby-incus-x86_64-unknown-linux-gnu.tar.xz.sha256
+incus image import labby-incus-x86_64-unknown-linux-gnu.tar.xz \
+  --alias labby-gateway-vX.Y.Z
+scripts/incus-bootstrap.sh \
+  --image local:labby-gateway-vX.Y.Z \
+  --skip-install
+```
+
+The image bakes in the release `labby` binary and the bounded apt floor,
+including ffmpeg plus Android platform tooling (`adb`, Android SDK platform
+tools, and build tools). It does not bake secrets, Tailscale auth, OAuth/login
+state, or operator config; those remain runtime convergence concerns handled by
+the bootstrap and `labby setup --provision`.
+
 Release archives are currently published for amd64 Linux. On arm64 hosts, use
 `--local-binary` with a locally built `labby` binary, or opt into the slower
 source build fallback with `--allow-source-fallback` / `LAB_ALLOW_SOURCE_FALLBACK=1`.
