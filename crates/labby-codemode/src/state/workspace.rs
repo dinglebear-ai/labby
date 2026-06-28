@@ -29,6 +29,38 @@ pub(crate) struct ListResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct MutationResult {
+    pub(crate) ok: bool,
+    pub(crate) path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ExistsResult {
+    pub(crate) path: String,
+    pub(crate) exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct StatResult {
+    pub(crate) path: String,
+    pub(crate) kind: String,
+    pub(crate) bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct WalkEntry {
+    pub(crate) path: String,
+    pub(crate) kind: String,
+    pub(crate) bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct WalkTreeResult {
+    pub(crate) entries: Vec<WalkEntry>,
+    pub(crate) truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct GlobResult {
     pub(crate) matches: Vec<String>,
     pub(crate) truncated: bool,
@@ -236,6 +268,229 @@ impl StateWorkspace {
             path: path.as_str().to_string(),
             bytes: content.len(),
             content,
+        })
+    }
+
+    pub(crate) async fn append_file(
+        &self,
+        path: &VirtualPath,
+        content: &str,
+    ) -> Result<MutationResult, ToolError> {
+        let existing = match self.read_file(path).await {
+            Ok(file) => file.content,
+            Err(err) if err.kind() == "not_found" => String::new(),
+            Err(err) => return Err(err),
+        };
+        let next = format!("{existing}{content}");
+        self.write_file(path, &next).await?;
+        Ok(MutationResult {
+            ok: true,
+            path: path.as_str().to_string(),
+        })
+    }
+
+    pub(crate) async fn exists(&self, path: &VirtualPath) -> Result<ExistsResult, ToolError> {
+        let destination = self.resolve(path);
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&destination).await?;
+        let exists = match tokio::fs::metadata(&destination).await {
+            Ok(_) => true,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+            Err(err) => return Err(internal_io("read state path metadata")(err)),
+        };
+        Ok(ExistsResult {
+            path: path.as_str().to_string(),
+            exists,
+        })
+    }
+
+    pub(crate) async fn stat(&self, path: &VirtualPath) -> Result<StatResult, ToolError> {
+        let destination = self.resolve(path);
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&destination).await?;
+        let metadata = tokio::fs::metadata(&destination)
+            .await
+            .map_err(not_found_or_internal("read state path metadata"))?;
+        let kind = if metadata.is_file() {
+            "file"
+        } else if metadata.is_dir() {
+            "directory"
+        } else {
+            return Err(ToolError::Sdk {
+                sdk_kind: "permission_denied".to_string(),
+                message: "state path kind is not supported".to_string(),
+            });
+        };
+        Ok(StatResult {
+            path: path.as_str().to_string(),
+            kind: kind.to_string(),
+            bytes: metadata.len(),
+        })
+    }
+
+    pub(crate) async fn mkdir(&self, path: &VirtualPath) -> Result<MutationResult, ToolError> {
+        let destination = self.resolve(path);
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&destination).await?;
+        tokio::fs::create_dir_all(&destination)
+            .await
+            .map_err(internal_io("create state directory"))?;
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&destination).await?;
+        Ok(MutationResult {
+            ok: true,
+            path: path.as_str().to_string(),
+        })
+    }
+
+    pub(crate) async fn remove(
+        &self,
+        path: &VirtualPath,
+        recursive: bool,
+    ) -> Result<MutationResult, ToolError> {
+        if path.as_str() == ".labby-state" || path.as_str().starts_with(".labby-state/") {
+            return Err(ToolError::Sdk {
+                sdk_kind: "permission_denied".to_string(),
+                message: "state metadata paths cannot be removed".to_string(),
+            });
+        }
+        let destination = self.resolve(path);
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&destination).await?;
+        let metadata = tokio::fs::metadata(&destination)
+            .await
+            .map_err(not_found_or_internal("read state path metadata"))?;
+        if metadata.is_file() {
+            tokio::fs::remove_file(&destination)
+                .await
+                .map_err(internal_io("remove state file"))?;
+        } else if metadata.is_dir() {
+            if recursive {
+                tokio::fs::remove_dir_all(&destination)
+                    .await
+                    .map_err(internal_io("remove state directory tree"))?;
+            } else {
+                tokio::fs::remove_dir(&destination)
+                    .await
+                    .map_err(internal_io("remove state directory"))?;
+            }
+        } else {
+            return Err(ToolError::Sdk {
+                sdk_kind: "permission_denied".to_string(),
+                message: "state path kind is not supported".to_string(),
+            });
+        }
+        Ok(MutationResult {
+            ok: true,
+            path: path.as_str().to_string(),
+        })
+    }
+
+    pub(crate) async fn copy(
+        &self,
+        from: &VirtualPath,
+        to: &VirtualPath,
+    ) -> Result<MutationResult, ToolError> {
+        let source = self.read_file(from).await?;
+        self.write_file(to, &source.content).await?;
+        Ok(MutationResult {
+            ok: true,
+            path: to.as_str().to_string(),
+        })
+    }
+
+    pub(crate) async fn move_path(
+        &self,
+        from: &VirtualPath,
+        to: &VirtualPath,
+    ) -> Result<MutationResult, ToolError> {
+        let source = self.resolve(from);
+        let destination = self.resolve(to);
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &source)?;
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
+        self.reject_existing_symlink_path(&source).await?;
+        self.reject_existing_symlink_path(&destination).await?;
+        if let Some(parent) = destination.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(internal_io("create state move directory"))?;
+        }
+        tokio::fs::rename(&source, &destination)
+            .await
+            .map_err(not_found_or_internal("move state path"))?;
+        Ok(MutationResult {
+            ok: true,
+            path: to.as_str().to_string(),
+        })
+    }
+
+    pub(crate) async fn walk_tree(
+        &self,
+        path: &VirtualPath,
+        limit: usize,
+    ) -> Result<WalkTreeResult, ToolError> {
+        let limit = normalize_limit(limit);
+        let start = self.resolve(path);
+        labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &start)?;
+        self.reject_existing_symlink_path(&start).await?;
+        let mut entries = Vec::new();
+        let mut stack = vec![start];
+        while let Some(dir) = stack.pop() {
+            let mut read_dir = tokio::fs::read_dir(&dir)
+                .await
+                .map_err(not_found_or_internal("read state directory"))?;
+            while let Some(entry) = read_dir
+                .next_entry()
+                .await
+                .map_err(internal_io("read state directory entry"))?
+            {
+                let path = entry.path();
+                let relative = match path.strip_prefix(&self.root) {
+                    Ok(relative) => relative,
+                    Err(_) => continue,
+                };
+                let virtual_path = labby_runtime::path_safety::rel_to_unix_string(relative);
+                if virtual_path == ".labby-state" || virtual_path.starts_with(".labby-state/") {
+                    continue;
+                }
+                let metadata = tokio::fs::symlink_metadata(&path)
+                    .await
+                    .map_err(internal_io("read state workspace metadata"))?;
+                if metadata.file_type().is_symlink() {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "permission_denied".to_string(),
+                        message: "state walk rejected a symlink".to_string(),
+                    });
+                }
+                let kind = if metadata.is_dir() {
+                    stack.push(path);
+                    "directory"
+                } else if metadata.is_file() {
+                    "file"
+                } else {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "permission_denied".to_string(),
+                        message: "state path kind is not supported".to_string(),
+                    });
+                };
+                entries.push(WalkEntry {
+                    path: virtual_path,
+                    kind: kind.to_string(),
+                    bytes: metadata.len(),
+                });
+                if entries.len() >= limit {
+                    entries.sort_by(|left, right| left.path.cmp(&right.path));
+                    return Ok(WalkTreeResult {
+                        entries,
+                        truncated: true,
+                    });
+                }
+            }
+        }
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(WalkTreeResult {
+            entries,
+            truncated: false,
         })
     }
 

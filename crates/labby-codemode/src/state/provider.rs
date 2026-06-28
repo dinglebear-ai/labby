@@ -18,6 +18,25 @@ struct WriteFileParams {
 }
 
 #[derive(Deserialize)]
+struct OptionalRecursivePathParams {
+    path: String,
+    #[serde(default)]
+    recursive: bool,
+}
+
+#[derive(Deserialize)]
+struct FromToParams {
+    from: String,
+    to: String,
+}
+
+#[derive(Deserialize)]
+struct WalkTreeParams {
+    path: String,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct GlobParams {
     pattern: String,
     limit: Option<usize>,
@@ -69,6 +88,66 @@ pub(crate) async fn dispatch_state_method(
                 .write_file(&VirtualPath::parse(&params.path)?, &params.content)
                 .await?;
             Ok(json!({ "ok": true, "path": params.path }))
+        }
+        "appendFile" => {
+            let params: WriteFileParams = serde_json::from_value(params).map_err(invalid_params)?;
+            let result = workspace
+                .append_file(&VirtualPath::parse(&params.path)?, &params.content)
+                .await?;
+            serde_json::to_value(result).map_err(serialize_error)
+        }
+        "exists" => {
+            let params: PathParams = serde_json::from_value(params).map_err(invalid_params)?;
+            let result = workspace.exists(&VirtualPath::parse(&params.path)?).await?;
+            serde_json::to_value(result).map_err(serialize_error)
+        }
+        "stat" | "lstat" => {
+            let params: PathParams = serde_json::from_value(params).map_err(invalid_params)?;
+            let result = workspace.stat(&VirtualPath::parse(&params.path)?).await?;
+            serde_json::to_value(result).map_err(serialize_error)
+        }
+        "mkdir" => {
+            let params: PathParams = serde_json::from_value(params).map_err(invalid_params)?;
+            let result = workspace.mkdir(&VirtualPath::parse(&params.path)?).await?;
+            serde_json::to_value(result).map_err(serialize_error)
+        }
+        "rm" => {
+            let params: OptionalRecursivePathParams =
+                serde_json::from_value(params).map_err(invalid_params)?;
+            let result = workspace
+                .remove(&VirtualPath::parse(&params.path)?, params.recursive)
+                .await?;
+            serde_json::to_value(result).map_err(serialize_error)
+        }
+        "cp" => {
+            let params: FromToParams = serde_json::from_value(params).map_err(invalid_params)?;
+            let result = workspace
+                .copy(
+                    &VirtualPath::parse(&params.from)?,
+                    &VirtualPath::parse(&params.to)?,
+                )
+                .await?;
+            serde_json::to_value(result).map_err(serialize_error)
+        }
+        "mv" => {
+            let params: FromToParams = serde_json::from_value(params).map_err(invalid_params)?;
+            let result = workspace
+                .move_path(
+                    &VirtualPath::parse(&params.from)?,
+                    &VirtualPath::parse(&params.to)?,
+                )
+                .await?;
+            serde_json::to_value(result).map_err(serialize_error)
+        }
+        "walkTree" | "summarizeTree" => {
+            let params: WalkTreeParams = serde_json::from_value(params).map_err(invalid_params)?;
+            let result = workspace
+                .walk_tree(
+                    &VirtualPath::parse(&params.path)?,
+                    params.limit.unwrap_or(default_search_limit()),
+                )
+                .await?;
+            serde_json::to_value(result).map_err(serialize_error)
         }
         "list" | "readdir" => {
             let params: PathParams = serde_json::from_value(params).map_err(invalid_params)?;
@@ -229,5 +308,76 @@ mod tests {
             .await
             .unwrap();
         assert!(result["content"].as_str().unwrap().contains("eprintln"));
+    }
+
+    #[tokio::test]
+    async fn v2_state_filesystem_methods_round_trip() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+
+        dispatch_state_method(&workspace, "mkdir", json!({"path": "src"}))
+            .await
+            .unwrap();
+        dispatch_state_method(
+            &workspace,
+            "writeFile",
+            json!({"path": "src/app.rs", "content": "fn main() {}\n"}),
+        )
+        .await
+        .unwrap();
+        dispatch_state_method(
+            &workspace,
+            "appendFile",
+            json!({"path": "src/app.rs", "content": "// tail\n"}),
+        )
+        .await
+        .unwrap();
+
+        let stat = dispatch_state_method(&workspace, "stat", json!({"path": "src/app.rs"}))
+            .await
+            .unwrap();
+        assert_eq!(stat["kind"], "file");
+        assert!(stat["bytes"].as_u64().unwrap() > 0);
+
+        let exists = dispatch_state_method(&workspace, "exists", json!({"path": "src/app.rs"}))
+            .await
+            .unwrap();
+        assert_eq!(exists["exists"], true);
+
+        dispatch_state_method(
+            &workspace,
+            "cp",
+            json!({"from": "src/app.rs", "to": "src/copy.rs"}),
+        )
+        .await
+        .unwrap();
+        dispatch_state_method(
+            &workspace,
+            "mv",
+            json!({"from": "src/copy.rs", "to": "src/moved.rs"}),
+        )
+        .await
+        .unwrap();
+        let tree =
+            dispatch_state_method(&workspace, "walkTree", json!({"path": "src", "limit": 10}))
+                .await
+                .unwrap();
+        assert!(
+            tree["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "src/moved.rs")
+        );
+
+        dispatch_state_method(&workspace, "rm", json!({"path": "src/moved.rs"}))
+            .await
+            .unwrap();
+        let gone = dispatch_state_method(&workspace, "exists", json!({"path": "src/moved.rs"}))
+            .await
+            .unwrap();
+        assert_eq!(gone["exists"], false);
     }
 }
