@@ -16,6 +16,7 @@ use tokio::process::ChildStdin;
 use ulid::Ulid;
 
 use crate::error::ToolError;
+use crate::git::provider::dispatch_git_method;
 use crate::host::CodeModeHost;
 use crate::local_provider::{LocalProviderCall, LocalProviderName};
 use crate::state::provider::dispatch_state_method;
@@ -617,13 +618,14 @@ async fn dispatch_local_provider_stub(
             let workspace = StateWorkspace::new(workspace_root, StateWorkspaceLimits::default())?;
             dispatch_state_method(&workspace, &local.method, params).await
         }
-        LocalProviderName::Git => Err(ToolError::Sdk {
-            sdk_kind: "unknown_tool".to_string(),
-            message: format!(
-                "Code Mode local provider `{provider_name}` method `{}` is not implemented yet",
-                local.method
-            ),
-        }),
+        LocalProviderName::Git => {
+            let workspace_root = labby_runtime::lab_home()
+                .join("code-mode-workspaces")
+                .join("default");
+            let workspace = StateWorkspace::new(workspace_root, StateWorkspaceLimits::default())?;
+            let _ = provider_name;
+            dispatch_git_method(&workspace, &local.method, params).await
+        }
     }
 }
 

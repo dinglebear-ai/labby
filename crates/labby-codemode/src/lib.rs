@@ -24,6 +24,7 @@ mod artifacts;
 mod broker;
 mod config;
 mod execute;
+mod git;
 pub mod host;
 mod local_provider;
 mod normalize;

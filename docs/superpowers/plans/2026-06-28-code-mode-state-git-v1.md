@@ -821,7 +821,7 @@ git commit -m "feat: add code mode state provider"
 - Produces: `dispatch_git_method(workspace: &StateWorkspace, method: &str, params: Value) -> Result<Value, ToolError>`.
 - Produces V1 methods: `init`, `status`, `add`, `commit`, `log`, `diff`.
 
-- [ ] **Step 1: Write failing argv tests**
+- [x] **Step 1: Write failing argv tests**
 
 Create `git/command.rs` tests:
 
@@ -838,7 +838,7 @@ fn git_rejects_unsupported_method() {
 }
 ```
 
-- [ ] **Step 2: Implement git command specs**
+- [x] **Step 2: Implement git command specs**
 
 Create `git.rs`:
 
@@ -898,7 +898,7 @@ fn base_args<const N: usize>(tail: [&str; N]) -> Vec<String> {
 }
 ```
 
-- [ ] **Step 3: Implement guarded git execution**
+- [x] **Step 3: Implement guarded git execution**
 
 Create `git/provider.rs` with an async runner using `tokio::process::Command`:
 
@@ -954,7 +954,7 @@ fn redact_git_output(value: &str) -> String {
 
 If `/usr/bin/git` is not portable enough for this repo, implement a resolver that finds `git` once outside the workspace and stores the absolute path. Do not run a relative `git` from inside the workspace.
 
-- [ ] **Step 4: Implement git provider dispatch**
+- [x] **Step 4: Implement git provider dispatch**
 
 `dispatch_git_method` should parse object params:
 
@@ -988,11 +988,11 @@ Build method-specific argv in `GitCommandSpec::for_method`:
 - `log`: parse optional `{ limit }`, clamp to `1..=50`, and append `["log", "--oneline", "-n", limit]`.
 - `diff`: parse optional `{ path }`; without a path use `["diff", "--"]`, with a path validate via `VirtualPath::parse` and append the virtual path after `--`.
 
-- [ ] **Step 5: Wire git provider to runner drive**
+- [x] **Step 5: Wire git provider to runner drive**
 
 In the local provider routing branch from Task 1, dispatch `LocalProviderName::Git` with the same workspace root as state.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run: `cargo test -p labby-codemode git:: --all-features`
 
@@ -1002,7 +1002,7 @@ Run: `cargo test -p labby-codemode --all-features`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/labby-codemode/src/git.rs crates/labby-codemode/src/git crates/labby-codemode/src/runner_drive.rs crates/labby-codemode/src/lib.rs

@@ -89,6 +89,10 @@ impl StateWorkspace {
         Ok(Self { root, limits })
     }
 
+    pub(crate) fn root_path(&self) -> &PathBuf {
+        &self.root
+    }
+
     fn resolve(&self, path: &VirtualPath) -> PathBuf {
         self.root.join(path.as_str())
     }
