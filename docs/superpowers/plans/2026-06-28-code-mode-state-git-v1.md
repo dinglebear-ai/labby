@@ -268,7 +268,7 @@ git commit -m "feat: add code mode local provider routing"
 - Produces: `VirtualPath::parse(raw: &str) -> Result<Self, ToolError>`.
 - Produces: `StateWorkspace::write_file`, `read_file`, `list`, `glob`, `search_files`, `replace_in_files`, `plan_edits`, `apply_edit_plan`.
 
-- [ ] **Step 1: Write failing path tests**
+- [x] **Step 1: Write failing path tests**
 
 Create tests in `crates/labby-codemode/src/state/path.rs`:
 
@@ -297,7 +297,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Implement virtual path parser**
+- [x] **Step 2: Implement virtual path parser**
 
 Create `crates/labby-codemode/src/state.rs`:
 
@@ -405,7 +405,7 @@ fn reject_credential_like_path(path: &str) -> Result<(), ToolError> {
 }
 ```
 
-- [ ] **Step 3: Add workspace read/write/list tests**
+- [x] **Step 3: Add workspace read/write/list tests**
 
 In `state/workspace.rs`, add tests:
 
@@ -424,7 +424,7 @@ async fn workspace_writes_reads_and_reopens() {
 }
 ```
 
-- [ ] **Step 4: Implement workspace backend**
+- [x] **Step 4: Implement workspace backend**
 
 Create `state/quota.rs`:
 
@@ -569,13 +569,13 @@ fn not_found_or_internal(action: &'static str) -> impl FnOnce(std::io::Error) ->
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `cargo test -p labby-codemode state:: --all-features`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/labby-codemode/src/state.rs crates/labby-codemode/src/state crates/labby-codemode/src/lib.rs
