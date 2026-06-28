@@ -67,3 +67,16 @@ OPENACP_NODE2_TOKEN=replace-me
 
 Use [generated/env-reference.md](./generated/env-reference.md) for the current
 required/optional env var matrix, default ports, secret flags, and examples.
+
+## Provisioning Environment
+
+`labby setup --provision` and `scripts/incus-bootstrap.sh` also honor:
+
+```env
+TS_AUTHKEY=tskey-auth-...
+```
+
+When set, provisioning installs Tailscale and joins the host/container to the
+tailnet using `tailscale up --auth-key=file:/run/labby-ts-authkey`. The key is
+written only to a root-owned runtime file for the join, then removed. Leave it
+unset to skip Tailscale join.
