@@ -79,10 +79,16 @@ scripts/incus-bootstrap.sh --version vX.Y.Z
 
 The declarative Incus shape lives in
 `config/incus/labby-gateway-profile.yaml`. The bootstrap script creates or
-updates that profile, launches `images:ubuntu/24.04` with it, and attaches it to
-an existing container when needed. The profile owns `security.privileged=true`,
-`security.nesting=false`, AppArmor unconfined via `raw.lxc`, a ZFS root disk on
-`labby-zfs`, and `/dev/net/tun` access through a raw LXC bind mount.
+updates that profile and launches `images:ubuntu/24.04` with it. The profile
+owns `security.privileged=true`, `security.nesting=false`, AppArmor unconfined
+via `raw.lxc`, a ZFS root disk on `labby-zfs`, and `/dev/net/tun` access through
+a raw LXC bind mount.
+
+Existing containers are idempotently converged too. If an existing container's
+root disk already comes from a different Incus storage pool, the bootstrap
+derives a rootless runtime profile from the same YAML and attaches that instead
+of trying to replace the immutable root disk. The derived profile defaults to
+`labby-gateway-runtime` and can be renamed with `--runtime-profile-name`.
 
 The script is idempotent. It creates or reuses the `labby` container, validates
 that the container is amd64 Ubuntu 24.04, verifies the expanded profile-provided
