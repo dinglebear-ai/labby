@@ -8,7 +8,7 @@ use tokio::process::Command;
 use crate::error::ToolError;
 use crate::state::workspace::StateWorkspace;
 
-use super::command::GitCommandSpec;
+use super::command::{GitCommandSpec, validate_remote_url};
 
 const MAX_GIT_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_GIT_STDERR_BYTES: usize = 16 * 1024;
@@ -19,8 +19,28 @@ pub(crate) async fn dispatch_git_method(
     params: Value,
 ) -> Result<Value, ToolError> {
     let spec = GitCommandSpec::for_method(method, params)?;
+    if let Some(remote) = &spec.remote_preflight {
+        ensure_remote_url_allowed(workspace.root_path(), remote).await?;
+    }
     let stdout = run_git(workspace.root_path(), &spec.args).await?;
     Ok(json!({ "ok": true, "stdout": stdout }))
+}
+
+async fn ensure_remote_url_allowed(workspace_root: &Path, remote: &str) -> Result<(), ToolError> {
+    let mut args = vec![
+        "-c".to_string(),
+        "core.hooksPath=/dev/null".to_string(),
+        "-c".to_string(),
+        "protocol.file.allow=never".to_string(),
+        "-c".to_string(),
+        "protocol.ext.allow=never".to_string(),
+        "remote".to_string(),
+        "get-url".to_string(),
+    ];
+    args.push(remote.to_string());
+    let url = run_git(workspace_root, &args).await?;
+    validate_remote_url(url.trim(), "remote")?;
+    Ok(())
 }
 
 pub(crate) async fn run_git(workspace_root: &Path, args: &[String]) -> Result<String, ToolError> {
@@ -277,5 +297,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remotes["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn git_v2_rejects_existing_unsafe_remote_before_network_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+        dispatch_git_method(&workspace, "init", json!({}))
+            .await
+            .unwrap();
+        run_git(
+            workspace.root_path(),
+            &[
+                "config".to_string(),
+                "remote.origin.url".to_string(),
+                "file:///tmp/repo".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let err = dispatch_git_method(&workspace, "fetch", json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "invalid_param");
     }
 }

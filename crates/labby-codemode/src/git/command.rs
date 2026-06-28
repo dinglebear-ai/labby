@@ -7,12 +7,14 @@ use crate::state::path::VirtualPath;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitCommandSpec {
     pub(crate) args: Vec<String>,
+    pub(crate) remote_preflight: Option<String>,
 }
 
 impl GitCommandSpec {
     pub(crate) fn status() -> Self {
         Self {
             args: base_args(["status", "--short"]),
+            remote_preflight: None,
         }
     }
 
@@ -20,6 +22,7 @@ impl GitCommandSpec {
         match method {
             "init" => Ok(Self {
                 args: base_args(["init"]),
+                remote_preflight: None,
             }),
             "status" => Ok(Self::status()),
             "add" => {
@@ -27,7 +30,10 @@ impl GitCommandSpec {
                 let path = VirtualPath::parse(&params.path)?;
                 let mut args = base_args(["add", "--"]);
                 args.push(path.as_str().to_string());
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: None,
+                })
             }
             "commit" => {
                 let params: CommitParams = parse_params(params)?;
@@ -50,14 +56,20 @@ impl GitCommandSpec {
                 args.push(author);
                 args.push("-m".to_string());
                 args.push(params.message);
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: None,
+                })
             }
             "log" => {
                 let params: LimitParams = parse_params(params)?;
                 let limit = params.limit.unwrap_or(20).clamp(1, 50).to_string();
                 let mut args = base_args(["log", "--oneline", "-n"]);
                 args.push(limit);
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: None,
+                })
             }
             "diff" => {
                 let params: OptionalPathParams = parse_params(params)?;
@@ -65,7 +77,10 @@ impl GitCommandSpec {
                 if let Some(path) = params.path {
                     args.push(VirtualPath::parse(&path)?.as_str().to_string());
                 }
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: None,
+                })
             }
             "branch" => {
                 let params: BranchParams = parse_params(params)?;
@@ -76,7 +91,10 @@ impl GitCommandSpec {
                     base_args(["branch"])
                 };
                 args.push(params.name);
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: None,
+                })
             }
             "checkout" => {
                 let params: CheckoutParams = parse_params(params)?;
@@ -87,10 +105,14 @@ impl GitCommandSpec {
                     base_args(["checkout"])
                 };
                 args.push(params.git_ref);
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: None,
+                })
             }
             "remoteList" => Ok(Self {
                 args: base_args(["remote", "-v"]),
+                remote_preflight: None,
             }),
             "remoteAdd" => {
                 let params: RemoteAddParams = parse_params(params)?;
@@ -99,14 +121,20 @@ impl GitCommandSpec {
                 let mut args = base_args(["remote", "add"]);
                 args.push(params.name);
                 args.push(params.url);
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: None,
+                })
             }
             "remoteRemove" => {
                 let params: RemoteNameParams = parse_params(params)?;
                 validate_remote_name(&params.name, "name")?;
                 let mut args = base_args(["remote", "remove"]);
                 args.push(params.name);
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: None,
+                })
             }
             "clone" => {
                 let params: CloneParams = parse_params(params)?;
@@ -116,15 +144,21 @@ impl GitCommandSpec {
                 let mut args = base_args(["clone", "--depth", "1", "--"]);
                 args.push(params.url);
                 args.push(directory.as_str().to_string());
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: None,
+                })
             }
             "fetch" => {
                 let params: PullPushParams = parse_params(params)?;
                 let remote = params.remote.unwrap_or_else(|| "origin".to_string());
                 validate_remote_name(&remote, "remote")?;
                 let mut args = base_args(["fetch"]);
-                args.push(remote);
-                Ok(Self { args })
+                args.push(remote.clone());
+                Ok(Self {
+                    args,
+                    remote_preflight: Some(remote),
+                })
             }
             "pull" => {
                 let params: PullPushParams = parse_params(params)?;
@@ -133,9 +167,12 @@ impl GitCommandSpec {
                 validate_remote_name(&remote, "remote")?;
                 validate_git_ref(&branch, "branch")?;
                 let mut args = base_args(["pull", "--ff-only"]);
-                args.push(remote);
+                args.push(remote.clone());
                 args.push(branch);
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: Some(remote),
+                })
             }
             "push" => {
                 let params: PullPushParams = parse_params(params)?;
@@ -144,9 +181,12 @@ impl GitCommandSpec {
                 validate_remote_name(&remote, "remote")?;
                 validate_git_ref(&branch, "branch")?;
                 let mut args = base_args(["push"]);
-                args.push(remote);
+                args.push(remote.clone());
                 args.push(branch);
-                Ok(Self { args })
+                Ok(Self {
+                    args,
+                    remote_preflight: Some(remote),
+                })
             }
             other => Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
@@ -272,7 +312,7 @@ fn validate_git_ref(value: &str, param: &str) -> Result<(), ToolError> {
     }
 }
 
-fn validate_remote_url(value: &str, param: &str) -> Result<(), ToolError> {
+pub(crate) fn validate_remote_url(value: &str, param: &str) -> Result<(), ToolError> {
     if !value.starts_with("https://") || value.contains('?') || value.contains('#') {
         return Err(invalid_param(
             param,
