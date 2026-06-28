@@ -6,6 +6,44 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [0.28.0] - 2026-06-27
+
+### Added
+
+- **Incus gateway deployment artifact** — added a standalone Incus profile YAML
+  and a host bootstrap script that consumes it, validates the Incus substrate,
+  pushes the selected Labby binary, provisions the container with
+  `labby setup --provision`, and optionally joins Tailscale inside the container.
+- **Incus runtime docs and reference capture** — documented the supported Ubuntu
+  24.04 system-container shape, system service model, provisioning boundaries,
+  rollback steps, and saved the reviewed Incus jail article as a local reference.
+
+### Changed
+
+- **Self-hosted gateway default** — the documented gateway runtime now favors an
+  Incus system container with the hardened `/etc/systemd/system/labby.service`
+  system unit. Docker Compose remains available for explicit dev-container and
+  image-smoke paths.
+- **Installer fallback contract** — source builds are now opt-in with
+  `LAB_ALLOW_SOURCE_FALLBACK=1` / `--allow-source-fallback`; unsupported release
+  platforms fail clearly instead of implying a hidden fallback.
+
+### Fixed
+
+- **Incus bootstrap hardening** — TUN validation now accepts valid `/dev/net/tun`
+  passthrough devices without reading an invalid `type` config key, and
+  Tailscale auth-key cleanup can no longer mask the `tailscale up` exit status.
+- **Provisioning installer hardening** — the `uv` installer is downloaded to a
+  checked temporary file before execution instead of piping directly into `sh`.
+- **Gateway admin protected routes** — the UI no longer falls back to
+  `mcp.example.com`; protected-route saves now fail closed until
+  `NEXT_PUBLIC_PROTECTED_MCP_HOST` is configured.
+- **MCP registry metadata compatibility** — locally curated registry metadata
+  written under the legacy `tv.tootie.lab/registry` namespace is still read and
+  filtered while new writes use `dev.labby/registry`.
+
+---
+
 ## [0.27.0] - 2026-06-25
 
 ### Added
@@ -227,7 +265,7 @@ All notable changes to this project will be documented in this file.
 |--------|--------|
 | `091b1c3d` | docs: save session log |
 | `ca834476` | test(acp): add principal-isolation (IDOR) tests for session actions |
-| `bb675cb8` | fix(plugins): clean up agent-os README and notebooklm SKILL.md |
+| `bb675cb8` | fix(plugins): clean up agent-workstation README and notebooklm SKILL.md |
 | `2c139784` | fix(acp): constant-time HMAC verify in persistence + rustfmt cleanup |
 | `5b2b3150` | Fix nvidia-skills, qdrant-skills, redis-development, mcp-apps with correct sources |
 | `b43d21fe` | Remove nvidia-skills, qdrant-skills, redis-development, mcp-apps — paths not found |
@@ -1060,7 +1098,7 @@ All notable changes to this project will be documented in this file.
 - **Marketplace security hardening P1 (lab-kvji.10)** — path traversal via plugin ID blocked at parse time; symlink following eliminated from all four filesystem walkers; `installPath` from `installed_plugins.json` validated against `plugins_root` before use
 - **AI component library** — 26 new TSX components under `components/ai/` covering agents, artifacts, attachments, code blocks, reasoning, tool calls, and more
 - **Fleet websocket runtime** — initial `feat: add websocket fleet runtime`; ACP provider, session registry, SSE transport, design docs
-- **Registry metadata curation** — Lab-owned `_meta["tv.tootie.lab/registry"]` contract, validation, audit fields, server-side metadata filters, typed CLI metadata commands, gateway-admin structured metadata editing
+- **Registry metadata curation** — Lab-owned `_meta["dev.labby/registry"]` contract, validation, audit fields, server-side metadata filters, typed CLI metadata commands, gateway-admin structured metadata editing
 - **Marketplace and upstream hardening** — marketplace client/dispatch cleanup, upstream pool adjustments, browser session auth fixes, large batch of PR-review-driven repairs across gateway, registry, marketplace, chat, and deploy
 
 ### Version bumps

@@ -4,8 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh
 #
 # Downloads the latest GitHub release archive for this platform, verifies its
-# SHA-256, and installs the binary to ~/.local/bin/labby. When no release
-# asset exists (or the platform has no prebuilt archive) it falls back to
+# SHA-256, and installs the binary to ~/.local/bin/labby. When explicitly
+# enabled with LAB_ALLOW_SOURCE_FALLBACK=1, a release failure falls back to
 # `cargo install --git` if a Rust toolchain is available.
 #
 # This script's ONLY job is bootstrap: getting `labby` onto PATH. Everything
@@ -16,16 +16,30 @@
 #   LAB_INSTALL_DIR     install directory       (default: ~/.local/bin)
 #   LAB_INSTALL_REPO    owner/repo to fetch     (default: jmagar/lab)
 #   LAB_INSTALL_VERSION release tag, e.g. v0.22.2 (default: latest)
-#   LAB_REQUIRE_CHECKSUM fail if the .sha256 asset is absent (default: 0)
-#   LAB_ALLOW_SOURCE_FALLBACK allow cargo fallback after release failure (default: 1)
+#   LAB_REQUIRE_CHECKSUM fail if the .sha256 asset is absent (default: 1)
+#   LAB_ALLOW_SOURCE_FALLBACK allow cargo fallback after release failure (default: 0)
 
 set -eu
 
 REPO="${LAB_INSTALL_REPO:-jmagar/lab}"
 INSTALL_DIR="${LAB_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${LAB_INSTALL_VERSION:-latest}"
-REQUIRE_CHECKSUM="${LAB_REQUIRE_CHECKSUM:-0}"
-ALLOW_SOURCE_FALLBACK="${LAB_ALLOW_SOURCE_FALLBACK:-1}"
+REQUIRE_CHECKSUM="${LAB_REQUIRE_CHECKSUM:-1}"
+ALLOW_SOURCE_FALLBACK="${LAB_ALLOW_SOURCE_FALLBACK:-0}"
+TMP_DIRS=""
+
+cleanup() {
+    for dir in $TMP_DIRS; do
+        rm -rf "$dir"
+    done
+}
+trap cleanup EXIT
+
+make_tmp_dir() {
+    dir="$(mktemp -d)"
+    TMP_DIRS="${TMP_DIRS} ${dir}"
+    printf '%s' "$dir"
+}
 
 say() { printf '%s\n' "$*" >&2; }
 fail() { say "install.sh: $*"; exit 1; }
@@ -59,9 +73,19 @@ sha256_check() {
         actual="$(shasum -a 256 "$1" | awk '{print $1}')"
         [ "$expected" = "$actual" ]
     else
-        say "warning: no sha256sum/shasum found — skipping checksum verification"
-        return 0
+        fail "no sha256sum/shasum found and checksum verification is required"
     fi
+}
+
+install_binary_atomic() {
+    # $1 = source binary, installs atomically as "$INSTALL_DIR/labby".
+    mkdir -p "$INSTALL_DIR"
+    tmp_bin="$(mktemp "$INSTALL_DIR/.labby.XXXXXX")"
+    if ! install -m 755 "$1" "$tmp_bin"; then
+        rm -f "$tmp_bin"
+        return 1
+    fi
+    mv -f "$tmp_bin" "$INSTALL_DIR/labby"
 }
 
 install_from_release() {
@@ -72,7 +96,11 @@ install_from_release() {
     arch="$(uname -m)"
     case "$arch" in
         aarch64 | arm64)
-            say "no prebuilt release archive for $arch — using the build-from-source fallback"
+            if [ "$ALLOW_SOURCE_FALLBACK" = "1" ]; then
+                say "no prebuilt release archive for $arch — using the build-from-source fallback"
+            else
+                say "no prebuilt release archive for $arch"
+            fi
             return 1
             ;;
     esac
@@ -85,8 +113,7 @@ install_from_release() {
         base="https://github.com/${REPO}/releases/download/${VERSION}"
     fi
 
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
+    tmp="$(make_tmp_dir)"
 
     say "downloading ${base}/${asset} ..."
     curl -fsSL --retry 3 -o "$tmp/$asset" "${base}/${asset}" || return 1
@@ -103,16 +130,20 @@ install_from_release() {
     bin="$(find "$tmp" -type f -name labby | head -n 1)"
     [ -n "$bin" ] || fail "archive $asset did not contain a 'labby' binary"
 
-    mkdir -p "$INSTALL_DIR"
-    install -m 755 "$bin" "$INSTALL_DIR/labby"
+    install_binary_atomic "$bin"
     return 0
 }
 
 install_from_source() {
     command -v cargo >/dev/null 2>&1 || return 1
     say "no release asset available — building from source (this takes a while) ..."
-    cargo install --git "https://github.com/${REPO}" --bin labby --all-features --root "${INSTALL_DIR%/bin}" \
-        || cargo install --git "https://github.com/${REPO}" --bin labby --all-features
+    cargo_root="$(make_tmp_dir)"
+    if [ "$VERSION" = "latest" ]; then
+        cargo install --git "https://github.com/${REPO}" --bin labby --all-features --root "$cargo_root"
+    else
+        cargo install --git "https://github.com/${REPO}" --tag "$VERSION" --bin labby --all-features --root "$cargo_root"
+    fi
+    install_binary_atomic "$cargo_root/bin/labby"
 }
 
 main() {

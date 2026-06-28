@@ -39,7 +39,7 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
               host: {
                 ty: 'string',
                 required: false,
-                default: 'dookie',
+                default: 'node-a',
                 description: 'Host alias',
               },
             },
@@ -62,7 +62,7 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
           host: {
             ty: 'string',
             required: false,
-            default: 'dookie',
+            default: 'node-a',
             description: 'Host alias',
           },
         },
@@ -112,7 +112,7 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
 
   await waitFor(() => assert.match(view.container.textContent ?? '', /homelab-readonly-pulse/))
   assert.match(view.container.textContent ?? '', /Host alias/)
-  assert.match(view.container.textContent ?? '', /default dookie/)
+  assert.match(view.container.textContent ?? '', /default node-a/)
   await waitFor(() => {
     const headings = Array.from(view.container.querySelectorAll('h1')).map((node) => node.textContent)
     assert.ok(headings.includes('Homelab Pulse'))

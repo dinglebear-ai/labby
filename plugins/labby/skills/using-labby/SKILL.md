@@ -140,7 +140,7 @@ Call a Windows helper through the live-confirmed helper path:
 ```json
 {
   "code": "async () => {\n    const result = await codemode.agent_os_windows_mcp.PowerShell({\n      command: \"$PSVersionTable.PSVersion.ToString()\"\n    });\n    return { ok: true, result };\n  }",
-  "tools": ["agent-os_windows-mcp::PowerShell"]
+  "tools": ["windows_windows-mcp::PowerShell"]
 }
 ```
 
@@ -161,7 +161,7 @@ Use `upstreams` or `tools` allowlists to narrow risky executions:
 ```json
 {
   "code": "async () => { return await codemode.agent_os_windows_mcp.Wait({ duration: 2 }); }",
-  "upstreams": ["agent-os_windows-mcp"]
+  "upstreams": ["windows_windows-mcp"]
 }
 ```
 

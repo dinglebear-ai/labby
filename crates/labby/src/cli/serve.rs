@@ -2067,7 +2067,7 @@ mod tests {
             protected_mcp_routes: vec![crate::config::ProtectedMcpRouteConfig {
                 name: "media".to_string(),
                 enabled: true,
-                public_host: "mcp.tootie.tv".to_string(),
+                public_host: "mcp.example.com".to_string(),
                 public_path: "/media".to_string(),
                 upstream: None,
                 backend_url: String::new(),
@@ -2101,7 +2101,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/media")
-                    .header("host", "mcp.tootie.tv")
+                    .header("host", "mcp.example.com")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping","id":1}"#))
                     .expect("request"),

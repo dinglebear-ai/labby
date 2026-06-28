@@ -20,7 +20,7 @@ The session started from design-system translation work for the Aurora web contr
 
 - Defined a CLI-only design system derived from the Aurora contract and documented it.
 - Implemented environment-aware CLI color policy, semantic theming, and output-layer refactors.
-- Added Lab-owned MCP registry metadata under `_meta["tv.tootie.lab/registry"]` with validation, audit fields, storage, merge behavior, CLI commands, and gateway-admin UI editing.
+- Added Lab-owned MCP registry metadata under `_meta["dev.labby/registry"]` with validation, audit fields, storage, merge behavior, CLI commands, and gateway-admin UI editing.
 - Added server-side registry filters for metadata fields, including `hidden` and `tag`.
 - Bumped versions, updated `CHANGELOG.md`, verified with `just test` and `cargo check`, then committed and pushed the branch.
 
@@ -39,7 +39,7 @@ The session started from design-system translation work for the Aurora web contr
 
 ## Key Findings
 
-- The upstream MCP registry aggregator model explicitly supports custom metadata under a namespaced `_meta` key, which fit the chosen namespace `tv.tootie.lab/registry`.
+- The upstream MCP registry aggregator model explicitly supports custom metadata under a namespaced `_meta` key, which fit the chosen namespace `dev.labby/registry`.
 - The repo already had a reusable CodeMirror editor surface in `apps/gateway-admin/components/ui/text-surface.tsx`, which made the advanced JSON editor consistent with the rest of gateway-admin.
 - Server-side filtering was the correct next step because registry list filtering had already grown beyond light client-side state and needed stable query parameters for `featured`, `reviewed`, `recommended`, `hidden`, and `tag`.
 - The repo contains a command spec at `plugins/commands/save-to-md.md`, but no installed `save-to-md` executable was available on this machine; the session capture was produced manually from that spec.
@@ -47,7 +47,7 @@ The session started from design-system translation work for the Aurora web contr
 
 ## Technical Decisions
 
-- Used `_meta["tv.tootie.lab/registry"]` rather than mutating upstream registry fields, so upstream sync remains clean and local curation remains clearly namespaced.
+- Used `_meta["dev.labby/registry"]` rather than mutating upstream registry fields, so upstream sync remains clean and local curation remains clearly namespaced.
 - Kept local metadata in separate storage and merged it at read time in the registry store rather than embedding local annotations into upstream blobs.
 - Enforced a typed Lab metadata contract with validation and audit stamping so filters and UI behavior rely on normalized data rather than arbitrary JSON.
 - Added typed CLI metadata commands on top of the raw action surface instead of replacing the action surface, preserving power-user flexibility.
@@ -95,7 +95,7 @@ The session started from design-system translation work for the Aurora web contr
 ## Behavior Changes (Before/After)
 
 - Before: registry local metadata support was incomplete and not fully documented; filters like `hidden` and `tag` were not wired end to end.
-  After: registry metadata is validated, audited, stored locally, merged into `_meta["tv.tootie.lab/registry"]`, exposed in CLI/API/UI, and filterable from the server.
+  After: registry metadata is validated, audited, stored locally, merged into `_meta["dev.labby/registry"]`, exposed in CLI/API/UI, and filterable from the server.
 - Before: gateway-admin metadata editing depended heavily on raw JSON handling.
   After: common metadata fields are editable through a structured form, with advanced JSON available through CodeMirror.
 - Before: CLI output theming and environment-aware styling behavior were underdefined.

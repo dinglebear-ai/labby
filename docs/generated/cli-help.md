@@ -670,7 +670,7 @@ Options:
           Emit JSON instead of human-readable tables
 
       --provision
-          Provision this Debian 13/Incus box for the Labby gateway
+          Provision this Ubuntu 24.04/Incus box for the Labby gateway
 
       --color <COLOR>
           Control human-readable CLI styling

@@ -902,7 +902,7 @@ export function NodesPanel({ thisDevice, controller, masterUrl, onMasterChange }
         <Input
           value={manualAlias}
           onChange={e => setManualAlias(e.target.value)}
-          placeholder="SSH host alias (e.g. tootie)"
+          placeholder="SSH host alias (e.g. controller)"
           className="bg-aurora-control-surface border-aurora-border-strong text-[13px]"
           onKeyDown={e => e.key === 'Enter' && addManual()}
         />

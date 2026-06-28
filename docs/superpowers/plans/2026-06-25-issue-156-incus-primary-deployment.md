@@ -590,7 +590,7 @@ Update public/operator docs, README references, generated help, and agent instru
 
 ### Context
 
-The repo currently documents host service as the normal local/dookie runtime and Docker as a supported prod-like smoke path. This issue changes the supported self-hosted substrate to an Incus system container, while retaining host-service development shortcuts and explicit Docker smoke where needed.
+The repo currently documents host service as the normal local/node-a runtime and Docker as a supported prod-like smoke path. This issue changes the supported self-hosted substrate to an Incus system container, while retaining host-service development shortcuts and explicit Docker smoke where needed.
 
 ### Locked Decisions
 
@@ -670,7 +670,7 @@ The universal path is install script plus `labby setup --provision` inside a Deb
 ### Locked Decisions
 
 - amd64-only image.
-- Build on self-hosted Tootie runner because distrobuilder needs privileged/overlayfs behavior that hosted runners fight.
+- Build on self-hosted Controller runner because distrobuilder needs privileged/overlayfs behavior that hosted runners fight.
 - Upload unified Incus image tarball as a GitHub Release asset.
 - Image cadence can be weekly or dependency-bump driven; do not require every Labby release to rebuild the base image.
 - No second source of truth for packages; reuse provision dependency logic.

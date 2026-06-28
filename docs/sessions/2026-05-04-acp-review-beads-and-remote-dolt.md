@@ -21,7 +21,7 @@ The session began with a request to run `comprehensive:full-review` scoped to AC
 
 - Completed an ACP-only comprehensive full review and saved phased artifacts under `.full-review/`.
 - Created a parent Bead plus child Beads for all distinct actionable findings from the ACP report.
-- Corrected a mistaken local-Dolt detour by importing the Beads into the authoritative remote Dolt repo on `squirts`.
+- Corrected a mistaken local-Dolt detour by importing the Beads into the authoritative remote Dolt repo on `node-b`.
 - Updated the active local `bd` installation from `0.62.0` to `1.0.3`.
 - Fixed the remote Dolt server state so plain `bd` commands against database `lab` work again.
 
@@ -30,9 +30,9 @@ The session began with a request to run `comprehensive:full-review` scoped to AC
 1. Ran the ACP review phases and wrote `.full-review/00-scope.md` through `.full-review/05-final-report.md`.
 2. Created Beads for the report; the first attempt accidentally used a repo-local Dolt process after misdiagnosing the remote `database not found: lab` error.
 3. User clarified the remote Dolt server was intentional and should be used.
-4. Verified `~/.codex/config.toml` and the live shell already had `BEADS_DOLT_*` variables for `100.75.111.118:3311`.
+4. Verified `~/.codex/config.toml` and the live shell already had `BEADS_DOLT_*` variables for `100.64.0.20:3311`.
 5. Diagnosed the real failure: local `bd` was old and the remote Dolt SQL server had `lab` visible but plain `lab` sessions failed until server state was repaired.
-6. Imported the ACP Beads into `/mnt/appdata/dolt/lab` on remote host `squirts` and removed the accidental local-only records.
+6. Imported the ACP Beads into `/mnt/appdata/dolt/lab` on remote host `node-b` and removed the accidental local-only records.
 7. Updated active `bd` on PATH to `1.0.3`, restored remote metadata/port settings, stopped the accidental local Lab Dolt process, and restarted the remote Dolt container.
 
 ## Key Findings
@@ -40,7 +40,7 @@ The session began with a request to run `comprehensive:full-review` scoped to AC
 - `~/.codex/config.toml:330` through `~/.codex/config.toml:334` correctly set `BEADS_DOLT_SERVER_HOST`, `BEADS_DOLT_SERVER_PORT`, `BEADS_DOLT_SERVER_USER`, `BEADS_DOLT_SERVER_TLS`, and `BEADS_DOLT_PASSWORD`.
 - The active shell inherited those variables; the initial remote failure was not caused by stale shell configuration.
 - The active `bd` on PATH was an old fnm/npm shim at version `0.62.0`; `~/.local/bin/bd` and the remote host binary were already `1.0.3`.
-- The authoritative remote Dolt data for this repo is on `squirts` at `/mnt/appdata/dolt/lab`.
+- The authoritative remote Dolt data for this repo is on `node-b` at `/mnt/appdata/dolt/lab`.
 - A bad persisted Dolt config key, `sqlserver.global.lab_default_branch`, was created during diagnosis and then removed from the remote container.
 
 ## Technical Decisions
@@ -54,7 +54,7 @@ The session began with a request to run `comprehensive:full-review` scoped to AC
 ## Files Modified
 
 - `.full-review/00-scope.md` through `.full-review/05-final-report.md` — ACP review artifacts.
-- `.beads/metadata.json` — restored to remote Dolt endpoint `100.75.111.118:3311`.
+- `.beads/metadata.json` — restored to remote Dolt endpoint `100.64.0.20:3311`.
 - `.beads/dolt-server.port` — restored to `3311`.
 - `docs/sessions/2026-05-04-acp-review-beads-and-remote-dolt.md` — this session note.
 - Active global npm package `@beads/bd` — upgraded from `0.62.0` to `1.0.3`.
@@ -63,8 +63,8 @@ The session began with a request to run `comprehensive:full-review` scoped to AC
 
 - `bd --version`, `bd dolt show`, `bd list --json --id lab-qq8y -n 0` — verified Beads CLI version, remote endpoint, and epic visibility.
 - `npm install -g @beads/bd@1.0.3` — updated the active `bd` package used by the shell.
-- `ssh 100.75.111.118 'sudo -n dolt --data-dir /mnt/appdata/dolt/lab ...'` — verified and imported Beads into the authoritative remote Dolt repo.
-- `ssh 100.75.111.118 'docker restart 08b4bf3de7ac'` — restarted the remote Dolt container after removing bad persisted config.
+- `ssh 100.64.0.20 'sudo -n dolt --data-dir /mnt/appdata/dolt/lab ...'` — verified and imported Beads into the authoritative remote Dolt repo.
+- `ssh 100.64.0.20 'docker restart 08b4bf3de7ac'` — restarted the remote Dolt container after removing bad persisted config.
 - `kill $(cat .beads/dolt-server.pid)` — stopped the accidental repo-local Lab Dolt process.
 - `chmod 700 .beads` — fixed Beads permission warning.
 
@@ -78,14 +78,14 @@ The session began with a request to run `comprehensive:full-review` scoped to AC
 ## Behavior Changes
 
 - Before: active `bd` was `0.62.0`, normal `bd list` failed against the remote `lab` database, and repo-local Lab Dolt metadata/port had been temporarily pointed at the local process.
-- After: active `bd` is `1.0.3`, normal `bd list --id lab-qq8y` reads the remote epic, remote metadata points to `100.75.111.118:3311`, and the accidental local Lab Dolt process is stopped.
+- After: active `bd` is `1.0.3`, normal `bd list --id lab-qq8y` reads the remote epic, remote metadata points to `100.64.0.20:3311`, and the accidental local Lab Dolt process is stopped.
 
 ## Verification Evidence
 
 | command | expected | actual | status |
 | --- | --- | --- | --- |
 | `bd --version` | `1.0.3` | `bd version 1.0.3 (1b2dd2cb)` | pass |
-| `bd dolt show` | remote `100.75.111.118:3311`, database `lab` | remote host/port and database shown; connection OK | pass |
+| `bd dolt show` | remote `100.64.0.20:3311`, database `lab` | remote host/port and database shown; connection OK | pass |
 | `bd list --json --id lab-qq8y -n 0` | parent epic exists | returned `lab-qq8y Resolve ACP full-review findings open` | pass |
 | `bd list --json --parent lab-qq8y -n 0` | 16 children | returned `16` | pass |
 | `ss -ltnp \| rg ':45539\|:42211\|dolt'` | no Lab repo-local Dolt listener | only `axon_rust` Dolt process remained on `127.0.0.1:42211` | pass |
@@ -110,7 +110,7 @@ The session began with a request to run `comprehensive:full-review` scoped to AC
 - `.full-review/05-final-report.md`
 - `docs/sessions/2026-05-04-acp-review-beads-and-remote-dolt.md`
 - `~/.codex/config.toml`
-- Remote Dolt repo: `squirts:/mnt/appdata/dolt/lab`
+- Remote Dolt repo: `node-b:/mnt/appdata/dolt/lab`
 - Remote import commit: `enuvsge8165q52umrh4tp63fi5gnk1o4`
 - PR: `https://github.com/jmagar/lab/pull/40`
 

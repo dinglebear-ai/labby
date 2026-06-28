@@ -1,70 +1,26 @@
 # Labby Gateway Runtime
 
-The primary supported self-hosted Labby gateway runtime is an **amd64 Ubuntu 24.04
-Incus system container**. Labby launches stdio MCP servers and agent CLIs at
-runtime, so the deployment needs a persistent system environment with normal
-package installation, systemd, SSH, and user caches. Docker remains useful for
-explicit development and image-smoke work, but it is no longer the default
-self-hosting boundary.
+The recommended self-hosted Labby gateway deployment is the **amd64 Ubuntu 24.04
+Incus system container** described in [INCUS.md](./INCUS.md). Bare metal is the
+secondary supported shape when Labby owns a dedicated host or VM. Docker remains
+available for development, compatibility, and image-smoke work, but it is no
+longer the recommended self-host boundary.
 
-The supported substrate is currently amd64 because the release binary includes
-Code Mode's QuickJS engine (`rquickjs-sys`), which does not cross-compile
-cleanly in the current release path. ARM hosts can still build from source, but
-they should not expect the same prebuilt cold-start path.
+Labby launches stdio MCP servers and agent CLIs at runtime, so the gateway needs
+a persistent system environment with normal package installation, systemd, SSH,
+user caches, and runtime-managed tools. Incus provides that shape without
+running Labby directly on the host.
 
-## Primary: Incus System Container
+## Recommended Paths
 
-Install and initialize Incus explicitly on the host first. The bootstrap script
-does not install or initialize Incus for you:
+| Path | Use when | Entry point |
+|------|----------|-------------|
+| Incus system container | Normal self-hosted gateway deployment | `scripts/incus-bootstrap.sh --version vX.Y.Z` |
+| Bare metal / dedicated VM | The host itself is the gateway appliance | `labby setup --provision --yes` |
+| Docker | Development, compatibility, image smoke, ACP adapter work | `just dev-container` / `just dev-container-debug` |
 
-```bash
-sudo apt install incus
-sudo incus admin init
-```
-
-Then launch and provision the gateway container with a pinned Labby release:
-
-```bash
-scripts/incus-bootstrap.sh --version vX.Y.Z
-```
-
-The bootstrap is idempotent. It creates or reuses the `labby` container, launches
-`images:ubuntu/24.04`, configures a privileged non-nesting system container,
-passes exactly one host device (`/dev/net/tun`), installs
-`/usr/local/bin/labby`, and runs:
-
-```bash
-incus exec labby -- labby setup --provision --yes
-```
-
-`/dev/net/tun` is required when Tailscale runs inside the container. To join the
-tailnet during bootstrap, provide an ephemeral, preauthorized, tag-scoped auth
-key:
-
-```bash
-TS_AUTHKEY=tskey-... scripts/incus-bootstrap.sh --version vX.Y.Z
-```
-
-Add `--tailscale-ssh` only when you intentionally want Tailscale SSH enabled for
-the container. Tailscale SSH is governed by tailnet ACLs; enabling it changes who
-can reach the container over SSH.
-
-The container is privileged because this host's unprivileged Incus containers
-deny signal delivery even for same-UID processes. `systemctl restart
-labby.service` needs normal signal semantics; without them, a stale Labby
-process can keep answering `/ready` while systemd reports the unit as failed.
-The service itself still runs as the unprivileged `lab` user inside the
-container.
-
-For local PR validation before a release exists, push a built checkout binary
-instead of downloading a GitHub release:
-
-```bash
-cargo build --workspace --all-features --bin labby
-scripts/incus-bootstrap.sh --local-binary target/debug/labby
-```
-
-The release path should still use `--version vX.Y.Z`.
+See [INCUS.md](./INCUS.md) for the full Incus runbook, bare-metal variant,
+Tailscale setup, rollback, and dependency diagnostics.
 
 ## In-Box Provisioning
 

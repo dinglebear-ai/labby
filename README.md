@@ -136,10 +136,11 @@ checkout.
 
 ### Self-Host The Gateway
 
-The supported self-hosted gateway substrate is an amd64 Debian 13 Incus system
-container. Docker is retained for explicit development/image smoke, but it is
-not the primary production boundary for Labby because stdio MCP servers and
-agent CLIs are installed and launched at runtime.
+The recommended self-hosted gateway substrate is an amd64 Ubuntu 24.04 Incus
+system container. Bare metal is the secondary supported shape for a dedicated
+gateway host or VM. Docker is retained for explicit development/image smoke,
+but it is not the recommended production boundary for Labby because stdio MCP
+servers and agent CLIs are installed and launched at runtime.
 
 ```bash
 scripts/incus-bootstrap.sh --version vX.Y.Z
@@ -147,9 +148,9 @@ incus exec labby -- systemctl status labby --no-pager
 incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
 ```
 
-See [docs/runtime/HOST_GATEWAY.md](./docs/runtime/HOST_GATEWAY.md) for the
-Incus runbook, `/dev/net/tun` Tailscale passthrough, manual `claude`/`codex`/
-`gemini` login checklist, and rollback commands.
+See [docs/runtime/INCUS.md](./docs/runtime/INCUS.md) for the full Incus
+runbook, bare-metal variant, `/dev/net/tun` Tailscale passthrough, manual
+`claude`/`codex`/`gemini` login checklist, and rollback commands.
 
 ## Core Workflows
 
@@ -247,8 +248,8 @@ workspaces.
 ```bash
 labby doctor system
 labby nodes list
-labby logs search dookie oauth
-labby deploy plan dookie
+labby logs search node-a oauth
+labby deploy plan node-a
 ```
 
 Every supported node runs `labby serve`. One node acts as controller; other nodes
@@ -414,10 +415,10 @@ just lint             # skill drift + cargo wrapper smoke + clippy -D warnings +
 just deny             # cargo deny check
 just build            # cargo build --workspace --all-features
 just build-release    # release build, bin/labby install, ~/.local/bin symlink
-labby setup host-service install --install-self -y # install current binary + start systemd user service
+labby setup host-service install --install-self -y # install current binary + start system service
 labby setup host-service restart --install-self -y # reinstall current binary + restart service
 labby setup host-service status --json # inspect the host Labby gateway service
-just host-sync        # repo dev shortcut: rebuild + install ~/.local/bin/labby + restart host service
+just host-sync        # repo dev shortcut: rebuild + install binary + restart host service
 just dev-container    # explicit Docker compatibility/prod-like smoke path
 just dev-container-debug # explicit Docker debug binary path
 just web-build        # cd apps/gateway-admin && pnpm build
@@ -449,16 +450,15 @@ Frontend changes should also run the relevant `pnpm` scripts under
 
 ### Host Gateway Runtime
 
-The default local and dookie gateway runtime is the host user service:
-`~/.local/bin/labby serve` managed by `systemd --user` as `labby.service`.
-This keeps stdio MCP tools, SSH config, local binaries, agent caches, and
-credentials in the same namespace as the gateway. Use
-`labby setup host-service install --install-self -y` to install the currently
-running binary and start the service, then
-`labby setup host-service restart --install-self -y` after replacing that binary.
-From a source checkout, `just host-sync` remains the rebuild-and-restart
-developer shortcut. Docker remains available for prod-like image smoke and
-adapter-container work, but it is no longer the preferred agent gateway runtime.
+The recommended self-hosted gateway runtime is the Incus system container
+provisioned by `scripts/incus-bootstrap.sh --version vX.Y.Z` and converged
+in-box with `labby setup --provision`. Bare metal uses the same provisioner and
+system unit when the host or VM is dedicated to Labby. The default service is
+`/etc/systemd/system/labby.service`, running as `User=lab`, `Group=lab`, with
+`ExecStart=/usr/local/bin/labby serve`. From a source checkout, `just host-sync`
+remains the rebuild-and-restart developer shortcut. Docker remains available
+for prod-like image smoke and adapter-container work, but it is no longer the
+recommended agent gateway runtime.
 
 ### Dev Container
 

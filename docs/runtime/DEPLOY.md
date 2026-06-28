@@ -8,7 +8,7 @@ One node is the configured `controller`. Every other node points at it with:
 
 ```toml
 [node]
-controller = "tootie"
+controller = "controller"
 ```
 
 The controller hosts:
@@ -58,7 +58,7 @@ Example `config.toml`:
 
 ```toml
 [node]
-controller = "tootie"
+controller = "controller"
 
 [mcp]
 port = 8765
@@ -87,8 +87,8 @@ Examples:
 
 ```bash
 labby nodes enrollments list
-labby nodes enrollments approve dookie
-labby nodes enrollments deny steamy-wsl --reason "unexpected token"
+labby nodes enrollments approve node-a
+labby nodes enrollments deny workstation-wsl --reason "unexpected token"
 ```
 
 ## Operational Notes

@@ -523,7 +523,7 @@ Expected: PASS
 
 - [ ] **Step 2: Run the dev server with real ACP provider enabled**
 
-Run: `cd apps/gateway-admin && LAB_ALLOWED_DEV_ORIGINS=dookie pnpm dev --hostname 0.0.0.0`
+Run: `cd apps/gateway-admin && LAB_ALLOWED_DEV_ORIGINS=node-a pnpm dev --hostname 0.0.0.0`
 Expected: server boots with provider health reporting either ready or explicit unavailable reason
 
 - [ ] **Step 3: Manually exercise one real `codex-acp` session**

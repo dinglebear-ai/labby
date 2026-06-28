@@ -93,8 +93,8 @@ Google-specific notes:
 `lab` also ships a local OAuth callback forwarder for browser-side machines:
 
 ```bash
-labby oauth relay-local --machine dookie --port 38935
-labby oauth relay-local --forward-base http://node.internal.example:38935/callback/dookie --port 38935
+labby oauth relay-local --machine node-a --port 38935
+labby oauth relay-local --forward-base http://node.internal.example:38935/callback/node-a --port 38935
 ```
 
 This helper exists for cases where:
@@ -128,7 +128,7 @@ Example body:
 ```json
 {
   "bind_addr": "127.0.0.1:38935",
-  "target_url": "http://node.internal.example:38935/callback/dookie",
+  "target_url": "http://node.internal.example:38935/callback/node-a",
   "default_port": 38935,
   "request_timeout_ms": 30000
 }
@@ -151,12 +151,12 @@ Configure extra allowed redirect URI patterns with either:
 Example:
 
 ```env
-LAB_AUTH_ALLOWED_REDIRECT_URIS=https://callback.tootie.tv/callback/*
+LAB_AUTH_ALLOWED_REDIRECT_URIS=https://callback.example.com/callback/*
 ```
 
 ```toml
 [auth]
-allowed_client_redirect_uris = ["https://callback.tootie.tv/callback/*"]
+allowed_client_redirect_uris = ["https://callback.example.com/callback/*"]
 ```
 
 Patterns are matched as structured URLs, not raw substrings:

@@ -155,7 +155,7 @@ test('buildGatewayCreatePayload includes stdio environment variables', () => {
     config: {
       command: 'npx',
       args: ['-y', 'mcp-searxng'],
-      env: { SEARXNG_URL: 'https://s.tootie.tv' },
+      env: { SEARXNG_URL: 'https://search.example.com' },
     },
   })
 
@@ -164,7 +164,7 @@ test('buildGatewayCreatePayload includes stdio environment variables', () => {
     url: null,
     command: 'npx',
     args: ['-y', 'mcp-searxng'],
-    env: { SEARXNG_URL: 'https://s.tootie.tv' },
+    env: { SEARXNG_URL: 'https://search.example.com' },
     bearer_token_env: null,
     proxy_resources: true,
     proxy_prompts: true,
@@ -811,7 +811,7 @@ test('normalizeGateway humanizes auth failures for operator-facing UI', () => {
     {
       config: {
         name: 'swag',
-        url: 'https://swag.tootie.tv/mcp',
+        url: 'https://gateway.example.com/mcp',
         proxy_resources: true,
       },
       runtime: {
@@ -836,7 +836,7 @@ test('normalizeGateway humanizes auth failures for operator-facing UI', () => {
 
   assert.equal(
     gateway.status.last_error,
-    'Authentication is required by https://swag.tootie.tv/mcp. Configure `bearer_token_env` with a valid upstream token, then reload this gateway.'
+    'Authentication is required by https://gateway.example.com/mcp. Configure `bearer_token_env` with a valid upstream token, then reload this gateway.'
   )
   assert.equal(gateway.warnings[0]?.code, 'auth_required')
 })

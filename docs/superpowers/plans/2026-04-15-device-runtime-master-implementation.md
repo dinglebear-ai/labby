@@ -119,11 +119,11 @@
 fn parses_device_master_config_block() {
     let raw = r#"
         [device]
-        master = "tootie"
+        master = "controller"
     "#;
 
     let parsed: lab::config::LabConfig = toml::from_str(raw).unwrap();
-    assert_eq!(parsed.device.as_ref().unwrap().master.as_deref(), Some("tootie"));
+    assert_eq!(parsed.device.as_ref().unwrap().master.as_deref(), Some("controller"));
 }
 
 #[test]
@@ -138,22 +138,22 @@ fn defaults_device_config_when_block_missing() {
 ```rust
 #[test]
 fn resolves_master_role_when_master_matches_local_hostname() {
-    let resolved = resolve_runtime_role("tootie", Some("tootie")).unwrap();
+    let resolved = resolve_runtime_role("controller", Some("controller")).unwrap();
     assert!(matches!(resolved.role, DeviceRole::Master));
 }
 
 #[test]
 fn resolves_non_master_role_when_master_differs_from_local_hostname() {
-    let resolved = resolve_runtime_role("dookie", Some("tootie")).unwrap();
+    let resolved = resolve_runtime_role("node-a", Some("controller")).unwrap();
     assert!(matches!(resolved.role, DeviceRole::NonMaster));
-    assert_eq!(resolved.master_host, "tootie");
+    assert_eq!(resolved.master_host, "controller");
 }
 
 #[test]
 fn defaults_first_device_to_master_when_master_is_missing() {
-    let resolved = resolve_runtime_role("tootie", None).unwrap();
+    let resolved = resolve_runtime_role("controller", None).unwrap();
     assert!(matches!(resolved.role, DeviceRole::Master));
-    assert_eq!(resolved.master_host, "tootie");
+    assert_eq!(resolved.master_host, "controller");
 }
 ```
 
@@ -257,13 +257,13 @@ git commit -m "feat: add master device config resolution"
 async fn device_store_tracks_last_seen_status_and_metadata() {
     let store = DeviceFleetStore::default();
     store.record_hello(DeviceHello {
-        device_id: "tootie".into(),
+        device_id: "controller".into(),
         role: "master".into(),
         version: "1.0.0".into(),
     }).await;
 
     store.record_status(DeviceStatus {
-        device_id: "tootie".into(),
+        device_id: "controller".into(),
         connected: true,
         cpu_percent: Some(3.5),
         memory_used_bytes: Some(1024),
@@ -272,9 +272,9 @@ async fn device_store_tracks_last_seen_status_and_metadata() {
         ips: vec!["100.64.0.1".into()],
     }).await;
 
-    let snapshot = store.device("tootie").await.unwrap();
+    let snapshot = store.device("controller").await.unwrap();
     assert!(snapshot.connected);
-    assert_eq!(snapshot.device_id, "tootie");
+    assert_eq!(snapshot.device_id, "controller");
 }
 ```
 
@@ -469,7 +469,7 @@ async fn queue_persists_and_reloads_entries() {
     let temp = tempfile::tempdir().unwrap();
     let queue = DeviceOutboundQueue::open(temp.path().join("queue.jsonl")).await.unwrap();
 
-    queue.push(QueuedEnvelope::status(serde_json::json!({"device_id":"tootie"}))).await.unwrap();
+    queue.push(QueuedEnvelope::status(serde_json::json!({"device_id":"controller"}))).await.unwrap();
     drop(queue);
 
     let reopened = DeviceOutboundQueue::open(temp.path().join("queue.jsonl")).await.unwrap();
@@ -556,7 +556,7 @@ git commit -m "feat: add device outbound queue"
 async fn hello_endpoint_updates_master_store() {
     let app = test_device_router();
     let response = app
-        .oneshot(hello_request(r#"{"device_id":"dookie","role":"non-master","version":"1.0.0"}"#))
+        .oneshot(hello_request(r#"{"device_id":"node-a","role":"non-master","version":"1.0.0"}"#))
         .await
         .unwrap();
 
@@ -567,7 +567,7 @@ async fn hello_endpoint_updates_master_store() {
 async fn syslog_batch_endpoint_accepts_normalized_events() {
     let app = test_device_router();
     let response = app
-        .oneshot(syslog_request(r#"{"device_id":"dookie","events":[{"device_id":"dookie","source":"journald","timestamp_unix_ms":1,"message":"hello","fields":{}}]}"#))
+        .oneshot(syslog_request(r#"{"device_id":"node-a","events":[{"device_id":"node-a","source":"journald","timestamp_unix_ms":1,"message":"hello","fields":{}}]}"#))
         .await
         .unwrap();
 
@@ -659,7 +659,7 @@ async fn non_master_runtime_posts_hello_to_master() {
         .mount(&server)
         .await;
 
-    let runtime = DeviceRuntime::non_master_for_test("dookie", server.uri());
+    let runtime = DeviceRuntime::non_master_for_test("node-a", server.uri());
     runtime.send_initial_hello().await.unwrap();
 }
 ```
@@ -883,8 +883,8 @@ git commit -m "feat: report device ai cli config inventory"
 #[tokio::test]
 async fn master_store_keeps_uploaded_logs_by_device() {
     let store = DeviceFleetStore::default();
-    store.record_logs("dookie", vec![DeviceLogEvent {
-        device_id: "dookie".into(),
+    store.record_logs("node-a", vec![DeviceLogEvent {
+        device_id: "node-a".into(),
         source: "journald".into(),
         timestamp_unix_ms: 1,
         level: Some("info".into()),
@@ -892,7 +892,7 @@ async fn master_store_keeps_uploaded_logs_by_device() {
         fields: Default::default(),
     }]).await;
 
-    assert_eq!(store.logs_for_device("dookie").await.len(), 1);
+    assert_eq!(store.logs_for_device("node-a").await.len(), 1);
 }
 ```
 
@@ -1116,7 +1116,7 @@ Required contents:
 - [ ] **Step 2: Update existing docs**
 
 Make each doc consistent with the new master model:
-- `docs/CONFIG.md`: add `[device] master = "tootie"`
+- `docs/CONFIG.md`: add `[device] master = "controller"`
 - `docs/CLI.md`: document `lab device` and `lab logs`
 - `docs/OAUTH.md`: explain that relay is a device capability
 - `docs/TRANSPORT.md`: add `/v1/device/*`

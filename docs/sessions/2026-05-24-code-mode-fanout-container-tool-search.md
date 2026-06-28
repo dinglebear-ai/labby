@@ -12,7 +12,7 @@ beads: lab-le0w0, lab-le0w0.1, lab-le0w0.2, lab-le0w0.3, lab-le0w0.4, lab-le0w0.
 
 ## User Request
 
-The session started with the gateway Code Mode implementation: it worked, but multiple tool calls were serialized instead of fanning out. Follow-up requests covered whether Code Mode uses JS or TS, rebuilding and installing the debug binary, live `mcporter` testing against `lab.tootie.tv/mcp`, explaining whether `code_search` uses vectors, and fixing container URL normalization for Qdrant/TEI.
+The session started with the gateway Code Mode implementation: it worked, but multiple tool calls were serialized instead of fanning out. Follow-up requests covered whether Code Mode uses JS or TS, rebuilding and installing the debug binary, live `mcporter` testing against `lab.example.com/mcp`, explaining whether `code_search` uses vectors, and fixing container URL normalization for Qdrant/TEI.
 
 ## Session Overview
 
@@ -64,7 +64,7 @@ The session started with the gateway Code Mode implementation: it worked, but mu
 | created | `docs/sessions/2026-05-24-code-mode-fanout-container-tool-search.md` | | This session note | current file |
 | untracked | `docs/superpowers/plans/2026-05-24-code-mode-dispatch-refactor.md` | | Existing untracked implementation plan observed during save pass | `git status --short` |
 | untracked | `docs/sessions/2026-05-24-stdio-parity-merge-deploy.md` | | Existing untracked session note observed during save pass | `git status --short` |
-| untracked | `docs/sessions/2026-05-24-steamy-extension-auth-search-crawl.md` | | Existing untracked session note observed during save pass | `git status --short` |
+| untracked | `docs/sessions/2026-05-24-workstation-extension-auth-search-crawl.md` | | Existing untracked session note observed during save pass | `git status --short` |
 
 ## Beads Activity
 
@@ -92,7 +92,7 @@ No bead create/edit/close commands were run in this save pass. The `bd list` out
 - MCP/external CLI: `mcporter` called `lab-prod.code_search`, `lab-prod.code_schema`, `lab-prod.invoke`, and `lab-prod.code_execute`.
 - File tools: `apply_patch` for code, compose, and this session note.
 - Browser tools/subagents: none used in this session.
-- Issues encountered: one local ad-hoc `mcporter` call to `http://127.0.0.1:8765/mcp` failed with protected-resource mismatch because the server advertised `https://lab.tootie.tv/mcp`; live prod calls were used instead.
+- Issues encountered: one local ad-hoc `mcporter` call to `http://127.0.0.1:8765/mcp` failed with protected-resource mismatch because the server advertised `https://lab.example.com/mcp`; live prod calls were used instead.
 
 ## Commands Executed
 

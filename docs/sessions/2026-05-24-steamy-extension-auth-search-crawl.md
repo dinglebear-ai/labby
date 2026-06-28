@@ -11,11 +11,11 @@ worktree: /home/jmagar/workspace/axon_rust
 
 ## User Request
 
-Use `steamy-wsl` and systematically debug the Chrome extension / crawl-with-search behavior. Follow up by configuring the bearer token and testing the real authenticated path, not just DOM loading.
+Use `workstation-wsl` and systematically debug the Chrome extension / crawl-with-search behavior. Follow up by configuring the bearer token and testing the real authenticated path, not just DOM loading.
 
 ## Session Overview
 
-- Repaired the `steamy-wsl` SSH session's missing Windows interop registration so Windows `.exe` commands could run from WSL over SSH.
+- Repaired the `workstation-wsl` SSH session's missing Windows interop registration so Windows `.exe` commands could run from WSL over SSH.
 - Confirmed branded Chrome 148 ignores unpacked extension command-line loading, matching Chromium's Chrome 137+ behavior.
 - Switched to WSL Chromium, loaded the Axon extension, configured the bearer token in extension storage, and tested authenticated extension calls against the live Axon API.
 - Found `/v1/search` initially returned partial crawl enqueue because SQLite job queue writes were failing with `code: 522 disk I/O error`.
@@ -23,7 +23,7 @@ Use `steamy-wsl` and systematically debug the Chrome extension / crawl-with-sear
 
 ## Sequence of Events
 
-1. SSH to `steamy-wsl` worked, but `/mnt/c/Windows/System32/*.exe` failed with `exec format error`.
+1. SSH to `workstation-wsl` worked, but `/mnt/c/Windows/System32/*.exe` failed with `exec format error`.
 2. Checked `binfmt_misc`, found `WSLInterop` missing, and registered it for the current session with `/init`.
 3. Launched a separate Windows Chrome debug profile, discovered port `9222` was already owned by `C:\chrome-debug`, and moved isolated testing to a new port.
 4. Confirmed branded Chrome 148 did not load the unpacked Axon extension via `--load-extension`.
@@ -35,7 +35,7 @@ Use `steamy-wsl` and systematically debug the Chrome extension / crawl-with-sear
 
 ## Key Findings
 
-- `steamy-wsl` SSH was not the blocker. The blocker was missing `WSLInterop` under `/proc/sys/fs/binfmt_misc`, which prevented Windows executables from launching through the SSH session.
+- `workstation-wsl` SSH was not the blocker. The blocker was missing `WSLInterop` under `/proc/sys/fs/binfmt_misc`, which prevented Windows executables from launching through the SSH session.
 - Branded Chrome 148 did not load the unpacked extension using `--load-extension`; Chrome APIs showed no loaded extensions, and extension page targets resolved to `chrome-error://chromewebdata/`.
 - WSL Chromium successfully loaded the extension as `chrome-extension://ejkokbgfbfkjjdfdcglplnflmckepkje/background.js`.
 - Authenticated extension API check succeeded after setting `axonUrl` and `axonToken` in `chrome.storage.local`.
@@ -54,7 +54,7 @@ Use `steamy-wsl` and systematically debug the Chrome extension / crawl-with-sear
 
 | status | path | previous path | purpose | evidence |
 | --- | --- | --- | --- | --- |
-| created | `docs/sessions/2026-05-24-steamy-extension-auth-search-crawl.md` |  | Session documentation | This file |
+| created | `docs/sessions/2026-05-24-workstation-extension-auth-search-crawl.md` |  | Session documentation | This file |
 
 Pre-existing dirty files observed and left untouched:
 
@@ -83,8 +83,8 @@ Observed tracker context:
 - Skill: `save-to-md` for session capture format and maintenance checklist.
 - Skill: `superpowers:systematic-debugging` earlier in the debugging flow to isolate symptoms, gather evidence, and avoid guessing.
 - Skill: `chrome` earlier in the debugging flow to drive Chrome/Chromium via CDP.
-- Shell / SSH: used `ssh steamy-wsl`, PowerShell through WSL interop, Docker CLI, `curl`, `sqlite3`, `lsof`, `df`, `git`, `gh`, and `bd`.
-- Browser tooling: Chrome DevTools Protocol through Windows PowerShell helpers and direct Node WebSocket CDP calls from `steamy-wsl`.
+- Shell / SSH: used `ssh workstation-wsl`, PowerShell through WSL interop, Docker CLI, `curl`, `sqlite3`, `lsof`, `df`, `git`, `gh`, and `bd`.
+- Browser tooling: Chrome DevTools Protocol through Windows PowerShell helpers and direct Node WebSocket CDP calls from `workstation-wsl`.
 - External docs: Chromium Extensions announcement about `--load-extension` removal in branded Chrome builds.
 
 ## Commands Executed
@@ -92,7 +92,7 @@ Observed tracker context:
 Critical commands and observed results:
 
 ```bash
-ssh steamy-wsl 'test -e /proc/sys/fs/binfmt_misc/WSLInterop && echo yes || echo no'
+ssh workstation-wsl 'test -e /proc/sys/fs/binfmt_misc/WSLInterop && echo yes || echo no'
 # Initially no; after registration, yes.
 ```
 
@@ -102,7 +102,7 @@ printf ':WSLInterop:M::MZ::/init:PF\n' | sudo tee /proc/sys/fs/binfmt_misc/regis
 ```
 
 ```bash
-ssh steamy-wsl 'chromium-browser --headless=new --remote-debugging-port=9336 ... --load-extension=/mnt/c/Users/jmaga/Desktop/axon-extension-test'
+ssh workstation-wsl 'chromium-browser --headless=new --remote-debugging-port=9336 ... --load-extension=/mnt/c/Users/jmaga/Desktop/axon-extension-test'
 # WSL Chromium loaded the Axon extension service worker.
 ```
 
@@ -186,10 +186,10 @@ After:
 ## Open Questions
 
 - Whether the SQLite `code: 522 disk I/O error` was caused by stale WAL/runtime state, a transient filesystem issue, or a specific concurrency path in job queue handling.
-- Whether `WSLInterop` should be registered persistently on `steamy-wsl`.
+- Whether `WSLInterop` should be registered persistently on `workstation-wsl`.
 
 ## Next Steps
 
 - Add or update a follow-up issue for investigating recurring SQLite job queue `code: 522 disk I/O error` if it appears again in logs.
 - Consider adding a health check or watchdog metric that detects queue read/write failures instead of only reporting process health.
-- If `steamy-wsl` loses Windows interop after restart, add a durable WSL/systemd repair instead of relying on per-session registration.
+- If `workstation-wsl` loses Windows interop after restart, add a durable WSL/systemd repair instead of relying on per-session registration.

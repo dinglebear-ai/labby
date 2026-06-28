@@ -16,7 +16,7 @@ Create scripts that test whether OAuth is properly configured — covering MCP e
 
 ## Session Overview
 
-Explored the auth middleware stack in the lab HTTP router, clarified the OAuth vs. bearer token model, wrote `scripts/check-oauth.sh` to verify live endpoint security, ran it against `https://lab.tootie.tv`, diagnosed and fixed a false-positive failure in the upstream OAuth callback check, and confirmed the server passes all 31 checks with one expected warning.
+Explored the auth middleware stack in the lab HTTP router, clarified the OAuth vs. bearer token model, wrote `scripts/check-oauth.sh` to verify live endpoint security, ran it against `https://lab.example.com`, diagnosed and fixed a false-positive failure in the upstream OAuth callback check, and confirmed the server passes all 31 checks with one expected warning.
 
 ## Sequence of Events
 
@@ -25,7 +25,7 @@ Explored the auth middleware stack in the lab HTTP router, clarified the OAuth v
 3. Read `.env.example` to enumerate all relevant env vars.
 4. Clarified the security model: API and MCP both accept OAuth JWTs as Bearer tokens; MCP additionally rejects session cookies; static bearer token and OAuth are simultaneously active.
 5. Wrote `scripts/check-oauth.sh` — 10 test sections covering config, health probes, protected endpoint gating, static bearer, MCP bearer-only, OAuth discovery metadata, WWW-Authenticate header, dev marketplace, node self-registration, and upstream OAuth callback.
-6. Ran the script against `https://lab.tootie.tv` — got 30 pass / 1 fail / 1 warn.
+6. Ran the script against `https://lab.example.com` — got 30 pass / 1 fail / 1 warn.
 7. Diagnosed the failure: test sent `?state=csrf&code=authcode` to `/auth/upstream/callback`, which triggered the real callback handler that looked up the fake state token in SQLite and correctly returned `kind:auth_failed` — not an auth gate failure.
 8. Fixed the probe to send no query params (expecting 400/422 from missing required params) rather than forged OAuth state.
 9. Re-ran: 31 pass / 0 fail / 1 warn. All checks clean.
@@ -60,11 +60,11 @@ Explored the auth middleware stack in the lab HTTP router, clarified the OAuth v
 bash -n scripts/check-oauth.sh  # → syntax ok
 
 # First run against live server
-LAB_BASE_URL=https://lab.tootie.tv bash scripts/check-oauth.sh
+LAB_BASE_URL=https://lab.example.com bash scripts/check-oauth.sh
 # → 30 pass / 1 fail / 1 warn
 
 # Second run after fixing upstream callback probe
-LAB_BASE_URL=https://lab.tootie.tv bash scripts/check-oauth.sh
+LAB_BASE_URL=https://lab.example.com bash scripts/check-oauth.sh
 # → 31 pass / 0 fail / 1 warn
 ```
 
@@ -92,7 +92,7 @@ LAB_BASE_URL=https://lab.tootie.tv bash scripts/check-oauth.sh
 | `GET /v1/extract/actions` (wrong Bearer) | 401 | 401 | ✓ |
 | `GET /mcp` (fake session cookie) | 401 | 401 | ✓ |
 | `GET /mcp` (Bearer) | 200/405 | 400 (warn — GET not valid for SSE endpoint) | ⚠ |
-| `GET /.well-known/oauth-authorization-server` | 200, issuer matches `LAB_PUBLIC_URL` | 200, issuer=`https://lab.tootie.tv` | ✓ |
+| `GET /.well-known/oauth-authorization-server` | 200, issuer matches `LAB_PUBLIC_URL` | 200, issuer=`https://lab.example.com` | ✓ |
 | `GET /.well-known/oauth-protected-resource` | 200 | 200 | ✓ |
 | `GET /jwks` | 200, keys array | 200, keys present | ✓ |
 | `POST /dev/api/marketplace` (read action, no auth) | not 401 | 200 | ✓ |
@@ -102,7 +102,7 @@ LAB_BASE_URL=https://lab.tootie.tv bash scripts/check-oauth.sh
 
 ## Open Questions
 
-- The MCP endpoint returns 400 on GET — worth confirming whether the reverse proxy (Caddy/Traefik in front of `lab.tootie.tv`) is stripping the `Upgrade` or SSE headers that a real MCP client would send.
+- The MCP endpoint returns 400 on GET — worth confirming whether the reverse proxy (Caddy/Traefik in front of `lab.example.com`) is stripping the `Upgrade` or SSE headers that a real MCP client would send.
 
 ## Next Steps
 

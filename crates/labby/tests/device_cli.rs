@@ -20,7 +20,7 @@ async fn device_list_command_reads_from_master_api() {
         .and(wiremock::matchers::path("/v1/nodes"))
         .respond_with(
             wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                {"node_id":"dookie","connected":true}
+                {"node_id":"node-a","connected":true}
             ])),
         )
         .mount(&server)
@@ -103,21 +103,21 @@ async fn logs_search_command_reads_from_master_api() {
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/v1/nodes/logs/search"))
         .and(wiremock::matchers::body_string_contains(
-            "\"node_id\":\"dookie\"",
+            "\"node_id\":\"node-a\"",
         ))
         .and(wiremock::matchers::body_string_contains(
             "\"query\":\"hello\"",
         ))
         .respond_with(
             wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                {"node_id":"dookie","message":"hello"}
+                {"node_id":"node-a","message":"hello"}
             ])),
         )
         .mount(&server)
         .await;
 
     let config = config_for_master(&server.uri());
-    let value = labby::cli::logs::search_logs(&config, "dookie", "hello")
+    let value = labby::cli::logs::search_logs(&config, "node-a", "hello")
         .await
         .unwrap();
     assert_eq!(value.as_array().unwrap().len(), 1);

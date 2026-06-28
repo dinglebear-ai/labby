@@ -66,7 +66,7 @@ export function SetupPageContent() {
                   <div>
                     <p className="text-sm font-medium">Targeted scan</p>
                     <p className="text-sm text-aurora-text-muted">
-                      Use a local path or SSH target like <code>squirts:/mnt/appdata</code>.
+                      Use a local path or SSH target like <code>node-b:/mnt/appdata</code>.
                     </p>
                   </div>
                   <div className="flex flex-col gap-3 sm:flex-row">

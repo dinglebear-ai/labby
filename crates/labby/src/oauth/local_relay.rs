@@ -329,7 +329,7 @@ mod tests {
         let relay = spawn_relay(LocalRelayConfig {
             bind_addr: relay_addr,
             resolved_target: resolve_explicit_target(
-                &format!("http://{}/callback/dookie", upstream.addr),
+                &format!("http://{}/callback/node-a", upstream.addr),
                 Some(relay_addr.port()),
             )
             .unwrap(),
@@ -339,7 +339,7 @@ mod tests {
 
         let response = reqwest::Client::new()
             .post(format!(
-                "http://{}/callback/dookie/extra?code=abc&state=xyz",
+                "http://{}/callback/node-a/extra?code=abc&state=xyz",
                 relay_addr
             ))
             .header(
@@ -362,7 +362,7 @@ mod tests {
         assert_eq!(seen[0].method, "POST");
         assert_eq!(
             seen[0].path_and_query,
-            "/callback/dookie/extra?code=abc&state=xyz"
+            "/callback/node-a/extra?code=abc&state=xyz"
         );
         assert_eq!(seen[0].body, b"grant_type=authorization_code");
         assert_eq!(response_status, StatusCode::CREATED);
@@ -436,7 +436,7 @@ mod tests {
         let relay_config = LocalRelayConfig {
             bind_addr: relay_addr,
             resolved_target: resolve_explicit_target(
-                &format!("http://{}/callback/dookie", upstream_addr),
+                &format!("http://{}/callback/node-a", upstream_addr),
                 Some(relay_addr.port()),
             )
             .unwrap(),
@@ -448,7 +448,7 @@ mod tests {
         sleep(Duration::from_millis(25)).await;
 
         let response = reqwest::Client::new()
-            .get(format!("http://{}/callback/dookie?code=abc", relay_addr))
+            .get(format!("http://{}/callback/node-a?code=abc", relay_addr))
             .send()
             .await
             .expect("relay should return a response");
@@ -482,7 +482,7 @@ mod tests {
         let relay = spawn_relay(LocalRelayConfig {
             bind_addr: relay_addr,
             resolved_target: resolve_explicit_target(
-                &format!("http://{}/callback/dookie", upstream.addr),
+                &format!("http://{}/callback/node-a", upstream.addr),
                 Some(relay_addr.port()),
             )
             .unwrap(),
@@ -491,7 +491,7 @@ mod tests {
         .await;
 
         let response = reqwest::Client::new()
-            .get(format!("http://{}/callback/dookie?code=abc", relay_addr))
+            .get(format!("http://{}/callback/node-a?code=abc", relay_addr))
             .send()
             .await
             .expect("relay should return a response");
@@ -513,7 +513,7 @@ mod tests {
         let result = run_local_relay(LocalRelayConfig {
             bind_addr,
             resolved_target: resolve_explicit_target(
-                "http://127.0.0.1:48081/callback/dookie",
+                "http://127.0.0.1:48081/callback/node-a",
                 Some(bind_addr.port()),
             )
             .unwrap(),
@@ -530,7 +530,7 @@ mod tests {
         // Verify the function strips query params and fragment so secrets
         // in OAuth callback URLs never appear in structured logs.
         let url = reqwest::Url::parse(
-            "http://127.0.0.1:38935/callback/dookie?token=secret-value#fragment",
+            "http://127.0.0.1:38935/callback/node-a?token=secret-value#fragment",
         )
         .unwrap();
         let redacted = redact_forward_target(&url);
@@ -544,7 +544,7 @@ mod tests {
         );
         assert!(redacted.contains("127.0.0.1"), "host missing: {redacted}");
         assert!(
-            redacted.contains("/callback/dookie"),
+            redacted.contains("/callback/node-a"),
             "path missing: {redacted}"
         );
     }
@@ -556,7 +556,7 @@ mod tests {
             Err("path not under relay target")
         );
         assert_eq!(
-            suffix_path_for_request("/callback/dookie", "/callback/dookie/extra"),
+            suffix_path_for_request("/callback/node-a", "/callback/node-a/extra"),
             Ok("extra".to_string())
         );
         assert_eq!(

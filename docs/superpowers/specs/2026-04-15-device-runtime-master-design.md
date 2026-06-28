@@ -98,8 +98,8 @@ For v1, the master should be identified by Tailscale machine name or MagicDNS ho
 
 Examples:
 
-- `tootie`
-- `tootie.tailnet-name.ts.net`
+- `controller`
+- `controller.tailnet-name.ts.net`
 
 This hostname is both:
 
@@ -390,7 +390,7 @@ Desired shape:
 
 ```toml
 [device]
-master = "tootie"
+master = "controller"
 ```
 
 Behavior:

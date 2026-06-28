@@ -39,6 +39,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { TransportBadge } from './transport-badge'
 import { WarningsPill } from './warnings-pill'
 import type { Gateway } from '@/lib/types/gateway'
@@ -111,6 +112,25 @@ export function GatewayTable({
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const [copiedGatewayId, setCopiedGatewayId] = useState<string | null>(null)
   const [expandedMobileGatewayId, setExpandedMobileGatewayId] = useState<string | null>(null)
+  const [disableConfirmationGatewayId, setDisableConfirmationGatewayId] = useState<string | null>(null)
+  const disableConfirmationGateway = disableConfirmationGatewayId
+    ? gateways.find((gateway) => gateway.id === disableConfirmationGatewayId) ?? null
+    : null
+
+  const requestToggleEnabled = (gateway: Gateway) => {
+    if (gateway.enabled ?? true) {
+      setDisableConfirmationGatewayId(gateway.id)
+      return
+    }
+    onToggleEnabled(gateway)
+  }
+
+  const confirmDisableGateway = () => {
+    const gateway = disableConfirmationGateway
+    setDisableConfirmationGatewayId(null)
+    if (!gateway || !(gateway.enabled ?? true)) return
+    onToggleEnabled(gateway)
+  }
 
   const handleAction = async (
     gateway: Gateway,
@@ -509,7 +529,7 @@ export function GatewayTable({
                         <Pencil className="size-4 mr-2" />
                         Edit server
                       </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onToggleEnabled(gateway)}>
+                      <DropdownMenuItem onClick={() => requestToggleEnabled(gateway)}>
                         {gateway.enabled ?? true ? (
                           <>
                             <Trash2 className="size-4 mr-2" />
@@ -725,7 +745,7 @@ export function GatewayTable({
                           variant="outline"
                           size="icon"
                           className={cn(gatewayActionTone(), GATEWAY_TABLE_ACTION, 'opacity-100 transition-opacity md:opacity-0 md:focus-visible:opacity-100 md:group-hover:opacity-100')}
-                          onClick={() => onToggleEnabled(gateway)}
+                          onClick={() => requestToggleEnabled(gateway)}
                         >
                           <Power className="size-3.5" />
                           <span className="sr-only">{gateway.enabled ?? true ? 'Disable server' : 'Enable server'}</span>
@@ -784,7 +804,7 @@ export function GatewayTable({
                             <Pencil className="mr-2 size-4" />
                             Edit server
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => onToggleEnabled(gateway)}>
+                          <DropdownMenuItem onClick={() => requestToggleEnabled(gateway)}>
                             {gateway.enabled ?? true ? (
                               <>
                                 <Trash2 className="mr-2 size-4" />
@@ -854,6 +874,16 @@ export function GatewayTable({
           </TableBody>
         </Table>
       </div>
+      <ActionConfirmationDialog
+        open={disableConfirmationGatewayId !== null}
+        title="Disable server?"
+        description="Connected clients should no longer have access to this server. Existing sessions may fail until the gateway is enabled again."
+        confirmLabel="Disable server"
+        onOpenChange={(open) => {
+          if (!open) setDisableConfirmationGatewayId(null)
+        }}
+        onConfirm={confirmDisableGateway}
+      />
     </>
   )
 }

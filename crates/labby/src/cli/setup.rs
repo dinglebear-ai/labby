@@ -27,7 +27,7 @@ use crate::output::{OutputFormat, print};
 
 #[derive(Debug, Args)]
 pub struct SetupArgs {
-    /// Provision this Debian 13/Incus box for the Labby gateway.
+    /// Provision this Ubuntu 24.04/Incus box for the Labby gateway.
     #[arg(long)]
     pub provision: bool,
 
@@ -662,7 +662,7 @@ mod tests {
             "setup",
             "plugin-connectivity",
             "--server-url",
-            "http://dookie:8765",
+            "http://node-a:8765",
         ])
         .unwrap();
         let crate::cli::Command::Setup(args) = cli.command else {
@@ -674,7 +674,7 @@ mod tests {
         else {
             panic!("expected plugin-connectivity with url");
         };
-        assert_eq!(url, "http://dookie:8765");
+        assert_eq!(url, "http://node-a:8765");
     }
 
     #[test]

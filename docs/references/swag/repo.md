@@ -619,7 +619,7 @@ jobs:
           ' server.json > server.tmp && mv server.tmp server.json
 
       - name: Authenticate to MCP Registry
-        run: ./mcp-publisher login dns --domain tootie.tv --private-key ${{ secrets.MCP_PRIVATE_KEY }}
+        run: ./mcp-publisher login dns --domain controller.tv --private-key ${{ secrets.MCP_PRIVATE_KEY }}
 
       - name: Publish to MCP Registry
         run: ./mcp-publisher publish
@@ -1569,14 +1569,14 @@ assert_not_contains "$OUT" "error" "no error on backup cleanup"
 
 # =============================================================================
 section "9. HEALTH CHECK — reachable domain"
-OUT=$(mcp '{"action":"health_check","domain":"swag.tootie.tv","timeout":10}')
+OUT=$(mcp '{"action":"health_check","domain":"swag.example.com","timeout":10}')
 assert_not_contains "$OUT" "\"error\":" "health_check call completes"
 # bead .4: assert response contains ✅ and parse 2xx/3xx status code
 if echo "$OUT" | grep -q '✅'; then
     pass "health_check — domain returned success indicator"
-    assert_http_success "$OUT" "swag.tootie.tv returns 2xx/3xx"
+    assert_http_success "$OUT" "swag.example.com returns 2xx/3xx"
 else
-    skip "health_check swag.tootie.tv — domain unreachable from this host (✅ not in response)"
+    skip "health_check swag.example.com — domain unreachable from this host (✅ not in response)"
 fi
 
 section "9a. HEALTH CHECK — invalid domain (graceful failure)"
@@ -1646,7 +1646,7 @@ section "11. SUBFOLDER — path-based routing via .subfolder.conf"
 OUT=$(mcp "{
   \"action\": \"create\",
   \"config_name\": \"smoke-subfolder.subfolder.conf\",
-  \"server_name\": \"swag.tootie.tv\",
+  \"server_name\": \"swag.example.com\",
   \"upstream_app\": \"smoke-subfolder-app\",
   \"upstream_port\": 9998,
   \"upstream_proto\": \"http\",
@@ -1681,7 +1681,7 @@ mcp "{\"action\":\"remove\",\"config_name\":\"${MCP_SUBFOLDER_CONFIG}\",\"create
 OUT=$(mcp "{
   \"action\": \"create\",
   \"config_name\": \"${MCP_SUBFOLDER_CONFIG}\",
-  \"server_name\": \"swag.tootie.tv\",
+  \"server_name\": \"swag.example.com\",
   \"upstream_app\": \"smoke-mcp-sf-app\",
   \"upstream_port\": 9992,
   \"upstream_proto\": \"http\",
@@ -1934,7 +1934,7 @@ if ($request_method = 'OPTIONS') {
 # Include this in MCP server blocks to add OAuth protection and discovery endpoints.
 #
 # Requires: mcp-oauth container accessible as http://mcp-oauth:8000
-# See: https://mcp-auth.tootie.tv
+# See: https://mcp-auth.example.com
 
 # OAuth 2.1 token verification (internal only — used by auth_request)
 location = /_oauth_verify {
@@ -1958,7 +1958,7 @@ location = /.well-known/oauth-protected-resource {
     add_header Cache-Control "public, max-age=3600" always;
     add_header Access-Control-Allow-Origin $http_origin always;
     add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-    return 200 '{"resource":"https://$server_name","authorization_servers":["https://mcp-auth.tootie.tv"],"scopes_supported":["mcp:read","mcp:write"],"bearer_methods_supported":["header"]}';
+    return 200 '{"resource":"https://$server_name","authorization_servers":["https://mcp-auth.example.com"],"scopes_supported":["mcp:read","mcp:write"],"bearer_methods_supported":["header"]}';
 }
 
 # Path-based PRM discovery (RFC 9728 — e.g. /.well-known/oauth-protected-resource/mcp)
@@ -1967,7 +1967,7 @@ location ~ ^/.well-known/oauth-protected-resource/.+ {
     add_header Cache-Control "public, max-age=3600" always;
     add_header Access-Control-Allow-Origin $http_origin always;
     add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-    return 200 '{"resource":"https://$server_name","authorization_servers":["https://mcp-auth.tootie.tv"],"scopes_supported":["mcp:read","mcp:write"],"bearer_methods_supported":["header"]}';
+    return 200 '{"resource":"https://$server_name","authorization_servers":["https://mcp-auth.example.com"],"scopes_supported":["mcp:read","mcp:write"],"bearer_methods_supported":["header"]}';
 }
 
 # OAuth Authorization Server Metadata (RFC 8414)
@@ -2286,7 +2286,7 @@ Install from the homelab marketplace:
 ```
 
 Configure userConfig when prompted:
-- **SWAG MCP Server URL**: `https://swag.tootie.tv/mcp` (or your server URL)
+- **SWAG MCP Server URL**: `https://swag.example.com/mcp` (or your server URL)
 - **SWAG Proxy Configs Path**: `/mnt/appdata/swag/nginx/proxy-confs`
 - **SWAG Proxy Configs URI**: `admin@swag-server:/path/to/proxy-confs` (for SSH mode)
 
@@ -2744,7 +2744,7 @@ SWAG_MCP_PROXY_CONFS_URI=admin@swag-server:2222:/mnt/appdata/swag/nginx/proxy-co
 | `SWAG_MCP_DEFAULT_AUTH_METHOD` | no | `authelia` | no | Default auth for new configs |
 | `SWAG_MCP_DEFAULT_QUIC_ENABLED` | no | `false` | no | Default QUIC/HTTP3 setting |
 | `SWAG_MCP_OAUTH_UPSTREAM` | no | `http://mcp-oauth:8000` | no | OAuth gateway upstream address |
-| `SWAG_MCP_AUTH_SERVER_URL` | no | `https://mcp-auth.tootie.tv` | no | Public OAuth authorization server URL |
+| `SWAG_MCP_AUTH_SERVER_URL` | no | `https://mcp-auth.example.com` | no | Public OAuth authorization server URL |
 | `SWAG_MCP_BACKUP_RETENTION_DAYS` | no | `30` | no | Backup retention period in days |
 
 ## Logging
@@ -3226,11 +3226,11 @@ Published automatically by `docker-publish.yml` on tag push. Multi-platform: lin
 
 ### MCP Registry
 
-Registry entry: `tv.tootie/swag-mcp`
+Registry entry: `tv.controller/swag-mcp`
 
 The `server.json` file defines the MCP registry entry with PyPI as the package source and stdio as the transport.
 
-DNS verification via `tootie.tv` domain.
+DNS verification via `controller.tv` domain.
 
 ## CHANGELOG
 
@@ -4005,7 +4005,7 @@ Registration and publishing patterns for Claude, Codex, and Gemini marketplaces.
 | Claude Code | `.claude-plugin/plugin.json` | `jmagar/claude-homelab` marketplace |
 | Codex CLI | `.codex-plugin/plugin.json` | `jmagar/claude-homelab` marketplace |
 | Gemini | `gemini-extension.json` | Gemini extension registry |
-| MCP Registry | `server.json` | `tv.tootie/swag-mcp` |
+| MCP Registry | `server.json` | `tv.controller/swag-mcp` |
 
 ## Claude Code marketplace
 
@@ -4022,11 +4022,11 @@ The marketplace entry is defined in `claude-homelab/.claude-plugin/marketplace.j
 
 The `server.json` file defines the public MCP registry entry:
 
-- **Name**: `tv.tootie/swag-mcp`
+- **Name**: `tv.controller/swag-mcp`
 - **Registry**: PyPI
 - **Identifier**: `swag-mcp`
 - **Transport**: stdio (via `uvx swag-mcp`)
-- **DNS verification**: `tootie.tv` domain
+- **DNS verification**: `controller.tv` domain
 
 ## PyPI
 
@@ -4094,7 +4094,7 @@ Structure and conventions for plugin manifest files.
 | `.claude-plugin/plugin.json` | Claude Code | Plugin metadata, userConfig, MCP server |
 | `.codex-plugin/plugin.json` | Codex CLI | Plugin metadata, skills, MCP, apps |
 | `gemini-extension.json` | Gemini | Extension metadata, MCP server, settings |
-| `server.json` | MCP Registry | Registry entry (`tv.tootie/swag-mcp`) |
+| `server.json` | MCP Registry | Registry entry (`tv.controller/swag-mcp`) |
 
 ## Claude Code manifest
 
@@ -4110,7 +4110,7 @@ Structure and conventions for plugin manifest files.
   "license": "MIT",
   "keywords": ["swag", "nginx", "reverse-proxy", "homelab", "mcp"],
   "userConfig": {
-    "swag_mcp_url": { "type": "string", "default": "https://swag.tootie.tv/mcp" },
+    "swag_mcp_url": { "type": "string", "default": "https://swag.example.com/mcp" },
     "swag_proxy_confs_path": { "type": "string" },
     "swag_proxy_confs_uri": { "type": "string" },
     "swag_mcp_token": { "type": "string", "sensitive": true }
@@ -5078,7 +5078,7 @@ Pre-release and quality checklist. Complete all items before tagging a release.
 
 ## Registry (if publishing)
 
-- [ ] `server.json` for MCP registry is valid (tv.tootie/swag-mcp)
+- [ ] `server.json` for MCP registry is valid (tv.controller/swag-mcp)
 - [ ] Package published to PyPI (`swag-mcp`)
 - [ ] Docker image published to GHCR (`ghcr.io/jmagar/swag-mcp`)
 
@@ -5208,7 +5208,7 @@ The configuration system uses Pydantic Settings with the `SWAG_MCP_` prefix. All
 | Variable | Required | Default | Sensitive | Description |
 | --- | --- | --- | --- | --- |
 | `SWAG_MCP_OAUTH_UPSTREAM` | no | `http://mcp-oauth:8000` | no | OAuth gateway upstream (Docker container name or IP:port) |
-| `SWAG_MCP_AUTH_SERVER_URL` | no | `https://mcp-auth.tootie.tv` | no | Public OAuth authorization server URL for Protected Resource Metadata |
+| `SWAG_MCP_AUTH_SERVER_URL` | no | `https://mcp-auth.example.com` | no | Public OAuth authorization server URL for Protected Resource Metadata |
 
 ### Backup settings
 
@@ -5501,7 +5501,7 @@ Complete listing of all plugin components.
 | `SWAG_MCP_DEFAULT_AUTH_METHOD` | no | `authelia` | no |
 | `SWAG_MCP_DEFAULT_QUIC_ENABLED` | no | `false` | no |
 | `SWAG_MCP_OAUTH_UPSTREAM` | no | `http://mcp-oauth:8000` | no |
-| `SWAG_MCP_AUTH_SERVER_URL` | no | `https://mcp-auth.tootie.tv` | no |
+| `SWAG_MCP_AUTH_SERVER_URL` | no | `https://mcp-auth.example.com` | no |
 | `SWAG_MCP_BACKUP_RETENTION_DAYS` | no | `30` | no |
 | `SWAG_MCP_LOG_LEVEL` | no | `INFO` | no |
 | `SWAG_MCP_LOG_FILE_ENABLED` | no | `true` | no |
@@ -6393,7 +6393,7 @@ This configuration successfully routes:
 ````markdown
 # SWAG MCP
 
-<!-- mcp-name: tv.tootie/swag-mcp -->
+<!-- mcp-name: tv.controller/swag-mcp -->
 
 [![PyPI](https://img.shields.io/pypi/v/swag-mcp)](https://pypi.org/project/swag-mcp/) [![ghcr.io](https://img.shields.io/badge/ghcr.io-jmagar%2Fswag--mcp-blue?logo=docker)](https://github.com/jmagar/swag-mcp/pkgs/container/swag-mcp)
 
@@ -8248,7 +8248,7 @@ class ServiceName:
 
 **After (Formatted)**:
 ```
-Port Usage on squirts
+Port Usage on node-b
 Found 82 exposed ports across 41 containers
 
 Protocols: TCP: 78, UDP: 4
@@ -8288,9 +8288,9 @@ def _format_port_mapping_details(self, port_mappings: list[dict[str, Any]]) -> l
 Docker Hosts (7 configured)
 Host         Address              ZFS Dataset
 ------------ -------------------- --- --------------------
-tootie       tootie:29229         ✓   cache/appdata
-shart        SHART:22             ✓   backup/appdata
-squirts      squirts:22           ✓   rpool/appdata
+controller       controller:29229         ✓   cache/appdata
+backup-node        backup-node:22             ✓   backup/appdata
+node-b      node-b:22           ✓   rpool/appdata
 vivobook-wsl vivobook-wsl:22      ✗   -
 ```
 
@@ -8327,7 +8327,7 @@ def list_docker_hosts(self) -> dict[str, Any]:
 
 **Formatted Output**:
 ```
-Docker Containers on squirts
+Docker Containers on node-b
 Showing 20 of 41 containers
 
   Container                 Ports                Project
@@ -8375,7 +8375,7 @@ def _format_container_summary(self, container: dict[str, Any]) -> list[str]:
 
 **Formatted Output**:
 ```
-Docker Compose Stacks on squirts (28 total)
+Docker Compose Stacks on node-b (28 total)
 Status breakdown: running: 27, partial: 1
 
   Stack                     Status     Services
@@ -8431,7 +8431,7 @@ Token Efficiency Strategy: Provide a compact header with counts and a small prev
 
 Formatted Output (container logs):
 ```
-Container Logs for swag on squirts
+Container Logs for swag on node-b
 Lines returned: 100 (requested: 100)
 truncated: False | follow: False
 
@@ -8472,7 +8472,7 @@ Token Efficiency Strategy: Top‑level counts and suggested path with short prev
 
 Formatted Output:
 ```
-Compose Discovery on squirts
+Compose Discovery on node-b
 Stacks found: 12 | Locations: 2
 Suggested compose_path: /mnt/user/compose
 
@@ -8492,7 +8492,7 @@ Token Efficiency Strategy: For check, show reclaimable totals and level estimate
 
 Formatted Output:
 ```
-Docker Cleanup (check) on squirts
+Docker Cleanup (check) on node-b
 Total reclaimable: 5.2 GB (23%)
 
 Levels:
@@ -8500,7 +8500,7 @@ Levels:
   moderate: 3.7 GB (16%)
   aggressive: 5.2 GB (23%)
 
-Docker Cleanup (safe) on squirts
+Docker Cleanup (safe) on node-b
 
 Reclaimed:
   containers: 512MB
@@ -8525,7 +8525,7 @@ Token Efficiency Strategy: Aligned table for multi‑host discovery and compact 
 
 Formatted Output (single host):
 ```
-Host Discovery on squirts
+Host Discovery on node-b
 Compose paths: 3 | Appdata paths: 2 | ZFS: ✓
 ZFS dataset: rpool/appdata
 
@@ -8661,28 +8661,28 @@ Apply the same formatting conventions across all tools:
 ### Port Management
 ```bash
 # See all ports in grouped format
-docker_hosts ports squirts
+docker_hosts ports node-b
 
 # Check specific port availability
-docker_hosts ports squirts --port 8080
+docker_hosts ports node-b --port 8080
 ```
 
 ### Container Operations
 ```bash
 # List containers with status and ports
-docker_container list squirts
+docker_container list node-b
 
 # Get detailed container info (still returns ToolResult)
-docker_container info squirts container_id
+docker_container info node-b container_id
 ```
 
 ### Stack Management
 ```bash
 # View all stacks with status breakdown
-docker_compose list squirts
+docker_compose list node-b
 
 # Deploy with formatted feedback
-docker_compose deploy squirts my-stack "$(cat docker-compose.yml)"
+docker_compose deploy node-b my-stack "$(cat docker-compose.yml)"
 ```
 
 ## Development Guidelines
@@ -8710,7 +8710,7 @@ def test_format_port_mappings():
 
 # Integration test ToolResult preservation
 async def test_list_containers_returns_toolresult():
-    result = await container_service.list_containers("squirts")
+    result = await container_service.list_containers("node-b")
     assert isinstance(result, ToolResult)
     assert result.content  # Human-readable
     assert result.structured_content  # Machine-readable
@@ -9481,7 +9481,7 @@ AUTH_METHODS = (
 
 # OAuth gateway defaults
 DEFAULT_OAUTH_UPSTREAM = "http://mcp-oauth:8000"  # Docker network name for OAuth gateway
-DEFAULT_AUTH_SERVER_URL = "https://mcp-auth.tootie.tv"  # Public OAuth authorization server
+DEFAULT_AUTH_SERVER_URL = "https://mcp-auth.example.com"  # Public OAuth authorization server
 
 # List filter options
 LIST_FILTERS = ("all", "active", "samples")  # Tuple for immutability
@@ -11799,7 +11799,7 @@ class SwagHealthCheckRequest(SwagBaseRequest):
     domain: str = Field(
         ...,
         max_length=253,
-        description="Domain to check health for (e.g., docker-mcp.tootie.tv)",
+        description="Domain to check health for (e.g., docker-mcp.example.com)",
     )
 
     timeout: int = Field(default=30, ge=1, le=300, description="Request timeout in seconds")
@@ -36172,10 +36172,10 @@ class TestParseSwagUri:
 
     def test_remote_simple(self):
         """Test parsing simple remote URI."""
-        result = parse_swag_uri("squirts:/mnt/appdata/swag/nginx/proxy-confs")
+        result = parse_swag_uri("node-b:/mnt/appdata/swag/nginx/proxy-confs")
         assert result == ParsedURI(
             is_remote=True,
-            host="squirts",
+            host="node-b",
             port=22,
             username=None,
             path="/mnt/appdata/swag/nginx/proxy-confs",
@@ -36205,10 +36205,10 @@ class TestParseSwagUri:
 
     def test_remote_full(self):
         """Test parsing fully qualified remote URI."""
-        result = parse_swag_uri("jmagar@squirts:2222:/mnt/appdata/swag/nginx/proxy-confs")
+        result = parse_swag_uri("jmagar@node-b:2222:/mnt/appdata/swag/nginx/proxy-confs")
         assert result == ParsedURI(
             is_remote=True,
-            host="squirts",
+            host="node-b",
             port=2222,
             username="jmagar",
             path="/mnt/appdata/swag/nginx/proxy-confs",
@@ -38118,7 +38118,7 @@ skips = ["B101", "B601"]  # Skip assert_used, paramiko_calls
 ````markdown
 # SWAG MCP
 
-<!-- mcp-name: tv.tootie/swag-mcp -->
+<!-- mcp-name: tv.controller/swag-mcp -->
 
 [![PyPI](https://img.shields.io/pypi/v/swag-mcp)](https://pypi.org/project/swag-mcp/) [![ghcr.io](https://img.shields.io/badge/ghcr.io-jmagar%2Fswag--mcp-blue?logo=docker)](https://github.com/jmagar/swag-mcp/pkgs/container/swag-mcp)
 
@@ -38570,7 +38570,7 @@ MIT
 ````json
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "tv.tootie/swag-mcp",
+  "name": "tv.controller/swag-mcp",
   "title": "SWAG MCP",
   "description": "MCP server for SWAG reverse proxy configuration generation and management.",
   "repository": {

@@ -285,7 +285,7 @@ tags: [demo]
 inputs:
   host:
     type: string
-    default: dookie
+    default: node-a
     required: false
   limit:
     type: integer
@@ -307,7 +307,7 @@ async (input) => ({ ok: true, input })
             resolve_snippet(&lab_home, &temp.path().join("builtins"), "parameterized").unwrap();
 
         let merged = merge_snippet_input(&resolved, json!({"limit": 3})).unwrap();
-        assert_eq!(merged["host"], "dookie");
+        assert_eq!(merged["host"], "node-a");
         assert_eq!(merged["limit"], 3);
         assert_eq!(merged["dry_run"], false);
 

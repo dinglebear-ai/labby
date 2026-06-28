@@ -1328,13 +1328,13 @@ mod tests {
             ..LabConfig::default()
         };
         config.deploy.as_mut().unwrap().hosts.insert(
-            "dookie".into(),
+            "node-a".into(),
             DeployHostOverride {
                 artifact_role: Some(ArtifactRole::Controller),
                 ..Default::default()
             },
         );
-        let effective = effective_target_config(&config, "dookie");
+        let effective = effective_target_config(&config, "node-a");
         assert_eq!(effective.artifact_role, ArtifactRole::Controller);
     }
 

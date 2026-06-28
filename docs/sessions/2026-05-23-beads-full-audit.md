@@ -31,7 +31,7 @@ Completed a broad Lab Beads tracker cleanup. The full open tracker count moved f
 
 ## Key Findings
 
-- `apps/gateway-admin/components/gateway/gateway-form-dialog.tsx:74` still defaults `NEXT_PUBLIC_PROTECTED_MCP_HOST` to `mcp.tootie.tv`, so `lab-mvtg.4` remains open.
+- `apps/gateway-admin/components/gateway/gateway-form-dialog.tsx:74` still defaults `NEXT_PUBLIC_PROTECTED_MCP_HOST` to `mcp.example.com`, so `lab-mvtg.4` remains open.
 - `crates/lab-apis/src/tei/client.rs:24` still configures a 60-second TEI client request timeout, so `lab-u6i6s` remains open.
 - `docs/sessions/2026-05-07-marketplace-host-validation.md:93` still says `docs/sessions/` is ignored unless force-added, so `lab-wyoh5` remains open.
 - `crates/lab/src/dispatch/marketplace/package.rs:112` still sends every `channels` array item through `component_from_inline_config`, so `lab-ogok` remains open.
@@ -83,7 +83,7 @@ Existing source/doc changes were already present in the worktree before this ses
 | `bd list --status=open --json --limit 0 \| jq 'length'` | Updated open count after cleanup | `442` | Pass |
 | `bd list --status=in_progress --json --limit 0 \| jq 'length'` | No in-progress beads | `0` | Pass |
 | `bd dolt push` | Push Beads changes to remote | `Push complete.` | Pass |
-| `bd dolt status` | Confirm Dolt server reachable | Server running at `100.75.111.118:3311`, database `lab` | Pass |
+| `bd dolt status` | Confirm Dolt server reachable | Server running at `100.64.0.20:3311`, database `lab` | Pass |
 
 ## Risks and Rollback
 

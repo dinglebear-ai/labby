@@ -14,7 +14,7 @@ test('setupResultDescription reflects fleet and targeted scans', () => {
     warnings: [],
   }
   const targeted: ExtractReport = {
-    target: { mode: 'targeted', uri: { host: 'squirts', path: '/mnt/appdata' } },
+    target: { mode: 'targeted', uri: { host: 'node-b', path: '/mnt/appdata' } },
     found: [],
     creds: [],
     warnings: [],
@@ -23,7 +23,7 @@ test('setupResultDescription reflects fleet and targeted scans', () => {
   assert.equal(setupResultDescription(fleet), 'Fleet scan across all actionable SSH config hosts.')
   assert.equal(
     setupResultDescription(targeted),
-    'Targeted scan for squirts:/mnt/appdata.',
+    'Targeted scan for node-b:/mnt/appdata.',
   )
 })
 
@@ -34,10 +34,10 @@ test('setup results render secret presence without exposing the raw value', () =
     creds: [
       {
         service: 'overseerr',
-        url: 'http://100.75.111.118:5055/login',
+        url: 'http://100.64.0.20:5055/login',
         env_field: 'OVERSEERR_API_KEY',
         secret_present: true,
-        source_host: 'squirts',
+        source_host: 'node-b',
       },
     ],
     warnings: [],
@@ -63,7 +63,7 @@ test('setup results render warnings and empty states', () => {
     warnings: [
       {
         service: 'radarr',
-        host: 'tootie',
+        host: 'controller',
         message: 'endpoint probe failed',
       },
     ],

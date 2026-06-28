@@ -2,7 +2,7 @@
 
 ## Session Overview
 
-Debugged "rogue MCP process" accumulation on host `dookie`, established the actual cause (codex per-turn `refresh_mcp_servers_now` plus npm-wrapper race-survival of `ProcessGroupGuard::Drop`), and built a small in-userland observability+cleanup system. Also disabled three high-leak MCP entry points in `~/.codex/config.toml`, wired SessionEnd/Stop hooks for claude/codex, and shipped a systemd safety-net timer. One self-inflicted regression (reaper killed two live Zed claude-agent-acp sessions on first timer fire) was caught, root-caused, and fixed in the same session.
+Debugged "rogue MCP process" accumulation on host `node-a`, established the actual cause (codex per-turn `refresh_mcp_servers_now` plus npm-wrapper race-survival of `ProcessGroupGuard::Drop`), and built a small in-userland observability+cleanup system. Also disabled three high-leak MCP entry points in `~/.codex/config.toml`, wired SessionEnd/Stop hooks for claude/codex, and shipped a systemd safety-net timer. One self-inflicted regression (reaper killed two live Zed claude-agent-acp sessions on first timer fire) was caught, root-caused, and fixed in the same session.
 
 ## Timeline
 
@@ -121,7 +121,7 @@ Not applicable — no embed/retrieve/vector-store operations performed in this s
 ## Open Questions
 
 - **Why does codex respawn at ~10–15 min cadence specifically?** The codex audit attributes it to per-turn `maybe_prompt_and_install_mcp_dependencies`. That matches a one-turn-every-10-min user pattern, but if turns happen faster or slower the cadence should track. Worth verifying by checking events.jsonl against the user's actual turn rate.
-- **Whether `chrome-devtools-mcp`'s WebSocket to `100.120.242.29:9222` (the Tailscale Chrome) is itself unstable** — independently testable but not done this session. Stability there is irrelevant to codex's per-turn rebuild trigger but would matter for non-codex callers.
+- **Whether `chrome-devtools-mcp`'s WebSocket to `100.64.0.11:9222` (the Tailscale Chrome) is itself unstable** — independently testable but not done this session. Stability there is irrelevant to codex's per-turn rebuild trigger but would matter for non-codex callers.
 - **What `zclean` (`@thestackai/zclean`) does on each Claude `Stop` turn** — left alone because the user already has it wired and didn't ask. Could potentially overlap with the reaper's per-turn behavior; no conflict observed.
 - **Whether the linter-driven additions to `agent-proc-reaper`** (the dynamic `derive_pattern_for_server` flow) handle all `[mcp_servers.*]` shapes correctly. It looked sound on inspection but was not tested with every config style (cargo, uvx, complex args).
 - **Codex pull at 40kB/s** — the user mentioned a slow git clone of the codex repo mid-session. Likely network-side (IPv6 path, GitHub edge), not local — not investigated further.

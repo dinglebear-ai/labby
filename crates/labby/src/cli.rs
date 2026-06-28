@@ -232,7 +232,7 @@ mod tests {
             "exec",
             "homelab-readonly-pulse",
             "--param",
-            "host=dookie",
+            "host=node-a",
         ]);
         assert!(matches!(cli.command, Command::Snippets(_)));
 

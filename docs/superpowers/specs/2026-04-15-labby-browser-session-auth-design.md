@@ -97,7 +97,7 @@ In the current codebase, the mounted auth surface is assembled in `crates/lab/sr
 
 ### Browser Login Flow
 
-1. An unauthenticated Labby user opens `https://lab.tootie.tv/`.
+1. An unauthenticated Labby user opens `https://lab.example.com/`.
 2. The UI discovers it is not logged in by calling a lightweight session-status endpoint.
 3. The UI redirects the browser to a Rust-owned browser login entrypoint such as `GET /auth/login`.
 4. That browser login entrypoint starts the upstream Google/GitHub flow.
@@ -114,8 +114,8 @@ The browser-login flow should remain distinct from the existing OAuth client flo
 
 There are two callback concepts and they should not be conflated:
 
-- the upstream Google callback currently terminates at `https://lab.tootie.tv/auth/google/callback`
-- the browser-facing post-login return target for the hosted UI can be `/`, `/app`, or a dedicated route such as `https://lab.tootie.tv/auth/callback`
+- the upstream Google callback currently terminates at `https://lab.example.com/auth/google/callback`
+- the browser-facing post-login return target for the hosted UI can be `/`, `/app`, or a dedicated route such as `https://lab.example.com/auth/callback`
 
 If a browser-facing route such as `/auth/callback` is introduced, it is a UI return target after the session cookie is already established. It is not the same thing as the upstream Google callback path.
 

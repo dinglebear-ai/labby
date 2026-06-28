@@ -312,7 +312,7 @@ pub struct DeployDefaults {
     #[serde(default)]
     pub canary_hosts: Vec<String>,
     /// Base URL of the master lab instance that deployed hosts should phone home to.
-    /// e.g. "http://dookie:8765". If absent, phone-home is skipped.
+    /// e.g. "http://node-a:8765". If absent, phone-home is skipped.
     pub master_url: Option<String>,
     /// Artifact role for this deploy target.
     #[serde(default)]
@@ -2572,7 +2572,7 @@ future = "keep"
             key_path: None,
             bootstrap_secret: Some("bootstrap".to_string()),
             allowed_client_redirect_uris: Some(vec![
-                "https://callback.tootie.tv/callback/*".to_string(),
+                "https://callback.example.com/callback/*".to_string(),
             ]),
             google_client_id: Some("client-id".to_string()),
             google_client_secret: Some("client-secret".to_string()),
@@ -2590,7 +2590,7 @@ future = "keep"
         assert_eq!(resolved.auth_code_ttl.as_secs(), 45);
         assert_eq!(
             resolved.allowed_client_redirect_uris,
-            vec!["https://callback.tootie.tv/callback/*".to_string()]
+            vec!["https://callback.example.com/callback/*".to_string()]
         );
     }
 
@@ -2598,23 +2598,23 @@ future = "keep"
     fn oauth_machine_config_deserializes() {
         let cfg = toml::from_str::<LabConfig>(
             r#"
-[oauth.machines.dookie]
-target_url = "http://100.88.16.79:38935/callback/dookie"
-description = "Dookie Claude callback target"
+[oauth.machines.node-a]
+target_url = "http://100.64.0.10:38935/callback/node-a"
+description = "Node A Claude callback target"
 default_port = 38935
 "#,
         )
         .expect("oauth machine config should parse");
 
         assert_eq!(
-            cfg.oauth.machines["dookie"].target_url,
-            "http://100.88.16.79:38935/callback/dookie"
+            cfg.oauth.machines["node-a"].target_url,
+            "http://100.64.0.10:38935/callback/node-a"
         );
         assert_eq!(
-            cfg.oauth.machines["dookie"].description.as_deref(),
-            Some("Dookie Claude callback target")
+            cfg.oauth.machines["node-a"].description.as_deref(),
+            Some("Node A Claude callback target")
         );
-        assert_eq!(cfg.oauth.machines["dookie"].default_port, Some(38935));
+        assert_eq!(cfg.oauth.machines["node-a"].default_port, Some(38935));
     }
 
     #[test]

@@ -39,7 +39,7 @@ Best fit for port-heavy output: group by container, then list mappings on one li
 Example:
 
 ```text
-Port Usage on squirts
+Port Usage on node-b
 Found 82 exposed ports across 41 containers
 
 Protocols: TCP: 78, UDP: 4
@@ -67,9 +67,9 @@ Example:
 Docker Hosts (7 configured)
 Host         Address              ZFS Dataset
 ------------ -------------------- -----------
-tootie       tootie:29229         cache/appdata
-shart        SHART:22             backup/appdata
-squirts      squirts:22           rpool/appdata
+controller       controller:29229         cache/appdata
+backup-node        backup-node:22             backup/appdata
+node-b      node-b:22           rpool/appdata
 vivobook-wsl vivobook-wsl:22      -
 ```
 
@@ -87,7 +87,7 @@ Use a single-line summary per container with status, port summary, and project n
 Example:
 
 ```text
-Docker Containers on squirts
+Docker Containers on node-b
 Showing 20 of 41 containers
 
   Container                 Ports                Project
@@ -111,7 +111,7 @@ Use a summary table with status breakdown up top and per-stack service counts be
 Example:
 
 ```text
-Docker Compose Stacks on squirts (28 total)
+Docker Compose Stacks on node-b (28 total)
 Status breakdown: running: 27, partial: 1
 
   Stack                     Status     Services
@@ -135,7 +135,7 @@ Logs should be compact by default. The CLI can show a small preview with counts 
 Example:
 
 ```text
-Container Logs for swag on squirts
+Container Logs for swag on node-b
 Lines returned: 100 (requested: 100)
 truncated: false | follow: false
 
@@ -187,7 +187,7 @@ Discovery commands should summarize scope first, then list the most useful locat
 Example:
 
 ```text
-Compose Discovery on squirts
+Compose Discovery on node-b
 Stacks found: 12 | Locations: 2
 Suggested compose_path: /mnt/user/compose
 
@@ -214,7 +214,7 @@ Cleanup output should separate check mode from action mode.
 Example:
 
 ```text
-Docker Cleanup (check) on squirts
+Docker Cleanup (check) on node-b
 Total reclaimable: 5.2 GB (23%)
 
 Levels:
@@ -222,7 +222,7 @@ Levels:
   moderate: 3.7 GB (16%)
   aggressive: 5.2 GB (23%)
 
-Docker Cleanup (safe) on squirts
+Docker Cleanup (safe) on node-b
 
 Reclaimed:
   containers: 512 MB

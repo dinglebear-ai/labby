@@ -13,6 +13,10 @@ import type {
   UpdateGatewayInput,
 } from '@/lib/types/gateway'
 
+const TEST_PROTECTED_MCP_HOST = 'mcp.example.test'
+
+process.env.NEXT_PUBLIC_PROTECTED_MCP_HOST = TEST_PROTECTED_MCP_HOST
+
 test('new custom URL auto-switches to OAuth and shows blocked popup fallback', async () => {
   const window = installGatewayDialogDom()
   let openCalls = 0
@@ -545,7 +549,7 @@ test('inline environment editor applies stdio env vars to gateway saves', async 
     })
     const envInput = document.querySelector('textarea') as HTMLTextAreaElement | null
     assert.ok(envInput)
-    await setTextareaValue(window, envInput, 'SEARXNG_URL=https://s.tootie.tv')
+    await setTextareaValue(window, envInput, 'SEARXNG_URL=https://search.example.com')
     await clickSave()
 
     await waitFor(() => {
@@ -556,7 +560,7 @@ test('inline environment editor applies stdio env vars to gateway saves', async 
         config: {
           command: 'npx',
           args: ['-y', 'mcp-searxng'],
-          env: { SEARXNG_URL: 'https://s.tootie.tv' },
+          env: { SEARXNG_URL: 'https://search.example.com' },
           bearer_token_env: undefined,
           bearer_token_value: undefined,
           oauth: undefined,
@@ -628,7 +632,7 @@ test('parseGatewayJsonEntry accepts standard mcpServers config wrapper', async (
       searxng: {
         command: 'npx',
         args: ['-y', 'mcp-searxng'],
-        env: { SEARXNG_URL: 'https://s.tootie.tv' },
+        env: { SEARXNG_URL: 'https://search.example.com' },
       },
     },
   }))
@@ -641,9 +645,9 @@ test('parseGatewayJsonEntry accepts standard mcpServers config wrapper', async (
 test('parseEnvText detects custom MCP env prefixes', async () => {
   const { parseEnvText } = await import('./gateway-form-dialog')
 
-  const parsed = parseEnvText('SEARXNG_URL=https://s.tootie.tv\n')
+  const parsed = parseEnvText('SEARXNG_URL=https://search.example.com\n')
 
-  assert.equal(parsed.pairs.SEARXNG_URL, 'https://s.tootie.tv')
+  assert.equal(parsed.pairs.SEARXNG_URL, 'https://search.example.com')
   assert.deepEqual(parsed.detectedServices, ['searxng'])
 })
 
@@ -654,10 +658,10 @@ test('buildEnvTextFromGatewayForm reflects form state for env text', async () =>
     buildEnvTextFromGatewayForm({
       name: 'searxng',
       transport: 'http',
-      url: 'https://s.tootie.tv',
+      url: 'https://search.example.com',
       stdioEnv: {},
     }),
-    'SEARXNG_URL=https://s.tootie.tv',
+    'SEARXNG_URL=https://search.example.com',
   )
 
   assert.equal(
@@ -665,9 +669,9 @@ test('buildEnvTextFromGatewayForm reflects form state for env text', async () =>
       name: 'searxng',
       transport: 'stdio',
       url: '',
-      stdioEnv: { SEARXNG_URL: 'https://s.tootie.tv' },
+      stdioEnv: { SEARXNG_URL: 'https://search.example.com' },
     }),
-    'SEARXNG_URL=https://s.tootie.tv',
+    'SEARXNG_URL=https://search.example.com',
   )
 })
 
@@ -935,7 +939,7 @@ function protectedRouteFixture(name: string, publicPath: string, upstream: strin
   return {
     name,
     enabled: true,
-    public_host: 'mcp.tootie.tv',
+    public_host: TEST_PROTECTED_MCP_HOST,
     public_path: publicPath,
     upstream,
     backend_url: '',

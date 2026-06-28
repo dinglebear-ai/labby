@@ -62,7 +62,7 @@ Beads/Dolt verification:
 ```text
 bd version 1.0.3 (1b2dd2cb)
 Database: lab
-Host: 100.75.111.118
+Host: 100.64.0.20
 Port: 3311
 Server connection OK
 ```

@@ -113,7 +113,7 @@ Updated `README.md`, `CLAUDE.md`, `docs/runtime/HOST_GATEWAY.md`, and `docs/gene
 | `cargo clippy --workspace --all-features --locked -- -D warnings` | Passed after fixing Rust 1.94.1 CI-only lints. |
 | `cargo nextest run --workspace --all-features` | Passed, 2200 passed and 14 skipped. |
 | `gh api graphql ... reviewThreads` | Confirmed all CodeRabbit inline review threads resolved. |
-| Windows `cargo metadata --format-version=1 --all-features --filter-platform x86_64-pc-windows-msvc --locked --no-deps` with `CARGO_BUILD_RUSTC_WRAPPER=""` | Passed on `agent-os`; confirmed the correct override for `.cargo/config.toml` `build.rustc-wrapper`. |
+| Windows `cargo metadata --format-version=1 --all-features --filter-platform x86_64-pc-windows-msvc --locked --no-deps` with `CARGO_BUILD_RUSTC_WRAPPER=""` | Passed on `agent-workstation`; confirmed the correct override for `.cargo/config.toml` `build.rustc-wrapper`. |
 
 ## Errors Encountered
 
@@ -147,7 +147,7 @@ Updated `README.md`, `CLAUDE.md`, `docs/runtime/HOST_GATEWAY.md`, and `docs/gene
 | `cargo clippy --workspace --all-features --locked -- -D warnings` | Matches CI Clippy gate. | Passed after CI lint fix. | pass |
 | `cargo nextest run --workspace --all-features` | Full test suite is green. | 2200 passed, 14 skipped. | pass |
 | `gh api graphql ... reviewThreads` | No unresolved actionable CodeRabbit threads. | All 4 threads returned `isResolved: true`. | pass |
-| Windows `cargo metadata` with `CARGO_BUILD_RUSTC_WRAPPER=""` | Cargo ignores the repo-local shell rustc wrapper on Windows. | Passed on `agent-os`. | pass |
+| Windows `cargo metadata` with `CARGO_BUILD_RUSTC_WRAPPER=""` | Cargo ignores the repo-local shell rustc wrapper on Windows. | Passed on `agent-workstation`. | pass |
 
 ## Risks and Rollback
 
