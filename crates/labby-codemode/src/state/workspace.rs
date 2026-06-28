@@ -193,12 +193,11 @@ impl StateWorkspace {
                 param: "content".to_string(),
             });
         }
-        self.check_total_bytes_after_write(path, content.len() as u64)
-            .await?;
-
         let destination = self.resolve(path);
         labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
         self.reject_existing_symlink_path(&destination).await?;
+        self.check_total_bytes_after_write(path, content.len() as u64)
+            .await?;
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -652,9 +651,16 @@ impl StateWorkspace {
         let files = if source_metadata.is_file() {
             vec![source.as_str().to_string()]
         } else if source_metadata.is_dir() {
-            self.walk_tree(source, self.limits.max_entries as usize)
-                .await?
-                .entries
+            let tree = self
+                .walk_tree(source, self.limits.max_entries as usize)
+                .await?;
+            if tree.truncated {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "response_too_large".to_string(),
+                    message: "state archive source exceeded max entries".to_string(),
+                });
+            }
+            tree.entries
                 .into_iter()
                 .filter(|entry| entry.kind == "file")
                 .map(|entry| entry.path)
@@ -1400,7 +1406,6 @@ mod tests {
         assert_eq!(glob.matches, vec!["src/app.rs"]);
         assert!(glob.truncated);
     }
-
     #[tokio::test]
     async fn workspace_glob_search_replace_and_edit_plan() {
         let temp = tempfile::tempdir().unwrap();
@@ -1442,5 +1447,30 @@ mod tests {
             .await
             .unwrap();
         assert!(updated.content.contains("eprintln"));
+    }
+
+    #[tokio::test]
+    async fn archive_create_errors_instead_of_writing_partial_tar_when_truncated() {
+        let temp = tempfile::tempdir().unwrap();
+        let limits = StateWorkspaceLimits {
+            max_entries: 1,
+            ..StateWorkspaceLimits::default()
+        };
+        let ws = StateWorkspace::new(temp.path().to_path_buf(), limits).unwrap();
+        ws.write_file(&VirtualPath::parse("src/a.txt").unwrap(), "a")
+            .await
+            .unwrap();
+        ws.write_file(&VirtualPath::parse("src/b.txt").unwrap(), "b")
+            .await
+            .unwrap();
+
+        let err = ws
+            .archive_create(
+                &VirtualPath::parse("src").unwrap(),
+                &VirtualPath::parse("out/src.tar").unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "response_too_large");
     }
 }

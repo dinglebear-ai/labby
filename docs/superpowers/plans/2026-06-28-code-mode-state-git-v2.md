@@ -14,7 +14,7 @@
 - Keep `state` and `git` as Code Mode local providers only; do not register them as normal upstream MCP tools.
 - Keep all state paths as virtual workspace paths; reject host absolute paths, traversal, Windows drive roots, symlink escapes, and credential-like paths.
 - Keep git execution shell-free: structured argv, controlled environment, timeout, output caps, hook/config isolation, and redaction.
-- V2 remote git operations are explicit and unauthenticated by default. Do not inject hidden GitHub tokens, OAuth tokens, credential helpers, or host git config.
+- V2 remote git operations are explicit, unauthenticated, and restricted to `https://github.com/...` URLs by default. Do not inject hidden GitHub tokens, OAuth tokens, credential helpers, or host git config.
 - Do not add Node/Deno/Bun/fs/fetch/import access to the QuickJS runner.
 - Use modern Rust module layout; no `mod.rs`.
 - The final truth is `cargo nextest run --workspace --all-features` and `cargo build --workspace --all-features`.
@@ -189,7 +189,7 @@ Add arms in `dispatch_state_method`:
 ```rust
 "appendFile" => { /* parse WriteFileParams, call append_file */ }
 "exists" => { /* parse PathParams, call exists */ }
-"stat" | "lstat" => { /* parse PathParams, call stat; lstat aliases stat in V2 because symlinks are rejected */ }
+"stat" => { /* parse PathParams, call stat; symlinks are rejected in V2 */ }
 "mkdir" => { /* parse PathParams, call mkdir */ }
 "rm" => { /* parse OptionalRecursivePathParams, call remove */ }
 "cp" => { /* parse FromToParams, call copy */ }
@@ -532,7 +532,7 @@ Validators:
 ```text
 remote names: ASCII alnum, "-", "_", "." only; 1..64 chars.
 branch/ref names: reject empty, whitespace, "..", "~", "^", ":", "?", "*", "[", "\\", leading "-", trailing "/", and lock suffix.
-remote URLs: allow only https:// URLs with no username/password and no query/fragment.
+remote URLs: allow only https://github.com/... URLs with no username/password and no query/fragment.
 clone directory: VirtualPath, must not be "." or include ".git".
 ```
 
@@ -611,7 +611,7 @@ V2 state methods add:
 
 - `state.appendFile({ path, content })`
 - `state.exists({ path })`
-- `state.stat({ path })` / `state.lstat({ path })`
+- `state.stat({ path })`
 - `state.mkdir({ path })`
 - `state.rm({ path, recursive })`
 - `state.cp({ from, to })`
@@ -626,18 +626,20 @@ V2 state methods add:
 
 V2 git methods add:
 
-- `git.branch({ name, delete })`
-- `git.checkout({ ref, create })`
-- `git.remoteList({})`
-- `git.remoteAdd({ name, url })`
-- `git.remoteRemove({ name })`
-- `git.clone({ url, directory })`
-- `git.fetch({ remote })`
-- `git.pull({ remote, branch })`
-- `git.push({ remote, branch })`
+- `git.branch({ name, delete, cwd })`
+- `git.checkout({ ref, create, cwd })`
+- `git.remoteList({ cwd })` returns `stdout` and structured `remotes`
+- `git.remoteAdd({ name, url, cwd })`
+- `git.remoteRemove({ name, cwd })`
+- `git.clone({ url, directory, cwd })`
+- `git.fetch({ remote, cwd })`
+- `git.pull({ remote, branch, cwd })`
+- `git.push({ remote, branch, cwd })`
 
-Remote git URLs must be explicit `https://` URLs without embedded credentials.
-Labby does not inject hidden credentials or host git config into Code Mode.
+Remote git URLs must be explicit `https://github.com/...` URLs without embedded
+credentials. Labby does not inject hidden credentials or host git config into
+Code Mode. Use `cwd` to run git commands inside a workspace-relative child repo,
+for example after cloning into `directory: "repo"`.
 ```
 
 - [x] **Step 2: Add changelog entry**
@@ -647,7 +649,7 @@ Under `[Unreleased]`, add:
 ```markdown
 - **Code Mode state/git V2** — expanded local Code Mode workspace APIs with
   safe filesystem mutation helpers, JSON/hash/detect/archive helpers, guarded
-  git branch/remote commands, and explicit unauthenticated remote git operations.
+  git branch/remote commands, and explicit unauthenticated GitHub remote git operations.
 ```
 
 - [x] **Step 3: Add smoke script**
@@ -730,7 +732,7 @@ After the implementation agent completes this plan and local verification is gre
 
 ## Self-Review
 
-**Spec coverage:** The plan covers all deferred V2 categories from the V1 epic: broad state file/tree helpers, JSON/hash/detect/archive helpers, branch/checkout/remotes, guarded remote git operations, docs, smoke, and full verification. Hidden remote auth remains intentionally excluded from implementation; V2 documents the no-hidden-auth boundary and supports explicit unauthenticated HTTPS URLs only.
+**Spec coverage:** The plan covers all deferred V2 categories from the V1 epic: broad state file/tree helpers, JSON/hash/detect/archive helpers, branch/checkout/remotes, guarded remote git operations, docs, smoke, and full verification. Hidden remote auth remains intentionally excluded from implementation; V2 documents the no-hidden-auth boundary and supports explicit unauthenticated GitHub HTTPS URLs only.
 
 **Placeholder scan:** No unconstrained placeholders remain. Each task names exact files, methods, test names, command invocations, and expected outcomes.
 

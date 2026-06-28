@@ -19,11 +19,69 @@ pub(crate) async fn dispatch_git_method(
     params: Value,
 ) -> Result<Value, ToolError> {
     let spec = GitCommandSpec::for_method(method, params)?;
+    let workdir = git_workdir(workspace, spec.cwd.as_ref()).await?;
     if let Some(remote) = &spec.remote_preflight {
-        ensure_remote_url_allowed(workspace.root_path(), remote).await?;
+        ensure_remote_url_allowed(&workdir, remote).await?;
     }
-    let stdout = run_git(workspace.root_path(), &spec.args).await?;
+    if let Some(branch) = &spec.branch_preflight {
+        ensure_branch_ref_allowed(&workdir, branch).await?;
+    }
+    let stdout = run_git(&workdir, &spec.args).await?;
+    if method == "remoteList" {
+        return Ok(json!({ "ok": true, "stdout": stdout, "remotes": parse_remote_list(&stdout) }));
+    }
     Ok(json!({ "ok": true, "stdout": stdout }))
+}
+
+async fn git_workdir(
+    workspace: &StateWorkspace,
+    cwd: Option<&crate::state::path::VirtualPath>,
+) -> Result<PathBuf, ToolError> {
+    let Some(cwd) = cwd else {
+        return Ok(workspace.root_path().clone());
+    };
+    let workdir = workspace.root_path().join(cwd.as_str());
+    labby_runtime::path_safety::reject_existing_symlink_ancestors(workspace.root_path(), &workdir)?;
+    match tokio::fs::symlink_metadata(&workdir).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(ToolError::Sdk {
+            sdk_kind: "permission_denied".to_string(),
+            message: "git cwd is denied because it is a symlink".to_string(),
+        }),
+        Ok(metadata) if metadata.is_dir() => Ok(workdir),
+        Ok(_) => Err(ToolError::InvalidParam {
+            message: "git cwd must be a directory".to_string(),
+            param: "cwd".to_string(),
+        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(ToolError::InvalidParam {
+            message: "git cwd does not exist".to_string(),
+            param: "cwd".to_string(),
+        }),
+        Err(err) => Err(ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to inspect git cwd: {err}"),
+        }),
+    }
+}
+
+async fn ensure_branch_ref_allowed(workspace_root: &Path, branch: &str) -> Result<(), ToolError> {
+    let mut args = vec![
+        "-c".to_string(),
+        "core.hooksPath=/dev/null".to_string(),
+        "-c".to_string(),
+        "protocol.file.allow=never".to_string(),
+        "-c".to_string(),
+        "protocol.ext.allow=never".to_string(),
+        "check-ref-format".to_string(),
+        "--branch".to_string(),
+    ];
+    args.push(branch.to_string());
+    run_git(workspace_root, &args)
+        .await
+        .map(|_| ())
+        .map_err(|_| ToolError::InvalidParam {
+            message: "git ref is not allowed".to_string(),
+            param: "ref".to_string(),
+        })
 }
 
 async fn ensure_remote_url_allowed(workspace_root: &Path, remote: &str) -> Result<(), ToolError> {
@@ -209,6 +267,19 @@ fn redact_git_output(value: &str) -> String {
     tokenish.replace_all(&value, "[REDACTED]").to_string()
 }
 
+fn parse_remote_list(stdout: &str) -> Vec<Value> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let name = parts.next()?;
+            let url = parts.next()?;
+            let kind = parts.next().unwrap_or_default().trim_matches(['(', ')']);
+            Some(json!({ "name": name, "url": url, "kind": kind }))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +368,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remotes["ok"], true);
+        assert!(remotes["remotes"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -323,5 +395,102 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[tokio::test]
+    async fn git_v2_rejects_refs_that_git_rejects_before_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+        dispatch_git_method(&workspace, "init", json!({}))
+            .await
+            .unwrap();
+
+        let err = dispatch_git_method(&workspace, "branch", json!({"name": "foo@{bar"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "invalid_param");
+    }
+
+    #[tokio::test]
+    async fn git_v2_can_operate_inside_cloned_child_repo() {
+        let source = tempfile::tempdir().unwrap();
+        run_git(source.path(), &["init".to_string()]).await.unwrap();
+        std::fs::write(source.path().join("README.md"), "hi\n").unwrap();
+        run_git(
+            source.path(),
+            &["add".to_string(), "--".to_string(), "README.md".to_string()],
+        )
+        .await
+        .unwrap();
+        run_git(
+            source.path(),
+            &[
+                "-c".to_string(),
+                "user.name=Lab".to_string(),
+                "-c".to_string(),
+                "user.email=lab@example.invalid".to_string(),
+                "commit".to_string(),
+                "--no-gpg-sign".to_string(),
+                "-m".to_string(),
+                "init".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+        run_git(
+            workspace.root_path(),
+            &[
+                "clone".to_string(),
+                "--".to_string(),
+                source.path().to_string_lossy().to_string(),
+                "repo".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let status = dispatch_git_method(&workspace, "status", json!({"cwd": "repo"}))
+            .await
+            .unwrap();
+        assert_eq!(status["stdout"], "");
+    }
+
+    #[tokio::test]
+    async fn git_v2_remote_list_preserves_plain_https_urls() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+        dispatch_git_method(&workspace, "init", json!({}))
+            .await
+            .unwrap();
+        dispatch_git_method(
+            &workspace,
+            "remoteAdd",
+            json!({"name": "origin", "url": "https://github.com/jmagar/example.git"}),
+        )
+        .await
+        .unwrap();
+
+        let remotes = dispatch_git_method(&workspace, "remoteList", json!({}))
+            .await
+            .unwrap();
+        assert!(
+            remotes["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("https://github.com/")
+        );
+        assert_eq!(
+            remotes["remotes"][0]["url"],
+            "https://github.com/jmagar/example.git"
+        );
     }
 }

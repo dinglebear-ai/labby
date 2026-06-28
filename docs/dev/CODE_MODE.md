@@ -56,7 +56,7 @@ V2 state methods add:
 
 - `state.appendFile({ path, content })`
 - `state.exists({ path })`
-- `state.stat({ path })` / `state.lstat({ path })`
+- `state.stat({ path })`
 - `state.mkdir({ path })`
 - `state.rm({ path, recursive })`
 - `state.cp({ from, to })`
@@ -71,18 +71,20 @@ V2 state methods add:
 
 V2 git methods add:
 
-- `git.branch({ name, delete })`
-- `git.checkout({ ref, create })`
-- `git.remoteList({})`
-- `git.remoteAdd({ name, url })`
-- `git.remoteRemove({ name })`
-- `git.clone({ url, directory })`
-- `git.fetch({ remote })`
-- `git.pull({ remote, branch })`
-- `git.push({ remote, branch })`
+- `git.branch({ name, delete, cwd })`
+- `git.checkout({ ref, create, cwd })`
+- `git.remoteList({ cwd })` returns `stdout` and structured `remotes`
+- `git.remoteAdd({ name, url, cwd })`
+- `git.remoteRemove({ name, cwd })`
+- `git.clone({ url, directory, cwd })`
+- `git.fetch({ remote, cwd })`
+- `git.pull({ remote, branch, cwd })`
+- `git.push({ remote, branch, cwd })`
 
-Remote git URLs must be explicit `https://` URLs without embedded credentials.
-Labby does not inject hidden credentials or host git config into Code Mode.
+Remote git URLs must be explicit `https://github.com/...` URLs without embedded
+credentials. Labby does not inject hidden credentials or host git config into
+Code Mode. Use `cwd` to run git commands inside a workspace-relative child repo,
+for example after cloning into `directory: "repo"`.
 
 Example:
 

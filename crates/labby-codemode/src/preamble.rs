@@ -343,7 +343,6 @@ globalThis.state = Object.freeze({
   appendFile: function(params) { return __labLocalProviderCall("state::appendFile", params); },
   exists: function(params) { return __labLocalProviderCall("state::exists", params); },
   stat: function(params) { return __labLocalProviderCall("state::stat", params); },
-  lstat: function(params) { return __labLocalProviderCall("state::lstat", params); },
   mkdir: function(params) { return __labLocalProviderCall("state::mkdir", params); },
   rm: function(params) { return __labLocalProviderCall("state::rm", params); },
   cp: function(params) { return __labLocalProviderCall("state::cp", params); },

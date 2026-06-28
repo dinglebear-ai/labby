@@ -127,7 +127,7 @@ pub(crate) async fn dispatch_state_method(
             let result = workspace.exists(&VirtualPath::parse(&params.path)?).await?;
             serde_json::to_value(result).map_err(serialize_error)
         }
-        "stat" | "lstat" => {
+        "stat" => {
             let params: PathParams = serde_json::from_value(params).map_err(invalid_params)?;
             let result = workspace.stat(&VirtualPath::parse(&params.path)?).await?;
             serde_json::to_value(result).map_err(serialize_error)
@@ -459,6 +459,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(gone["exists"], false);
+    }
+
+    #[tokio::test]
+    async fn v2_state_rejects_lstat_alias() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+
+        let err = dispatch_state_method(&workspace, "lstat", json!({"path": "src/app.rs"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "unknown_tool");
     }
 
     #[tokio::test]

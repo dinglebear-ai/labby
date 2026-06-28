@@ -2406,6 +2406,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ulid",
+ "url",
 ]
 
 [[package]]

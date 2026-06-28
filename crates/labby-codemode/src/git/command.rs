@@ -1,20 +1,27 @@
 use serde::Deserialize;
 use serde_json::Value;
+use url::Url;
 
 use crate::error::ToolError;
 use crate::state::path::VirtualPath;
 
+const ALLOWED_REMOTE_HOSTS: &[&str] = &["github.com"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitCommandSpec {
     pub(crate) args: Vec<String>,
+    pub(crate) cwd: Option<VirtualPath>,
     pub(crate) remote_preflight: Option<String>,
+    pub(crate) branch_preflight: Option<String>,
 }
 
 impl GitCommandSpec {
     pub(crate) fn status() -> Self {
         Self {
             args: base_args(["status", "--short"]),
+            cwd: None,
             remote_preflight: None,
+            branch_preflight: None,
         }
     }
 
@@ -22,9 +29,17 @@ impl GitCommandSpec {
         match method {
             "init" => Ok(Self {
                 args: base_args(["init"]),
+                cwd: parse_cwd(params)?,
                 remote_preflight: None,
+                branch_preflight: None,
             }),
-            "status" => Ok(Self::status()),
+            "status" => {
+                let cwd = parse_cwd(params)?;
+                Ok(Self {
+                    cwd,
+                    ..Self::status()
+                })
+            }
             "add" => {
                 let params: PathParams = parse_params(params)?;
                 let path = VirtualPath::parse(&params.path)?;
@@ -32,7 +47,9 @@ impl GitCommandSpec {
                 args.push(path.as_str().to_string());
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    branch_preflight: None,
                 })
             }
             "commit" => {
@@ -58,7 +75,9 @@ impl GitCommandSpec {
                 args.push(params.message);
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    branch_preflight: None,
                 })
             }
             "log" => {
@@ -68,7 +87,9 @@ impl GitCommandSpec {
                 args.push(limit);
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    branch_preflight: None,
                 })
             }
             "diff" => {
@@ -79,7 +100,9 @@ impl GitCommandSpec {
                 }
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    branch_preflight: None,
                 })
             }
             "branch" => {
@@ -90,10 +113,12 @@ impl GitCommandSpec {
                 } else {
                     base_args(["branch"])
                 };
-                args.push(params.name);
+                args.push(params.name.clone());
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    branch_preflight: Some(params.name),
                 })
             }
             "checkout" => {
@@ -104,15 +129,19 @@ impl GitCommandSpec {
                 } else {
                     base_args(["checkout"])
                 };
-                args.push(params.git_ref);
+                args.push(params.git_ref.clone());
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    branch_preflight: Some(params.git_ref),
                 })
             }
             "remoteList" => Ok(Self {
                 args: base_args(["remote", "-v"]),
+                cwd: parse_cwd(params)?,
                 remote_preflight: None,
+                branch_preflight: None,
             }),
             "remoteAdd" => {
                 let params: RemoteAddParams = parse_params(params)?;
@@ -123,7 +152,9 @@ impl GitCommandSpec {
                 args.push(params.url);
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    branch_preflight: None,
                 })
             }
             "remoteRemove" => {
@@ -133,7 +164,9 @@ impl GitCommandSpec {
                 args.push(params.name);
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    branch_preflight: None,
                 })
             }
             "clone" => {
@@ -146,7 +179,9 @@ impl GitCommandSpec {
                 args.push(directory.as_str().to_string());
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: None,
+                    branch_preflight: None,
                 })
             }
             "fetch" => {
@@ -157,7 +192,9 @@ impl GitCommandSpec {
                 args.push(remote.clone());
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: Some(remote),
+                    branch_preflight: None,
                 })
             }
             "pull" => {
@@ -168,10 +205,12 @@ impl GitCommandSpec {
                 validate_git_ref(&branch, "branch")?;
                 let mut args = base_args(["pull", "--ff-only"]);
                 args.push(remote.clone());
-                args.push(branch);
+                args.push(branch.clone());
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: Some(remote),
+                    branch_preflight: branch_preflight(branch),
                 })
             }
             "push" => {
@@ -182,10 +221,12 @@ impl GitCommandSpec {
                 validate_git_ref(&branch, "branch")?;
                 let mut args = base_args(["push"]);
                 args.push(remote.clone());
-                args.push(branch);
+                args.push(branch.clone());
                 Ok(Self {
                     args,
+                    cwd: parse_optional_cwd(params.cwd)?,
                     remote_preflight: Some(remote),
+                    branch_preflight: branch_preflight(branch),
                 })
             }
             other => Err(ToolError::Sdk {
@@ -216,9 +257,23 @@ fn parse_params<T: for<'de> Deserialize<'de>>(params: Value) -> Result<T, ToolEr
     })
 }
 
+fn parse_cwd(params: Value) -> Result<Option<VirtualPath>, ToolError> {
+    parse_optional_cwd(parse_params::<CwdParams>(params)?.cwd)
+}
+
+fn parse_optional_cwd(cwd: Option<String>) -> Result<Option<VirtualPath>, ToolError> {
+    cwd.map(|value| VirtualPath::parse(&value)).transpose()
+}
+
+#[derive(Deserialize)]
+struct CwdParams {
+    cwd: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct PathParams {
     path: String,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -227,16 +282,19 @@ struct CommitParams {
     message: String,
     author_name: String,
     author_email: String,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct LimitParams {
     limit: Option<usize>,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct OptionalPathParams {
     path: Option<String>,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -245,6 +303,7 @@ struct BranchParams {
     name: String,
     #[serde(default)]
     delete: bool,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -254,29 +313,34 @@ struct CheckoutParams {
     git_ref: String,
     #[serde(default)]
     create: bool,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct RemoteNameParams {
     name: String,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct RemoteAddParams {
     name: String,
     url: String,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct CloneParams {
     url: String,
     directory: String,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct PullPushParams {
     remote: Option<String>,
     branch: Option<String>,
+    cwd: Option<String>,
 }
 
 fn validate_remote_name(value: &str, param: &str) -> Result<(), ToolError> {
@@ -313,21 +377,38 @@ fn validate_git_ref(value: &str, param: &str) -> Result<(), ToolError> {
 }
 
 pub(crate) fn validate_remote_url(value: &str, param: &str) -> Result<(), ToolError> {
-    if !value.starts_with("https://") || value.contains('?') || value.contains('#') {
-        return Err(invalid_param(
+    let parsed = Url::parse(value).map_err(|_| {
+        invalid_param(
             param,
-            "git remote URL must be an explicit https URL without query or fragment",
-        ));
+            "git remote URL must be a valid https URL on an allowed host",
+        )
+    })?;
+    if parsed.scheme() != "https" {
+        return Err(invalid_param(param, "git remote URL must use https"));
     }
-    let remainder = &value["https://".len()..];
-    let Some((authority, path)) = remainder.split_once('/') else {
-        return Err(invalid_param(param, "git remote URL must include a path"));
-    };
-    if authority.is_empty() || path.is_empty() || authority.contains('@') {
+    if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(invalid_param(
             param,
             "git remote URL must not include embedded credentials",
         ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(invalid_param(
+            param,
+            "git remote URL must not include query or fragment",
+        ));
+    }
+    let Some(host) = parsed.host_str() else {
+        return Err(invalid_param(param, "git remote URL must include a host"));
+    };
+    if !ALLOWED_REMOTE_HOSTS.contains(&host) {
+        return Err(invalid_param(
+            param,
+            "git remote host is not allowed for Code Mode",
+        ));
+    }
+    if parsed.path() == "/" || parsed.path().trim_matches('/').is_empty() {
+        return Err(invalid_param(param, "git remote URL must include a path"));
     }
     Ok(())
 }
@@ -340,6 +421,10 @@ fn validate_clone_directory(value: &str) -> Result<(), ToolError> {
         ));
     }
     Ok(())
+}
+
+fn branch_preflight(value: String) -> Option<String> {
+    if value == "HEAD" { None } else { Some(value) }
 }
 
 fn invalid_param(param: &str, message: &str) -> ToolError {
@@ -369,6 +454,7 @@ mod tests {
                 "--short"
             ]
         );
+        assert_eq!(cmd.cwd, None);
     }
 
     #[test]
@@ -390,6 +476,8 @@ mod tests {
             "ssh://host/repo",
             "git@github.com:owner/repo.git",
             "https://user:token@example.com/repo.git",
+            "https://github.com/owner/repo.git?token=x",
+            "https://example.com/owner/repo.git",
         ] {
             let err = GitCommandSpec::for_method(
                 "remoteAdd",
@@ -426,5 +514,15 @@ mod tests {
         )
         .unwrap();
         assert!(remote.args.iter().any(|arg| arg == "remote"));
+    }
+
+    #[test]
+    fn git_v2_builds_workspace_relative_cwd() {
+        let cmd = GitCommandSpec::for_method("status", serde_json::json!({"cwd": "repo"})).unwrap();
+        assert_eq!(cmd.cwd.unwrap().as_str(), "repo");
+
+        let err = GitCommandSpec::for_method("status", serde_json::json!({"cwd": "../repo"}))
+            .unwrap_err();
+        assert_eq!(err.kind(), "path_traversal");
     }
 }
