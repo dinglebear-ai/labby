@@ -9,6 +9,7 @@ on:
       - .github/actions/build-gateway-admin/action.yml
       - .github/workflows/build-incus-image.yml
       - apps/gateway-admin/**
+      - config/Dockerfile
       - config/incus/**
       - crates/**
       - scripts/ci/build-incus-image.sh
@@ -20,6 +21,7 @@ on:
       - .github/actions/build-gateway-admin/action.yml
       - .github/workflows/build-incus-image.yml
       - apps/gateway-admin/**
+      - config/Dockerfile
       - config/incus/**
       - crates/**
       - scripts/ci/build-incus-image.sh
