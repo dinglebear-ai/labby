@@ -186,6 +186,7 @@ actions:
       if ! command -v tailscale >/dev/null 2>&1; then
         curl -fsSL https://tailscale.com/install.sh | sh
       fi
+      rm -f /var/lib/tailscale/*.state /run/labby-ts-authkey
 
 files:
   - generator: copy

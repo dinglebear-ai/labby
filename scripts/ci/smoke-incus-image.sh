@@ -179,9 +179,12 @@ for path in \
     /run/labby-ts-authkey \
     /var/lib/tailscale/tailscaled.state
 do
-    test ! -e "$path"
+    if test -e "$path"; then
+        echo "forbidden runtime state exists: $path" >&2
+        exit 1
+    fi
 done
-if env | grep -E "^(TS_AUTHKEY|LAB_MCP_HTTP_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|CARGO_REGISTRY_TOKEN)="; then
+if env | grep -E "^(TS_AUTHKEY|LAB_MCP_HTTP_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|CARGO_REGISTRY_TOKEN)=" >&2; then
     exit 1
 fi'
 
