@@ -97,7 +97,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: gitleaks/gitleaks-action@v3
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_SUMMARY: "true"
@@ -111,7 +111,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: stable
       - run: go run github.com/rhysd/actionlint/cmd/actionlint@latest
@@ -134,7 +134,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/build-gateway-admin
       - name: Upload gateway-admin export
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out/
@@ -150,7 +150,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -164,7 +164,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87
 
   check:
     name: Check
@@ -179,8 +179,8 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: dtolnay/rust-toolchain@1.94.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo check --workspace --all-features --locked
 
   feature-slices:
@@ -212,8 +212,8 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: dtolnay/rust-toolchain@1.94.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo check -p labby --no-default-features --features ${{ matrix.slice }} --all-targets --locked
 
   extracted-crate-slices:
@@ -257,8 +257,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.94.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: ${{ matrix.command }}
 
   docs-check:
@@ -274,9 +274,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: dtolnay/rust-toolchain@1.94.1
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - uses: taiki-e/install-action@9cfa436698ecd30b7b47d715cbb8241e4624245a
       - run: just docs-check
 
   clippy:
@@ -292,10 +292,10 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo clippy --workspace --all-features --locked -- -D warnings
 
   test:
@@ -319,13 +319,13 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: dtolnay/rust-toolchain@1.94.1
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
       - run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nextest-junit
           path: target/nextest/ci/junit.xml
@@ -348,13 +348,13 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: dtolnay/rust-toolchain@1.94.1
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
       - run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nextest-junit
           path: target/nextest/ci/junit.xml
@@ -668,8 +668,8 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: dtolnay/rust-toolchain@1.94.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           save-if: true
       - run: cargo build --workspace --all-features --locked --release
@@ -701,8 +701,8 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: config/Dockerfile

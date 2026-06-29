@@ -354,50 +354,55 @@ impl LabMcpServer {
                 .iter()
                 .any(|a| a.name == action && a.destructive);
             if is_destructive {
-                match elicit_confirm(&context, &service, &action).await {
-                    ElicitResult::Confirmed => {}
-                    ElicitResult::Declined | ElicitResult::Cancelled => {
-                        let envelope = build_error(
-                            &service,
-                            &action,
-                            "confirmation_required",
-                            &format!("action `{action}` is destructive — confirm to proceed"),
-                        );
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            envelope.to_string(),
-                        )]));
-                    }
-                    ElicitResult::NotSupported => {
-                        // Client does not support elicitation — allow params["confirm"] == true
-                        // as a machine-to-machine bypass (mirrors HTTP's handle_action()).
-                        if params.get("confirm").and_then(Value::as_bool) != Some(true) {
+                if params.get("confirm").and_then(Value::as_bool) == Some(true) {
+                    tracing::info!(
+                        surface = "mcp",
+                        service,
+                        action,
+                        "destructive action confirmed by params"
+                    );
+                } else {
+                    match elicit_confirm(&context, &service, &action).await {
+                        ElicitResult::Confirmed => {}
+                        ElicitResult::Declined | ElicitResult::Cancelled => {
+                            let envelope = build_error(
+                                &service,
+                                &action,
+                                "confirmation_required",
+                                &format!("action `{action}` is destructive — confirm to proceed"),
+                            );
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                envelope.to_string(),
+                            )]));
+                        }
+                        ElicitResult::NotSupported => {
                             let envelope = build_error(
                                 &service,
                                 &action,
                                 "confirmation_required",
                                 &format!(
                                     "action `{action}` is destructive — pass \
-                                     {{\"confirm\":true}} in params or use a client \
-                                     that supports MCP elicitation"
+                                 {{\"confirm\":true}} in params or use a client \
+                                 that supports MCP elicitation"
                                 ),
                             );
                             return Ok(CallToolResult::error(vec![Content::text(
                                 envelope.to_string(),
                             )]));
                         }
-                    }
-                    ElicitResult::Failed => {
-                        let envelope = build_error(
-                            &service,
-                            &action,
-                            "confirmation_required",
-                            &format!(
-                                "action `{action}` is destructive — confirmation failed, retry with a client that supports MCP elicitation"
-                            ),
-                        );
-                        return Ok(CallToolResult::error(vec![Content::text(
-                            envelope.to_string(),
-                        )]));
+                        ElicitResult::Failed => {
+                            let envelope = build_error(
+                                &service,
+                                &action,
+                                "confirmation_required",
+                                &format!(
+                                    "action `{action}` is destructive — confirmation failed, retry with a client that supports MCP elicitation"
+                                ),
+                            );
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                envelope.to_string(),
+                            )]));
+                        }
                     }
                 }
             }
