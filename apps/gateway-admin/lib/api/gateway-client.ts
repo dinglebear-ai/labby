@@ -168,77 +168,80 @@ async function fetchVirtualServerAllowedActions(
   }
 }
 
-async function normalizeListedServerView(
-  view: BackendServerView,
-  runtime: BackendGatewayMcpRuntimeView | undefined,
-  signal?: AbortSignal,
-): Promise<Gateway> {
-  if (view.source === 'in_process') {
-    // Service catalog fan-out must be fail-open; stale service rows should degrade, not break gateway.list.
-    const [actionsResult, allowedActions] = await Promise.all([
-      fetchSortedServiceActions(view.name, signal).then(
-        (actions) => ({ ok: true as const, actions }),
-        (error: unknown) => ({ ok: false as const, error }),
-      ),
-      fetchVirtualServerAllowedActions(view.id, signal),
-    ])
-
-    if (actionsResult.ok) {
-      return normalizeServerView(view, {
-        tools: actionsResult.actions,
-        allowed_actions: allowedActions,
-      }, runtime)
-    }
-
-    if (signal?.aborted) {
-      throw actionsResult.error
-    }
-
-    const message = actionsResult.error instanceof Error
-      ? actionsResult.error.message
-      : 'Failed to load service action catalog'
-
-    return normalizeServerView({
-      ...view,
-      warnings: [
-        ...(view.warnings ?? []),
-        {
-          code: 'service_catalog_unavailable',
-          message,
-        },
-      ],
-    }, {
-      tools: [],
-      allowed_actions: allowedActions,
-    }, runtime)
-  }
-
-  try {
-    const gatewayView = await gatewayAction<BackendGatewayView>('gateway.get', { name: view.name }, signal)
-    const lastWarning = view.warnings?.[0]?.message
-    const connected = view.connected ?? runtime?.connected ?? false
-    return normalizeGateway(
-      gatewayView,
-      {
-        connected,
-        healthy: connected && !lastWarning,
-        ...(lastWarning ? { last_error: lastWarning } : {}),
-      },
-      { tools: [], resources: [], prompts: [] },
-      runtime,
-    )
-  } catch (error) {
-    if (signal?.aborted) {
-      throw error
-    }
-    return normalizeServerView(view, undefined, runtime)
-  }
-}
-
 function logGatewayDegradation(gateways: Gateway[]) {
   const counts = gatewayDegradedWarningCounts(gateways)
   if (hasGatewayDegradedWarnings(counts)) {
     console.warn('[gateway] degraded gateway rows', counts)
+  }
+}
+
+function applyRuntimeRow(gateway: Gateway, runtime: BackendGatewayMcpRuntimeView | undefined): Gateway {
+  if (!runtime) {
+    return gateway
+  }
+
+  const enabled = runtime.enabled ?? gateway.enabled ?? true
+  const connected = Boolean(runtime.connected)
+  const discoveredToolCount = runtime.discovered_tool_count ?? gateway.status.discovered_tool_count
+  const exposedToolCount = runtime.exposed_tool_count ?? gateway.status.exposed_tool_count
+  const discoveredResourceCount = runtime.discovered_resource_count ?? gateway.status.discovered_resource_count
+  const exposedResourceCount = runtime.exposed_resource_count ?? gateway.status.exposed_resource_count
+  const discoveredPromptCount = runtime.discovered_prompt_count ?? gateway.status.discovered_prompt_count
+  const exposedPromptCount = runtime.exposed_prompt_count ?? gateway.status.exposed_prompt_count
+
+  return {
+    ...gateway,
+    enabled,
+    transport: runtime.transport === 'http' || runtime.transport === 'stdio'
+      ? runtime.transport
+      : gateway.transport,
+    surfaces: {
+      cli: gateway.surfaces?.cli ?? { enabled: false, connected: false },
+      api: gateway.surfaces?.api ?? { enabled: false, connected: false },
+      mcp: {
+        ...(gateway.surfaces?.mcp ?? { enabled: false, connected: false }),
+        enabled,
+        connected,
+      },
+      webui: gateway.surfaces?.webui ?? { enabled: false, connected: false },
+    },
+    config: {
+      ...gateway.config,
+      ...((runtime.transport === 'http' && runtime.target && !gateway.config.url)
+        ? { url: runtime.target }
+        : {}),
+      ...((runtime.transport === 'stdio' && runtime.target && !gateway.config.command)
+        ? { command: runtime.target }
+        : {}),
+    },
+    status: {
+      ...gateway.status,
+      connected,
+      healthy: Boolean(enabled && connected && !gateway.status.last_error),
+      discovered_tool_count: discoveredToolCount,
+      exposed_tool_count: exposedToolCount,
+      discovered_resource_count: discoveredResourceCount,
+      exposed_resource_count: exposedResourceCount,
+      discovered_prompt_count: discoveredPromptCount,
+      exposed_prompt_count: exposedPromptCount,
+      likely_stale_count: runtime.likely_stale_count,
+      pid: runtime.pid ?? undefined,
+      pgid: runtime.pgid ?? undefined,
+      age_seconds: runtime.age_seconds ?? undefined,
+      origin: runtime.origin ?? undefined,
+      owner: runtime.owner
+        ? {
+            surface: runtime.owner.surface,
+            subject: runtime.owner.subject ?? undefined,
+            request_id: runtime.owner.request_id ?? undefined,
+            session_id: runtime.owner.session_id ?? undefined,
+            client_name: runtime.owner.client_name ?? undefined,
+            raw: runtime.owner.raw ?? undefined,
+          }
+        : undefined,
+      runtime_state_path: runtime.runtime_state_path ?? undefined,
+      reconciled_at: runtime.reconciled_at ?? undefined,
+    },
   }
 }
 
@@ -371,14 +374,10 @@ export const gatewayApi = {
   },
 
   async list(signal?: AbortSignal): Promise<Gateway[]> {
-    const [views, runtimeRows] = await Promise.all([
-      gatewayAction<BackendServerView[]>('gateway.list', {}, signal),
-      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
-    ])
-    const runtimeByName = new Map(runtimeRows.map((row) => [row.name, row]))
+    const views = await gatewayAction<BackendServerView[]>('gateway.list', {}, signal)
     const normalizedResults = await safeFanout(
       views,
-      (view) => normalizeListedServerView(view, runtimeByName.get(view.name), signal),
+      async (view) => normalizeServerView(view),
     )
     const gateways = normalizedResults.map((result) => {
       if (result.ok) {
@@ -403,6 +402,14 @@ export const gatewayApi = {
     })
     logGatewayDegradation(gateways)
     return gateways
+  },
+
+  async hydrateRuntime(gateways: Gateway[], signal?: AbortSignal): Promise<Gateway[]> {
+    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
+    const runtimeByName = new Map(runtimeRows.map((row) => [row.name, row]))
+    const hydrated = gateways.map((gateway) => applyRuntimeRow(gateway, runtimeByName.get(gateway.name)))
+    logGatewayDegradation(hydrated)
+    return hydrated
   },
 
   async get(id: string, signal?: AbortSignal): Promise<Gateway> {

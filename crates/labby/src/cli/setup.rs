@@ -15,6 +15,7 @@
 
 use std::future::Future;
 use std::io::{self, IsTerminal, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -114,6 +115,8 @@ pub enum SetupCommand {
     Check,
     /// Repair missing local setup prerequisites without contacting external services.
     Repair,
+    /// Validate or apply local Incus backup policy.
+    IncusBackup(IncusBackupArgs),
     /// Copy the labby binary into ~/.local/bin so it is callable in your own terminal.
     Install,
     /// Install the Claude Code plugin for a configured service.
@@ -204,16 +207,44 @@ pub struct PluginMutationArgs {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Args)]
+pub struct IncusBackupArgs {
+    #[command(subcommand)]
+    pub command: IncusBackupCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IncusBackupCommand {
+    /// Validate a backup policy YAML without mutating Incus.
+    Validate {
+        /// Backup policy YAML to validate.
+        #[arg(long, default_value = "config/incus/labby-backup.yaml")]
+        config: PathBuf,
+    },
+    /// Apply a backup policy YAML to an Incus instance.
+    Apply {
+        /// Incus container name.
+        #[arg(long)]
+        name: String,
+        /// Backup policy YAML to apply.
+        #[arg(long, default_value = "config/incus/labby-backup.yaml")]
+        config: PathBuf,
+        /// Print the changes without mutating Incus.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 /// Default URL for the embedded web UI (per Q1: 127.0.0.1:8765).
 const DEFAULT_LAB_URL: &str = "http://127.0.0.1:8765";
 
-fn install_self() -> Result<std::path::PathBuf> {
+fn install_self() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let name = exe
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("cannot determine binary name"))?;
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
-    let bin_dir = std::path::PathBuf::from(home).join(".local").join("bin");
+    let bin_dir = PathBuf::from(home).join(".local").join("bin");
     std::fs::create_dir_all(&bin_dir)?;
     let dest = bin_dir.join(name);
     if dest == exe {
@@ -239,9 +270,9 @@ fn install_self() -> Result<std::path::PathBuf> {
     Ok(dest)
 }
 
-fn install_self_system() -> Result<std::path::PathBuf> {
+fn install_self_system() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
-    let bin_dir = std::path::PathBuf::from("/usr/local/bin");
+    let bin_dir = PathBuf::from("/usr/local/bin");
     std::fs::create_dir_all(&bin_dir)?;
     let dest = bin_dir.join("labby");
     if dest == exe {
@@ -438,6 +469,9 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
             let value = crate::dispatch::setup::dispatch("repair", json!({})).await?;
             print(&value, format)?;
         }
+        SetupCommand::IncusBackup(args) => {
+            run_incus_backup_command(args, format).await?;
+        }
         SetupCommand::Install => {
             let dest = install_self()?;
             println!("installed -> {}", dest.display());
@@ -450,6 +484,43 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn run_incus_backup_command(args: IncusBackupArgs, format: OutputFormat) -> Result<()> {
+    match args.command {
+        IncusBackupCommand::Validate { config } => {
+            let entries = crate::dispatch::setup::incus::parse_backup_config(&config)?;
+            if format.is_json() {
+                print(&serde_json::to_value(&entries)?, format)?;
+            } else {
+                println!("validated {} backup config entries", entries.len());
+            }
+        }
+        IncusBackupCommand::Apply {
+            name,
+            config,
+            dry_run,
+        } => {
+            let outcome =
+                crate::dispatch::setup::incus::apply_backup_config(&name, &config, dry_run)?;
+            if format.is_json() {
+                print(&serde_json::to_value(&outcome)?, format)?;
+            } else if dry_run {
+                println!(
+                    "dry-run: would apply {} backup config entries to {}",
+                    outcome.applied.len(),
+                    outcome.container
+                );
+            } else {
+                println!(
+                    "applied {} backup config entries to {}",
+                    outcome.applied.len(),
+                    outcome.container
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn run_host_service_command(args: HostServiceArgs, format: OutputFormat) -> Result<()> {
@@ -710,6 +781,39 @@ mod tests {
         assert!(args.dry_run);
         assert!(args.skip_deps);
         assert!(args.command.is_none());
+    }
+
+    #[test]
+    fn parses_incus_backup_apply_subcommand() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "labby",
+            "setup",
+            "incus-backup",
+            "apply",
+            "--name",
+            "labby",
+            "--config",
+            "config/incus/labby-backup.yaml",
+            "--dry-run",
+        ])
+        .unwrap();
+        let crate::cli::Command::Setup(args) = cli.command else {
+            panic!("expected setup command");
+        };
+        let Some(SetupCommand::IncusBackup(IncusBackupArgs {
+            command:
+                IncusBackupCommand::Apply {
+                    name,
+                    config,
+                    dry_run,
+                },
+        })) = args.command
+        else {
+            panic!("expected setup incus-backup apply subcommand");
+        };
+        assert_eq!(name, "labby");
+        assert_eq!(config, PathBuf::from("config/incus/labby-backup.yaml"));
+        assert!(dry_run);
     }
 
     #[test]

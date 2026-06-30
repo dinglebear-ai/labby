@@ -887,7 +887,7 @@ async fn run_http(
     };
     // ── end single-master lock ────────────────────────────────────────────────
 
-    let web_assets_enabled = state.web_assets_dir.is_some();
+    let web_assets_enabled = state.web_assets_enabled();
     let bearer_token_configured = bearer_token.is_some();
     tracing::info!(
         subsystem = "api_server",

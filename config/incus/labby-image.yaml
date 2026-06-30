@@ -47,6 +47,27 @@ actions:
     action: |-
       #!/usr/bin/env bash
       set -euo pipefail
+      # LABBY_IMAGE_ACTION: incus-network
+      install -d -m 0755 /etc/netplan
+      cat > /etc/netplan/10-lxc.yaml <<'EOF'
+      network:
+        version: 2
+        ethernets:
+          eth0:
+            dhcp4: true
+            dhcp-identifier: mac
+      EOF
+      chmod 0600 /etc/netplan/10-lxc.yaml
+      mkdir -p /etc/systemd/system/multi-user.target.wants
+      ln -sfn /usr/lib/systemd/system/systemd-networkd.service \
+        /etc/systemd/system/multi-user.target.wants/systemd-networkd.service
+      ln -sfn /usr/lib/systemd/system/systemd-resolved.service \
+        /etc/systemd/system/multi-user.target.wants/systemd-resolved.service
+
+  - trigger: post-packages
+    action: |-
+      #!/usr/bin/env bash
+      set -euo pipefail
       # LABBY_PROVISION_ACTION: lab-user
       if ! id -u lab >/dev/null 2>&1; then
         useradd --create-home --shell /usr/bin/zsh lab

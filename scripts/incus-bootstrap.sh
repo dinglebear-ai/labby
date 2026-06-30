@@ -7,8 +7,10 @@ NAME="labby"
 IMAGE="images:ubuntu/24.04"
 PROFILE_NAME="labby-gateway"
 PROFILE_FILE="config/incus/labby-gateway-profile.yaml"
-STORAGE_POOL_NAME="labby-zfs"
-STORAGE_POOL_SOURCE="${LABBY_INCUS_ZFS_SOURCE:-rpool/labby-incus}"
+BACKUP_CONFIG_FILE="${LABBY_INCUS_BACKUP_CONFIG:-config/incus/labby-backup.yaml}"
+STORAGE_POOL_DRIVER="${LABBY_INCUS_STORAGE_DRIVER:-zfs}"
+STORAGE_POOL_NAME="${LABBY_INCUS_STORAGE_POOL:-}"
+STORAGE_POOL_SOURCE="${LABBY_INCUS_STORAGE_SOURCE:-${LABBY_INCUS_ZFS_SOURCE:-}}"
 RUNTIME_PROFILE_NAME=""
 VERSION="${LAB_INSTALL_VERSION:-}"
 LOCAL_BINARY=""
@@ -16,6 +18,7 @@ SKIP_INSTALL=0
 DRY_RUN=0
 TAILSCALE_SSH=0
 ALLOW_SOURCE_FALLBACK=0
+APPLY_BACKUP_CONFIG=1
 
 say() { printf '%s\n' "$*"; }
 err() { printf '%s\n' "$*" >&2; }
@@ -30,9 +33,13 @@ Options:
   --image IMAGE               Incus image alias (default: images:ubuntu/24.04)
   --profile-name NAME          Incus profile name (default: labby-gateway)
   --profile-file PATH          Incus profile YAML (default: config/incus/labby-gateway-profile.yaml)
+  --backup-config PATH         Incus snapshot policy YAML (default: config/incus/labby-backup.yaml)
+  --no-backup-config           Do not apply an Incus snapshot policy
   --runtime-profile-name NAME  Rootless profile for existing containers with a different root pool
-  --storage-pool NAME          ZFS Incus storage pool used by the profile root disk (default: labby-zfs)
-  --zfs-source DATASET          ZFS dataset for the storage pool (default: rpool/labby-incus)
+  --storage-driver DRIVER      Incus storage driver: zfs, btrfs, or dir (default: zfs)
+  --storage-pool NAME          Incus storage pool used by the profile root disk
+  --storage-source SOURCE      Incus storage source path/dataset for the pool
+  --zfs-source DATASET         Back-compat alias for --storage-source with zfs
   --version TAG               Labby release tag to install, e.g. v0.22.2
   --local-binary PATH          Push a locally built labby binary instead of downloading a release
   --skip-install              Use the labby binary already baked into the selected image
@@ -43,7 +50,11 @@ Options:
 
 Environment:
   TS_AUTHKEY                  Optional Tailscale auth key for in-container join
-  LABBY_INCUS_ZFS_SOURCE       Optional ZFS dataset source (default: rpool/labby-incus)
+  LABBY_INCUS_STORAGE_DRIVER  Optional Incus storage driver: zfs, btrfs, or dir
+  LABBY_INCUS_STORAGE_POOL    Optional Incus storage pool name
+  LABBY_INCUS_STORAGE_SOURCE  Optional Incus storage pool source path/dataset
+  LABBY_INCUS_ZFS_SOURCE      Back-compat ZFS dataset source env
+  LABBY_INCUS_BACKUP_CONFIG   Optional Incus snapshot policy YAML path
 USAGE
 }
 
@@ -61,6 +72,16 @@ run() {
     else
         "$@"
     fi
+}
+
+normalize_profile_yaml() {
+    awk '
+        /^used_by:/ { print "used_by: []"; in_used_by = 1; next }
+        in_used_by && /^- / { next }
+        in_used_by { in_used_by = 0 }
+        /^project:/ { next }
+        { print }
+    '
 }
 
 verify_container_substrate() {
@@ -110,26 +131,173 @@ ensure_tun_device() {
 
     if [ "$DRY_RUN" -eq 0 ]; then
         incus exec "$NAME" -- test -c /dev/net/tun || fail "$NAME is missing /dev/net/tun"
+        incus exec "$NAME" -- sh -c "ip tuntap add dev labby-tun-probe mode tun && ip link delete labby-tun-probe" \
+            || fail "$NAME cannot create a test TUN interface; Tailscale will not work with the current Incus profile"
     fi
+}
+
+ensure_container_networking() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        say "+ incus exec $(quote "$NAME") -- sh -c 'write Incus DHCP netplan, enable systemd-networkd, generate networkd config, verify IPv4/DNS'"
+        return
+    fi
+
+    incus exec "$NAME" -- sh -eu <<'SCRIPT'
+install -d -m 0755 /etc/netplan
+cat > /etc/netplan/10-lxc.yaml <<'EOF'
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: true
+      dhcp-identifier: mac
+EOF
+chmod 0600 /etc/netplan/10-lxc.yaml
+systemctl enable systemd-networkd systemd-resolved >/dev/null
+netplan_err="$(mktemp)"
+if ! netplan generate 2>"$netplan_err"; then
+    cat "$netplan_err" >&2
+    rm -f "$netplan_err"
+    exit 1
+fi
+if [ -s "$netplan_err" ]; then
+    grep -v '^Failed to send reload request: No such file or directory$' "$netplan_err" >&2 || true
+fi
+rm -f "$netplan_err"
+if ip -4 addr show dev eth0 | grep -q 'inet ' && getent hosts tailscale.com >/dev/null 2>&1; then
+    exit 0
+fi
+systemctl restart systemd-networkd systemd-resolved
+SCRIPT
+
+    i=0
+    while [ "$i" -lt 30 ]; do
+        if incus exec "$NAME" -- sh -c "ip -4 addr show dev eth0 | grep -q 'inet '"; then
+            break
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    incus exec "$NAME" -- sh -c "ip -4 addr show dev eth0 | grep -q 'inet '" \
+        || fail "$NAME did not acquire an IPv4 address on eth0"
+
+    if ! incus exec "$NAME" -- getent hosts tailscale.com >/dev/null 2>&1; then
+        incus exec "$NAME" -- resolvectl status || true
+        fail "$NAME cannot resolve tailscale.com after network convergence"
+    fi
+    say "container networking ready: eth0 has IPv4 and DNS resolves"
 }
 
 cleanup_ts_authkey() {
     incus exec "$NAME" -- rm -f /run/labby-ts-authkey >/dev/null 2>&1 || true
 }
 
-ensure_storage_pool() {
+verify_labby_ready() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        say "+ incus storage show $(quote "$STORAGE_POOL_NAME") >/dev/null 2>&1 || incus storage create $(quote "$STORAGE_POOL_NAME") zfs source=$(quote "$STORAGE_POOL_SOURCE")"
+        say "+ incus exec $(quote "$NAME") -- curl -fsS http://127.0.0.1:8765/ready"
+        return
+    fi
+    incus exec "$NAME" -- curl -fsS http://127.0.0.1:8765/ready >/dev/null
+}
+
+parse_backup_config() {
+    awk '
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+        /^config:[[:space:]]*$/ { in_config = 1; next }
+        in_config && /^[^[:space:]]/ { in_config = 0 }
+        !in_config { next }
+        /^[[:space:]]*(#|$)/ { next }
+        {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            colon = index(line, ":")
+            if (colon == 0) {
+                next
+            }
+            key = trim(substr(line, 1, colon - 1))
+            value = trim(substr(line, colon + 1))
+            if ((value ~ /^".*"$/) || (value ~ /^'\''.*'\''$/)) {
+                value = substr(value, 2, length(value) - 2)
+            }
+            print key "=" value
+        }
+    ' "$BACKUP_CONFIG_FILE"
+}
+
+validate_backup_key() {
+    case "$1" in
+        snapshots.schedule | snapshots.expiry | snapshots.pattern | snapshots.schedule.stopped) ;;
+        *) fail "unsupported backup config key '$1' in $BACKUP_CONFIG_FILE" ;;
+    esac
+}
+
+host_labby_supports_incus_backup() {
+    command -v labby >/dev/null 2>&1 && labby setup incus-backup --help >/dev/null 2>&1
+}
+
+apply_backup_config_with_shell() {
+    applied=0
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        key="${entry%%=*}"
+        value="${entry#*=}"
+        validate_backup_key "$key"
+        run incus config set "$NAME" "$key" "$value"
+        applied=$((applied + 1))
+    done <<EOF
+$(parse_backup_config)
+EOF
+    [ "$applied" -gt 0 ] || fail "$BACKUP_CONFIG_FILE must contain at least one supported config key"
+}
+
+apply_backup_config() {
+    [ "$APPLY_BACKUP_CONFIG" -eq 1 ] || return 0
+
+    [ "$DRY_RUN" -eq 1 ] || [ -f "$BACKUP_CONFIG_FILE" ] \
+        || fail "--backup-config path does not exist: $BACKUP_CONFIG_FILE"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        say "+ labby setup incus-backup apply --name $(quote "$NAME") --config $(quote "$BACKUP_CONFIG_FILE")"
+        return
+    fi
+
+    if host_labby_supports_incus_backup; then
+        run labby setup incus-backup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE"
+    else
+        apply_backup_config_with_shell
+    fi
+}
+
+ensure_storage_pool() {
+    case "$STORAGE_POOL_DRIVER" in
+        zfs | btrfs | dir) ;;
+        *) fail "--storage-driver must be 'zfs', 'btrfs', or 'dir', got: $STORAGE_POOL_DRIVER" ;;
+    esac
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        if [ -n "$STORAGE_POOL_SOURCE" ]; then
+            say "+ incus storage show $(quote "$STORAGE_POOL_NAME") >/dev/null 2>&1 || incus storage create $(quote "$STORAGE_POOL_NAME") $(quote "$STORAGE_POOL_DRIVER") source=$(quote "$STORAGE_POOL_SOURCE")"
+        else
+            say "+ incus storage show $(quote "$STORAGE_POOL_NAME") >/dev/null 2>&1 || incus storage create $(quote "$STORAGE_POOL_NAME") $(quote "$STORAGE_POOL_DRIVER")"
+        fi
         return
     fi
 
     if incus storage show "$STORAGE_POOL_NAME" >/dev/null 2>&1; then
         driver="$(incus storage show "$STORAGE_POOL_NAME" | awk '$1 == "driver:" { print $2; exit }')"
-        [ "$driver" = "zfs" ] \
-            || fail "Incus storage pool '$STORAGE_POOL_NAME' exists but uses driver '$driver', expected zfs"
+        [ "$driver" = "$STORAGE_POOL_DRIVER" ] \
+            || fail "Incus storage pool '$STORAGE_POOL_NAME' exists but uses driver '$driver', expected $STORAGE_POOL_DRIVER"
         say "storage pool already exists: $STORAGE_POOL_NAME"
     else
-        run incus storage create "$STORAGE_POOL_NAME" zfs source="$STORAGE_POOL_SOURCE"
+        if [ -n "$STORAGE_POOL_SOURCE" ]; then
+            run incus storage create "$STORAGE_POOL_NAME" "$STORAGE_POOL_DRIVER" source="$STORAGE_POOL_SOURCE"
+        else
+            run incus storage create "$STORAGE_POOL_NAME" "$STORAGE_POOL_DRIVER"
+        fi
     fi
 }
 
@@ -158,7 +326,21 @@ ensure_profile() {
         sed "s/^    pool: .*/    pool: $STORAGE_POOL_NAME/" "$PROFILE_FILE" > "$profile_tmp"
         profile_source="$profile_tmp"
     fi
-    incus profile edit "$PROFILE_NAME" < "$profile_source"
+    current_tmp="$(mktemp)"
+    desired_tmp="$(mktemp)"
+    incus profile show "$PROFILE_NAME" | normalize_profile_yaml > "$current_tmp"
+    normalize_profile_yaml < "$profile_source" > "$desired_tmp"
+    if cmp -s "$current_tmp" "$desired_tmp"; then
+        say "profile already matches: $PROFILE_NAME"
+        rm -f "$current_tmp" "$desired_tmp"
+        if [ -n "$profile_tmp" ]; then
+            rm -f "$profile_tmp"
+        fi
+        return
+    fi
+    rm -f "$current_tmp" "$desired_tmp"
+    timeout 60 incus profile edit "$PROFILE_NAME" < "$profile_source" \
+        || fail "timed out updating Incus profile '$PROFILE_NAME'"
     if [ -n "$profile_tmp" ]; then
         rm -f "$profile_tmp"
     fi
@@ -193,7 +375,8 @@ ensure_runtime_profile() {
 
     profile_tmp="$(mktemp)"
     write_rootless_profile "$runtime_name" > "$profile_tmp"
-    incus profile edit "$runtime_name" < "$profile_tmp"
+    timeout 60 incus profile edit "$runtime_name" < "$profile_tmp" \
+        || fail "timed out updating Incus profile '$runtime_name'"
     rm -f "$profile_tmp"
 }
 
@@ -255,8 +438,12 @@ while [ "$#" -gt 0 ]; do
         --image) IMAGE="${2:?missing --image value}"; shift 2 ;;
         --profile-name) PROFILE_NAME="${2:?missing --profile-name value}"; shift 2 ;;
         --profile-file) PROFILE_FILE="${2:?missing --profile-file value}"; shift 2 ;;
+        --backup-config) BACKUP_CONFIG_FILE="${2:?missing --backup-config value}"; APPLY_BACKUP_CONFIG=1; shift 2 ;;
+        --no-backup-config) APPLY_BACKUP_CONFIG=0; shift ;;
         --runtime-profile-name) RUNTIME_PROFILE_NAME="${2:?missing --runtime-profile-name value}"; shift 2 ;;
+        --storage-driver) STORAGE_POOL_DRIVER="${2:?missing --storage-driver value}"; shift 2 ;;
         --storage-pool) STORAGE_POOL_NAME="${2:?missing --storage-pool value}"; shift 2 ;;
+        --storage-source) STORAGE_POOL_SOURCE="${2:?missing --storage-source value}"; shift 2 ;;
         --zfs-source) STORAGE_POOL_SOURCE="${2:?missing --zfs-source value}"; shift 2 ;;
         --version) VERSION="${2:?missing --version value}"; shift 2 ;;
         --local-binary) LOCAL_BINARY="${2:?missing --local-binary value}"; shift 2 ;;
@@ -269,6 +456,20 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+case "$STORAGE_POOL_DRIVER" in
+    zfs | btrfs | dir) ;;
+    *) fail "--storage-driver must be 'zfs', 'btrfs', or 'dir', got: $STORAGE_POOL_DRIVER" ;;
+esac
+if [ -z "$STORAGE_POOL_NAME" ]; then
+    case "$STORAGE_POOL_DRIVER" in
+        zfs) STORAGE_POOL_NAME="labby-zfs" ;;
+        btrfs) STORAGE_POOL_NAME="labby-btrfs" ;;
+        dir) STORAGE_POOL_NAME="labby-dir" ;;
+    esac
+fi
+if [ "$STORAGE_POOL_DRIVER" = "zfs" ] && [ -z "$STORAGE_POOL_SOURCE" ]; then
+    STORAGE_POOL_SOURCE="rpool/labby-incus"
+fi
 if [ -z "$VERSION" ] && [ -z "$LOCAL_BINARY" ] && [ "$SKIP_INSTALL" -eq 0 ]; then
     fail "--version is required unless --local-binary or --skip-install is provided"
 fi
@@ -320,6 +521,8 @@ fi
 
 verify_container_substrate
 ensure_tun_device
+ensure_container_networking
+apply_backup_config
 
 if [ "$SKIP_INSTALL" -eq 1 ]; then
     run incus exec "$NAME" -- test -x /usr/local/bin/labby
@@ -343,9 +546,14 @@ else
 fi
 
 run incus exec "$NAME" -- labby setup --provision --yes
+verify_labby_ready
 
 if [ -n "${TS_AUTHKEY:-}" ]; then
-	run incus exec "$NAME" -- sh -c "curl -fsSL https://tailscale.com/install.sh | sh"
+	if [ "$DRY_RUN" -eq 1 ]; then
+		say "+ incus exec $(quote "$NAME") -- sh -c 'command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh'"
+	elif ! incus exec "$NAME" -- sh -c "command -v tailscale >/dev/null 2>&1"; then
+		run incus exec "$NAME" -- sh -c "curl -fsSL https://tailscale.com/install.sh | sh"
+	fi
 	ts_args="--auth-key=file:/run/labby-ts-authkey"
 	if [ "$TAILSCALE_SSH" -eq 1 ]; then
 		ts_args="$ts_args --ssh"

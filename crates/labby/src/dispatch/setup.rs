@@ -13,6 +13,7 @@ mod client;
 mod dispatch;
 mod draft;
 pub(crate) mod host_service;
+pub(crate) mod incus;
 mod params;
 mod plugin_hook;
 pub(crate) mod provision;

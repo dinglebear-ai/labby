@@ -11,6 +11,7 @@ on:
       - apps/gateway-admin/**
       - config/Dockerfile
       - config/incus/**
+      - scripts/incus-bootstrap.sh
       - crates/**
       - scripts/ci/build-incus-image.sh
       - scripts/ci/smoke-incus-image.sh
@@ -23,6 +24,7 @@ on:
       - apps/gateway-admin/**
       - config/Dockerfile
       - config/incus/**
+      - scripts/incus-bootstrap.sh
       - crates/**
       - scripts/ci/build-incus-image.sh
       - scripts/ci/smoke-incus-image.sh
@@ -68,8 +70,9 @@ jobs:
       - name: Validate image scripts and definition
         run: |
           set -euo pipefail
+          sh -n scripts/incus-bootstrap.sh
           bash -n scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
-          shellcheck scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
+          shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
           sudo distrobuilder validate config/incus/labby-image.yaml -o image.serial=ci
 
       - name: Build Labby release binary

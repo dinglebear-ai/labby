@@ -177,12 +177,28 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y debootstrap gpg rsync squashfs-tools
+          sudo apt-get install -y debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
           sudo snap install distrobuilder --classic
+          sudo incus admin init --minimal || true
+      - name: Validate Incus image scripts and definition
+        run: |
+          set -euo pipefail
+          sh -n scripts/incus-bootstrap.sh
+          bash -n scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
+          shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
+          sudo distrobuilder validate config/incus/labby-image.yaml -o image.serial=ci
       - name: Build Incus image
         env:
           RELEASE_REF_NAME: ${{ github.ref_name }}
         run: scripts/ci/build-incus-image.sh "$RELEASE_REF_NAME" lab-x86_64-unknown-linux-gnu.tar.gz
+      - name: Smoke test Incus image
+        run: scripts/ci/smoke-incus-image.sh
+        env:
+          IMAGE_ALIAS: labby-incus-release-smoke
+          SMOKE_CONTAINER_NAME: labby-incus-release-smoke
+          SMOKE_BOOTSTRAP_CONTAINER_NAME: labby-incus-release-bootstrap-smoke
+          SMOKE_PROFILE_NAME: labby-gateway-release-smoke
+          SMOKE_BOOTSTRAP_PROFILE_NAME: labby-gateway-release-bootstrap-smoke
       - name: Upload Incus image artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
