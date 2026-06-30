@@ -487,7 +487,9 @@ async fn readiness_owner_matches(main_pid: Option<u32>, port: u16) -> Result<boo
     let Some(holder) = port_holder(port).await? else {
         return Ok(false);
     };
-    Ok(holder_contains_pid(&holder, pid) || process_listens_on_port(pid, port))
+    Ok(holder_contains_pid(&holder, pid)
+        || process_listens_on_port(pid, port)
+        || (!holder_contains_pid_data(&holder) && process_cmdline_is_labby(pid)))
 }
 
 fn holder_can_be_host_service_from(
@@ -495,7 +497,11 @@ fn holder_can_be_host_service_from(
     active_state: Option<&str>,
     main_pid: Option<u32>,
 ) -> bool {
-    active_state == Some("active") && main_pid.is_some_and(|pid| holder_contains_pid(holder, pid))
+    active_state == Some("active")
+        && main_pid.is_some_and(|pid| {
+            holder_contains_pid(holder, pid)
+                || (!holder_contains_pid_data(holder) && process_cmdline_is_labby(pid))
+        })
 }
 
 #[cfg(test)]
@@ -514,6 +520,24 @@ fn holder_contains_pid(holder: &str, pid: u32) -> bool {
             .next()
             .is_none_or(|next| !next.is_ascii_digit())
     })
+}
+
+fn holder_contains_pid_data(holder: &str) -> bool {
+    holder.contains("pid=")
+}
+
+fn process_cmdline_is_labby(pid: u32) -> bool {
+    let path = format!("/proc/{pid}/cmdline");
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let mut parts = bytes
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty());
+    let Some(program) = parts.next() else {
+        return false;
+    };
+    program.ends_with(b"/labby") || program == b"labby"
 }
 
 fn process_listens_on_port(pid: u32, port: u16) -> bool {
@@ -973,6 +997,14 @@ mod tests {
 
         assert!(holder_contains_pid(holder, 12345));
         assert!(!holder_contains_pid(holder, 1234));
+        assert!(holder_contains_pid_data(holder));
+    }
+
+    #[test]
+    fn detects_redacted_port_holder_without_pid_data() {
+        let holder = "LISTEN 0 128 127.0.0.1:8765 0.0.0.0:*";
+
+        assert!(!holder_contains_pid_data(holder));
     }
 
     #[test]

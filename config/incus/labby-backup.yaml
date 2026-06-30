@@ -1,0 +1,10 @@
+# Incus instance snapshot policy for the Labby gateway container.
+#
+# These map directly to Incus instance config keys. The bootstrap applies this
+# file with `incus config set`, leaving Incus itself responsible for scheduling,
+# expiry, and snapshot naming.
+config:
+  snapshots.schedule: "@daily"
+  snapshots.expiry: "14d"
+  snapshots.pattern: "labby-{{ creation_date|date:'2006-01-02_15-04-05' }}"
+  snapshots.schedule.stopped: "false"

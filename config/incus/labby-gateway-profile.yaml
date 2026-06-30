@@ -1,10 +1,8 @@
 config:
   raw.lxc: |-
-    lxc.apparmor.profile=unconfined
-    lxc.cgroup2.devices.allow = c 10:200 rwm
     lxc.mount.entry = /dev/net/tun dev/net/tun none bind,create=file 0 0
   security.nesting: "false"
-  security.privileged: "true"
+  security.privileged: "false"
 description: Labby gateway Incus profile
 devices:
   root:

@@ -18,9 +18,9 @@ The supported Incus substrate is currently:
 - Incus system container
 - `config/incus/labby-gateway-profile.yaml` applied as the `labby-gateway`
   Incus profile
-- privileged container with nesting disabled and AppArmor unconfined for the
-  gateway workload
-- `/dev/net/tun` passthrough when Tailscale is enabled
+- unprivileged container with nesting disabled
+- `/dev/net/tun` passthrough when Tailscale is enabled, validated by creating
+  a throwaway TUN interface during bootstrap
 
 The amd64 release-path constraint exists because the release binary includes
 Code Mode's QuickJS engine (`rquickjs-sys`), which does not cross-compile
@@ -59,15 +59,17 @@ sudo apt install incus
 sudo incus admin init
 ```
 
-Host networking and storage still matter. On node-a, live testing required
-`devices=on` for the backing ZFS dataset and explicit forwarding/NAT rules for
-`incusbr0` because Docker's FORWARD/NAT policy blocked container outbound
-networking.
+Host networking and storage still matter. If containers cannot reach the
+network, check the host bridge/NAT rules and Docker's FORWARD/NAT policy before
+debugging Labby itself.
 
-The bootstrap creates and uses a dedicated ZFS Incus storage pool named
-`labby-zfs` by default, backed by `rpool/labby-incus`. Override the dataset with
-`LABBY_INCUS_ZFS_SOURCE` or `--zfs-source`; override the Incus pool name with
-`--storage-pool`.
+The bootstrap can use a ZFS, Btrfs, or dir-backed Incus storage pool. By default
+it creates a dedicated ZFS pool named `labby-zfs`; set
+`LABBY_INCUS_STORAGE_DRIVER=btrfs` or pass `--storage-driver btrfs` for a Btrfs
+pool named `labby-btrfs`, and use `dir` for the simplest fallback pool named
+`labby-dir`. Override the pool name with `--storage-pool`, the storage source
+with `--storage-source`, or the legacy ZFS dataset source with
+`LABBY_INCUS_ZFS_SOURCE` / `--zfs-source`.
 
 ## Bootstrap
 
@@ -78,11 +80,12 @@ scripts/incus-bootstrap.sh --version vX.Y.Z
 ```
 
 The declarative Incus shape lives in
-`config/incus/labby-gateway-profile.yaml`. The bootstrap script creates or
-updates that profile and launches `images:ubuntu/24.04` with it. The profile
-owns `security.privileged=true`, `security.nesting=false`, AppArmor unconfined
-via `raw.lxc`, a ZFS root disk on `labby-zfs`, and `/dev/net/tun` access through
-a raw LXC bind mount.
+`config/incus/labby-gateway-profile.yaml`, and the default snapshot policy lives
+in `config/incus/labby-backup.yaml`. The bootstrap script creates or updates the
+profile, launches `images:ubuntu/24.04` with it, then applies the snapshot policy
+with Incus instance config. The profile owns `security.privileged=false`,
+`security.nesting=false`, a root disk on the selected storage pool, and
+`/dev/net/tun` access through a raw LXC bind mount.
 
 Existing containers are idempotently converged too. If an existing container's
 root disk already comes from a different Incus storage pool, the bootstrap
@@ -97,6 +100,22 @@ TUN device, installs `/usr/local/bin/labby`, then runs:
 ```bash
 incus exec labby -- labby setup --provision --yes
 ```
+
+Override the snapshot policy with `--backup-config PATH` or
+`LABBY_INCUS_BACKUP_CONFIG=PATH`. Disable policy application with
+`--no-backup-config`. The backup YAML maps directly to Incus `snapshots.*`
+instance config keys, so Incus owns scheduling and expiry; Labby does not run a
+cron or timer for normal snapshot retention. Bootstrap prefers the Rust-backed
+`labby setup incus-backup apply --name <container> --config <path>` validator
+when a new enough host `labby` is on `PATH`, and falls back to the constrained
+shell parser only for older hosts.
+
+Bootstrap does not migrate host Labby config, copy arbitrary local MCP
+artifacts, bind-mount host workspaces, or rewrite `config.toml`. Incus is the
+primary deployment boundary, so the supported runtime shape is a durable system
+container that owns its own `/home/lab/.lab` state. For an existing single-user
+host setup, seed `/home/lab/.lab` once, fix any host-specific paths once, then
+preserve that container with Incus snapshots/backups.
 
 For PR validation before a release exists, push a local binary instead:
 
@@ -129,11 +148,11 @@ is the source of truth for both the apt package list and the named provisioning
 action scripts; bare-metal `labby setup --provision` derives its install and
 verification steps from the same YAML so image builds and non-image provisioning
 do not drift. The image does not bake secrets, Tailscale auth, OAuth/login state,
-operator config, or tailnet join state; those remain runtime convergence
-concerns handled by the bootstrap and `labby setup --provision`. The image build
-script explicitly strips common secret environment variables before invoking
-distrobuilder, and the CI smoke test fails if the exported image contains Labby
-env files, Tailscale state/authkey files, or common secret env vars.
+operator config, or tailnet join state; those remain runtime state owned by the
+container after the one-time seed. The image build script explicitly strips
+common secret environment variables before invoking distrobuilder, and the CI
+smoke test fails if the exported image contains Labby env files, Tailscale
+state/authkey files, or common secret env vars.
 
 Release archives are currently published for amd64 Linux. On arm64 hosts, use
 `--local-binary` with a locally built `labby` binary, or opt into the slower
@@ -141,8 +160,8 @@ source build fallback with `--allow-source-fallback` / `LAB_ALLOW_SOURCE_FALLBAC
 
 ## Golden Snapshots
 
-ZFS-backed Incus storage makes configured golden containers cheap to snapshot and
-clone. After a successful provision run:
+ZFS- and Btrfs-backed Incus storage make configured golden containers cheap to
+snapshot and clone. After a successful provision run:
 
 ```bash
 incus stop labby-golden
@@ -153,6 +172,14 @@ incus copy labby-golden/configured-v1 labby-test-1
 Do not start multiple clones that carry the same Tailscale machine state at the
 same time. For parallel clone testing, reset and rejoin Tailscale in each clone
 with a fresh ephemeral key before running networked checks.
+
+Configured gateway state is intentionally inside the Incus container, not a host
+bind mount. Use snapshots and normal Incus backup/export workflows for rollback
+and recovery. ZFS and Btrfs are the preferred storage drivers for cheap
+copy-on-write snapshots and clones; the dir driver is useful as a universal
+fallback but does not provide the same storage-level efficiency. Deleting a
+container deletes that container filesystem unless you first snapshot, copy, or
+export it.
 
 ## Tailscale
 
@@ -186,21 +213,24 @@ labby setup --provision --yes --skip-deps
 
 The plan is explicit about privilege. Root actions are limited to:
 
-- apt install of the bounded floor: `git`, `openssh-client`, `gh`,
-  `ca-certificates`, `curl`, `xz-utils`, `zsh`
+- apt install of the bounded floor derived from `config/incus/labby-image.yaml`,
+  including core CLI/runtime packages plus `ffmpeg`, `adb`, and Android SDK
+  command-line tooling
 - `lab` user creation
 - writing `/etc/systemd/system/labby.service`
 - enabling and restarting `labby.service`
 
 User-space actions run as `lab` and install:
 
-- Node v24.x, including `node`, `npm`, and `npx`
+- Node, including `node`, `npm`, and `npx`
 - `uv`, `uvx`, and a managed Python exposed as `python` and `python3`
+- Rust and Go
 - `claude`, `codex`, and `gemini`
+- Tailscale when not already installed
 
-Provisioning does not install or initialize Incus, silently install leaf
-packages such as `ffmpeg`, or expose root package/user/systemd mutation through
-MCP, HTTP, Code Mode, or remote admin actions.
+Provisioning does not install or initialize Incus or expose root
+package/user/systemd mutation through MCP, HTTP, Code Mode, or remote admin
+actions.
 
 Supply-chain trust is intentionally explicit: the Labby release install path
 requires the GitHub release checksum, and Node downloads are verified against
@@ -250,6 +280,23 @@ incus exec labby -- systemctl status labby --no-pager
 incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
 incus exec labby -- su - lab
 ```
+
+For the first cutover from an existing host-native setup, copy the current
+Labby state into the container manually:
+
+```bash
+incus exec labby -- install -d -m 0700 -o lab -g lab /home/lab/.lab
+incus file push ~/.lab/.env labby/home/lab/.lab/.env
+incus file push ~/.lab/config.toml labby/home/lab/.lab/config.toml
+incus exec labby -- chown lab:lab /home/lab/.lab/.env /home/lab/.lab/config.toml
+incus exec labby -- chmod 600 /home/lab/.lab/.env /home/lab/.lab/config.toml
+incus exec labby -- systemctl restart labby
+incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
+```
+
+That is an operator cutover step, not bootstrap behavior. If copied config
+contains host-only paths such as `/home/jmagar/...`, update them once to
+container-local paths or reinstall those MCP servers inside the `lab` account.
 
 Run interactive agent setup inside that `lab` shell:
 
@@ -307,8 +354,7 @@ curl -fsS http://127.0.0.1:8765/ready
 
 ## Dependency Diagnostics
 
-The runtime floor covers `npx`, `uvx`, `python`, and `ssh`. Missing leaf
-dependencies are diagnosed from the existing bounded upstream stderr/health path
-and reported as redacted hints. For example, an upstream that fails with
-`ffmpeg: command not found` reports an explicit `sudo apt install ffmpeg` hint,
-but Labby does not run that command automatically.
+The runtime floor covers `npx`, `uvx`, `python`, `ssh`, `ffmpeg`, `adb`, and
+the baked agent toolchains. Missing additional leaf dependencies are diagnosed
+from the existing bounded upstream stderr/health path and reported as redacted
+hints instead of being installed automatically by the gateway runtime.

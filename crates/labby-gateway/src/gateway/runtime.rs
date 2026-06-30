@@ -12,7 +12,9 @@ use tempfile::NamedTempFile;
 use tokio::sync::RwLock;
 
 use crate::gateway::manager::GatewayManager;
-use crate::gateway::projection::{redacted_gateway_target, upstream_summary};
+use crate::gateway::projection::{
+    operator_visible_upstream_error, redacted_gateway_target, upstream_summary,
+};
 #[cfg(all(unix, target_os = "linux"))]
 use crate::process::unix::terminate_process_group_sigkill;
 #[cfg(unix)]
@@ -197,7 +199,22 @@ impl GatewayManager {
     ) -> Result<Vec<super::types::GatewayMcpRuntimeView>, ToolError> {
         let cfg = self.config.read().await.clone();
         let pool = self.runtime.current_pool().await;
-        self.warm_mcp_runtime_catalog(&cfg, pool.as_deref()).await;
+        let warm_timeout = mcp_runtime_warm_timeout();
+        if tokio::time::timeout(
+            warm_timeout,
+            self.warm_mcp_runtime_catalog(&cfg, pool.as_deref()),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.mcp.list",
+                timeout_ms = warm_timeout.as_millis(),
+                "gateway MCP runtime catalog warm timed out; returning current snapshot"
+            );
+        }
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
         let mut rows = Vec::with_capacity(cfg.upstream.len());
         for upstream in &cfg.upstream {
@@ -239,10 +256,20 @@ impl GatewayManager {
                         .unwrap_or(entry.observed_at_epoch_secs)
                 })
             };
-            let connected = upstream.enabled
-                && (summary.exposed_tool_count > 0
-                    || summary.exposed_resource_count > 0
-                    || summary.exposed_prompt_count > 0);
+            let last_error = operator_visible_upstream_error(match pool.as_deref() {
+                Some(pool) => pool.upstream_last_error(&upstream.name).await,
+                None => None,
+            });
+            let health = match pool.as_deref() {
+                Some(pool) => pool.upstream_tool_health(&upstream.name).await,
+                None => None,
+            };
+            let exposing_capabilities = summary.exposed_tool_count > 0
+                || summary.exposed_resource_count > 0
+                || summary.exposed_prompt_count > 0;
+            let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
+            let connected =
+                upstream.enabled && last_error.is_none() && (exposing_capabilities || health_ok);
             rows.push(super::types::GatewayMcpRuntimeView {
                 name: upstream.name.clone(),
                 enabled: upstream.enabled,
@@ -435,6 +462,15 @@ impl GatewayManager {
 
         Ok(view)
     }
+}
+
+fn mcp_runtime_warm_timeout() -> Duration {
+    std::env::var("LAB_GATEWAY_MCP_LIST_WARM_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .filter(|duration| !duration.is_zero())
+        .unwrap_or(Duration::from_secs(5))
 }
 
 fn local_cleanup_patterns() -> Vec<String> {

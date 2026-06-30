@@ -6,8 +6,11 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export_dir="${EXPORT_DIR:-$repo_root/target/incus-image-dist}"
 image_alias="${IMAGE_ALIAS:-labby-incus-smoke}"
 container_name="${SMOKE_CONTAINER_NAME:-labby-incus-image-smoke}"
+bootstrap_container_name="${SMOKE_BOOTSTRAP_CONTAINER_NAME:-${container_name}-bootstrap}"
 profile_name="${SMOKE_PROFILE_NAME:-labby-gateway-smoke}"
+bootstrap_profile_name="${SMOKE_BOOTSTRAP_PROFILE_NAME:-${profile_name}-bootstrap}"
 profile_yaml="${SMOKE_PROFILE_YAML:-$repo_root/config/incus/labby-gateway-profile.yaml}"
+backup_yaml="${SMOKE_BACKUP_YAML:-$repo_root/config/incus/labby-backup.yaml}"
 image_tar="${IMAGE_TAR:-}"
 
 log() {
@@ -88,6 +91,23 @@ default_storage_pool() {
     printf '%s\n' "$pool"
 }
 
+default_storage_driver() {
+    local pool="$1"
+    local driver
+
+    driver="$(incus_cmd storage show "$pool" 2>/dev/null | awk -F': ' '$1 == "driver" {print $2; exit}' || true)"
+    [[ -n "$driver" ]] || die "could not determine Incus storage driver for pool $pool"
+    printf '%s\n' "$driver"
+}
+
+bootstrap_cmd() {
+    if [[ "$INCUS_USE_SUDO" == "1" ]]; then
+        sudo env PATH="$PATH" HOME="$HOME" "$repo_root/scripts/incus-bootstrap.sh" "$@"
+    else
+        "$repo_root/scripts/incus-bootstrap.sh" "$@"
+    fi
+}
+
 ensure_smoke_profile() {
     local pool
     local rendered
@@ -138,6 +158,18 @@ container_file_exists() {
     return 1
 }
 
+assert_container_config() {
+    local name="$1"
+    local key="$2"
+    local expected="$3"
+    local actual
+
+    actual="$(incus_cmd config get "$name" "$key")"
+    if [[ "$actual" != "$expected" ]]; then
+        die "$name config $key was '$actual', expected '$expected'"
+    fi
+}
+
 if [[ -z "$image_tar" ]]; then
     image_tar="$(find "$export_dir" -maxdepth 1 -type f -name 'labby-incus-*.tar.xz' -print -quit)"
 fi
@@ -148,6 +180,8 @@ ensure_incus_ready
 ensure_smoke_profile
 
 incus_cmd delete "$container_name" --force >/dev/null 2>&1 || true
+incus_cmd delete "$bootstrap_container_name" --force >/dev/null 2>&1 || true
+incus_cmd profile delete "$bootstrap_profile_name" >/dev/null 2>&1 || true
 incus_cmd image delete "$image_alias" >/dev/null 2>&1 || true
 
 log "importing $image_tar as $image_alias"
@@ -219,5 +253,24 @@ log "checking provision convergence"
 incus_cmd exec "$container_name" -- labby setup --provision --yes
 incus_cmd exec "$container_name" -- systemctl is-active labby
 incus_cmd exec "$container_name" -- curl -fsS http://127.0.0.1:8765/ready
+
+log "checking operator bootstrap path"
+storage_pool="$(default_storage_pool)"
+storage_driver="$(default_storage_driver "$storage_pool")"
+bootstrap_cmd \
+    --image "$image_alias" \
+    --name "$bootstrap_container_name" \
+    --profile-name "$bootstrap_profile_name" \
+    --profile-file "$profile_yaml" \
+    --backup-config "$backup_yaml" \
+    --storage-driver "$storage_driver" \
+    --storage-pool "$storage_pool" \
+    --skip-install
+incus_cmd exec "$bootstrap_container_name" -- systemctl is-active labby
+incus_cmd exec "$bootstrap_container_name" -- curl -fsS http://127.0.0.1:8765/ready
+assert_container_config "$bootstrap_container_name" snapshots.schedule "@daily"
+assert_container_config "$bootstrap_container_name" snapshots.expiry "14d"
+assert_container_config "$bootstrap_container_name" snapshots.pattern "labby-{{ creation_date|date:'2006-01-02_15-04-05' }}"
+assert_container_config "$bootstrap_container_name" snapshots.schedule.stopped "false"
 
 log "image smoke test passed"

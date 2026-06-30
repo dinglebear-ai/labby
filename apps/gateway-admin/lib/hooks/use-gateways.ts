@@ -93,7 +93,8 @@ const fetchGateways = async (): Promise<Gateway[]> => {
     return upstreamMcpGateways(getMockGatewaysFallback())
   }
 
-  return upstreamMcpGateways(await gatewayApi.list())
+  const gateways = upstreamMcpGateways(await gatewayApi.list())
+  return upstreamMcpGateways(await gatewayApi.hydrateRuntime(gateways))
 }
 
 const fetchGateway = async (id: string): Promise<Gateway> => {

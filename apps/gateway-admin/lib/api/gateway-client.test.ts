@@ -553,10 +553,10 @@ test('gatewayApi.list does not refresh browser session for non-csrf validation e
     expiresAt: 123,
     csrfToken: 'csrf-old',
   })
-  assert.deepEqual(urls, ['/v1/gateway', '/v1/gateway'])
+  assert.deepEqual(urls, ['/v1/gateway'])
 })
 
-test('gatewayApi.list keeps loading when a stale in-process service has no action catalog', async () => {
+test('gatewayApi.list keeps loading when a stale in-process service is present', async () => {
   const originalWarn = console.warn
   console.warn = () => {}
   try {
@@ -589,19 +589,6 @@ test('gatewayApi.list keeps loading when a stale in-process service has no actio
             },
           },
         ]),
-        'gateway.mcp.list': () => [],
-        'gateway.service_actions': () => new Response(
-          JSON.stringify({
-            kind: 'invalid_param',
-            message: 'unknown service `mcpregistry`',
-            param: 'service',
-          }),
-          {
-            status: 422,
-            headers: { 'content-type': 'application/json' },
-          },
-        ),
-        'gateway.virtual_server.get_mcp_policy': () => ({ allowed_actions: [] }),
       },
       async () => {
         const gateways = await gatewayApi.list()
@@ -609,7 +596,7 @@ test('gatewayApi.list keeps loading when a stale in-process service has no actio
         assert.equal(gateways.length, 1)
         assert.equal(gateways[0]?.id, 'mcpregistry')
         assert.equal(gateways[0]?.discovery.tools.length, 0)
-        assert.match(gateways[0]?.warnings[0]?.message ?? '', /unknown service `mcpregistry`/)
+        assert.equal(gateways[0]?.status.discovered_tool_count, 0)
       },
     )
   } finally {
@@ -659,19 +646,6 @@ test('gatewayApi.list logs degraded gateway row warning counts once', async () =
             },
           },
         ]),
-        'gateway.mcp.list': () => [],
-        'gateway.service_actions': () => new Response(
-          JSON.stringify({
-            kind: 'invalid_param',
-            message: 'unknown service `mcpregistry`',
-            param: 'service',
-          }),
-          {
-            status: 422,
-            headers: { 'content-type': 'application/json' },
-          },
-        ),
-        'gateway.virtual_server.get_mcp_policy': () => ({ allowed_actions: [] }),
       },
       async () => {
         await gatewayApi.list()
@@ -680,13 +654,71 @@ test('gatewayApi.list logs degraded gateway row warning counts once', async () =
         assert.equal(warnings[0][0], '[gateway] degraded gateway rows')
         assert.deepEqual(warnings[0][1], {
           unknown_service: 1,
-          service_catalog_unavailable: 1,
         })
       },
     )
   } finally {
     console.warn = originalWarn
   }
+})
+
+test('gatewayApi.hydrateRuntime treats gateway.mcp.list as authoritative runtime state', async () => {
+  await withGatewayFetch(
+    {
+      'gateway.mcp.list': () => [
+        {
+          name: 'google-drive',
+          enabled: true,
+          connected: false,
+          discovered_tool_count: 0,
+          exposed_tool_count: 0,
+          discovered_resource_count: 0,
+          exposed_resource_count: 0,
+          discovered_prompt_count: 0,
+          exposed_prompt_count: 0,
+          runtime_state_path: '/home/lab/.lab/config.runtime.json',
+        },
+      ],
+    },
+    async () => {
+      const [gateway] = await gatewayApi.hydrateRuntime([
+        {
+          id: 'google-drive',
+          name: 'google-drive',
+          transport: 'http',
+          source: 'custom_gateway',
+          configured: true,
+          enabled: true,
+          surfaces: {
+            cli: { enabled: false, connected: false },
+            api: { enabled: false, connected: false },
+            mcp: { enabled: true, connected: true },
+            webui: { enabled: false, connected: false },
+          },
+          config: { url: 'https://drivemcp.googleapis.com/mcp/v1' },
+          status: {
+            healthy: true,
+            connected: true,
+            discovered_tool_count: 7,
+            exposed_tool_count: 7,
+            discovered_resource_count: 1,
+            exposed_resource_count: 1,
+            discovered_prompt_count: 0,
+            exposed_prompt_count: 0,
+          },
+          discovery: { tools: [], resources: [], prompts: [] },
+          warnings: [],
+        },
+      ])
+
+      assert.equal(gateway?.status.connected, false)
+      assert.equal(gateway?.surfaces?.mcp.connected, false)
+      assert.equal(gateway?.status.healthy, false)
+      assert.equal(gateway?.status.discovered_tool_count, 0)
+      assert.equal(gateway?.status.exposed_tool_count, 0)
+      assert.equal(gateway?.status.runtime_state_path, '/home/lab/.lab/config.runtime.json')
+    },
+  )
 })
 
 test('gatewayApi.list rethrows aborts instead of degrading rows', async () => {
@@ -700,39 +732,10 @@ test('gatewayApi.list rethrows aborts instead of degrading rows', async () => {
   try {
     await withGatewayFetch(
       {
-        'gateway.list': () => ([
-          {
-            id: 'plex',
-            name: 'plex',
-            source: 'in_process',
-            configured: true,
-            enabled: true,
-            connected: false,
-            discovered_tool_count: 0,
-            exposed_tool_count: 0,
-            discovered_resource_count: 0,
-            exposed_resource_count: 0,
-            discovered_prompt_count: 0,
-            exposed_prompt_count: 0,
-            surfaces: {
-              cli: { enabled: false, connected: false },
-              api: { enabled: false, connected: false },
-              mcp: { enabled: true, connected: false },
-              webui: { enabled: false, connected: false },
-            },
-            warnings: [],
-            config_summary: {
-              transport: 'in_process',
-              target: 'plex',
-            },
-          },
-        ]),
-        'gateway.mcp.list': () => [],
-        'gateway.service_actions': () => {
+        'gateway.list': () => {
           controller.abort()
           throw new DOMException('Aborted', 'AbortError')
         },
-        'gateway.virtual_server.get_mcp_policy': () => ({ allowed_actions: [] }),
       },
       async () => {
         await assert.rejects(

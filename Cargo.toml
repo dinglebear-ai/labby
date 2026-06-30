@@ -66,6 +66,7 @@ dialoguer = { version = "0.12", default-features = false }
 # config
 dotenvy = "0.15"
 toml = "1.1"
+serde_yaml = "0.9"
 
 # tui
 ratatui = "0.30.0"
