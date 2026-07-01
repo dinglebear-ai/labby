@@ -121,6 +121,11 @@ container that owns its own `/home/lab/.lab` state. For an existing single-user
 host setup, seed `/home/lab/.lab` once, fix any host-specific paths once, then
 preserve that container with Incus snapshots/backups.
 
+The web app also serves the installer at `https://labby.tootie.tv/install.sh`
+for convenience. The canonical pipe-to-shell source remains the GitHub-hosted
+script at
+`https://raw.githubusercontent.com/jmagar/labby/main/scripts/install.sh`.
+
 For PR validation before a release exists, push a local binary instead:
 
 ```bash

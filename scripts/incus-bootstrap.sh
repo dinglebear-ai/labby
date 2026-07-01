@@ -254,19 +254,37 @@ EOF
     [ "$applied" -gt 0 ] || fail "$BACKUP_CONFIG_FILE must contain at least one supported config key"
 }
 
+validate_backup_config_with_shell() {
+    validated=0
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        key="${entry%%=*}"
+        validate_backup_key "$key"
+        validated=$((validated + 1))
+    done <<EOF
+$(parse_backup_config)
+EOF
+    [ "$validated" -gt 0 ] || fail "$BACKUP_CONFIG_FILE must contain at least one supported config key"
+}
+
 apply_backup_config() {
     [ "$APPLY_BACKUP_CONFIG" -eq 1 ] || return 0
 
-    [ "$DRY_RUN" -eq 1 ] || [ -f "$BACKUP_CONFIG_FILE" ] \
+    [ -f "$BACKUP_CONFIG_FILE" ] \
         || fail "--backup-config path does not exist: $BACKUP_CONFIG_FILE"
 
     if [ "$DRY_RUN" -eq 1 ]; then
-        say "+ labby setup incusbackup apply --name $(quote "$NAME") --config $(quote "$BACKUP_CONFIG_FILE")"
+        if host_labby_supports_incus_backup; then
+            labby setup incusbackup validate --config "$BACKUP_CONFIG_FILE" >/dev/null
+        else
+            validate_backup_config_with_shell
+        fi
+        say "+ labby setup incusbackup apply --name $(quote "$NAME") --config $(quote "$BACKUP_CONFIG_FILE") --dry-run"
         return
     fi
 
     if host_labby_supports_incus_backup; then
-        run labby setup incusbackup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE"
+        run labby setup incusbackup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE" --yes
     else
         apply_backup_config_with_shell
     fi

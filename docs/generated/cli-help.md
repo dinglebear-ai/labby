@@ -1218,6 +1218,9 @@ Options:
       --dry-run
           Print the changes without mutating Incus
 
+  -y, --yes
+          Confirm applying the backup policy without prompting
+
   -h, --help
           Print help
 ```

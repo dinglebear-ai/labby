@@ -4,6 +4,7 @@
 //! catalog and must not be exposed through MCP, HTTP, or Code Mode.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -73,8 +74,8 @@ pub(crate) struct IncusBootstrapArtifacts {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IncusBootstrapCommand {
-    pub program: String,
-    pub args: Vec<String>,
+    pub program: OsString,
+    pub args: Vec<OsString>,
     pub current_dir: PathBuf,
 }
 
@@ -189,23 +190,30 @@ pub(crate) fn bootstrap_command(
     artifacts: &IncusBootstrapArtifacts,
     options: &IncusBootstrapOptions,
 ) -> Result<IncusBootstrapCommand, ToolError> {
-    let mut args = vec![artifacts.bootstrap_script.display().to_string()];
+    let mut args = vec![artifacts.bootstrap_script.as_os_str().to_os_string()];
+    if options.no_backup_config && options.backup_config.is_some() {
+        return Err(ToolError::Sdk {
+            message: "--backup-config cannot be combined with --no-backup-config".into(),
+            sdk_kind: "incus_bootstrap_invalid_options".into(),
+        });
+    }
     push_option(&mut args, "--name", options.name.as_deref());
     push_option(&mut args, "--image", options.image.as_deref());
     push_option(&mut args, "--profile-name", options.profile_name.as_deref());
-    args.push("--profile-file".into());
-    args.push(artifacts.profile_file.display().to_string());
+    push_path_option(&mut args, "--profile-file", &artifacts.profile_file);
     if options.no_backup_config {
-        args.push("--no-backup-config".into());
+        push_flag(&mut args, "--no-backup-config", true);
     } else {
-        args.push("--backup-config".into());
         let backup_config = options
             .backup_config
+            .as_ref()
+            .cloned()
+            .or_else(backup_config_from_env)
             .as_ref()
             .map(|path| absolutize_user_path(path))
             .transpose()?
             .unwrap_or_else(|| artifacts.backup_config_file.clone());
-        args.push(backup_config.display().to_string());
+        push_path_option(&mut args, "--backup-config", &backup_config);
     }
     push_option(
         &mut args,
@@ -225,8 +233,11 @@ pub(crate) fn bootstrap_command(
     );
     push_option(&mut args, "--version", options.version.as_deref());
     if let Some(local_binary) = &options.local_binary {
-        args.push("--local-binary".into());
-        args.push(absolutize_user_path(local_binary)?.display().to_string());
+        push_path_option(
+            &mut args,
+            "--local-binary",
+            &absolutize_user_path(local_binary)?,
+        );
     }
     push_flag(&mut args, "--skip-install", options.skip_install);
     push_flag(&mut args, "--dry-run", options.dry_run);
@@ -238,7 +249,7 @@ pub(crate) fn bootstrap_command(
     );
 
     Ok(IncusBootstrapCommand {
-        program: "sh".into(),
+        program: OsString::from("sh"),
         args,
         current_dir: artifacts.root.clone(),
     })
@@ -287,17 +298,28 @@ fn write_materialized_file(path: &Path, content: &str, mode: u32) -> Result<(), 
     Ok(())
 }
 
-fn push_option(args: &mut Vec<String>, flag: &str, value: Option<&str>) {
+fn push_option(args: &mut Vec<OsString>, flag: &str, value: Option<&str>) {
     if let Some(value) = value {
-        args.push(flag.into());
-        args.push(value.into());
+        args.push(OsString::from(flag));
+        args.push(OsString::from(value));
     }
 }
 
-fn push_flag(args: &mut Vec<String>, flag: &str, enabled: bool) {
+fn push_path_option(args: &mut Vec<OsString>, flag: &str, value: &Path) {
+    args.push(OsString::from(flag));
+    args.push(value.as_os_str().to_os_string());
+}
+
+fn push_flag(args: &mut Vec<OsString>, flag: &str, enabled: bool) {
     if enabled {
-        args.push(flag.into());
+        args.push(OsString::from(flag));
     }
+}
+
+fn backup_config_from_env() -> Option<PathBuf> {
+    std::env::var_os("LABBY_INCUS_BACKUP_CONFIG")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn absolutize_user_path(path: &Path) -> Result<PathBuf, ToolError> {
@@ -339,6 +361,7 @@ fn scalar_to_string(value: Value) -> Result<String, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     #[test]
     fn parses_supported_snapshot_keys() {
@@ -417,23 +440,21 @@ config:
         let command = bootstrap_command(&artifacts, &options).unwrap();
         let args = command.args;
 
-        assert_eq!(command.program, "sh");
-        assert_eq!(args[0], artifacts.bootstrap_script.display().to_string());
-        assert!(args.windows(2).any(|pair| pair == ["--version", "v1.2.3"]));
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--profile-file", artifacts.profile_file.to_str().unwrap()])
-        );
+        assert_eq!(command.program, OsStr::new("sh"));
+        assert_eq!(args[0], artifacts.bootstrap_script.as_os_str());
+        assert!(has_arg_pair(&args, "--version", OsStr::new("v1.2.3")));
+        assert!(has_arg_pair(
+            &args,
+            "--profile-file",
+            artifacts.profile_file.as_os_str()
+        ));
         assert!(args.windows(2).any(|pair| pair
             == [
-                "--backup-config",
-                artifacts.backup_config_file.to_str().unwrap()
+                OsStr::new("--backup-config"),
+                artifacts.backup_config_file.as_os_str()
             ]));
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--storage-driver", "dir"])
-        );
-        assert!(args.iter().any(|arg| arg == "--dry-run"));
+        assert!(has_arg_pair(&args, "--storage-driver", OsStr::new("dir")));
+        assert!(args.iter().any(|arg| arg == OsStr::new("--dry-run")));
     }
 
     #[test]
@@ -451,15 +472,34 @@ config:
         let args = command.args;
         let cwd = std::env::current_dir().unwrap();
 
-        assert!(args.windows(2).any(|pair| pair
-            == [
-                "--backup-config",
-                cwd.join("my-backup.yaml").to_str().unwrap()
-            ]));
-        assert!(args.windows(2).any(|pair| pair
-            == [
-                "--local-binary",
-                cwd.join("target/debug/labby").to_str().unwrap()
-            ]));
+        assert!(has_arg_pair(
+            &args,
+            "--backup-config",
+            cwd.join("my-backup.yaml").as_os_str()
+        ));
+        assert!(has_arg_pair(
+            &args,
+            "--local-binary",
+            cwd.join("target/debug/labby").as_os_str()
+        ));
+    }
+
+    #[test]
+    fn rejects_conflicting_backup_config_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = materialize_bootstrap_artifacts(dir.path()).unwrap();
+        let options = IncusBootstrapOptions {
+            backup_config: Some(PathBuf::from("my-backup.yaml")),
+            no_backup_config: true,
+            ..IncusBootstrapOptions::default()
+        };
+
+        let err = bootstrap_command(&artifacts, &options).unwrap_err();
+        assert_eq!(err.kind(), "incus_bootstrap_invalid_options");
+    }
+
+    fn has_arg_pair(args: &[OsString], flag: &str, value: &OsStr) -> bool {
+        args.windows(2)
+            .any(|pair| pair[0] == OsStr::new(flag) && pair[1] == value)
     }
 }

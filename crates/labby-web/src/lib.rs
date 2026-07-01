@@ -108,6 +108,7 @@ mod tests {
         let asset = serve_asset("/install.sh", &source).await.unwrap();
 
         assert_eq!(asset.content_type, "text/x-shellscript; charset=utf-8");
+        assert_eq!(asset.cache_control, "no-store");
     }
 
     #[tokio::test]
@@ -134,6 +135,32 @@ mod tests {
         let asset = serve_asset("/", &source).await.unwrap();
         assert_eq!(asset.cache_control, "no-store");
         assert!(asset.content_type.contains("text/html"));
+    }
+
+    #[tokio::test]
+    async fn embedded_install_script_is_shell_and_not_immutable_when_present() {
+        if !embedded_assets_available() {
+            eprintln!(
+                "skipping: apps/gateway-admin/out/install.sh missing — \
+                 run `pnpm --filter gateway-admin build` to populate"
+            );
+            return;
+        }
+        let source = AssetSource::Embedded;
+        let asset = serve_asset("/install.sh", &source).await.unwrap();
+        assert_eq!(asset.content_type, "text/x-shellscript; charset=utf-8");
+        assert_eq!(asset.cache_control, "no-store");
+        assert!(asset.bytes.starts_with(b"#!/bin/sh"));
+    }
+
+    #[tokio::test]
+    async fn embedded_missing_file_like_asset_is_not_spa_fallback() {
+        if !embedded_assets_available() {
+            return;
+        }
+        let source = AssetSource::Embedded;
+        let result = serve_asset("/missing.js", &source).await;
+        assert!(matches!(result, Err(AssetError::NotFound)));
     }
 
     #[tokio::test]
@@ -166,6 +193,10 @@ mod tests {
         );
         assert_eq!(
             cache_control_for(std::path::Path::new("index.html")),
+            "no-store"
+        );
+        assert_eq!(
+            cache_control_for(std::path::Path::new("install.sh")),
             "no-store"
         );
     }

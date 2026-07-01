@@ -256,6 +256,9 @@ pub enum IncusBackupCommand {
         /// Print the changes without mutating Incus.
         #[arg(long)]
         dry_run: bool,
+        /// Confirm applying the backup policy without prompting.
+        #[arg(short = 'y', long, alias = "no-confirm")]
+        yes: bool,
     },
 }
 
@@ -395,7 +398,12 @@ pub async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
     if let Some(command) = args.command {
         return run_command(command, format).await;
     }
-    if args.smoke || args.no_setup || args.no_browser || !matches!(args.mode, SetupModeArg::Full) {
+    if setup_skip_requested()
+        || args.smoke
+        || args.no_setup
+        || args.no_browser
+        || !matches!(args.mode, SetupModeArg::Full)
+    {
         return run_wizard(
             WizardArgs {
                 mode: args.mode,
@@ -416,14 +424,14 @@ pub async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
         yes: args.yes,
         ..IncusBootstrapArgs::default()
     };
-    run_incus_bootstrap_command(incus_args).await?;
+    run_incus_bootstrap_command(incus_args, format).await?;
     Ok(ExitCode::SUCCESS)
 }
 
 async fn run_wizard(args: WizardArgs, format: OutputFormat) -> Result<ExitCode> {
     let theme = CliTheme::from_context(format.render_context());
 
-    if std::env::var("LAB_SKIP_SETUP").as_deref() == Ok("1") || args.no_setup {
+    if setup_skip_requested() || args.no_setup {
         eprintln!(
             "{}",
             theme.muted(
@@ -597,7 +605,7 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
             run_incus_backup_command(args, format).await?;
         }
         SetupCommand::Incus(args) => {
-            run_incus_bootstrap_command(args).await?;
+            run_incus_bootstrap_command(args, format).await?;
         }
         SetupCommand::Install => {
             let dest = install_self()?;
@@ -627,7 +635,11 @@ async fn run_incus_backup_command(args: IncusBackupArgs, format: OutputFormat) -
             name,
             config,
             dry_run,
+            yes,
         } => {
+            if !dry_run {
+                require_incus_backup_confirmation(&name, yes)?;
+            }
             let outcome =
                 crate::dispatch::setup::incus::apply_backup_config(&name, &config, dry_run)?;
             if format.is_json() {
@@ -650,7 +662,12 @@ async fn run_incus_backup_command(args: IncusBackupArgs, format: OutputFormat) -
     Ok(())
 }
 
-async fn run_incus_bootstrap_command(args: IncusBootstrapArgs) -> Result<()> {
+async fn run_incus_bootstrap_command(args: IncusBootstrapArgs, format: OutputFormat) -> Result<()> {
+    if format.is_json() {
+        anyhow::bail!(
+            "setup incus does not support --json yet because it streams an imperative Incus bootstrap script"
+        );
+    }
     confirm_incus_bootstrap(args.dry_run, args.yes)?;
     let options = crate::dispatch::setup::incus::IncusBootstrapOptions {
         name: args.name,
@@ -671,6 +688,10 @@ async fn run_incus_bootstrap_command(args: IncusBootstrapArgs) -> Result<()> {
     };
     crate::dispatch::setup::incus::run_incus_bootstrap(options)?;
     Ok(())
+}
+
+fn setup_skip_requested() -> bool {
+    std::env::var("LAB_SKIP_SETUP").as_deref() == Ok("1")
 }
 
 fn confirm_incus_bootstrap(dry_run: bool, mut yes: bool) -> Result<()> {
@@ -694,6 +715,25 @@ fn confirm_incus_bootstrap(dry_run: bool, mut yes: bool) -> Result<()> {
         anyhow::bail!("setup incus cancelled");
     }
     Ok(())
+}
+
+fn require_incus_backup_confirmation(container: &str, yes: bool) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+    if !io::stdin().is_terminal() {
+        anyhow::bail!("setup incusbackup apply requires --yes when stdin is not a TTY");
+    }
+    eprintln!("This will apply Incus snapshot policy config to container `{container}`.");
+    eprint!("Proceed? [y/N] ");
+    io::stderr().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    if matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+        Ok(())
+    } else {
+        anyhow::bail!("setup incusbackup apply cancelled");
+    }
 }
 
 async fn run_host_service_command(args: HostServiceArgs, format: OutputFormat) -> Result<()> {
@@ -1009,6 +1049,7 @@ mod tests {
                     name,
                     config,
                     dry_run,
+                    yes,
                 },
         })) = args.command
         else {
@@ -1017,6 +1058,7 @@ mod tests {
         assert_eq!(name, "labby");
         assert_eq!(config, PathBuf::from("config/incus/labby-backup.yaml"));
         assert!(dry_run);
+        assert!(!yes);
     }
 
     #[test]

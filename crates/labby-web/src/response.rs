@@ -63,12 +63,15 @@ pub fn guess_content_type(path: &Path) -> &'static str {
     }
 }
 
-/// `Cache-Control` for a resolved asset path. The SPA entry point must never be
-/// cached so deploys take effect immediately; every other (content-hashed)
-/// asset is cached aggressively.
+/// `Cache-Control` for a resolved asset path. The SPA entry point and mutable
+/// root bootstrap artifacts must not be cached; content-hashed bundle assets
+/// are cached aggressively.
 #[must_use]
 pub fn cache_control_for(path: &Path) -> &'static str {
-    if path.file_name().and_then(|name| name.to_str()) == Some("index.html") {
+    if matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("index.html" | "install.sh")
+    ) {
         "no-store"
     } else {
         "public, max-age=31536000, immutable"

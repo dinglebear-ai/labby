@@ -76,6 +76,42 @@ sha256_check() {
     fi
 }
 
+latest_release_with_asset() {
+    # GitHub's "latest" release may point at non-binary artifacts such as the
+    # Incus image release. Pick the newest release that actually contains the
+    # platform binary archive we are about to download.
+    # $1 = asset name
+    curl -fsSL --retry 3 "https://api.github.com/repos/${REPO}/releases?per_page=20" |
+        awk -v asset="$1" '
+            function capture_if_match() {
+                if (resolved == "" && tag != "" && found) {
+                    resolved = tag
+                }
+            }
+            /"tag_name":[[:space:]]*"/ {
+                capture_if_match()
+                tag = $0
+                sub(/^.*"tag_name":[[:space:]]*"/, "", tag)
+                sub(/".*$/, "", tag)
+                found = 0
+            }
+            /"name":[[:space:]]*"/ {
+                name = $0
+                sub(/^.*"name":[[:space:]]*"/, "", name)
+                sub(/".*$/, "", name)
+                if (name == asset) {
+                    found = 1
+                }
+            }
+            END {
+                capture_if_match()
+                if (resolved != "") {
+                    print resolved
+                }
+            }
+        '
+}
+
 install_binary_atomic() {
     # $1 = source binary, installs atomically as "$INSTALL_DIR/labby".
     mkdir -p "$INSTALL_DIR"
@@ -107,7 +143,14 @@ install_from_release() {
     triple="$(target_triple)" || return 1
     asset="lab-${triple}.tar.gz"
     if [ "$VERSION" = "latest" ]; then
-        base="https://github.com/${REPO}/releases/latest/download"
+        resolved_version="$(latest_release_with_asset "$asset" || true)"
+        if [ -n "$resolved_version" ]; then
+            say "resolved latest binary release to ${resolved_version}"
+            base="https://github.com/${REPO}/releases/download/${resolved_version}"
+        else
+            say "could not resolve latest binary release from GitHub API — trying releases/latest"
+            base="https://github.com/${REPO}/releases/latest/download"
+        fi
     else
         base="https://github.com/${REPO}/releases/download/${VERSION}"
     fi
@@ -138,9 +181,9 @@ install_from_source() {
     say "no release asset available — building from source (this takes a while) ..."
     cargo_root="$(make_tmp_dir)"
     if [ "$VERSION" = "latest" ]; then
-        cargo install --git "https://github.com/${REPO}" --bin labby --all-features --root "$cargo_root"
+        cargo install --git "https://github.com/${REPO}" labby --bin labby --all-features --root "$cargo_root"
     else
-        cargo install --git "https://github.com/${REPO}" --tag "$VERSION" --bin labby --all-features --root "$cargo_root"
+        cargo install --git "https://github.com/${REPO}" --tag "$VERSION" labby --bin labby --all-features --root "$cargo_root"
     fi
     install_binary_atomic "$cargo_root/bin/labby"
 }
