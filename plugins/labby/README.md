@@ -17,7 +17,7 @@ or auto-repair anything. It ships:
 ## Installing labby (server host only)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.sh | sh
+curl -fsSL https://labby.tootie.tv/install.sh | sh
 labby setup
 ```
 

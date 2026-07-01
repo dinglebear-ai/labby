@@ -22,9 +22,9 @@
     "server_url": {
       "type": "string",
       "title": "Server URL",
-      "description": "Base URL of the lab MCP HTTP server (labby serve). Default http://localhost:8765 for local access. Set to http://<hostname>:8765 when connecting from a remote machine or through a reverse proxy. Do NOT include a trailing /mcp — the plugin appends it.",
+      "description": "Base URL of the Labby MCP HTTP server (labby serve). Defaults to https://labby.tootie.tv. Set to http://localhost:8765 for a local-only server or another reverse-proxy URL when self-hosting elsewhere. Do NOT include a trailing /mcp — the plugin appends it.",
       "required": true,
-      "default": "http://localhost:8765"
+      "default": "https://labby.tootie.tv"
     },
     "api_token": {
       "type": "string",

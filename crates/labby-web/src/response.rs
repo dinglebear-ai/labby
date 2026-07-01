@@ -46,6 +46,7 @@ pub fn guess_content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("html") => "text/html; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
+        Some("sh") => "text/x-shellscript; charset=utf-8",
         Some("js") => "application/javascript; charset=utf-8",
         Some("json") => "application/json",
         Some("svg") => "image/svg+xml",
@@ -84,16 +85,15 @@ fn response_for(bytes: Vec<u8>, path: &Path) -> AssetResponse {
 
 /// Resolve `request_path` against `source` and return the asset to serve.
 ///
-/// Behavior mirrors the previous Labby handler exactly:
-///
 /// - For a configured filesystem directory: sanitize the path, resolve it
-///   (file → itself, directory → its `index.html`, missing → root `index.html`
-///   SPA fallback), canonicalize both the root and the resolved path, reject any
-///   path that escapes the canonical root, then read the file. Any failure in
-///   that chain yields [`AssetError::NotFound`].
+///   (file → itself, directory → its `index.html`, extensionless missing path
+///   → root `index.html` SPA fallback, file-like missing path → not found),
+///   canonicalize both the root and the resolved path, reject any path that
+///   escapes the canonical root, then read the file. Any failure in that chain
+///   yields [`AssetError::NotFound`].
 /// - For the embedded bundle: sanitize the path and look up the exact key, then
-///   `<path>/index.html`, then the root `index.html` SPA fallback. A missing
-///   bundle yields [`AssetError::NotFound`].
+///   `<path>/index.html`, then the root `index.html` SPA fallback only for
+///   extensionless paths. A missing bundle yields [`AssetError::NotFound`].
 pub async fn serve_asset(
     request_path: &str,
     source: &AssetSource,

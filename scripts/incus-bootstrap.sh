@@ -236,7 +236,7 @@ validate_backup_key() {
 }
 
 host_labby_supports_incus_backup() {
-    command -v labby >/dev/null 2>&1 && labby setup incus-backup --help >/dev/null 2>&1
+    command -v labby >/dev/null 2>&1 && labby setup incusbackup --help >/dev/null 2>&1
 }
 
 apply_backup_config_with_shell() {
@@ -261,12 +261,12 @@ apply_backup_config() {
         || fail "--backup-config path does not exist: $BACKUP_CONFIG_FILE"
 
     if [ "$DRY_RUN" -eq 1 ]; then
-        say "+ labby setup incus-backup apply --name $(quote "$NAME") --config $(quote "$BACKUP_CONFIG_FILE")"
+        say "+ labby setup incusbackup apply --name $(quote "$NAME") --config $(quote "$BACKUP_CONFIG_FILE")"
         return
     fi
 
     if host_labby_supports_incus_backup; then
-        run labby setup incus-backup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE"
+        run labby setup incusbackup apply --name "$NAME" --config "$BACKUP_CONFIG_FILE"
     else
         apply_backup_config_with_shell
     fi

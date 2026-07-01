@@ -89,6 +89,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn filesystem_missing_file_like_asset_is_not_spa_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "spa").unwrap();
+
+        let source = AssetSource::Directory(dir.path().to_path_buf());
+        let result = serve_asset("/install.sh", &source).await;
+
+        assert!(matches!(result, Err(AssetError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn filesystem_shell_script_uses_shell_content_type() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("install.sh"), "#!/bin/sh\n").unwrap();
+
+        let source = AssetSource::Directory(dir.path().to_path_buf());
+        let asset = serve_asset("/install.sh", &source).await.unwrap();
+
+        assert_eq!(asset.content_type, "text/x-shellscript; charset=utf-8");
+    }
+
+    #[tokio::test]
     async fn filesystem_missing_root_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         // No index.html written, so even the SPA fallback fails to canonicalize.
