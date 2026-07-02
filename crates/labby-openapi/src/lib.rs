@@ -3,6 +3,7 @@
 //! peer-IP re-validated). Isolates `rmcp-openapi`/`reqwest` out of
 //! `labby-codemode`. MUST NOT depend on `labby-codemode`/`labby-gateway`.
 pub mod config;
+pub mod convert;
 pub mod error;
 pub mod ssrf;
 
