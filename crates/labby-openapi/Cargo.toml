@@ -1,0 +1,31 @@
+[package]
+name = "labby-openapi"
+description = "OpenAPI-spec-to-Code-Mode-tool derivation. Parses specs via rmcp-openapi; executes outbound HTTP via its OWN hardened reqwest client. Isolates rmcp-openapi/reqwest out of labby-codemode."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+publish = false
+
+[dependencies]
+labby-runtime = { path = "../labby-runtime" }
+labby-primitives = { path = "../labby-primitives" }
+rmcp-openapi = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt", "net"] }
+reqwest = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true
