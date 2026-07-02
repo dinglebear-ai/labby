@@ -350,6 +350,7 @@ async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
         },
         CodeModeSurface::Mcp,
         &ToolScope::new(Vec::new(), Vec::new()),
+        labby_codemode::ExecCtx::none(),
     )
     .await
     .expect_err("read-only caller must not execute destructive tool");

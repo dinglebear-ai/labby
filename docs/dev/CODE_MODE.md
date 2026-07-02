@@ -424,9 +424,61 @@ Destructive upstream tools are gated by host-side metadata before dispatch. In
 the MCP `codemode` surface, callers can explicitly confirm the whole Code Mode
 run with top-level `confirm: true`. Execute-capable scopes (`lab` or
 `lab:admin`) authorize Code Mode execution, but do not implicitly confirm
-destructive upstream effects. Unconfirmed MCP destructive calls fail as
-`confirmation_required`. CLI Code Mode execution permits destructive upstream calls because it is
+destructive upstream effects. CLI Code Mode execution permits destructive upstream calls because it is
 operator-driven.
+
+## Durable pause / resume (mid-script human-in-the-loop)
+
+When a durable Code Mode pause store is configured (`~/.labby/codemode_pauses.db`,
+enabled automatically on the MCP `serve` path), an MCP `codemode` run that is
+**not** pre-confirmed with whole-run `confirm: true` and is **not** a resume
+takes the *pause-capable path*: every upstream tool call is journaled to a
+durable SQLite log, and the first destructive call the caller is not permitted
+to run pauses the whole run awaiting human approval. This is a faithful port of
+Cloudflare `agents`' Code Mode durable-execution model
+(`packages/codemode/src/runtime.ts`).
+
+**Contract (MCP-only today.** Code Mode has no CLI/HTTP surface for pause/resume;
+a future CLI/HTTP surface must carry `resume_token` / `confirm` as params.)
+
+1. **Pause.** A destructive, unconfirmed call flips the durable run status to
+   `paused` and the run halts. The tool result is a `confirmation_required`
+   envelope carrying `status: "paused"`, `execution_id`, `resume_token` (equal
+   to the execution id), and a `pending` array of `{ seq, tool_id }`.
+   Crucially, pausing is enforced by the **durable status**, not by an escaping
+   exception: model code that swallows the pause sentinel (`Promise.allSettled`,
+   `try/catch`) drives no further side effects — a monotonic gate returns "pause"
+   for every subsequent call once the run is not `running` — and the host reads
+   the durable status **after the run settles** to decide the envelope.
+2. **Resume.** Resubmit the **identical** code with `resume_token` + `confirm:
+   true`. The run re-runs from the top with already-applied calls short-circuited
+   to their recorded results (matched by emission `seq` + `(tool_id, canonical
+   args)`); the approved destructive call executes for real, and the run proceeds
+   to the next unconfirmed destructive call or completion.
+3. **Reject.** Resubmit with `resume_token` + `confirm: false` to end the run
+   (`rejected`). A subsequent resume with the same token fails closed.
+
+**Determinism contract.** All code outside connector (`callTool` /
+`codemode.<upstream>.<tool>`) calls and `codemode.step(name, fn)` must be
+deterministic across replays. A journaled call whose `(tool_id, canonical args)`
+diverges from the recorded run at a given `seq` — or a resume whose resubmitted
+code hash does not match the paused run — is a hard, model-actionable
+`resume_divergence` error, never a silent stale-result application. Wrap
+nondeterministic or side-effectful work (random, time, raw reads that drift) in
+`codemode.step` so it is journaled once and replayed thereafter.
+
+**No truncation.** Any single journaled args/result value over
+`MAX_DURABLE_VALUE_BYTES` (1 MiB) fails the run with a model-actionable message
+rather than being truncated — truncation would feed resumed code corrupted data.
+Write large data to an artifact/file and pass a small reference instead.
+
+**Expiry.** Abandoned paused (and stale `running`) runs older than
+`LAB_CODE_MODE_PAUSE_TTL_MS` (default 24h) are reclaimed by a lazy, throttled
+sweep fired on pause/resume/reject dispatch — no background timer.
+
+**Perf scope.** Journaling happens only on the pause-capable path. Pre-confirmed
+(`confirm: true`) runs, CLI runs, and runs with no configured pause store take
+the write-free path unchanged.
 
 ## Scope
 

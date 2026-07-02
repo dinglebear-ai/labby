@@ -165,8 +165,13 @@ pub struct Run {
     pub is_admin: bool,
     pub route_scope: String,
     pub capability_filter_fingerprint: String,
+    // Loaded from the real columns; carried for audit/inspection. Not read on
+    // the current decide/lifecycle paths.
+    #[allow(dead_code)]
     pub created_at_ms: i64,
+    #[allow(dead_code)]
     pub updated_at_ms: i64,
+    #[allow(dead_code)]
     pub expires_at_ms: i64,
     /// HMAC verification result over the signed tuple. `false` ⇒ tampered.
     pub verified: bool,
@@ -189,8 +194,12 @@ pub struct LogEntry {
     pub seq: i64,
     pub tool_id: String,
     pub args_hash: String,
+    // Audit-only fields loaded from the real columns; not read on the current
+    // decide/replay paths (divergence uses `args_hash`; approval uses `state`).
+    #[allow(dead_code)]
     pub redacted_args: String,
     pub redacted_result: Option<Value>,
+    #[allow(dead_code)]
     pub requires_approval: bool,
     pub ephemeral: bool,
     pub state: LogState,
@@ -789,6 +798,26 @@ impl CodeModePauseStore {
                 expired += 1;
             }
             Ok(expired)
+        })
+        .await
+    }
+
+    /// The recorded error message for a run (the nullable `error` column),
+    /// used for the `Error`-status audit / envelope. `None` when absent.
+    pub async fn run_error(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<String>, CodeModePauseStoreError> {
+        let id = execution_id.to_string();
+        self.blocking_read("run_error", move |conn| {
+            conn.query_row(
+                "SELECT error FROM codemode_runs WHERE execution_id = ?1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(CodeModePauseStoreError::from)
         })
         .await
     }

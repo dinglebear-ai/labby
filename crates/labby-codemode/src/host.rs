@@ -99,6 +99,56 @@ pub enum DecideOutcome {
     Fail(String),
 }
 
+/// Neutral lifecycle status of a durable Code Mode run, read by the host after a
+/// pass settles to decide the paused/completed/error envelope. Mirrors the
+/// binary-side `RunStatus`; `Unknown` also covers a tampered (HMAC-failed) row
+/// so callers fail closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunLifecycle {
+    Running,
+    Paused,
+    Completed,
+    Error,
+    Rejected,
+    Expired,
+    /// Missing run OR failed integrity verification — treat as fail-closed.
+    Unknown,
+}
+
+/// Fields to begin a fresh durable run (`store.begin`). Neutral mirror of the
+/// binary-side `NewRun` so the MCP surface can start a run through the decider
+/// trait without depending on the SQLite store.
+#[derive(Debug, Clone)]
+pub struct BeginRun {
+    pub execution_id: String,
+    pub code_hash: String,
+    pub actor_key: Option<String>,
+    pub is_admin: bool,
+    pub route_scope: String,
+    pub capability_filter_fingerprint: String,
+    pub expires_at_ms: i64,
+}
+
+/// A pending (awaiting-approval) call surfaced in a paused run's summary.
+#[derive(Debug, Clone)]
+pub struct PendingCall {
+    pub seq: u64,
+    pub tool_id: String,
+}
+
+/// Authorization fields recorded on a run, re-read at resume time to recompute
+/// live authorization (V1/V3). Returned by `run_auth_fields`.
+#[derive(Debug, Clone)]
+pub struct RunAuthFields {
+    pub code_hash: String,
+    pub actor_key: Option<String>,
+    pub is_admin: bool,
+    pub capability_filter_fingerprint: String,
+    /// HMAC integrity verification result — `false` ⇒ tampered, fail closed.
+    pub verified: bool,
+    pub status: RunLifecycle,
+}
+
 /// A boxed, `Send` future — the object-safe return type the `CodeModeDecider`
 /// trait uses so it can be held as `Arc<dyn CodeModeDecider>`.
 ///
@@ -138,6 +188,57 @@ pub trait CodeModeDecider: Send + Sync {
         seq: u64,
         result: &'a Value,
     ) -> BoxDecideFuture<'a, Result<(), ToolError>>;
+
+    // ── Run lifecycle (driven by the MCP surface) ────────────────────────────
+
+    /// Insert a fresh `running` run (port of `runtime.ts:355 begin`). Called on
+    /// the pause-capable path before driving the snippet.
+    fn begin(&self, run: BeginRun) -> BoxDecideFuture<'_, Result<(), ToolError>>;
+
+    /// The durable status of a run after a pass settles (the C1 payoff): the
+    /// host reads this — NOT the sandbox's own result — to decide the envelope.
+    /// Returns `Unknown` for a missing/tampered run.
+    fn run_status<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, RunLifecycle>;
+
+    /// The recorded error message for an `Error` run (audit / envelope).
+    fn run_error<'a>(
+        &'a self,
+        execution_id: &'a str,
+    ) -> BoxDecideFuture<'a, Option<String>>;
+
+    /// Pending (awaiting-approval) calls of a paused run (port of
+    /// `runtime.ts:640 listPending`).
+    fn list_pending<'a>(
+        &'a self,
+        execution_id: &'a str,
+    ) -> BoxDecideFuture<'a, Vec<PendingCall>>;
+
+    /// Mark a run terminal with the given lifecycle status + optional error.
+    /// Used for `Completed` after settle and `Rejected` from the reject action.
+    fn set_status<'a>(
+        &'a self,
+        execution_id: &'a str,
+        to: RunLifecycle,
+        error: Option<&'a str>,
+    ) -> BoxDecideFuture<'a, Result<bool, ToolError>>;
+
+    /// CAS a paused run `paused → running` (port of `runtime.ts:383 resume`).
+    /// Returns `true` iff a paused row transitioned (loser gets `false`).
+    fn resume_to_running<'a>(
+        &'a self,
+        execution_id: &'a str,
+    ) -> BoxDecideFuture<'a, bool>;
+
+    /// The recorded authorization fields for a run, for live re-authorization at
+    /// resume time (V1/V3).
+    fn run_auth_fields<'a>(
+        &'a self,
+        execution_id: &'a str,
+    ) -> BoxDecideFuture<'a, Option<RunAuthFields>>;
+
+    /// Lazy, throttled TTL expiry sweep (Wave 4 Task 4.2). Best-effort;
+    /// no-op if the throttle interval has not elapsed.
+    fn maybe_expire(&self) -> BoxDecideFuture<'_, ()>;
 }
 
 /// Injects the tool source into the Code Mode kernel.

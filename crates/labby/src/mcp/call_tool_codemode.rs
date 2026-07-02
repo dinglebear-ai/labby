@@ -339,8 +339,27 @@ impl LabMcpServer {
                 }
             };
         let code_hash = hash_arguments(&Value::String(code.to_string()));
-        let execution_id = ulid::Ulid::new().to_string();
+        // V4: random component so a crashing/restarting host can never mint a
+        // colliding id (mirror runtime.ts:360 `exec_<ts>_<uuid>`).
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let execution_id = format!("exec_{now_ms:016}_{}", ulid::Ulid::new());
         let capability_filter_fingerprint = capability_filter.fingerprint();
+        // A whole-run pre-confirmation (`confirm: true`) or a resume attempt
+        // (`resume_token`) takes the write-free path — pausing is only for a
+        // run that has NOT been globally pre-approved.
+        let whole_run_confirm = args
+            .get("confirm")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let has_resume_token = args
+            .get("resume_token")
+            .and_then(Value::as_str)
+            .is_some_and(|t| !t.is_empty());
+        let is_admin_scope =
+            auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"));
         tracing::info!(
             surface = "mcp",
             service = CODE_MODE_SERVICE,
@@ -354,7 +373,43 @@ impl LabMcpServer {
             input_tokens,
             "gateway codemode start"
         );
-        let broker = CodeModeBroker::new(Some(manager.as_ref()));
+        // Pause-capable path: a decider is injected AND this is a fresh,
+        // not-pre-confirmed, non-resume run. Begin a durable run before driving
+        // so destructive calls can journal + pause; else take the write-free
+        // path (execution_id stays local, no journaling).
+        let decider = manager.code_mode_decider().cloned();
+        let pause_capable = decider.is_some() && !whole_run_confirm && !has_resume_token;
+        if let (true, Some(decider)) = (pause_capable, decider.as_ref()) {
+            decider.maybe_expire().await;
+            if let Err(err) = decider
+                .begin(labby_codemode::BeginRun {
+                    execution_id: execution_id.clone(),
+                    code_hash: code_hash.clone(),
+                    actor_key: actor_key.map(ToOwned::to_owned),
+                    is_admin: is_admin_scope,
+                    route_scope: self.route_scope.label(),
+                    capability_filter_fingerprint: capability_filter_fingerprint.clone(),
+                    expires_at_ms: now_ms + pause_ttl_ms(),
+                })
+                .await
+            {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = CODE_MODE_SERVICE,
+                    action = "pause.begin",
+                    kind = "internal_error",
+                    error = %err,
+                    "failed to begin durable Code Mode run; falling back to write-free path"
+                );
+            }
+        }
+        let broker = CodeModeBroker::new(Some(manager.as_ref())).with_execution_id(
+            if pause_capable {
+                Some(execution_id.clone())
+            } else {
+                None
+            },
+        );
         let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
             CodeModeCaller::Scoped {
                 capabilities: code_mode_capabilities_for_scopes(&auth.scopes),
@@ -423,6 +478,65 @@ impl LabMcpServer {
             }
         };
         response.execution_id = Some(execution_id.clone());
+
+        // ── C1 payoff: read the DURABLE status after the pass settles ──
+        // A run that swallowed the pause sentinel (Promise.allSettled/try-catch)
+        // still completes the sandbox "ok", but the durable status is `paused`.
+        // The durable status — NOT the sandbox result — decides the envelope.
+        if pause_capable && let Some(decider) = decider.as_ref() {
+            match decider.run_status(&execution_id).await {
+                labby_codemode::RunLifecycle::Paused => {
+                    let pending = decider.list_pending(&execution_id).await;
+                    let elapsed_ms = started.elapsed().as_millis();
+                    tracing::info!(
+                        surface = "mcp",
+                        service = CODE_MODE_SERVICE,
+                        code_mode_tool = %service,
+                        action = "pause",
+                        subject,
+                        actor_key,
+                        execution_id = %execution_id,
+                        pending = pending.len(),
+                        elapsed_ms,
+                        "gateway codemode paused awaiting approval"
+                    );
+                    return Ok(build_pause_envelope(
+                        service,
+                        &execution_id,
+                        &pending,
+                    ));
+                }
+                labby_codemode::RunLifecycle::Error => {
+                    let message = decider
+                        .run_error(&execution_id)
+                        .await
+                        .unwrap_or_else(|| "Code Mode execution failed".to_string());
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = CODE_MODE_SERVICE,
+                        code_mode_tool = %service,
+                        action = "call_tool",
+                        subject,
+                        actor_key,
+                        execution_id = %execution_id,
+                        kind = "internal_error",
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "gateway codemode durable error after settle"
+                    );
+                    let env = build_error(service, "call_tool", "internal_error", &message);
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+                // Running (never paused) or already terminal-ok — mark completed
+                // and fall through to the normal completed envelope.
+                _ => {
+                    decider
+                        .set_status(&execution_id, labby_codemode::RunLifecycle::Completed, None)
+                        .await
+                        .ok();
+                }
+            }
+        }
+
         // Mirror the upstream's `_meta.ui` verbatim onto the codemode result so
         // the host renders the native mcp-ui widget (last-wins). The widget
         // itself is driven by the `ui://` resource read, not by inline content,
@@ -547,6 +661,49 @@ impl LabMcpServer {
         );
         Ok(call_result_with_structured(output, structured, ui_meta))
     }
+}
+
+/// Configured pause TTL in ms (`LAB_CODE_MODE_PAUSE_TTL_MS`, default 24h).
+fn pause_ttl_ms() -> i64 {
+    std::env::var("LAB_CODE_MODE_PAUSE_TTL_MS")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(24 * 60 * 60 * 1000)
+}
+
+/// Build the paused envelope: a `confirmation_required` error carrying the
+/// `resume_token` (the execution id) plus the pending-call summary (port of
+/// `proxy-tool.ts:108-112` `{ status: "paused", pending }`). The model resumes
+/// with `resume_token` + `confirm: true` + the identical resubmitted code, or
+/// rejects with `confirm: false`.
+fn build_pause_envelope(
+    service: &str,
+    execution_id: &str,
+    pending: &[labby_codemode::PendingCall],
+) -> CallToolResult {
+    let pending_json: Vec<Value> = pending
+        .iter()
+        .map(|p| {
+            serde_json::json!({ "seq": p.seq, "tool_id": p.tool_id })
+        })
+        .collect();
+    let env = build_error_extra(
+        service,
+        "call_tool",
+        "confirmation_required",
+        "Code Mode paused awaiting human approval of a destructive tool call. \
+         Tell the user what is pending and wait — do NOT re-issue the code. To \
+         continue, resubmit the identical code with `resume_token` and \
+         `confirm: true`; to cancel, use `confirm: false`.",
+        &serde_json::json!({
+            "status": "paused",
+            "execution_id": execution_id,
+            "resume_token": execution_id,
+            "pending": pending_json,
+        }),
+    );
+    CallToolResult::error(vec![Content::text(env.to_string())])
 }
 
 fn code_mode_capabilities_for_scopes(scopes: &[String]) -> CodeModeCallerCapabilities {

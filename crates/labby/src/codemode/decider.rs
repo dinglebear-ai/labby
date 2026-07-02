@@ -10,13 +10,41 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use labby_codemode::{CodeModeDecider, DecideOutcome};
+use labby_codemode::host::BoxDecideFuture;
+use labby_codemode::{
+    BeginRun, CodeModeDecider, DecideOutcome, PendingCall, RunAuthFields, RunLifecycle,
+};
 use labby_runtime::error::ToolError;
 use serde_json::Value;
 
 use super::sqlite_pauses::{
-    CodeModePauseStore, CodeModePauseStoreError, LogState, NewLogEntry, RunStatus,
+    CodeModePauseStore, CodeModePauseStoreError, LogState, NewLogEntry, NewRun, RunStatus,
 };
+
+/// Map the neutral `RunLifecycle` (host-facing) onto the store's `RunStatus`.
+fn lifecycle_to_status(l: RunLifecycle) -> Option<RunStatus> {
+    match l {
+        RunLifecycle::Running => Some(RunStatus::Running),
+        RunLifecycle::Paused => Some(RunStatus::Paused),
+        RunLifecycle::Completed => Some(RunStatus::Completed),
+        RunLifecycle::Error => Some(RunStatus::Error),
+        RunLifecycle::Rejected => Some(RunStatus::Rejected),
+        RunLifecycle::Expired => Some(RunStatus::Expired),
+        RunLifecycle::Unknown => None,
+    }
+}
+
+/// Map the store's `RunStatus` onto the neutral `RunLifecycle`.
+fn status_to_lifecycle(s: RunStatus) -> RunLifecycle {
+    match s {
+        RunStatus::Running => RunLifecycle::Running,
+        RunStatus::Paused => RunLifecycle::Paused,
+        RunStatus::Completed => RunLifecycle::Completed,
+        RunStatus::Error => RunLifecycle::Error,
+        RunStatus::Rejected => RunLifecycle::Rejected,
+        RunStatus::Expired => RunLifecycle::Expired,
+    }
+}
 
 /// Default age after which a paused (awaiting-approval) run can be expired
 /// (24h, matching Cloudflare's `DEFAULT_PAUSED_TTL_MS`; `runtime.ts:156`).
@@ -42,9 +70,10 @@ impl SqliteDecider {
         }
     }
 
-    /// Access the underlying store (used by the MCP surface for begin / status
-    /// reads / resume CAS / reject).
+    /// Access the underlying store. Used by the MCP surface's resume/reject
+    /// paths (Wave 3); retained here as the concrete-decider escape hatch.
     #[must_use]
+    #[allow(dead_code)]
     pub fn store(&self) -> &CodeModePauseStore {
         &self.store
     }
@@ -61,8 +90,9 @@ impl SqliteDecider {
 
     /// Lazy, throttled TTL sweep (`Wave 4 Task 4.2`). No-op unless
     /// `EXPIRY_SWEEP_INTERVAL_MS` has elapsed since the last sweep. Does only
-    /// SQLite work (no runner pool, no subprocess).
-    pub async fn maybe_expire(&self) {
+    /// SQLite work (no runner pool, no subprocess). Exposed via the trait's
+    /// `maybe_expire`.
+    async fn maybe_expire_impl(&self) {
         let now = now_ms();
         let last = self.last_sweep_ms.load(Ordering::Relaxed);
         if now - last < EXPIRY_SWEEP_INTERVAL_MS {
@@ -112,7 +142,7 @@ impl CodeModeDecider for SqliteDecider {
         args: &'a Value,
         requires_approval: bool,
         ephemeral: bool,
-    ) -> labby_codemode::host::BoxDecideFuture<'a, DecideOutcome> {
+    ) -> BoxDecideFuture<'a, DecideOutcome> {
         Box::pin(async move {
             self.decide_inner(execution_id, seq, tool_id, args, requires_approval, ephemeral)
                 .await
@@ -124,8 +154,123 @@ impl CodeModeDecider for SqliteDecider {
         execution_id: &'a str,
         seq: u64,
         result: &'a Value,
-    ) -> labby_codemode::host::BoxDecideFuture<'a, Result<(), ToolError>> {
+    ) -> BoxDecideFuture<'a, Result<(), ToolError>> {
         Box::pin(async move { self.record_result_inner(execution_id, seq, result).await })
+    }
+
+    fn begin(&self, run: BeginRun) -> BoxDecideFuture<'_, Result<(), ToolError>> {
+        Box::pin(async move {
+            self.store
+                .begin(NewRun {
+                    execution_id: run.execution_id,
+                    code_hash: run.code_hash,
+                    actor_key: run.actor_key,
+                    is_admin: run.is_admin,
+                    route_scope: run.route_scope,
+                    capability_filter_fingerprint: run.capability_filter_fingerprint,
+                    expires_at_ms: run.expires_at_ms,
+                })
+                .await
+                .map_err(|e| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: e.to_string(),
+                })
+        })
+    }
+
+    fn run_status<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, RunLifecycle> {
+        Box::pin(async move {
+            match self.store.load_run(execution_id).await {
+                // A tampered row (verified == false) fails closed as Unknown.
+                Ok(Some(run)) if run.verified => status_to_lifecycle(run.status),
+                _ => RunLifecycle::Unknown,
+            }
+        })
+    }
+
+    fn run_error<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, Option<String>> {
+        Box::pin(async move {
+            self.store
+                .run_error(execution_id)
+                .await
+                .ok()
+                .flatten()
+        })
+    }
+
+    fn list_pending<'a>(
+        &'a self,
+        execution_id: &'a str,
+    ) -> BoxDecideFuture<'a, Vec<PendingCall>> {
+        Box::pin(async move {
+            self.store
+                .list_pending(execution_id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| PendingCall {
+                    seq: e.seq as u64,
+                    tool_id: e.tool_id,
+                })
+                .collect()
+        })
+    }
+
+    fn set_status<'a>(
+        &'a self,
+        execution_id: &'a str,
+        to: RunLifecycle,
+        error: Option<&'a str>,
+    ) -> BoxDecideFuture<'a, Result<bool, ToolError>> {
+        Box::pin(async move {
+            let Some(status) = lifecycle_to_status(to) else {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: "cannot set a run to Unknown status".to_string(),
+                });
+            };
+            self.store
+                .set_status(execution_id, status, error)
+                .await
+                .map_err(|e| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: e.to_string(),
+                })
+        })
+    }
+
+    fn resume_to_running<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, bool> {
+        Box::pin(async move {
+            self.store
+                .resume_to_running(execution_id)
+                .await
+                .unwrap_or(false)
+        })
+    }
+
+    fn run_auth_fields<'a>(
+        &'a self,
+        execution_id: &'a str,
+    ) -> BoxDecideFuture<'a, Option<RunAuthFields>> {
+        Box::pin(async move {
+            self.store
+                .load_run(execution_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|run| RunAuthFields {
+                    code_hash: run.code_hash,
+                    actor_key: run.actor_key,
+                    is_admin: run.is_admin,
+                    capability_filter_fingerprint: run.capability_filter_fingerprint,
+                    verified: run.verified,
+                    status: status_to_lifecycle(run.status),
+                })
+        })
+    }
+
+    fn maybe_expire(&self) -> BoxDecideFuture<'_, ()> {
+        Box::pin(async move { self.maybe_expire_impl().await })
     }
 }
 
@@ -350,7 +495,7 @@ mod tests {
     async fn begin_run(decider: &SqliteDecider, id: &str) {
         decider
             .store
-            .begin(super::super::sqlite_pauses::NewRun {
+            .begin(NewRun {
                 execution_id: id.to_string(),
                 code_hash: "hash".to_string(),
                 actor_key: Some("actor".to_string()),

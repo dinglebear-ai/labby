@@ -1341,6 +1341,7 @@ sleep 3600
                 _caller: &CodeModeCaller,
                 _surface: CodeModeSurface,
                 _scope: &ToolScope,
+                _ctx: crate::host::ExecCtx<'_>,
             ) -> Result<ToolCallOutcome, ToolError> {
                 Err(ToolError::Sdk {
                     sdk_kind: "unknown_tool".to_string(),
