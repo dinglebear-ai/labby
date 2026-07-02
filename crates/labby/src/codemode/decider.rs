@@ -643,6 +643,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn maybe_expire_is_lazy_and_throttled() {
+        let (d, _dir) = fresh_decider().await;
+        // last_sweep starts at 0 → first call sweeps and stamps a recent time.
+        assert_eq!(d.last_sweep_ms.load(Ordering::Relaxed), 0);
+        d.maybe_expire().await;
+        let after_first = d.last_sweep_ms.load(Ordering::Relaxed);
+        assert!(after_first > 0, "first sweep must stamp last_sweep_ms");
+        // An immediate second call is inside EXPIRY_SWEEP_INTERVAL_MS → throttled
+        // (last_sweep_ms unchanged, no second sweep).
+        d.maybe_expire().await;
+        assert_eq!(
+            d.last_sweep_ms.load(Ordering::Relaxed),
+            after_first,
+            "second call within the throttle window must not re-sweep"
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_expire_rejects_stale_paused_run() {
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "e-exp").await;
+        let _ = d
+            .decide("e-exp", 0, "svc::delete", &serde_json::json!({}), true, false)
+            .await;
+        assert_eq!(d.run_status("e-exp").await, RunLifecycle::Paused);
+        // Force expiry directly on the store with a future cutoff (bypass the
+        // throttle/TTL) to prove the sweep flips a stale paused run to rejected.
+        let cutoff = now_ms() + 1_000_000;
+        let n = d.store.expire_paused(cutoff).await.expect("expire");
+        assert_eq!(n, 1);
+        assert_eq!(d.run_status("e-exp").await, RunLifecycle::Rejected);
+    }
+
+    #[tokio::test]
     async fn reject_sets_rejected_only_when_paused() {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e9").await;

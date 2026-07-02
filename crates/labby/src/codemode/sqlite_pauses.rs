@@ -33,6 +33,22 @@
 //! Any single journaled value over `MAX_DURABLE_VALUE_BYTES` fails the run
 //! (`ValueTooLarge`) rather than being truncated — truncation would feed resumed
 //! code corrupted data (`runtime.ts:146-153`).
+//!
+//! # Known limitations (v1)
+//!
+//! - **Redaction dictionary:** the on-disk byte-scan test only catches known
+//!   secret key names (`token`/`api_key`/`password`/`secret`/`authorization`,
+//!   plus value heuristics). A novel upstream secret field name could slip
+//!   through — a documented residual confidentiality risk.
+//! - **Local providers (`state`/`git`) + resume (C3):** Labby's runner-reserved
+//!   local providers are dispatched on a separate path
+//!   (`runner_drive::enqueue_local_provider_call`) that does NOT flow through
+//!   `host.call_tool`, so their calls are **not** journaled. A paused run that
+//!   also called a local provider would re-execute that provider on resume
+//!   (double-apply). Local providers only run for unscoped admin/trusted-local
+//!   callers; a fail-closed "non-resumable if a local provider was used" guard
+//!   and `codemode.step` journaling are deferred follow-ups (plan Wave 4 Task
+//!   4.1). Until then, do not rely on resume for runs that touch `state`/`git`.
 
 use std::path::PathBuf;
 
