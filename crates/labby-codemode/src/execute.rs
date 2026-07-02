@@ -178,12 +178,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .iter()
             .map(CodeModeDiscoveryEntry::from_catalog)
             .collect::<Vec<_>>();
-        let discovery_js =
-            super::preamble::generate_discovery_js(&discovery_entries).map_err(|message| {
-                ToolError::Sdk {
-                    sdk_kind: "invalid_param".to_string(),
-                    message,
-                }
+        let code_mode_config = host.config().await;
+        let blend_weight = code_mode_config.semantic_search.blend_weight;
+        let discovery_js = super::preamble::generate_discovery_js(&discovery_entries, blend_weight)
+            .map_err(|message| ToolError::Sdk {
+                sdk_kind: "invalid_param".to_string(),
+                message,
             })?;
         let tool_entries = catalog
             .iter()
