@@ -11,6 +11,6 @@ import { deriveCapabilities, type Capabilities } from '@/lib/capabilities'
 
 /** Live feature-gated capabilities for the current server build. */
 export function useCapabilities(): Capabilities {
-  const { data, isLoading, error } = useCommandCatalog()
-  return deriveCapabilities(data, isLoading, error != null)
+  const { data, error } = useCommandCatalog()
+  return deriveCapabilities(data, error != null)
 }

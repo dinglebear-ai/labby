@@ -11,6 +11,7 @@ import * as React from 'react'
 import { usePathname } from 'next/navigation'
 import { ChatSessionProvider } from '@/lib/chat/chat-session-provider'
 import { useCapabilities } from '@/lib/hooks/use-capabilities'
+import { capabilityAvailable } from '@/lib/capabilities'
 import { FloatingChatFab } from '@/components/floating-chat-fab'
 import { FloatingChatPopover } from '@/components/floating-chat-popover'
 import { FloatingChatShell } from '@/components/floating-chat-shell'
@@ -72,7 +73,7 @@ export function AdminLayoutClient({
   // `acp` service is present. Until the catalog resolves (`!ready`) we keep the
   // FAB hidden to avoid a flash, and on a gateway-only build it stays hidden.
   const capabilities = useCapabilities()
-  const chatAvailable = capabilities.ready && capabilities.acp
+  const chatAvailable = capabilityAvailable(capabilities, 'acp')
 
   // Only auto-bootstrap a session when the chat surface is actually visible.
   // Without this gate the provider would mint an empty session on every admin

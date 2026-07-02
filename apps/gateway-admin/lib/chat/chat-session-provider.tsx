@@ -21,6 +21,7 @@
 import * as React from 'react'
 import { createAcpFetcher } from '@/lib/acp/fetch'
 import { useCapabilities } from '@/lib/hooks/use-capabilities'
+import { capabilityAvailable } from '@/lib/capabilities'
 import {
   toProjects,
   appendSessionEvent,
@@ -183,7 +184,7 @@ export function ChatSessionProvider({
   // init effect must not touch `/v1/acp/*` until the catalog confirms `acp` is
   // present — otherwise a gateway-only build 404s app-wide in the background.
   const capabilities = useCapabilities()
-  const acpAvailable = capabilities.ready && capabilities.acp
+  const acpAvailable = capabilityAvailable(capabilities, 'acp')
 
   // ---- State ----
   const [runs, setRuns] = React.useState<ACPRun[]>([])
