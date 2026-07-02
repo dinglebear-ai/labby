@@ -1162,7 +1162,7 @@ async fn build_gateway_runtime(
     );
     let registry: Arc<dyn labby_gateway::gateway::service_registry::GatewayServiceRegistry> =
         Arc::new(registry);
-    let mut gateway_manager = GatewayManager::from_config(
+    let gateway_manager = GatewayManager::from_config(
         GatewayManagerConfig {
             config_path,
             store,
@@ -1178,6 +1178,35 @@ async fn build_gateway_runtime(
         },
         gateway_runtime,
     )?;
+
+    // Code Mode `openapi` provider: config-parse errors DO fail boot (bad TOML),
+    // but spec-LOAD failures never do — `OpenApiRegistry::load` degrades + WARNs
+    // per spec. Build the hardened dispatch client + the registry (concurrent,
+    // 8s per-spec timeout) and inject both into the gateway host.
+    let openapi_provider_config =
+        crate::config::load_openapi_provider_config(&config.openapi, &|k| std::env::var(k).ok())?;
+    let openapi_http_client = labby_openapi::http::build_dispatch_client();
+    let openapi_registry = labby_openapi::OpenApiRegistry::load(
+        openapi_provider_config,
+        labby_openapi::http::build_spec_fetch_client(),
+        Duration::from_secs(8),
+    )
+    .await;
+    if openapi_registry.is_empty() {
+        tracing::info!(
+            service = "openapi",
+            "openapi code-mode provider: no specs configured/loaded"
+        );
+    } else {
+        tracing::info!(
+            service = "openapi",
+            specs = ?openapi_registry.labels(),
+            "openapi code-mode provider ready"
+        );
+    }
+    let mut gateway_manager =
+        gateway_manager.with_openapi(openapi_registry, openapi_http_client);
+
     gateway_manager.set_notifier(CatalogChangeNotifier::new(notify_tx));
     let gateway_manager = Arc::new(gateway_manager);
     // Seed config for both transports so MCP catalog visibility and code-mode

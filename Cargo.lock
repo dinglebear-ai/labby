@@ -2779,6 +2779,7 @@ dependencies = [
  "labby-apis",
  "labby-auth",
  "labby-codemode",
+ "labby-openapi",
  "labby-primitives",
  "labby-runtime",
  "labby-winjob",

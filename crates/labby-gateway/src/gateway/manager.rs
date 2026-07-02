@@ -142,6 +142,12 @@ pub struct GatewayManager {
     /// pool; configured from the environment at construction (kill switch:
     /// `LAB_CODE_MODE_POOL_SIZE=0` → spawn-per-execution fallback).
     pub(super) code_mode_runner_pool: Arc<crate::gateway::code_mode::RunnerPool>,
+    /// Loaded OpenAPI specs for the Code Mode `openapi` local provider. Built at
+    /// `labby serve` startup (`with_openapi`); an empty registry means no specs
+    /// are configured/loaded (the shim is then never emitted). Cheap `Arc` clone.
+    pub(super) openapi_registry: labby_openapi::OpenApiRegistry,
+    /// Hardened `reqwest` client for `openapi` dispatch. Cheap `Arc` clone.
+    pub(super) openapi_http_client: reqwest::Client,
 }
 
 impl GatewayManager {

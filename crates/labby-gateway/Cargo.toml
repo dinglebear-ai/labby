@@ -23,6 +23,7 @@ labby-primitives = { path = "../labby-primitives" }
 labby-runtime = { path = "../labby-runtime" }
 labby-auth = { path = "../labby-auth", features = ["upstream-oauth-rmcp"] }
 labby-codemode = { path = "../labby-codemode" }
+labby-openapi = { path = "../labby-openapi" }
 dirs = "5"
 toml = { workspace = true }
 toml_edit = "0.23"

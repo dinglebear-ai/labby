@@ -135,7 +135,23 @@ impl GatewayManager {
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),
             code_mode_runner_pool: Arc::new(crate::gateway::code_mode::RunnerPool::from_env()?),
+            openapi_registry: labby_openapi::OpenApiRegistry::default(),
+            openapi_http_client: labby_openapi::http::build_dispatch_client(),
         })
+    }
+
+    /// Inject the Code Mode `openapi` provider registry + hardened dispatch
+    /// client, built at `labby serve` startup. Without this the registry is empty
+    /// (no `openapi` specs) and the shim is never emitted.
+    #[must_use]
+    pub fn with_openapi(
+        mut self,
+        registry: labby_openapi::OpenApiRegistry,
+        client: reqwest::Client,
+    ) -> Self {
+        self.openapi_registry = registry;
+        self.openapi_http_client = client;
+        self
     }
 
     /// Override the `.env` path used by config persistence helpers (test only).
