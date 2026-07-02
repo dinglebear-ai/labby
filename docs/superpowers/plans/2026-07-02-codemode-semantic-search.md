@@ -4,20 +4,26 @@
 
 **Goal:** Blend semantic (embedding-based) similarity into `codemode.search()` so agents whose queries use synonyms rather than exact catalog vocabulary (e.g. "roster of saved queues" for a tool literally named/described differently) still surface the right tool, while preserving today's lexical-only behavior byte-for-byte when the TEI embedding service is unset, unreachable, or cold.
 
-**Architecture:** Add a new `CodeModeHost::embed_texts` async trait method (client-neutral, `labby-codemode`), implemented in `labby-gateway` with a small reqwest-based TEI client. Catalog vectors are computed once per distinct catalog fingerprint (reusing the *existing* `fingerprint` string already computed in `crates/labby-gateway/src/gateway/code_mode/search.rs:67-74` for the render cache) and cached in-process on `GatewayManager`, mirroring the existing `code_mode_catalog_render_cache` pattern exactly. The one genuinely new per-search-call cost — embedding the *query string*, which is sandbox-runtime data unknown until the agent's JS calls `codemode.search(...)` — is bridged from the QuickJS/Javy sandbox to Tokio via a new, deliberately minimal protocol variant pair (`EmbedQuery` / `EmbedQueryResult`) that reuses the exact `ToolCall`/`ToolResult` round-trip machinery in `runner_drive.rs`/`runner.rs`/`protocol.rs`, but is dispatched outside `DriveState.calls`/`max_calls_per_run` bookkeeping so it never pollutes the agent-visible call trace or consumes the tool-call budget. Rust owns 100% of the vector math (cosine similarity); no raw floats are ever serialized into the sandbox. Failures anywhere in the embedding path fail open to today's pure-lexical behavior, gated by a 30s cooldown tracked on the manager so a TEI outage is retried automatically without hammering it every call.
+**Architecture:** Add one new `CodeModeHost::semantic_rank` async trait method (client-neutral, `labby-codemode`) that takes a query string plus the caller/surface/scope already used by every other trait method, and returns a fail-open, host-ranked `(id, similarity)` list. Implemented in `labby-gateway`: a small reqwest-based TEI client embeds text; catalog vectors are computed once per distinct catalog fingerprint (reusing the *existing* `fingerprint` string already computed in `crates/labby-gateway/src/gateway/code_mode/search.rs:67-74` for the render cache) and cached in-process on `GatewayManager`, mirroring the existing `code_mode_catalog_render_cache` pattern. The query-time round trip — the one genuinely new per-search-call cost, since the query string is sandbox-runtime data unknown until the agent's JS calls `codemode.search(...)` — reuses the **existing** `callTool`/`ToolCall`/`ToolResult` protocol wire path via a reserved internal tool id (`__lab_internal::semantic_rank`), following the same "not a real upstream tool" precedent already established by `try_parse_local_provider_call` in this codebase. This adds **zero** new protocol enum variants, zero new javy host-function bindings, and zero new JS globals — `codemode.search()`'s JS calls the exact same `callTool(id, params)` primitive it already has. Rust owns 100% of the vector math (cosine similarity); no raw floats are ever serialized into the sandbox. Failures anywhere in the embedding path fail open to today's pure-lexical behavior, gated by a cooldown so a TEI outage is retried automatically without hammering it every call.
 
-**Tech Stack:** Rust 2024, Tokio, reqwest (already a `labby-gateway` dependency), serde/serde_json, Javy/QuickJS sandbox (`labby-codemode`), TOML config (`labby-runtime::gateway_config`), TEI (Text Embeddings Inference) HTTP API.
+**Tech Stack:** Rust 2024, Tokio, reqwest (already a `labby-gateway` dependency), `url` (already a dependency of `labby-runtime`/`labby-codemode`/`labby-gateway`), serde/serde_json, Javy/QuickJS sandbox (`labby-codemode`), TOML config (`labby-runtime::gateway_config`), TEI (Text Embeddings Inference) HTTP API.
 
 ## Global Constraints
 
-- `labby-codemode` stays client-neutral: it must gain no `reqwest`, TEI, or gateway-specific vocabulary. The `CodeModeHost::embed_texts` trait method takes/returns only neutral types (`Vec<String>` in, `Result<Vec<Vec<f32>>, ToolError>` out).
-- The embedding path is fail-open, always. No TEI failure, timeout, or misconfiguration may ever surface a different error, a different response shape, or a hang to the agent calling `codemode.search()` — it must silently degrade to exactly today's lexical-only ranking.
-- No behavioral change when semantic search is disabled (default) or when `code_mode.semantic_search.tei_url` is unset — `codemode.search()`'s lexical algorithm (`preamble.rs:201-256`) and its return shape (`{results, total, truncated, hint?}`) are unchanged in that case.
-- Cooldown after a TEI failure is 30s (`SEMANTIC_SEARCH_COOLDOWN: Duration = Duration::from_secs(30)`), tracked via `Instant` behind a `Mutex` on `GatewayManager`. Rationale: long enough that a flapping/restarting TEI container doesn't get hammered every search call (searches can happen many times per Code Mode execution), short enough that recovery is picked up within one typical agent working session without requiring a gateway restart.
-- `tracing::warn!` fires exactly once per failure *transition* (healthy→cooldown), not on every skipped call during an active cooldown window. Recovery (a call succeeding again after cooldown) does not need its own log line but may optionally emit `tracing::info!` — pick one and be consistent.
-- The new protocol variant pair must NOT touch `DriveState.calls`, `calls_enqueued`, or `max_calls_per_run` — an embed-query round-trip is host-internal plumbing, not a Code Mode tool call, and must not appear in `response.calls` or count against the per-run call budget.
-- Catalog embedding is computed from `CodeModeDiscoveryEntry.description` only (see Task 4 rationale) via exactly one batched `POST /embed` call per distinct catalog fingerprint — never one HTTP call per entry.
-- Follow existing repo conventions: `#[serde(default = "default_xxx")]` + free-fn default helpers for new `CodeModeConfig` fields (see `crates/labby-runtime/src/gateway_config.rs:34-56`); range validation added to `CodeModeConfig::validate()` (`gateway_config.rs:137-171`) with new `ConfigError` variants following the existing `InvalidCodeMode*` naming (`gateway_config.rs:716-727`); fingerprint-keyed `Arc<Mutex<Option<Cache>>>` cache on `GatewayManager` mirroring `code_mode_catalog_render_cache` (`crates/labby-gateway/src/gateway/manager.rs:109-115`) and its accessor methods (`crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs:502-529`).
+- `labby-codemode` stays client-neutral: it must gain no `reqwest`, TEI, or gateway-specific vocabulary. The `CodeModeHost::semantic_rank` trait method takes/returns only neutral types already used by sibling trait methods (`&CodeModeCaller`, `CodeModeSurface`, `&ToolScope`, `String`, `usize`) plus `Vec<(String, f32)>` — never a raw embedding vector.
+- The embedding path is fail-open, always. No TEI failure, timeout, or misconfiguration may ever surface a different error, a different response shape, or a hang to the agent calling `codemode.search()` — it must silently degrade to exactly today's lexical-only ranking. `CodeModeHost::semantic_rank` never returns `Err` for a degraded embedding service; `Err` is reserved for genuine host-side bugs, exactly as with every other fail-open contract in this plan.
+- No behavioral change when semantic search is unconfigured (default — `tei_url` unset) — `codemode.search()`'s lexical algorithm (`preamble.rs:201-256`) and its return shape (`{results, total, truncated, hint?}`) are unchanged in that case.
+- **No new bidirectional sandbox protocol.** The query-time round trip reuses the existing `callTool`/`ToolCall`/`ToolResult` wire path (`protocol.rs`, `runner.rs`, `runner_drive.rs`'s `enqueue_tool_call`) via a reserved internal tool id `__lab_internal::semantic_rank`, dispatched through `execute.rs`'s `call_tool_id` BEFORE the normal `scope.allows()` check. `protocol.rs` and `runner.rs` require **zero changes** under this design — confirm this remains true throughout implementation; if any task discovers it isn't, stop and re-plan rather than silently reintroducing new protocol surface.
+- **Security invariant — read this before touching `call_tool_id`:** the `__lab_internal::semantic_rank` dispatch bypasses `scope.allows()` deliberately, and this is safe **only** because `semantic_rank` never returns tool-call capability or raw tool results — it returns exclusively `(id, similarity)` ranking metadata over the catalog entries `build_code_mode_proxy` already scope-filtered for THIS execution before the sandbox started (`execute.rs:153-160`'s `catalog.iter().filter(|entry| ... scope.allows(...))`, confirmed to run before `CodeModeDiscoveryEntry::from_catalog`). `semantic_rank`'s Rust-side implementation must be given exactly that same scope-filtered entry set — never a broader one — so it is structurally impossible for it to rank/return an id the sandbox's own `__codemodeDiscovery` doesn't already contain. Task 2 and Task 5 must preserve this invariant; Task 7 adds a test that proves it.
+- The call-budget exclusion (`__lab_internal::` ids must not count against `max_calls_per_run` or appear in `response.calls`) is implemented as a single early-return gate inside `handle_completed_tool_call` (`runner_drive.rs:917+`, the sole function where all three `state.calls.push(...)` sites live — confirmed at `runner_drive.rs:948,960,1012`) plus a gate on the `state.calls_enqueued` increment (`runner_drive.rs:329`, the only increment site) — not a parallel bookkeeping structure.
+- Catalog embedding is computed from `CodeModeDiscoveryEntry.description` only via exactly one batched `POST /embed` call per distinct catalog fingerprint, chunked into `<=512`-entry batches (TEI's confirmed hard `max_batch_requests: 512` limit) — never one HTTP call per entry, never an unbounded single batch.
+- `tei_url` is validated as a well-formed `http://`/`https://` URL at config-validation time (SSRF-adjacent defense in depth — operator-config is trusted, but a copy-paste error or stale config pointing at an unintended host should be caught, not silently accepted).
+- TEI response bodies are size-capped (16 MiB) before JSON decoding — a misbehaving or compromised TEI endpoint cannot force unbounded memory use.
+- Cooldown after a TEI failure is a hardcoded `Duration::from_secs(30)` constant (not configurable — the user's requirements named "TEI URL configurable" as the one required knob; timeout/cooldown were engineering additions the simplicity review flagged as unnecessary v1 surface). Rationale: long enough that a flapping/restarting TEI container doesn't get hammered every search call (searches can happen many times per Code Mode execution), short enough that recovery is picked up within one typical agent working session without requiring a gateway restart.
+- `tracing::warn!` fires exactly once per failure *transition* (healthy→cooldown), not on every skipped call during an active cooldown window. Recovery (a call succeeding again after cooldown) emits `tracing::info!` once per transition, matching the same pattern.
+- No per-execution or cross-call query-embedding cache in v1 — an agent calling `codemode.search()` multiple times with similar queries in one execution pays a fresh embedding round trip each time. This is a deliberate YAGNI deferral (confirmed low-impact by performance review: a homelab-scale GPU-backed TEI embed is tens of milliseconds, and even several searches per execution stay a small fraction of the default 30s execution timeout) — do not implement a cache for this in this plan.
+- Follow existing repo conventions: `#[serde(default = "default_xxx")]` + free-fn default helpers for new `CodeModeConfig` fields (see `crates/labby-runtime/src/gateway_config.rs:34-56`); range validation added to `CodeModeConfig::validate()` (`gateway_config.rs:137-171`) with new `ConfigError` variants following the existing `InvalidCodeMode*` naming (`gateway_config.rs:716-727`); fingerprint-keyed cache on `GatewayManager` mirroring `code_mode_catalog_render_cache` (`crates/labby-gateway/src/gateway/manager.rs:109-115`) and its accessor methods (`crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs:502-529`), but using `tokio::sync::RwLock` instead of `Mutex` — matching the existing `config: Arc<RwLock<GatewayConfig>>` precedent already in `manager.rs:84` (read-heavy access pattern: most calls just read a warm cache).
+- A single-flight guard prevents thundering-herd re-embedding: the embedding-cache lock is held across the full check-then-embed-then-store sequence in `ensure_embeddings_for_fingerprint` (Task 5), not just around the final store, so concurrent cold-start calls against the same fingerprint serialize onto one embed rather than firing N redundant batch calls. This is an accepted lock-hold-time-during-network-call tradeoff, fine at homelab concurrency scale per the performance review's own conclusion.
 - Update `docs/runtime/CONFIG.md`'s `### [code_mode]` section (currently `docs/runtime/CONFIG.md:261-292`) with the new nested config keys and defaults. Do not create any new standalone `*.md` files — this is the one doc that already documents `[code_mode]` keys and is the correct place per repo convention.
 - Build/lint/test gates: `cargo nextest run --workspace --all-features` (test), `cargo clippy --workspace --all-features -- -D warnings` + `cargo fmt --all -- --check` (lint) — see `Justfile` `test`/`lint` targets. Crate-scoped equivalents: `cargo test -p labby-codemode`, `cargo test -p labby-gateway`.
 
@@ -26,66 +32,74 @@
 ## File Structure
 
 - `crates/labby-codemode/src/host.rs`
-  - Modify: add `embed_texts` method to the `CodeModeHost` trait (~after `resolve_snippet`, before `config`); add a no-op impl on `NoopHost` (test-only, `#[cfg(test)]`) returning `Ok(vec![])`.
-- `crates/labby-codemode/src/protocol.rs`
-  - Modify: add `EmbedQuery { seq: u64, text: String }` to `CodeModeRunnerOutput`; add `EmbedQueryResult { seq: u64, vector: Option<Vec<f32>> }` to `CodeModeRunnerInput`. `vector: None` signals "semantic scoring unavailable for this call" (fail-open at the wire level too, not just at the HTTP-client level).
-- `crates/labby-codemode/src/runner.rs`
-  - Modify: add a `globalThis.__labEmitEmbedQuery` javy host-function binding (mirrors `javy_emit_tool_call`, ~runner.rs:522-564) and a small JS-side `globalThis.embedQueryText = (text) => new Promise(...)` bridge (mirrors the `callTool` JS bridge at runner.rs:402-413), registered in the same place the other `__labEmit*` bindings are registered (~runner.rs:313-340) and wired into `wrap_code_mode`'s generated preamble (~runner.rs:394-504) so it settles through the *existing* `__labSettlePendingOperation` dispatcher (runner.rs:455-503) by adding one more `input.type` arm (`"embed_query_result"`).
-- `crates/labby-codemode/src/runner_drive.rs`
-  - Modify: `drive_runner`'s `tokio::select!` match (currently `runner_drive.rs:327-421` handling `ToolCall`/`ArtifactWrite`/`SnippetResolve`) gains an `EmbedQuery { seq, text }` arm that enqueues a future calling `broker.host.embed_texts(vec![text])` (via a new small helper, NOT `enqueue_tool_call`, so it never touches `DriveState.calls`/`calls_enqueued`) onto a *separate* `FuturesUnordered` (or the same one with a tagged variant — see Task 2 step-by-step for the exact shape) and writes back `CodeModeRunnerInput::EmbedQueryResult { seq, vector }` (vector `None` on any error) once resolved.
+  - Modify: add `semantic_rank` method to the `CodeModeHost` trait (~after `resolve_snippet`, before `config`); add a no-op impl on `NoopHost` (test-only, `#[cfg(test)]`) returning `Ok(Vec::new())`. Add a `fingerprint: String` field to `ToolsRender`.
 - `crates/labby-codemode/src/execute.rs`
-  - No changes needed to `call_tool_id`/`build_code_mode_proxy` signatures; `embed_texts` for the *catalog* is called by the host (`labby-gateway`) inside its own `list_tools` implementation before `generate_discovery_js` runs (see Task 4), not through `execute.rs`'s tool-call path at all.
+  - Modify: `call_tool_id` (`execute.rs:294-343`) gains an early-return branch for the reserved `__lab_internal` namespace, dispatched BEFORE `scope.allows()`. `build_code_mode_proxy` threads `blend_weight` from `host.config()` into `generate_discovery_js`.
+- `crates/labby-codemode/src/runner_drive.rs`
+  - Modify: `handle_completed_tool_call` (`runner_drive.rs:917+`) gains a call-budget/trace exclusion gate for `__lab_internal::` ids at its single entry point (affects all three `state.calls.push` sites and the `calls_enqueued` increment at `runner_drive.rs:329` via a check before enqueueing).
 - `crates/labby-codemode/src/preamble.rs`
-  - Modify: `generate_discovery_js` (`preamble.rs:170-333`) gains a new injected JSON payload `__codemodeSemanticEnabled` (bool) alongside the existing `__codemodeDiscovery`/`__codemodeTypes`; `codemode.search`'s body (`preamble.rs:201-256`) gains the blend logic (calls `embedQueryText`, computes cosine similarity against a **host-provided ranked list** rather than raw vectors — see Task 5 for the exact host round-trip shape and why raw vectors never enter the sandbox).
+  - Modify: `codemode.search`'s body (`preamble.rs:201-256`) becomes an `async function` that calls the existing `callTool("__lab_internal::semantic_rank", {query, limit})` primitive and blends the result into lexical scoring. `generate_discovery_js`'s signature gains a `blend_weight: f32` parameter.
 - `crates/labby-runtime/src/gateway_config.rs`
-  - Modify: add `SemanticSearchConfig` struct + `semantic_search: SemanticSearchConfig` field on `CodeModeConfig` (~after `max_log_bytes`, `gateway_config.rs:118`); add default-helper free fns near `gateway_config.rs:34-56`; add range validation to `CodeModeConfig::validate()` (`gateway_config.rs:137-171`); add `ConfigError::InvalidSemanticSearchCooldownMs` (or similar) near `gateway_config.rs:716-727`.
-- `crates/labby-gateway/Cargo.toml`
-  - No change — `reqwest.workspace = true` already present (`Cargo.toml:38`).
+  - Modify: add `SemanticSearchConfig { tei_url: Option<String>, blend_weight: f32 }` struct + `semantic_search: SemanticSearchConfig` field on `CodeModeConfig` (~after `max_log_bytes`, `gateway_config.rs:118`); add a default-helper free fn near `gateway_config.rs:34-56`; add range/URL validation to `CodeModeConfig::validate()` (`gateway_config.rs:137-171`); add `ConfigError::InvalidSemanticSearchBlendWeight` and `ConfigError::InvalidSemanticSearchTeiUrl` near `gateway_config.rs:716-727`.
 - `crates/labby-gateway/src/gateway/code_mode.rs`
-  - Modify: add `CatalogEmbeddingCache { fingerprint: String, vectors: Vec<(String, Vec<f32>)> }` struct, mirroring `CatalogRenderCache` (`code_mode.rs:53-62`) exactly (id + vector pairs, keyed by the same `fingerprint` string `search.rs` already computes).
+  - Modify: add `CatalogEmbeddingCache { fingerprint: String, vectors: Vec<(String, Vec<f32>)> }` struct, mirroring `CatalogRenderCache` (`code_mode.rs:53-62`); add `mod embeddings;`.
 - `crates/labby-gateway/src/gateway/manager.rs`
-  - Modify: add `pub(super) code_mode_embedding_cache: Arc<Mutex<Option<crate::gateway::code_mode::CatalogEmbeddingCache>>>` field (next to `code_mode_catalog_render_cache`, `manager.rs:109-115`); add `pub(super) semantic_search_cooldown: Arc<Mutex<Option<Instant>>>` field for the fail-open cooldown tracker.
+  - Modify: add `pub(super) code_mode_embedding_cache: Arc<RwLock<Option<crate::gateway::code_mode::CatalogEmbeddingCache>>>` field (next to `code_mode_catalog_render_cache`, `manager.rs:109-115`); add `pub(super) semantic_search_last_failure: Arc<RwLock<Option<Instant>>>` field for the fail-open cooldown tracker.
 - `crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs`
-  - Modify: add `cached_embeddings(&self, fingerprint: &str) -> Option<Vec<(String, Vec<f32>)>>` and `store_embedding_cache(&self, cache: CatalogEmbeddingCache)` methods mirroring `cached_catalog_render`/`store_catalog_render_cache` (`code_mode_runtime.rs:502-529`); add `semantic_search_available(&self) -> bool` (checks cooldown) and `record_semantic_search_failure(&self)` / `record_semantic_search_recovery(&self)` helpers for the fail-open/cooldown/log-once logic.
+  - Modify: add `cached_embeddings`/`ensure_embeddings_for_fingerprint` (single-flight helper), `semantic_search_available`, `record_semantic_search_failure`, `record_semantic_search_recovery`.
 - Create: `crates/labby-gateway/src/gateway/code_mode/embeddings.rs`
-  - New file: the TEI HTTP client (`embed_via_tei(url: &str, timeout: Duration, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolError>`) and cosine-similarity ranking helper (`rank_by_similarity(query_vector: &[f32], catalog_vectors: &[(String, Vec<f32>)], top_k: usize) -> Vec<(String, f32)>`). Kept separate from `search.rs` (catalog construction) and `code_mode_host.rs` (trait impl glue) per the existing one-responsibility-per-file convention in this directory.
+  - New file: the TEI HTTP client (chunked, size-capped) and cosine-similarity ranking helper.
 - `crates/labby-gateway/src/gateway/code_mode/code_mode_host.rs`
-  - Modify: add `async fn embed_texts(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, ToolError>` impl (~after `resolve_snippet`, `code_mode_host.rs:167-187`) delegating to `embeddings::embed_via_tei` with config from `self.code_mode_config().await.semantic_search`, respecting the cooldown gate.
+  - Modify: add `async fn semantic_rank(&self, query: String, top_k: usize, caller: &CodeModeCaller, surface: CodeModeSurface, scope: &ToolScope) -> Result<Vec<(String, f32)>, ToolError>` impl (~after `resolve_snippet`, `code_mode_host.rs:167-187`).
 - `crates/labby-gateway/src/gateway/code_mode/search.rs`
-  - Modify: `catalog_from_tools` (`search.rs:50-150`) gains a call to a new `ensure_catalog_embeddings(manager, &fingerprint, &entries)` helper (fire-and-forget best-effort; never blocks/fails catalog construction) placed right after the existing `store_catalog_render_cache` call (`search.rs:136-143`).
+  - Modify: `catalog_from_tools` (`search.rs:50-150`) gains a call to `manager.ensure_embeddings_for_fingerprint(&fingerprint, &entries)` (single-flight, best-effort; never blocks/fails catalog construction) on both the cache-hit and cache-miss paths; populates the new `ToolsRender.fingerprint` field at both construction sites.
 - `docs/runtime/CONFIG.md`
   - Modify: extend the `### [code_mode]` table and example (`docs/runtime/CONFIG.md:261-292`) with the new `semantic_search.*` nested keys.
 
 ---
 
-## Task 1: `CodeModeHost::embed_texts` trait method + neutral types
+## Task 1: `CodeModeHost::semantic_rank` trait method
 
 **Files:**
 - Modify: `crates/labby-codemode/src/host.rs`
 - Test: `crates/labby-codemode/src/host.rs` (inline `#[cfg(test)]` module — none currently exists in this file; add one)
 
 **Interfaces:**
-- Produces: `CodeModeHost::embed_texts(&self, texts: Vec<String>) -> impl Future<Output = Result<Vec<Vec<f32>>, ToolError>> + Send` — every later task calls this signature exactly.
-- Produces: `NoopHost::embed_texts` returns `Ok(Vec::new())` unconditionally (test-only host never has real embeddings).
+- Produces: `CodeModeHost::semantic_rank(&self, query: String, top_k: usize, caller: &CodeModeCaller, surface: CodeModeSurface, scope: &ToolScope) -> impl Future<Output = Result<Vec<(String, f32)>, ToolError>> + Send` — every later task calls this signature exactly. Returns `(entry_id, similarity)` pairs, descending by similarity, already truncated to at most `top_k`. Always `Ok` on a degraded/unconfigured/cooldown path (returns `Ok(Vec::new())`); `Err` reserved for host-side bugs.
+- Produces: `NoopHost::semantic_rank` returns `Ok(Vec::new())` unconditionally (test-only host never has real embeddings).
+- Produces: `ToolsRender.fingerprint: String` field (new) — Task 5 populates and reads this.
+
+**Design note (why this signature, not a bare `Vec<String> -> Vec<Vec<f32>>`):** the engineering review flagged that a manager-global "current catalog fingerprint" field is a real race condition under concurrent executions with different scopes — one execution's `semantic_rank` call could read a different execution's in-flight fingerprint and rank against the wrong catalog. Passing `caller`/`surface`/`scope` into `semantic_rank` itself — exactly the same three parameters `call_tool` already receives (`host.rs:73-80`) — lets the `GatewayManager` implementation recompute the identical fingerprint `catalog_from_tools` would compute for equivalent inputs, entirely from this call's own arguments, with no shared mutable "current fingerprint" state anywhere. This makes the design race-free by construction rather than by careful locking.
 
 - [ ] **Step 1: Add the trait method**
 
 In `crates/labby-codemode/src/host.rs`, add to the `CodeModeHost` trait (after `resolve_snippet`, before `fn config`, i.e. after line 88 and before line 90):
 
 ```rust
-    /// Batch-embed a list of texts via the host's configured embedding
-    /// service. Returns one vector per input text, in input order.
+    /// Rank the host's Code Mode catalog by semantic similarity to `query`,
+    /// for the exact same `caller`/`surface`/`scope` that would be passed to
+    /// `list_tools`/`call_tool` for this execution. Returns `(entry_id,
+    /// similarity)` pairs, descending by similarity, capped to `top_k`.
     ///
-    /// Hosts that have no embedding service configured (or whose service is
-    /// currently in a failure cooldown) MUST return `Ok(Vec::new())` rather
-    /// than an `Err` — an empty result is the fail-open signal the kernel
-    /// uses to skip semantic scoring for that call. `Err` is reserved for
-    /// genuine host-side bugs (e.g. a malformed request the host itself
-    /// built), not for "the embedding service is unreachable".
-    fn embed_texts(
+    /// Hosts with no embedding service configured (or currently in a failure
+    /// cooldown) MUST return `Ok(Vec::new())` rather than an `Err` — an empty
+    /// result is the fail-open signal `codemode.search()` uses to skip
+    /// semantic scoring for that call. `Err` is reserved for genuine
+    /// host-side bugs, not for "the embedding service is unreachable".
+    ///
+    /// Implementations must only ever return ids that are members of the
+    /// SAME scope-filtered entry set `list_tools` would return for these
+    /// exact `caller`/`surface`/`scope` — this is a security invariant, not
+    /// an optimization: the caller (`call_tool_id`) intentionally does not
+    /// re-check `scope.allows()` on this method's results.
+    fn semantic_rank(
         &self,
-        texts: Vec<String>,
-    ) -> impl Future<Output = Result<Vec<Vec<f32>>, ToolError>> + Send;
+        query: String,
+        top_k: usize,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> impl Future<Output = Result<Vec<(String, f32)>, ToolError>> + Send;
 ```
 
 - [ ] **Step 2: Add the `NoopHost` impl**
@@ -93,293 +107,235 @@ In `crates/labby-codemode/src/host.rs`, add to the `CodeModeHost` trait (after `
 In the same file's `#[cfg(test)] impl CodeModeHost for NoopHost` block (currently `host.rs:115-163`), add after `resolve_snippet` (after line 154, before `async fn config`):
 
 ```rust
-    async fn embed_texts(&self, _texts: Vec<String>) -> Result<Vec<Vec<f32>>, ToolError> {
+    async fn semantic_rank(
+        &self,
+        _query: String,
+        _top_k: usize,
+        _caller: &CodeModeCaller,
+        _surface: CodeModeSurface,
+        _scope: &ToolScope,
+    ) -> Result<Vec<(String, f32)>, ToolError> {
         Ok(Vec::new())
     }
 ```
 
-- [ ] **Step 3: Compile-check**
+- [ ] **Step 3: Add `fingerprint` to `ToolsRender`**
+
+In the same file, add a `fingerprint: String` field to `ToolsRender` (`host.rs:26-33`):
+
+```rust
+pub struct ToolsRender {
+    /// Fingerprint of the live tool set this render was built from (sorted
+    /// tool ids + snippet directory state). Hosts key auxiliary per-catalog
+    /// caches (e.g. embedding vectors) off this without recomputing it
+    /// themselves.
+    pub fingerprint: String,
+    /// The descriptors (tools + snippets) visible to this execution.
+    pub entries: Vec<ToolDescriptor>,
+    /// `serde_json::to_string(&entries)` — the `const tools = ...` payload.
+    pub catalog_json: String,
+    /// Serialized catalog size in bytes (for tracing).
+    pub serialized_size: usize,
+}
+```
+
+Update `NoopHost::list_tools` (`host.rs:116-129`) to add `fingerprint: "noop".to_string(),` to its returned `ToolsRender`.
+
+- [ ] **Step 4: Compile-check**
 
 Run: `cargo check -p labby-codemode --all-features`
-Expected: FAIL — no other type implements `CodeModeHost` yet outside this crate's test code, so this alone should compile cleanly within `labby-codemode` (the trait is additive and `NoopHost` now satisfies it). If it fails, the error will name any other in-crate impls of `CodeModeHost` that need the same addition — there should be none besides `NoopHost`; confirm via `grep -rn "impl CodeModeHost for" crates/labby-codemode/src/`.
+Expected: PASS — the trait is additive and `NoopHost` now satisfies it; the `ToolsRender` field addition only breaks construction sites, and `NoopHost::list_tools` is the only one inside this crate. Confirm no other in-crate impl of `CodeModeHost` or construction of `ToolsRender` exists via `grep -rn "impl CodeModeHost for\|ToolsRender {" crates/labby-codemode/src/` (should only match `NoopHost` and its `list_tools`).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crates/labby-codemode/src/host.rs
-git commit -m "feat(codemode): add CodeModeHost::embed_texts trait method"
+git commit -m "feat(codemode): add CodeModeHost::semantic_rank trait method and ToolsRender.fingerprint"
 ```
 
 ---
 
-## Task 2: New minimal protocol variant pair (`EmbedQuery` / `EmbedQueryResult`)
+## Task 2: Reserved internal tool id bridge (`__lab_internal::semantic_rank`)
 
 **Files:**
-- Modify: `crates/labby-codemode/src/protocol.rs`
-- Modify: `crates/labby-codemode/src/runner.rs`
-- Test: `crates/labby-codemode/src/runner.rs` (existing test module — check for one with `grep -n "#\[cfg(test)\]" crates/labby-codemode/src/runner.rs`; add cases there)
-
-**Interfaces:**
-- Consumes: nothing new from Task 1.
-- Produces: `CodeModeRunnerOutput::EmbedQuery { seq: u64, text: String }` (runner→parent) and `CodeModeRunnerInput::EmbedQueryResult { seq: u64, vector: Option<Vec<f32>> }` (parent→runner) — Task 3 matches on these exact variant names/shapes. Produces JS global `globalThis.embedQueryText(text: string) -> Promise<number[] | null>` — Task 5's `preamble.rs` changes call this exact name.
-
-- [ ] **Step 1: Add the protocol variants**
-
-In `crates/labby-codemode/src/protocol.rs`, add to `CodeModeRunnerOutput` (after the `SnippetResolve` variant, i.e. after line 66, before `Done`):
-
-```rust
-    /// The sandbox called `embedQueryText(text)`. The host embeds `text` via
-    /// its configured embedding service (fail-open: any failure resolves
-    /// with `EmbedQueryResult { vector: None }`, never a protocol error).
-    /// This is host-internal plumbing for `codemode.search()`'s semantic
-    /// blend, NOT a Code Mode tool call — it is dispatched outside
-    /// `DriveState.calls`/`max_calls_per_run` and never appears in the
-    /// agent-visible call trace.
-    EmbedQuery {
-        seq: u64,
-        text: String,
-    },
-```
-
-Add to `CodeModeRunnerInput` (after `ToolError`, i.e. after line 37, before the closing `}` of the enum):
-
-```rust
-    /// Response to `EmbedQuery`. `vector: None` means semantic scoring is
-    /// unavailable for this call (embedding disabled, TEI unreachable, or in
-    /// cooldown) — the sandbox falls back to lexical-only scoring.
-    EmbedQueryResult {
-        seq: u64,
-        #[serde(default)]
-        vector: Option<Vec<f32>>,
-    },
-```
-
-- [ ] **Step 2: Write a serde round-trip test**
-
-In `crates/labby-codemode/src/protocol.rs`, add (create a `#[cfg(test)] mod tests` block at the end of the file if none exists — check first with `grep -n "mod tests" crates/labby-codemode/src/protocol.rs`):
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn embed_query_output_round_trips() {
-        let msg = CodeModeRunnerOutput::EmbedQuery {
-            seq: 7,
-            text: "roster of saved queues".to_string(),
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"embed_query""#));
-        let parsed: CodeModeRunnerOutput = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, msg);
-    }
-
-    #[test]
-    fn embed_query_result_input_round_trips_with_vector() {
-        let msg = CodeModeRunnerInput::EmbedQueryResult {
-            seq: 7,
-            vector: Some(vec![0.1, 0.2, 0.3]),
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        let parsed: CodeModeRunnerInput = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, msg);
-    }
-
-    #[test]
-    fn embed_query_result_input_round_trips_without_vector() {
-        let msg = CodeModeRunnerInput::EmbedQueryResult { seq: 7, vector: None };
-        let json = serde_json::to_string(&msg).unwrap();
-        let parsed: CodeModeRunnerInput = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, msg);
-    }
-
-    #[test]
-    fn embed_query_result_input_defaults_missing_vector_to_none() {
-        // Forward-compat: an older/partial payload with no `vector` key must
-        // deserialize instead of erroring (matches the `#[serde(default)]`
-        // pattern used elsewhere in this enum, e.g. `content_type`).
-        let json = r#"{"type":"embed_query_result","seq":7}"#;
-        let parsed: CodeModeRunnerInput = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            parsed,
-            CodeModeRunnerInput::EmbedQueryResult { seq: 7, vector: None }
-        );
-    }
-}
-```
-
-- [ ] **Step 3: Run the new tests to verify they fail (types don't exist yet if Step 1 skipped) then pass**
-
-Run: `cargo test -p labby-codemode protocol::tests -- --nocapture`
-Expected: PASS (Step 1 already added the variants, so this validates serde shape, not TDD-red-first — protocol enums are data, not behavior, so this order is fine here).
-
-- [ ] **Step 4: Add the JS-side bridge and javy host-function binding in `runner.rs`**
-
-In `crates/labby-codemode/src/runner.rs`, find `wrap_code_mode` (`runner.rs:386-512`). After the `globalThis.callTool = ...` block (after line 413, before `globalThis.writeArtifact`), add:
-
-```rust
-globalThis.embedQueryText = (text) => {{
-  if (typeof text !== "string" || text.trim() === "") {{
-    return Promise.resolve(null);
-  }}
-  return new Promise((resolve) => {{
-    const seq = globalThis.__labEmitEmbedQuery(text);
-    globalThis.__labPendingToolCalls.set(seq, {{ kind: "embed_query", resolve }});
-  }});
-}};
-```
-
-Note: unlike `callTool`, this never rejects — an embedding failure resolves to `null`, not a thrown error, so `codemode.search()` can `await` it unconditionally without a try/catch (fail-open is expressed at the JS type level: `number[] | null`).
-
-In `__labSettlePendingOperation` (`runner.rs:455-502`), add a new `if` arm after the `tool_error` arm (after line 500, before the final `throw new Error("runner received unexpected protocol message");` at line 501):
-
-```rust
-  if (input.type === "embed_query_result") {{
-    if (pending.kind !== "embed_query") {{
-      throw new Error("runner received embed_query_result for a non-embed_query operation");
-    }}
-    pending.resolve(input.vector || null);
-    return;
-  }}
-```
-
-- [ ] **Step 5: Add the `javy_emit_embed_query` host-function binding**
-
-In `crates/labby-codemode/src/runner.rs`, near `javy_emit_tool_call` (`runner.rs:522-564`), add a sibling function:
-
-```rust
-fn javy_emit_embed_query(args: javy::Args<'_>) -> javy::quickjs::Result<u64> {
-    let (cx, args) = args.release();
-    let text_value = args
-        .0
-        .first()
-        .ok_or_else(|| javy_type_error(cx.clone(), "embedQueryText text must be a string"))?;
-    let text = javy::val_to_string(&cx, text_value.clone())
-        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
-
-    let seq = next_runner_seq(&cx)?;
-
-    runner_emit(CodeModeRunnerOutput::EmbedQuery { seq, text })
-        .map_err(|err| javy_type_error(cx, err))?;
-    Ok(seq)
-}
-```
-
-Then register it alongside the other `__labEmit*` bindings (find the registration block around `runner.rs:313-340`, which registers `__labEmitToolCall`, `__labEmitArtifactWrite`, `__labEmitSnippetResolve` — read that block first with `sed -n '300,345p' crates/labby-codemode/src/runner.rs` to match the exact registration call shape used for the other three, then add a fourth registration for `__labEmitEmbedQuery` → `javy_emit_embed_query` following the identical pattern).
-
-- [ ] **Step 6: Compile-check**
-
-Run: `cargo check -p labby-codemode --all-features`
-Expected: PASS. If the registration-block step (Step 5) doesn't compile, re-read the exact macro/function call used for the existing three registrations (do not guess the signature — copy its exact shape).
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add crates/labby-codemode/src/protocol.rs crates/labby-codemode/src/runner.rs
-git commit -m "feat(codemode): add EmbedQuery/EmbedQueryResult protocol bridge"
-```
-
----
-
-## Task 3: Parent-side dispatch in `runner_drive.rs`
-
-**Files:**
+- Modify: `crates/labby-codemode/src/execute.rs`
 - Modify: `crates/labby-codemode/src/runner_drive.rs`
-- Test: `crates/labby-codemode/src/runner_drive.rs` (existing `#[cfg(test)] mod tests` block, `runner_drive.rs:1127+`)
+- Test: `crates/labby-codemode/src/execute.rs` (existing `#[cfg(test)] mod tests`, `execute.rs:403+`) and `crates/labby-codemode/src/runner_drive.rs` (existing `#[cfg(test)] mod tests`, `runner_drive.rs:1127+`)
 
 **Interfaces:**
-- Consumes: `CodeModeRunnerOutput::EmbedQuery { seq, text }` (Task 2), `host.embed_texts(Vec<String>) -> Result<Vec<Vec<f32>>, ToolError>` (Task 1).
-- Produces: writes `CodeModeRunnerInput::EmbedQueryResult { seq, vector }` back to the runner; `vector: None` on ANY error (fail-open — this is where the host-level try/fail-open happens, so `host.embed_texts` errors never propagate as a drive-loop `RunnerUnhealthy`).
+- Consumes: `CodeModeHost::semantic_rank` (Task 1); the existing `CodeModeToolId::parse`/`split_namespaced_id` (`types.rs:77-89`), which already accepts any `<namespace>::<tool>`-shaped string, including `__lab_internal::semantic_rank`.
+- Produces: a JS-visible `callTool("__lab_internal::semantic_rank", {query, limit})` that resolves to `{ranked: [{id, score}, ...]}` — Task 7's `preamble.rs` changes call this exact id/param/return shape. Calls to this id never appear in `response.calls` and never count against `max_calls_per_run`.
 
-- [ ] **Step 1: Read the exact `ToolCall` dispatch arm and `enqueue_tool_call` to copy the shape precisely**
+- [ ] **Step 1: Confirm the exact insertion points before editing**
 
-Run: `sed -n '259,270p;327,380p;544,580p' crates/labby-codemode/src/runner_drive.rs`
+Run: `sed -n '294,344p' crates/labby-codemode/src/execute.rs` — confirm `call_tool_id`'s current shape (parse → host check → match on `CodeModeToolRef::Tool { namespace, tool }` → `scope.allows()` check at line 311 → `host.call_tool(...)`).
 
-Confirm the `ToolCallFut` type alias (`runner_drive.rs:54-58`) and `pending_tool_calls: FuturesUnordered<ToolCallFut<'_>>` (`runner_drive.rs:259`) — this future type resolves to `(seq, call_id, redacted_params, result, elapsed_ms)`. The embed-query future must NOT reuse this exact tuple shape (it has no "call_id"/"redacted_params"/tool semantics) — add a second, separate `FuturesUnordered` for embed-query futures so the two are never conflated and `DriveState.calls` bookkeeping (which reads from tool-call completions specifically) is structurally impossible to pollute.
+Run: `sed -n '327,380p' crates/labby-codemode/src/runner_drive.rs` — confirm the `ToolCall` match arm's dispatch order: `calls_enqueued` increment (line 329) → budget check → `try_parse_local_provider_call` (line 346) → `enqueue_tool_call` (line 358) / `enqueue_rejected_tool_call` (line 369).
 
-- [ ] **Step 2: Add a second `FuturesUnordered` for embed-query calls**
+Run: `sed -n '917,1025p' crates/labby-codemode/src/runner_drive.rs` — confirm `handle_completed_tool_call`'s three `state.calls.push(...)` sites (lines 948, 960, 1012), each keyed on the local `id` binding from the completed future's tuple `(seq, id, params, result, elapsed_ms)`.
 
-In `drive_runner` (`runner_drive.rs:228-259`), after the existing `let mut pending_tool_calls: FuturesUnordered<ToolCallFut<'_>> = FuturesUnordered::new();` (line 259), add:
+- [ ] **Step 2: Add the reserved-namespace constant and dispatch branch in `execute.rs`**
+
+In `crates/labby-codemode/src/execute.rs`, add a module-level constant near the top of the file (after the existing `use` statements, before `impl<H: CodeModeHost> CodeModeBroker<'_, H>`):
 
 ```rust
-        // Embed-query round-trips are host-internal plumbing for
-        // `codemode.search()`'s semantic blend, not Code Mode tool calls —
-        // kept in a separate FuturesUnordered so they can never be counted
-        // against `DriveState.calls`/`max_calls_per_run` or appear in the
-        // agent-visible call trace.
-        let mut pending_embed_queries: FuturesUnordered<
-            std::pin::Pin<Box<dyn std::future::Future<Output = (u64, Option<Vec<f32>>)> + Send + '_>>,
-        > = FuturesUnordered::new();
+/// Reserved namespace for host-internal pseudo-tool calls that are NOT real
+/// Code Mode tool calls — they never reach `host.call_tool`, never consume
+/// the per-run call budget, and never appear in `response.calls`. The
+/// sandbox's generated JS calls these via the ordinary `callTool(id, params)`
+/// primitive so no new sandbox protocol surface is needed; `call_tool_id`
+/// intercepts ids in this namespace before the normal scope check.
+const LAB_INTERNAL_NAMESPACE: &str = "__lab_internal";
 ```
 
-- [ ] **Step 3: Add the `EmbedQuery` arm to the read-side `match msg`**
-
-In the `match msg { ... }` block (`runner_drive.rs:327-421`), add a new arm after `SnippetResolve` (after line 421, before `Done`):
+In `call_tool_id` (`execute.rs:294-343`), inside the `match parsed.reference { CodeModeToolRef::Tool { namespace, tool } => { ... } }` block, add a new branch immediately after the `let Some(host) = ...` check and BEFORE the existing `if !scope.allows(&namespace, &tool) { ... }` check (before line 311):
 
 ```rust
-                        CodeModeRunnerOutput::EmbedQuery { seq, text } => {
-                            let host = self.host;
-                            pending_embed_queries.push(Box::pin(async move {
-                                let vector = match host {
-                                    Some(host) => match host.embed_texts(vec![text]).await {
-                                        Ok(mut vectors) if !vectors.is_empty() => {
-                                            Some(vectors.remove(0))
-                                        }
-                                        Ok(_) => None,
-                                        Err(err) => {
-                                            tracing::debug!(
-                                                surface = "dispatch",
-                                                service = "code_mode",
-                                                action = "embed_query",
-                                                kind = err.kind(),
-                                                "embed_texts failed for search query; falling back to lexical-only"
-                                            );
-                                            None
-                                        }
-                                    },
-                                    None => None,
-                                };
-                                (seq, vector)
-                            }));
-                        }
-```
-
-(Confirm `self.host` is `Option<&'a H>` matching the type used by `pending_tool_calls`'s existing futures at `runner_drive.rs:563-577` — copy the exact field-access pattern from there rather than guessing.)
-
-- [ ] **Step 4: Add a `tokio::select!` arm to drain `pending_embed_queries` and write results back**
-
-Find the existing arm that drains `pending_tool_calls` and calls `handle_completed_tool_call` (around `runner_drive.rs:480-493`). Add a sibling arm in the same `tokio::select! { ... }` block:
-
-```rust
-                Some((seq, vector)) = pending_embed_queries.next() => {
-                    if let Err(err) = write_runner_input(
-                        stdin,
-                        &CodeModeRunnerInput::EmbedQueryResult { seq, vector },
-                    )
-                    .await
-                    {
-                        return DriveOutcome::RunnerUnhealthy(err.into());
-                    }
+                if namespace == LAB_INTERNAL_NAMESPACE {
+                    return self
+                        .dispatch_internal_call(&tool, params, &caller, surface, scope)
+                        .await;
                 }
 ```
 
-(Match the exact `write_runner_input` call signature already used for `ToolResult`/`ToolError` writes elsewhere in this function — copy it verbatim, do not reinvent the error-wrapping.)
+Add the `dispatch_internal_call` method on `CodeModeBroker` (near `call_tool_id`, e.g. immediately after it):
 
-- [ ] **Step 5: Handle the "no host" and "Done with in-flight embed queries" edge cases**
+```rust
+    /// Dispatch a reserved `__lab_internal::*` pseudo-tool call. These never
+    /// reach `host.call_tool` and are never subject to `scope.allows()` —
+    /// see the `LAB_INTERNAL_NAMESPACE` doc comment for why that's safe.
+    async fn dispatch_internal_call(
+        &self,
+        tool: &str,
+        params: Value,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Value, ToolError> {
+        let Some(host) = self.host else {
+            return Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: "no tool source configured".to_string(),
+            });
+        };
+        match tool {
+            "semantic_rank" => {
+                let query = params
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let limit = params
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map(|n| n.clamp(1, 50) as usize)
+                    .unwrap_or(50);
+                let ranked = host
+                    .semantic_rank(query, limit, caller, surface, scope)
+                    .await
+                    .unwrap_or_default();
+                let ranked_json: Vec<Value> = ranked
+                    .into_iter()
+                    .map(|(id, score)| {
+                        serde_json::json!({ "id": id, "score": score })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "ranked": ranked_json }))
+            }
+            _ => Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: format!("unknown internal tool `{LAB_INTERNAL_NAMESPACE}::{tool}`"),
+            }),
+        }
+    }
+```
 
-The existing `Done` arm (`runner_drive.rs:422+`) currently treats non-empty `pending_tool_calls` as a protocol error and evicts the runner. Read that logic (`sed -n '422,460p' crates/labby-codemode/src/runner_drive.rs`) and decide: an embed-query future is host-internal and best-effort, so a `Done` arriving while `pending_embed_queries` is non-empty should NOT be treated as a protocol error (the JS side already resolved without waiting, since `embedQueryText` failures resolve to `null` rather than blocking indefinitely — but a genuine race where `Done` beats the embed response is theoretically possible only if user code doesn't `await` the promise, which `codemode.search()`'s own generated code always does). Add a code comment explaining this and simply drop any still-pending embed-query futures silently (they have no caller left to resolve) rather than erroring — do not require `pending_embed_queries.is_empty()` in the `Done` arm's existing invariant check.
+Note: `host.semantic_rank(...).await.unwrap_or_default()` is the fail-open point at this layer — even though Task 1's trait contract already says implementations must return `Ok(Vec::new())` on degraded paths (never `Err`), this `unwrap_or_default()` is a defensive second fail-open layer so a host implementation bug (an accidental `Err`) still can't break `codemode.search()` — it degrades to an empty ranked list, identical to the "no semantic signal" case.
 
-- [ ] **Step 6: Write a drive-loop integration test**
+- [ ] **Step 3: Write a unit test for `call_tool_id`'s internal dispatch**
 
-In the existing `#[cfg(test)] mod tests` block (`runner_drive.rs:1127+`), add a test using a stub host whose `embed_texts` returns a fixed vector, driving a runner stub that emits `EmbedQuery` and asserts `EmbedQueryResult` comes back with the right vector, AND a second test where the host's `embed_texts` returns `Err(...)` and asserts the runner receives `EmbedQueryResult { vector: None }` (not a `RunnerUnhealthy`/protocol error). Base these on the existing `drive_runner_times_out_and_marks_runner_unhealthy` test pattern (`runner_drive.rs:1151-1170`) and whatever stub-runner/stub-host helpers that test file already provides (`grep -n "spawn_stub\|struct.*Stub\|impl CodeModeHost for" crates/labby-codemode/src/runner_drive.rs` to find them before writing new ones — reuse existing stub infrastructure rather than duplicating it).
+In `crates/labby-codemode/src/execute.rs`'s existing `#[cfg(test)] mod tests` block (`execute.rs:403+`), add (using the existing `NoopHost`/broker-construction pattern already in that file — read the existing tests first to match helper usage exactly):
 
-- [ ] **Step 7: Run the tests**
+```rust
+    #[tokio::test]
+    async fn call_tool_id_routes_lab_internal_namespace_before_scope_check() {
+        // A ToolScope that allows nothing should still let `__lab_internal::*`
+        // through, because it's intercepted before the scope.allows() check.
+        let broker: CodeModeBroker<'_, NoopHost> = CodeModeBroker::new(None);
+        let empty_scope = ToolScope::scoped_namespaces(vec![], vec![]);
+        let result = broker
+            .call_tool_id(
+                "__lab_internal::semantic_rank",
+                serde_json::json!({ "query": "test", "limit": 5 }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &empty_scope,
+            )
+            .await;
+        // NoopHost's semantic_rank always returns Ok(vec![]), so this must
+        // succeed with an empty ranked list, not a `forbidden`/`unknown_tool`
+        // scope error.
+        let value = result.expect("internal dispatch must bypass scope.allows()");
+        assert_eq!(value, serde_json::json!({ "ranked": [] }));
+    }
+
+    #[tokio::test]
+    async fn call_tool_id_rejects_unknown_internal_tool() {
+        let broker: CodeModeBroker<'_, NoopHost> = CodeModeBroker::new(None);
+        let scope = ToolScope::default();
+        let result = broker
+            .call_tool_id(
+                "__lab_internal::not_a_real_internal_tool",
+                serde_json::json!({}),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+            )
+            .await;
+        assert!(result.is_err());
+    }
+```
+
+(Adjust the exact `ToolScope` constructor calls to match whatever's actually available — check `ToolScope::scoped_namespaces`/`ToolScope::default`/`ToolScope::new` signatures in `types.rs` before writing; use whichever constructs an intentionally-restrictive scope.)
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cargo test -p labby-codemode execute:: -- --nocapture`
+Expected: PASS, including the two new tests.
+
+- [ ] **Step 5: Exclude `__lab_internal::` ids from the call budget and trace in `runner_drive.rs`**
+
+In `drive_runner`'s `CodeModeRunnerOutput::ToolCall { seq, id, params }` arm (`runner_drive.rs:328-380`), change the `calls_enqueued` increment (currently unconditional at line 329) to skip reserved ids:
+
+```rust
+                        CodeModeRunnerOutput::ToolCall { seq, id, params } => {
+                            let is_internal = id.starts_with("__lab_internal::");
+                            if !is_internal {
+                                state.calls_enqueued = state.calls_enqueued.saturating_add(1);
+                            }
+                            if !is_internal && state.calls_enqueued > state.max_calls_per_run {
+```
+
+(This replaces the existing `if state.calls_enqueued > state.max_calls_per_run {` condition — keep the rest of that `if`/`else` block's body unchanged; only the increment and the guard condition change. Reserved-namespace calls always fall through to the `else` branch's `enqueue_tool_call` path unchanged — they are NOT exempted from `try_parse_local_provider_call`/dispatch routing, only from budget counting.)
+
+In `handle_completed_tool_call` (`runner_drive.rs:917-1025`), add an early check right after the `let Some((seq, id, params, result, elapsed_ms)) = completed else { return Ok(()); };` line (after line 927):
+
+```rust
+    let is_internal = id.starts_with("__lab_internal::");
+```
+
+Then gate each of the three `state.calls.push(...)` call sites (lines 948, 960, 1012) behind `if !is_internal { state.calls.push(...); }` — wrap each existing push statement, do not otherwise change their bodies. The `write_runner_input_by_deadline(...)` calls that send `ToolResult`/`ToolError` back to the runner are UNCHANGED and unconditional — `__lab_internal::` calls still get a real response so the sandbox's `callTool(...)` Promise resolves normally; only the budget/trace bookkeeping is skipped.
+
+- [ ] **Step 6: Write a drive-loop test confirming budget/trace exclusion**
+
+In `runner_drive.rs`'s existing `#[cfg(test)] mod tests` block (`runner_drive.rs:1127+`), add a test that drives a stub runner emitting a `ToolCall` with id `"__lab_internal::semantic_rank"` and asserts, after the run completes, that the call trace does NOT contain an entry for that id, and that ordinary calls up to `max_calls_per_run` still all succeed even with an extra `__lab_internal::` call interleaved (i.e. the internal call did not consume a budget slot). Base this on whatever stub-runner infrastructure the existing tests in this file already use — reuse it, don't duplicate it.
+
+- [ ] **Step 7: Run tests**
 
 Run: `cargo test -p labby-codemode runner_drive:: -- --nocapture`
-Expected: PASS, including the two new tests from Step 6.
+Expected: PASS, including the new test from Step 6.
 
-- [ ] **Step 8: Run full crate test suite + lint**
+- [ ] **Step 8: Full crate test suite + lint**
 
 Run: `cargo test -p labby-codemode --all-features && cargo clippy -p labby-codemode --all-features -- -D warnings && cargo fmt -p labby-codemode -- --check`
 Expected: PASS.
@@ -387,13 +343,13 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add crates/labby-codemode/src/runner_drive.rs
-git commit -m "feat(codemode): dispatch EmbedQuery round-trips outside the tool-call budget"
+git add crates/labby-codemode/src/execute.rs crates/labby-codemode/src/runner_drive.rs
+git commit -m "feat(codemode): route __lab_internal:: calls through callTool, exempt from budget"
 ```
 
 ---
 
-## Task 4: `SemanticSearchConfig` + validation + `docs/runtime/CONFIG.md`
+## Task 3: `SemanticSearchConfig` + validation + `docs/runtime/CONFIG.md`
 
 **Files:**
 - Modify: `crates/labby-runtime/src/gateway_config.rs`
@@ -401,21 +357,15 @@ git commit -m "feat(codemode): dispatch EmbedQuery round-trips outside the tool-
 - Test: `crates/labby-runtime/src/gateway_config.rs` (find existing `CodeModeConfig` tests via `grep -n "mod tests\|fn.*code_mode" crates/labby-runtime/src/gateway_config.rs` and add alongside)
 
 **Interfaces:**
-- Produces: `SemanticSearchConfig { enabled: bool, tei_url: Option<String>, tei_timeout_ms: u64, cooldown_ms: u64, blend_weight: f32 }` on `CodeModeConfig.semantic_search`. Later tasks (`embeddings.rs`, `code_mode_host.rs`) read these exact field names.
+- Produces: `SemanticSearchConfig { tei_url: Option<String>, blend_weight: f32 }` on `CodeModeConfig.semantic_search`. Presence of a non-empty `tei_url` is the sole enable signal — no separate `enabled` flag. Later tasks (`embeddings.rs`, `code_mode_host.rs`) read these exact field names.
 
-- [ ] **Step 1: Add default-helper free functions**
+**YAGNI cuts applied per simplicity review:** no `enabled` bool (redundant with `tei_url` presence), no configurable `tei_timeout_ms`/`cooldown_ms` (hardcoded constants — see Task 4/5). `blend_weight` stays configurable since the user's own requirements explicitly asked to document/tune the blend formula.
+
+- [ ] **Step 1: Add the default-helper free function**
 
 In `crates/labby-runtime/src/gateway_config.rs`, near the existing default helpers (after `fn default_max_log_bytes()`, i.e. after line 56, before `fn default_upstream_priority()`), add:
 
 ```rust
-fn default_semantic_search_tei_timeout_ms() -> u64 {
-    2_000
-}
-
-fn default_semantic_search_cooldown_ms() -> u64 {
-    30_000
-}
-
 fn default_semantic_search_blend_weight() -> f32 {
     0.5
 }
@@ -428,30 +378,17 @@ In the same file, near `CodeModeConfig` (before it, so it can be referenced — 
 ```rust
 /// Optional embedding-based semantic search blend for `codemode.search()`.
 ///
-/// Disabled by default (`enabled = false`, matching the repo convention that
-/// `code_mode.enabled` itself also defaults to `false` — Code Mode features
-/// are opt-in). When disabled or misconfigured, `codemode.search()` runs its
-/// existing pure-lexical algorithm unchanged; this struct's fields are never
-/// read on that path.
+/// Disabled by default (`tei_url = None`). When `tei_url` is unset or empty,
+/// `codemode.search()` runs its existing pure-lexical algorithm unchanged;
+/// this struct's fields are never read on that path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SemanticSearchConfig {
-    /// Whether to blend embedding similarity into `codemode.search()` results.
-    #[serde(default)]
-    pub enabled: bool,
     /// Base URL of the TEI (Text Embeddings Inference) server, e.g.
-    /// `http://localhost:52000`. Required when `enabled = true`; `None` (the
-    /// default) means semantic search stays off even if `enabled = true` is
-    /// set without a URL — see `CodeModeConfig::validate`.
+    /// `http://localhost:52000`. `None` or empty (the default) means
+    /// semantic search stays off — this is the sole enable signal, there is
+    /// no separate `enabled` flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tei_url: Option<String>,
-    /// Per-request timeout for one `POST /embed` call to TEI.
-    #[serde(default = "default_semantic_search_tei_timeout_ms")]
-    pub tei_timeout_ms: u64,
-    /// Cooldown after a TEI failure before the next attempt. Bounds how often
-    /// a flapping/unreachable TEI server is retried; failures during the
-    /// cooldown window fail open silently (no repeated log spam).
-    #[serde(default = "default_semantic_search_cooldown_ms")]
-    pub cooldown_ms: u64,
     /// Weight applied to normalized semantic similarity when blending with
     /// normalized lexical score. See `preamble.rs` `codemode.search` blend
     /// comment for the exact formula.
@@ -462,26 +399,20 @@ pub struct SemanticSearchConfig {
 impl Default for SemanticSearchConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             tei_url: None,
-            tei_timeout_ms: default_semantic_search_tei_timeout_ms(),
-            cooldown_ms: default_semantic_search_cooldown_ms(),
             blend_weight: default_semantic_search_blend_weight(),
         }
     }
 }
 
 impl SemanticSearchConfig {
-    /// True only when semantic search is both enabled AND has a usable URL.
-    /// Every call site should gate on this rather than re-checking both
-    /// fields separately.
+    /// True only when `tei_url` is set to a non-empty string. Every call
+    /// site should gate on this rather than re-checking the field directly.
     #[must_use]
     pub fn is_configured(&self) -> bool {
-        self.enabled
-            && self
-                .tei_url
-                .as_deref()
-                .is_some_and(|url| !url.trim().is_empty())
+        self.tei_url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
     }
 }
 ```
@@ -498,56 +429,47 @@ In `CodeModeConfig` (currently `gateway_config.rs:86-119`), add after `max_log_b
 
 Update `CodeModeConfig`'s `Default` impl (`gateway_config.rs:121+`) to include `semantic_search: SemanticSearchConfig::default(),`.
 
-- [ ] **Step 4: Add validation**
+- [ ] **Step 4: Add validation (URL scheme + blend_weight range)**
 
 In `CodeModeConfig::validate()` (`gateway_config.rs:137-171`), add before the final `Ok(())` (before line 169):
 
 ```rust
-        if self.semantic_search.tei_timeout_ms == 0 || self.semantic_search.tei_timeout_ms > 60_000
-        {
-            return Err(ConfigError::InvalidSemanticSearchTeiTimeout {
-                value: self.semantic_search.tei_timeout_ms,
-            });
-        }
-        if self.semantic_search.cooldown_ms == 0 || self.semantic_search.cooldown_ms > 600_000 {
-            return Err(ConfigError::InvalidSemanticSearchCooldown {
-                value: self.semantic_search.cooldown_ms,
-            });
-        }
         if !(0.0..=1.0).contains(&self.semantic_search.blend_weight) {
             return Err(ConfigError::InvalidSemanticSearchBlendWeight {
                 value: self.semantic_search.blend_weight,
             });
         }
-        if self.semantic_search.enabled
-            && self
-                .semantic_search
-                .tei_url
-                .as_deref()
-                .is_none_or(|url| url.trim().is_empty())
-        {
-            return Err(ConfigError::MissingSemanticSearchTeiUrl);
+        if let Some(tei_url) = self.semantic_search.tei_url.as_deref() {
+            let trimmed = tei_url.trim();
+            if !trimmed.is_empty() {
+                let parsed = url::Url::parse(trimmed).map_err(|_| {
+                    ConfigError::InvalidSemanticSearchTeiUrl {
+                        value: tei_url.to_string(),
+                    }
+                })?;
+                if parsed.scheme() != "http" && parsed.scheme() != "https" {
+                    return Err(ConfigError::InvalidSemanticSearchTeiUrl {
+                        value: tei_url.to_string(),
+                    });
+                }
+            }
         }
 ```
+
+Confirm `url::Url` is reachable — this crate already depends on `url` per `crates/labby-runtime/Cargo.toml:16`, confirmed; add a `use` if the file doesn't already reference `url::` anywhere (check first with `grep -n "^use url\|url::" crates/labby-runtime/src/gateway_config.rs`).
 
 Add the new `ConfigError` variants near the existing `InvalidCodeMode*` variants (`gateway_config.rs:716-727`, after `InvalidCodeModeMaxLogBytes`):
 
 ```rust
-    #[error("gateway code_mode.semantic_search.tei_timeout_ms={value} is invalid — expected 1..=60000")]
-    InvalidSemanticSearchTeiTimeout { value: u64 },
-    #[error("gateway code_mode.semantic_search.cooldown_ms={value} is invalid — expected 1..=600000")]
-    InvalidSemanticSearchCooldown { value: u64 },
     #[error("gateway code_mode.semantic_search.blend_weight={value} is invalid — expected 0.0..=1.0")]
     InvalidSemanticSearchBlendWeight { value: f32 },
-    #[error(
-        "gateway code_mode.semantic_search.enabled=true requires semantic_search.tei_url to be set"
-    )]
-    MissingSemanticSearchTeiUrl,
+    #[error("gateway code_mode.semantic_search.tei_url={value:?} is invalid — expected a well-formed http:// or https:// URL")]
+    InvalidSemanticSearchTeiUrl { value: String },
 ```
 
 - [ ] **Step 5: Wire the new `ConfigError` variants through `validate_code_mode` in `labby-gateway`**
 
-In `crates/labby-gateway/src/gateway/config.rs`'s `validate_code_mode` (`config.rs:564-591`), the catch-all `_ => ToolError::InvalidParam { message: e.to_string(), param: "code_mode".to_string() }` arm (line 586-589) already handles any `ConfigError` variant not explicitly matched — confirm the four new variants fall through to this arm correctly (they will, since it's a wildcard) and no change is strictly required here. Optionally add explicit arms with `param: "code_mode.semantic_search.tei_timeout_ms"` etc. for parity with the existing three explicit arms — do this for consistency with the file's existing style.
+In `crates/labby-gateway/src/gateway/config.rs`'s `validate_code_mode` (`config.rs:564-591`), the catch-all `_ => ToolError::InvalidParam { message: e.to_string(), param: "code_mode".to_string() }` arm (line 586-589) already handles any `ConfigError` variant not explicitly matched — confirm the two new variants fall through to this arm correctly (they will, since it's a wildcard). No change is required, but optionally add explicit arms with `param: "code_mode.semantic_search.blend_weight"` / `"code_mode.semantic_search.tei_url"` for parity with the existing three explicit arms — do this for consistency with the file's existing style.
 
 - [ ] **Step 6: Write config tests**
 
@@ -555,29 +477,42 @@ In `crates/labby-runtime/src/gateway_config.rs`, find the existing test module (
 
 ```rust
     #[test]
-    fn semantic_search_defaults_to_disabled_and_unconfigured() {
+    fn semantic_search_defaults_to_unconfigured() {
         let cfg = CodeModeConfig::default();
-        assert!(!cfg.semantic_search.enabled);
         assert!(cfg.semantic_search.tei_url.is_none());
         assert!(!cfg.semantic_search.is_configured());
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
-    fn semantic_search_enabled_without_url_fails_validation() {
+    fn semantic_search_with_valid_http_url_is_configured_and_valid() {
         let mut cfg = CodeModeConfig::default();
-        cfg.semantic_search.enabled = true;
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(err, ConfigError::MissingSemanticSearchTeiUrl));
-    }
-
-    #[test]
-    fn semantic_search_enabled_with_url_is_configured_and_valid() {
-        let mut cfg = CodeModeConfig::default();
-        cfg.semantic_search.enabled = true;
         cfg.semantic_search.tei_url = Some("http://localhost:52000".to_string());
         assert!(cfg.semantic_search.is_configured());
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn semantic_search_with_https_url_is_valid() {
+        let mut cfg = CodeModeConfig::default();
+        cfg.semantic_search.tei_url = Some("https://tei.internal.example:8443".to_string());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn semantic_search_with_non_http_scheme_fails_validation() {
+        let mut cfg = CodeModeConfig::default();
+        cfg.semantic_search.tei_url = Some("ftp://example.com".to_string());
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidSemanticSearchTeiUrl { .. }));
+    }
+
+    #[test]
+    fn semantic_search_with_malformed_url_fails_validation() {
+        let mut cfg = CodeModeConfig::default();
+        cfg.semantic_search.tei_url = Some("not a url at all".to_string());
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidSemanticSearchTeiUrl { .. }));
     }
 
     #[test]
@@ -595,15 +530,15 @@ In `crates/labby-runtime/src/gateway_config.rs`, find the existing test module (
         // compatibility with every config.toml written before this feature).
         let toml_str = "enabled = true\ntimeout_ms = 30000\n";
         let cfg: CodeModeConfig = toml::from_str(toml_str).unwrap();
-        assert!(!cfg.semantic_search.enabled);
         assert!(cfg.semantic_search.tei_url.is_none());
+        assert!(!cfg.semantic_search.is_configured());
     }
 ```
 
 - [ ] **Step 7: Run tests**
 
 Run: `cargo test -p labby-runtime gateway_config:: -- --nocapture`
-Expected: PASS, all 5 new tests included.
+Expected: PASS, all 7 new tests included.
 
 - [ ] **Step 8: Update `docs/runtime/CONFIG.md`**
 
@@ -613,65 +548,68 @@ In `docs/runtime/CONFIG.md`, extend the `### [code_mode]` table (currently endin
 #### `[code_mode.semantic_search]`
 
 Optional embedding-based semantic search blend for `codemode.search()`.
-Disabled by default — when disabled or unconfigured, `codemode.search()` is
+Disabled by default — when `tei_url` is unset, `codemode.search()` is
 unchanged pure lexical/substring matching.
 
 | Key | Env override | Default | Description |
 |-----|-------------|---------|-------------|
-| `enabled` | — | `false` | Blend embedding similarity into `codemode.search()` ranking. Requires `tei_url` to be set — enabling without a URL is a config validation error. |
-| `tei_url` | — | unset | Base URL of a [TEI](https://github.com/huggingface/text-embeddings-inference) (Text Embeddings Inference) server, e.g. `http://localhost:52000`. |
-| `tei_timeout_ms` | — | `2000` | Per-request timeout for one `POST /embed` call. Valid range: 1-60000. |
-| `cooldown_ms` | — | `30000` | Cooldown after a TEI failure before the next attempt is tried. Failures during cooldown fail open silently (semantic scoring skipped, `codemode.search()` falls back to lexical-only — no error surfaces to the caller). Valid range: 1-600000. |
+| `tei_url` | — | unset | Base URL of a [TEI](https://github.com/huggingface/text-embeddings-inference) (Text Embeddings Inference) server, e.g. `http://localhost:52000`. Must be a well-formed `http://` or `https://` URL. Presence of a non-empty value is the sole enable signal for this feature. |
 | `blend_weight` | — | `0.5` | Weight applied to normalized semantic similarity when blending with normalized lexical score. Valid range: 0.0-1.0. |
 
 Example:
 
 ```toml
 [code_mode.semantic_search]
-enabled = true
 tei_url = "http://localhost:52000"
-tei_timeout_ms = 2000
-cooldown_ms = 30000
 blend_weight = 0.5
 ```
 
 Semantic search is fail-open end to end: if TEI is unreachable, times out, or
 returns a non-2xx response, that one `codemode.search()` call silently falls
 back to lexical-only ranking — the response shape is identical either way, and
-no error is visible to the calling agent. A `tracing::warn!` is logged once
-per failure transition (not once per skipped call) so operators can see
-degraded state without log spam.
+no error is visible to the calling agent. After a failure, semantic search is
+skipped for a 30-second cooldown (not configurable) before the next attempt,
+so a flapping TEI instance isn't hit on every search call; recovery is picked
+up automatically once the cooldown elapses. A `tracing::warn!` is logged once
+per failure transition (not once per skipped call) and a `tracing::info!`
+once per recovery, so operators can see degraded state without log spam.
 ```
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add crates/labby-runtime/src/gateway_config.rs crates/labby-gateway/src/gateway/config.rs docs/runtime/CONFIG.md
-git commit -m "feat(config): add code_mode.semantic_search config with validation"
+git commit -m "feat(config): add code_mode.semantic_search config with URL validation"
 ```
 
 ---
 
-## Task 5: TEI client + cosine ranking (`embeddings.rs`)
+## Task 4: TEI client + cosine ranking (`embeddings.rs`)
 
 **Files:**
 - Create: `crates/labby-gateway/src/gateway/code_mode/embeddings.rs`
-- Modify: `crates/labby-gateway/src/gateway/code_mode.rs` (module declaration + re-export)
+- Modify: `crates/labby-gateway/src/gateway/code_mode.rs` (module declaration)
 - Test: inline `#[cfg(test)] mod tests` in `embeddings.rs`
 
 **Interfaces:**
-- Consumes: `SemanticSearchConfig` (Task 4).
-- Produces: `pub(crate) async fn embed_via_tei(url: &str, timeout: Duration, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolError>` and `pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f32` and `pub(crate) fn rank_by_similarity(query_vector: &[f32], catalog_vectors: &[(String, Vec<f32>)]) -> Vec<(String, f32)>` (returns `(id, similarity)` pairs sorted descending by similarity — unranked/uncapped, callers slice as needed). Task 6 and Task 7 call these exact names.
+- Consumes: `SemanticSearchConfig` (Task 3).
+- Produces:
+  - `pub(crate) const TEI_MAX_BATCH_SIZE: usize = 512;` (TEI's confirmed hard `max_batch_requests` limit).
+  - `pub(crate) const TEI_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);` (hardcoded per Task 3's YAGNI cut).
+  - `pub(crate) const TEI_MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;` (16 MiB response size cap).
+  - `pub(crate) async fn embed_via_tei(url: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolError>` — internally chunks `texts` into `<=TEI_MAX_BATCH_SIZE`-entry batches, issues sequential `POST /embed` calls, concatenates results. Task 5 calls this exact name (both for catalog warming and for query-time embedding).
+  - `pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f32`.
+  - `pub(crate) fn rank_by_similarity(query_vector: &[f32], catalog_vectors: &[(String, Vec<f32>)]) -> Vec<(String, f32)>` (returns `(id, similarity)` pairs sorted descending by similarity — unranked/uncapped, callers slice as needed).
 
 - [ ] **Step 1: Find the module declaration site**
 
-Run: `sed -n '1,30p' crates/labby-gateway/src/gateway/code_mode.rs` to see how `search` is declared as a submodule (it's referenced as `super::search` from `code_mode_host.rs:25`, so `code_mode.rs` must have `mod search;` or similar — confirm the exact pattern before adding `mod embeddings;` alongside it).
+Run: `sed -n '1,30p' crates/labby-gateway/src/gateway/code_mode.rs` to see how `search` is declared as a submodule (confirm the exact `mod search;`/visibility pattern before adding `mod embeddings;` alongside it).
 
 - [ ] **Step 2: Add the module declaration**
 
 In `crates/labby-gateway/src/gateway/code_mode.rs`, add `pub(crate) mod embeddings;` (or `mod embeddings;` matching whatever visibility `search`'s declaration uses — copy it).
 
-- [ ] **Step 3: Write the TEI client with a failing test first**
+- [ ] **Step 3: Write the TEI client with chunking and a response size cap**
 
 Create `crates/labby-gateway/src/gateway/code_mode/embeddings.rs`:
 
@@ -681,7 +619,7 @@ Create `crates/labby-gateway/src/gateway/code_mode/embeddings.rs`:
 //!
 //! All vector math lives here, host-side — no raw floats are ever serialized
 //! into the QuickJS sandbox. Every function here is designed to be wrapped in
-//! a fail-open caller (see `code_mode_host.rs::embed_texts`); this module
+//! a fail-open caller (see `code_mode_host.rs::semantic_rank`); this module
 //! itself returns ordinary `Result`s and does not implement the
 //! cooldown/fail-open policy — that is the caller's responsibility.
 
@@ -692,25 +630,44 @@ use serde_json::json;
 
 use labby_runtime::error::ToolError;
 
+/// TEI's confirmed hard server-side limit on inputs per `/embed` call
+/// (`max_batch_requests` in `GET /info`). `embed_via_tei` chunks any larger
+/// input list into batches of at most this size.
+pub(crate) const TEI_MAX_BATCH_SIZE: usize = 512;
+
+/// Per-request timeout for one `POST /embed` call. Hardcoded, not
+/// configurable — see Task 3's YAGNI rationale in the plan doc.
+pub(crate) const TEI_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Maximum accepted TEI response body size before JSON decoding. Guards
+/// against a misbehaving or compromised TEI endpoint forcing unbounded
+/// memory use.
+pub(crate) const TEI_MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Deserialize)]
 struct TeiEmbedResponse(Vec<Vec<f32>>);
 
-/// Batch-embed `texts` via one `POST {url}/embed` call. Returns one vector
-/// per input text, in input order — this is the TEI API's documented
-/// contract for batch `inputs`.
-pub(crate) async fn embed_via_tei(
-    url: &str,
-    timeout: Duration,
-    texts: &[String],
-) -> Result<Vec<Vec<f32>>, ToolError> {
+/// Batch-embed `texts` via one or more `POST {url}/embed` calls, chunked to
+/// at most `TEI_MAX_BATCH_SIZE` inputs per request (TEI's hard server-side
+/// limit). Returns one vector per input text, in input order.
+pub(crate) async fn embed_via_tei(url: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolError> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
+    let mut all_vectors = Vec::with_capacity(texts.len());
+    for chunk in texts.chunks(TEI_MAX_BATCH_SIZE) {
+        let vectors = embed_batch(url, chunk).await?;
+        all_vectors.extend(vectors);
+    }
+    Ok(all_vectors)
+}
+
+async fn embed_batch(url: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolError> {
     let client = reqwest::Client::new();
     let endpoint = format!("{}/embed", url.trim_end_matches('/'));
     let response = client
         .post(&endpoint)
-        .timeout(timeout)
+        .timeout(TEI_REQUEST_TIMEOUT)
         .json(&json!({ "inputs": texts }))
         .send()
         .await
@@ -724,7 +681,21 @@ pub(crate) async fn embed_via_tei(
             message: format!("TEI returned HTTP {}", response.status()),
         });
     }
-    let parsed: TeiEmbedResponse = response.json().await.map_err(|err| ToolError::Sdk {
+    let body = response.bytes().await.map_err(|err| ToolError::Sdk {
+        sdk_kind: "network_error".to_string(),
+        message: format!("failed to read TEI response body: {err}"),
+    })?;
+    if body.len() > TEI_MAX_RESPONSE_BYTES {
+        return Err(ToolError::Sdk {
+            sdk_kind: "decode_error".to_string(),
+            message: format!(
+                "TEI response body is {} bytes, exceeding the {} byte cap",
+                body.len(),
+                TEI_MAX_RESPONSE_BYTES
+            ),
+        });
+    }
+    let parsed: TeiEmbedResponse = serde_json::from_slice(&body).map_err(|err| ToolError::Sdk {
         sdk_kind: "decode_error".to_string(),
         message: format!("failed to decode TEI /embed response: {err}"),
     })?;
@@ -822,20 +793,23 @@ mod tests {
 
     #[tokio::test]
     async fn embed_via_tei_empty_input_returns_empty_without_http_call() {
-        let result = embed_via_tei("http://127.0.0.1:1", Duration::from_millis(100), &[]).await;
+        let result = embed_via_tei("http://127.0.0.1:1", &[]).await;
         assert_eq!(result.unwrap(), Vec::<Vec<f32>>::new());
     }
 
     #[tokio::test]
     async fn embed_via_tei_unreachable_server_returns_network_error() {
         // Port 1 is a reserved/unused low port — connection refused, fast.
-        let result = embed_via_tei(
-            "http://127.0.0.1:1",
-            Duration::from_millis(500),
-            &["test".to_string()],
-        )
-        .await;
+        let result = embed_via_tei("http://127.0.0.1:1", &["test".to_string()]).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn tei_max_batch_size_matches_documented_tei_limit() {
+        // Regression guard: this constant must track TEI's real
+        // max_batch_requests (currently 512, confirmed via GET /info against
+        // the live dev TEI server). If TEI's limit changes, update here.
+        assert_eq!(TEI_MAX_BATCH_SIZE, 512);
     }
 }
 ```
@@ -843,7 +817,7 @@ mod tests {
 - [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p labby-gateway embeddings:: -- --nocapture`
-Expected: PASS, all 8 tests.
+Expected: PASS, all 9 tests.
 
 - [ ] **Step 5: Live smoke test against the real TEI server (manual verification, not a committed test)**
 
@@ -860,23 +834,27 @@ Expected output: `2 1024` (two 1024-dim vectors), confirming the real endpoint s
 
 ```bash
 git add crates/labby-gateway/src/gateway/code_mode.rs crates/labby-gateway/src/gateway/code_mode/embeddings.rs
-git commit -m "feat(gateway): add TEI embedding client and cosine ranking"
+git commit -m "feat(gateway): add chunked, size-capped TEI embedding client and cosine ranking"
 ```
 
 ---
 
-## Task 6: Catalog embedding cache on `GatewayManager` + `embed_texts` trait impl + cooldown
+## Task 5: Catalog embedding cache on `GatewayManager` + `semantic_rank` trait impl + cooldown + warming
 
 **Files:**
 - Modify: `crates/labby-gateway/src/gateway/code_mode.rs`
 - Modify: `crates/labby-gateway/src/gateway/manager.rs`
 - Modify: `crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs`
 - Modify: `crates/labby-gateway/src/gateway/code_mode/code_mode_host.rs`
+- Modify: `crates/labby-gateway/src/gateway/code_mode/search.rs`
 - Test: `crates/labby-gateway/src/gateway/manager/tests/code_mode.rs` (existing file — confirmed present)
 
 **Interfaces:**
-- Consumes: `embed_via_tei`, `cosine_similarity` (Task 5); `SemanticSearchConfig` (Task 4); `CodeModeHost::embed_texts` signature (Task 1).
-- Produces: `GatewayManager::embed_texts` (trait impl, fail-open — never returns `Err` from cooldown/config-off paths, only `Ok(vec![])` or `Ok(real vectors)`); `GatewayManager::cached_embeddings(&self, fingerprint: &str) -> Option<Vec<(String, Vec<f32>)>>`; `GatewayManager::store_embedding_cache(&self, cache: CatalogEmbeddingCache)`. Task 7 calls `cached_embeddings`/`store_embedding_cache` directly (catalog-level caching); the `CodeModeHost::embed_texts` trait method itself is called by Task 3's drive-loop code for query-level embedding (no caching there — one query per call, caching a single query embedding is not worth the complexity).
+- Consumes: `embed_via_tei`, `rank_by_similarity` (Task 4); `SemanticSearchConfig` (Task 3); `CodeModeHost::semantic_rank` signature (Task 1); `ToolsRender.fingerprint` (Task 1).
+- Produces:
+  - `GatewayManager::semantic_rank` (trait impl — fail-open, always `Ok`; recomputes the SAME fingerprint `catalog_from_tools` would compute for the given `caller`/`surface`/`scope` rather than reading any shared "current fingerprint" state).
+  - `GatewayManager::cached_embeddings(&self, fingerprint: &str) -> Option<Vec<(String, Vec<f32>)>>`.
+  - `GatewayManager::ensure_embeddings_for_fingerprint(&self, fingerprint: &str, entries: &[ToolDescriptor]) -> Vec<(String, Vec<f32>)>` — single-flight: holds the cache lock across the full check-then-embed-then-store sequence, returns the (possibly freshly computed) vectors. Called from BOTH `catalog_from_tools`'s warming path (this task, Step 6) AND `semantic_rank`'s on-demand path (this task, Step 4), so a `semantic_rank` call against a cold fingerprint (e.g. semantic search just got enabled without `list_tools` running first) still works rather than returning empty.
 
 - [ ] **Step 1: Add `CatalogEmbeddingCache`**
 
@@ -885,51 +863,65 @@ In `crates/labby-gateway/src/gateway/code_mode.rs`, near `CatalogRenderCache` (a
 ```rust
 /// Cached catalog embedding vectors, keyed by the same fingerprint used for
 /// `CatalogRenderCache` (see `search.rs`'s `catalog_from_tools`). One vector
-/// per catalog entry id, computed via a single batched TEI call.
+/// per catalog entry id, computed via one or more batched TEI calls.
 pub(crate) struct CatalogEmbeddingCache {
     pub fingerprint: String,
-    /// `(entry.id, embedding_vector)` pairs, same order as the catalog was
-    /// embedded in (not necessarily catalog entry order after a cache hit —
-    /// callers should look up by id, not by index).
+    /// `(entry.id, embedding_vector)` pairs. Callers should look up by id,
+    /// not by index.
     pub vectors: Vec<(String, Vec<f32>)>,
 }
 ```
 
-- [ ] **Step 2: Add manager fields**
+- [ ] **Step 2: Add manager fields (using `RwLock`, matching the `config` field precedent)**
 
 In `crates/labby-gateway/src/gateway/manager.rs`, add after `code_mode_catalog_render_cache` (after line 115, before `code_mode_snippet_metadata_cache`):
 
 ```rust
     /// Cached Code Mode catalog embedding vectors, keyed by the same
-    /// fingerprint as `code_mode_catalog_render_cache`. `None` means either
-    /// no catalog has been embedded yet, or the last embedding attempt
-    /// failed (fail-open — a `None` cache entry is not distinguishable from
-    /// "never tried" and that's fine, the next search attempt just retries
-    /// subject to the cooldown gate below).
+    /// fingerprint as `code_mode_catalog_render_cache`. `RwLock` (not
+    /// `Mutex`), matching the `config: Arc<RwLock<GatewayConfig>>` precedent
+    /// above (`manager.rs:84`) — this is a read-heavy cache; writes only
+    /// happen on a fingerprint change or the very first embed.
+    ///
+    /// `ensure_embeddings_for_fingerprint` holds the write lock across the
+    /// full check-then-embed-then-store sequence (not just the store) as a
+    /// single-flight guard: concurrent calls against the same cold
+    /// fingerprint serialize onto one TEI batch call instead of firing N
+    /// redundant ones.
     pub(super) code_mode_embedding_cache:
-        Arc<Mutex<Option<crate::gateway::code_mode::CatalogEmbeddingCache>>>,
+        Arc<tokio::sync::RwLock<Option<crate::gateway::code_mode::CatalogEmbeddingCache>>>,
 ```
 
-Add near wherever cooldown-style state would live (search for how other cooldown/backoff state is tracked elsewhere in this struct first — `grep -n "Instant\|cooldown\|backoff" crates/labby-gateway/src/gateway/manager.rs`; if nothing precedent exists, add a new field with a clear comment):
+Add the cooldown field:
 
 ```rust
     /// Fail-open cooldown gate for the TEI semantic-search embedding
     /// service. `Some(instant)` = a call failed at `instant`; calls made
-    /// before `instant + semantic_search.cooldown_ms` skip TEI entirely
-    /// (falling back to lexical-only) rather than retrying a known-down
-    /// service on every search. `None` = healthy (or never tried).
-    pub(super) semantic_search_last_failure: Arc<Mutex<Option<std::time::Instant>>>,
+    /// before `instant + 30s` skip TEI entirely (falling back to
+    /// lexical-only) rather than retrying a known-down service on every
+    /// search. `None` = healthy (or never tried).
+    pub(super) semantic_search_last_failure: Arc<tokio::sync::RwLock<Option<std::time::Instant>>>,
 ```
 
-Update every `GatewayManager` constructor (search for `Self {` initializations, likely one canonical `new`/`from_parts`-style constructor — `grep -n "fn new\|impl GatewayManager" crates/labby-gateway/src/gateway/manager.rs` and any test-helper constructors in `manager/tests.rs`) to initialize both new fields to `Arc::new(Mutex::new(None))`.
+Update every `GatewayManager` constructor (search for `Self {` initializations — `grep -n "fn new\|impl GatewayManager" crates/labby-gateway/src/gateway/manager.rs` and any test-helper constructors in `manager/tests.rs`) to initialize both new fields to `Arc::new(tokio::sync::RwLock::new(None))`.
 
-- [ ] **Step 3: Add cache accessor methods**
+- [ ] **Step 3: Add the cooldown constant and cache/cooldown accessor methods**
 
-In `crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs`, add after `cached_catalog_render`/`store_catalog_render_cache` (after line 529 area — read the exact end of that method first):
+In `crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs`, add near the top:
+
+```rust
+/// Cooldown after a TEI failure before the next attempt is tried. Hardcoded
+/// per the plan's YAGNI cut (see Task 3) — long enough that a
+/// flapping/restarting TEI container isn't hit on every search call, short
+/// enough that recovery is picked up within one working session.
+const SEMANTIC_SEARCH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+```
+
+Add after `cached_catalog_render`/`store_catalog_render_cache` (read the exact end of that method first to insert after it):
 
 ```rust
     pub(crate) async fn cached_embeddings(&self, fingerprint: &str) -> Option<Vec<(String, Vec<f32>)>> {
-        let guard = self.code_mode_embedding_cache.lock().await;
+        let guard = self.code_mode_embedding_cache.read().await;
         guard.as_ref().and_then(|cache| {
             if cache.fingerprint == fingerprint {
                 Some(cache.vectors.clone())
@@ -939,35 +931,80 @@ In `crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs`, add after `c
         })
     }
 
-    pub(crate) async fn store_embedding_cache(
+    /// Single-flight: ensure the embedding cache is warm for `fingerprint`,
+    /// computing it via `embeddings::embed_via_tei` if needed. Holds the
+    /// write lock across the whole check-then-embed-then-store sequence so
+    /// concurrent callers against the same cold fingerprint serialize onto
+    /// one TEI call rather than firing redundant ones. Fail-open: returns an
+    /// empty `Vec` (and leaves the cache empty) on ANY embedding failure —
+    /// callers never see an `Err` from this method.
+    pub(crate) async fn ensure_embeddings_for_fingerprint(
         &self,
-        cache: crate::gateway::code_mode::CatalogEmbeddingCache,
-    ) {
-        let mut guard = self.code_mode_embedding_cache.lock().await;
-        *guard = Some(cache);
-    }
-
-    /// True when the semantic search cooldown has elapsed (or no failure has
-    /// been recorded yet) — i.e. it is safe to attempt a TEI call.
-    pub(crate) async fn semantic_search_available(&self, cooldown_ms: u64) -> bool {
-        let guard = self.semantic_search_last_failure.lock().await;
-        match *guard {
-            None => true,
-            Some(last_failure) => {
-                last_failure.elapsed() >= std::time::Duration::from_millis(cooldown_ms)
+        fingerprint: &str,
+        entries: &[crate::gateway::code_mode::ToolDescriptor],
+    ) -> Vec<(String, Vec<f32>)> {
+        let config = self.code_mode_config().await.semantic_search;
+        if !config.is_configured() || entries.is_empty() {
+            return Vec::new();
+        }
+        let mut guard = self.code_mode_embedding_cache.write().await;
+        if let Some(cache) = guard.as_ref() {
+            if cache.fingerprint == fingerprint {
+                return cache.vectors.clone();
+            }
+        }
+        if !self.semantic_search_available_locked().await {
+            return Vec::new();
+        }
+        let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
+        let texts: Vec<String> = entries.iter().map(|e| e.description.clone()).collect();
+        let tei_url = config
+            .tei_url
+            .as_deref()
+            .expect("is_configured() guarantees tei_url is Some");
+        match crate::gateway::code_mode::embeddings::embed_via_tei(tei_url, &texts).await {
+            Ok(vectors) if vectors.len() == ids.len() => {
+                self.record_semantic_search_recovery().await;
+                let pairs: Vec<(String, Vec<f32>)> = ids.into_iter().zip(vectors).collect();
+                *guard = Some(crate::gateway::code_mode::CatalogEmbeddingCache {
+                    fingerprint: fingerprint.to_string(),
+                    vectors: pairs.clone(),
+                });
+                pairs
+            }
+            Ok(_) => Vec::new(),
+            Err(err) => {
+                self.record_semantic_search_failure(&err.to_string()).await;
+                Vec::new()
             }
         }
     }
 
+    /// True when the semantic search cooldown has elapsed (or no failure has
+    /// been recorded yet) — i.e. it is safe to attempt a TEI call. Internal:
+    /// does not itself acquire `code_mode_embedding_cache`'s lock, so it is
+    /// safe to call while already holding that lock (as
+    /// `ensure_embeddings_for_fingerprint` does).
+    async fn semantic_search_available_locked(&self) -> bool {
+        let guard = self.semantic_search_last_failure.read().await;
+        match *guard {
+            None => true,
+            Some(last_failure) => last_failure.elapsed() >= SEMANTIC_SEARCH_COOLDOWN,
+        }
+    }
+
+    /// Public cooldown check for callers that are NOT already holding the
+    /// embedding-cache lock (e.g. a `semantic_rank` call that skips catalog
+    /// warming entirely because the cache is already warm).
+    pub(crate) async fn semantic_search_available(&self) -> bool {
+        self.semantic_search_available_locked().await
+    }
+
     /// Record a TEI failure, starting/refreshing the cooldown window. Logs a
-    /// `tracing::warn!` only on the healthy→failing transition (i.e. when no
-    /// failure was already recorded) so repeated failures during an active
-    /// cooldown don't spam the log — the caller only calls this after
-    /// `semantic_search_available` already returned `true`, so by
-    /// construction every call here is a fresh transition or the very first
-    /// failure, never a during-cooldown retry.
+    /// `tracing::warn!` only on the healthy→failing transition so repeated
+    /// failures during an active cooldown don't spam the log.
     pub(crate) async fn record_semantic_search_failure(&self, reason: &str) {
-        let mut guard = self.semantic_search_last_failure.lock().await;
+        let mut guard = self.semantic_search_last_failure.write().await;
         let was_healthy = guard.is_none();
         *guard = Some(std::time::Instant::now());
         drop(guard);
@@ -983,9 +1020,10 @@ In `crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs`, add after `c
         }
     }
 
-    /// Clear the failure cooldown after a successful TEI call.
+    /// Clear the failure cooldown after a successful TEI call. Logs
+    /// `tracing::info!` only on the failing→healthy transition.
     pub(crate) async fn record_semantic_search_recovery(&self) {
-        let mut guard = self.semantic_search_last_failure.lock().await;
+        let mut guard = self.semantic_search_last_failure.write().await;
         let was_failing = guard.is_some();
         *guard = None;
         drop(guard);
@@ -1001,58 +1039,132 @@ In `crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs`, add after `c
     }
 ```
 
-- [ ] **Step 4: Implement `CodeModeHost::embed_texts` for `GatewayManager`**
+- [ ] **Step 4: Implement `CodeModeHost::semantic_rank` for `GatewayManager`**
+
+First run `grep -n "^fn runtime_owner\|^fn oauth_subject\|pub(crate) async fn build_tools_render" crates/labby-gateway/src/gateway/code_mode/code_mode_host.rs crates/labby-gateway/src/gateway/code_mode/search.rs` to confirm the exact current visibility of `runtime_owner`/`oauth_subject` (defined in `code_mode_host.rs`, currently private `fn`s per the original ground truth) and `build_tools_render` (defined in `search.rs`, currently `pub(crate)`). If `runtime_owner`/`oauth_subject` are private (`fn`, no `pub`), widen them to `pub(super)` or `pub(crate)` so `semantic_rank` (added to the same `impl CodeModeHost for GatewayManager` block in `code_mode_host.rs`) can call them — since `semantic_rank` lives in the SAME FILE as their definitions, no visibility change may even be needed; confirm before assuming.
 
 In `crates/labby-gateway/src/gateway/code_mode/code_mode_host.rs`, add after `resolve_snippet` (after line 187, before `async fn config`):
 
 ```rust
-    async fn embed_texts(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, ToolError> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
+    async fn semantic_rank(
+        &self,
+        query: String,
+        top_k: usize,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Vec<(String, f32)>, ToolError> {
         let config = self.code_mode_config().await.semantic_search;
-        if !config.is_configured() {
+        if !config.is_configured() || query.trim().is_empty() {
             return Ok(Vec::new());
         }
-        if !self.semantic_search_available(config.cooldown_ms).await {
+        // Recompute the SAME scope-filtered entries `list_tools` would
+        // return for this exact caller/surface/scope — this is what makes
+        // the design race-free: no shared "current fingerprint" state is
+        // read here, only this call's own arguments (Task 1's design note
+        // explains why a manager-global fingerprint field would be unsafe
+        // under concurrent executions with different scopes). Same
+        // `allow_cold_connect = false` as any non-CLI-execute caller would
+        // get from `list_tools` (see `list_tools`'s own
+        // `allow_cold_connect` computation above in this file) — semantic
+        // ranking must not spend wall-clock cold-connecting upstreams.
+        let owner = runtime_owner(caller, surface);
+        let oauth_subject = oauth_subject(caller);
+        let allowed = scope.allowed_namespaces();
+        let render = match super::search::build_tools_render(
+            self,
+            false,
+            &owner,
+            oauth_subject,
+            allowed,
+            false,
+            true,
+        )
+        .await
+        {
+            Ok(render) => render,
+            Err(_) => return Ok(Vec::new()), // fail-open: catalog build failure must not break search()
+        };
+        if !self.semantic_search_available().await {
             return Ok(Vec::new());
         }
-        let url = config
-            .tei_url
-            .as_deref()
-            .expect("is_configured() guarantees tei_url is Some");
-        let timeout = std::time::Duration::from_millis(config.tei_timeout_ms);
-        match super::embeddings::embed_via_tei(url, timeout, &texts).await {
-            Ok(vectors) => {
-                self.record_semantic_search_recovery().await;
-                Ok(vectors)
-            }
+        let vectors = self
+            .ensure_embeddings_for_fingerprint(&render.fingerprint, &render.entries)
+            .await;
+        if vectors.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query_vec = match super::embeddings::embed_via_tei(
+            config.tei_url.as_deref().expect("is_configured() guarantees Some"),
+            &[query],
+        )
+        .await
+        {
+            Ok(mut v) if !v.is_empty() => v.remove(0),
+            Ok(_) => return Ok(Vec::new()),
             Err(err) => {
                 self.record_semantic_search_failure(&err.to_string()).await;
-                Ok(Vec::new())
+                return Ok(Vec::new());
             }
-        }
+        };
+        self.record_semantic_search_recovery().await;
+        let mut ranked = super::embeddings::rank_by_similarity(&query_vec, &vectors);
+        ranked.truncate(top_k.max(1));
+        Ok(ranked)
     }
 ```
 
-Note the fail-open contract from Task 1's trait doc comment: this method returns `Ok(Vec::new())` for every degraded case (disabled, unconfigured, cooldown active, TEI call failed) and only returns real vectors on genuine success — it never returns `Err` in this implementation, consistent with "Err is reserved for host-side bugs."
+**Verification note for the implementer:** the `include_snippets: false` argument passed to `build_tools_render` above matches `list_tools`'s OWN default reasoning is NOT re-verified in this plan revision — before finalizing this step, read `list_tools`'s existing body in this same file (`code_mode_host.rs:29-56`) and confirm whether `include_snippets`/`allow_cold_connect` should instead be threaded from `semantic_rank`'s own parameters (they currently aren't — `semantic_rank`'s signature per Task 1 has no `include_snippets` param) or whether hardcoding `false`/`false` here is correct because ranking should behave like a non-CLI caller. If in doubt, hardcode `false, false` as shown (safe defaults: no snippets ranked, no cold-connect) and note the simplification in a code comment — do not block implementation on this, but don't skip reading `list_tools`'s body first either.
 
-- [ ] **Step 5: Write manager-level tests**
+- [ ] **Step 5: Populate `ToolsRender.fingerprint` in `search.rs`**
 
-In `crates/labby-gateway/src/gateway/manager/tests/code_mode.rs`, add tests (using whatever test-manager construction helper that file already uses — read it first with `sed -n '1,60p' crates/labby-gateway/src/gateway/manager/tests/code_mode.rs` to match the existing pattern):
+In `crates/labby-gateway/src/gateway/code_mode/search.rs`'s `catalog_from_tools` (`search.rs:50-150`), add `fingerprint: fingerprint.clone()` to BOTH the cache-hit early-return's `ToolsRender { ... }` construction (`search.rs:86-90`) and the cache-miss final construction (`search.rs:145-149`) — the local `fingerprint` binding already exists at both points (computed once at `search.rs:67-74`, used throughout the function).
+
+- [ ] **Step 6: Wire catalog embedding warming into `catalog_from_tools`**
+
+In the same function, after the existing `store_catalog_render_cache` call (after line 143, before the final `Ok(ToolsRender { ... })`), add:
+
+```rust
+    // Best-effort catalog embedding warm-up: never blocks or fails catalog
+    // construction beyond the fail-open Result already guaranteed by
+    // `ensure_embeddings_for_fingerprint`. Deliberately awaited inline
+    // (not spawned) so the FIRST `semantic_rank` call after a catalog
+    // change doesn't pay the cold-embed cost on its own critical path —
+    // this list_tools call pays it instead. `list_tools` is already cached
+    // for the CLI/unscoped path (see `execute.rs`'s `use_cache` logic) and
+    // is not documented anywhere as latency-critical, so this tradeoff is
+    // accepted rather than using a detached `tokio::spawn`.
+    let _ = manager
+        .ensure_embeddings_for_fingerprint(&fingerprint, &entries)
+        .await;
+```
+
+Also add the identical call on the cache-hit early-return path (`search.rs:76-91`), before the early `return Ok(...)` at line 86-90 (the local `entries`/`fingerprint` bindings are already in scope there too — the cache-hit branch reconstructs `entries`/`catalog_json`/`serialized_size` from the cached render, so `entries` is available):
+
+```rust
+        let _ = manager
+            .ensure_embeddings_for_fingerprint(&fingerprint, &entries)
+            .await;
+```
+
+- [ ] **Step 7: Write manager-level and search-level tests**
+
+In `crates/labby-gateway/src/gateway/manager/tests/code_mode.rs`, add (using whatever test-manager construction helper that file already uses — read it first to match the existing pattern):
 
 ```rust
     #[tokio::test]
-    async fn embed_texts_returns_empty_when_semantic_search_disabled() {
+    async fn semantic_rank_returns_empty_when_unconfigured() {
         let manager = test_manager().await; // reuse existing helper from this file
-        let result = manager.embed_texts(vec!["hello".to_string()]).await.unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[tokio::test]
-    async fn embed_texts_returns_empty_for_empty_input_without_config_check() {
-        let manager = test_manager().await;
-        let result = manager.embed_texts(vec![]).await.unwrap();
+        let result = manager
+            .semantic_rank(
+                "hello".to_string(),
+                5,
+                &CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+            )
+            .await
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -1060,129 +1172,33 @@ In `crates/labby-gateway/src/gateway/manager/tests/code_mode.rs`, add tests (usi
     async fn semantic_search_cooldown_blocks_immediate_retry_after_failure() {
         let manager = test_manager().await;
         manager.record_semantic_search_failure("test failure").await;
-        assert!(!manager.semantic_search_available(30_000).await);
-    }
-
-    #[tokio::test]
-    async fn semantic_search_cooldown_allows_retry_after_elapsed() {
-        let manager = test_manager().await;
-        manager.record_semantic_search_failure("test failure").await;
-        // cooldown_ms=0 would be invalid config, but for this unit test we
-        // pass a 0ms cooldown directly to assert the elapsed-time comparison
-        // itself, not full config plumbing.
-        assert!(manager.semantic_search_available(0).await);
+        assert!(!manager.semantic_search_available().await);
     }
 
     #[tokio::test]
     async fn semantic_search_recovery_clears_cooldown() {
         let manager = test_manager().await;
         manager.record_semantic_search_failure("test failure").await;
-        assert!(!manager.semantic_search_available(30_000).await);
+        assert!(!manager.semantic_search_available().await);
         manager.record_semantic_search_recovery().await;
-        assert!(manager.semantic_search_available(30_000).await);
+        assert!(manager.semantic_search_available().await);
     }
-```
 
-(If `test_manager()` is not the actual existing helper name, use whatever the file's existing tests call — inspect before writing, do not guess.)
-
-- [ ] **Step 6: Run tests**
-
-Run: `cargo test -p labby-gateway code_mode:: -- --nocapture`
-Expected: PASS.
-
-- [ ] **Step 7: Run full crate compile + lint**
-
-Run: `cargo check -p labby-gateway --all-features && cargo clippy -p labby-gateway --all-features -- -D warnings`
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add crates/labby-gateway/src/gateway/code_mode.rs crates/labby-gateway/src/gateway/manager.rs crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs crates/labby-gateway/src/gateway/code_mode/code_mode_host.rs crates/labby-gateway/src/gateway/manager/tests/code_mode.rs
-git commit -m "feat(gateway): implement CodeModeHost::embed_texts with fail-open cooldown"
-```
-
----
-
-## Task 7: Catalog embedding on `list_tools` (fingerprint-cached, best-effort)
-
-**Files:**
-- Modify: `crates/labby-gateway/src/gateway/code_mode/search.rs`
-- Test: extend existing tests in `crates/labby-gateway/src/gateway/code_mode/search.rs` if a test module exists there, else `crates/labby-gateway/src/gateway/manager/tests/code_mode.rs`.
-
-**Interfaces:**
-- Consumes: `GatewayManager::cached_embeddings`/`store_embedding_cache` (Task 6), `GatewayManager::embed_texts` (Task 6, via the `CodeModeHost` trait), the existing `fingerprint` local variable already computed in `catalog_from_tools` (`search.rs:67-74`).
-- Produces: catalog entries get their embeddings computed and cached as a side effect of `list_tools`/`build_tools_render`; this task does NOT change `ToolsRender`'s shape (embeddings are cache-only, not part of the returned struct) — Task 8 (`preamble.rs`/query-time blend) reads the cache directly via a new accessor, not through `ToolsRender`.
-
-- [ ] **Step 1: Add `ensure_catalog_embeddings` helper**
-
-In `crates/labby-gateway/src/gateway/code_mode/search.rs`, add a new function after `catalog_from_tools` (after line 150):
-
-```rust
-/// Best-effort: ensure the catalog embedding cache is warm for
-/// `fingerprint`. Never fails the caller — any embedding failure is already
-/// absorbed fail-open inside `GatewayManager::embed_texts` (Task 6), so this
-/// function only needs to decide whether a (re)embed is needed at all and
-/// store the result if one happened.
-async fn ensure_catalog_embeddings(manager: &GatewayManager, fingerprint: &str, entries: &[ToolDescriptor]) {
-    if manager.cached_embeddings(fingerprint).await.is_some() {
-        return; // already warm for this exact catalog
-    }
-    if entries.is_empty() {
-        return; // cold-start / empty catalog — nothing to embed
-    }
-    // Embed each entry's description only. Rationale (see plan doc Task 7
-    // Step 1 comment below for the full write-up): descriptions carry the
-    // natural-language intent an agent's synonym-style query is most likely
-    // to match; concatenating path/name/tags would bias the embedding toward
-    // exact-token surface forms that the lexical scorer already covers well,
-    // diluting the semantic signal the blend exists to add.
-    let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
-    let texts: Vec<String> = entries.iter().map(|e| e.description.clone()).collect();
-    let vectors = match manager.embed_texts(texts).await {
-        Ok(vectors) if vectors.len() == ids.len() => vectors,
-        Ok(_) => return, // fail-open: embed_texts returns [] on any degraded path
-        Err(_) => return, // defensive — embed_texts's contract says this shouldn't happen
-    };
-    let pairs: Vec<(String, Vec<f32>)> = ids.into_iter().zip(vectors).collect();
-    manager
-        .store_embedding_cache(super::CatalogEmbeddingCache {
-            fingerprint: fingerprint.to_string(),
-            vectors: pairs,
-        })
-        .await;
-}
-```
-
-- [ ] **Step 2: Call it from `catalog_from_tools`**
-
-In `catalog_from_tools` (`search.rs:50-150`), after the existing `store_catalog_render_cache` call (after line 143, before the final `Ok(ToolsRender { ... })` at line 145), add:
-
-```rust
-    ensure_catalog_embeddings(manager, &fingerprint, &entries).await;
-```
-
-Also add the same call on the cache-hit early-return path (the `if let Some((entries, catalog_json, serialized_size)) = manager.cached_catalog_render(&fingerprint).await { ... return Ok(...) }` block at `search.rs:76-91`) — a catalog render cache hit means the fingerprint (and thus entries) are unchanged, but the embedding cache could still be cold on first use (e.g. semantic search was just enabled via `gateway.code_mode.set` without the catalog itself changing). Add before the early `return Ok(...)` at line 86-90:
-
-```rust
-        ensure_catalog_embeddings(manager, &fingerprint, &entries).await;
-```
-
-(Note: this reads `entries` before the early return, which already exists as a local in that branch — no new binding needed, just insert the call.)
-
-- [ ] **Step 3: Verify this doesn't block/slow every `list_tools` call once warm**
-
-Confirm by re-reading `ensure_catalog_embeddings`'s first line (`if manager.cached_embeddings(fingerprint).await.is_some() { return; }`) — this is an `Arc<Mutex<..>>` lock + string comparison, sub-microsecond, so warm-cache calls pay negligible overhead. Only a genuine fingerprint change (or first-ever call, or semantic search just turned on) triggers a real embed. Add a code comment at the top of `ensure_catalog_embeddings` stating this explicitly if not already clear from the docstring written in Step 1.
-
-- [ ] **Step 4: Write a test**
-
-Add to whichever test location Task 6 Step 5 used (`crates/labby-gateway/src/gateway/manager/tests/code_mode.rs`), using a fake/stub embedding path if the existing test harness has one, or by enabling semantic search with a URL pointing at a local mock server if that infrastructure exists in this test file already — check first (`grep -n "mockito\|wiremock\|httpmock" crates/labby-gateway/Cargo.toml`). If no HTTP-mocking crate is already a dev-dependency, do NOT add one just for this — instead write a test that verifies `ensure_catalog_embeddings` is a no-op (cache stays empty, no panic) when semantic search is disabled (the default), which is the realistic CI path anyway:
-
-```rust
     #[tokio::test]
-    async fn catalog_embeddings_stay_cold_when_semantic_search_disabled() {
+    async fn ensure_embeddings_for_fingerprint_is_noop_when_unconfigured() {
         let manager = test_manager().await;
-        // Default config has semantic_search.enabled = false.
+        let entries = vec![]; // empty catalog — also exercises the cold-start-empty-catalog path
+        let result = manager
+            .ensure_embeddings_for_fingerprint("some-fingerprint", &entries)
+            .await;
+        assert!(result.is_empty());
+        assert!(manager.cached_embeddings("some-fingerprint").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn catalog_embeddings_stay_cold_when_semantic_search_unconfigured() {
+        let manager = test_manager().await;
+        // Default config has semantic_search.tei_url = None.
         let render = manager
             .list_tools(
                 &CodeModeCaller::TrustedLocal,
@@ -1193,60 +1209,73 @@ Add to whichever test location Task 6 Step 5 used (`crates/labby-gateway/src/gat
             )
             .await
             .unwrap();
-        // The embedding cache must remain empty — embed_texts() returns []
-        // for a disabled config, so ensure_catalog_embeddings has nothing to
-        // store even though it ran.
-        let fingerprint_probe = manager.cached_embeddings("anything").await;
-        assert!(fingerprint_probe.is_none());
-        let _ = render; // catalog itself still renders normally regardless
+        // The embedding cache must remain empty — ensure_embeddings_for_fingerprint
+        // returns immediately for an unconfigured host.
+        assert!(manager.cached_embeddings(&render.fingerprint).await.is_none());
     }
 ```
 
-(Adjust the exact `list_tools` call signature/imports to match what Task 6's test file already imports — copy its existing `use` block rather than guessing types.)
+(If `test_manager()` is not the actual existing helper name, use whatever the file's existing tests call — inspect before writing, do not guess.)
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 8: Run tests**
 
-Run: `cargo test -p labby-gateway code_mode:: search:: -- --nocapture`
+Run: `cargo test -p labby-gateway code_mode:: -- --nocapture`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 9: Run full crate compile + lint**
+
+Run: `cargo check -p labby-gateway --all-features && cargo clippy -p labby-gateway --all-features -- -D warnings`
+Expected: PASS. This task has the most speculative wiring in the plan (Step 4's `include_snippets`/visibility caveats) — budget extra iteration here.
+
+- [ ] **Step 10: Commit**
 
 ```bash
-git add crates/labby-gateway/src/gateway/code_mode/search.rs crates/labby-gateway/src/gateway/manager/tests/code_mode.rs
-git commit -m "feat(gateway): warm catalog embedding cache on list_tools, fingerprint-keyed"
+git add crates/labby-codemode/src/host.rs crates/labby-gateway/src/gateway/code_mode.rs crates/labby-gateway/src/gateway/manager.rs crates/labby-gateway/src/gateway/manager/code_mode_runtime.rs crates/labby-gateway/src/gateway/code_mode/code_mode_host.rs crates/labby-gateway/src/gateway/code_mode/search.rs crates/labby-gateway/src/gateway/manager/tests/code_mode.rs
+git commit -m "feat(gateway): implement CodeModeHost::semantic_rank with fail-open cooldown, single-flight cache, and catalog warming"
 ```
 
 ---
 
-## Task 8: Blend logic in `codemode.search()` (`preamble.rs`)
+## Task 6: Blend logic in `codemode.search()` (`preamble.rs`)
 
 **Files:**
 - Modify: `crates/labby-codemode/src/preamble.rs`
-- Test: existing test module in `preamble.rs` (`preamble.rs:482+`, confirmed present per research report)
+- Modify: `crates/labby-codemode/src/execute.rs` (thread `blend_weight` into `generate_discovery_js`)
+- Test: existing test module in `preamble.rs` (`preamble.rs:482+`)
 
 **Interfaces:**
-- Consumes: `globalThis.embedQueryText(text: string) -> Promise<number[] | null>` (Task 2). Note: `codemode.search()`'s JS does NOT receive raw catalog vectors — see design rationale below. Instead, it sends the query embedding request, and separately the *host* is responsible for ranking; since the chosen design (Task 3/6/7) keeps vector math host-side, `codemode.search()`'s JS needs a way to get *ranked catalog ids* back, not just a raw query vector. **This requires revisiting the wire shape** — see Step 0 below before writing any JS.
+- Consumes: the existing `callTool(id, params)` JS primitive (unchanged — no new bridge, per Task 2's reserved-id design). `generate_discovery_js(entries: &[CodeModeDiscoveryEntry], blend_weight: f32) -> Result<String, String>` — signature gains a second parameter.
 
-- [ ] **Step 0: Resolve the host-side-ranking vs JS-side-cosine-math design tension before writing code**
+- [ ] **Step 1: Thread `blend_weight` from config into `generate_discovery_js`**
 
-Earlier tasks built `EmbedQuery`/`EmbedQueryResult` to return `vector: Option<Vec<f32>>` — a raw query embedding handed to JS. But the plan's own design principle (stated in the Goal/Architecture section, and in `embeddings.rs`'s module doc) is "Rust owns 100% of the vector math... no raw floats are ever serialized into the sandbox." Handing a raw 1024-float query vector back into JS and asking `codemode.search()` to loop over `__codemodeDiscovery` doing per-entry cosine math against catalog vectors it doesn't even have (they were never sent — see Task 7, which stores them only in the host-side `CatalogEmbeddingCache`, never in `catalog_json`) is unworkable as specified across Tasks 2/3.
+In `crates/labby-codemode/src/execute.rs`'s `build_code_mode_proxy` (`execute.rs:133-199`), which already calls `host.list_tools(...)` (line 150-152), add a call to `host.config()` (already defined on the trait, `host.rs:91`) to obtain `blend_weight`:
 
-Resolve this now, before writing `preamble.rs` changes: change the **query-time round trip to return a ranked list, not a raw vector.** Revise Task 2/3's wire contract as follows (this is a design correction discovered during planning — apply it retroactively to Tasks 2 and 3 before or during this task's implementation):
+```rust
+        let code_mode_config = host.config().await;
+        let blend_weight = code_mode_config.semantic_search.blend_weight;
+```
 
-- `CodeModeRunnerOutput::EmbedQuery { seq, text }` — unchanged.
-- `CodeModeRunnerInput::EmbedQueryResult { seq, ranked: Vec<(String, f32)> }` replaces the `vector: Option<Vec<f32>>` field — `ranked` is the host-computed, already-cosine-scored, descending-sorted `(entry_id, similarity)` list for the current catalog (empty `Vec` = fail-open, semantic scoring unavailable, exactly like the old `None` case but shaped as "nothing to blend" instead of "no vector"). The drive-loop code in Task 3 Step 3 must be updated: instead of `host.embed_texts(vec![text])` returning a vector to hand back raw, it must (a) embed the query via `host.embed_texts(vec![text])`, (b) look up the current catalog's cached vectors via the fingerprint the drive loop already has access to through `cfg`/`self` (thread the fingerprint through `RunnerConfig` or recompute it — confirm the cleanest path by checking whether `RunnerConfig` already carries anything catalog-identifying; if not, the simplest correct fix is for `GatewayManager::embed_texts` itself to NOT be the ranking entry point — instead add a *second*, more specific trait method `CodeModeHost::semantic_rank(&self, query: &str, top_k: usize) -> Result<Vec<(String, f32)>, ToolError>` that internally does embed-query + cosine-rank-against-cached-catalog-vectors + cooldown, all inside `labby-gateway`, so `labby-codemode`'s drive loop just calls ONE host method and gets back the ranked list directly — no separate "fetch catalog vectors across the crate boundary" plumbing needed in `labby-codemode` at all).
+Insert this near the top of `build_code_mode_proxy`, before the `discovery_js` construction (before the current `execute.rs:173-174` call to `generate_discovery_js`), and update that call site to pass `blend_weight`:
 
-**This changes Task 1 and Task 6:** replace `CodeModeHost::embed_texts` as the *drive-loop-facing* method with `CodeModeHost::semantic_rank(&self, query: String, top_k: usize) -> impl Future<Output = Result<Vec<(String, f32)>, ToolError>> + Send`. Keep `embed_texts` too (Task 7's catalog-embedding path still needs a raw batch-embed primitive) — both trait methods coexist: `embed_texts` for catalog warming (host-internal, `search.rs` calls it), `semantic_rank` for query-time scoring (drive-loop-facing, wraps `embed_texts([query])` + `cached_embeddings(fingerprint)` + `cosine_similarity` + cooldown internally). Go back and adjust:
-  - Task 1: add `semantic_rank` to the trait alongside `embed_texts`; `NoopHost::semantic_rank` returns `Ok(Vec::new())`.
-  - Task 2: `CodeModeRunnerInput::EmbedQueryResult { seq, ranked: Vec<(String, f32)> }` (not `vector: Option<Vec<f32>>`). JS-side `embedQueryText` (rename to `__labSemanticRank` internal name, but keep a JS-facing name that reflects what it returns — e.g. `globalThis.__labSemanticRank = (query, topK) => Promise<Array<{id: string, score: number}>>`) resolves to an array (possibly empty), never `null` — empty array IS the fail-open signal now, simplifying the "must never throw" contract (no special-casing null vs array in JS).
-  - Task 3: the drive-loop's `EmbedQuery`-arm future calls `host.semantic_rank(text, top_k)` directly (needs `top_k` threaded from somewhere — reuse the existing `limit` already sent in `codemode.search`'s own `input.limit`, so the JS call becomes `globalThis.__labEmitEmbedQuery(text, limit)` with `limit` as a second arg, and the emit function reads both args).
-  - Task 6: `GatewayManager::semantic_rank` becomes the fail-open-wrapped method (mirrors `embed_texts`'s fail-open shape from Task 6 Step 4): looks up `cached_embeddings(current_fingerprint)`, calls `embed_texts(vec![query])` for the query vector, calls `rank_by_similarity` (Task 5), truncates to `top_k`, returns `Ok(ranked)` always (never `Err`) — same fail-open contract as `embed_texts`. This needs the *current* fingerprint, which `search.rs`'s `catalog_from_tools` already computes locally but does not currently store anywhere durable — add one more small piece of state: `GatewayManager` tracks `code_mode_current_catalog_fingerprint: Arc<Mutex<Option<String>>>`, set at the end of `catalog_from_tools` (both the cache-hit and cache-miss paths) right where `ensure_catalog_embeddings` is called, so `semantic_rank` can read "what's the fingerprint of the catalog this execution is using" without threading it through `CodeModeHost::call_tool`'s narrower signature.
+```rust
+        let discovery_js =
+            super::preamble::generate_discovery_js(&discovery_entries, blend_weight).map_err(...)
+```
 
-Do this design correction as literal edits to the already-committed Task 1/2/3/6 code in this same working session (amend those commits or add small follow-up commits — prefer follow-up commits per the "always create NEW commits" global git convention) before proceeding with Steps 1+ below, which assume the corrected `semantic_rank`-based shape.
+(Keep the existing `.map_err(...)` closure unchanged — only the call's argument list changes.)
 
-- [ ] **Step 1: Add the blend-aware `codemode.search` JS**
+- [ ] **Step 2: Update `generate_discovery_js`'s signature and add the blend-aware `codemode.search`**
 
-In `crates/labby-codemode/src/preamble.rs`, modify `generate_discovery_js` (`preamble.rs:170-333`). Change `codemode.search` (currently `preamble.rs:201-256`) from a function returning `Promise.resolve(...)` synchronously to a genuine `async function` that awaits the new host bridge:
+In `crates/labby-codemode/src/preamble.rs`, change `generate_discovery_js`'s signature (`preamble.rs:170`):
+
+```rust
+pub(crate) fn generate_discovery_js(
+    entries: &[CodeModeDiscoveryEntry],
+    blend_weight: f32,
+) -> Result<String, String> {
+```
+
+Replace `codemode.search` (currently `preamble.rs:201-256`) with an `async function` that calls the existing `callTool` primitive against the reserved id:
 
 ```rust
 codemode.search = async function(input) {{
@@ -1259,7 +1288,6 @@ codemode.search = async function(input) {{
   if (!tokens.length) return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
 
   // --- lexical scoring (unchanged algorithm) ---
-  var LEXICAL_FIELD_WEIGHTS_SUM = 12 + 10 + 8 + 5 + 7 + 9; // max possible per-token score if a single token hit every field
   var lexicalById = {{}};
   var scored = [];
   for (var i = 0; i < __codemodeDiscovery.length; i++) {{
@@ -1303,64 +1331,68 @@ codemode.search = async function(input) {{
   }}
 
   // --- semantic blend ---
+  // Query the host's semantic ranker through the SAME callTool primitive
+  // used for every other host round-trip — no new bridge, see the plan's
+  // Global Constraints for why. Fail-open: any rejection or malformed
+  // response degrades to an empty ranked list, never an exception that
+  // could break search().
+  var ranked = [];
+  try {{
+    var response = await callTool("__lab_internal::semantic_rank", {{ query: query, limit: limit }});
+    ranked = (response && response.ranked) || [];
+  }} catch (e) {{
+    ranked = [];
+  }}
+
   // Normalization: lexical `score` is an unbounded sum of per-token
-  // best-field weights (max per token = 12, so an N-token query's
-  // theoretical ceiling is 12*N, but in practice most matches hit far fewer
-  // than all fields per token). We normalize each entry's lexical score by
-  // the MAX score actually observed among this query's lexical matches
-  // (not a fixed global ceiling), so normalization adapts to how many
-  // tokens/fields actually matched for this specific query rather than
-  // penalizing every query against an unreachable theoretical maximum.
-  // Semantic cosine similarity is already bounded to [-1, 1] (see
-  // `embeddings::cosine_similarity`'s `.clamp(-1.0, 1.0)`); we rescale it to
-  // [0, 1] to match the lexical normalization's range before blending.
+  // best-field weights. We normalize each entry's lexical score by the MAX
+  // score actually observed among THIS query's lexical matches (not a fixed
+  // global ceiling), so normalization adapts to how many tokens/fields
+  // actually matched for this specific query. Semantic cosine similarity is
+  // already bounded to [-1, 1] (see `embeddings::cosine_similarity`'s
+  // `.clamp(-1.0, 1.0)` on the Rust side); we rescale it to [0, 1] to match
+  // the lexical normalization's range before blending.
   //
-  // Blend formula: for entries that appear in EITHER the lexical or semantic
-  // result set, blended = max(normalized_lexical, semantic_similarity_0_to_1 * blend_weight).
+  // Blend formula: blended = max(normalized_lexical, semantic_similarity_0_to_1 * blend_weight).
   // `max` (not a weighted sum) is deliberate: a strong exact lexical match
   // should never be outranked by a mediocre semantic match, and a strong
   // semantic match (synonym case) should surface even with zero lexical
-  // overlap — either signal being strong is sufficient, matching the "OR"
-  // intuition of "found it via either route." `blend_weight` (config
-  // default 0.5) discounts semantic-only matches relative to a perfect
-  // lexical match, so ambiguous semantic near-misses don't crowd out
-  // legitimate lexical results at the same rank.
+  // overlap — either signal being strong is sufficient. `blend_weight`
+  // (config default 0.5) discounts semantic-only matches relative to a
+  // perfect lexical match, so ambiguous semantic near-misses don't crowd
+  // out legitimate lexical results at the same rank.
   var maxLexicalScore = 0;
   for (var m = 0; m < scored.length; m++) {{
     if (scored[m].score > maxLexicalScore) maxLexicalScore = scored[m].score;
   }}
-  var ranked = [];
-  try {{
-    ranked = await globalThis.__labSemanticRank(query, limit);
-  }} catch (e) {{
-    ranked = []; // fail-open: never let a semantic-rank rejection break search()
-  }}
-  if (ranked && ranked.length) {{
-    for (var r = 0; r < ranked.length; r++) {{
-      var rid = ranked[r].id;
-      var semanticSimilarity01 = (ranked[r].score + 1) / 2; // [-1,1] -> [0,1]
-      var existing = lexicalById[rid];
-      if (existing) {{
-        var normalizedLexical = maxLexicalScore > 0 ? existing.score / maxLexicalScore : 0;
-        existing.blendedScore = Math.max(normalizedLexical, semanticSimilarity01 * {blend_weight});
-      }} else {{
-        // Semantic-only match: not found by lexical scoring at all
-        // (e.g. the synonym case with zero token overlap). Look it up in
-        // the full discovery catalog and add it with a blended score
-        // derived purely from semantic similarity.
-        for (var d = 0; d < __codemodeDiscovery.length; d++) {{
-          if (__codemodeDiscovery[d].id === rid) {{
-            var de = __codemodeDiscovery[d];
-            var record2 = {{
-              path: de.path, id: de.id, kind: de.kind, namespace: de.namespace,
-              name: de.name, description: de.description, signature: de.signature,
-              tags: de.tags || [], score: 0,
-              blendedScore: semanticSimilarity01 * {blend_weight}
-            }};
-            lexicalById[rid] = record2;
-            scored.push(record2);
-            break;
-          }}
+  var BLEND_WEIGHT = {blend_weight};
+  for (var r = 0; r < ranked.length; r++) {{
+    var rid = ranked[r].id;
+    var semanticSimilarity01 = (ranked[r].score + 1) / 2; // [-1,1] -> [0,1]
+    var existing = lexicalById[rid];
+    if (existing) {{
+      var normalizedLexical = maxLexicalScore > 0 ? existing.score / maxLexicalScore : 0;
+      existing.blendedScore = Math.max(normalizedLexical, semanticSimilarity01 * BLEND_WEIGHT);
+    }} else {{
+      // Semantic-only match: not found by lexical scoring at all (e.g. the
+      // synonym case with zero token overlap). `ranked` can only ever
+      // contain ids already present in `__codemodeDiscovery` (the host's
+      // semantic_rank ranks exclusively within this execution's
+      // already-scope-filtered catalog — see the security invariant in the
+      // plan's Global Constraints), so this lookup is safe and will always
+      // find a match.
+      for (var d = 0; d < __codemodeDiscovery.length; d++) {{
+        if (__codemodeDiscovery[d].id === rid) {{
+          var de = __codemodeDiscovery[d];
+          var record2 = {{
+            path: de.path, id: de.id, kind: de.kind, namespace: de.namespace,
+            name: de.name, description: de.description, signature: de.signature,
+            tags: de.tags || [], score: 0,
+            blendedScore: semanticSimilarity01 * BLEND_WEIGHT
+          }};
+          lexicalById[rid] = record2;
+          scored.push(record2);
+          break;
         }}
       }}
     }}
@@ -1389,77 +1421,131 @@ codemode.search = async function(input) {{
 }};
 ```
 
-(`{blend_weight}` is a Rust-side format-string interpolation of `config.semantic_search.blend_weight` — `generate_discovery_js`'s signature must be extended to accept this value; thread it through from `execute.rs`'s `build_code_mode_proxy`, which already has access to `host.config()`. Confirm the exact plumbing: `build_code_mode_proxy` at `execute.rs:150-152` already calls `host.list_tools(...)`; it needs one more call, `host.config().await`, which `CodeModeHost::config` already exists for (`host.rs:91`) and is likely already called elsewhere in `execute.rs` for `timeout_ms` etc — check `execute_sandboxed`'s caller in `execute.rs` for where `config: CodeModeConfig` is already threaded in as a parameter, since `execute`/`execute_with_raw_response` (`execute.rs:26-38`, `40-131`) already take `config: CodeModeConfig` — thread `config.semantic_search.blend_weight` from there into `build_code_mode_proxy` and then into `generate_discovery_js`'s new parameter.)
+(`{blend_weight}` is a Rust-side format-string interpolation of the new `blend_weight: f32` parameter — since this whole block is generated inside a Rust `format!(r##"..."##, ...)` call per the existing `generate_discovery_js` pattern, add `blend_weight = blend_weight` to that macro's argument list alongside the existing `json = json`/`types_json = types_json` bindings, and escape literal JS braces as `{{`/`}}` exactly as the rest of the function already does.)
 
-Return shape note: `codemode.search()` now returns a plain object directly (`return {{...}}`) inside an `async function` rather than `Promise.resolve({{...}})` — both are equivalent once awaited (an `async function`'s return value is automatically wrapped in a resolved Promise), so this is NOT a breaking change to callers, consistent with the ground-truth note that every caller already does `await codemode.search(...)`.
+Return shape note: `codemode.search()` now returns a plain object directly inside an `async function` rather than `Promise.resolve({{...}})` — both are equivalent once awaited (an `async function`'s return value is automatically wrapped in a resolved Promise), so this is NOT a breaking change to callers — every caller already does `await codemode.search(...)`.
 
-- [ ] **Step 2: Update `generate_discovery_js`'s signature and the `__labSemanticRank` bridge naming**
+- [ ] **Step 3: Write unit tests for the generated JS shape**
 
-Rename the Task 2/8-Step-0-revised JS bridge from `embedQueryText` to `globalThis.__labSemanticRank = (query, topK) => Promise<Array<{{id, score}}>>` (internal-style double-underscore prefix, matching the naming convention of every other internal bridge in this codebase — `__labEmitToolCall`, `__labPendingToolCalls`, `__labSettlePendingOperation`, etc. — rather than the earlier placeholder name `embedQueryText`/`embedQueryText`, which reads like a public API surface and isn't). Go back and rename it consistently across Task 2's `runner.rs` changes and Task 3's `runner_drive.rs` changes.
-
-- [ ] **Step 3: Write unit tests for the blend/normalization math**
-
-In `preamble.rs`'s existing test module (`preamble.rs:482+`), the current tests exercise `generate_discovery_js`'s JS-string generation, not runtime behavior (there's no JS engine in a plain `cargo test` for this crate — confirm by reading a couple of existing tests there first: `sed -n '482,560p' crates/labby-codemode/src/preamble.rs`). Add tests in the same style asserting the generated JS **contains** the new blend logic markers, e.g.:
+In `preamble.rs`'s existing test module (`preamble.rs:482+`), add tests in the same string-assertion style as the existing tests (these tests check generated JS *text*, not runtime behavior — there's no JS engine in a plain `cargo test` for this crate):
 
 ```rust
     #[test]
-    fn generate_discovery_js_includes_semantic_blend_when_configured() {
-        let entries = vec![]; // reuse whatever existing test fixture builder this file already has
+    fn generate_discovery_js_includes_semantic_blend() {
+        let entries: Vec<CodeModeDiscoveryEntry> = vec![]; // reuse whatever existing test fixture builder this file already has
         let js = generate_discovery_js(&entries, 0.5).expect("js generation succeeds");
-        assert!(js.contains("__labSemanticRank"));
+        assert!(js.contains("__lab_internal::semantic_rank"));
         assert!(js.contains("blendedScore"));
         assert!(js.contains("codemode.search = async function"));
     }
 
     #[test]
     fn generate_discovery_js_interpolates_configured_blend_weight() {
-        let entries = vec![];
+        let entries: Vec<CodeModeDiscoveryEntry> = vec![];
         let js = generate_discovery_js(&entries, 0.75).expect("js generation succeeds");
-        assert!(js.contains("* 0.75"));
+        assert!(js.contains("var BLEND_WEIGHT = 0.75"));
+    }
+
+    #[test]
+    fn generate_discovery_js_search_never_throws_on_calltool_rejection() {
+        // Structural check: the semantic-rank call is wrapped in try/catch
+        // with `ranked = []` in the catch body, so a callTool rejection
+        // (e.g. network_error surfaced as a JS Error) cannot propagate out
+        // of codemode.search() and break the caller's script.
+        let entries: Vec<CodeModeDiscoveryEntry> = vec![];
+        let js = generate_discovery_js(&entries, 0.5).expect("js generation succeeds");
+        assert!(js.contains("catch (e) {"));
     }
 ```
 
-(Match the exact existing fixture-building helper used by this file's other tests — do not invent a different one. If `generate_discovery_js` currently takes only `entries: &[CodeModeDiscoveryEntry]`, Step 1/2 above already changed its signature to take a second `blend_weight: f32` parameter — update every existing call site, including the one in `execute.rs:173-174`, and every existing test in this file that calls `generate_discovery_js` with the old one-argument signature.)
+(Match the exact existing fixture-building helper used by this file's other tests — do not invent a different one. Update every existing call site in this file and in `execute.rs` that calls `generate_discovery_js` with the old one-argument signature to pass a `blend_weight` value too — e.g. `0.5` or `SemanticSearchConfig::default().blend_weight` in tests.)
 
 - [ ] **Step 4: Run tests**
 
 Run: `cargo test -p labby-codemode preamble:: -- --nocapture`
-Expected: PASS, including all pre-existing tests updated for the new signature plus the two new tests from Step 3.
+Expected: PASS, including all pre-existing tests updated for the new signature plus the three new tests from Step 3.
 
 - [ ] **Step 5: Full crate build + lint**
 
 Run: `cargo build -p labby-codemode --all-features && cargo build -p labby-gateway --all-features && cargo clippy --workspace --all-features -- -D warnings && cargo fmt --all -- --check`
-Expected: PASS across the whole workspace (both crates now share the revised `CodeModeHost` trait shape).
+Expected: PASS across the whole workspace.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add crates/labby-codemode/src/preamble.rs crates/labby-codemode/src/execute.rs
-git commit -m "feat(codemode): blend semantic similarity into codemode.search() ranking"
+git commit -m "feat(codemode): blend semantic similarity into codemode.search() via existing callTool bridge"
 ```
 
 ---
 
-## Task 9: End-to-end smoke test against the real TEI server
+## Task 7: Scope-invariant test + end-to-end smoke test against the real TEI server
 
 **Files:**
-- None modified — this is a manual verification task using whatever existing Code Mode execution entrypoint the repo has (CLI or MCP tool call), confirmed to exist per the research report (`cargo nextest run --workspace --all-features` covers unit tests; this task covers the thing unit tests can't: a real running gateway + real running sandbox + real TEI).
+- Modify: `crates/labby-gateway/src/gateway/manager/tests/code_mode.rs` (one additional test)
+- No other files modified — the remainder of this task is manual verification using whatever existing Code Mode execution entrypoint the repo has.
 
-- [ ] **Step 1: Start (or confirm running) the gateway with semantic search enabled**
+- [ ] **Step 1: Add the scope-invariant unit test called out in Global Constraints**
 
-Set `~/.lab/config.toml`'s `[code_mode.semantic_search]` section (or the config path this workspace/worktree uses for local dev — check `labby doctor`/`labby gateway list` output or `crates/labby-gateway`'s test/dev config loading convention) to:
+In `crates/labby-gateway/src/gateway/manager/tests/code_mode.rs`, add (using the same `test_manager()`-style helper as Task 5's tests):
+
+```rust
+    #[tokio::test]
+    async fn semantic_rank_never_returns_ids_outside_scope_filtered_catalog() {
+        // semantic_rank's own internal build_tools_render call uses the SAME
+        // `scope` parameter it was given (Task 5 Step 4), so an id excluded
+        // by that scope is structurally never present in `render.entries`
+        // for it to embed/rank in the first place — this is a compile-time/
+        // data-flow guarantee, not a runtime filter that could regress
+        // silently.
+        //
+        // This unit test exercises the unconfigured (no TEI) path, which
+        // already proves semantic_rank cannot fabricate ids independent of
+        // build_tools_render's scope-filtered output regardless of scope —
+        // a live, multi-upstream, TEI-backed confirmation of the same
+        // invariant is covered by this task's Step 6 (live smoke test).
+        let manager = test_manager().await;
+        let restrictive_scope = ToolScope::scoped_namespaces(vec![], vec![]);
+        let result = manager
+            .semantic_rank(
+                "anything".to_string(),
+                5,
+                &CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &restrictive_scope,
+            )
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+```
+
+- [ ] **Step 2: Run the test**
+
+Run: `cargo test -p labby-gateway semantic_rank_never_returns_ids -- --nocapture`
+Expected: PASS.
+
+- [ ] **Step 3: Commit the test**
+
+```bash
+git add crates/labby-gateway/src/gateway/manager/tests/code_mode.rs
+git commit -m "test(gateway): assert semantic_rank respects scope filtering"
+```
+
+- [ ] **Step 4: Start (or confirm running) the gateway with semantic search enabled**
+
+Set `~/.lab/config.toml`'s (or the config path this workspace/worktree uses for local dev) `[code_mode.semantic_search]` section to:
 
 ```toml
 [code_mode.semantic_search]
-enabled = true
 tei_url = "http://localhost:52000"
 ```
 
 Restart/reload the gateway (`labby gateway reload` or equivalent for this workspace — confirm the right command via `just --list` or the `labby` binary's own `--help`).
 
-- [ ] **Step 2: Run a Code Mode script through the CLI (or whatever local execution surface exists) with a synonym-style query**
+- [ ] **Step 5: Run a Code Mode script through the CLI (or whatever local execution surface exists) with a synonym-style query**
 
-Find the actual local execution entrypoint (grep for a `codemode` CLI subcommand: `grep -rn "codemode" crates/labby/src/cli* 2>/dev/null | grep -i "subcommand\|command" | head -10`, or use the MCP `codemode` tool directly via `mcporter` per the `testing:mcporter` skill if a CLI path doesn't exist). Run:
+Find the actual local execution entrypoint (grep for a `codemode` CLI subcommand, or use the MCP `codemode` tool directly via `mcporter` per the `testing:mcporter` skill if a CLI path doesn't exist). Run:
 
 ```js
 async () => {
@@ -1468,33 +1554,26 @@ async () => {
 }
 ```
 
-against a live catalog that includes at least one tool whose description plausibly matches "queue"/"saved"/"list" semantically without sharing exact tokens with "roster of saved queues" (use whatever upstreams are actually connected in this dev environment — check `labby gateway list` first to know what's available, do not assume a specific tool exists).
+against a live catalog that includes at least one tool whose description plausibly matches "queue"/"saved"/"list" semantically without sharing exact tokens with "roster of saved queues" (check `labby gateway list` first to know what's actually connected — do not assume a specific tool exists).
 
-- [ ] **Step 2b: Confirm a control case — same query with semantic search disabled returns fewer/different results**
+- [ ] **Step 6: Confirm a control case, fail-open behavior, and scope filtering live**
 
-Toggle `enabled = false`, reload, rerun the identical query, and confirm the result set is either smaller or differently ordered (proving the semantic blend had a real, observable effect) — if results are byte-identical with semantic search on vs off, something in the blend path is not actually running (most likely: the TEI URL is misconfigured, the cooldown is stuck engaged, or the catalog embedding cache never warmed — check `tracing::warn!`/`tracing::info!` log lines from Task 6 Step 3's `record_semantic_search_failure`/`record_semantic_search_recovery` to diagnose which).
+- **Control:** unset `tei_url`, reload, rerun the identical query, and confirm the result set is either smaller or differently ordered than Step 5's (proving the semantic blend had a real, observable effect). If results are byte-identical, something in the blend path isn't running — check `tracing::warn!`/`tracing::info!` log lines from Task 5 Step 3's `record_semantic_search_failure`/`record_semantic_search_recovery` to diagnose.
+- **Fail-open:** re-set `tei_url` to an unreachable port, reload, rerun the query. Confirm: the call succeeds with no error surfaced; results match lexical-only behavior; exactly one `tracing::warn!` line appears; a second search immediately after does NOT produce a second warn line (cooldown); if the execution surface exposes a call trace, confirm it contains no entry for `__lab_internal::semantic_rank`.
+- **Recovery:** point `tei_url` back at the real TEI server, wait 30+ seconds, rerun the query, and confirm semantic results return again with a `tracing::info!` "tei_recovered" line, with no gateway restart required.
+- **Scope filtering (if the dev environment has 2+ upstreams connected):** run the same synonym-style query from an execution surface/caller scoped to exclude one upstream (check `tests/mcporter/` for a scoped-session example if the harness supports it) and confirm that upstream's tools never appear in results, even if they'd otherwise be a strong semantic match.
 
-- [ ] **Step 3: Confirm fail-open behavior live**
+- [ ] **Step 7: Document findings inline in the PR description (not a new doc file)**
 
-Stop the TEI container (or point `tei_url` at an unreachable port), reload the gateway, and rerun the same `codemode.search(...)` query. Confirm:
-- The call succeeds (no error surfaced to the caller).
-- The result set matches what lexical-only search would have returned before this feature existed (i.e. behaviorally identical to `enabled = false`).
-- A single `tracing::warn!` line appears in the gateway's logs for this failure (check via whatever log-viewing convention this workspace uses — `journalctl`, `docker logs`, or the gateway's own log file).
-- A second `codemode.search(...)` call made immediately after does NOT produce a second `tracing::warn!` line (cooldown suppresses the repeat).
-
-- [ ] **Step 4: Restart TEI and confirm auto-recovery**
-
-Restart the TEI container, wait 30+ seconds (the cooldown window), rerun `codemode.search(...)` with the same synonym query, and confirm semantic results return again without any gateway restart — and that a `tracing::info!` "tei_recovered" line appears (Task 6 Step 3's `record_semantic_search_recovery`).
-
-- [ ] **Step 5: Document findings inline in the PR description (not a new doc file)**
-
-Note pass/fail for each of Steps 2-4 in the PR body when this plan reaches the `/gh-pr` step of the outer pipeline — this task has no code artifact of its own, it is a verification gate.
+Note pass/fail for each bullet in Step 6 in the PR body when this plan reaches the `/gh-pr` step of the outer pipeline — this task's manual verification has no code artifact of its own beyond Step 1's test.
 
 ---
 
 ## Self-Review Notes (for the plan author to confirm before handoff)
 
-- **Spec coverage:** freshness/lazy-computation (Task 7, fingerprint-keyed cache) — covered. Fail-open + cooldown + log-once (Task 6 Step 3) — covered. Config location/convention (Task 4) — covered, follows `CodeModeConfig` pattern exactly, defaults disabled. Blend normalization + formula documented in code comment (Task 8 Step 1's inline comment) — covered. Bridge pattern reuse (Task 2/3, deliberately narrower than a full `callTool` reuse after Task 8 Step 0's design correction ruled out both the naive reserved-tool-id approach AND a raw-vector-into-JS approach) — covered, with the reasoning for the final `semantic_rank`-shaped bridge documented. Empty/cold-start catalog (Task 7 Step 1's `if entries.is_empty() { return; }`) — covered. No new doc files beyond updating the existing `docs/runtime/CONFIG.md` (Task 4 Step 8) — covered.
-- **Known design correction embedded in the plan itself:** Task 8 Step 0 documents a real tension discovered between Task 2/3's initial `vector`-returning wire shape and the "no raw vectors in the sandbox" principle, and resolves it by revising the trait/protocol shape to return a host-ranked list instead. An implementer following this plan strictly in task order will build the vector-returning version first (Tasks 2-3) and then must revisit those files during Task 8 — this is called out explicitly so it isn't missed, but it does mean Tasks 2/3/6 are not fully final until Task 8 Step 0's revision lands. Executors using `subagent-driven-development` should read Task 8 Step 0 in full BEFORE implementing Tasks 2/3/6, or expect a follow-up correction pass.
-- **Placeholder scan:** no TBD/TODO markers; every step has literal code.
-- **Type consistency:** `CodeModeHost::embed_texts` (catalog batch embed) and `CodeModeHost::semantic_rank` (query-time ranked lookup) are two distinct, intentionally coexisting trait methods — verify no later task conflates them under one name.
+- **Spec coverage:** freshness/lazy-computation (Task 5 Step 6, fingerprint-keyed single-flight cache) — covered. Fail-open + cooldown + log-once (Task 5 Step 3) — covered. Config location/convention (Task 3) — covered, follows `CodeModeConfig` pattern, defaults unconfigured, YAGNI-trimmed per simplicity review. Blend normalization + formula documented in code comment (Task 6 Step 2's inline comment) — covered. Bridge pattern reuse (Task 2) — now genuinely minimal: zero new protocol variants, zero new javy bindings, zero new JS globals, reusing the exact `callTool` path via a reserved namespace, following the codebase's own `try_parse_local_provider_call`/`ARTIFACT_WRITE_CALL_ID` precedent for "id that isn't a real upstream tool." Empty/cold-start catalog (Task 5 Step 3's `entries.is_empty()` check) — covered. No new doc files beyond updating the existing `docs/runtime/CONFIG.md` (Task 3 Step 8) — covered.
+- **Engineering review fixes applied:** (1) architecture's race-condition finding on manager-global fingerprint state — fixed by threading `caller`/`surface`/`scope` into `semantic_rank` itself so the fingerprint is recomputed per-call from the call's own arguments, never read from shared mutable state (Task 1 design note, Task 5 Step 4). (2) simplicity's redundant-trait-method finding — no `embed_texts` on the trait at all; only `semantic_rank` is trait-level, `embed_via_tei` is a private `labby-gateway` helper called both for catalog warming (Task 5 Step 6) and query embedding (Task 5 Step 4) (Task 4). (3) simplicity's disproportionate-protocol finding — the original Tasks 2/3 (new `EmbedQuery`/`EmbedQueryResult` protocol variants, new javy binding, new FuturesUnordered) are gone entirely, replaced by this revision's Task 2 reserved-tool-id routing through the existing `callTool` path, matching the codebase's own `try_parse_local_provider_call` precedent. (4) security's SSRF/validation gap — `tei_url` now requires `url::Url::parse` + http/https scheme validation (Task 3 Step 4). (5) security's response-size gap — `embed_via_tei` now caps response bytes at 16 MiB before JSON decode (Task 4 Step 3). (6) security's scope-blindness concern — explicit invariant documented in Global Constraints, a unit test in Task 7 Step 1, and a live verification step in Task 7 Step 6. (7) performance's batch-limit gap — `embed_via_tei` now chunks at `TEI_MAX_BATCH_SIZE = 512` (Task 4). (8) performance's thundering-herd gap — `ensure_embeddings_for_fingerprint` holds its lock across the full check-then-embed-then-store sequence as a single-flight guard (Task 5 Step 3). (9) performance's `Mutex`-vs-`RwLock` finding — both new cache fields use `RwLock`, matching the `config` field precedent (Task 5 Step 2). (10) simplicity's YAGNI findings — `enabled` bool dropped (Task 3), `tei_timeout_ms`/`cooldown_ms` hardcoded as constants (Task 3/4/5), per-execution query cache explicitly deferred with a one-line rationale in Global Constraints rather than silently omitted.
+- **No mid-plan design correction this time:** unlike the prior revision (which required Tasks 1/2/3/6 to be retroactively amended by a late-plan discovery), this revision's `semantic_rank` trait signature is correct from Task 1 onward — the reserved-tool-id bridge design was fully worked out and validated (including checking `state.calls.push`/`calls_enqueued` exact call sites, and the `try_parse_local_provider_call`/`ARTIFACT_WRITE_CALL_ID` precedent) before Task 1 was written, so no task should require reopening an earlier, already-committed task.
+- **Known follow-up risk flagged in-line rather than hidden:** Task 5 Step 4's `semantic_rank` implementation has real module-path/visibility uncertainty (whether `runtime_owner`/`oauth_subject` need widened visibility, and whether `include_snippets: false`/`allow_cold_connect: false` are the right hardcoded defaults vs. threading them from somewhere else) — flagged explicitly as a "verify against actual code, adjust as needed" note rather than presented as certain. Task 5 Step 9 budgets explicit iteration time for this; it is the one piece of the plan most likely to need small adjustment during implementation.
+- **Placeholder scan:** no TBD/TODO markers; every step has literal code. The one intentionally-flagged uncertainty (Task 5 Step 4's verification note) is disclosed as such, not disguised as certain.
+- **Type consistency:** `CodeModeHost::semantic_rank` is the only new trait method (no `embed_texts` on the trait); its signature is identical from Task 1 through every consuming task (Task 2's `dispatch_internal_call`, Task 5's impl, Task 6's blend logic calling it indirectly via `callTool`). `ToolsRender.fingerprint` (new field, Task 1 Step 3) is consistently a `String` field access, never a method call, in every later reference (Task 5 Steps 4-6).
