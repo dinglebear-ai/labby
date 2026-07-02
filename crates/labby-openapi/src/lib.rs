@@ -5,12 +5,15 @@
 pub mod config;
 pub mod convert;
 pub mod error;
+pub mod http;
+pub mod registry;
 pub mod ssrf;
 
 pub use config::{
     OpenApiCredential, OpenApiProviderConfig, OpenApiSpecConfig, RESERVED_NAMESPACES, SpecSource,
 };
 pub use error::OpenApiError;
+pub use registry::{OpenApiRegistry, OperationHandle, SpecEntry};
 
 #[cfg(test)]
 mod tests_config;
