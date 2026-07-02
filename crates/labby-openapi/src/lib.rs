@@ -4,3 +4,10 @@
 //! `labby-codemode`. MUST NOT depend on `labby-codemode`/`labby-gateway`.
 pub mod config;
 pub mod error;
+
+pub use config::{
+    OpenApiCredential, OpenApiProviderConfig, OpenApiSpecConfig, RESERVED_NAMESPACES, SpecSource,
+};
+
+#[cfg(test)]
+mod tests_config;

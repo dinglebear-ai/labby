@@ -206,6 +206,43 @@ pub struct LabConfig {
     /// Gateway spawn-guard and command-allowlist preferences.
     #[serde(default)]
     pub gateway: GatewayPreferences,
+    /// Code Mode `openapi` local-provider spec configuration.
+    ///
+    /// Non-secret only (spec URL/path, label, mandatory base_url, allowlist);
+    /// credentials are read from `OPENAPI_<LABEL>_*` env vars, never TOML.
+    #[serde(default)]
+    pub openapi: OpenApiTomlSection,
+}
+
+/// `[openapi]` config section: a list of `[[openapi.specs]]` tables.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OpenApiTomlSection {
+    /// Configured specs.
+    #[serde(default)]
+    pub specs: Vec<OpenApiSpecToml>,
+}
+
+/// One `[[openapi.specs]]` table. Non-secret fields only.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OpenApiSpecToml {
+    /// Provider label (`openapi::<label>.<operationId>`).
+    #[serde(default)]
+    pub label: String,
+    /// Mandatory base URL for outbound requests (validated at load time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Spec document URL (mutually exclusive with `spec_path`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_url: Option<String>,
+    /// Spec document filesystem path (mutually exclusive with `spec_url`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_path: Option<String>,
+    /// Header name for `OPENAPI_<LABEL>_API_KEY` injection (default `X-API-Key`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_header: Option<String>,
+    /// Deny-by-default allowlist of raw operationIds.
+    #[serde(default)]
+    pub allowed_operations: Vec<String>,
 }
 
 // `GatewayPreferences` moved to `labby_runtime::gateway_config`; re-exported above.
@@ -1643,6 +1680,89 @@ pub fn load() -> Result<LabConfig> {
     Ok(cfg)
 }
 
+/// Resolve the Code Mode `openapi` provider config from the parsed `[openapi]`
+/// TOML section plus `OPENAPI_<LABEL>_*` env vars.
+///
+/// Non-secret fields come from TOML; credentials (`OPENAPI_<LABEL>_TOKEN` /
+/// `OPENAPI_<LABEL>_API_KEY`) come from `env`. `base_url` is mandatory; reserved
+/// or duplicate labels, a missing/invalid base_url, an invalid spec_url, and an
+/// ambiguous spec source are all hard config errors that fail boot.
+///
+/// `env` is injected (rather than read from the process environment directly) so
+/// tests stay hermetic. In production callers pass a `std::env::var`-backed closure.
+#[cfg(feature = "gateway")]
+pub fn load_openapi_provider_config(
+    section: &OpenApiTomlSection,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> std::result::Result<labby_openapi::OpenApiProviderConfig, ConfigError> {
+    use labby_openapi::{OpenApiCredential, OpenApiProviderConfig, OpenApiSpecConfig, SpecSource};
+
+    let mut specs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw in &section.specs {
+        let label = raw.label.trim().to_string();
+        if labby_openapi::RESERVED_NAMESPACES.contains(&label.as_str()) {
+            return Err(ConfigError::ReservedLabel { label });
+        }
+        if !seen.insert(label.clone()) {
+            return Err(ConfigError::DuplicateLabel { label });
+        }
+        let base_url: url::Url = raw
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ConfigError::MissingBaseUrl {
+                label: label.clone(),
+            })?
+            .parse()
+            .map_err(|_| ConfigError::InvalidBaseUrl {
+                label: label.clone(),
+            })?;
+
+        let upper = label.to_uppercase();
+        let credential = env(&format!("OPENAPI_{upper}_TOKEN"))
+            .filter(|t| !t.is_empty())
+            .map(OpenApiCredential::BearerToken)
+            .or_else(|| {
+                env(&format!("OPENAPI_{upper}_API_KEY"))
+                    .filter(|k| !k.is_empty())
+                    .map(|value| OpenApiCredential::ApiKey {
+                        header: raw
+                            .api_key_header
+                            .clone()
+                            .filter(|h| !h.trim().is_empty())
+                            .unwrap_or_else(|| "X-API-Key".into()),
+                        value,
+                    })
+            });
+
+        let spec_source = match (
+            raw.spec_url.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            raw.spec_path.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        ) {
+            (Some(u), None) => SpecSource::Url(u.parse().map_err(|_| ConfigError::InvalidSpecUrl {
+                label: label.clone(),
+            })?),
+            (None, Some(p)) => SpecSource::Path(p.into()),
+            _ => {
+                return Err(ConfigError::SpecSourceAmbiguous {
+                    label: label.clone(),
+                });
+            }
+        };
+
+        specs.push(OpenApiSpecConfig {
+            label,
+            spec_source,
+            base_url,
+            allowed_operations: raw.allowed_operations.clone(),
+            credential,
+        });
+    }
+    Ok(OpenApiProviderConfig { specs })
+}
+
 /// Candidate paths for `config.toml`, ordered by priority (highest first).
 pub fn toml_candidates() -> Vec<PathBuf> {
     let mut paths = vec![PathBuf::from("config.toml")];
@@ -2382,6 +2502,95 @@ mod tests {
         let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
         cfg.normalize_protected_mcp_routes().expect("normalize");
         cfg
+    }
+
+    #[cfg(feature = "gateway")]
+    fn openapi_section(toml: &str) -> OpenApiTomlSection {
+        toml::from_str::<LabConfig>(toml).expect("parse").openapi
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_reserved_label_rejected() {
+        let toml = r#"[[openapi.specs]]
+label = "git"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+allowed_operations = ["getUser"]"#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::ReservedLabel { ref label } if label == "git"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_missing_base_url_rejected() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+spec_url = "https://api.example.com/openapi.json"
+allowed_operations = ["getUser"]"#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::MissingBaseUrl { .. }));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_duplicate_label_rejected() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+
+[[openapi.specs]]
+label = "vendor"
+base_url = "https://api2.example.com"
+spec_url = "https://api2.example.com/openapi.json""#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::DuplicateLabel { ref label } if label == "vendor"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_ambiguous_spec_source_rejected() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+spec_path = "/tmp/openapi.json""#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::SpecSourceAmbiguous { .. }));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_credential_read_from_env_not_toml() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+allowed_operations = ["getUser"]"#;
+        let env = |k: &str| (k == "OPENAPI_VENDOR_TOKEN").then(|| "tok-123".to_string());
+        let cfg = load_openapi_provider_config(&openapi_section(toml), &env).unwrap();
+        assert!(cfg.specs[0].credential.is_some());
+        // Credential must NEVER round-trip through the TOML struct.
+        assert!(!format!("{:?}", cfg.specs[0]).contains("tok-123"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_api_key_uses_configured_header() {
+        let toml = r#"[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+api_key_header = "X-Custom-Key""#;
+        let env = |k: &str| (k == "OPENAPI_VENDOR_API_KEY").then(|| "sk-abc".to_string());
+        let cfg = load_openapi_provider_config(&openapi_section(toml), &env).unwrap();
+        match &cfg.specs[0].credential {
+            Some(labby_openapi::OpenApiCredential::ApiKey { header, .. }) => {
+                assert_eq!(header, "X-Custom-Key");
+            }
+            other => panic!("expected ApiKey credential, got {other:?}"),
+        }
     }
 
     fn vars<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Iterator<Item = (String, String)> + 'a {
