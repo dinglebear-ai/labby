@@ -81,17 +81,18 @@ impl GatewayConfigStore for SlowPersistStore {
     }
 }
 
-static DEPLOY_KNOWN_META: labby_primitives::plugin::PluginMeta = labby_primitives::plugin::PluginMeta {
-    name: "deploy",
-    display_name: "Deploy",
-    description: "deploy (test stub)",
-    category: labby_primitives::plugin::Category::Bootstrap,
-    docs_url: "",
-    required_env: &[],
-    optional_env: &[],
-    default_port: None,
-    supports_multi_instance: false,
-};
+static DEPLOY_KNOWN_META: labby_primitives::plugin::PluginMeta =
+    labby_primitives::plugin::PluginMeta {
+        name: "deploy",
+        display_name: "Deploy",
+        description: "deploy (test stub)",
+        category: labby_primitives::plugin::Category::Bootstrap,
+        docs_url: "",
+        required_env: &[],
+        optional_env: &[],
+        default_port: None,
+        supports_multi_instance: false,
+    };
 
 impl crate::registry::InProcessServiceRegistry for DeployKnownRegistry {
     fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {

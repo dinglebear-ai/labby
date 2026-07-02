@@ -7,6 +7,6 @@
 
 pub use labby_primitives::plugin_ui::{
     BOOL_FIELD, FIELD_VALIDATION_DEFAULT, FieldKind, FieldValidation, SECRET_FIELD,
-    SECRET_OPTIONAL_FIELD, TEXT_FIELD, TEXT_OPTIONAL_FIELD, UI_SCHEMA_DEFAULT, UiSchema,
-    URL_FIELD, URL_OPTIONAL_FIELD, WizardKind, file_path_within_root,
+    SECRET_OPTIONAL_FIELD, TEXT_FIELD, TEXT_OPTIONAL_FIELD, UI_SCHEMA_DEFAULT, URL_FIELD,
+    URL_OPTIONAL_FIELD, UiSchema, WizardKind, file_path_within_root,
 };

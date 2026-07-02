@@ -74,7 +74,7 @@ pub struct FieldValidation {
     pub max_length: Option<usize>,
     /// ECMAScript-compatible regex the value must match.
     pub pattern: Option<&'static str>,
-    /// Whether the field accepts empty / missing values.
+    /// Whether the field must be present and non-empty.
     pub required: bool,
     /// Safe root for `FieldKind::FilePath` validation.
     pub safe_root: Option<&'static str>,
@@ -89,8 +89,15 @@ pub enum WizardKind {
 
 /// Validate a user-provided file path under an explicit safe root.
 ///
-/// This does not canonicalize. It rejects any `..` component before joining,
+/// This is a **lexical-only** check for UI/pre-submit validation (Bootstrap
+/// wizard, Settings rail) — it rejects any `..` component before joining,
 /// then verifies the final path still starts with the supplied safe root.
+/// It does not canonicalize and does not consult the filesystem, so it is
+/// **not** a security boundary: a symlink (or other filesystem state) can
+/// still redirect an otherwise-lexically-valid path outside `safe_root`.
+/// Callers that use this result to gate an actual file read/write must
+/// re-validate at the I/O boundary with canonicalization, the way
+/// `labby-runtime::path_safety` does for dispatch modules.
 #[must_use]
 pub fn file_path_within_root(input: &str, safe_root: &Path) -> bool {
     let path = Path::new(input);

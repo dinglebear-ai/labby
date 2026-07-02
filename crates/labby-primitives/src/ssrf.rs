@@ -179,17 +179,29 @@ pub fn parse_validated_https_url(url: &str) -> Result<url::Url, SsrfError> {
         )));
     }
 
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| SsrfError::InvalidUrl(format!("URL `{redacted}` must include a host")))?;
-    parsed
-        .port_or_known_default()
-        .ok_or_else(|| SsrfError::InvalidUrl(format!("URL `{redacted}` must include a port")))?;
-
-    check_host_not_private(host)?;
-    if let Ok(addr) = host.parse::<IpAddr>() {
-        check_ip_not_private(addr, &redacted)?;
+    // Match on the typed `Host` rather than `host_str()` + manual string/
+    // `IpAddr::parse` reasoning: `host_str()` serializes IPv6 literals with
+    // brackets (`"[::1]"`), which fails `IpAddr::from_str` outright (brackets
+    // aren't part of the textual IP grammar) and doesn't match the bare
+    // `"::1"` / `"fe80::1"` literals `check_host_not_private` denylists. That
+    // combination let bracketed IPv6 loopback/link-local/ULA hosts skip both
+    // checks entirely. `Url::host()` hands back an already-parsed
+    // `Ipv4Addr`/`Ipv6Addr` with no bracket ambiguity, so every host form is
+    // routed to the same `check_ip_not_private` guard used by the tests below.
+    match parsed.host() {
+        Some(url::Host::Domain(domain)) => check_host_not_private(domain)?,
+        Some(url::Host::Ipv4(ip)) => check_ip_not_private(IpAddr::V4(ip), &redacted)?,
+        Some(url::Host::Ipv6(ip)) => check_ip_not_private(IpAddr::V6(ip), &redacted)?,
+        None => {
+            return Err(SsrfError::InvalidUrl(format!(
+                "URL `{redacted}` must include a host"
+            )));
+        }
     }
+
+    // No separate port check: scheme is already pinned to `https` above, and
+    // `https` always has a known default port (443), so
+    // `port_or_known_default()` can never return `None` here.
 
     Ok(parsed)
 }
@@ -247,6 +259,28 @@ mod tests {
             "https://127.0.0.1/agent.tar.gz",
             "https://[::ffff:127.0.0.1]/agent.tar.gz",
             "https://192.168.1.20/agent.tar.gz",
+        ] {
+            let err = parse_validated_https_url(url).unwrap_err();
+            assert_eq!(err.kind(), "ssrf_blocked", "{url}");
+        }
+    }
+
+    #[test]
+    fn rejects_bracketed_ipv6_literals_through_the_full_url_path() {
+        // Regression test: `Url::host_str()` serializes IPv6 hosts with
+        // brackets (`"[::1]"`), which is neither equal to the bare `"::1"`
+        // literal `check_host_not_private` denylists nor parseable by
+        // `IpAddr::from_str` (brackets aren't part of the textual IP
+        // grammar). Before routing through the typed `Url::host()` enum,
+        // these bypassed both checks entirely. Exercise the loopback,
+        // link-local, and ULA ranges through the actual public entry point
+        // (not `check_ip_not_private` directly) so a regression here fails
+        // the same way a real caller would hit it.
+        for url in [
+            "https://[::1]/agent.tar.gz",
+            "https://[fe80::1]/agent.tar.gz",
+            "https://[fc00::1]/agent.tar.gz",
+            "https://[fd00::1]/agent.tar.gz",
         ] {
             let err = parse_validated_https_url(url).unwrap_err();
             assert_eq!(err.kind(), "ssrf_blocked", "{url}");
