@@ -1,4 +1,18 @@
-import { CircleAlert } from 'lucide-react'
+import { CircleAlert, Loader2 } from 'lucide-react'
+
+/**
+ * Brief centered spinner shown while the catalog has not yet resolved
+ * (`!capabilities.ready`). Rendered by `CapabilityGuard` INSTEAD OF the guarded
+ * children so their `/v1/*` fetches do not fire before the catalog confirms the
+ * backing service exists.
+ */
+export function CapabilityPending() {
+  return (
+    <div className="flex min-h-[60vh] items-center justify-center">
+      <Loader2 className="size-6 animate-spin text-aurora-text-muted" />
+    </div>
+  )
+}
 
 /**
  * Full-page state shown when a feature-gated service was not compiled into this

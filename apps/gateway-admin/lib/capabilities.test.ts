@@ -8,7 +8,6 @@ const ALL = [
   { name: 'acp' },
   { name: 'device' },
   { name: 'marketplace' },
-  { name: 'stash' },
 ]
 
 test('all capabilities available when their services are present', () => {
@@ -16,8 +15,7 @@ test('all capabilities available when their services are present', () => {
   assert.equal(caps.acp, true)
   assert.equal(caps.nodes, true)
   assert.equal(caps.marketplace, true)
-  assert.equal(caps.stash, true)
-  assert.equal(caps.isLoading, false)
+  assert.equal(caps.ready, true)
 })
 
 test('gateway-only catalog hides gated capabilities', () => {
@@ -25,7 +23,7 @@ test('gateway-only catalog hides gated capabilities', () => {
   assert.equal(caps.acp, false)
   assert.equal(caps.nodes, false)
   assert.equal(caps.marketplace, false)
-  assert.equal(caps.stash, false)
+  assert.equal(caps.ready, true)
 })
 
 test('nodes capability is backed by the "device" service, not "nodes"', () => {
@@ -33,23 +31,35 @@ test('nodes capability is backed by the "device" service, not "nodes"', () => {
   assert.equal(deriveCapabilities([{ name: 'nodes' }], false, false).nodes, false)
 })
 
-test('fail-open while loading', () => {
+test('ready is false while the catalog is loading', () => {
   const caps = deriveCapabilities([], true, false)
+  assert.equal(caps.ready, false)
+  // Fail-open while unresolved.
   assert.equal(caps.acp, true)
   assert.equal(caps.nodes, true)
   assert.equal(caps.marketplace, true)
-  assert.equal(caps.stash, true)
-  assert.equal(caps.isLoading, true)
 })
 
-test('fail-open on catalog error', () => {
+test('ready is true once real data has arrived', () => {
+  assert.equal(deriveCapabilities([{ name: 'gateway' }], false, false).ready, true)
+})
+
+test('ready is true on catalog error, but capabilities stay fail-open', () => {
   const caps = deriveCapabilities([{ name: 'gateway' }], false, true)
+  assert.equal(caps.ready, true)
   assert.equal(caps.acp, true)
+  assert.equal(caps.nodes, true)
   assert.equal(caps.marketplace, true)
 })
 
-test('fail-open on empty catalog (no confident data)', () => {
+test('fallbackData first render: empty services + isLoading false + no error → not ready, fail-open', () => {
+  // The catalog SWR hook sets `fallbackData: []`, so on the very first render
+  // `isLoading` is already false while no data has arrived. `ready` must be
+  // false here so guarded pages do not render children (and fire /v1 fetches)
+  // before the catalog resolves.
   const caps = deriveCapabilities([], false, false)
+  assert.equal(caps.ready, false)
   assert.equal(caps.acp, true)
   assert.equal(caps.nodes, true)
+  assert.equal(caps.marketplace, true)
 })

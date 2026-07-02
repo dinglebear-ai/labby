@@ -39,6 +39,7 @@ import type { DrillTarget } from '@/components/dashboard/drill'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import { useGateways } from '@/lib/hooks/use-gateways'
 import { useDashboardMetrics } from '@/lib/hooks/use-dashboard-metrics'
+import { useCapabilities } from '@/lib/hooks/use-capabilities'
 import { fetchFleetDevices } from '@/lib/api/device-client'
 import {
   WINDOW_LABELS,
@@ -69,7 +70,17 @@ function PanelHeading({ title, hint }: { title: string; hint?: string }) {
 
 export default function OverviewPage() {
   const { data: gateways, isLoading: gatewaysLoading } = useGateways()
-  const { data: devices, error: devicesError } = useSWR('/fleet-devices', () => fetchFleetDevices())
+  const capabilities = useCapabilities()
+  // Only fetch fleet devices when the catalog confirms the `nodes` service is
+  // present. A null SWR key tells SWR not to fetch, so a gateway-only build
+  // never hits `/v1/nodes`. `nodesUnavailable` = catalog resolved and `nodes`
+  // is confidently absent → render the Devices tile as "n/a".
+  const nodesAvailable = capabilities.ready && capabilities.nodes
+  const nodesUnavailable = capabilities.ready && !capabilities.nodes
+  const { data: devices, error: devicesError } = useSWR(
+    nodesAvailable ? '/fleet-devices' : null,
+    () => fetchFleetDevices(),
+  )
   const [activeWindow, setActiveWindow] = useState<MetricsWindow>('24h')
   const [drill, setDrill] = useState<DrillTarget | null>(null)
   const { data: metrics, error: metricsError, mutate: reloadMetrics } = useDashboardMetrics(activeWindow)
@@ -158,9 +169,9 @@ export default function OverviewPage() {
           />
           <StatTile
             label="Devices"
-            value={live.connectedDevices}
+            value={nodesUnavailable ? 'n/a' : live.connectedDevices}
             icon={HardDrive}
-            loading={!devices && !devicesError}
+            loading={nodesAvailable && !devices && !devicesError}
           />
           <StatTile
             label="Tool calls"

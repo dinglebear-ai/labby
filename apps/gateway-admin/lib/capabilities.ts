@@ -2,7 +2,7 @@
  * Feature-gated capability derivation for the admin UI.
  *
  * The `labby` binary can be compiled without certain services (`acp`, `nodes`,
- * `stash`, `marketplace`). When a service is gated out at compile time it never
+ * `marketplace`). When a service is gated out at compile time it never
  * registers, so it is absent from `/v1/catalog`. The UI reads that same catalog
  * to decide which feature-specific pages and nav entries to show, so a
  * gateway-only build hides Chat/Nodes/Marketplace instead of letting those
@@ -11,6 +11,12 @@
  * `deriveCapabilities` is a pure function over the catalog service list so it
  * can be unit-tested without React; `useCapabilities` (in
  * `lib/hooks/use-capabilities.ts`) wraps it around the live catalog hook.
+ *
+ * Fail-open is keyed on whether the catalog has RESOLVED — i.e. real data has
+ * arrived (`services.length > 0`) or the fetch errored — not on a loading flag.
+ * The catalog SWR hook sets `fallbackData: []`, so `isLoading` is already
+ * `false` on the first render even though no data has arrived yet; `ready`
+ * captures the "definitive answer received" condition that `isLoading` cannot.
  */
 
 /** Feature-gated capabilities the UI conditionally exposes. */
@@ -21,14 +27,20 @@ export interface Capabilities {
   nodes: boolean
   /** Plugin/agent marketplace (`/marketplace`). Backend service `marketplace`. */
   marketplace: boolean
-  /** Component snapshot store. Backend service `stash`. */
-  stash: boolean
-  /** True until the catalog has resolved at least once. */
-  isLoading: boolean
+  /**
+   * True once the catalog has given a definitive answer — either real data has
+   * arrived (`services.length > 0`) or the fetch errored. Until then callers
+   * must not treat an absent capability as confirmed: the per-capability
+   * booleans stay fail-open (available) while `!ready`, but consumers that fire
+   * `/v1/*` requests (guarded pages, the chat bootstrap, the dashboard nodes
+   * tile) should wait for `ready` before fetching so a gated build never emits
+   * the background `404` we are avoiding.
+   */
+  ready: boolean
 }
 
-/** Gated capability keys (excludes the always-true `isLoading` field). */
-export type CapabilityKey = 'acp' | 'nodes' | 'marketplace' | 'stash'
+/** Gated capability keys (excludes the `ready` meta-field). */
+export type CapabilityKey = 'acp' | 'nodes' | 'marketplace'
 
 /**
  * Backend service name backing each capability. Note the `nodes` capability is
@@ -39,7 +51,6 @@ export const CAPABILITY_SERVICE: Record<CapabilityKey, string> = {
   acp: 'acp',
   nodes: 'device',
   marketplace: 'marketplace',
-  stash: 'stash',
 }
 
 /** Minimal shape `deriveCapabilities` needs from a catalog service entry. */
@@ -50,26 +61,32 @@ interface NamedService {
 /**
  * Derive capability flags from the catalog service list.
  *
- * Fail-open: a capability is only reported ABSENT when the catalog has
- * confidently resolved (not loading, no error, non-empty) and omits its
- * backing service. While the catalog is loading, errored, or empty, every
- * capability is reported available so a transient fetch problem never hides a
- * surface that actually exists.
+ * Fail-open: a capability is only reported ABSENT when the catalog has given a
+ * definitive answer (`ready`) and omits its backing service. While the catalog
+ * has not resolved (no data yet, empty due to `fallbackData: []`), every
+ * capability is reported available so a transient fetch state never hides a
+ * surface that actually exists. On error the catalog is also treated as
+ * definitive-but-fail-open: `ready` is true, but every capability stays
+ * available so a fetch failure never hides a working surface.
  */
 export function deriveCapabilities(
   services: readonly NamedService[],
   isLoading: boolean,
   hasError: boolean,
 ): Capabilities {
-  const confident = !isLoading && !hasError && services.length > 0
+  // `ready` = the catalog has given a definitive answer. `isLoading` is
+  // deliberately ignored: `fallbackData: []` makes it false on the first render
+  // before any data has arrived, so it cannot distinguish "resolved to empty"
+  // from "not resolved yet".
+  void isLoading
+  const ready = hasError || services.length > 0
   const has = (name: string) => services.some((service) => service.name === name)
-  const cap = (key: CapabilityKey) => !confident || has(CAPABILITY_SERVICE[key])
+  const cap = (key: CapabilityKey) => !ready || hasError || has(CAPABILITY_SERVICE[key])
 
   return {
     acp: cap('acp'),
     nodes: cap('nodes'),
     marketplace: cap('marketplace'),
-    stash: cap('stash'),
-    isLoading,
+    ready,
   }
 }

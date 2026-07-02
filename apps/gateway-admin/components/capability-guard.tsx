@@ -4,16 +4,24 @@ import type { ReactNode } from 'react'
 
 import { useCapabilities } from '@/lib/hooks/use-capabilities'
 import type { CapabilityKey } from '@/lib/capabilities'
-import { ServiceUnavailableNotice } from '@/components/service-unavailable-notice'
+import {
+  CapabilityPending,
+  ServiceUnavailableNotice,
+} from '@/components/service-unavailable-notice'
 
 /**
- * Renders `children` unless the required capability is confidently absent from
- * the server build, in which case it shows a "not available in this build"
- * notice instead of letting the page fail with an opaque `404`.
+ * Renders `children` only once the catalog confirms the required capability is
+ * available. Until the catalog has resolved (`!caps.ready`) it renders a brief
+ * loading placeholder INSTEAD OF the children, so the guarded page's `/v1/*`
+ * fetches never fire on a gated build before the catalog can swap in the
+ * "not available in this build" notice. Once resolved, a confidently-absent
+ * capability shows the notice; otherwise the children render.
  *
- * Fail-open: while the catalog is loading (or on fetch error) the capability is
- * reported available, so the page renders normally and the notice only appears
- * once the catalog confirms the service is gated out.
+ * Fail-open: the per-capability boolean stays available whenever the catalog
+ * has NOT given a definitive answer — real data received or errored — not on a
+ * loading flag (the catalog's `fallbackData: []` makes `isLoading` false on the
+ * first render). So a fetch error renders the children normally; only a
+ * resolved catalog that omits the backing service shows the notice.
  */
 export function CapabilityGuard({
   need,
@@ -25,6 +33,9 @@ export function CapabilityGuard({
   children: ReactNode
 }) {
   const capabilities = useCapabilities()
+  if (!capabilities.ready) {
+    return <CapabilityPending />
+  }
   if (!capabilities[need]) {
     return <ServiceUnavailableNotice serviceName={label} />
   }
