@@ -78,6 +78,10 @@ pub(crate) struct RunnerConfig {
     pub max_log_bytes: usize,
     pub trace_params: bool,
     pub capability_filter: ToolScope,
+    /// Loaded OpenAPI specs for the `openapi` local provider (cheap `Arc` clone).
+    pub openapi_registry: labby_openapi::OpenApiRegistry,
+    /// Hardened dispatch client for the `openapi` provider (cheap `Arc` clone).
+    pub openapi_http_client: reqwest::Client,
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +152,17 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         trace_params: bool,
         capability_filter: ToolScope,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
+        // Read the openapi registry/client from the host at the config-build site
+        // (per the plan's I4 fix — do NOT thread them down the positional arg
+        // list). Host-less runs (some tests) get an empty registry + a hardened
+        // client; the openapi shim is only ever emitted on the host path anyway.
+        let (openapi_registry, openapi_http_client) = match self.host {
+            Some(host) => (host.openapi_registry(), host.openapi_http_client()),
+            None => (
+                labby_openapi::OpenApiRegistry::default(),
+                labby_openapi::http::build_dispatch_client(),
+            ),
+        };
         let cfg = RunnerConfig {
             code_to_run,
             proxy,
@@ -158,6 +173,8 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             max_log_bytes,
             trace_params,
             capability_filter,
+            openapi_registry,
+            openapi_http_client,
         };
         self.run_in_runner_with_config(cfg).await
     }
@@ -635,23 +652,50 @@ fn enqueue_local_provider_call(
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
+    let openapi_registry = cfg.openapi_registry.clone();
+    let openapi_http_client = cfg.openapi_http_client.clone();
     pending_tool_calls.push(Box::pin(async move {
         let call_start = std::time::Instant::now();
-        let _guard = LOCAL_PROVIDER_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .await;
-        let result = if super::execute::local_providers_allowed(&caller, &capability_filter) {
-            dispatch_local_provider_stub(local, params).await
-        } else {
+        let result = if !super::execute::local_providers_allowed(&caller, &capability_filter) {
             Err(ToolError::Forbidden {
                 message: "local Code Mode providers require unscoped lab:admin".to_string(),
                 required_scopes: vec!["lab:admin".to_string()],
             })
+        } else if matches!(local.provider, LocalProviderName::Openapi) {
+            // NO LOCAL_PROVIDER_LOCK — openapi has no shared mutable local state,
+            // and must not serialize behind slow state/git ops. Branch BEFORE the
+            // lock and never route through dispatch_local_provider_stub.
+            dispatch_openapi_provider(&openapi_registry, &openapi_http_client, local, params).await
+        } else {
+            let _guard = LOCAL_PROVIDER_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .await;
+            dispatch_local_provider_stub(local, params).await
         };
         let elapsed_ms = call_start.elapsed().as_millis();
         (seq, id, redacted_params, result, elapsed_ms)
     }));
+}
+
+/// Dispatch an `openapi::<label>.<operationId>` call to `labby-openapi`. Splits
+/// the method on the FIRST `.` so a dotted operationId (`vendor.pets.list`) is
+/// preserved. Runs OUTSIDE `LOCAL_PROVIDER_LOCK`.
+async fn dispatch_openapi_provider(
+    registry: &labby_openapi::OpenApiRegistry,
+    client: &reqwest::Client,
+    local: LocalProviderCall,
+    params: Value,
+) -> Result<Value, ToolError> {
+    let (label, op) = local.method.split_once('.').ok_or_else(|| {
+        ToolError::InvalidParam {
+            message: "openapi call must be openapi::<label>.<operationId>".to_string(),
+            param: "id".to_string(),
+        }
+    })?;
+    labby_openapi::dispatch_openapi_call(registry, client, label, op, params)
+        .await
+        .map_err(Into::into)
 }
 
 fn enqueue_rejected_tool_call(
@@ -713,6 +757,14 @@ async fn dispatch_local_provider_stub(
             let _ = provider_name;
             dispatch_git_method(&workspace, &local.method, params).await
         }
+        // `Openapi` is dispatched BEFORE the lock in `enqueue_local_provider_call`
+        // and never reaches this stub. This arm is defensive only — a routing bug
+        // returns a scrubbed internal error rather than silently sharing the lock.
+        LocalProviderName::Openapi => Err(ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: "openapi provider must not be dispatched via the local-provider stub"
+                .to_string(),
+        }),
     }
 }
 
@@ -1222,7 +1274,34 @@ mod tests {
             max_log_bytes: 4096,
             trace_params: false,
             capability_filter: ToolScope::default(),
+            openapi_registry: labby_openapi::OpenApiRegistry::default(),
+            openapi_http_client: labby_openapi::http::build_dispatch_client(),
         }
+    }
+
+    /// The `openapi` provider must dispatch WITHOUT taking `LOCAL_PROVIDER_LOCK`,
+    /// so a slow state/git op holding that lock cannot stall it. Holding the lock
+    /// and dispatching an (empty-registry) openapi call must return quickly with
+    /// an `unknown_instance` error rather than blocking on the mutex.
+    #[tokio::test]
+    async fn openapi_dispatch_does_not_block_on_local_provider_lock() {
+        let lock = LOCAL_PROVIDER_LOCK.get_or_init(|| Mutex::new(()));
+        let _held = lock.lock().await; // a slow state/git op holds the lock
+        let reg = labby_openapi::OpenApiRegistry::default();
+        let client = labby_openapi::http::build_dispatch_client();
+        let call = LocalProviderCall {
+            provider: LocalProviderName::Openapi,
+            method: "vendor.getUser".to_string(),
+            params: Value::Null,
+        };
+        let res = tokio::time::timeout(
+            Duration::from_secs(2),
+            dispatch_openapi_provider(&reg, &client, call, serde_json::json!({})),
+        )
+        .await;
+        assert!(res.is_ok(), "openapi must not block on LOCAL_PROVIDER_LOCK");
+        // Empty registry ⇒ unknown label.
+        assert_eq!(res.unwrap().unwrap_err().kind(), "unknown_instance");
     }
 
     /// Budget/trace exclusion for reserved `__lab_internal::` pseudo-tool
@@ -1369,6 +1448,14 @@ sleep 3600
 
             fn runner_pool(&self) -> &RunnerPool {
                 &self.pool
+            }
+
+            fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+                labby_openapi::OpenApiRegistry::default()
+            }
+
+            fn openapi_http_client(&self) -> reqwest::Client {
+                labby_openapi::http::build_dispatch_client()
             }
         }
 
