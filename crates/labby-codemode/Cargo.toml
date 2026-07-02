@@ -37,6 +37,16 @@ url.workspace = true
 javy = { version = "7.0.0" }
 anyhow = "1"
 
+# Wasmtime dual-sandbox spike path. The published `javy-codegen = 4.0.0`
+# depends on Wasmtime/WASI 42 and fails the current RustSec gates. Javy v9 tags
+# an unpublished `javy-codegen = 4.0.1-alpha.1`; keep it pinned to the release
+# tag and force the patched Wasmtime/WASI 45 line during the spike.
+javy-codegen = { git = "https://github.com/bytecodealliance/javy", tag = "v9.0.0", version = "4.0.1-alpha.1" }
+deterministic-wasi-ctx = "=4.0.3"
+wasmtime = "=45.0.3"
+wasmtime-wasi = "=45.0.3"
+wasmtime-wizer = { version = "=45.0.3", features = ["wasmtime"] }
+
 # JavaScript AST normalization (export-shape detection in normalize.rs).
 boa_ast = "0.21.1"
 boa_interner = "0.21.1"

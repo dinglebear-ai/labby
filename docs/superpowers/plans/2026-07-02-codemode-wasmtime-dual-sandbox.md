@@ -319,6 +319,26 @@ ignores. The safe next step is one of:
   with a separately pinned and reviewed tool artifact;
 - change the architecture away from Javy-to-Wasm.
 
+2026-07-02 follow-up: research found a possible unblocking path through the
+Javy `v9.0.0` Git tag. That tag contains unpublished
+`javy-codegen 4.0.1-alpha.1`, pins `deterministic-wasi-ctx =4.0.3`, and can
+resolve to patched Wasmtime/WASI/Wizer `45.0.3`. Before Task 3 starts, prove
+this path in the real Lab worktree with:
+
+```bash
+cargo check -p labby-codemode --all-features
+cargo deny check
+cargo audit
+```
+
+Result: this path passed `cargo check -p labby-codemode --all-features` and
+`cargo deny check` in the real Lab worktree. `cargo audit` still reports the
+existing baseline `quinn-proto` and `rsa` advisories plus the allowed `paste`
+warning, but no Wasmtime/WASI 42 advisory remains on this path. Task 3 should
+use the Git-tagged Javy v9 codegen path until a crates.io `javy-codegen 4.0.1+`
+release exists. Track the first-check build cost: the focused package check took
+6m31s because the dependency graph builds native `wasm-opt`.
+
 - [ ] **Step 5: Commit**
 
 ```bash

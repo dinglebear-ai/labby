@@ -157,3 +157,58 @@ The production workspace should not retain the spike dependencies after this
 check. Keep this document as the durable artifact, and keep `Cargo.toml` /
 `Cargo.lock` clean until a dependency path passes both compilation and the
 security gates.
+
+## Javy v9 Git Spike
+
+Status: viable dependency path.
+
+The crates.io `javy-codegen 4.0.0` path is blocked by Wasmtime/WASI 42, but the
+Javy repository has moved forward. Javy `v9.0.0` contains an unpublished
+`javy-codegen 4.0.1-alpha.1` package in `crates/codegen`.
+
+Upstream facts verified on 2026-07-02:
+
+- Javy `v9.0.0` workspace pins `deterministic-wasi-ctx = "=4.0.3"` and uses the
+  Wasmtime/WASI/Wizer 45 family.
+- Javy `v9.0.0` `crates/codegen/Cargo.toml` declares
+  `javy-codegen = "4.0.1-alpha.1"`.
+- Patched Wasmtime/WASI `45.0.3` crates exist on crates.io and satisfy the
+  RustSec patched ranges relevant to the previous Wasmtime/WASI 42 blocker.
+
+The Lab spike dependency set is:
+
+```toml
+javy-codegen = { git = "https://github.com/bytecodealliance/javy", tag = "v9.0.0", version = "4.0.1-alpha.1" }
+deterministic-wasi-ctx = "=4.0.3"
+wasmtime = "=45.0.3"
+wasmtime-wasi = "=45.0.3"
+wasmtime-wizer = { version = "=45.0.3", features = ["wasmtime"] }
+```
+
+Expected verification:
+
+```bash
+cargo check -p labby-codemode --all-features
+cargo deny check
+cargo audit
+```
+
+Verification result on 2026-07-02:
+
+- `cargo check -p labby-codemode --all-features` passed in 6m31s.
+- `cargo deny check` passed after explicitly allowing the reviewed Javy Git
+  source and extending the existing `anyhow` wrapper policy to the Javy/Wasmtime
+  codegen dependency boundary.
+- `cargo audit` still reports the existing workspace baseline advisories for
+  `quinn-proto` and `rsa`, plus the allowed `paste` warning. It does not report
+  the Wasmtime/WASI 42 advisories from the crates.io `javy-codegen 4.0.0` path.
+
+Notes to carry into production implementation:
+
+- Wasmtime/WASI 45.0.3 raises the effective dependency Rust floor to 1.93.0;
+  this is acceptable for Lab's current stable Rust 1.96.0 workflow.
+- The dependency graph pulls native `wasm-opt` build dependencies and is
+  substantially heavier than the current subprocess-only Javy runtime path;
+  the first focused `labby-codemode` check took 6m31s.
+- This relies on a Git tag until Bytecode Alliance publishes
+  `javy-codegen 4.0.1+` to crates.io.

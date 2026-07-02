@@ -76,11 +76,27 @@ wrappers = [
     "labby-gateway",
     "agent-client-protocol",
     "agent-client-protocol-schema",
+    "deterministic-wasi-ctx",
+    "ittapi",
     "javy",
+    "javy-codegen",
+    "swc_common",
+    "vergen",
+    "vergen-lib",
+    "walrus",
+    "wasm-compose",
+    "wasm-opt",
+    "wasm-opt-cxx-sys",
+    "wasm-opt-sys",
     "wasmprinter",
     "wasmtime-environ",
+    "wasmtime-internal-component-macro",
+    "wasmtime-internal-core",
+    "wasmtime-internal-wit-bindgen",
+    "wit-parser",
+    "witx",
 ]
-reason = "lab-apis uses `thiserror`. anyhow is for the binary only."
+reason = "lab-apis uses `thiserror`. anyhow is allowed at binary, Code Mode Javy/codegen, and upstream protocol boundaries only."
 
 [[bans.deny]]
 name = "tabled"
@@ -90,4 +106,4 @@ reason = "Binary-only: table formatting happens in `lab/src/output.rs`, not lab-
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = ["https://github.com/bytecodealliance/javy"]
