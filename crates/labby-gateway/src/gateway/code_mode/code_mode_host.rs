@@ -181,6 +181,106 @@ impl CodeModeHost for GatewayManager {
         .map_err(|err| ToolError::internal_message(format!("snippet resolve task failed: {err}")))?
     }
 
+    async fn semantic_rank(
+        &self,
+        query: String,
+        top_k: usize,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+    ) -> Result<Vec<(String, f32)>, ToolError> {
+        let config = self.code_mode_config().await.semantic_search;
+        if !config.is_configured() || query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        // Recompute the SAME scope-filtered entries `list_tools` +
+        // `build_code_mode_proxy` would produce for this exact
+        // caller/surface/scope — this is what makes the design race-free: no
+        // shared "current fingerprint" state is read here, only this call's
+        // own arguments. `include_snippets`/`use_cache` deliberately mirror
+        // `build_code_mode_proxy`'s own formulas (labby-codemode
+        // `execute.rs`) so the fingerprint computed here matches the one the
+        // warming path in `catalog_from_tools` already embedded for this
+        // execution's catalog. `allow_cold_connect` is hardcoded `false`
+        // (unlike `list_tools`'s `caller.can_execute()`): semantic ranking
+        // must never spend wall-clock cold-connecting upstreams — by the
+        // time a sandbox calls search(), the proxy build already connected
+        // everything this execution can see.
+        let include_snippets = caller.can_use_snippets() && !scope.is_scoped();
+        let use_cache = surface == CodeModeSurface::Cli && scope.allowed_namespaces().is_none();
+        let owner = runtime_owner(caller, surface);
+        let oauth_subject = oauth_subject(caller);
+        let allowed = scope.allowed_namespaces();
+        let render = match search::build_tools_render(
+            self,
+            false,
+            &owner,
+            oauth_subject,
+            allowed,
+            include_snippets,
+            use_cache,
+        )
+        .await
+        {
+            Ok(render) => render,
+            // Fail-open: a catalog build failure must not break search().
+            Err(_) => return Ok(Vec::new()),
+        };
+        if !self.semantic_search_available().await {
+            return Ok(Vec::new());
+        }
+        // Embeddings are cached/warmed over the FULL render (same
+        // fingerprint + entry set as `catalog_from_tools`' warming path);
+        // ranking is then restricted to exactly the entry subset the
+        // sandbox's own `__codemodeDiscovery` contains for this scope — the
+        // same `kind == Snippet || scope.allows(...)` filter
+        // `build_code_mode_proxy` applies. This is the security invariant:
+        // `rank_by_similarity` is only ever given scope-allowed ids, so it
+        // is structurally impossible to return an id the sandbox cannot see.
+        let vectors = self
+            .ensure_embeddings_for_fingerprint(&render.fingerprint, &render.entries)
+            .await;
+        if vectors.is_empty() {
+            return Ok(Vec::new());
+        }
+        let allowed_ids: std::collections::BTreeSet<&str> = render
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == labby_codemode::CodeModeCatalogKind::Snippet
+                    || scope.allows(&entry.namespace, &entry.name)
+            })
+            .map(|entry| entry.id.as_str())
+            .collect();
+        let scoped_vectors: Vec<(String, Vec<f32>)> = vectors
+            .into_iter()
+            .filter(|(id, _)| allowed_ids.contains(id.as_str()))
+            .collect();
+        if scoped_vectors.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query_vec = match super::embeddings::embed_via_tei(
+            config
+                .tei_url
+                .as_deref()
+                .expect("is_configured() guarantees Some"),
+            &[query],
+        )
+        .await
+        {
+            Ok(mut v) if !v.is_empty() => v.remove(0),
+            Ok(_) => return Ok(Vec::new()),
+            Err(err) => {
+                self.record_semantic_search_failure(&err.to_string()).await;
+                return Ok(Vec::new());
+            }
+        };
+        self.record_semantic_search_recovery().await;
+        let mut ranked = super::embeddings::rank_by_similarity(&query_vec, &scoped_vectors);
+        ranked.truncate(top_k.max(1));
+        Ok(ranked)
+    }
+
     async fn config(&self) -> CodeModeConfig {
         self.code_mode_config().await
     }

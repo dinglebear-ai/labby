@@ -310,3 +310,77 @@ async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
         other => panic!("expected forbidden sdk error, got {other:?}"),
     }
 }
+
+// ── Semantic search (fail-open embedding blend) ──────────────────────────────
+
+#[tokio::test]
+async fn semantic_rank_returns_empty_when_unconfigured() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    let result = manager
+        .semantic_rank(
+            "hello".to_string(),
+            5,
+            &CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Cli,
+            &ToolScope::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn semantic_search_cooldown_blocks_immediate_retry_after_failure() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    manager.record_semantic_search_failure("test failure").await;
+    assert!(!manager.semantic_search_available().await);
+}
+
+#[tokio::test]
+async fn semantic_search_recovery_clears_cooldown() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    manager.record_semantic_search_failure("test failure").await;
+    assert!(!manager.semantic_search_available().await);
+    manager.record_semantic_search_recovery().await;
+    assert!(manager.semantic_search_available().await);
+}
+
+#[tokio::test]
+async fn ensure_embeddings_for_fingerprint_is_noop_when_unconfigured() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    let entries = Vec::new(); // empty catalog — also exercises the cold-start-empty-catalog path
+    let result = manager
+        .ensure_embeddings_for_fingerprint("some-fingerprint", &entries)
+        .await;
+    assert!(result.is_empty());
+    assert!(
+        manager
+            .cached_embeddings("some-fingerprint")
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn catalog_embeddings_stay_cold_when_semantic_search_unconfigured() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    // Default config has semantic_search.tei_url = None.
+    let render = manager
+        .list_tools(
+            &CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Cli,
+            &ToolScope::default(),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+    // The embedding cache must remain empty — ensure_embeddings_for_fingerprint
+    // returns immediately for an unconfigured host.
+    assert!(
+        manager
+            .cached_embeddings(&render.fingerprint)
+            .await
+            .is_none()
+    );
+}

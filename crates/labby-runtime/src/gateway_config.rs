@@ -794,7 +794,9 @@ pub enum ConfigError {
     InvalidCodeModeMaxLogEntries { value: usize },
     #[error("gateway code_mode.max_log_bytes={value} is invalid — expected 1..=104857600")]
     InvalidCodeModeMaxLogBytes { value: usize },
-    #[error("gateway code_mode.semantic_search.blend_weight={value} is invalid — expected 0.0..=1.0")]
+    #[error(
+        "gateway code_mode.semantic_search.blend_weight={value} is invalid — expected 0.0..=1.0"
+    )]
     InvalidSemanticSearchBlendWeight { value: f32 },
     #[error(
         "gateway code_mode.semantic_search.tei_url={value:?} is invalid — expected a well-formed http:// or https:// URL"
@@ -1172,7 +1174,10 @@ mod tests {
         let mut cfg = CodeModeConfig::default();
         cfg.semantic_search.tei_url = Some("ftp://example.com".to_string());
         let err = cfg.validate().unwrap_err();
-        assert!(matches!(err, ConfigError::InvalidSemanticSearchTeiUrl { .. }));
+        assert!(matches!(
+            err,
+            ConfigError::InvalidSemanticSearchTeiUrl { .. }
+        ));
     }
 
     #[test]
@@ -1180,7 +1185,10 @@ mod tests {
         let mut cfg = CodeModeConfig::default();
         cfg.semantic_search.tei_url = Some("not a url at all".to_string());
         let err = cfg.validate().unwrap_err();
-        assert!(matches!(err, ConfigError::InvalidSemanticSearchTeiUrl { .. }));
+        assert!(matches!(
+            err,
+            ConfigError::InvalidSemanticSearchTeiUrl { .. }
+        ));
     }
 
     #[test]

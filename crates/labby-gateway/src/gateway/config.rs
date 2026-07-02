@@ -583,12 +583,12 @@ pub fn validate_code_mode(
                 param: "code_mode.max_response_tokens".to_string(),
             }
         }
-        labby_runtime::gateway_config::ConfigError::InvalidSemanticSearchBlendWeight {
-            ..
-        } => ToolError::InvalidParam {
-            message: e.to_string(),
-            param: "code_mode.semantic_search.blend_weight".to_string(),
-        },
+        labby_runtime::gateway_config::ConfigError::InvalidSemanticSearchBlendWeight { .. } => {
+            ToolError::InvalidParam {
+                message: e.to_string(),
+                param: "code_mode.semantic_search.blend_weight".to_string(),
+            }
+        }
         labby_runtime::gateway_config::ConfigError::InvalidSemanticSearchTeiUrl { .. } => {
             ToolError::InvalidParam {
                 message: e.to_string(),
