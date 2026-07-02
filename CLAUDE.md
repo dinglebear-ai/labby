@@ -2,7 +2,7 @@
 
 ## What is this?
 
-`lab` is a pluggable homelab CLI + MCP server SDK in Rust. One binary exposes CLI, MCP, HTTP API, and Labby web UI surfaces for product-local control-plane services. Standalone Cargo product slices currently include `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; base services include `doctor`, `setup`, `logs`, `device`, `stash`, and `acp`. MCP dispatch still uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
+`lab` is a pluggable homelab CLI + MCP server SDK in Rust. One binary exposes CLI, MCP, HTTP API, and Labby web UI surfaces for product-local control-plane services. Standalone Cargo product slices currently include `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; base services include `doctor`, `setup`, `logs`, `device`, `stash`, and `acp`. Base capabilities `acp`, `nodes`, and `stash` are feature-gated (all included in `all`); a gateway-only build (`--no-default-features --features gateway`) excludes them. MCP dispatch still uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
 
 Start with `docs/README.md` for the docs index. The topic docs in `docs/` are the source of truth; if this file disagrees with them, this file is stale.
 
@@ -19,7 +19,7 @@ Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPAT
 - Do not merge `marketplace-no-mcp` into `main` by default, and do not delete it
   as stale unless Jacob explicitly retires the no-MCP marketplace variant.
 
-**Build assumption.** This repo is developed and verified as an **all-features** binary. Treat `cargo build --all-features`, `cargo nextest run --all-features`, and the equivalent `just` commands as the default truth. Narrow feature-slice builds are supported for `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; use them to catch accidental cross-slice coupling, but check warning/removal decisions against the normal all-features build before deleting shared helpers.
+**Build assumption.** This repo is developed and verified as an **all-features** binary. Treat `cargo build --all-features`, `cargo nextest run --all-features`, and the equivalent `just` commands as the default truth. Narrow feature-slice builds are supported for `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; use them to catch accidental cross-slice coupling, but check warning/removal decisions against the normal all-features build before deleting shared helpers. The `acp`, `nodes`, and `stash` slices (plus the `nodes,deploy` pair) are CI compile-check slices for feature-gated base capabilities — members of `all` that a gateway-only build excludes — not supported standalone product slices.
 
 **Service onboarding rule.** When bringing a service online, follow the dispatch/module layout in `docs/dev/SERVICE_ONBOARDING.md`, update generated docs, then validate with the all-features test/build path. The older `labby scaffold service` / `labby audit onboarding` workflow is not part of the current CLI surface unless those commands are restored in code.
 

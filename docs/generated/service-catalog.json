@@ -5,8 +5,8 @@
     "description": "Agent Client Protocol — session management and provider orchestration",
     "category": "ai",
     "status": "available",
-    "feature": null,
-    "exposure": "always_on",
+    "feature": "acp",
+    "exposure": "feature_gated",
     "surfaces": {
       "cli": true,
       "mcp": true,
@@ -68,8 +68,8 @@
     "description": "Manage fleet device enrollments",
     "category": "bootstrap",
     "status": "available",
-    "feature": null,
-    "exposure": "always_on",
+    "feature": "nodes",
+    "exposure": "feature_gated",
     "surfaces": {
       "cli": false,
       "mcp": true,
@@ -278,8 +278,8 @@
     "description": "Component versioning and deployment — track, snapshot, and deploy Claude Code artefacts",
     "category": "bootstrap",
     "status": "available",
-    "feature": null,
-    "exposure": "always_on",
+    "feature": "stash",
+    "exposure": "feature_gated",
     "surfaces": {
       "cli": true,
       "mcp": true,

@@ -44,6 +44,19 @@ Current standalone product slices are:
 - `deploy`
 - `acp_registry`
 
+In addition to the product slices, three **feature-gated base capabilities**
+exist:
+
+- `acp` — ACP session runtime and the `acp` service surface
+- `nodes` — fleet/node runtime and the `device` service surface
+- `stash` — component versioning and the `stash` service surface
+
+These are members of `all` (so the default build includes them) but are
+excluded from a gateway-only build (`--no-default-features --features
+gateway`). They are not supported standalone products; their CI slices exist
+to keep the gating honest, and `nodes,deploy` is checked as a pair because
+some code (e.g. `node/update.rs`) is gated on both features together.
+
 `mcpregistry` remains a `labby` compatibility alias for `marketplace`.
 `services-all` is currently empty because the older first-party upstream
 integrations are not present in this checkout's feature table.
@@ -53,7 +66,10 @@ Default feature posture:
 - `lab-apis` defaults to no optional SDK modules
 - `labby` defaults to `all`
 - `labby/all` enables the release product surface
-- base services are compiled into `labby` without individual feature flags
+- doctor, setup, logs (local), and serve are always-on base services compiled
+  into every `labby` build
+- acp, nodes, and stash are feature-gated base capabilities: members of `all`,
+  excluded from gateway-only builds
 - SDK capability modules remain available where base or feature-gated services
   use them
 
