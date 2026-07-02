@@ -20,6 +20,8 @@
 
 import * as React from 'react'
 import { createAcpFetcher } from '@/lib/acp/fetch'
+import { useCapabilities } from '@/lib/hooks/use-capabilities'
+import { capabilityAvailable } from '@/lib/capabilities'
 import {
   toProjects,
   appendSessionEvent,
@@ -178,6 +180,12 @@ export function ChatSessionProvider({
   onSessionPanelClose,
   autoBootstrap = false,
 }: ChatSessionProviderProps) {
+  // Feature-gated capabilities. The provider mounts on EVERY admin page, so its
+  // init effect must not touch `/v1/acp/*` until the catalog confirms `acp` is
+  // present — otherwise a gateway-only build 404s app-wide in the background.
+  const capabilities = useCapabilities()
+  const acpAvailable = capabilityAvailable(capabilities, 'acp')
+
   // ---- State ----
   const [runs, setRuns] = React.useState<ACPRun[]>([])
   const [sessionsLoaded, setSessionsLoaded] = React.useState(false)
@@ -515,9 +523,16 @@ export function ChatSessionProvider({
       return
     }
 
+    // Gate the ACP catalog/session fetches on confirmed availability so the
+    // provider does not fire `/v1/acp/provider` + `/v1/acp/sessions` on every
+    // admin page of a build compiled without the `acp` service. While the
+    // catalog is unresolved (`!ready`) we hold off; once it confirms `acp` is
+    // absent we never fetch.
+    if (!acpAvailable) return
+
     void refreshProvider()
     void refreshSessions()
-  }, [refreshProvider, refreshSessions])
+  }, [acpAvailable, refreshProvider, refreshSessions])
 
   // Sync providerHealth when selectedProviderId or providers list changes
   React.useEffect(() => {
