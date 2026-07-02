@@ -2,6 +2,18 @@
   "features": [
     {
       "crate_name": "labby",
+      "feature": "acp",
+      "dependencies": [
+        "dep:agent-client-protocol"
+      ],
+      "included_in_default": true,
+      "included_in_all": true,
+      "classification": "base_capability",
+      "mapped_crate_feature": null,
+      "exception_reason": "feature-gated base capability"
+    },
+    {
+      "crate_name": "labby",
       "feature": "acp_registry",
       "dependencies": [
         "labby-apis/acp_registry",
@@ -19,10 +31,13 @@
       "dependencies": [
         "labby-apis/all",
         "lab-admin",
+        "acp",
         "acp_registry",
         "deploy",
         "gateway",
-        "marketplace"
+        "marketplace",
+        "nodes",
+        "stash"
       ],
       "included_in_default": true,
       "included_in_all": true,
@@ -98,7 +113,11 @@
       "feature": "marketplace",
       "dependencies": [
         "labby-apis/mcpregistry",
-        "labby-runtime/marketplace"
+        "labby-runtime/marketplace",
+        "gateway",
+        "acp",
+        "nodes",
+        "stash"
       ],
       "included_in_default": true,
       "included_in_all": true,
@@ -130,6 +149,16 @@
     },
     {
       "crate_name": "labby",
+      "feature": "nodes",
+      "dependencies": [],
+      "included_in_default": true,
+      "included_in_all": true,
+      "classification": "base_capability",
+      "mapped_crate_feature": null,
+      "exception_reason": "feature-gated base capability"
+    },
+    {
+      "crate_name": "labby",
       "feature": "services-all",
       "dependencies": [],
       "included_in_default": false,
@@ -137,6 +166,16 @@
       "classification": "intentional_exception",
       "mapped_crate_feature": null,
       "exception_reason": "intentional crate-local exception"
+    },
+    {
+      "crate_name": "labby",
+      "feature": "stash",
+      "dependencies": [],
+      "included_in_default": true,
+      "included_in_all": true,
+      "classification": "base_capability",
+      "mapped_crate_feature": null,
+      "exception_reason": "feature-gated base capability"
     },
     {
       "crate_name": "labby",
@@ -285,6 +324,7 @@
       "crate_name": "labby-runtime",
       "feature": "acp_registry",
       "dependencies": [
+        "dep:labby-apis",
         "labby-apis/acp_registry"
       ],
       "included_in_default": false,
@@ -297,6 +337,7 @@
       "crate_name": "labby-runtime",
       "feature": "deploy",
       "dependencies": [
+        "dep:labby-apis",
         "labby-apis/deploy"
       ],
       "included_in_default": false,
@@ -309,6 +350,7 @@
       "crate_name": "labby-runtime",
       "feature": "marketplace",
       "dependencies": [
+        "dep:labby-apis",
         "labby-apis/mcpregistry"
       ],
       "included_in_default": false,

@@ -1314,8 +1314,10 @@ mod tests {
         // Every service that has a PluginMeta entry should appear; synthetic
         // services without meta (doctor/setup) are skipped — they
         // have no env config to render in the wizard.
+        let mut meta_service_count = 0;
         for entry in build_default_registry().services() {
             if service_meta(entry.name).is_some() {
+                meta_service_count += 1;
                 assert!(
                     services.contains_key(entry.name),
                     "missing service: {}",
@@ -1323,7 +1325,13 @@ mod tests {
                 );
             }
         }
-        assert!(!services.is_empty());
+        // In narrow feature slices (e.g. gateway-only) no registered service
+        // carries PluginMeta, so an empty schema is the correct output.
+        assert_eq!(
+            services.is_empty(),
+            meta_service_count == 0,
+            "schema.get must list exactly the services with PluginMeta"
+        );
     }
 
     #[tokio::test]

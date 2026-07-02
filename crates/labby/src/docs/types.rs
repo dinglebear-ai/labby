@@ -104,6 +104,9 @@ pub enum FeatureClass {
     ServicePassthrough,
     SdkOnly,
     ProductSlice,
+    /// Feature-gated base capability (acp/nodes/stash): member of `all`,
+    /// excluded from gateway-only builds, not a standalone product slice.
+    BaseCapability,
     BinaryOnly,
     HelperInternal,
     ExtractedCrate,

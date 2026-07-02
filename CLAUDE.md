@@ -2,7 +2,7 @@
 
 ## What is this?
 
-`lab` is a pluggable homelab CLI + MCP server SDK in Rust. One binary exposes CLI, MCP, HTTP API, and Labby web UI surfaces for product-local control-plane services. Standalone Cargo product slices currently include `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; base services include `doctor`, `setup`, `logs`, `device`, `stash`, and `acp`. MCP dispatch still uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
+`lab` is a pluggable homelab CLI + MCP server SDK in Rust. One binary exposes CLI, MCP, HTTP API, and Labby web UI surfaces for product-local control-plane services. Standalone Cargo product slices currently include `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; base services include `doctor`, `setup`, `logs`, `device`, `stash`, and `acp`. Base capabilities `acp`, `nodes`, and `stash` are feature-gated (all included in `all`); a gateway-only build (`--no-default-features --features gateway`) excludes them. MCP dispatch still uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
 
 Start with `docs/README.md` for the docs index. The topic docs in `docs/` are the source of truth; if this file disagrees with them, this file is stale.
 
@@ -19,7 +19,7 @@ Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPAT
 - Do not merge `marketplace-no-mcp` into `main` by default, and do not delete it
   as stale unless Jacob explicitly retires the no-MCP marketplace variant.
 
-**Build assumption.** This repo is developed and verified as an **all-features** binary. Treat `cargo build --all-features`, `cargo nextest run --all-features`, and the equivalent `just` commands as the default truth. Narrow feature-slice builds are supported for `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; use them to catch accidental cross-slice coupling, but check warning/removal decisions against the normal all-features build before deleting shared helpers.
+**Build assumption.** This repo is developed and verified as an **all-features** binary. Treat `cargo build --all-features`, `cargo nextest run --all-features`, and the equivalent `just` commands as the default truth. Narrow feature-slice builds are supported for `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; use them to catch accidental cross-slice coupling, but check warning/removal decisions against the normal all-features build before deleting shared helpers. The `acp`, `nodes`, and `stash` slices (plus the `nodes,deploy` pair) are CI compile-check slices for feature-gated base capabilities — members of `all` that a gateway-only build excludes — not supported standalone product slices.
 
 **Service onboarding rule.** When bringing a service online, follow the dispatch/module layout in `docs/dev/SERVICE_ONBOARDING.md`, update generated docs, then validate with the all-features test/build path. The older `labby scaffold service` / `labby audit onboarding` workflow is not part of the current CLI surface unless those commands are restored in code.
 
@@ -33,23 +33,39 @@ Shared dispatch ownership and adapter direction are governed by `docs/dev/DISPAT
 
 ## Repository Structure
 
-The workspace is split into reusable crates plus one product binary crate. Pure
-SDK/domain clients live in `labby-apis`. HTTP/OAuth auth middleware and
-upstream OAuth runtime live in `labby-auth`. Shared transport-neutral contracts
-and helpers live in `labby-runtime`. Code Mode execution lives in
-`labby-codemode`. Gateway runtime/proxy orchestration lives in `labby-gateway`.
-Embedded/static web serving lives in `labby-web`. Windows process-tree reaping
-lives in `labby-winjob`. CLI, MCP, HTTP API adapters, config loading, product
-dispatch, and the `labby` binary live in `labby`.
+The workspace is split into reusable crates plus one product binary crate. A
+dependency-free leaf crate, `labby-primitives`, holds the small vocabulary
+types (`ActionSpec`/`ParamSpec`, `PluginMeta`/`EnvVar`/`Category`, `UiSchema`,
+static SSRF checks) shared by both the SDK and the gateway-extraction crates.
+Pure SDK/domain clients live in `labby-apis`, which re-exports those types from
+`labby-primitives`. HTTP/OAuth auth middleware and upstream OAuth runtime live
+in `labby-auth`. Shared transport-neutral contracts and helpers (`ToolError`,
+gateway config DTOs, redaction, path-safety, backoff) live in `labby-runtime`.
+Code Mode execution lives in `labby-codemode`. Gateway runtime/proxy
+orchestration — including its own dispatch helpers and the stdio spawn-guard/
+SSRF security checks — lives in `labby-gateway`. Embedded/static web serving
+lives in `labby-web`. Windows process-tree reaping lives in `labby-winjob`.
+CLI, MCP, HTTP API adapters, config loading, product dispatch, and the `labby`
+binary live in `labby`.
 
 ```
 lab/
 ├── crates/
+│   ├── labby-primitives/             # Leaf crate: ActionSpec/ParamSpec, PluginMeta/EnvVar/Category,
+│   │   │                             # UiSchema, static SSRF checks. Zero internal deps.
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── action.rs
+│   │       ├── plugin.rs
+│   │       ├── plugin_ui.rs
+│   │       └── ssrf.rs
+│   │
 │   ├── labby-apis/                   # PURE Rust SDK — reusable in any binary
-│   │   ├── Cargo.toml                # deps: reqwest, serde, thiserror, tokio
+│   │   ├── Cargo.toml                # deps: reqwest, serde, thiserror, tokio, labby-primitives
 │   │   └── src/
 │   │       ├── lib.rs                # re-exports, feature gates
-│   │       ├── core/                 # HttpClient, Auth, errors, traits
+│   │       ├── core/                 # HttpClient, Auth, errors, traits; action/plugin/plugin_ui/ssrf
+│   │       │                         # are thin re-exports of labby-primitives
 │   │       ├── acp/                   # ACP provider/session primitives
 │   │       ├── acp_registry/          # SDK-only ACP Registry client
 │   │       ├── mcpregistry/           # SDK-only MCP Registry v0.1 client
@@ -61,9 +77,10 @@ lab/
 │   │       └── stash/                 # stash pure data types
 │   │
 │   ├── labby-auth/                   # HTTP/OAuth auth middleware and storage
-│   ├── labby-runtime/                # ToolError, config DTOs, path/security helpers
+│   ├── labby-runtime/                # ToolError, config DTOs, path/redaction/backoff helpers
 │   ├── labby-codemode/               # Code Mode runner kernel + snippet engine
-│   ├── labby-gateway/                # Gateway manager, upstream pool, OAuth lifecycle
+│   ├── labby-gateway/                # Gateway manager, upstream pool, OAuth lifecycle,
+│   │                                 # dispatch helpers, stdio spawn-guard/SSRF checks
 │   ├── labby-web/                    # Embedded/filesystem web asset serving
 │   ├── labby-winjob/                 # Windows Job Object helper crate
 │   └── labby/                        # BINARY: cli + mcp + api + product dispatch

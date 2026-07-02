@@ -23,7 +23,7 @@ Commands:
   gateway      Manage proxied upstream MCP gateways
   snippets     Manage executable Code Mode snippets
   oauth        Run local OAuth callback relay helpers
-  logs         Search fleet logs on the configured master
+  logs         Query labby runtime logs (local store; fleet search requires the nodes feature)
   marketplace  Claude plugin marketplace manager
   stash        Component versioning and deployment
   deploy       Deploy the local lab release binary to SSH targets
@@ -3273,7 +3273,7 @@ Arguments:
 ## `labby logs`
 
 ```text
-Search fleet logs on the configured master
+Query labby runtime logs (local store; fleet search requires the nodes feature)
 
 Usage: logs [OPTIONS] <COMMAND>
 
