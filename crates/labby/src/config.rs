@@ -1738,12 +1738,20 @@ pub fn load_openapi_provider_config(
             });
 
         let spec_source = match (
-            raw.spec_url.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            raw.spec_path.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            raw.spec_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            raw.spec_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
         ) {
-            (Some(u), None) => SpecSource::Url(u.parse().map_err(|_| ConfigError::InvalidSpecUrl {
-                label: label.clone(),
-            })?),
+            (Some(u), None) => {
+                SpecSource::Url(u.parse().map_err(|_| ConfigError::InvalidSpecUrl {
+                    label: label.clone(),
+                })?)
+            }
             (None, Some(p)) => SpecSource::Path(p.into()),
             _ => {
                 return Err(ConfigError::SpecSourceAmbiguous {

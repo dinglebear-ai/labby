@@ -687,12 +687,13 @@ async fn dispatch_openapi_provider(
     local: LocalProviderCall,
     params: Value,
 ) -> Result<Value, ToolError> {
-    let (label, op) = local.method.split_once('.').ok_or_else(|| {
-        ToolError::InvalidParam {
+    let (label, op) = local
+        .method
+        .split_once('.')
+        .ok_or_else(|| ToolError::InvalidParam {
             message: "openapi call must be openapi::<label>.<operationId>".to_string(),
             param: "id".to_string(),
-        }
-    })?;
+        })?;
     labby_openapi::dispatch_openapi_call(registry, client, label, op, params)
         .await
         .map_err(Into::into)

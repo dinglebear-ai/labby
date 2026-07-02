@@ -70,7 +70,8 @@ pub fn convert_spec(
 /// verbs fall back to `GET` — the allowlist bounds which operations can even be
 /// dispatched, and rmcp-openapi only emits the standard verbs.
 fn parse_method(raw: &str) -> reqwest::Method {
-    raw.parse::<reqwest::Method>().unwrap_or(reqwest::Method::GET)
+    raw.parse::<reqwest::Method>()
+        .unwrap_or(reqwest::Method::GET)
 }
 
 #[cfg(test)]

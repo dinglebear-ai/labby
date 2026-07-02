@@ -1204,8 +1204,7 @@ async fn build_gateway_runtime(
             "openapi code-mode provider ready"
         );
     }
-    let mut gateway_manager =
-        gateway_manager.with_openapi(openapi_registry, openapi_http_client);
+    let mut gateway_manager = gateway_manager.with_openapi(openapi_registry, openapi_http_client);
 
     gateway_manager.set_notifier(CatalogChangeNotifier::new(notify_tx));
     let gateway_manager = Arc::new(gateway_manager);

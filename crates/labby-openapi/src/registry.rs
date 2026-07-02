@@ -147,7 +147,8 @@ async fn load_one_spec(
 ) -> Result<SpecEntry, OpenApiError> {
     let base_url = crate::ssrf::validate_base_url(&spec)?;
     let spec_json = fetch_spec_json(&spec.spec_source, client, &spec.label).await?;
-    let descriptors = crate::convert::convert_spec(&spec.label, &spec_json, &spec.allowed_operations)?;
+    let descriptors =
+        crate::convert::convert_spec(&spec.label, &spec_json, &spec.allowed_operations)?;
     let converted = descriptors.len();
     let mut operations = HashMap::new();
     for d in descriptors.into_iter().take(MAX_OPERATIONS_PER_SPEC) {
@@ -283,7 +284,13 @@ mod tests {
         let op = reg.operation("vendor", "getUser").expect("op present");
         assert_eq!(op.method, reqwest::Method::GET);
         assert_eq!(op.path_template, "/users/{id}");
-        assert_eq!(reg.operation("vendor", "nope").unwrap_err().kind(), "unknown_action");
-        assert_eq!(reg.operation("nope", "getUser").unwrap_err().kind(), "unknown_instance");
+        assert_eq!(
+            reg.operation("vendor", "nope").unwrap_err().kind(),
+            "unknown_action"
+        );
+        assert_eq!(
+            reg.operation("nope", "getUser").unwrap_err().kind(),
+            "unknown_instance"
+        );
     }
 }

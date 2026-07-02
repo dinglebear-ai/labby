@@ -123,9 +123,12 @@ async fn collect_capped(
 ) -> Result<String, OpenApiError> {
     let mut buf: Vec<u8> = Vec::new();
     loop {
-        let chunk = resp.chunk().await.map_err(|_| OpenApiError::UpstreamRequest {
-            label: label.to_string(),
-        })?;
+        let chunk = resp
+            .chunk()
+            .await
+            .map_err(|_| OpenApiError::UpstreamRequest {
+                label: label.to_string(),
+            })?;
         match chunk {
             Some(bytes) => {
                 if buf.len() + bytes.len() > cap {
@@ -305,8 +308,7 @@ fn build_url_with_params(
                 .ok_or_else(|| OpenApiError::UpstreamRequest {
                     label: op.operation_id.clone(),
                 })?;
-            let encoded: String =
-                url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
+            let encoded: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
             // form-urlencoded uses '+' for space; path segments want %20.
             path.push_str(&encoded.replace('+', "%20"));
             consumed.push(name);
@@ -338,10 +340,15 @@ fn json_scalar_to_string(v: &serde_json::Value) -> String {
 }
 
 /// Inject the server-side credential. Header-style only in v1.
-fn inject_credential(req: reqwest::RequestBuilder, op: &OperationHandle) -> reqwest::RequestBuilder {
+fn inject_credential(
+    req: reqwest::RequestBuilder,
+    op: &OperationHandle,
+) -> reqwest::RequestBuilder {
     match &op.credential {
         Some(crate::config::OpenApiCredential::BearerToken(token)) => req.bearer_auth(token),
-        Some(crate::config::OpenApiCredential::ApiKey { header, value }) => req.header(header, value),
+        Some(crate::config::OpenApiCredential::ApiKey { header, value }) => {
+            req.header(header, value)
+        }
         None => req,
     }
 }

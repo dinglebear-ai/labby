@@ -10,7 +10,10 @@ fn debug_never_prints_credential_value() {
         credential: Some(OpenApiCredential::BearerToken("super-secret-token".into())),
     };
     let dbg = format!("{cfg:?}");
-    assert!(!dbg.contains("super-secret-token"), "credential leaked: {dbg}");
+    assert!(
+        !dbg.contains("super-secret-token"),
+        "credential leaked: {dbg}"
+    );
     assert!(dbg.contains("vendor"));
 }
 

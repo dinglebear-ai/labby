@@ -55,9 +55,15 @@ async fn happy_path_calls_allowed_operation() {
         .await;
 
     let reg = registry_from_handle("vendor", get_user_handle(&server.uri(), None));
-    let out = dispatch_openapi_call(&reg, &loopback_client(), "vendor", "getUser", json!({ "id": "7" }))
-        .await
-        .unwrap();
+    let out = dispatch_openapi_call(
+        &reg,
+        &loopback_client(),
+        "vendor",
+        "getUser",
+        json!({ "id": "7" }),
+    )
+    .await
+    .unwrap();
     assert_eq!(out["id"], "7");
 }
 
@@ -66,17 +72,29 @@ async fn credential_injected_server_side() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/users/7"))
-        .and(wiremock::matchers::header("authorization", "Bearer tok-abc"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer tok-abc",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "7" })))
         .mount(&server)
         .await;
 
-    let handle = get_user_handle(&server.uri(), Some(OpenApiCredential::BearerToken("tok-abc".into())));
+    let handle = get_user_handle(
+        &server.uri(),
+        Some(OpenApiCredential::BearerToken("tok-abc".into())),
+    );
     let reg = registry_from_handle("vendor", handle);
     // The params never carry the token — it is injected after the sandbox boundary.
-    let out = dispatch_openapi_call(&reg, &loopback_client(), "vendor", "getUser", json!({ "id": "7" }))
-        .await
-        .unwrap();
+    let out = dispatch_openapi_call(
+        &reg,
+        &loopback_client(),
+        "vendor",
+        "getUser",
+        json!({ "id": "7" }),
+    )
+    .await
+    .unwrap();
     assert_eq!(out["id"], "7");
 }
 
@@ -84,9 +102,15 @@ async fn credential_injected_server_side() {
 async fn unknown_operation_returns_unknown_action() {
     let server = MockServer::start().await;
     let reg = registry_from_handle("vendor", get_user_handle(&server.uri(), None));
-    let err = dispatch_openapi_call(&reg, &loopback_client(), "vendor", "deleteUser", json!({ "id": "7" }))
-        .await
-        .unwrap_err();
+    let err = dispatch_openapi_call(
+        &reg,
+        &loopback_client(),
+        "vendor",
+        "deleteUser",
+        json!({ "id": "7" }),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind(), "unknown_action");
 }
 
@@ -109,14 +133,22 @@ async fn upstream_error_body_never_leaks_into_error() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/users/7"))
-        .respond_with(ResponseTemplate::new(500).set_body_string("CANARY-9f3b-SECRET internal detail"))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_string("CANARY-9f3b-SECRET internal detail"),
+        )
         .mount(&server)
         .await;
 
     let reg = registry_from_handle("vendor", get_user_handle(&server.uri(), None));
-    let err = dispatch_openapi_call(&reg, &loopback_client(), "vendor", "getUser", json!({ "id": "7" }))
-        .await
-        .unwrap_err();
+    let err = dispatch_openapi_call(
+        &reg,
+        &loopback_client(),
+        "vendor",
+        "getUser",
+        json!({ "id": "7" }),
+    )
+    .await
+    .unwrap_err();
     let tool_err: labby_runtime::error::ToolError = err.clone().into();
     for s in [
         format!("{err}"),
@@ -124,6 +156,9 @@ async fn upstream_error_body_never_leaks_into_error() {
         format!("{tool_err:?}"),
         serde_json::to_string(&tool_err).unwrap(),
     ] {
-        assert!(!s.contains("CANARY-9f3b-SECRET"), "response body leaked: {s}");
+        assert!(
+            !s.contains("CANARY-9f3b-SECRET"),
+            "response body leaked: {s}"
+        );
     }
 }

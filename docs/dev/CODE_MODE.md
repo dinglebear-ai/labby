@@ -93,6 +93,65 @@ for example after cloning into `directory: "repo"`. Clones are shallow
 mutation methods are deferred until Code Mode has an explicit transaction and
 credential model for them.
 
+### OpenAPI Provider (`openapi`)
+
+`openapi` is the third local provider. It turns an operator-configured OpenAPI
+spec into locally-dispatched, LLM-callable operations. Unlike `state`/`git`, it
+performs outbound HTTP — through the isolated `labby-openapi` crate's OWN hardened
+client, never through a sidecar MCP server.
+
+**JS API** (flat, non-discoverable in v1 — `codemode.search` does NOT list
+`openapi` operations):
+
+```ts
+async () => {
+  // openapi.call(label, operationId, params)
+  const user = await openapi.call("vendor", "getUser", { id: "7" });
+  return user;
+}
+```
+
+`params` supplies path-template values (substituted, PATH_SEGMENT-encoded) plus
+either query params (GET/HEAD/DELETE) or a JSON body (POST/PUT/PATCH). The JS
+snippet never sees the credential — it is injected server-side after the sandbox
+boundary.
+
+**Config.** Non-secret fields in `config.toml`; credentials in `.env`
+(`OPENAPI_<LABEL>_TOKEN` → `Authorization: Bearer`, or `OPENAPI_<LABEL>_API_KEY`
+→ a header named by `api_key_header`, default `X-API-Key`). `base_url` is
+**mandatory** — `rmcp-openapi` never reads the spec's `servers[]`.
+
+```toml
+[[openapi.specs]]
+label = "vendor"
+base_url = "https://api.vendor.example.com"     # MANDATORY, SSRF-validated
+spec_url = "https://api.vendor.example.com/openapi.json"  # or spec_path = "..."
+api_key_header = "X-API-Key"                      # optional
+allowed_operations = ["getUser", "listUsers"]     # deny-by-default allowlist
+```
+
+**Gate.** Three layers, all required: the admin+unscoped local-provider gate
+(same as `state`/`git`), a mandatory deny-by-default per-operation allowlist
+(operations not listed are never dispatched), and SSRF containment.
+
+**SSRF containment.** The base URL is validated at load time via the canonical
+`labby_primitives::ssrf` guard (https-only, rejects loopback / link-local /
+RFC1918 / CGNAT / private-TLD). At request time the outbound client disables
+redirects, forces `https_only`, resolves + validates every IP, pins one validated
+address, and re-checks the connected peer IP — closing the redirect-bypass and
+DNS-rebinding gaps. Default logging captures method / resolved host / path
+template / status / `elapsed_ms` only — never third-party response bodies or
+credentials.
+
+**Refresh.** Specs load once at process start (concurrently, per-spec timeout,
+4 MiB body-size cap). A spec that fails to load is omitted with a WARN;
+`labby serve` still reaches ready. There is no background refresh in v1.
+
+**Deferred follow-ups (v1):** discovery-catalog integration (which would
+re-introduce per-operation `input_schema`, per-op JS proxies, and operationId→JS
+sanitization), background `ArcSwap` refresh, per-spec rate/concurrency caps, and
+apiKey-in-query / apiKey-in-cookie injection (header-style only in v1).
+
 Example:
 
 ```ts
