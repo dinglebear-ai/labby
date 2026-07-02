@@ -41,9 +41,12 @@ use crate::dispatch::logs::client::{
 };
 use crate::mcp::peers::PeerNotifier;
 use crate::mcp::server::LabMcpServer;
+#[cfg(feature = "nodes")]
 use crate::node::enrollment::store::EnrollmentStore;
 use crate::node::identity::{resolve_local_hostname, resolve_runtime_role_from_config};
+#[cfg(feature = "nodes")]
 use crate::node::runtime::NodeRuntime;
+#[cfg(feature = "nodes")]
 use crate::node::store::NodeStore;
 use crate::output::theme::{CliTheme, ColorPolicy, RenderContext, RenderEnv};
 #[cfg(target_os = "linux")]
@@ -216,11 +219,20 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         master_host = %resolved_runtime.master_host,
         "node runtime resolved"
     );
+    #[cfg(feature = "nodes")]
     let node_runtime = NodeRuntime::from_config(resolved_runtime, config, Some(port))?;
+    #[cfg(feature = "nodes")]
     let node_role = node_runtime.role();
+    #[cfg(not(feature = "nodes"))]
+    let node_role = resolve_node_role_without_nodes(&resolved_runtime)?;
+    #[cfg(not(feature = "nodes"))]
+    warn_ignored_node_config_without_nodes(config);
+    #[cfg(not(feature = "acp"))]
+    warn_ignored_acp_env_without_acp();
 
     // Early return for node (non-controller) processes: skip the full
     // controller startup (registry build, OAuth, gateway, logs system, web UI, etc.).
+    #[cfg(feature = "nodes")]
     if matches!(node_role, crate::config::NodeRole::NonMaster) {
         return run_node_mode(transport, args.command.as_ref(), config, node_runtime, port).await;
     }
@@ -240,40 +252,44 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         selected_service_count = registry.services().len(),
         "service registry ready"
     );
-    let log_retention_days = config
-        .node
-        .as_ref()
-        .and_then(|n| n.log_retention_days)
-        .unwrap_or(crate::node::log_store::DEFAULT_RETENTION_DAYS);
-    let node_log_db_path = node_runtime.home_dir().join(".lab/node-logs.sqlite");
-    let node_store = match crate::node::log_store::SqliteNodeLogStore::open(
-        node_log_db_path.clone(),
-        log_retention_days,
-    )
-    .await
-    {
-        Ok(log_store) => {
-            tracing::info!(
-                path = %node_log_db_path.display(),
-                retention_days = log_retention_days,
-                "node log store opened"
-            );
-            Arc::new(NodeStore::with_log_store(log_store))
-        }
-        Err(err) => {
-            tracing::warn!(
-                path = %node_log_db_path.display(),
-                error = %err,
-                "node log store unavailable; falling back to in-memory store"
-            );
-            Arc::new(NodeStore::default())
-        }
+    #[cfg(feature = "nodes")]
+    let (node_store, enrollment_store) = {
+        let log_retention_days = config
+            .node
+            .as_ref()
+            .and_then(|n| n.log_retention_days)
+            .unwrap_or(crate::node::log_store::DEFAULT_RETENTION_DAYS);
+        let node_log_db_path = node_runtime.home_dir().join(".lab/node-logs.sqlite");
+        let node_store = match crate::node::log_store::SqliteNodeLogStore::open(
+            node_log_db_path.clone(),
+            log_retention_days,
+        )
+        .await
+        {
+            Ok(log_store) => {
+                tracing::info!(
+                    path = %node_log_db_path.display(),
+                    retention_days = log_retention_days,
+                    "node log store opened"
+                );
+                Arc::new(NodeStore::with_log_store(log_store))
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %node_log_db_path.display(),
+                    error = %err,
+                    "node log store unavailable; falling back to in-memory store"
+                );
+                Arc::new(NodeStore::default())
+            }
+        };
+        let enrollment_store = Arc::new(
+            EnrollmentStore::open(node_runtime.home_dir().join(".lab/node-enrollments.json"))
+                .await
+                .context("open node enrollment store")?,
+        );
+        (node_store, enrollment_store)
     };
-    let enrollment_store = Arc::new(
-        EnrollmentStore::open(node_runtime.home_dir().join(".lab/node-enrollments.json"))
-            .await
-            .context("open node enrollment store")?,
-    );
 
     let stdio_mode = should_run_stdio(transport, args.command.as_ref());
     let spawn_depth = resolve_lab_spawn_depth(std::env::var("LAB_SPAWN_DEPTH").ok());
@@ -325,14 +341,18 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // Create the ACP session registry before the HTTP/stdio split so both transports
     // share the same process-global dispatch slot (intra-process only — stdio and
     // HTTP modes are mutually exclusive within one process).
-    let acp_registry = Arc::new(crate::acp::registry::AcpSessionRegistry::from_env().await);
-    crate::dispatch::acp::install_registry(Arc::clone(&acp_registry));
-    acp_registry.restore_from_db().await;
-    tracing::info!(
-        subsystem = "acp",
-        phase = "ready",
-        "ACP session registry installed"
-    );
+    #[cfg(feature = "acp")]
+    let acp_registry = {
+        let acp_registry = Arc::new(crate::acp::registry::AcpSessionRegistry::from_env().await);
+        crate::dispatch::acp::install_registry(Arc::clone(&acp_registry));
+        acp_registry.restore_from_db().await;
+        tracing::info!(
+            subsystem = "acp",
+            phase = "ready",
+            "ACP session registry installed"
+        );
+        acp_registry
+    };
 
     if stdio_mode {
         tracing::info!(
@@ -470,8 +490,11 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
 
     let mut state = AppState::from_registry(registry)
         .with_config(config.clone())
-        .with_http_bind_host(host.clone())
-        .with_acp_registry(Arc::clone(&acp_registry));
+        .with_http_bind_host(host.clone());
+    #[cfg(feature = "acp")]
+    {
+        state = state.with_acp_registry(Arc::clone(&acp_registry));
+    }
     if auth_configured {
         match crate::observability::activity::ActorKeyDeriver::load_or_create() {
             Ok(deriver) => {
@@ -514,8 +537,11 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         );
     }
 
-    state = state.with_node_store(Arc::clone(&node_store));
-    state = state.with_enrollment_store(Arc::clone(&enrollment_store));
+    #[cfg(feature = "nodes")]
+    {
+        state = state.with_node_store(Arc::clone(&node_store));
+        state = state.with_enrollment_store(Arc::clone(&enrollment_store));
+    }
     state = state.with_log_system(logs_system);
     #[cfg(feature = "marketplace")]
     let _registry_sync_keepalive = {
@@ -660,7 +686,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         api_server_enabled = true,
         web_server_enabled = state.web_assets_enabled(),
         mcp_server_enabled = matches!(transport, Transport::Http),
-        gateway_client_enabled = !config.upstream.is_empty(),
+        gateway_client_enabled = cfg!(feature = "gateway") && !config.upstream.is_empty(),
         oauth_upstream_enabled = config
             .upstream
             .iter()
@@ -669,6 +695,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         "startup plan resolved"
     );
 
+    #[cfg(feature = "nodes")]
     node_runtime.start_background_tasks();
 
     run_http(
@@ -1243,7 +1270,122 @@ fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
             "protected MCP routes are configured but this labby build does not include the gateway feature"
         );
     }
+    // Configured upstreams are harmless without the gateway client, but the
+    // operator should know they're being ignored rather than silently dropped.
+    if !config.upstream.is_empty() {
+        tracing::warn!(
+            subsystem = "startup",
+            phase = "bootstrap.plan",
+            upstream_count = config.upstream.len(),
+            "gateway upstreams are configured but this build has no gateway support (gateway feature); values ignored"
+        );
+    }
     Ok(())
+}
+
+/// Companion to `resolve_node_role_without_nodes`: the role guard already
+/// rejects `node.role = "node"`, but the remaining fleet/node keys are
+/// harmless in a no-nodes build — warn that they're ignored instead of
+/// silently dropping them.
+#[cfg(not(feature = "nodes"))]
+fn warn_ignored_node_config_without_nodes(config: &LabConfig) {
+    let mut ignored: Vec<&str> = Vec::new();
+    if let Some(node) = config.node.as_ref() {
+        if node.controller.is_some() {
+            ignored.push("node.controller");
+        }
+        if node.log_retention_days.is_some() {
+            ignored.push("node.log_retention_days");
+        }
+    }
+    if config
+        .device
+        .as_ref()
+        .is_some_and(|device| device.master.is_some())
+    {
+        ignored.push("device.master");
+    }
+    if !ignored.is_empty() {
+        tracing::warn!(
+            subsystem = "startup",
+            phase = "bootstrap.device-runtime",
+            ignored_keys = ?ignored,
+            "fleet/node configuration is set but this build has no fleet support (nodes feature); values ignored"
+        );
+    }
+}
+
+/// Warn once when ACP-shaped env keys are present in a build without the
+/// `acp` feature. Key names only — never values (LAB_ACP_HMAC_SECRET is a
+/// secret).
+#[cfg(not(feature = "acp"))]
+fn warn_ignored_acp_env_without_acp() {
+    let present: Vec<&str> = [
+        "LAB_ACP_DB",
+        "LAB_ACP_SESSION_DIR",
+        "ACP_CODEX_COMMAND",
+        "LAB_ACP_HMAC_SECRET",
+    ]
+    .into_iter()
+    .filter(|key| std::env::var_os(key).is_some())
+    .collect();
+    if !present.is_empty() {
+        tracing::warn!(
+            subsystem = "startup",
+            phase = "bootstrap.plan",
+            ignored_keys = ?present,
+            "ACP environment configuration is set but this build has no ACP support (acp feature); values ignored"
+        );
+    }
+}
+
+/// Mirror of `reject_protected_routes_without_gateway`: a build without the
+/// `nodes` feature can only run as a controller. Fail loudly if config asks
+/// for node mode instead of silently ignoring it.
+#[cfg(not(feature = "nodes"))]
+fn resolve_node_role_without_nodes(
+    resolved: &crate::config::ResolvedNodeRuntime,
+) -> Result<crate::config::NodeRole> {
+    let role = resolved.role;
+    if matches!(role, crate::config::NodeRole::NonMaster) {
+        anyhow::bail!(
+            "node (non-controller) role is configured but this labby build does not include fleet support (built without the `nodes` feature)"
+        );
+    }
+    Ok(role)
+}
+
+#[cfg(all(test, not(feature = "nodes")))]
+mod resolve_node_role_without_nodes_tests {
+    use super::resolve_node_role_without_nodes;
+    use crate::config::{NodeRole, ResolvedNodeRuntime};
+
+    #[test]
+    fn non_master_role_errors_and_mentions_nodes_feature() {
+        let resolved = ResolvedNodeRuntime {
+            local_host: "worker-01".to_string(),
+            master_host: "controller".to_string(),
+            role: NodeRole::NonMaster,
+        };
+        let err = resolve_node_role_without_nodes(&resolved)
+            .expect_err("NonMaster must be rejected in a build without the nodes feature");
+        assert!(
+            err.to_string().contains("nodes"),
+            "error should point at the missing `nodes` feature, got: {err}"
+        );
+    }
+
+    #[test]
+    fn master_role_is_allowed() {
+        let resolved = ResolvedNodeRuntime {
+            local_host: "controller".to_string(),
+            master_host: "controller".to_string(),
+            role: NodeRole::Master,
+        };
+        let role = resolve_node_role_without_nodes(&resolved)
+            .expect("Master role must be allowed without the nodes feature");
+        assert!(matches!(role, NodeRole::Master));
+    }
 }
 
 /// Run the minimal node-mode startup path.
@@ -1253,6 +1395,7 @@ fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
 /// web UI, marketplace sync, EnrollmentStore, etc.) and runs only what a node needs:
 /// background tasks (metadata upload, bootstrap logs, WebSocket flush) and a
 /// loopback health server to keep the process alive and signal systemd readiness.
+#[cfg(feature = "nodes")]
 async fn run_node_mode(
     transport: Transport,
     command: Option<&ServeCommand>,

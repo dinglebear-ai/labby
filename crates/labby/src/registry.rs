@@ -530,6 +530,7 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         dispatch_fn!(crate::dispatch::snippets::dispatch),
     ));
 
+    #[cfg(feature = "nodes")]
     reg.register(RegisteredService {
         name: "device",
         description: "Manage fleet device enrollments",
@@ -554,7 +555,8 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         });
     }
 
-    // acp is always-on (no feature flag). MCP and CLI surfaces are Phase 2.
+    // acp is feature-gated: chat/session runtime for the web UI (required by marketplace).
+    #[cfg(feature = "acp")]
     {
         let meta = labby_apis::acp::META;
         reg.register(RegisteredService {
@@ -568,7 +570,8 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         });
     }
 
-    // stash is always-on (no feature flag). Manages versioned component snapshots.
+    // stash is feature-gated: versioned component snapshots (required by marketplace).
+    #[cfg(feature = "stash")]
     {
         let meta = labby_apis::stash::META;
         reg.register(RegisteredService {
@@ -763,7 +766,22 @@ mod tests {
             .iter()
             .map(|service| service.name)
             .collect();
-        let mut kept_services = vec!["setup", "doctor", "acp", "stash"];
+        // `mut` is only exercised when at least one feature-gated push compiles;
+        // slice builds with none of these features would otherwise warn.
+        #[cfg_attr(
+            not(any(
+                feature = "acp",
+                feature = "stash",
+                feature = "gateway",
+                feature = "marketplace"
+            )),
+            allow(unused_mut)
+        )]
+        let mut kept_services = vec!["setup", "doctor"];
+        #[cfg(feature = "acp")]
+        kept_services.push("acp");
+        #[cfg(feature = "stash")]
+        kept_services.push("stash");
         #[cfg(feature = "gateway")]
         kept_services.push("gateway");
         #[cfg(feature = "marketplace")]
@@ -798,51 +816,101 @@ mod tests {
         assert!(service_meta("gateway").is_none());
     }
 
+    /// Shared body for the feature-gated inclusion/omission test pairs below.
+    fn registry_has_service(name: &str) -> bool {
+        build_default_registry()
+            .services()
+            .iter()
+            .any(|service| service.name == name)
+    }
+
     #[cfg(not(feature = "gateway"))]
     #[test]
     fn default_registry_omits_gateway_without_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .all(|service| service.name != "gateway")
+            !registry_has_service("gateway"),
+            "gateway must not register without the `gateway` feature"
         );
     }
 
     #[cfg(feature = "gateway")]
     #[test]
     fn default_registry_includes_gateway_with_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .any(|service| service.name == "gateway")
+            registry_has_service("gateway"),
+            "gateway must register with the `gateway` feature"
         );
     }
 
     #[cfg(not(feature = "marketplace"))]
     #[test]
     fn default_registry_omits_marketplace_without_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .all(|service| service.name != "marketplace")
+            !registry_has_service("marketplace"),
+            "marketplace must not register without the `marketplace` feature"
         );
     }
 
     #[cfg(feature = "marketplace")]
     #[test]
     fn default_registry_includes_marketplace_with_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .any(|service| service.name == "marketplace")
+            registry_has_service("marketplace"),
+            "marketplace must register with the `marketplace` feature"
+        );
+    }
+
+    #[cfg(not(feature = "acp"))]
+    #[test]
+    fn default_registry_omits_acp_without_feature() {
+        assert!(
+            !registry_has_service("acp"),
+            "acp must not register without the `acp` feature"
+        );
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn default_registry_includes_acp_with_feature() {
+        assert!(
+            registry_has_service("acp"),
+            "acp must register with the `acp` feature"
+        );
+    }
+
+    #[cfg(not(feature = "stash"))]
+    #[test]
+    fn default_registry_omits_stash_without_feature() {
+        assert!(
+            !registry_has_service("stash"),
+            "stash must not register without the `stash` feature"
+        );
+    }
+
+    #[cfg(feature = "stash")]
+    #[test]
+    fn default_registry_includes_stash_with_feature() {
+        assert!(
+            registry_has_service("stash"),
+            "stash must register with the `stash` feature"
+        );
+    }
+
+    #[cfg(not(feature = "nodes"))]
+    #[test]
+    fn default_registry_omits_device_without_nodes_feature() {
+        assert!(
+            !registry_has_service("device"),
+            "device must not register without the `nodes` feature"
+        );
+    }
+
+    #[cfg(feature = "nodes")]
+    #[test]
+    fn default_registry_includes_device_with_nodes_feature() {
+        assert!(
+            registry_has_service("device"),
+            "device must register with the `nodes` feature"
         );
     }
 
@@ -868,7 +936,9 @@ mod tests {
         // ever changes the build itself would break on the feature-gated import.
         let http_router_services: std::collections::HashSet<&'static str> = {
             let mut s = std::collections::HashSet::new();
-            s.insert(labby_apis::acp::META.name); // always-on
+            #[cfg(feature = "acp")]
+            s.insert(labby_apis::acp::META.name);
+            #[cfg(feature = "nodes")]
             s.insert("device");
             #[cfg(feature = "gateway")]
             s.insert("gateway");
@@ -879,7 +949,8 @@ mod tests {
             s.insert(labby_apis::marketplace::META.name);
             s.insert(labby_apis::doctor::META.name); // always-on
             s.insert(labby_apis::setup::META.name); // always-on
-            s.insert(labby_apis::stash::META.name); // always-on
+            #[cfg(feature = "stash")]
+            s.insert(labby_apis::stash::META.name);
             #[cfg(feature = "fs")]
             s.insert("fs");
             s

@@ -137,6 +137,8 @@ fn snippets_builtin_actions_require_catalog_admin_scope() {
     }
 }
 
+// Both services under test are feature-gated registrations.
+#[cfg(all(feature = "marketplace", feature = "stash"))]
 #[test]
 fn marketplace_and_stash_builtin_actions_follow_catalog_admin_scope() {
     let registry = crate::registry::build_default_registry();

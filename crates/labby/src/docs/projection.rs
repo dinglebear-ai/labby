@@ -490,6 +490,13 @@ fn collect_feature_set(
     }
 }
 
+/// Feature-gated base capabilities: members of `all` that a gateway-only
+/// build excludes. Not standalone product slices — classified explicitly so
+/// the feature matrix labels them meaningfully instead of falling through to
+/// HelperInternal (`acp` carries a `dep:` entry) or IntentionalException
+/// (`nodes`/`stash` have empty dependency lists).
+const BASE_CAPABILITIES: &[&str] = &["acp", "nodes", "stash"];
+
 fn classify_lab_feature(
     feature: &str,
     deps: &[String],
@@ -497,6 +504,8 @@ fn classify_lab_feature(
 ) -> FeatureClass {
     if matches!(feature, "all" | "default") {
         FeatureClass::AggregateDefault
+    } else if BASE_CAPABILITIES.contains(&feature) {
+        FeatureClass::BaseCapability
     } else if matches!(
         feature,
         "gateway" | "marketplace" | "fs" | "deploy" | "acp_registry" | "lab-admin"
@@ -560,6 +569,7 @@ fn compatibility_api_feature(
 fn exception_reason(classification: FeatureClass) -> Option<&'static str> {
     match classification {
         FeatureClass::ProductSlice => Some("standalone product slice"),
+        FeatureClass::BaseCapability => Some("feature-gated base capability"),
         FeatureClass::BinaryOnly => Some("binary-only Lab feature"),
         FeatureClass::HelperInternal => Some("helper/internal feature"),
         FeatureClass::ExtractedCrate => Some("extracted crate feature"),
@@ -570,16 +580,22 @@ fn exception_reason(classification: FeatureClass) -> Option<&'static str> {
 }
 
 fn service_feature(service: &str, matrix: &FeatureMatrix) -> Option<String> {
+    // The `device` service surface is gated by the `nodes` cargo feature.
+    let feature_name = match service {
+        "device" => "nodes",
+        other => other,
+    };
     matrix
         .features
         .iter()
         .find(|feature| {
             feature.crate_name == "labby"
-                && feature.feature == service
+                && feature.feature == feature_name
                 && matches!(
                     feature.classification,
                     FeatureClass::ServicePassthrough
                         | FeatureClass::ProductSlice
+                        | FeatureClass::BaseCapability
                         | FeatureClass::BinaryOnly
                 )
         })
@@ -692,6 +708,8 @@ mod tests {
         assert_eq!(sanitized_example(&env), "<service_api_key>");
     }
 
+    // The fs.preview action only exists in builds with the `fs` feature.
+    #[cfg(feature = "fs")]
     #[test]
     fn action_catalog_exposes_fs_preview_as_http_only() {
         let projection = build_docs_projection(&workspace_root().unwrap()).unwrap();

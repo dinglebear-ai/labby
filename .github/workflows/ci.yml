@@ -196,14 +196,21 @@ jobs:
     # disabling features (a service module is compiled but its registration is
     # gated off), so this job overrides the global `-D warnings`. The
     # all-features `check`/`clippy`/`test` jobs above remain the authoritative
-    # warning-clean signal. `stash` has no feature flag (always-on) so it is
-    # absent.
+    # warning-clean signal.
+    # Base capabilities (acp, nodes, stash) are feature-gated too so a
+    # gateway-only build can exclude them; their slices are compile checks only.
+    # "nodes,deploy" covers code gated on both features together (e.g.
+    # node/update.rs) that no singleton slice compiles.
+    # Slices are compile checks, EXCEPT gateway: the flagship slice also runs
+    # its test suite so omission-side tests (#[cfg(not(feature = ...))] —
+    # registry omission tests, the no-feature rejection helpers) actually
+    # execute somewhere in CI instead of only ever being compiled.
     env:
       RUSTFLAGS: ""
     strategy:
       fail-fast: false
       matrix:
-        slice: [gateway, marketplace, fs, deploy, acp_registry]
+        slice: [gateway, marketplace, fs, deploy, acp_registry, acp, nodes, stash, "nodes,deploy"]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -215,6 +222,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo check -p labby --no-default-features --features ${{ matrix.slice }} --all-targets --locked
+      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+        if: matrix.slice == 'gateway'
+      - name: Run gateway-slice test suite
+        if: matrix.slice == 'gateway'
+        run: cargo nextest run -p labby --no-default-features --features gateway --locked
 
   extracted-crate-slices:
     name: Extracted crate slice (${{ matrix.name }})

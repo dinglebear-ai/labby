@@ -4,8 +4,10 @@
 //! themes, config files, binaries, and more) as versioned artefacts that can
 //! be deployed to local paths or remote gateways.
 //!
-//! This module is **always-on** (no feature gate), matching the pattern of
-//! `device_runtime`. The pure domain types live in [`types`]. Client and
+//! This module is always compiled in `labby-apis` (no cargo feature here),
+//! matching the pattern of `device_runtime`. The service surface in the
+//! `labby` binary, however, is gated behind the `stash` cargo feature
+//! (a member of `all`). The pure domain types live in [`types`]. Client and
 //! provider implementations will be added in later tasks.
 
 pub mod types;

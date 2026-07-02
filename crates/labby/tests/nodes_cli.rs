@@ -1,3 +1,4 @@
+#![cfg(feature = "nodes")]
 #![allow(
     clippy::bool_assert_comparison,
     clippy::err_expect,
@@ -11,9 +12,11 @@
     clippy::unnested_or_patterns
 )]
 use clap::Parser;
+use labby::cli::Cli;
+#[cfg(feature = "deploy")]
+use labby::cli::Command;
 #[cfg(feature = "deploy")]
 use labby::cli::nodes::NodesCommand;
-use labby::cli::{Cli, Command};
 use labby::config::{LabConfig, NodePreferences};
 use labby::node::master_client::MasterClient;
 use url::Url;

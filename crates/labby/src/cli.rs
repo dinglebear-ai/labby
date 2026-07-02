@@ -17,6 +17,7 @@ pub mod internal;
 pub mod logs;
 #[cfg(feature = "marketplace")]
 pub mod marketplace;
+#[cfg(feature = "nodes")]
 pub mod nodes;
 pub mod oauth;
 pub mod params;
@@ -24,6 +25,7 @@ pub mod serve;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;
+#[cfg(feature = "stash")]
 pub mod stash;
 pub mod style;
 
@@ -77,6 +79,7 @@ pub enum Command {
     /// Generate and verify code-owned documentation artifacts.
     Docs(docs::DocsArgs),
     /// Query nodes from the configured controller.
+    #[cfg(feature = "nodes")]
     Nodes(nodes::NodesArgs),
     /// Quick reachability check for configured services.
     Health,
@@ -92,12 +95,13 @@ pub enum Command {
     Snippets(snippets::SnippetsArgs),
     /// Run local OAuth callback relay helpers.
     Oauth(oauth::OauthArgs),
-    /// Search fleet logs on the configured master.
+    /// Query labby runtime logs (local store; fleet search requires the nodes feature).
     Logs(logs::LogsArgs),
     /// Claude plugin marketplace manager.
     #[cfg(feature = "marketplace")]
     Marketplace(marketplace::MarketplaceArgs),
     /// Component versioning and deployment.
+    #[cfg(feature = "stash")]
     Stash(stash::StashArgs),
     /// Deploy the local lab release binary to SSH targets.
     #[cfg(feature = "deploy")]
@@ -117,6 +121,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Mcp(args) => serve::run_mcp(args, &config).await,
         Command::Doctor(args) => doctor::run(args, format).await,
         Command::Docs(args) => docs::run(args, format),
+        #[cfg(feature = "nodes")]
         Command::Nodes(args) => nodes::run(args, format, &config).await,
         Command::Health => health::run(format).await,
         Command::Setup(args) => setup::run(args, format).await,
@@ -129,6 +134,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Logs(args) => logs::run(args, format, &config).await,
         #[cfg(feature = "marketplace")]
         Command::Marketplace(args) => marketplace::run(args, format).await,
+        #[cfg(feature = "stash")]
         Command::Stash(args) => stash::run(args, format).await,
         #[cfg(feature = "deploy")]
         Command::Deploy(args) => dispatch_deploy(args, format, config.deploy.clone()).await,

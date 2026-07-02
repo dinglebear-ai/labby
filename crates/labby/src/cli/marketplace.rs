@@ -1,7 +1,8 @@
 //! `labby marketplace` — CLI shim for marketplace plugin management.
 //!
 //! All actions follow the shared dispatch layer.
-//! Always-on (synthetic service). See `apprise.rs` for the reference pattern.
+//! Synthetic service gated behind the `marketplace` cargo feature (member of
+//! `all`). See `apprise.rs` for the reference pattern.
 
 use std::process::ExitCode;
 
