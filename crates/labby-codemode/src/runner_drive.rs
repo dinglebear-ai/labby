@@ -1172,7 +1172,7 @@ mod tests {
     #[cfg(not(windows))]
     #[tokio::test]
     async fn drive_runner_excludes_lab_internal_calls_from_budget_and_trace() {
-        let budget = crate::config::max_calltool_per_run();
+        let budget = max_calltool_per_run();
         // The stub emits 1 internal ToolCall + `budget` ordinary ToolCalls,
         // waits for the host to settle them (a background `cat` drains stdin
         // so ToolResult/ToolError writes back to the stub never block), then
