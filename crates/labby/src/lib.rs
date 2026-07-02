@@ -26,6 +26,8 @@ pub mod api;
 pub mod catalog;
 #[allow(unreachable_pub)]
 pub mod cli;
+#[cfg(feature = "gateway")]
+pub mod codemode;
 pub mod config;
 #[allow(unreachable_pub)]
 pub mod dispatch;
