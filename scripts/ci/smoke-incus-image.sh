@@ -213,7 +213,7 @@ incus_cmd start "$container_name"
 wait_for_running "$container_name"
 
 log "checking baked toolchain"
-incus_cmd exec "$container_name" -- su - lab -c 'set -e
+incus_cmd exec "$container_name" -- su - labby -c 'set -e
 node --version
 npm --version
 uv --version
