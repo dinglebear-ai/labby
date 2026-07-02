@@ -15,19 +15,29 @@ letting these namespaces become general host tools.
 
 ---
 
-## Runtime — Javy/QuickJS via subprocess stdio (NOT Wasmtime)
+## Runtime — Javy/QuickJS Wasm inside a pooled subprocess
 
-The live Code Mode runner is a **Javy/QuickJS subprocess** communicated with
-over a framed stdio line protocol. There is NO Wasmtime/fuel path on any live
-code path; the old Wasmtime runner reference file was deleted during extraction.
+The live Code Mode runner is a **Javy-generated Wasm module executed by
+Wasmtime** inside the existing `labby internal code-mode-runner` subprocess. The
+parent still owns all host authority over the framed stdio protocol; the child
+never calls `CodeModeHost` directly.
 
-Execution limits (QuickJS side):
-- **30-second wall-clock timeout** — enforced by `runner_drive.rs` via `tokio::time::timeout`.
-- **64 MiB memory limit** — enforced by the Javy runtime at start-up.
-- **Stack depth limit** — enforced by QuickJS natively.
+Per execution, the runner creates a fresh Wasmtime `Store`, generated JS module,
+and generated module instance. One shared Wasmtime `Engine` and one
+preinitialized Lab-owned Javy plugin module are reused per runner process.
 
-The emitted `ToolError` kind when the wall-clock timer fires is `"timeout"`.
-`code_mode_fuel_exhausted` is NOT emitted by this runner; see `docs/dev/ERRORS.md`.
+Execution limits:
+- **Parent wall-clock timeout** — enforced by `runner_drive.rs`; expiry kills and
+  evicts the runner and surfaces `"timeout"`.
+- **Wasmtime fuel + epoch interruption** — enabled by default in the child; fuel
+  exhaustion and epoch interruption also surface to callers as `"timeout"`.
+- **64 MiB Wasm memory limit** — enforced by the Wasmtime resource limiter.
+- **256 KiB Wasm stack limit** — configured on the Wasmtime engine.
+
+`LAB_CODE_MODE_WASM_LIMITS=0` or `false` disables fuel/epoch/resource-limit
+configuration only for debugging. It does **not** switch back to native QuickJS.
+`code_mode_fuel_exhausted` and `code_mode_timeout` are reserved compatibility
+kinds and are not emitted; callers see canonical `"timeout"`.
 
 ---
 
@@ -37,14 +47,15 @@ The runner **process** is pooled and long-lived; the **JS runtime is rebuilt
 per execution**. This amortizes the dominant fixed cost (fork + process startup)
 while guaranteeing JS-state isolation by construction.
 
-- **Runner loop.** `runner.rs` reads a `Start` → builds a FRESH `javy::Runtime`
-  + context → installs the bridge globals → runs to settle → emits `Done`/`Error`
-  → resets per-execution state and **loops back to read the next `Start`**. The
-  process never exits except on stdin EOF (parent dropped the runner).
-- **Fresh runtime per `Start` is the contract.** Never reuse a `javy::Runtime`
-  across executions — a brand-new runtime has no globals, no
-  `__labPendingToolCalls`, and no captured data from a prior caller. This is
-  where cross-caller leakage would live.
+- **Runner loop.** `runner.rs` reads a `Start` → runs the source through
+  `wasm_runner` → emits `Done`/`Error` → resets per-execution state and **loops
+  back to read the next `Start`**. The process never exits except on stdin EOF
+  (parent dropped the runner).
+- **Fresh store/instance per `Start` is the contract.** Never reuse a Wasmtime
+  `Store` or generated module instance across executions. A fresh store has no
+  JS globals, no `__labPendingToolCalls`, and no captured data from a prior
+  caller. The shared engine/plugin/module cache may be reused because they do not
+  carry caller JS state.
 - **Per-execution resets** (`runner.rs`): the `next_seq` counter resets to 0, and
   a fresh per-execution cwd jail subdir is created (the previous one removed) so a
   pooled process never accumulates working-directory state across runs.
@@ -94,8 +105,8 @@ a `"kind"` field. `protocol.rs` is the source of truth; the shapes below mirror
 **Parent → runner (`CodeModeRunnerInput`):**
 
 ```jsonc
-// Start an execution (the runtime is rebuilt fresh per Start)
-{ "type": "start", "code": "<js source>", "proxy": "<generated codemode proxy js>" }
+// Start an execution (fresh Wasmtime Store/generated instance per Start)
+{ "type": "start", "code": "<js source>", "proxy": "<generated codemode proxy js>", "timeout_ms": 30000 }
 
 // Reply to a tool_call broker request
 { "type": "tool_result", "seq": <u64>, "result": <json> }
@@ -162,7 +173,11 @@ env_clear lands" comment — that state is in the past.
 
 | File | Purpose |
 |------|---------|
-| `runner.rs` | Runner subprocess entry point: the warm-pool loop (read `Start` → fresh runtime → run → `Done`/`Error` → reset + park), per-execution seq + cwd-jail reset, `PR_SET_DUMPABLE`. |
+| `runner.rs` | Runner subprocess entry point: the warm-pool loop (read `Start` → Wasmtime run → `Done`/`Error` → reset + park), per-execution seq + cwd-jail reset, `PR_SET_DUMPABLE`. |
+| `wasm_plugin.rs` | Loads the preinitialized Lab-owned Javy plugin, validates ABI provenance/import namespace, and creates the shared Wasmtime engine/module. |
+| `wasm_codegen.rs` | Wraps caller JS with Code Mode bridge globals and generates dynamic-linking Javy Wasm modules. |
+| `wasm_bridge.rs` | Wasmtime imports, bounded guest-memory reads, pending-operation settlement, final-result capture, and runner protocol emission. |
+| `wasm_runner.rs` | Per-`Start` Wasmtime store/module/instance execution, module cache, fuel/epoch/resource limits, trap classification, and timing evidence. |
 | `runner_drive.rs` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnhealthy`), wall-clock timeout, and finalizes the lease (release vs evict). |
 | `pool.rs` | `RunnerPool` + `RunnerLease`: bounded warm pool, free-list slot ownership, recycle-after-K, bounded ephemeral overflow, kill switch. |
 | `pool/runner_handle.rs` | `PooledRunner`: one long-lived runner process + its stdin/lines/stderr-drain, process-group/Job-Object guard, spawn (`env_clear`, `process_group`, `kill_on_drop`). |
@@ -189,8 +204,10 @@ env_clear lands" comment — that state is in the past.
 
 ## Rules
 
-- Do not reintroduce Wasmtime/fuel execution paths; the live kind is `"timeout"`.
-- Do not add `code_mode_fuel_exhausted` to new match arms; the live kind is `"timeout"`.
+- Do not reintroduce a native `javy::Runtime` hot path or fallback. The live JS
+  engine is Javy/QuickJS compiled to Wasm and run by Wasmtime.
+- Do not add `code_mode_fuel_exhausted` or `code_mode_timeout` to new emitted
+  match arms; normalize execution budget exhaustion to `"timeout"`.
 - Do not expose host network APIs to the runner child.
 - Keep `protocol.rs` as the single serialization-stable wire contract. The
   mcp-ui `{ __ui: <result> }` wrapper is a **host-side return convention**

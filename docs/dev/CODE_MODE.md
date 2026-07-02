@@ -410,11 +410,10 @@ try {
 Canonical recovery buckets:
 
 - Retry-safe: `rate_limited`, `timeout`, `network_error`
-  - The live budget kind is `timeout`: the Javy/QuickJS runner's wall-clock
-    backstop interrupts an over-running snippet and the host normalizes the
-    trap to `timeout`. (`code_mode_fuel_exhausted` is **not** emitted on the
-    live path — it belongs to the dead Wasmtime reference engine; see
-    [Runner Architecture](#runner-architecture).)
+  - The live budget kind is `timeout`: parent wall-clock expiry, Wasmtime fuel
+    exhaustion, and Wasmtime epoch interruption are all normalized to
+    `timeout`. Internal logs may include the trap cause; callers must not depend
+    on `code_mode_fuel_exhausted` or `code_mode_timeout`.
 - Fix-and-retry: `missing_param`, `invalid_param`, `validation_failed`,
   `confirmation_required`
 - Terminal: `unknown_tool`, `unknown_action`, `auth_failed`, `server_error`,
@@ -440,33 +439,37 @@ Trusted local callers use the shared gateway subject.
 The stdio parent-broker protocol is:
 
 1. Parent starts (or reuses a pooled) `labby internal code-mode-runner` process.
-2. Parent sends a `start` line; the child builds a FRESH QuickJS runtime and
-   evaluates the normalized async function.
+2. Parent sends a `start` line; the child creates a FRESH Wasmtime `Store` and
+   generated Javy Wasm module instance for the normalized async function.
 3. Child emits `tool_call` lines for `callTool` requests.
 4. Parent dispatches through the gateway broker and replies with `tool_result` or
    `tool_error`.
-5. Child settles pending promises and emits `done`.
+5. Child re-enters the Lab-owned Javy plugin to settle pending promises and
+   emits `done`.
 6. The child then resets and parks for the next `start` (warm-runner pool).
 
 ### Warm-runner pool
 
-The runner **process** is pooled and long-lived; the **JS runtime is rebuilt for
-every execution**. Pooling amortizes the dominant fixed cost (process fork +
-startup) without ever sharing JS state across callers — a brand-new runtime has
-no globals, no leftover pending tool calls, and no captured data from a prior
-run, so isolation holds by construction.
+The runner **process** is pooled and long-lived; the **Wasmtime store and
+generated JS instance are rebuilt for every execution**. Pooling amortizes the
+dominant fixed cost (process fork + plugin/engine setup) without ever sharing JS
+state across callers — a brand-new store/instance has no globals, no leftover
+pending tool calls, and no captured data from a prior run, so isolation holds by
+construction.
 
-- **Process reuse, fresh runtime.** A pooled runner loops: read `start` → build a
-  fresh `javy::Runtime` → run → emit `done`/`error` → reset and read the next
-  `start`. It exits only when the parent closes stdin.
+- **Process reuse, fresh store.** A pooled runner loops: read `start` → generate
+  or reuse a cached compiled Wasm module for the wrapped source → instantiate a
+  fresh Wasmtime store/module pair → run → emit `done`/`error` → reset and read
+  the next `start`. It exits only when the parent closes stdin.
 - **Per-execution isolation.** Each run resets the `callTool` sequence counter and
   creates a fresh, empty per-execution QuickJS working-directory jail (removing
   the prior one), so a long-lived process never accumulates JS runtime state
   across callers. Code Mode's `state.*` and `git.*` local providers deliberately
   use a separate persistent workspace under `LAB_HOME/code-mode-workspaces/`;
   persistence is scoped to that workspace and guarded by virtual path, symlink,
-  quota, archive, and git remote restrictions. The 64 MiB heap, 30 s wall-clock
-  timeout, and stack limit are enforced per execution.
+  quota, archive, and git remote restrictions. The 64 MiB Wasm memory cap,
+  parent wall-clock timeout, fuel/epoch budget, and Wasm stack limit are
+  enforced per execution.
 - **Bounded pool, one execution per runner.** `N` runners serve `N` concurrent
   executions. When all are busy, an extra request is served by a bounded
   ephemeral (overflow) runner rather than queueing unboundedly.
@@ -489,24 +492,23 @@ run, so isolation holds by construction.
   process-group/Job-Object reaping, `kill_on_drop`, `PR_SET_DUMPABLE`) are set
   once at spawn and therefore hold for the pooled process's whole lifetime.
 
-Code Mode always uses Javy/QuickJS for snippet execution — it is the **sole live
-engine**, with no Boa fallback and no `code_mode_wasm` feature. `codemode` runs
-in the Javy/QuickJS child runner over stdio. The Javy toolchain is pulled in by
-the `gateway` feature.
+Code Mode always uses Javy/QuickJS compiled to Wasm and executed by Wasmtime for
+snippet execution — it is the **sole live engine**, with no Boa fallback, no
+native `javy::Runtime` fallback, and no `code_mode_wasm` feature. `codemode`
+runs in the Wasmtime-backed child runner over stdio. The Javy/Wasmtime toolchain
+is pulled in by the `gateway` feature.
 
 The runner starts with an empty environment in a temporary directory. It does not
 provide Node, Deno, Bun, `fetch`, `connect`, `XMLHttpRequest`, `require`, or host
 module `import()` access. `callTool` is the only host bridge exposed to user code.
 
-> **Wasmtime is dead reference code, not a live path.** `wasm_runner.rs` is an
-> unused engine skeleton retained only for reference; nothing on the live Code
-> Mode path constructs or runs it. Its fuel/epoch-interruption design would
-> normalize fuel and timeout traps to `code_mode_fuel_exhausted` and
-> `code_mode_timeout`, but because the skeleton never executes, **neither kind is
-> emitted today.** The only budget kind a caller observes on the live
-> Javy/QuickJS path is `timeout` (the wall-clock backstop). Treat
-> `code_mode_fuel_exhausted` / `code_mode_timeout` as reserved-for-the-dead-path
-> and do not switch-case on them as live outcomes.
+> **Wasmtime is the live inner sandbox.** The outer authority boundary remains
+> the pooled subprocess and parent-owned stdio broker. The child-side Wasmtime
+> imports only emit existing `tool_call`, `artifact_write`, and
+> `snippet_resolve` protocol messages, then settle the matching pending JS
+> promise when the parent replies. `code_mode_fuel_exhausted` /
+> `code_mode_timeout` are reserved compatibility kinds and are not emitted on the
+> live path; switch-case on canonical `timeout`.
 
 Loose JavaScript snippets are normalized before execution. Already-formed
 function expressions pass through, while statement blocks such as

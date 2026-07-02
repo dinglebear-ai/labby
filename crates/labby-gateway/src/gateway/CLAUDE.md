@@ -62,8 +62,9 @@ runner_drive, runner_io, protocol, pool, artifacts, wrapper, preamble, util,
 execute broker, schema, normalize, truncate, trace, types, ts_signatures, plus
 the snippet store). The crate is injected with a tool source via the
 `labby_codemode::CodeModeHost` trait and carries **no** gateway/upstream
-vocabulary. Wasmtime / `wasm_runner.rs` were dropped (dead code). See
-`crates/labby-codemode/CLAUDE.md` for the sandbox containment invariants.
+vocabulary. The inner sandbox is Javy-generated Wasm executed by Wasmtime inside
+the existing runner subprocess. See `crates/labby-codemode/CLAUDE.md` for the
+sandbox containment invariants.
 
 What stays in `dispatch/gateway/code_mode/` is the gateway's **thin adapter**:
 
@@ -108,11 +109,10 @@ process environment.** The following invariants are NON-NEGOTIABLE:
    assert on env behaviour are non-`#[ignore]` where hermetic (Linux `/proc`
    inspect) and `#[ignore]` where they require a built binary or external tool.
 
-4. **`wasm_runner.rs` is dead code.** No Wasmtime/fuel path is wired. The live
-   Code Mode runner is always Javy/QuickJS via subprocess stdio. If you see
-   references to `code_mode_fuel_exhausted` in error-handling code, that is
-   stale — the live emitted kind for execution-time budget exhaustion is
-   `"timeout"`. See `docs/dev/ERRORS.md` for the canonical error kind contract.
+4. **Code Mode host authority stays parent-owned.** Wasmtime imports in
+   `labby-codemode` emit only the existing runner protocol messages. Do not call
+   gateway `CodeModeHost` from the child runner, and do not add new
+   gateway/upstream vocabulary to `labby-codemode`.
 
 ---
 
@@ -121,14 +121,18 @@ process environment.** The following invariants are NON-NEGOTIABLE:
 **The authoritative documentation for the Code Mode JS execution surface is
 `docs/dev/CODE_MODE.md`.** The key facts for avoiding drift:
 
-- **Runtime: Javy/QuickJS via subprocess stdio, NOT Wasmtime/fuel.**
-- Bounded by: 30-second wall-clock timeout + 64 MiB memory + stack limit.
-- The emitted `ToolError` kind on wall-clock expiry is `"timeout"`.
-- `wasm_runner.rs` is kept for historical reference; it is not on any live code path.
-- `code_mode/runner.rs` + `runner_drive.rs` + `runner_io.rs` are the live path.
+- **Runtime: Javy/QuickJS compiled to Wasm and executed by Wasmtime inside the
+  existing runner subprocess.**
+- Bounded by: parent wall-clock timeout, Wasmtime fuel/epoch interruption, 64 MiB
+  Wasm memory limit, and Wasm stack limit.
+- The emitted `ToolError` kind for wall-clock, fuel, and epoch budget exhaustion
+  is `"timeout"`.
+- `runner.rs`, `runner_drive.rs`, `runner_io.rs`, `wasm_plugin.rs`,
+  `wasm_codegen.rs`, `wasm_bridge.rs`, and `wasm_runner.rs` are the live runner
+  path.
 
-Any doc or comment that says "Wasmtime", "fuel budget", or
-`code_mode_fuel_exhausted` on an active code path is wrong and must be corrected.
+Any doc or comment that says `code_mode_fuel_exhausted` is emitted on an active
+code path is wrong and must be corrected.
 
 **Runner process hardening is IMPLEMENTED (not "planned").** The Code Mode
 runner subprocess is spawned with `env_clear()` (`pool/runner_handle.rs`, in

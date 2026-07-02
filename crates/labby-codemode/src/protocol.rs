@@ -20,6 +20,12 @@ pub(crate) enum CodeModeRunnerInput {
         /// an empty proxy, leaving `codemode` undefined exactly as before.
         #[serde(default)]
         proxy: String,
+        /// Internal child-side deadline budget. The parent remains authoritative
+        /// and kills the subprocess on wall-clock expiry; this lets Wasmtime
+        /// fuel/epoch deadlines use the same per-run timeout instead of a
+        /// hardcoded child default. Older Start messages deserialize to `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
     },
     ToolResult {
         seq: u64,
@@ -92,14 +98,6 @@ pub(crate) enum CodeModeRunnerResult {
 
 impl CodeModeRunnerResult {
     #[must_use]
-    pub(crate) fn from_response_result(result: Option<Value>) -> Self {
-        match result {
-            Some(value) => Self::Json(value),
-            None => Self::Undefined,
-        }
-    }
-
-    #[must_use]
     pub(crate) fn into_response_result(self) -> Option<Value> {
         match self {
             Self::Undefined => None,
@@ -117,9 +115,3 @@ pub(crate) struct CodeModeRunnerState {
 thread_local! {
     pub(crate) static RUNNER_STATE: RefCell<Option<CodeModeRunnerState>> = const { RefCell::new(None) };
 }
-
-// Javy interprets this as the native stack size in bytes. The runtime
-// `codemode.*` proxy preamble (one method per tool, ~140+ across the
-// catalog) plus await/Promise machinery needs ample headroom; 256 KiB avoids
-// operand-stack overflow on a single callTool.
-pub(crate) const CODE_MODE_STACK_SIZE_LIMIT: usize = 256 * 1024;

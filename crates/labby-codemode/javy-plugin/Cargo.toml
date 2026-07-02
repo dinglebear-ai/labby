@@ -1,0 +1,15 @@
+[package]
+name = "labby-codemode-javy-plugin"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+name = "labby_codemode_javy_plugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1"
+javy-plugin-api = { git = "https://github.com/bytecodealliance/javy", tag = "v9.0.0" }

@@ -2,8 +2,9 @@
 //!
 //! A `PooledRunner` owns one `labby internal code-mode-runner` subprocess that
 //! stays alive across executions. The expensive `fork()` + process startup is
-//! paid once at spawn; each execution builds a FRESH `javy::Runtime` inside the
-//! process (runner-side contract), so no JS state leaks between callers.
+//! paid once at spawn; each execution builds a FRESH Wasmtime `Store` and
+//! generated JS instance inside the process (runner-side contract), so no JS
+//! state leaks between callers.
 //!
 //! Security invariants preserved at spawn (set once, persist for the process):
 //! - `env_clear()` — the child inherits no `LAB_*`/ambient env.

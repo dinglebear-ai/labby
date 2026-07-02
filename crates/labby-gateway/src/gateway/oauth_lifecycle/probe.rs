@@ -72,7 +72,8 @@ pub(crate) fn probe_manager_key(parsed: &Url) -> String {
         key.push('-');
         key.push_str(path);
     }
-    key.chars()
+    let mut sanitized = key
+        .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
                 ch
@@ -80,11 +81,12 @@ pub(crate) fn probe_manager_key(parsed: &Url) -> String {
                 '-'
             }
         })
-        .collect::<String>()
-        + &format!(
-            "-{:016x}",
-            xxhash_rust::xxh3::xxh3_64(parsed.as_str().as_bytes())
-        )
+        .collect::<String>();
+    sanitized.push_str(&format!(
+        "-{:016x}",
+        xxhash_rust::xxh3::xxh3_64(parsed.as_str().as_bytes())
+    ));
+    sanitized
 }
 
 // ── private helpers ───────────────────────────────────────────────────────────

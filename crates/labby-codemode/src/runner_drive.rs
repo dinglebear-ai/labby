@@ -162,10 +162,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         cfg: RunnerConfig,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Acquire a runner. With a host, use the shared warm pool (Perf H1): a
-        // pooled runner amortizes the fork/startup cost across executions while
-        // still building a fresh `javy::Runtime` per `Start` (runner-side), so JS
-        // state isolation holds. Without a host (some tests / standalone paths),
-        // spawn a one-shot runner directly.
+        // pooled runner amortizes the fork/startup and Wasmtime plugin setup
+        // cost across executions while still building a fresh Store/generated
+        // instance per `Start` (runner-side), so JS state isolation holds.
+        // Without a host (some tests / standalone paths), spawn a one-shot
+        // runner directly.
         match self.host {
             Some(host) => self.run_via_pool(host.runner_pool(), cfg).await,
             None => self.run_standalone(cfg).await,
@@ -237,6 +238,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             &CodeModeRunnerInput::Start {
                 code: cfg.code_to_run.clone(),
                 proxy: cfg.proxy.clone(),
+                timeout_ms: Some(u64::try_from(cfg.timeout.as_millis()).unwrap_or(u64::MAX)),
             },
         )
         .await
@@ -305,17 +307,21 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             );
                         }
                     };
+                    if line.trim().is_empty() {
+                        continue;
+                    }
 
                     let msg = match serde_json::from_str::<CodeModeRunnerOutput>(&line) {
                         Ok(msg) => msg,
                         Err(err) => {
+                            let preview: String = line.chars().take(120).collect();
                             terminate_code_mode_runner(child, child_pid).await;
                             return DriveOutcome::RunnerUnhealthy(
                                 CodeModeExecutionError::with_trace(
                                     ToolError::Sdk {
                                         sdk_kind: "internal_error".to_string(),
                                         message: format!(
-                                            "Code Mode runner emitted invalid protocol JSON: {err}"
+                                            "Code Mode runner emitted invalid protocol JSON: {err}; frame={preview:?}"
                                         ),
                                     },
                                     sorted_calls(&state.calls),

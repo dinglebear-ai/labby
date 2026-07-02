@@ -1,0 +1,16 @@
+[package]
+name = "labby-codemode-build-support"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+sha2 = "0.11"
+hex = "0.4"
+wasmtime = "=45.0.3"
+wasmtime-wasi = "=45.0.3"
+wasmtime-wizer = { version = "=45.0.3", features = ["wasmtime"] }
+deterministic-wasi-ctx = "=4.0.3"
+tokio = { version = "1", features = ["rt"] }

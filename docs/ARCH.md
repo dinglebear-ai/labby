@@ -75,8 +75,9 @@ dependency graph even though neither ever calls into them.
 ### `crates/labby-codemode`
 
 `labby-codemode` is the client-neutral Code Mode execution kernel. It owns the
-Javy/QuickJS runner protocol, warm runner pool, result shaping, snippet engine,
-and TypeScript descriptor generation. Hosts inject tools through `CodeModeHost`.
+Javy-generated Wasm / Wasmtime runner protocol, warm runner pool, result
+shaping, snippet engine, and TypeScript descriptor generation. Hosts inject
+tools through `CodeModeHost`.
 
 ### `crates/labby-gateway`
 

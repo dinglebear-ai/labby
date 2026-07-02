@@ -6,7 +6,7 @@ use tokio::process::{Child, ChildStdin};
 
 use crate::error::ToolError;
 
-use super::protocol::CodeModeRunnerInput;
+use super::protocol::{CodeModeRunnerInput, CodeModeRunnerOutput, RUNNER_STATE};
 
 pub(crate) async fn write_runner_input(
     stdin: &mut ChildStdin,
@@ -47,4 +47,74 @@ pub(crate) async fn terminate_code_mode_runner(child: &mut Child, _pid: Option<u
     // belt-and-suspenders direct kill of the immediate child process.
     drop(child.kill().await);
     drop(child.wait().await);
+}
+
+pub(crate) fn runner_next_seq_blocking() -> Result<u64, ToolError> {
+    RUNNER_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut().ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: "runner state is not initialized".to_string(),
+        })?;
+        let seq = state.next_seq;
+        state.next_seq = state.next_seq.saturating_add(1);
+        Ok(seq)
+    })
+}
+
+pub(crate) fn runner_emit_blocking(output: CodeModeRunnerOutput) -> Result<(), ToolError> {
+    use std::io::Write;
+
+    RUNNER_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut().ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: "runner state is not initialized".to_string(),
+        })?;
+        serde_json::to_writer(&mut state.writer, &output).map_err(|err| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to encode Code Mode runner output: {err}"),
+        })?;
+        state
+            .writer
+            .write_all(b"\n")
+            .map_err(|err| ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: format!("failed to write Code Mode runner output: {err}"),
+            })?;
+        state.writer.flush().map_err(|err| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to flush Code Mode runner output: {err}"),
+        })
+    })
+}
+
+pub(crate) fn runner_read_input_blocking() -> Result<CodeModeRunnerInput, ToolError> {
+    use std::io::BufRead;
+
+    RUNNER_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut().ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: "runner state is not initialized".to_string(),
+        })?;
+        let mut line = String::new();
+        let read = state
+            .reader
+            .read_line(&mut line)
+            .map_err(|err| ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: format!("failed to read Code Mode runner input: {err}"),
+            })?;
+        if read == 0 {
+            return Err(ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: "runner input closed".to_string(),
+            });
+        }
+        serde_json::from_str(&line).map_err(|err| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to decode Code Mode runner input: {err}"),
+        })
+    })
 }

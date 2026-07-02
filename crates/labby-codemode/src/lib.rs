@@ -16,8 +16,8 @@
 //! unscoped admin/trusted-local callers. Scoped runs must not discover or
 //! dispatch them.
 //!
-//! Runtime: Javy/QuickJS via a hardened subprocess (NOT Wasmtime). See
-//! `CLAUDE.md` for the sandbox containment invariants.
+//! Runtime: Javy-generated Wasm under Wasmtime inside a hardened subprocess.
+//! See `CLAUDE.md` for the sandbox containment invariants.
 
 pub mod error {
     //! Re-export of the shared `ToolError` so kernel modules use one path.
@@ -49,6 +49,10 @@ mod truncate;
 mod ts_signatures;
 mod types;
 mod util;
+mod wasm_bridge;
+mod wasm_codegen;
+mod wasm_plugin;
+mod wasm_runner;
 mod wrapper;
 
 #[cfg(test)]

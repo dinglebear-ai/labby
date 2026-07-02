@@ -118,6 +118,35 @@ product surface, including:
 Those routes must not silently bypass the normal dispatch schema just because
 they are not mounted under `/v1/{service}`.
 
+### Code Mode Runner
+
+Code Mode is a parent-owned dispatch path with a Wasmtime-backed child runner.
+The parent-side dispatch event still uses the normal Code Mode action fields:
+
+- `surface`
+- `service = "code_mode"`
+- `action = "codemode"`
+- `elapsed_ms`
+- `kind` on failure
+
+The child runner may emit implementation metrics to its drained stderr logs for
+operator diagnosis. These metrics must not include user source, tool params,
+tool results, artifact content, auth headers, environment variables, or secrets.
+Current Wasmtime runner metrics include:
+
+- `wrap_ms`
+- `javy_codegen_ms`
+- `wasm_module_compile_ms`
+- `plugin_instantiate_ms`
+- `generated_instantiate_ms`
+- `bridge_roundtrip_ms`
+- `fuel_remaining`
+- `fuel_consumed`
+
+Caller-facing timeout semantics remain stable: parent wall-clock expiry,
+Wasmtime fuel exhaustion, and Wasmtime epoch interruption all surface as
+canonical `timeout`; internal logs may include the lower-level trap cause.
+
 ### Actor Correlation
 
 Operator-facing events that have an authenticated subject must use `actor_key`

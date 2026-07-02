@@ -2,6 +2,33 @@
 
 Date: 2026-07-02
 
+## Implementation Result
+
+The production implementation uses the unblocked Javy v9 Git-tag codegen path
+with Wasmtime/WASI/Wizer `45.0.3`, not the blocked crates.io
+`javy-codegen = 4.0.0` path described in the initial spike notes below.
+
+Live runtime shape:
+
+- `javy-codegen = 4.0.1-alpha.1` from `https://github.com/bytecodealliance/javy`
+  tag `v9.0.0`
+- `wasmtime = 45.0.3`
+- `wasmtime-wasi = 45.0.3`
+- `wasmtime-wizer = 45.0.3`
+- Lab-owned Javy plugin built from `crates/labby-codemode/javy-plugin/`,
+  preinitialized during the `labby-codemode` build, and loaded from
+  `OUT_DIR/plugin.wasm`
+
+Security result: the vulnerable Wasmtime/WASI 42 dependency tree from crates.io
+`javy-codegen = 4.0.0` is not present in the live dependency graph. Keep the
+Javy Git source allow-list and `anyhow` policy in `deny.toml` aligned with this
+runtime while upstream Javy v9 codegen is Git-sourced.
+
+The sections below are retained as historical spike evidence. Treat the
+`Javy v9 Git Spike` conclusion as the active path and the earlier
+`javy-codegen = 4.0.0` / Wasmtime 46 notes as the blocked path that motivated
+the switch.
+
 ## Version Pins
 
 | Crate | Exact version | Why compatible | Source |

@@ -6,12 +6,9 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
-use super::protocol::CODE_MODE_STACK_SIZE_LIMIT;
 use super::protocol::{
-    CodeModeRunnerInput, CodeModeRunnerOutput, CodeModeRunnerResult, CodeModeRunnerState,
-    RUNNER_STATE,
+    CodeModeRunnerInput, CodeModeRunnerOutput, CodeModeRunnerState, RUNNER_STATE,
 };
-use super::wrapper::{CODE_MODE_VALUE_CODEC_JS, code_mode_main_invoker};
 
 pub fn run_code_mode_runner_stdio() -> ExitCode {
     // Security: prevent /proc/<pid>/environ readback of the runner process.
@@ -43,15 +40,15 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
     });
 
     // Warm-runner pool (Perf H1): the runner process is long-lived and serves
-    // one execution per `Start` message, building a FRESH `javy::Runtime` per
-    // execution so no JS state (globals, `__labPendingToolCalls`, captured data)
-    // can leak across callers. After each execution the process parks on the
-    // next `read_line`. The parent pools these processes to amortize the fork
-    // cost. EOF on the input (parent closed stdin / dropped the handle) ends the
-    // loop with a clean exit. A genuine per-execution failure is reported as an
-    // `Error` line; the runner then continues to the next `Start` so a single bad
-    // snippet does not poison a pooled process (the parent decides whether to
-    // recycle it).
+    // one execution per `Start` message, building a FRESH Wasmtime Store and
+    // generated JS instance per execution so no JS state (globals,
+    // `__labPendingToolCalls`, captured data) can leak across callers. After
+    // each execution the process parks on the next `read_line`. The parent pools
+    // these processes to amortize the fork/plugin setup cost. EOF on the input
+    // (parent closed stdin / dropped the handle) ends the loop with a clean
+    // exit. A genuine per-execution failure is reported as an `Error` line; the
+    // runner then continues to the next `Start` so a single bad snippet does not
+    // poison a pooled process (the parent decides whether to recycle it).
     loop {
         match run_code_mode_runner() {
             Ok(RunnerLoopOutcome::Completed) => {
@@ -192,6 +189,15 @@ impl From<String> for CodeModeRunnerError {
     }
 }
 
+impl From<crate::error::ToolError> for CodeModeRunnerError {
+    fn from(error: crate::error::ToolError) -> Self {
+        Self {
+            kind: error.kind().to_string(),
+            message: error.to_string(),
+        }
+    }
+}
+
 /// Extract a structured `{kind,message}` payload embedded in a rejection message
 /// and return its `kind`, scanning the ENTIRE message rather than the first line.
 ///
@@ -235,7 +241,7 @@ fn extract_structured_kind(message: &str) -> Option<String> {
 /// `..._preserves_kind_from_uncaught_structured_rejection` integration test). The
 /// extracted kind is the caller's OWN result, not a cross-trust signal, so this
 /// is by design rather than a forgery boundary.
-fn classify_rejection(message: String) -> CodeModeRunnerError {
+fn classify_code_mode_rejection(message: String) -> CodeModeRunnerError {
     if let Some(kind) = extract_structured_kind(&message) {
         return CodeModeRunnerError { kind, message };
     }
@@ -249,6 +255,14 @@ fn classify_rejection(message: String) -> CodeModeRunnerError {
     CodeModeRunnerError {
         kind: "server_error".to_string(),
         message,
+    }
+}
+
+pub(crate) fn classify_code_mode_rejection_tool_error(message: String) -> crate::error::ToolError {
+    let error = classify_code_mode_rejection(message);
+    crate::error::ToolError::Sdk {
+        sdk_kind: error.kind,
+        message: error.message,
     }
 }
 
@@ -285,9 +299,18 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
         Err(RunnerReadError::InputClosed) => return Ok(RunnerLoopOutcome::InputClosed),
         Err(RunnerReadError::Other(message)) => return Err(message.into()),
     };
-    let CodeModeRunnerInput::Start { code, proxy } = input else {
+    let CodeModeRunnerInput::Start {
+        code,
+        proxy,
+        timeout_ms,
+    } = input
+    else {
         return Err("runner expected start message".to_string().into());
     };
+    let timeout = timeout_ms
+        .map(std::time::Duration::from_millis)
+        .filter(|timeout| !timeout.is_zero())
+        .unwrap_or_else(|| std::time::Duration::from_secs(30));
 
     // Per-execution cwd jail (Perf H1 isolation): a pooled runner is long-lived,
     // so its process cwd must not accumulate state across executions. Create a
@@ -299,457 +322,34 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
     // non-fatal: the spawn cwd is already an isolated TempDir.
     reset_execution_jail();
 
-    let mut config = javy::Config::default();
-    config
-        .redirect_stdout_to_stderr(true)
-        .memory_limit(64 * 1024 * 1024)
-        .max_stack_size(CODE_MODE_STACK_SIZE_LIMIT);
-    let runtime = javy::Runtime::new(config).map_err(|err| err.to_string())?;
+    thread_local! {
+        static WASM_RUNNER: std::cell::RefCell<Option<crate::wasm_runner::WasmRunner>> =
+            const { std::cell::RefCell::new(None) };
+    }
 
-    runtime
-        .context()
-        .with(|cx| -> javy::quickjs::Result<()> {
-            let globals = cx.globals();
-            globals.set(
-                "__labEmitToolCall",
-                javy::quickjs::Function::new(
-                    cx.clone(),
-                    javy::quickjs::prelude::MutFn::new(|cx, args| {
-                        javy_emit_tool_call(javy::Args::hold(cx, args))
-                    }),
-                )?,
-            )?;
-            globals.set(
-                "__labEmitArtifactWrite",
-                javy::quickjs::Function::new(
-                    cx.clone(),
-                    javy::quickjs::prelude::MutFn::new(|cx, args| {
-                        javy_emit_artifact_write(javy::Args::hold(cx, args))
-                    }),
-                )?,
-            )?;
-            globals.set(
-                "__labEmitSnippetResolve",
-                javy::quickjs::Function::new(
-                    cx.clone(),
-                    javy::quickjs::prelude::MutFn::new(|cx, args| {
-                        javy_emit_snippet_resolve(javy::Args::hold(cx, args))
-                    }),
-                )?,
-            )?;
-            Ok(())
-        })
-        .map_err(javy_error_message)?;
-
-    let wrapped = wrap_code_mode(&code, &proxy);
-
-    // A failure here is a parse/eval error in the caller's code (e.g. the
-    // malformed `async () => {`), before the main promise is ever created. That
-    // is a caller mistake, not a backend fault → `invalid_param`. (A non-function
-    // body like `42` evals fine; its TypeError surfaces later as a promise
-    // rejection and is classified by `classify_rejection`.)
-    runtime
-        .context()
-        .with(|cx| cx.eval::<(), _>(wrapped))
-        .map_err(|err| CodeModeRunnerError {
-            kind: "invalid_param".to_string(),
-            message: javy_error_message(err),
-        })?;
-
-    // Run the event loop until the main promise settles.
-    let resolved_result = loop {
-        runtime
-            .resolve_pending_jobs()
-            .map_err(|err| err.to_string())?;
-        match javy_main_promise_state(&runtime)? {
-            JavyMainPromiseState::Resolved(result) => break result,
-            JavyMainPromiseState::Rejected(message) => {
-                return Err(classify_rejection(message));
-            }
-            JavyMainPromiseState::Pending => {
-                // Mid-execution EOF means the parent died while a tool call was
-                // in flight — a genuine fault, not the clean pool-shutdown path.
-                let input = runner_read_input().map_err(RunnerReadError::into_runner_error)?;
-                javy_settle_tool_promise(&runtime, &input)?;
-            }
+    let result = WASM_RUNNER.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none() {
+            *cell =
+                Some(
+                    crate::wasm_runner::WasmRunner::new().map_err(|err| CodeModeRunnerError {
+                        kind: "server_error".to_string(),
+                        message: format!("failed to initialize Code Mode Wasm runner: {err}"),
+                    })?,
+                );
         }
-    };
+        cell.as_mut()
+            .expect("runner initialized above")
+            .execute(&code, &proxy, timeout)
+            .map_err(CodeModeRunnerError::from)
+    })?;
 
     runner_emit(CodeModeRunnerOutput::Done {
-        result: CodeModeRunnerResult::from_response_result(resolved_result),
+        result,
         logs: Vec::new(),
     })
     .map_err(CodeModeRunnerError::from)?;
     Ok(RunnerLoopOutcome::Completed)
-}
-
-fn wrap_code_mode(code: &str, proxy: &str) -> String {
-    // The execute wrapper body (assign → typeof check → invoke) is shared with
-    // the Boa path via `code_mode_main_invoker` so the contract cannot diverge.
-    // It is interpolated as a named arg (`{invoker}`) so its literal JS braces
-    // are substituted verbatim and need no `{{`/`}}` escaping.
-    let invoker = code_mode_main_invoker(code);
-    format!(
-        r#"
-globalThis.__labPendingToolCalls = new Map();
-globalThis.__labSnippetStack = [];
-globalThis.__labSnippetResolveCount = 0;
-globalThis.__labSnippetResolvedBytes = 0;
-globalThis.__labSnippetMaxDepth = 8;
-globalThis.__labSnippetMaxResolves = 32;
-globalThis.__labSnippetMaxBytes = 262144;
-{codec}
-globalThis.callTool = (id, params = {{}}) => {{
-  if (typeof id !== "string" || id.trim() === "") {{
-    throw new TypeError("callTool id must be a non-empty string");
-  }}
-  if (params === null || typeof params !== "object" || Array.isArray(params)) {{
-    throw new TypeError("callTool params must be a JSON object");
-  }}
-  return new Promise((resolve, reject) => {{
-    const seq = globalThis.__labEmitToolCall(id, __labEncodeResult(params));
-    globalThis.__labPendingToolCalls.set(seq, {{ kind: "tool", resolve, reject }});
-  }});
-}};
-globalThis.writeArtifact = (path, content, options = {{}}) => {{
-  if (typeof path !== "string" || path.trim() === "") {{
-    throw new TypeError("writeArtifact path must be a non-empty string");
-  }}
-  if (typeof content !== "string") {{
-    throw new TypeError("writeArtifact content must be a string");
-  }}
-  if (options === null || typeof options !== "object" || Array.isArray(options)) {{
-    throw new TypeError("writeArtifact options must be a JSON object");
-  }}
-  if (options.contentType !== undefined && typeof options.contentType !== "string") {{
-    throw new TypeError("writeArtifact options.contentType must be a string");
-  }}
-  const contentType = options.contentType ?? null;
-  return new Promise((resolve, reject) => {{
-    const seq = globalThis.__labEmitArtifactWrite(path, content, contentType);
-    globalThis.__labPendingToolCalls.set(seq, {{ kind: "artifact", resolve, reject }});
-  }});
-}};
-globalThis.__labRunSnippet = (name, input = {{}}) => {{
-  if (typeof name !== "string" || name.trim() === "") {{
-    return Promise.reject(new Error(JSON.stringify({{kind: "bad_snippet_name", message: "codemode.run name must be a non-empty string"}})));
-  }}
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {{
-    return Promise.reject(new Error(JSON.stringify({{kind: "invalid_param", message: "codemode.run input must be a JSON object"}})));
-  }}
-  if (globalThis.__labSnippetStack.indexOf(name) !== -1) {{
-    return Promise.reject(new Error(JSON.stringify({{kind: "snippet_recursion_limit", message: "snippet recursion detected for `" + name + "`"}})));
-  }}
-  if (globalThis.__labSnippetStack.length >= globalThis.__labSnippetMaxDepth) {{
-    return Promise.reject(new Error(JSON.stringify({{kind: "snippet_depth_exceeded", message: "snippet depth limit exceeded"}})));
-  }}
-  if (globalThis.__labSnippetResolveCount >= globalThis.__labSnippetMaxResolves) {{
-    return Promise.reject(new Error(JSON.stringify({{kind: "snippet_resolve_limit", message: "snippet resolve limit exceeded"}})));
-  }}
-  globalThis.__labSnippetResolveCount++;
-  return new Promise((resolve, reject) => {{
-    const seq = globalThis.__labEmitSnippetResolve(name, __labEncodeResult(input));
-    globalThis.__labPendingToolCalls.set(seq, {{ kind: "snippet", name, resolve, reject }});
-  }});
-}};
-globalThis.__labSettlePendingOperation = (message) => {{
-  const input = JSON.parse(message);
-  const pending = globalThis.__labPendingToolCalls.get(input.seq);
-  if (!pending) {{
-    throw new Error("runner received a response for an unknown pending operation");
-  }}
-  globalThis.__labPendingToolCalls.delete(input.seq);
-  if (input.type === "tool_result") {{
-    pending.resolve(__labDecodeResult(input.result));
-    return;
-  }}
-  if (input.type === "snippet_resolved") {{
-    if (pending.kind !== "snippet") {{
-      throw new Error("runner received snippet code for a non-snippet operation");
-    }}
-    if (typeof input.code !== "string") {{
-      pending.reject(new Error(JSON.stringify({{kind: "invalid_snippet_resolution", message: "resolved snippet code must be a string"}})));
-      return;
-    }}
-    globalThis.__labSnippetResolvedBytes += input.code.length;
-    if (globalThis.__labSnippetResolvedBytes > globalThis.__labSnippetMaxBytes) {{
-      pending.reject(new Error(JSON.stringify({{kind: "snippet_budget_exceeded", message: "resolved snippet code budget exceeded"}})));
-      return;
-    }}
-    Promise.resolve().then(async () => {{
-      globalThis.__labSnippetStack.push(pending.name);
-      try {{
-        return await (eval("(" + input.code + ")"))(__labDecodeResult(input.input));
-      }} finally {{
-        globalThis.__labSnippetStack.pop();
-      }}
-    }}).then(pending.resolve, pending.reject);
-    return;
-  }}
-  if (input.type === "tool_error") {{
-    // Reject with an Error whose message is the *pure JSON* {{kind,message}} of
-    // the tool-call error. This is a load-bearing contract: caller JS recovers the
-    // structured error via `JSON.parse(e.message)` (see the runner integration
-    // tests), so the message must stay valid JSON — do NOT wrap it in markers or
-    // prose. The host preserves `kind` by extracting the embedded JSON object from
-    // the rejection (see classify_rejection / extract_structured_kind), which is
-    // robust to QuickJS's `Error: ` prefix and any appended stack trace because
-    // JSON.stringify escapes newlines and stack frames carry no braces.
-    pending.reject(new Error(JSON.stringify({{kind: input.kind, message: input.message}})));
-    return;
-  }}
-  throw new Error("runner received unexpected protocol message");
-}};
-globalThis.__labSettleToolCall = globalThis.__labSettlePendingOperation;
-{proxy}
-globalThis.__labMainPromise = (async () => {{
-{invoker}}})();
-"#,
-        codec = CODE_MODE_VALUE_CODEC_JS,
-        invoker = invoker,
-        proxy = proxy,
-    )
-}
-
-enum JavyMainPromiseState {
-    Pending,
-    /// The async function returned. `result` is the JSON-serialized return value,
-    /// or None when the function returned undefined.
-    Resolved(Option<Value>),
-    Rejected(String),
-}
-
-fn javy_emit_tool_call(args: javy::Args<'_>) -> javy::quickjs::Result<u64> {
-    let (cx, args) = args.release();
-    let id_value = args
-        .0
-        .first()
-        .ok_or_else(|| javy_type_error(cx.clone(), "callTool id must be a non-empty string"))?;
-    let id = javy::val_to_string(&cx, id_value.clone())
-        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
-    if id.trim().is_empty() {
-        return Err(javy_type_error(
-            cx.clone(),
-            "callTool id must be a non-empty string",
-        ));
-    }
-
-    let params_json = args
-        .0
-        .get(1)
-        .map(|params| cx.json_stringify(params.clone()))
-        .transpose()?
-        .flatten()
-        .map(|params| params.to_string())
-        .transpose()?
-        .unwrap_or_else(|| "{}".to_string());
-    let params: Value = serde_json::from_str(&params_json).map_err(|err| {
-        javy_type_error(
-            cx.clone(),
-            format!("callTool params must be JSON-serializable: {err}"),
-        )
-    })?;
-    if !params.is_object() {
-        return Err(javy_type_error(
-            cx.clone(),
-            "callTool params must be a JSON object",
-        ));
-    }
-
-    let seq = next_runner_seq(&cx)?;
-
-    runner_emit(CodeModeRunnerOutput::ToolCall { seq, id, params })
-        .map_err(|err| javy_type_error(cx, err))?;
-    Ok(seq)
-}
-
-fn javy_emit_artifact_write(args: javy::Args<'_>) -> javy::quickjs::Result<u64> {
-    let (cx, args) = args.release();
-    let path_value = args.0.first().ok_or_else(|| {
-        javy_type_error(cx.clone(), "writeArtifact path must be a non-empty string")
-    })?;
-    let path = javy::val_to_string(&cx, path_value.clone())
-        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
-    if path.trim().is_empty() {
-        return Err(javy_type_error(
-            cx.clone(),
-            "writeArtifact path must be a non-empty string",
-        ));
-    }
-
-    let content_value = args
-        .0
-        .get(1)
-        .ok_or_else(|| javy_type_error(cx.clone(), "writeArtifact content must be a string"))?;
-    let content = javy::val_to_string(&cx, content_value.clone())
-        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
-
-    let content_type = args
-        .0
-        .get(2)
-        .filter(|value| !value.is_null() && !value.is_undefined())
-        .map(|value| javy::val_to_string(&cx, value.clone()))
-        .transpose()
-        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
-
-    let seq = next_runner_seq(&cx)?;
-
-    runner_emit(CodeModeRunnerOutput::ArtifactWrite {
-        seq,
-        path,
-        content,
-        content_type,
-    })
-    .map_err(|err| javy_type_error(cx, err))?;
-    Ok(seq)
-}
-
-fn javy_emit_snippet_resolve(args: javy::Args<'_>) -> javy::quickjs::Result<u64> {
-    let (cx, args) = args.release();
-    let name_value = args
-        .0
-        .first()
-        .ok_or_else(|| javy_type_error(cx.clone(), "snippet name must be a non-empty string"))?;
-    let name = javy::val_to_string(&cx, name_value.clone())
-        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
-    if name.trim().is_empty() {
-        return Err(javy_type_error(
-            cx.clone(),
-            "snippet name must be a non-empty string",
-        ));
-    }
-
-    let input_json = args
-        .0
-        .get(1)
-        .map(|input| cx.json_stringify(input.clone()))
-        .transpose()?
-        .flatten()
-        .map(|input| input.to_string())
-        .transpose()?
-        .unwrap_or_else(|| "{}".to_string());
-    let input: Value = serde_json::from_str(&input_json).map_err(|err| {
-        javy_type_error(
-            cx.clone(),
-            format!("snippet input must be JSON-serializable: {err}"),
-        )
-    })?;
-    if !input.is_object() {
-        return Err(javy_type_error(
-            cx.clone(),
-            "snippet input must be a JSON object",
-        ));
-    }
-
-    let seq = next_runner_seq(&cx)?;
-
-    runner_emit(CodeModeRunnerOutput::SnippetResolve { seq, name, input })
-        .map_err(|err| javy_type_error(cx, err))?;
-    Ok(seq)
-}
-
-fn javy_settle_tool_promise(
-    runtime: &javy::Runtime,
-    input: &CodeModeRunnerInput,
-) -> Result<(), String> {
-    let message = serde_json::to_string(input).map_err(|err| err.to_string())?;
-    runtime
-        .context()
-        .with(|cx| -> javy::quickjs::Result<()> {
-            let settle: javy::quickjs::Function<'_> =
-                cx.globals().get("__labSettlePendingOperation")?;
-            settle.call::<_, ()>((message,))?;
-            Ok(())
-        })
-        .map_err(javy_error_message)?;
-    runtime
-        .resolve_pending_jobs()
-        .map_err(|err| err.to_string())
-}
-
-fn javy_main_promise_state(runtime: &javy::Runtime) -> Result<JavyMainPromiseState, String> {
-    runtime
-        .context()
-        .with(|cx| -> javy::quickjs::Result<JavyMainPromiseState> {
-            let promise: javy::quickjs::Promise<'_> = cx.globals().get("__labMainPromise")?;
-            match promise.result::<javy::quickjs::Value<'_>>() {
-                None => Ok(JavyMainPromiseState::Pending),
-                Some(Ok(val)) => {
-                    // Serialize the resolved value to JSON via cx.json_stringify.
-                    // undefined cannot be stringified and maps to None (no result).
-                    // null is a real JSON value and must round-trip as Some(Null).
-                    let result = if val.is_undefined() {
-                        None
-                    } else {
-                        match cx.json_stringify(val) {
-                            Ok(Some(json_str)) => {
-                                let json_text = json_str.to_string()?;
-                                let value: Value = match serde_json::from_str(&json_text) {
-                                    Ok(value) => value,
-                                    Err(err) => {
-                                        return Ok(JavyMainPromiseState::Rejected(format!(
-                                            "Code Mode result must be JSON-serializable: {err}"
-                                        )));
-                                    }
-                                };
-                                Some(value)
-                            }
-                            Ok(None) => {
-                                return Ok(JavyMainPromiseState::Rejected(
-                                    "Code Mode result must be JSON-serializable".to_string(),
-                                ));
-                            }
-                            Err(err) => {
-                                return Ok(JavyMainPromiseState::Rejected(format!(
-                                    "Code Mode result must be JSON-serializable: {}",
-                                    javy::from_js_error(cx.clone(), err)
-                                )));
-                            }
-                        }
-                    };
-                    Ok(JavyMainPromiseState::Resolved(result))
-                }
-                Some(Err(err)) => {
-                    // Capture a debug representation before `from_js_error`
-                    // consumes `err`; used as a fallback when the stringified
-                    // JS error is empty (lab-4uele).
-                    let debug_fallback = format!("{err:?}");
-                    let message = javy::from_js_error(cx.clone(), err).to_string();
-                    let message = if message.is_empty() {
-                        debug_fallback
-                    } else {
-                        message
-                    };
-                    Ok(JavyMainPromiseState::Rejected(message))
-                }
-            }
-        })
-        .map_err(javy_error_message)
-}
-
-fn javy_type_error(
-    message_context: javy::quickjs::Ctx<'_>,
-    message: impl Into<String>,
-) -> javy::quickjs::Error {
-    javy::to_js_error(message_context, anyhow::anyhow!(message.into()))
-}
-
-fn next_runner_seq(cx: &javy::quickjs::Ctx<'_>) -> javy::quickjs::Result<u64> {
-    RUNNER_STATE
-        .with(|state| {
-            let mut state = state.borrow_mut();
-            let state = state
-                .as_mut()
-                .ok_or_else(|| "runner state is not initialized".to_string())?;
-            let seq = state.next_seq;
-            state.next_seq = state.next_seq.saturating_add(1);
-            Ok::<_, String>(seq)
-        })
-        .map_err(|err| javy_type_error(cx.clone(), err))
-}
-
-fn javy_error_message(error: javy::quickjs::Error) -> String {
-    error.to_string()
 }
 
 fn runner_emit(output: CodeModeRunnerOutput) -> Result<(), String> {
@@ -777,17 +377,7 @@ enum RunnerReadError {
     Other(String),
 }
 
-impl RunnerReadError {
-    /// Collapse to a `CodeModeRunnerError` for mid-execution reads, where an EOF
-    /// is a genuine fault (the parent died while a tool call was in flight)
-    /// rather than the clean pool-shutdown path.
-    fn into_runner_error(self) -> CodeModeRunnerError {
-        match self {
-            Self::InputClosed => "runner input closed".to_string().into(),
-            Self::Other(message) => message.into(),
-        }
-    }
-}
+impl RunnerReadError {}
 
 fn runner_read_input() -> Result<CodeModeRunnerInput, RunnerReadError> {
     RUNNER_STATE.with(|state| {

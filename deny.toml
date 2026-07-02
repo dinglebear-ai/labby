@@ -73,6 +73,7 @@ wrappers = [
     "labby",
     "labby-auth",
     "labby-codemode",
+    "labby-codemode-build-support",
     "labby-gateway",
     "agent-client-protocol",
     "agent-client-protocol-schema",

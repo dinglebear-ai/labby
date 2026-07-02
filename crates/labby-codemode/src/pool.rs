@@ -1,10 +1,11 @@
 //! Code Mode warm-runner pool (Perf H1).
 //!
-//! Pools the **OS process** of the Code Mode runner, not the JS runtime. Each
-//! pooled runner builds a FRESH `javy::Runtime` per `Start` (runner-side), so JS
-//! state isolation is guaranteed by construction — a brand-new runtime has no
-//! globals, no `__labPendingToolCalls`, and no captured data from a prior
-//! caller. Pooling amortizes only the expensive `fork()` + process startup.
+//! Pools the **OS process** of the Code Mode runner, not caller JS state. Each
+//! pooled runner builds a FRESH Wasmtime `Store` and generated JS instance per
+//! `Start` (runner-side), so JS state isolation is guaranteed by construction —
+//! a brand-new store/instance has no globals, no `__labPendingToolCalls`, and no
+//! captured data from a prior caller. Pooling amortizes process startup plus
+//! shared Wasmtime engine/plugin setup.
 //!
 //! Concurrency model: a bounded set of long-lived runners, one execution per
 //! runner at a time. `size` permits gate access to pooled runners; when all are

@@ -74,8 +74,11 @@ Dispatch layers may add the following kinds on top of SDK errors:
 > Code Mode execution disabled → `internal_error`. Sandbox/runner JS evaluation failure
 > → `server_error`. These map into the canonical kind set so agents switch-casing on
 > `err.kind` don't fall into the default branch.
-- `code_mode_fuel_exhausted` — **reserved, not currently emitted.** Belongs to the dead Wasmtime reference engine (`wasm_runner.rs`), which is never run on the live path. Would map to HTTP 408 if the Wasmtime path were ever revived.
-- `code_mode_timeout` — **reserved, not currently emitted.** Same dead-Wasmtime origin as above. On the live Javy/QuickJS runner, a wall-clock backstop interruption surfaces as the canonical `timeout` kind, not `code_mode_timeout`. Would map to HTTP 408 if the Wasmtime path were ever revived. See [CODE_MODE.md](./CODE_MODE.md) "Runner Architecture".
+- `code_mode_fuel_exhausted` — **reserved, not currently emitted.** The live
+  Wasmtime runner maps fuel exhaustion to canonical `timeout`.
+- `code_mode_timeout` — **reserved, not currently emitted.** Parent wall-clock
+  expiry and Wasmtime epoch interruption both surface as canonical `timeout`.
+  See [CODE_MODE.md](./CODE_MODE.md) "Runner Architecture".
 - `call_budget_exceeded` — Code Mode rejected a `callTool` invocation after the per-run fan-out budget was reached. The in-sandbox promise rejects with this recoverable kind; reduce fan-out or split work across multiple `codemode` calls.
 - `result_too_large` — Code Mode rejected a single upstream `callTool` result before sending it into the runner because the serialized result exceeded the host-side result cap. Use `writeArtifact` for large payloads or reduce the upstream result.
 - `queue_saturated` — bounded runtime queue is full; caller should retry after the current work drains. HTTP 429.

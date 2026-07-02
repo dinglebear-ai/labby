@@ -30,11 +30,11 @@ regex = "1"
 tar = "0.4"
 tokio-util = { version = "0.7", features = ["codec"] }
 url.workspace = true
+walrus = "0.25.2"
+lru = "0.16"
 
-# QuickJS/Javy sandbox runtime (runner subprocess only). `anyhow` is required
-# ONLY at the javy FFI boundary (`javy::to_js_error` takes `anyhow::Error`); it
-# is not the crate's error-handling idiom — that is `ToolError`/`thiserror`.
-javy = { version = "7.0.0" }
+# `anyhow` is limited to Javy codegen / Wasmtime setup boundaries; normal
+# caller-facing errors still use `ToolError`.
 anyhow = "1"
 
 # Wasmtime dual-sandbox spike path. The published `javy-codegen = 4.0.0`
@@ -67,6 +67,10 @@ labby-winjob = { path = "../labby-winjob" }
 
 [dev-dependencies]
 tempfile.workspace = true
+wat = "1.252.0"
+
+[build-dependencies]
+labby-codemode-build-support = { path = "build-support" }
 
 [lints]
 workspace = true
