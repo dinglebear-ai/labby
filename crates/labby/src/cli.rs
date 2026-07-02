@@ -24,6 +24,7 @@ pub mod serve;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;
+#[cfg(feature = "stash")]
 pub mod stash;
 pub mod style;
 
@@ -98,6 +99,7 @@ pub enum Command {
     #[cfg(feature = "marketplace")]
     Marketplace(marketplace::MarketplaceArgs),
     /// Component versioning and deployment.
+    #[cfg(feature = "stash")]
     Stash(stash::StashArgs),
     /// Deploy the local lab release binary to SSH targets.
     #[cfg(feature = "deploy")]
@@ -129,6 +131,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Logs(args) => logs::run(args, format, &config).await,
         #[cfg(feature = "marketplace")]
         Command::Marketplace(args) => marketplace::run(args, format).await,
+        #[cfg(feature = "stash")]
         Command::Stash(args) => stash::run(args, format).await,
         #[cfg(feature = "deploy")]
         Command::Deploy(args) => dispatch_deploy(args, format, config.deploy.clone()).await,

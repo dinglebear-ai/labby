@@ -25,6 +25,7 @@ pub mod marketplace;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;
+#[cfg(feature = "stash")]
 pub mod stash;
 
 #[cfg(feature = "marketplace")]

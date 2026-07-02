@@ -568,7 +568,8 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         });
     }
 
-    // stash is always-on (no feature flag). Manages versioned component snapshots.
+    // stash is feature-gated: versioned component snapshots (required by marketplace).
+    #[cfg(feature = "stash")]
     {
         let meta = labby_apis::stash::META;
         reg.register(RegisteredService {
@@ -763,7 +764,9 @@ mod tests {
             .iter()
             .map(|service| service.name)
             .collect();
-        let mut kept_services = vec!["setup", "doctor", "acp", "stash"];
+        let mut kept_services = vec!["setup", "doctor", "acp"];
+        #[cfg(feature = "stash")]
+        kept_services.push("stash");
         #[cfg(feature = "gateway")]
         kept_services.push("gateway");
         #[cfg(feature = "marketplace")]
@@ -879,7 +882,8 @@ mod tests {
             s.insert(labby_apis::marketplace::META.name);
             s.insert(labby_apis::doctor::META.name); // always-on
             s.insert(labby_apis::setup::META.name); // always-on
-            s.insert(labby_apis::stash::META.name); // always-on
+            #[cfg(feature = "stash")]
+            s.insert(labby_apis::stash::META.name);
             #[cfg(feature = "fs")]
             s.insert("fs");
             s

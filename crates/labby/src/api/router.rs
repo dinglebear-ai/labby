@@ -1142,11 +1142,15 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
                     crate::api::host_validation::host_validation_layer,
                 )),
             )
-            .nest("/stash", services::stash::routes(state.clone()))
             .nest(
                 "/auth/allowed-emails",
                 services::auth_admin::routes(state.clone()),
             );
+
+        #[cfg(feature = "stash")]
+        {
+            v1 = v1.nest("/stash", services::stash::routes(state.clone()));
+        }
 
         #[cfg(feature = "marketplace")]
         {

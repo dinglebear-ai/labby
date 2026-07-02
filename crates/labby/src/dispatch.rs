@@ -20,6 +20,7 @@ pub mod security;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;
+#[cfg(feature = "stash")]
 pub mod stash;
 #[cfg(feature = "gateway")]
 pub mod upstream;

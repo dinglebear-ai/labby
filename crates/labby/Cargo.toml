@@ -142,14 +142,16 @@ path = "src/lib.rs"
 [features]
 acp_registry = ["labby-apis/acp_registry", "labby-runtime/acp_registry"]
 node-runtime = []
-all = ["labby-apis/all", "lab-admin", "acp_registry", "deploy", "gateway", "marketplace"]
+all = ["labby-apis/all", "lab-admin", "acp_registry", "deploy", "gateway", "marketplace", "stash"]
 gateway = ["dep:labby-codemode", "dep:labby-gateway"]
 # Depends on `gateway` because marketplace's stdio-install validation reuses
 # the shared spawn-guard/SSRF checks, which now live in labby-gateway (moved
 # out of labby-runtime so labby-auth/labby-codemode don't pull them in).
-marketplace = ["labby-apis/mcpregistry", "labby-runtime/marketplace", "gateway"]
+# Also requires `stash`: fork persistence goes through dispatch/marketplace/stash_bridge.rs.
+marketplace = ["labby-apis/mcpregistry", "labby-runtime/marketplace", "gateway", "stash"]
 services-all = [
 ]
+stash = []
 default = ["all"]
 deploy = ["labby-apis/deploy", "labby-runtime/deploy"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
