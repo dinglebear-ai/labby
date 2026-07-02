@@ -1551,6 +1551,10 @@ pub fn build_router(
         .merge(v1_protected);
     #[cfg(feature = "nodes")]
     {
+        // Registration order relative to `v1_protected` does not affect auth:
+        // v1_protected is a pre-built sub-router merged wholesale, and its auth
+        // comes from its own route_layer. The routes below are auth-exempt by
+        // construction — do not fold them into v1_protected.
         router = router
             // POST /v1/nodes/hello is self-registration — exempt from bearer auth.
             .nest("/v1/nodes", super::nodes::public_routes(state.clone()))

@@ -224,7 +224,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     #[cfg(feature = "nodes")]
     let node_role = node_runtime.role();
     #[cfg(not(feature = "nodes"))]
-    let node_role = node_role_without_nodes(&resolved_runtime)?;
+    let node_role = resolve_node_role_without_nodes(&resolved_runtime)?;
 
     // Early return for node (non-controller) processes: skip the full
     // controller startup (registry build, OAuth, gateway, logs system, web UI, etc.).
@@ -1273,7 +1273,7 @@ fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
 /// `nodes` feature can only run as a controller. Fail loudly if config asks
 /// for node mode instead of silently ignoring it.
 #[cfg(not(feature = "nodes"))]
-fn node_role_without_nodes(
+fn resolve_node_role_without_nodes(
     resolved: &crate::config::ResolvedNodeRuntime,
 ) -> Result<crate::config::NodeRole> {
     let role = resolved.role;

@@ -135,7 +135,7 @@ already started speaking.
 
 ## Status
 
-ACP is registered as a first-class always-on service. The pieces in place:
+ACP is registered as a first-class service behind the `acp` cargo feature (a member of `all`, excluded from gateway-only builds). The pieces in place:
 
 - `lab-apis::acp` — capability module with `META`, `AcpEvent`, `AcpSessionState`,
   `AcpSessionSummary`, `AcpPersistence` trait, and bounded `SessionHandle`

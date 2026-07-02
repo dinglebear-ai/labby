@@ -766,6 +766,17 @@ mod tests {
             .iter()
             .map(|service| service.name)
             .collect();
+        // `mut` is only exercised when at least one feature-gated push compiles;
+        // slice builds with none of these features would otherwise warn.
+        #[cfg_attr(
+            not(any(
+                feature = "acp",
+                feature = "stash",
+                feature = "gateway",
+                feature = "marketplace"
+            )),
+            allow(unused_mut)
+        )]
         let mut kept_services = vec!["setup", "doctor"];
         #[cfg(feature = "acp")]
         kept_services.push("acp");
@@ -850,6 +861,78 @@ mod tests {
                 .services()
                 .iter()
                 .any(|service| service.name == "marketplace")
+        );
+    }
+
+    #[cfg(not(feature = "acp"))]
+    #[test]
+    fn default_registry_omits_acp_without_feature() {
+        let registry = build_default_registry();
+        assert!(
+            registry
+                .services()
+                .iter()
+                .all(|service| service.name != "acp")
+        );
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn default_registry_includes_acp_with_feature() {
+        let registry = build_default_registry();
+        assert!(
+            registry
+                .services()
+                .iter()
+                .any(|service| service.name == "acp")
+        );
+    }
+
+    #[cfg(not(feature = "stash"))]
+    #[test]
+    fn default_registry_omits_stash_without_feature() {
+        let registry = build_default_registry();
+        assert!(
+            registry
+                .services()
+                .iter()
+                .all(|service| service.name != "stash")
+        );
+    }
+
+    #[cfg(feature = "stash")]
+    #[test]
+    fn default_registry_includes_stash_with_feature() {
+        let registry = build_default_registry();
+        assert!(
+            registry
+                .services()
+                .iter()
+                .any(|service| service.name == "stash")
+        );
+    }
+
+    #[cfg(not(feature = "nodes"))]
+    #[test]
+    fn default_registry_omits_device_without_nodes_feature() {
+        let registry = build_default_registry();
+        assert!(
+            registry
+                .services()
+                .iter()
+                .all(|service| service.name != "device")
+        );
+    }
+
+    #[cfg(feature = "nodes")]
+    #[test]
+    fn default_registry_includes_device_with_nodes_feature() {
+        let registry = build_default_registry();
+        assert!(
+            registry
+                .services()
+                .iter()
+                .any(|service| service.name == "device")
         );
     }
 

@@ -95,7 +95,7 @@ pub enum Command {
     Snippets(snippets::SnippetsArgs),
     /// Run local OAuth callback relay helpers.
     Oauth(oauth::OauthArgs),
-    /// Search fleet logs on the configured master.
+    /// Query labby runtime logs (local store; fleet search requires the nodes feature).
     Logs(logs::LogsArgs),
     /// Claude plugin marketplace manager.
     #[cfg(feature = "marketplace")]

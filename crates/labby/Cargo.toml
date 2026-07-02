@@ -138,7 +138,7 @@ path = "src/lib.rs"
 # - `mcpregistry` is owned by marketplace in this crate; do not treat it as standalone here.
 # - `acp`, `nodes`, and `stash` are feature-gated base capabilities: not standalone
 #   products, but excludable so a gateway-only build stays lean. `marketplace`
-#   requires `acp` + `stash`. `doctor`, `setup`, `logs` (local), docs generation,
+#   requires `acp` + `nodes` + `stash`. `doctor`, `setup`, `logs` (local), docs generation,
 #   and the `serve` base remain always-on.
 # - Helper/internal features are not standalone product slices unless this comment is updated.
 [features]

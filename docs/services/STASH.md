@@ -1,6 +1,6 @@
 # Stash
 
-Stash is an always-on local versioning service built into `lab`. It tracks versioned snapshots of homelab components — skills, agents, commands, hooks, scripts, configs, and more — stored under `~/.lab/stash/` on the local machine. No external service or database is required.
+Stash is a local versioning service built into `lab`, feature-gated behind the `stash` cargo feature (a member of `all`, excluded from gateway-only builds). It tracks versioned snapshots of homelab components — skills, agents, commands, hooks, scripts, configs, and more — stored under `~/.lab/stash/` on the local machine. No external service or database is required.
 
 ## Overview
 
