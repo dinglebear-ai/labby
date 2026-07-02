@@ -204,8 +204,18 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         } else {
             String::new()
         };
+        // The `openapi` shim is emitted ONLY on the host path (this fn) and ONLY
+        // when the gate passes AND the host has ≥1 loaded spec. The host-less
+        // early-return path has no registry, so the shim would only ever error
+        // there (M11).
+        let openapi_provider_js =
+            if local_providers_allowed(caller, scope) && !host.openapi_registry().is_empty() {
+                super::preamble::generate_openapi_provider_js()
+            } else {
+                ""
+            };
         Ok(format!(
-            "{local_provider_js}\n{discovery_js}\n{namespace_js}"
+            "{local_provider_js}\n{openapi_provider_js}\n{discovery_js}\n{namespace_js}"
         ))
     }
 
