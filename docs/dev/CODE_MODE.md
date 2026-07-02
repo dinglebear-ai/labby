@@ -480,6 +480,33 @@ sweep fired on pause/resume/reject dispatch — no background timer.
 (`confirm: true`) runs, CLI runs, and runs with no configured pause store take
 the write-free path unchanged.
 
+**Worked MCP example (pause → resume / reject):**
+
+```jsonc
+// 1. Model runs code that calls a destructive upstream tool.
+codemode({ "code": "async () => { await codemode.svc.delete_thing({ id: 42 }); return 'done'; }" })
+// → error envelope:
+{ "kind": "confirmation_required",
+  "status": "paused",
+  "execution_id": "exec_0000001718000000_01J...",
+  "resume_token": "exec_0000001718000000_01J...",
+  "pending": [{ "seq": 0, "tool_id": "svc::delete_thing" }] }
+
+// 2a. Human approves → resubmit the IDENTICAL code + resume_token + confirm:true.
+codemode({ "code": "async () => { await codemode.svc.delete_thing({ id: 42 }); return 'done'; }",
+           "resume_token": "exec_0000001718000000_01J...", "confirm": true })
+// → the approved call re-dispatches for real; the run completes (or pauses at
+//   the next unconfirmed destructive call).
+
+// 2b. Human rejects → resume_token + confirm:false.
+codemode({ "resume_token": "exec_0000001718000000_01J...", "confirm": false })
+// → { "status": "rejected" }. The pending call was never executed.
+```
+
+Code Mode is **MCP-only** today. A future CLI/HTTP surface must carry
+`resume_token` / `confirm` as params to drive the same durable pause/resume
+contract.
+
 ## Scope
 
 - `lab` or `lab:admin` can use `codemode`.

@@ -607,4 +607,56 @@ mod tests {
             .await;
         assert!(matches!(out, DecideOutcome::Fail(_)));
     }
+
+    // ── Wave 3 lifecycle (resume/reject) trait methods ──
+
+    #[tokio::test]
+    async fn run_auth_fields_returns_recorded_authz() {
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "e7").await;
+        let fields = d.run_auth_fields("e7").await.expect("some");
+        assert!(fields.verified);
+        assert_eq!(fields.code_hash, "hash");
+        assert_eq!(fields.actor_key.as_deref(), Some("actor"));
+        assert!(fields.is_admin);
+        assert_eq!(fields.capability_filter_fingerprint, "fp");
+        assert_eq!(fields.status, RunLifecycle::Running);
+    }
+
+    #[tokio::test]
+    async fn resume_to_running_cas_wins_once() {
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "e8").await;
+        // Pause it (a destructive fresh call).
+        let _ = d
+            .decide("e8", 0, "svc::delete", &serde_json::json!({}), true, false)
+            .await;
+        assert_eq!(
+            d.run_status("e8").await,
+            RunLifecycle::Paused,
+            "must be paused after a destructive call"
+        );
+        // First CAS wins; a concurrent second loses (already_resumed).
+        assert!(d.resume_to_running("e8").await);
+        assert!(!d.resume_to_running("e8").await);
+        assert_eq!(d.run_status("e8").await, RunLifecycle::Running);
+    }
+
+    #[tokio::test]
+    async fn reject_sets_rejected_only_when_paused() {
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "e9").await;
+        let _ = d
+            .decide("e9", 0, "svc::delete", &serde_json::json!({}), true, false)
+            .await;
+        // Reject guarded on Paused → succeeds.
+        assert!(
+            d.set_status("e9", RunLifecycle::Rejected, Some("rejected by user"))
+                .await
+                .expect("set_status")
+        );
+        assert_eq!(d.run_status("e9").await, RunLifecycle::Rejected);
+        // A resume CAS on a rejected run fails closed.
+        assert!(!d.resume_to_running("e9").await);
+    }
 }

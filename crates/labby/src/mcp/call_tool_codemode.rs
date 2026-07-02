@@ -373,13 +373,183 @@ impl LabMcpServer {
             input_tokens,
             "gateway codemode start"
         );
+        let decider = manager.code_mode_decider().cloned();
+
+        // ── Resume / reject a paused run (Wave 3) ──
+        // A `resume_token` targets an existing paused run. `confirm: false`
+        // rejects it; `confirm: true` resumes after full authorization. The
+        // block returns early on every failure/reject; reaching its end means a
+        // resume was authorized (`resuming = true`, `execution_id = token`).
+        let mut execution_id = execution_id;
+        // A resume is in progress once the block below reaches its end without
+        // an early return.
+        let resuming = has_resume_token && whole_run_confirm;
+        if has_resume_token {
+            let token = args
+                .get("resume_token")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let Some(decider) = decider.as_ref() else {
+                let env = build_error(
+                    service,
+                    "call_tool",
+                    "internal_error",
+                    "Code Mode durable pause store is not configured; cannot resume.",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            };
+            decider.maybe_expire().await;
+
+            if !whole_run_confirm {
+                // Reject (Task 3.2): guarded on the run still being Paused.
+                match decider
+                    .set_status(&token, labby_codemode::RunLifecycle::Rejected, Some("rejected by user"))
+                    .await
+                {
+                    Ok(true) => {
+                        tracing::info!(
+                            surface = "mcp",
+                            service = CODE_MODE_SERVICE,
+                            code_mode_tool = %service,
+                            action = "reject",
+                            subject,
+                            actor_key,
+                            execution_id = %token,
+                            "gateway codemode run rejected by user"
+                        );
+                        let env = build_error_extra(
+                            service,
+                            "call_tool",
+                            "confirmation_required",
+                            "Code Mode run rejected. The pending destructive call was not executed.",
+                            &serde_json::json!({ "status": "rejected", "execution_id": token }),
+                        );
+                        return Ok(CallToolResult::success(vec![Content::text(env.to_string())]));
+                    }
+                    _ => {
+                        let env = build_error(
+                            service,
+                            "call_tool",
+                            "already_resumed",
+                            "Code Mode run is not paused (already resumed, rejected, expired, or \
+                             unknown); nothing to reject.",
+                        );
+                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    }
+                }
+            }
+
+            // Resume (Task 3.1) — authorization checks BEFORE the CAS.
+            let Some(auth_fields) = decider.run_auth_fields(&token).await else {
+                let env = build_error(
+                    service,
+                    "call_tool",
+                    "unknown_execution",
+                    "No paused Code Mode run for this resume_token.",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            };
+            if !auth_fields.verified {
+                let env = build_error(
+                    service,
+                    "call_tool",
+                    "internal_error",
+                    "Code Mode run integrity check failed; refusing to resume.",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            if auth_fields.status != labby_codemode::RunLifecycle::Paused {
+                let env = build_error(
+                    service,
+                    "call_tool",
+                    "already_resumed",
+                    "Code Mode run is not paused (already resumed, rejected, expired, or \
+                     terminal); only a paused run can be resumed.",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            // Code identity: resubmitted code must hash-match the paused run
+            // (source is not persisted — the caller resubmits identical code).
+            if auth_fields.code_hash != code_hash {
+                let env = build_error(
+                    service,
+                    "call_tool",
+                    "resume_divergence",
+                    "Resubmitted Code Mode code does not match the paused run. Resume must \
+                     resubmit the identical code.",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            // Actor identity (V3): the resuming actor must equal the recorded
+            // one (None matches only None — never bridges trusted-local↔scoped).
+            let live_actor = actor_key.map(ToOwned::to_owned);
+            if auth_fields.actor_key != live_actor {
+                let env = build_error(
+                    service,
+                    "call_tool",
+                    "forbidden",
+                    "Only the actor that started a Code Mode run may resume it.",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            // Live authorization (V1 — the critical fix): recompute live caps at
+            // resume time. The fingerprint alone is NOT an authz check; the
+            // recomputed live capabilities are. If scope narrowed/revoked since
+            // pause → fail closed even though the fingerprint matches.
+            let live_caps = auth
+                .map(|auth| code_mode_capabilities_for_scopes(&auth.scopes))
+                .unwrap_or(CodeModeCallerCapabilities {
+                    can_execute: true,
+                    can_use_snippets: true,
+                    is_admin: true,
+                });
+            let fingerprint_matches =
+                auth_fields.capability_filter_fingerprint == capability_filter_fingerprint;
+            if !live_caps.can_execute
+                || auth_fields.is_admin != live_caps.is_admin
+                || !fingerprint_matches
+            {
+                let env = build_error(
+                    service,
+                    "call_tool",
+                    "forbidden",
+                    "Code Mode authorization changed since the run paused; refusing to resume \
+                     with narrowed or revoked scope.",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            // CAS Paused→Running; loser gets already_resumed.
+            if !decider.resume_to_running(&token).await {
+                let env = build_error(
+                    service,
+                    "call_tool",
+                    "already_resumed",
+                    "Code Mode run was concurrently resumed or is no longer paused.",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
+            // Pre-execution intent log (OBSERVABILITY: destructive re-dispatch).
+            tracing::info!(
+                surface = "mcp",
+                service = CODE_MODE_SERVICE,
+                code_mode_tool = %service,
+                action = "resume.intent",
+                subject,
+                actor_key,
+                execution_id = %token,
+                "resuming paused Code Mode run — approved destructive call will re-dispatch"
+            );
+            execution_id = token;
+        }
+
         // Pause-capable path: a decider is injected AND this is a fresh,
         // not-pre-confirmed, non-resume run. Begin a durable run before driving
         // so destructive calls can journal + pause; else take the write-free
         // path (execution_id stays local, no journaling).
-        let decider = manager.code_mode_decider().cloned();
-        let pause_capable = decider.is_some() && !whole_run_confirm && !has_resume_token;
-        if let (true, Some(decider)) = (pause_capable, decider.as_ref()) {
+        let pause_capable =
+            (decider.is_some() && !whole_run_confirm && !has_resume_token) || resuming;
+        if let (true, false, Some(decider)) = (pause_capable, resuming, decider.as_ref()) {
             decider.maybe_expire().await;
             if let Err(err) = decider
                 .begin(labby_codemode::BeginRun {
