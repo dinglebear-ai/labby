@@ -93,6 +93,17 @@ impl OpenApiRegistry {
         }
     }
 
+    /// Construct a registry directly from a label→entry map. TEST-ONLY: bypasses
+    /// spec loading and the SSRF guard so dispatch logic can be exercised against
+    /// a loopback mock server. Not part of the production API.
+    #[cfg(test)]
+    #[must_use]
+    pub fn from_map_for_test(map: HashMap<String, SpecEntry>) -> Self {
+        Self {
+            inner: Arc::new(map),
+        }
+    }
+
     /// Sorted list of loaded labels.
     #[must_use]
     pub fn labels(&self) -> Vec<String> {
