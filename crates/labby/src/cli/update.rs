@@ -72,10 +72,8 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
     }
 
     run_install_script(&args.version, &install_dir)?;
-    let mut incus_sync = None;
-    let mut incus_sync_skipped = None;
-    if args.no_incus_sync {
-        incus_sync_skipped = Some("--no-incus-sync requested".to_string());
+    let (incus_sync, incus_sync_skipped) = if args.no_incus_sync {
+        (None, Some("--no-incus-sync requested".to_string()))
     } else {
         match crate::dispatch::setup::incus::sync_incus_binary(
             crate::dispatch::setup::incus::IncusSyncOptions {
@@ -86,13 +84,13 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
                 dry_run: false,
             },
         ) {
-            Ok(outcome) => incus_sync = Some(outcome),
+            Ok(outcome) => (Some(outcome), None),
             Err(err) if err.kind() == "incus_sync_container_discovery_failed" => {
-                incus_sync_skipped = Some(err.to_string());
+                (None, Some(err.to_string()))
             }
             Err(err) => return Err(anyhow::anyhow!(err.to_string())),
         }
-    }
+    };
 
     let outcome = UpdateOutcome {
         version: args.version,
