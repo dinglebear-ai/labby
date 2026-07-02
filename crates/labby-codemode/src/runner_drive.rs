@@ -607,8 +607,15 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
     let surface = cfg.surface;
+    // Durable-run context (pause-capable path). Owned so it can move into the
+    // spawned future; `ExecCtx` borrows it back at the call boundary.
+    let execution_id = broker.execution_id.clone();
     pending_tool_calls.push(Box::pin(async move {
         let call_start = std::time::Instant::now();
+        let ctx = crate::host::ExecCtx {
+            execution_id: execution_id.as_deref(),
+            seq,
+        };
         let result = broker
             .call_tool_id_before_deadline(
                 &id,
@@ -617,6 +624,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
                 caller,
                 surface,
                 &capability_filter,
+                ctx,
             )
             .await;
         let elapsed_ms = call_start.elapsed().as_millis();

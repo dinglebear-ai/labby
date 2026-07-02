@@ -54,6 +54,92 @@ pub struct ToolCallOutcome {
     pub ui: Option<UiLink>,
 }
 
+/// Per-call execution context threaded from the runner drive layer into
+/// [`CodeModeHost::call_tool`]. Carries the durable-run `execution_id` (when the
+/// run is on the pause-capable path) and the protocol `seq` for this call.
+///
+/// `execution_id` is `None` for the no-decider / standalone / write-free path
+/// (CLI runs, pre-confirmed runs, tests) — the host then dispatches directly
+/// without journaling.
+#[derive(Debug, Clone, Copy)]
+pub struct ExecCtx<'a> {
+    pub execution_id: Option<&'a str>,
+    pub seq: u64,
+}
+
+impl ExecCtx<'_> {
+    /// The write-free context used when no durable run is active.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            execution_id: None,
+            seq: 0,
+        }
+    }
+}
+
+/// The durable-execution decision for a single tool call or step.
+///
+/// Port of Cloudflare's `ToolDecision` (`runtime.ts:127-134`), plus explicit
+/// `Diverge`/`Fail` terminal variants (Cloudflare routes both through a `pause`
+/// decision whose reason lives on the execution record; Labby's host returns a
+/// typed outcome so the driver can map it onto a `ToolError` directly).
+#[derive(Debug, Clone)]
+pub enum DecideOutcome {
+    /// Return the cached result, do NOT dispatch (`runtime.ts:464`).
+    Replay(Value),
+    /// Dispatch for real, then call `record_result` (`runtime.ts:527`).
+    Execute,
+    /// Run flipped to `paused`; return the pause sentinel (`runtime.ts:524`).
+    /// Best-effort sandbox halt only — the durable status is the source of truth.
+    Pause,
+    /// Hard, model-actionable replay divergence (`runtime.ts:437/448`).
+    Diverge(String),
+    /// Oversize/unserializable args → terminal run failure (`runtime.ts:494`).
+    Fail(String),
+}
+
+/// A boxed, `Send` future — the object-safe return type the `CodeModeDecider`
+/// trait uses so it can be held as `Arc<dyn CodeModeDecider>`.
+///
+/// Native `async fn in trait` (RPITIT) is NOT `dyn`-compatible, and the repo
+/// forbids the `async-trait` crate; boxing the future by hand keeps the trait
+/// object-safe without pulling in `async_trait`. Implementations still write
+/// `async` bodies internally and wrap them in `Box::pin(async move { … })`.
+pub type BoxDecideFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// The durable-execution decision layer the Code Mode host consults around each
+/// upstream tool call. Storage-neutral: the concrete SQLite-backed
+/// implementation (`SqliteDecider`) lives in the `labby` binary crate, injected
+/// into the gateway host as `Arc<dyn CodeModeDecider>`.
+///
+/// Port of the `decide()`/`recordResult()` half of Cloudflare's
+/// `CodemodeRuntime` (`runtime.ts:411-572`). Methods return boxed futures so the
+/// trait is `dyn`-compatible (see [`BoxDecideFuture`]).
+pub trait CodeModeDecider: Send + Sync {
+    /// Decide what to do with the call at `(execution_id, seq)`. Ports
+    /// `runtime.ts:411 decide`: monotonic pause gate first, then
+    /// replay/divergence/journal-and-pause/execute.
+    fn decide<'a>(
+        &'a self,
+        execution_id: &'a str,
+        seq: u64,
+        tool_id: &'a str,
+        args: &'a Value,
+        requires_approval: bool,
+        ephemeral: bool,
+    ) -> BoxDecideFuture<'a, DecideOutcome>;
+
+    /// Record the real result of an executed call and mark it applied. Ports
+    /// `runtime.ts:543 recordResult`.
+    fn record_result<'a>(
+        &'a self,
+        execution_id: &'a str,
+        seq: u64,
+        result: &'a Value,
+    ) -> BoxDecideFuture<'a, Result<(), ToolError>>;
+}
+
 /// Injects the tool source into the Code Mode kernel.
 ///
 /// Implementations live entirely outside this crate. Methods take the neutral
@@ -75,6 +161,11 @@ pub trait CodeModeHost: Send + Sync {
     /// Route a `callTool(id, params)` to the host's tool source and return the
     /// unwrapped result (plus any captured widget link). The kernel has already
     /// checked the id against `scope`.
+    ///
+    /// `ctx` carries the durable-run `execution_id` + protocol `seq`; when the
+    /// host has an injected decider AND `ctx.execution_id` is `Some`, the call
+    /// runs through the decide→dispatch→record durable dance (pause/replay/
+    /// diverge/fail), otherwise it dispatches directly (write-free path).
     fn call_tool(
         &self,
         id: &str,
@@ -82,6 +173,7 @@ pub trait CodeModeHost: Send + Sync {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
+        ctx: ExecCtx<'_>,
     ) -> impl Future<Output = Result<ToolCallOutcome, ToolError>> + Send;
 
     /// Resolve a Code Mode snippet by name (engine lives in-crate; only the
@@ -166,6 +258,7 @@ impl CodeModeHost for NoopHost {
         _caller: &CodeModeCaller,
         _surface: CodeModeSurface,
         _scope: &ToolScope,
+        _ctx: ExecCtx<'_>,
     ) -> Result<ToolCallOutcome, ToolError> {
         Err(ToolError::Sdk {
             sdk_kind: "unknown_tool".to_string(),

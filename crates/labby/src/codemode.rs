@@ -16,4 +16,5 @@
 //! Gated `#[cfg(feature = "gateway")]` because it depends on
 //! `labby_codemode::redact_trace_value`, only present under `gateway`.
 
+pub mod decider;
 pub mod sqlite_pauses;

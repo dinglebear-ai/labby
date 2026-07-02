@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::error::ToolError;
-use crate::host::CodeModeHost;
+use crate::host::{CodeModeHost, ExecCtx};
 use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
 
 use super::CodeModeBroker;
@@ -287,10 +287,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         caller: CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
+        ctx: ExecCtx<'_>,
     ) -> Result<Value, ToolError> {
         match tokio::time::timeout_at(
             deadline,
-            self.call_tool_id(id, params, caller, surface, scope),
+            self.call_tool_id(id, params, caller, surface, scope, ctx),
         )
         .await
         {
@@ -309,6 +310,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         caller: CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
+        ctx: ExecCtx<'_>,
     ) -> Result<Value, ToolError> {
         let parsed = CodeModeToolId::parse(id)?;
         let Some(host) = self.host else {
@@ -338,7 +340,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 // destructive); it surfaces a `forbidden` error which passes
                 // straight through.
                 let outcome = host
-                    .call_tool(&parsed.raw, params, &caller, surface, scope)
+                    .call_tool(&parsed.raw, params, &caller, surface, scope, ctx)
                     .await?;
                 if let Some(ui) = outcome.ui {
                     if let Ok(mut sink) = self.ui_capture.lock() {
@@ -557,6 +559,7 @@ mod tests {
                 CodeModeCaller::TrustedLocal,
                 CodeModeSurface::Cli,
                 &empty_scope,
+                ExecCtx::none(),
             )
             .await;
         // NoopHost's semantic_rank always returns Ok(vec![]), so this must
@@ -578,6 +581,7 @@ mod tests {
                 CodeModeCaller::TrustedLocal,
                 CodeModeSurface::Cli,
                 &scope,
+                ExecCtx::none(),
             )
             .await;
         assert!(result.is_err());
@@ -672,6 +676,7 @@ mod tests {
                 CodeModeCaller::TrustedLocal,
                 CodeModeSurface::Cli,
                 &ToolScope::default(),
+                ExecCtx::none(),
             )
             .await;
         let value = result.expect("oversized query must be truncated, not errored");

@@ -135,7 +135,21 @@ impl GatewayManager {
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),
             code_mode_runner_pool: Arc::new(crate::gateway::code_mode::RunnerPool::from_env()?),
+            code_mode_decider: None,
         })
+    }
+
+    /// Inject the durable-execution decision layer for Code Mode pause/resume.
+    ///
+    /// The `labby` binary passes an `Arc<SqliteDecider>` (over the pause store).
+    /// Without this, the gateway takes today's write-free, no-pause path.
+    #[must_use]
+    pub fn with_code_mode_decider(
+        mut self,
+        decider: Arc<dyn labby_codemode::CodeModeDecider>,
+    ) -> Self {
+        self.code_mode_decider = Some(decider);
+        self
     }
 
     /// Override the `.env` path used by config persistence helpers (test only).

@@ -63,6 +63,7 @@ impl CodeModeHost for GatewayManager {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         _scope: &ToolScope,
+        ctx: labby_codemode::ExecCtx<'_>,
     ) -> Result<ToolCallOutcome, ToolError> {
         let (upstream, tool) =
             labby_codemode::split_namespaced_id(id).ok_or_else(|| ToolError::Sdk {
@@ -76,9 +77,61 @@ impl CodeModeHost for GatewayManager {
             .resolve_code_mode_upstream_tool(upstream, tool, Some(&owner), oauth_subject)
             .await?;
 
-        // Host-side scope check: read-only callers cannot execute a destructive
-        // upstream tool.
-        if upstream_tool.destructive && !destructive_permitted(surface, caller) {
+        // `requires_approval` reuses the existing destructive gate: a
+        // destructive tool the caller is not otherwise permitted to run requires
+        // human approval. Same predicate as the legacy hard `forbidden` block —
+        // no soft-pass (port of proxy-tool.ts:408 + the :79-97 gate).
+        let requires_approval =
+            upstream_tool.destructive && !destructive_permitted(surface, caller);
+
+        // Durable pause/resume dance (port of proxy-tool.ts:402-428). Active only
+        // on the pause-capable path: a decider is injected AND this run has a
+        // durable execution id. Otherwise fall through to today's behavior.
+        if let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) {
+            match decider
+                .decide(exec_id, ctx.seq, id, &params, requires_approval, false)
+                .await
+            {
+                labby_codemode::DecideOutcome::Replay(value) => {
+                    // Served from the durable log — do NOT dispatch upstream.
+                    return Ok(ToolCallOutcome { value, ui: None });
+                }
+                labby_codemode::DecideOutcome::Pause => {
+                    // Best-effort sandbox halt; the durable status is already
+                    // `paused` and is the source of truth read after settle.
+                    return Err(pause_sentinel_error());
+                }
+                labby_codemode::DecideOutcome::Diverge(message) => {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "resume_divergence".to_string(),
+                        message,
+                    });
+                }
+                labby_codemode::DecideOutcome::Fail(message) => {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "internal_error".to_string(),
+                        message,
+                    });
+                }
+                // Fall through to the real dispatch, then record the result.
+                labby_codemode::DecideOutcome::Execute => {}
+            }
+            validate_code_mode_params_against_schema(
+                &params,
+                upstream_tool.input_schema.as_ref(),
+            )?;
+            let outcome = self
+                .dispatch_code_mode_upstream(upstream, tool, params)
+                .await?;
+            decider
+                .record_result(exec_id, ctx.seq, &outcome.value)
+                .await
+                .ok();
+            return Ok(outcome);
+        }
+
+        // ── Write-free path (no decider / no durable run) — unchanged behavior ──
+        if requires_approval {
             tracing::warn!(
                 surface = "dispatch",
                 service = "code_mode",
@@ -96,73 +149,7 @@ impl CodeModeHost for GatewayManager {
             });
         }
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
-
-        let Some(pool) = self.current_pool().await else {
-            return Err(ToolError::Sdk {
-                sdk_kind: "upstream_error".to_string(),
-                message: "gateway upstream pool is unavailable".to_string(),
-            });
-        };
-        let mut upstream_params = CallToolRequestParams::new(tool.to_string());
-        upstream_params.arguments = Some(match params {
-            Value::Object(map) => map,
-            _ => Map::new(),
-        });
-        match pool.call_tool(upstream, upstream_params).await {
-            Some(Ok(result)) => {
-                if result.is_error == Some(true) {
-                    let error_text = result
-                        .content
-                        .first()
-                        .and_then(|content| content.as_text())
-                        .map(|content| content.text.as_str());
-                    let (kind, message, counts_as_failure) =
-                        code_mode_upstream_error_info(error_text);
-                    if counts_as_failure {
-                        pool.record_failure(upstream, message.clone()).await;
-                    } else {
-                        pool.record_success(upstream).await;
-                    }
-                    return Err(ToolError::Sdk {
-                        sdk_kind: kind.to_string(),
-                        message,
-                    });
-                }
-                pool.record_success(upstream).await;
-                let ui = extract_ui_link(&result);
-                if let Some(ui) = ui.as_ref() {
-                    let resource_uri = ui_resource_uri(&ui.ui_meta).unwrap_or("<unknown>");
-                    tracing::info!(
-                        surface = "dispatch",
-                        service = "code_mode",
-                        action = "mcp_app.capture",
-                        upstream,
-                        tool,
-                        resource_uri,
-                        "captured upstream MCP App widget link"
-                    );
-                }
-                Ok(ToolCallOutcome {
-                    value: unwrap_code_mode_upstream_result(result),
-                    ui,
-                })
-            }
-            Some(Err(err)) => {
-                pool.record_failure(upstream, err.clone()).await;
-                Err(ToolError::Sdk {
-                    sdk_kind: "upstream_error".to_string(),
-                    message: err,
-                })
-            }
-            None => {
-                pool.record_failure(upstream, format!("upstream `{upstream}` is not connected"))
-                    .await;
-                Err(ToolError::Sdk {
-                    sdk_kind: "not_found".to_string(),
-                    message: format!("upstream tool `{upstream}::{tool}` was not found"),
-                })
-            }
-        }
+        self.dispatch_code_mode_upstream(upstream, tool, params).await
     }
 
     async fn resolve_snippet(
@@ -291,6 +278,98 @@ impl CodeModeHost for GatewayManager {
 
     fn runner_pool(&self) -> &RunnerPool {
         self.code_mode_runner_pool()
+    }
+}
+
+/// Gateway-side Code Mode dispatch helpers (not trait methods).
+impl GatewayManager {
+    /// Dispatch a resolved Code Mode call to the upstream MCP pool and unwrap
+    /// the result. Shared by the durable and write-free `call_tool` paths
+    /// (mcp-ui capture, error classification, success/failure recording).
+    async fn dispatch_code_mode_upstream(
+        &self,
+        upstream: &str,
+        tool: &str,
+        params: Value,
+    ) -> Result<ToolCallOutcome, ToolError> {
+        let Some(pool) = self.current_pool().await else {
+            return Err(ToolError::Sdk {
+                sdk_kind: "upstream_error".to_string(),
+                message: "gateway upstream pool is unavailable".to_string(),
+            });
+        };
+        let mut upstream_params = CallToolRequestParams::new(tool.to_string());
+        upstream_params.arguments = Some(match params {
+            Value::Object(map) => map,
+            _ => Map::new(),
+        });
+        match pool.call_tool(upstream, upstream_params).await {
+            Some(Ok(result)) => {
+                if result.is_error == Some(true) {
+                    let error_text = result
+                        .content
+                        .first()
+                        .and_then(|content| content.as_text())
+                        .map(|content| content.text.as_str());
+                    let (kind, message, counts_as_failure) =
+                        code_mode_upstream_error_info(error_text);
+                    if counts_as_failure {
+                        pool.record_failure(upstream, message.clone()).await;
+                    } else {
+                        pool.record_success(upstream).await;
+                    }
+                    return Err(ToolError::Sdk {
+                        sdk_kind: kind.to_string(),
+                        message,
+                    });
+                }
+                pool.record_success(upstream).await;
+                let ui = extract_ui_link(&result);
+                if let Some(ui) = ui.as_ref() {
+                    let resource_uri = ui_resource_uri(&ui.ui_meta).unwrap_or("<unknown>");
+                    tracing::info!(
+                        surface = "dispatch",
+                        service = "code_mode",
+                        action = "mcp_app.capture",
+                        upstream,
+                        tool,
+                        resource_uri,
+                        "captured upstream MCP App widget link"
+                    );
+                }
+                Ok(ToolCallOutcome {
+                    value: unwrap_code_mode_upstream_result(result),
+                    ui,
+                })
+            }
+            Some(Err(err)) => {
+                pool.record_failure(upstream, err.clone()).await;
+                Err(ToolError::Sdk {
+                    sdk_kind: "upstream_error".to_string(),
+                    message: err,
+                })
+            }
+            None => {
+                pool.record_failure(upstream, format!("upstream `{upstream}` is not connected"))
+                    .await;
+                Err(ToolError::Sdk {
+                    sdk_kind: "not_found".to_string(),
+                    message: format!("upstream tool `{upstream}::{tool}` was not found"),
+                })
+            }
+        }
+    }
+}
+
+/// The best-effort sandbox-halt error returned on a durable pause. The pause is
+/// enforced by the durable status (already flipped to `paused` by `decide`),
+/// NOT by this error propagating — model code may swallow it (`allSettled`/
+/// `try-catch`) and the host still reads the durable status after settle. Port
+/// of the pause sentinel (`proxy-tool.ts:222-224, 650`).
+fn pause_sentinel_error() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "code_mode_paused".to_string(),
+        message: "Code Mode execution paused awaiting approval".to_string(),
     }
 }
 
