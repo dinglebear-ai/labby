@@ -618,7 +618,7 @@ fi
 
 cat <<DONE
 Done. Manual steps remain:
-  1. incus exec $NAME -- su - lab
+  1. incus exec $NAME -- su - labby
   2. claude login && codex login && gemini
   3. verify service: incus exec $NAME -- systemctl status labby --no-pager
   4. verify readiness: incus exec $NAME -- curl -fsS http://127.0.0.1:8765/ready
