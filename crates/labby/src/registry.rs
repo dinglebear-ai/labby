@@ -816,123 +816,101 @@ mod tests {
         assert!(service_meta("gateway").is_none());
     }
 
+    /// Shared body for the feature-gated inclusion/omission test pairs below.
+    fn registry_has_service(name: &str) -> bool {
+        build_default_registry()
+            .services()
+            .iter()
+            .any(|service| service.name == name)
+    }
+
     #[cfg(not(feature = "gateway"))]
     #[test]
     fn default_registry_omits_gateway_without_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .all(|service| service.name != "gateway")
+            !registry_has_service("gateway"),
+            "gateway must not register without the `gateway` feature"
         );
     }
 
     #[cfg(feature = "gateway")]
     #[test]
     fn default_registry_includes_gateway_with_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .any(|service| service.name == "gateway")
+            registry_has_service("gateway"),
+            "gateway must register with the `gateway` feature"
         );
     }
 
     #[cfg(not(feature = "marketplace"))]
     #[test]
     fn default_registry_omits_marketplace_without_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .all(|service| service.name != "marketplace")
+            !registry_has_service("marketplace"),
+            "marketplace must not register without the `marketplace` feature"
         );
     }
 
     #[cfg(feature = "marketplace")]
     #[test]
     fn default_registry_includes_marketplace_with_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .any(|service| service.name == "marketplace")
+            registry_has_service("marketplace"),
+            "marketplace must register with the `marketplace` feature"
         );
     }
 
     #[cfg(not(feature = "acp"))]
     #[test]
     fn default_registry_omits_acp_without_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .all(|service| service.name != "acp")
+            !registry_has_service("acp"),
+            "acp must not register without the `acp` feature"
         );
     }
 
     #[cfg(feature = "acp")]
     #[test]
     fn default_registry_includes_acp_with_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .any(|service| service.name == "acp")
+            registry_has_service("acp"),
+            "acp must register with the `acp` feature"
         );
     }
 
     #[cfg(not(feature = "stash"))]
     #[test]
     fn default_registry_omits_stash_without_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .all(|service| service.name != "stash")
+            !registry_has_service("stash"),
+            "stash must not register without the `stash` feature"
         );
     }
 
     #[cfg(feature = "stash")]
     #[test]
     fn default_registry_includes_stash_with_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .any(|service| service.name == "stash")
+            registry_has_service("stash"),
+            "stash must register with the `stash` feature"
         );
     }
 
     #[cfg(not(feature = "nodes"))]
     #[test]
     fn default_registry_omits_device_without_nodes_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .all(|service| service.name != "device")
+            !registry_has_service("device"),
+            "device must not register without the `nodes` feature"
         );
     }
 
     #[cfg(feature = "nodes")]
     #[test]
     fn default_registry_includes_device_with_nodes_feature() {
-        let registry = build_default_registry();
         assert!(
-            registry
-                .services()
-                .iter()
-                .any(|service| service.name == "device")
+            registry_has_service("device"),
+            "device must register with the `nodes` feature"
         );
     }
 

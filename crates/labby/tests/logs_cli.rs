@@ -44,6 +44,8 @@ fn raw_gateway_event(message: &str) -> RawLogEvent {
     }
 }
 
+// `logs search` (fleet search) is a nodes-gated subcommand — see cli/logs.rs.
+#[cfg(feature = "nodes")]
 #[test]
 fn logs_cli_parses_existing_fleet_search() {
     let cli = Cli::try_parse_from(["lab", "logs", "search", "node-a", "timeout"])

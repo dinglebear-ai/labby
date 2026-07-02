@@ -329,6 +329,63 @@ async fn deny_enrollment_marks_record_denied() {
     assert!(snapshot.denied.contains_key("pending-1"));
 }
 
+/// Pin the deliberate auth exemption on node self-registration.
+///
+/// `POST /v1/nodes/hello` is mounted outside the bearer-auth `route_layer` by
+/// construction (see `build_router` in `api/router.rs`) so unenrolled nodes can
+/// self-register. This test locks that in: with a bearer token configured, the
+/// hello endpoint still accepts unauthenticated requests while ordinary /v1
+/// routes reject them.
+#[tokio::test]
+async fn hello_endpoint_is_exempt_from_bearer_auth_but_v1_routes_are_not() {
+    let store = Arc::new(NodeStore::default());
+    let enrollment_store = Arc::new(
+        futures::executor::block_on(EnrollmentStore::open(
+            std::env::temp_dir().join(format!("lab-device-api-{}.json", uuid::Uuid::new_v4())),
+        ))
+        .unwrap(),
+    );
+    let state = AppState::new()
+        .with_node_store(store)
+        .with_enrollment_store(enrollment_store);
+    let app = build_router_with_bearer(state, Some("test-bearer-token".to_string()), None);
+
+    // (a) hello WITHOUT an Authorization header is deliberately auth-exempt.
+    let response = app
+        .clone()
+        .oneshot(hello_request(
+            r#"{"node_id":"node-a","role":"non-master","version":"1.0.0"}"#,
+        ))
+        .await
+        .unwrap();
+    assert!(
+        !matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ),
+        "POST /v1/nodes/hello must stay auth-exempt (self-registration), got {}",
+        response.status()
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // (b) a protected /v1 route WITHOUT the token is rejected.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/catalog")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "GET /v1/catalog without a bearer token must be 401"
+    );
+}
+
 fn test_device_router() -> (axum::Router, Arc<NodeStore>, Arc<EnrollmentStore>) {
     let store = Arc::new(NodeStore::default());
     let enrollment_store = Arc::new(

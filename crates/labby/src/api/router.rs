@@ -3541,6 +3541,7 @@ mod tests {
     }
 
     /// POST /dev/api/marketplace must block mutating actions after auth.
+    #[cfg(feature = "marketplace")]
     #[tokio::test]
     async fn dev_marketplace_blocks_mutating_actions() {
         let state = AppState::new();
@@ -3585,6 +3586,7 @@ mod tests {
     }
 
     /// POST /dev/api/marketplace must require auth when auth is configured.
+    #[cfg(feature = "marketplace")]
     #[tokio::test]
     async fn dev_marketplace_requires_auth_when_configured() {
         let state = AppState::new();
@@ -3633,6 +3635,7 @@ mod tests {
     }
 
     /// POST /dev/api/marketplace remains open in explicit no-auth local mode.
+    #[cfg(feature = "marketplace")]
     #[tokio::test]
     async fn dev_marketplace_allows_no_auth_when_server_has_no_auth() {
         let state = AppState::new();

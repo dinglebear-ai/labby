@@ -225,6 +225,10 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let node_role = node_runtime.role();
     #[cfg(not(feature = "nodes"))]
     let node_role = resolve_node_role_without_nodes(&resolved_runtime)?;
+    #[cfg(not(feature = "nodes"))]
+    warn_ignored_node_config_without_nodes(config);
+    #[cfg(not(feature = "acp"))]
+    warn_ignored_acp_env_without_acp();
 
     // Early return for node (non-controller) processes: skip the full
     // controller startup (registry build, OAuth, gateway, logs system, web UI, etc.).
@@ -682,7 +686,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         api_server_enabled = true,
         web_server_enabled = state.web_assets_enabled(),
         mcp_server_enabled = matches!(transport, Transport::Http),
-        gateway_client_enabled = !config.upstream.is_empty(),
+        gateway_client_enabled = cfg!(feature = "gateway") && !config.upstream.is_empty(),
         oauth_upstream_enabled = config
             .upstream
             .iter()
@@ -1266,7 +1270,73 @@ fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
             "protected MCP routes are configured but this labby build does not include the gateway feature"
         );
     }
+    // Configured upstreams are harmless without the gateway client, but the
+    // operator should know they're being ignored rather than silently dropped.
+    if !config.upstream.is_empty() {
+        tracing::warn!(
+            subsystem = "startup",
+            phase = "bootstrap.plan",
+            upstream_count = config.upstream.len(),
+            "gateway upstreams are configured but this build has no gateway support (gateway feature); values ignored"
+        );
+    }
     Ok(())
+}
+
+/// Companion to `resolve_node_role_without_nodes`: the role guard already
+/// rejects `node.role = "node"`, but the remaining fleet/node keys are
+/// harmless in a no-nodes build — warn that they're ignored instead of
+/// silently dropping them.
+#[cfg(not(feature = "nodes"))]
+fn warn_ignored_node_config_without_nodes(config: &LabConfig) {
+    let mut ignored: Vec<&str> = Vec::new();
+    if let Some(node) = config.node.as_ref() {
+        if node.controller.is_some() {
+            ignored.push("node.controller");
+        }
+        if node.log_retention_days.is_some() {
+            ignored.push("node.log_retention_days");
+        }
+    }
+    if config
+        .device
+        .as_ref()
+        .is_some_and(|device| device.master.is_some())
+    {
+        ignored.push("device.master");
+    }
+    if !ignored.is_empty() {
+        tracing::warn!(
+            subsystem = "startup",
+            phase = "bootstrap.device-runtime",
+            ignored_keys = ?ignored,
+            "fleet/node configuration is set but this build has no fleet support (nodes feature); values ignored"
+        );
+    }
+}
+
+/// Warn once when ACP-shaped env keys are present in a build without the
+/// `acp` feature. Key names only — never values (LAB_ACP_HMAC_SECRET is a
+/// secret).
+#[cfg(not(feature = "acp"))]
+fn warn_ignored_acp_env_without_acp() {
+    let present: Vec<&str> = [
+        "LAB_ACP_DB",
+        "LAB_ACP_SESSION_DIR",
+        "ACP_CODEX_COMMAND",
+        "LAB_ACP_HMAC_SECRET",
+    ]
+    .into_iter()
+    .filter(|key| std::env::var_os(key).is_some())
+    .collect();
+    if !present.is_empty() {
+        tracing::warn!(
+            subsystem = "startup",
+            phase = "bootstrap.plan",
+            ignored_keys = ?present,
+            "ACP environment configuration is set but this build has no ACP support (acp feature); values ignored"
+        );
+    }
 }
 
 /// Mirror of `reject_protected_routes_without_gateway`: a build without the
@@ -1283,6 +1353,39 @@ fn resolve_node_role_without_nodes(
         );
     }
     Ok(role)
+}
+
+#[cfg(all(test, not(feature = "nodes")))]
+mod resolve_node_role_without_nodes_tests {
+    use super::resolve_node_role_without_nodes;
+    use crate::config::{NodeRole, ResolvedNodeRuntime};
+
+    #[test]
+    fn non_master_role_errors_and_mentions_nodes_feature() {
+        let resolved = ResolvedNodeRuntime {
+            local_host: "worker-01".to_string(),
+            master_host: "controller".to_string(),
+            role: NodeRole::NonMaster,
+        };
+        let err = resolve_node_role_without_nodes(&resolved)
+            .expect_err("NonMaster must be rejected in a build without the nodes feature");
+        assert!(
+            err.to_string().contains("nodes"),
+            "error should point at the missing `nodes` feature, got: {err}"
+        );
+    }
+
+    #[test]
+    fn master_role_is_allowed() {
+        let resolved = ResolvedNodeRuntime {
+            local_host: "controller".to_string(),
+            master_host: "controller".to_string(),
+            role: NodeRole::Master,
+        };
+        let role = resolve_node_role_without_nodes(&resolved)
+            .expect("Master role must be allowed without the nodes feature");
+        assert!(matches!(role, NodeRole::Master));
+    }
 }
 
 /// Run the minimal node-mode startup path.

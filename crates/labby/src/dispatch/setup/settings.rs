@@ -734,6 +734,14 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             1_000_000,
             Some("1024"),
         ),
+    ];
+    // Fleet/node settings only exist in builds with the `nodes` feature.
+    // A no-nodes build must not advertise or accept them: a settings write of
+    // `node.role = "node"` would be persisted with a success envelope and then
+    // fail the next `labby serve` startup (the no-nodes role guard rejects
+    // NonMaster), turning one accepted write into a deferred crash loop.
+    #[cfg(feature = "nodes")]
+    fields.extend([
         editable(
             "advanced",
             "node.controller",
@@ -784,6 +792,8 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             None,
             Some("node-a"),
         ),
+    ]);
+    fields.extend([
         number_editable(
             "advanced",
             "code_mode.timeout_ms",
@@ -844,7 +854,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             104_857_600,
             Some("1048576"),
         ),
-    ];
+    ]);
     fields.extend(readonly_fields());
     fields
 }
@@ -873,7 +883,7 @@ fn enum_env(
 }
 
 fn readonly_fields() -> Vec<SettingsFieldSpec> {
-    vec![
+    let mut fields = vec![
         readonly(
             "surfaces",
             "web.disable_auth",
@@ -892,17 +902,31 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
         ),
         readonly(
             "features",
-            "gateway_import_mode",
-            "Gateway import mode",
-            "External MCP config discovery can expose new upstreams and requires a dedicated dangerous settings flow.",
+            "admin.enabled",
+            "Admin tool enabled",
+            "Enabling the lab_admin MCP tool requires a dedicated dangerous settings flow.",
             SettingsRisk::Dangerous,
             SettingsWritePolicy::DangerousFlowRequired,
         ),
         readonly(
             "features",
-            "admin.enabled",
-            "Admin tool enabled",
-            "Enabling the lab_admin MCP tool requires a dedicated dangerous settings flow.",
+            "code_mode.enabled",
+            "Code Mode enabled",
+            "Enabling the synthetic Code Mode surface requires dedicated runtime exposure tests.",
+            SettingsRisk::SecuritySensitive,
+            SettingsWritePolicy::DangerousFlowRequired,
+        ),
+    ];
+    // Gateway-owned settings only exist in builds with the `gateway` feature —
+    // same philosophy as the nodes gating above: don't advertise config for a
+    // capability this build cannot run.
+    #[cfg(feature = "gateway")]
+    fields.extend([
+        readonly(
+            "features",
+            "gateway_import_mode",
+            "Gateway import mode",
+            "External MCP config discovery can expose new upstreams and requires a dedicated dangerous settings flow.",
             SettingsRisk::Dangerous,
             SettingsWritePolicy::DangerousFlowRequired,
         ),
@@ -916,20 +940,14 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
         ),
         readonly(
             "features",
-            "code_mode.enabled",
-            "Code Mode enabled",
-            "Enabling the synthetic Code Mode surface requires dedicated runtime exposure tests.",
-            SettingsRisk::SecuritySensitive,
-            SettingsWritePolicy::DangerousFlowRequired,
-        ),
-        readonly(
-            "features",
             "gateway.disable_spawn_guard",
             "Disable spawn guard",
             "Disabling stdio command validation requires typed confirmation and rollback instructions.",
             SettingsRisk::Dangerous,
             SettingsWritePolicy::DangerousFlowRequired,
         ),
+    ]);
+    fields.extend([
         readonly(
             "advanced",
             "oauth.machines",
@@ -994,7 +1012,8 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             SettingsRisk::Restart,
             SettingsWritePolicy::ReadOnly,
         ),
-    ]
+    ]);
+    fields
 }
 
 pub fn state_response(
@@ -1639,6 +1658,11 @@ fn build_env_schema() -> Vec<EnvSettingSpec> {
             }
         }
     }
+    // A build without the `acp` feature must not advertise ACP env keys: the
+    // generated env-reference.json is baked in at compile time and still lists
+    // them even though no code in this build reads them.
+    #[cfg(not(feature = "acp"))]
+    by_key.retain(|key, _| !(key.starts_with("LAB_ACP_") || key.starts_with("ACP_")));
     by_key.into_values().collect()
 }
 
@@ -1670,14 +1694,17 @@ mod tests {
     #[test]
     fn dangerous_and_secret_config_is_not_editable_in_first_slice() {
         let fields = settings_fields();
-        for key in [
+        let mut keys = vec![
             "auth",
             "web.disable_auth",
-            "gateway.disable_spawn_guard",
             "upstream",
             "protected_mcp_routes",
             "deploy",
-        ] {
+        ];
+        // Gateway-owned fields are only declared in gateway builds.
+        #[cfg(feature = "gateway")]
+        keys.push("gateway.disable_spawn_guard");
+        for key in keys {
             let field = fields.iter().find(|field| field.key == key).expect(key);
             assert_ne!(
                 field.write_policy,
@@ -1800,11 +1827,11 @@ mod tests {
     #[test]
     fn dangerous_exposure_fields_are_not_normal_editable_settings() {
         let fields = settings_fields();
-        for key in [
-            "gateway_import_mode",
-            "admin.enabled",
-            "gateway.extra_stdio_commands",
-        ] {
+        let mut keys = vec!["admin.enabled"];
+        // Gateway-owned fields are only declared in gateway builds.
+        #[cfg(feature = "gateway")]
+        keys.extend(["gateway_import_mode", "gateway.extra_stdio_commands"]);
+        for key in keys {
             let field = fields.iter().find(|field| field.key == key).unwrap();
             assert_eq!(field.control, SettingsControl::ReadOnly);
             assert_eq!(
@@ -1847,9 +1874,20 @@ mod tests {
     #[test]
     fn env_schema_merges_generated_reference_and_plugin_meta() {
         let specs = env_schema();
-        for key in ["LAB_ACP_DB", "LAB_PUBLIC_URL", "LAB_MCP_HTTP_TOKEN"] {
+        let mut keys = vec!["LAB_PUBLIC_URL", "LAB_MCP_HTTP_TOKEN"];
+        // ACP env keys are filtered out of the schema in no-acp builds.
+        #[cfg(feature = "acp")]
+        keys.push("LAB_ACP_DB");
+        for key in keys {
             assert!(specs.iter().any(|spec| spec.key == key), "missing {key}");
         }
+        #[cfg(not(feature = "acp"))]
+        assert!(
+            !specs
+                .iter()
+                .any(|spec| spec.key.starts_with("LAB_ACP_") || spec.key.starts_with("ACP_")),
+            "no-acp builds must not advertise ACP env keys"
+        );
         let token = specs
             .iter()
             .find(|spec| spec.key == "LAB_MCP_HTTP_TOKEN")
