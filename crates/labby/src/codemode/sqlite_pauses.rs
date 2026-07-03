@@ -559,6 +559,56 @@ impl CodeModePauseStore {
         .await
     }
 
+    /// Reject a run, guarded so it only fires on a still-`paused` run (F3). Port
+    /// of `runtime.ts:668 reject`: the transition is conditional on the run
+    /// observing `status='paused'`, so a stale/duplicate reject (already
+    /// resumed, running, or terminal) is a no-op and cannot force-terminate a
+    /// live Running run. Re-signs the integrity tuple for the `rejected` status.
+    /// Also reverts any still-`pending` log entries. Returns `true` iff a paused
+    /// row transitioned.
+    pub async fn reject_paused(
+        &self,
+        execution_id: &str,
+        error: Option<&str>,
+    ) -> Result<bool, CodeModePauseStoreError> {
+        let Some(run) = self.load_run(execution_id).await? else {
+            return Ok(false);
+        };
+        // Refuse to re-sign a tampered row (would launder the tamper) or a
+        // non-paused run.
+        if !run.verified || run.status != RunStatus::Paused {
+            return Ok(false);
+        }
+        let sig = self.sign_run_fields(
+            RunStatus::Rejected,
+            run.is_admin,
+            &run.capability_filter_fingerprint,
+            &run.route_scope,
+            run.actor_key.as_deref(),
+        );
+        let now = now_ms();
+        let id = execution_id.to_string();
+        let err_owned = error.map(str::to_string);
+        self.blocking_write("reject_paused", move |conn| {
+            let n = conn.execute(
+                "UPDATE codemode_runs
+                    SET status = 'rejected', integrity_sig = ?1, updated_at_ms = ?2,
+                        error = ?3
+                  WHERE execution_id = ?4 AND status = 'paused'",
+                params![sig, now, err_owned, id],
+            )?;
+            if n == 1 {
+                conn.execute(
+                    "UPDATE codemode_call_log SET state = 'reverted'
+                      WHERE run_id = ?1 AND state = 'pending'",
+                    params![id],
+                )?;
+            }
+            Ok(n == 1)
+        })
+        .await
+    }
+
     /// Load a single call-log entry by `(run_id, seq)`. Port of
     /// `runtime.ts #logRow`.
     pub async fn get_log_entry(

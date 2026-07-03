@@ -248,6 +248,22 @@ impl CodeModeDecider for SqliteDecider {
         })
     }
 
+    fn reject_paused<'a>(
+        &'a self,
+        execution_id: &'a str,
+        error: Option<&'a str>,
+    ) -> BoxDecideFuture<'a, Result<bool, ToolError>> {
+        Box::pin(async move {
+            self.store
+                .reject_paused(execution_id, error)
+                .await
+                .map_err(|e| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: e.to_string(),
+                })
+        })
+    }
+
     fn run_auth_fields<'a>(
         &'a self,
         execution_id: &'a str,
@@ -755,5 +771,57 @@ mod tests {
         assert_eq!(d.run_status("e9").await, RunLifecycle::Rejected);
         // A resume CAS on a rejected run fails closed.
         assert!(!d.resume_to_running("e9").await);
+    }
+
+    // ── F3: reject_paused is guarded to Paused-only ──
+
+    #[tokio::test]
+    async fn reject_paused_terminates_only_a_paused_run() {
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "e-rej").await;
+        // Pause via a destructive call.
+        let _ = d
+            .decide("e-rej", 0, "svc::delete", &serde_json::json!({}), true, false)
+            .await;
+        assert_eq!(d.run_status("e-rej").await, RunLifecycle::Paused);
+        // reject_paused on a paused run → true + Rejected, pending entry reverted.
+        assert!(
+            d.reject_paused("e-rej", Some("rejected by user"))
+                .await
+                .expect("reject_paused")
+        );
+        assert_eq!(d.run_status("e-rej").await, RunLifecycle::Rejected);
+        let entry = d.store.get_log_entry("e-rej", 0).await.unwrap().unwrap();
+        assert_eq!(entry.state, LogState::Reverted);
+    }
+
+    #[tokio::test]
+    async fn reject_paused_is_a_noop_on_a_running_run() {
+        // The status guard is the security-critical property (F3): a token holder
+        // must NOT be able to force-terminate a live Running run.
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "e-run").await;
+        assert_eq!(d.run_status("e-run").await, RunLifecycle::Running);
+        // reject_paused on a running run → false, status unchanged.
+        assert!(
+            !d.reject_paused("e-run", Some("rejected by user"))
+                .await
+                .expect("reject_paused")
+        );
+        assert_eq!(
+            d.run_status("e-run").await,
+            RunLifecycle::Running,
+            "reject_paused must not terminate a running run"
+        );
+    }
+
+    #[tokio::test]
+    async fn reject_paused_is_a_noop_on_an_unknown_run() {
+        let (d, _dir) = fresh_decider().await;
+        assert!(
+            !d.reject_paused("nope", None)
+                .await
+                .expect("reject_paused")
+        );
     }
 }

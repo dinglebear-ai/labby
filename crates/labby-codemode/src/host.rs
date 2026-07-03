@@ -233,6 +233,16 @@ pub trait CodeModeDecider: Send + Sync {
         execution_id: &'a str,
     ) -> BoxDecideFuture<'a, bool>;
 
+    /// Reject a run, guarded so it only fires on a still-`paused` run (port of
+    /// `runtime.ts:668 reject`). Unlike `set_status`, this cannot force-terminate
+    /// a live `running` run: the transition is conditional on the run observing
+    /// `status='paused'`. Returns `true` iff a paused row transitioned.
+    fn reject_paused<'a>(
+        &'a self,
+        execution_id: &'a str,
+        error: Option<&'a str>,
+    ) -> BoxDecideFuture<'a, Result<bool, ToolError>>;
+
     /// The recorded authorization fields for a run, for live re-authorization at
     /// resume time (V1/V3).
     fn run_auth_fields<'a>(

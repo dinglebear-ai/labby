@@ -402,9 +402,45 @@ impl LabMcpServer {
             decider.maybe_expire().await;
 
             if !whole_run_confirm {
-                // Reject (Task 3.2): guarded on the run still being Paused.
+                // Reject (Task 3.2). F3: authorize the rejecter BEFORE mutating
+                // state — load the run's recorded auth fields, require the
+                // integrity check to pass, and require the actor to match the one
+                // that started the run (None matches only None, mirroring the
+                // resume actor gate). Without this any token holder could
+                // force-terminate another actor's run.
+                let Some(reject_auth) = decider.run_auth_fields(&token).await else {
+                    let env = build_error(
+                        service,
+                        "call_tool",
+                        "unknown_execution",
+                        "No Code Mode run for this resume_token; nothing to reject.",
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                };
+                if !reject_auth.verified {
+                    let env = build_error(
+                        service,
+                        "call_tool",
+                        "internal_error",
+                        "Code Mode run integrity check failed; refusing to reject.",
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+                let live_actor = actor_key.map(ToOwned::to_owned);
+                if reject_auth.actor_key != live_actor {
+                    let env = build_error(
+                        service,
+                        "call_tool",
+                        "forbidden",
+                        "Only the actor that started a Code Mode run may reject it.",
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+                // Guarded reject: only a still-`paused` run transitions
+                // (`reject_paused`), so this cannot force-terminate a live
+                // `running` run.
                 match decider
-                    .set_status(&token, labby_codemode::RunLifecycle::Rejected, Some("rejected by user"))
+                    .reject_paused(&token, Some("rejected by user"))
                     .await
                 {
                     Ok(true) => {
@@ -427,13 +463,22 @@ impl LabMcpServer {
                         );
                         return Ok(CallToolResult::success(vec![Content::text(env.to_string())]));
                     }
-                    _ => {
+                    Ok(false) => {
                         let env = build_error(
                             service,
                             "call_tool",
                             "already_resumed",
                             "Code Mode run is not paused (already resumed, rejected, expired, or \
                              unknown); nothing to reject.",
+                        );
+                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    }
+                    Err(err) => {
+                        let env = build_error(
+                            service,
+                            "call_tool",
+                            "internal_error",
+                            &format!("failed to reject Code Mode run: {err}"),
                         );
                         return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                     }

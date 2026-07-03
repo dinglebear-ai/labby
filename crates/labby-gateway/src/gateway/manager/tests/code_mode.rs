@@ -471,6 +471,14 @@ impl CodeModeDecider for SpyDecider {
         Box::pin(async move { true })
     }
 
+    fn reject_paused<'a>(
+        &'a self,
+        _execution_id: &'a str,
+        _error: Option<&'a str>,
+    ) -> BoxDecideFuture<'a, Result<bool, ToolError>> {
+        Box::pin(async move { Ok(true) })
+    }
+
     fn run_auth_fields<'a>(
         &'a self,
         _execution_id: &'a str,
