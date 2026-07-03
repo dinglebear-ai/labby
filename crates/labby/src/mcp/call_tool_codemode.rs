@@ -436,6 +436,17 @@ impl LabMcpServer {
                     );
                     return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
+                // Symmetric with the resume path (F2): a run may only be
+                // rejected from the same route scope that started it.
+                if reject_auth.route_scope != self.route_scope.label() {
+                    let env = build_error(
+                        service,
+                        "call_tool",
+                        "forbidden",
+                        "A Code Mode run may only be rejected from the route scope that started it.",
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
                 // Guarded reject: only a still-`paused` run transitions
                 // (`reject_paused`), so this cannot force-terminate a live
                 // `running` run.
