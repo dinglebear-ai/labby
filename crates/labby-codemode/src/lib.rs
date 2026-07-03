@@ -68,8 +68,8 @@ pub use config::{MAX_SOURCE_BYTES, SERVICE};
 /// `semantic_rank`) MUST use these rather than restating the formulas.
 pub use execute::{discovery_entry_visible, discovery_render_params, local_providers_allowed};
 pub use host::{
-    BeginRun, CodeModeDecider, CodeModeHost, DecideOutcome, ExecCtx, PendingCall, ResolvedSnippet,
-    RunAuthFields, RunLifecycle, StepDecision, ToolCallOutcome, ToolsRender,
+    AuthLoad, BeginRun, CodeModeDecider, CodeModeHost, DecideOutcome, ExecCtx, PendingCall,
+    ResolvedSnippet, RunLifecycle, StepDecision, ToolCallOutcome, ToolsRender, VerifiedAuth,
 };
 /// Re-export so hosts can name the config type from one crate path.
 pub use labby_runtime::CodeModeConfig;

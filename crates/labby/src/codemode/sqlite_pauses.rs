@@ -189,8 +189,24 @@ pub struct NewRun {
     pub expires_at_ms: i64,
 }
 
+/// The HMAC-verified authorization view of a run. Borrowed from a [`Run`] ONLY
+/// through [`Run::verified_auth`], which returns `None` for a tampered row — so
+/// a holder of this type is proof the signed tuple verified. The non-auth fields
+/// (`status`, `code_hash`, timestamps) stay directly public on [`Run`]; only the
+/// auth-bearing tuple is gated here.
+#[derive(Debug, Clone, Copy)]
+pub struct VerifiedRunAuth<'a> {
+    pub actor_key: Option<&'a str>,
+    pub is_admin: bool,
+    pub route_scope: &'a str,
+    pub capability_filter_fingerprint: &'a str,
+}
+
 /// A loaded run row. `verified` is the HMAC integrity-check result — callers
-/// MUST treat `verified == false` as tampered and fail closed.
+/// MUST treat `verified == false` as tampered and fail closed. The auth-bearing
+/// fields (`is_admin`, `route_scope`, `actor_key`,
+/// `capability_filter_fingerprint`) are reachable through [`Run::verified_auth`]
+/// so a caller cannot read them off a tampered row by accident.
 #[derive(Debug, Clone)]
 pub struct Run {
     pub execution_id: String,
@@ -210,6 +226,24 @@ pub struct Run {
     pub expires_at_ms: i64,
     /// HMAC verification result over the signed tuple. `false` ⇒ tampered.
     pub verified: bool,
+}
+
+impl Run {
+    /// The auth-bearing fields, but ONLY if the row passed HMAC verification.
+    /// Returns `None` for a tampered row so no gate can read forged
+    /// `is_admin`/`route_scope`/`actor_key`/`capability_filter_fingerprint`.
+    #[must_use]
+    pub fn verified_auth(&self) -> Option<VerifiedRunAuth<'_>> {
+        if !self.verified {
+            return None;
+        }
+        Some(VerifiedRunAuth {
+            actor_key: self.actor_key.as_deref(),
+            is_admin: self.is_admin,
+            route_scope: &self.route_scope,
+            capability_filter_fingerprint: &self.capability_filter_fingerprint,
+        })
+    }
 }
 
 /// Input for journaling a fresh call. `raw_args` is redacted+hashed inside the

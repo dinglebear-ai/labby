@@ -157,9 +157,15 @@ pub struct PendingCall {
 }
 
 /// Authorization fields recorded on a run, re-read at resume time to recompute
-/// live authorization (V1/V3). Returned by `run_auth_fields`.
+/// live authorization (V1/V3).
+///
+/// A `VerifiedAuth` can ONLY be produced from a row that passed HMAC integrity
+/// verification — it carries no `verified` flag because its mere existence is
+/// the proof. It is reachable exclusively through [`AuthLoad::Ok`], so a caller
+/// can never read `is_admin`/`route_scope`/`actor_key` off a tampered row: the
+/// tampered case is a distinct [`AuthLoad::Tampered`] variant with no fields.
 #[derive(Debug, Clone)]
-pub struct RunAuthFields {
+pub struct VerifiedAuth {
     pub code_hash: String,
     pub actor_key: Option<String>,
     pub is_admin: bool,
@@ -168,9 +174,24 @@ pub struct RunAuthFields {
     /// time (F2) so a run paused under route A cannot be resumed under route B
     /// even when the caller shares the same capability fingerprint/actor.
     pub route_scope: String,
-    /// HMAC integrity verification result — `false` ⇒ tampered, fail closed.
-    pub verified: bool,
     pub status: RunLifecycle,
+}
+
+/// The outcome of loading a run's authorization fields via
+/// [`CodeModeDecider::run_auth_fields`].
+///
+/// This models the three states a security gate MUST handle explicitly, so that
+/// tampered auth fields can never be read as usable. There is no `verified: bool`
+/// to forget: only [`AuthLoad::Ok`] yields a [`VerifiedAuth`], and it is
+/// unreachable for a missing or HMAC-failed row.
+#[derive(Debug, Clone)]
+pub enum AuthLoad {
+    /// No run exists for this execution id.
+    Missing,
+    /// A run row exists but failed HMAC integrity verification — fail closed.
+    Tampered,
+    /// A run row exists and passed integrity verification.
+    Ok(VerifiedAuth),
 }
 
 /// A boxed, `Send` future — the object-safe return type the `CodeModeDecider`
@@ -190,6 +211,28 @@ pub type BoxDecideFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Sen
 /// Port of the `decide()`/`recordResult()` half of Cloudflare's
 /// `CodemodeRuntime` (`runtime.ts:411-572`). Methods return boxed futures so the
 /// trait is `dyn`-compatible (see [`BoxDecideFuture`]).
+///
+/// # Fail-closed contract
+///
+/// Every method fails closed — an ambiguous, missing, or tampered run must never
+/// be readable as a usable/authorized state:
+///
+/// - [`run_status`](Self::run_status) returns [`RunLifecycle::Unknown`] for a
+///   missing OR HMAC-tampered run; `Unknown` is never `Running`, so no work
+///   proceeds.
+/// - [`run_auth_fields`](Self::run_auth_fields) returns [`AuthLoad::Ok`] ONLY
+///   for a row that passed integrity verification; a missing row is
+///   [`AuthLoad::Missing`] and a tampered row is [`AuthLoad::Tampered`], neither
+///   of which exposes a [`VerifiedAuth`].
+/// - CAS transitions ([`resume_to_running`](Self::resume_to_running),
+///   [`reject_paused`](Self::reject_paused)) return `false` when no eligible row
+///   transitioned (already resumed/terminal, missing, or tampered) — the loser
+///   of a race or a tampered row is refused, never force-applied.
+/// - [`decide`](Self::decide) returns [`DecideOutcome::Fail`] with an
+///   [`AuthLoad`]-shaped reason for a missing/tampered run and never treats a
+///   tampered row's recorded fields as trustworthy.
+///
+/// Uniformly: `None`/`Unknown`/`false`/`Tampered` mean "refuse", never "allow".
 pub trait CodeModeDecider: Send + Sync {
     /// Decide what to do with the call at `(execution_id, seq)`. Ports
     /// `runtime.ts:411 decide`: monotonic pause gate first, then
@@ -256,10 +299,13 @@ pub trait CodeModeDecider: Send + Sync {
 
     /// The recorded authorization fields for a run, for live re-authorization at
     /// resume time (V1/V3).
-    fn run_auth_fields<'a>(
-        &'a self,
-        execution_id: &'a str,
-    ) -> BoxDecideFuture<'a, Option<RunAuthFields>>;
+    ///
+    /// Returns [`AuthLoad::Ok`] ONLY for a row that passed HMAC integrity
+    /// verification; a missing row is [`AuthLoad::Missing`] and a tampered
+    /// (HMAC-failed) row is [`AuthLoad::Tampered`]. A [`VerifiedAuth`] is thus
+    /// reachable exclusively down the `Ok` path, so no caller can trust the
+    /// auth-bearing fields of an unverified row.
+    fn run_auth_fields<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, AuthLoad>;
 
     /// Lazy, throttled TTL expiry sweep (Wave 4 Task 4.2). Best-effort;
     /// no-op if the throttle interval has not elapsed.

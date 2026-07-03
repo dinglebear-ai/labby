@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use labby_codemode::host::BoxDecideFuture;
 use labby_codemode::{
-    BeginRun, CodeModeDecider, DecideOutcome, PendingCall, RunAuthFields, RunLifecycle,
+    AuthLoad, BeginRun, CodeModeDecider, DecideOutcome, PendingCall, RunLifecycle, VerifiedAuth,
 };
 use labby_runtime::error::ToolError;
 use serde_json::Value;
@@ -254,25 +254,28 @@ impl CodeModeDecider for SqliteDecider {
         })
     }
 
-    fn run_auth_fields<'a>(
-        &'a self,
-        execution_id: &'a str,
-    ) -> BoxDecideFuture<'a, Option<RunAuthFields>> {
+    fn run_auth_fields<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, AuthLoad> {
         Box::pin(async move {
-            self.store
-                .load_run(execution_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|run| RunAuthFields {
-                    code_hash: run.code_hash,
-                    actor_key: run.actor_key,
-                    is_admin: run.is_admin,
-                    capability_filter_fingerprint: run.capability_filter_fingerprint,
-                    route_scope: run.route_scope,
-                    verified: run.verified,
-                    status: status_to_lifecycle(run.status),
-                })
+            let run = match self.store.load_run(execution_id).await {
+                // A load error (SQLite/join) is treated as fail-closed: report
+                // the run as missing so no gate reads auth off nothing.
+                Err(_) | Ok(None) => return AuthLoad::Missing,
+                Ok(Some(run)) => run,
+            };
+            // The auth-bearing tuple is only reachable through `verified_auth()`,
+            // which is `None` for a tampered row — so a tampered row can NEVER
+            // become a `VerifiedAuth`; it is surfaced as its own variant.
+            let Some(auth) = run.verified_auth() else {
+                return AuthLoad::Tampered;
+            };
+            AuthLoad::Ok(VerifiedAuth {
+                code_hash: run.code_hash.clone(),
+                actor_key: auth.actor_key.map(ToOwned::to_owned),
+                is_admin: auth.is_admin,
+                capability_filter_fingerprint: auth.capability_filter_fingerprint.to_string(),
+                route_scope: auth.route_scope.to_string(),
+                status: status_to_lifecycle(run.status),
+            })
         })
     }
 
@@ -850,14 +853,44 @@ mod tests {
     async fn run_auth_fields_returns_recorded_authz() {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e7").await;
-        let fields = d.run_auth_fields("e7").await.expect("some");
-        assert!(fields.verified);
+        let fields = match d.run_auth_fields("e7").await {
+            AuthLoad::Ok(fields) => fields,
+            other => panic!("a fresh verified run must load Ok, got {other:?}"),
+        };
         assert_eq!(fields.code_hash, "hash");
         assert_eq!(fields.actor_key.as_deref(), Some("actor"));
         assert!(fields.is_admin);
         assert_eq!(fields.capability_filter_fingerprint, "fp");
         assert_eq!(fields.route_scope, "unscoped");
         assert_eq!(fields.status, RunLifecycle::Running);
+    }
+
+    #[tokio::test]
+    async fn run_auth_fields_missing_run_is_missing() {
+        let (d, _dir) = fresh_decider().await;
+        assert!(matches!(d.run_auth_fields("nope").await, AuthLoad::Missing));
+    }
+
+    #[tokio::test]
+    async fn run_auth_fields_tampered_row_is_tampered_not_ok() {
+        // A raw-file edit that flips an auth-bearing field breaks the HMAC, so the
+        // row can NEVER be read as a usable VerifiedAuth — the load reports
+        // `Tampered` (its own dead-end variant), and the resume/reject gates that
+        // pattern-match `AuthLoad::Ok(..)` therefore refuse it structurally.
+        let (d, dir) = fresh_decider().await;
+        begin_run(&d, "e-tamper").await;
+        let path = dir.path().join("codemode_pauses.db");
+        let conn = rusqlite::Connection::open(&path).expect("raw open");
+        conn.execute(
+            "UPDATE codemode_runs SET is_admin = 0 WHERE execution_id = 'e-tamper'",
+            [],
+        )
+        .expect("tamper");
+        drop(conn);
+        assert!(
+            matches!(d.run_auth_fields("e-tamper").await, AuthLoad::Tampered),
+            "a tampered row must load as Tampered, never Ok"
+        );
     }
 
     #[tokio::test]
@@ -869,8 +902,14 @@ mod tests {
         let (d, _dir) = fresh_decider().await;
         begin_run_scoped(&d, "route-a", "protected:media").await;
         begin_run_scoped(&d, "route-b", "protected:ops").await;
-        let a = d.run_auth_fields("route-a").await.expect("some");
-        let b = d.run_auth_fields("route-b").await.expect("some");
+        let a = match d.run_auth_fields("route-a").await {
+            AuthLoad::Ok(f) => f,
+            other => panic!("route-a must load Ok, got {other:?}"),
+        };
+        let b = match d.run_auth_fields("route-b").await {
+            AuthLoad::Ok(f) => f,
+            other => panic!("route-b must load Ok, got {other:?}"),
+        };
         assert_eq!(a.route_scope, "protected:media");
         assert_eq!(b.route_scope, "protected:ops");
         // The refusal predicate the handler applies: a run paused under A is

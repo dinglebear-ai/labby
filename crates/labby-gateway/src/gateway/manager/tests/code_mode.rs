@@ -379,7 +379,7 @@ async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
 
 use labby_codemode::host::BoxDecideFuture;
 use labby_codemode::{
-    BeginRun, CodeModeDecider, DecideOutcome, PendingCall, RunAuthFields, RunLifecycle,
+    AuthLoad, BeginRun, CodeModeDecider, DecideOutcome, PendingCall, RunLifecycle,
 };
 use serde_json::Value;
 use std::sync::Mutex;
@@ -476,11 +476,8 @@ impl CodeModeDecider for SpyDecider {
         Box::pin(async move { Ok(true) })
     }
 
-    fn run_auth_fields<'a>(
-        &'a self,
-        _execution_id: &'a str,
-    ) -> BoxDecideFuture<'a, Option<RunAuthFields>> {
-        Box::pin(async move { None })
+    fn run_auth_fields<'a>(&'a self, _execution_id: &'a str) -> BoxDecideFuture<'a, AuthLoad> {
+        Box::pin(async move { AuthLoad::Missing })
     }
 
     fn maybe_expire(&self) -> BoxDecideFuture<'_, ()> {

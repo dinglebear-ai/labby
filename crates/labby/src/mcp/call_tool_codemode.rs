@@ -408,24 +408,27 @@ impl LabMcpServer {
                 // that started the run (None matches only None, mirroring the
                 // resume actor gate). Without this any token holder could
                 // force-terminate another actor's run.
-                let Some(reject_auth) = decider.run_auth_fields(&token).await else {
-                    let env = build_error(
-                        service,
-                        "call_tool",
-                        "unknown_execution",
-                        "No Code Mode run for this resume_token; nothing to reject.",
-                    );
-                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                let reject_auth = match decider.run_auth_fields(&token).await {
+                    labby_codemode::AuthLoad::Ok(auth) => auth,
+                    labby_codemode::AuthLoad::Missing => {
+                        let env = build_error(
+                            service,
+                            "call_tool",
+                            "unknown_execution",
+                            "No Code Mode run for this resume_token; nothing to reject.",
+                        );
+                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    }
+                    labby_codemode::AuthLoad::Tampered => {
+                        let env = build_error(
+                            service,
+                            "call_tool",
+                            "internal_error",
+                            "Code Mode run integrity check failed; refusing to reject.",
+                        );
+                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    }
                 };
-                if !reject_auth.verified {
-                    let env = build_error(
-                        service,
-                        "call_tool",
-                        "internal_error",
-                        "Code Mode run integrity check failed; refusing to reject.",
-                    );
-                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-                }
                 let live_actor = actor_key.map(ToOwned::to_owned);
                 if reject_auth.actor_key != live_actor {
                     let env = build_error(
@@ -499,24 +502,27 @@ impl LabMcpServer {
             }
 
             // Resume (Task 3.1) — authorization checks BEFORE the CAS.
-            let Some(auth_fields) = decider.run_auth_fields(&token).await else {
-                let env = build_error(
-                    service,
-                    "call_tool",
-                    "unknown_execution",
-                    "No paused Code Mode run for this resume_token.",
-                );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            let auth_fields = match decider.run_auth_fields(&token).await {
+                labby_codemode::AuthLoad::Ok(auth) => auth,
+                labby_codemode::AuthLoad::Missing => {
+                    let env = build_error(
+                        service,
+                        "call_tool",
+                        "unknown_execution",
+                        "No paused Code Mode run for this resume_token.",
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
+                labby_codemode::AuthLoad::Tampered => {
+                    let env = build_error(
+                        service,
+                        "call_tool",
+                        "internal_error",
+                        "Code Mode run integrity check failed; refusing to resume.",
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                }
             };
-            if !auth_fields.verified {
-                let env = build_error(
-                    service,
-                    "call_tool",
-                    "internal_error",
-                    "Code Mode run integrity check failed; refusing to resume.",
-                );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
-            }
             if auth_fields.status != labby_codemode::RunLifecycle::Paused {
                 let env = build_error(
                     service,
