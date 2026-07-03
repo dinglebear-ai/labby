@@ -365,14 +365,14 @@ pub(crate) fn settle_pending_operation(
 pub(crate) fn compile_settlement_entrypoints(
     store: &mut Store<WasmRunState>,
 ) -> Result<(), ToolError> {
-    let source = r#"
+    let source = r"
 export function __labSettlePendingOperationEntrypoint() {
   globalThis.__labSettlePendingOperation(globalThis.__labReadPendingInput());
 }
 export async function __labPumpEventLoop() {
   await Promise.resolve();
 }
-"#;
+";
     let (bytecode_ptr, bytecode_len) = compile_plugin_script(store, source)?;
     store.data_mut().settlement_bytecode = Some((bytecode_ptr, bytecode_len));
     Ok(())

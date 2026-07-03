@@ -192,13 +192,13 @@ mod tests {
     #[test]
     fn cosine_similarity_zero_vector_returns_zero_not_nan() {
         let result = cosine_similarity(&[0.0, 0.0], &[1.0, 1.0]);
-        assert_eq!(result, 0.0);
+        assert!(result.abs() < f32::EPSILON);
         assert!(!result.is_nan());
     }
 
     #[test]
     fn cosine_similarity_mismatched_lengths_returns_zero() {
-        assert_eq!(cosine_similarity(&[1.0, 2.0], &[1.0]), 0.0);
+        assert!(cosine_similarity(&[1.0, 2.0], &[1.0]).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -245,6 +245,10 @@ mod tests {
         let err = embed_via_tei(&server.uri(), &["x".to_string()])
             .await
             .expect_err("over-cap response must be rejected");
+        assert!(
+            matches!(err, ToolError::Sdk { .. }),
+            "expected decode_error cap breach, got {err:?}"
+        );
         match err {
             ToolError::Sdk { sdk_kind, message } => {
                 assert_eq!(sdk_kind, "decode_error");
@@ -253,7 +257,7 @@ mod tests {
                     "unexpected message: {message}"
                 );
             }
-            other => panic!("expected decode_error cap breach, got {other:?}"),
+            _ => {}
         }
     }
 
@@ -297,6 +301,10 @@ mod tests {
         let err = embed_via_tei(&format!("http://{addr}"), &["x".to_string()])
             .await
             .expect_err("over-cap streamed response must be rejected");
+        assert!(
+            matches!(err, ToolError::Sdk { .. }),
+            "expected decode_error cap breach, got {err:?}"
+        );
         match err {
             ToolError::Sdk { sdk_kind, message } => {
                 assert_eq!(sdk_kind, "decode_error");
@@ -305,7 +313,7 @@ mod tests {
                     "unexpected message: {message}"
                 );
             }
-            other => panic!("expected decode_error cap breach, got {other:?}"),
+            _ => {}
         }
     }
 

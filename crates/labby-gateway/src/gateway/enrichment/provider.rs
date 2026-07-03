@@ -643,16 +643,26 @@ mod tests {
     }
 
     fn sdk_kind(result: Result<Vec<GatewayHintProposalView>, ToolError>) -> String {
-        match result.expect_err("provider should fail") {
+        let err = result.expect_err("provider should fail");
+        assert!(
+            matches!(err, ToolError::Sdk { .. }),
+            "expected sdk error, got {err:?}"
+        );
+        match err {
             ToolError::Sdk { sdk_kind, .. } => sdk_kind,
-            other => panic!("expected sdk error, got {other:?}"),
+            _ => String::new(),
         }
     }
 
     fn sdk_error(result: Result<Vec<GatewayHintProposalView>, ToolError>) -> (String, String) {
-        match result.expect_err("provider should fail") {
+        let err = result.expect_err("provider should fail");
+        assert!(
+            matches!(err, ToolError::Sdk { .. }),
+            "expected sdk error, got {err:?}"
+        );
+        match err {
             ToolError::Sdk { sdk_kind, message } => (sdk_kind, message),
-            other => panic!("expected sdk error, got {other:?}"),
+            _ => (String::new(), String::new()),
         }
     }
 
@@ -692,9 +702,9 @@ printf '{"proposals":[{"upstream":"github","hint":"capabilities: repository issu
     #[tokio::test]
     async fn process_provider_rejects_oversized_output() {
         let (_dir, script) = write_script(
-            r#"cat >/dev/null
+            r"cat >/dev/null
 head -c 256 /dev/zero | tr '\0' x
-"#,
+",
         );
 
         let kind = sdk_kind(
@@ -712,9 +722,9 @@ head -c 256 /dev/zero | tr '\0' x
     #[tokio::test]
     async fn process_provider_rejects_oversized_stderr() {
         let (_dir, script) = write_script(
-            r#"cat >/dev/null
+            r"cat >/dev/null
 head -c 256 /dev/zero | tr '\0' x >&2
-"#,
+",
         );
 
         let kind = sdk_kind(
@@ -753,10 +763,10 @@ exit 9
     #[tokio::test]
     async fn process_provider_nonzero_exit_includes_capped_stderr_context() {
         let (_dir, script) = write_script(
-            r#"cat >/dev/null
+            r"cat >/dev/null
 printf 'provider quota exhausted' >&2
 exit 9
-"#,
+",
         );
 
         let (kind, message) = sdk_error(
@@ -776,9 +786,9 @@ exit 9
     #[tokio::test]
     async fn process_provider_timeout_is_reported_without_fallback() {
         let (_dir, script) = write_script(
-            r#"cat >/dev/null
+            r"cat >/dev/null
 sleep 2
-"#,
+",
         );
 
         let kind = sdk_kind(
@@ -801,11 +811,11 @@ sleep 2
             .into_temp_path();
         let pid_path = pid_file.to_string_lossy().to_string();
         let (_dir, script) = write_script(&format!(
-            r#"(sleep 30) &
+            r"(sleep 30) &
 echo $! > '{}'
 cat >/dev/null
 sleep 30
-"#,
+",
             pid_path
         ));
 
