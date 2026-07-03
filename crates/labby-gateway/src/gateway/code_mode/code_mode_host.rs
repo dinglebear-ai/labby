@@ -77,19 +77,33 @@ impl CodeModeHost for GatewayManager {
             .resolve_code_mode_upstream_tool(upstream, tool, Some(&owner), oauth_subject)
             .await?;
 
-        // `requires_approval` reuses the existing destructive gate: a
-        // destructive tool the caller is not otherwise permitted to run requires
-        // human approval. Same predicate as the legacy hard `forbidden` block —
-        // no soft-pass (port of proxy-tool.ts:408 + the :79-97 gate).
+        // `requires_approval` (the write-free forbidden gate below) reuses the
+        // existing destructive gate: a destructive tool the caller is not
+        // otherwise permitted to run is hard-`forbidden`. Same predicate as the
+        // legacy block — no soft-pass (port of proxy-tool.ts:408 + the :79-97
+        // gate). This is used ONLY on the no-decider path.
         let requires_approval =
             upstream_tool.destructive && !destructive_permitted(surface, caller);
 
         // Durable pause/resume dance (port of proxy-tool.ts:402-428). Active only
         // on the pause-capable path: a decider is injected AND this run has a
         // durable execution id. Otherwise fall through to today's behavior.
+        //
+        // On this path EVERY destructive upstream call requires per-call human
+        // approval. The pause-capable path is reached only for an UNCONFIRMED,
+        // execute-capable MCP run (see `pause_capable` gating in
+        // call_tool_codemode.rs) — so `destructive_permitted(Mcp, caller)` is
+        // always true here (it equals `caller.can_execute()`), which would make
+        // the legacy `requires_approval` variable ALWAYS false and the run could
+        // never pause. Pass the raw `upstream_tool.destructive` flag to the
+        // decider so destructive calls journal + pause. The decider's
+        // existing-entry branch replays already-approved (previously `pending`)
+        // calls via pending→executing→Execute BEFORE the fresh journal-and-pause
+        // path, so a resume of an approved destructive call re-dispatches without
+        // re-pausing; only genuinely-fresh destructive calls pause.
         if let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) {
             match decider
-                .decide(exec_id, ctx.seq, id, &params, requires_approval, false)
+                .decide(exec_id, ctx.seq, id, &params, upstream_tool.destructive, false)
                 .await
             {
                 labby_codemode::DecideOutcome::Replay(value) => {
