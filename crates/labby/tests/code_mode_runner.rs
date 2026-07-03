@@ -1624,3 +1624,619 @@ fn codemode_step_rejects_non_function_fn() {
     drop(stdin);
     assert!(child.wait().expect("wait").success());
 }
+
+// ===========================================================================
+// Durable pause/resume — REAL runner subprocess + REAL SqliteDecider e2e
+//
+// These are the true runner-level end-to-end tests that close the gap the
+// review flagged: until now, the C1 swallowed-pause payoff and the resume
+// happy-path were only exercised at the decider level (a mock host in
+// `handlers_tools/tests.rs`) or the protocol level (the `codemode.step` tests
+// above, which mock the host's step decisions on the wire). NEITHER drove the
+// REAL runner subprocess through the REAL durable store.
+//
+// WHICH LAYER IS REAL vs INLINE (Option B — see the PR handoff for why Option A,
+// a full-stack `LabMcpServer`, is impractical: `test_server` /
+// `code_mode_manager_with_pool` / `call_tool_codemode_impl` are all crate-private
+// to `crates/labby/src`, unreachable from this `tests/` harness, while the runner
+// is only spawnable here because integration tests carry `CARGO_BIN_EXE_labby`):
+//
+//   REAL:   the runner subprocess (`labby internal code-mode-runner`, spawned
+//           exactly like every other test in this file), the JS sandbox that
+//           runs the snippet, and the `SqliteDecider` + `CodeModePauseStore`
+//           over a temp-file DB (`labby::codemode::{decider, sqlite_pauses}`).
+//   INLINE: a ~40-line host loop (`InlineDurableHost`) that reads each
+//           `tool_call` off the wire and drives the decide→dispatch→record
+//           dance, plus a `dispatch` counter standing in for a real upstream.
+//
+// The inline host is a faithful, minimal mirror of production. It replicates:
+//   - `code_mode_host.rs::call_tool` (durable path, lines ~104-188): decide →
+//     on Execute dispatch + record_result → reply; on Replay reply the cached
+//     value WITHOUT dispatching; on Pause reply the `code_mode_paused` sentinel
+//     `tool_error`; on Diverge/Fail reply the mapped-kind `tool_error`.
+//   - `call_tool_codemode.rs` (lines ~640-825): begin a durable run before
+//     driving, then read the DURABLE status after the pass settles
+//     (`decider.run_status`) — NOT the sandbox result — to decide paused vs
+//     completed, and `list_pending` for the pending-call summary.
+// If either production function drifts, this mirror should be updated in step.
+// ===========================================================================
+
+use labby::codemode::decider::SqliteDecider;
+use labby::codemode::sqlite_pauses::CodeModePauseStore;
+use labby_codemode::{Approval, CodeModeDecider, DecideOutcome, Journaling, RunLifecycle};
+
+/// The pause sentinel `tool_error` kind the production host returns from
+/// `call_tool` on a `DecideOutcome::Pause` (`code_mode_host.rs::pause_sentinel_error`).
+const PAUSE_SENTINEL_KIND: &str = "code_mode_paused";
+
+/// A minimal inline durable host: owns the REAL decider, counts real dispatches
+/// per tool id, and mirrors the production `call_tool` durable dance for one
+/// `tool_call`. Returns the wire reply to write back to the runner.
+struct InlineDurableHost {
+    decider: SqliteDecider,
+    execution_id: String,
+    /// Per-tool-id count of calls that were ACTUALLY dispatched to the (stub)
+    /// upstream — i.e. reached the `Execute` arm. Replayed/paused calls never
+    /// bump this, exactly as a real upstream would never see them.
+    dispatched: std::collections::HashMap<String, u32>,
+}
+
+impl InlineDurableHost {
+    /// Mirror of `code_mode_host.rs::call_tool`'s durable arm for one call.
+    /// `destructive` is the raw `upstream_tool.destructive` flag the production
+    /// host passes straight to the decider (it does NOT pre-resolve approval on
+    /// the pause-capable path — see the long comment at code_mode_host.rs:92-103).
+    /// Returns the JSON wire message to send back to the runner.
+    async fn handle_tool_call(
+        &mut self,
+        seq: u64,
+        id: &str,
+        params: &Value,
+        destructive: bool,
+    ) -> Value {
+        let approval = if destructive {
+            Approval::Required
+        } else {
+            Approval::NotNeeded
+        };
+        match self
+            .decider
+            .decide(
+                &self.execution_id,
+                seq,
+                id,
+                params,
+                approval,
+                Journaling::Durable,
+            )
+            .await
+        {
+            // Served from the durable log — do NOT dispatch upstream.
+            DecideOutcome::Replay(value) => {
+                json!({ "type": "tool_result", "seq": seq, "result": value })
+            }
+            // Best-effort sandbox halt; the durable status is already `paused`.
+            DecideOutcome::Pause => {
+                json!({ "type": "tool_error", "seq": seq, "kind": PAUSE_SENTINEL_KIND, "message": "Code Mode execution paused awaiting approval" })
+            }
+            DecideOutcome::Diverge(message) => {
+                json!({ "type": "tool_error", "seq": seq, "kind": "resume_divergence", "message": message })
+            }
+            DecideOutcome::Fail { reason, message } => {
+                json!({ "type": "tool_error", "seq": seq, "kind": reason.sdk_kind(), "message": message })
+            }
+            // Real dispatch (stub upstream), then record the result.
+            DecideOutcome::Execute => {
+                *self.dispatched.entry(id.to_string()).or_insert(0) += 1;
+                // A stub upstream result — the value the real pool would unwrap.
+                let value = json!({ "dispatched": id });
+                self.decider
+                    .record_result(&self.execution_id, seq, &value)
+                    .await
+                    .expect("record_result must succeed for a well-formed result");
+                json!({ "type": "tool_result", "seq": seq, "result": value })
+            }
+        }
+    }
+
+    fn dispatch_count(&self, id: &str) -> u32 {
+        self.dispatched.get(id).copied().unwrap_or(0)
+    }
+}
+
+/// Open a fresh temp-file durable store + decider, begin one `running` durable
+/// run, and return them (plus the `TempDir`, which must outlive the test).
+async fn begin_durable_run(execution_id: &str) -> (SqliteDecider, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = CodeModePauseStore::open(dir.path().join("codemode_pauses.db"))
+        .await
+        .expect("open store");
+    let decider = SqliteDecider::new(store);
+    decider
+        .begin(labby_codemode::BeginRun {
+            execution_id: execution_id.to_string(),
+            code_hash: "hash".to_string(),
+            actor_key: Some("actor".to_string()),
+            is_admin: true,
+            route_scope: "root".to_string(),
+            capability_filter_fingerprint: "fp".to_string(),
+            expires_at_ms: i64::MAX,
+        })
+        .await
+        .expect("begin durable run");
+    (decider, dir)
+}
+
+/// Read one line from the runner and parse it as a protocol message.
+/// Convenience wrapper so the drive loop reads like the production one.
+fn next_runner_msg(stdout: &mut BufReader<std::process::ChildStdout>) -> Value {
+    read_protocol_line(stdout)
+}
+
+/// C1 e2e: a snippet that SWALLOWS the pause sentinel (via `Promise.allSettled`)
+/// still drives NO destructive side effects, because the durable monotonic gate
+/// + read-status-after-settle override the sandbox's "ok" result.
+///
+/// REAL runner runs the JS; REAL decider journals + gates. Asserts:
+///   (a) `stub::delete` is NEVER dispatched (the inline host's dispatch counter
+///       stays 0 for it — the first call PAUSES, the monotonic gate PAUSES the
+///       second),
+///   (b) the durable run status is `Paused` after the pass settles,
+///   (c) `list_pending` surfaces the first destructive call at seq 0.
+#[tokio::test]
+async fn swallowed_pause_via_all_settled_dispatches_nothing_and_ends_paused() {
+    let execution_id = "e2e-c1";
+    let (decider, _dir) = begin_durable_run(execution_id).await;
+    let mut host = InlineDurableHost {
+        decider: decider.clone(),
+        execution_id: execution_id.to_string(),
+        dispatched: std::collections::HashMap::new(),
+    };
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["internal", "code-mode-runner"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn code mode runner");
+    let mut stdin = child.stdin.take().expect("runner stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("runner stdout"));
+
+    // The snippet swallows the pause: allSettled lets both destructive calls
+    // settle (one rejects with the sentinel) and the function returns normally.
+    let code = r#"async () => {
+        const r = await Promise.allSettled([
+          callTool("stub::delete", { id: 5 }),
+          callTool("stub::delete", { id: 6 })
+        ]);
+        return r.map(x => x.status);
+    }"#;
+    writeln!(stdin, "{}", json!({ "type": "start", "code": code })).expect("write start");
+
+    // Both destructive callTool requests fan out before either is answered.
+    // Drive each through the REAL decider via the inline host. `stub::delete`
+    // is DESTRUCTIVE, so the decider PAUSES the first (journal pending → paused)
+    // and — via the C1 monotonic gate — PAUSES the second too, journaling
+    // nothing. The inline host returns the pause-sentinel tool_error for both.
+    for _ in 0..2 {
+        let call = next_runner_msg(&mut stdout);
+        assert_eq!(
+            call["type"], "tool_call",
+            "expected a tool_call, got: {call}"
+        );
+        assert_eq!(call["id"], json!("stub::delete"));
+        let seq = call["seq"].as_u64().expect("seq");
+        let reply = host
+            .handle_tool_call(seq, "stub::delete", &call["params"], true)
+            .await;
+        // Both destructive calls must resolve to the pause sentinel.
+        assert_eq!(
+            reply["kind"], PAUSE_SENTINEL_KIND,
+            "a destructive call on a pause-capable run must return the pause sentinel, got: {reply}"
+        );
+        writeln!(stdin, "{reply}").expect("write pause sentinel");
+    }
+
+    // The snippet swallowed both rejections → the sandbox completes "ok".
+    let done = next_runner_msg(&mut stdout);
+    assert_eq!(
+        done["type"], "done",
+        "the sandbox swallows the sentinel and completes ok, got: {done}"
+    );
+    // Both allSettled entries rejected (each callTool's promise rejected).
+    assert_eq!(done_json_result(&done), &json!(["rejected", "rejected"]));
+
+    // (a) NEITHER destructive call was ever dispatched to the (stub) upstream.
+    assert_eq!(
+        host.dispatch_count("stub::delete"),
+        0,
+        "swallowing the pause must NOT drive any destructive dispatch"
+    );
+    // (b) The DURABLE status is the source of truth: the run is Paused, NOT the
+    //     sandbox's "ok" result (the C1 payoff — read status after settle).
+    assert_eq!(
+        decider.run_status(execution_id).await,
+        RunLifecycle::Paused,
+        "the durable run must be Paused after the swallowed-pause pass settles"
+    );
+    // (c) The first destructive call is the pending, awaiting-approval one.
+    let pending = decider.list_pending(execution_id).await;
+    assert_eq!(
+        pending.len(),
+        1,
+        "exactly one pending call, got: {pending:?}"
+    );
+    assert_eq!(pending[0].seq, 0);
+    assert_eq!(pending[0].tool_id, "stub::delete");
+
+    drop(stdin);
+    assert!(child.wait().expect("wait for runner").success());
+}
+
+/// Resume happy-path e2e: a snippet does a non-destructive `stub::read` then a
+/// destructive `stub::delete`; the first pass PAUSES at the delete. On RESUME
+/// (re-running the identical snippet with the run flipped back to `running` and
+/// the delete pre-approved), the REAL decider REPLAYS the recorded read (never
+/// re-dispatched) and DISPATCHES the now-approved delete exactly once, and the
+/// run reaches completed.
+///
+/// REAL runner + REAL decider throughout; the inline host mirrors both the
+/// per-call durable dance and the resume state transitions the MCP surface
+/// performs (`resume_to_running`, then the applied-read replay + approved-delete
+/// pending→executing→execute in `SqliteDecider::decide`).
+#[tokio::test]
+async fn resume_replays_applied_calls_and_executes_approved_destructive() {
+    let execution_id = "e2e-resume";
+    let (decider, _dir) = begin_durable_run(execution_id).await;
+
+    // The SAME snippet on both passes (resume resubmits identical code).
+    let code = r#"async () => {
+        const a = await callTool("stub::read", { id: 1 });
+        const b = await callTool("stub::delete", { id: 2 });
+        return { a: a, b: b };
+    }"#;
+
+    // ── FIRST PASS: read executes, delete pauses ────────────────────────────
+    {
+        let mut host = InlineDurableHost {
+            decider: decider.clone(),
+            execution_id: execution_id.to_string(),
+            dispatched: std::collections::HashMap::new(),
+        };
+        let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+            .args(["internal", "code-mode-runner"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn runner (first pass)");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        writeln!(stdin, "{}", json!({ "type": "start", "code": code })).expect("write start");
+
+        // 1) The non-destructive read executes: dispatched + recorded.
+        let read_call = next_runner_msg(&mut stdout);
+        assert_eq!(read_call["type"], "tool_call");
+        assert_eq!(read_call["id"], json!("stub::read"));
+        assert_eq!(read_call["seq"], json!(0));
+        let reply = host
+            .handle_tool_call(0, "stub::read", &read_call["params"], false)
+            .await;
+        assert_eq!(
+            reply["type"], "tool_result",
+            "read must execute, got: {reply}"
+        );
+        writeln!(stdin, "{reply}").expect("write read result");
+        assert_eq!(host.dispatch_count("stub::read"), 1, "read dispatched once");
+
+        // 2) The destructive delete PAUSES (journal pending → paused).
+        let del_call = next_runner_msg(&mut stdout);
+        assert_eq!(del_call["type"], "tool_call");
+        assert_eq!(del_call["id"], json!("stub::delete"));
+        assert_eq!(del_call["seq"], json!(1));
+        let reply = host
+            .handle_tool_call(1, "stub::delete", &del_call["params"], true)
+            .await;
+        assert_eq!(
+            reply["kind"], PAUSE_SENTINEL_KIND,
+            "delete must pause, got: {reply}"
+        );
+        writeln!(stdin, "{reply}").expect("write pause sentinel");
+        assert_eq!(
+            host.dispatch_count("stub::delete"),
+            0,
+            "delete NOT dispatched on first pass"
+        );
+
+        // The snippet's delete awaited the rejected promise → the whole function
+        // rejects with the sentinel (uncaught). The runner surfaces it as a
+        // top-level error whose kind is preserved (the swallowing test above
+        // covers the caught path; here the sentinel is uncaught, which is the
+        // normal shape when a destructive call is awaited directly).
+        let out = next_runner_msg(&mut stdout);
+        assert_eq!(
+            out["type"], "error",
+            "an uncaught pause sentinel is a top-level error, got: {out}"
+        );
+        assert_eq!(out["kind"], PAUSE_SENTINEL_KIND);
+
+        drop(stdin);
+        assert!(child.wait().expect("wait first pass").success());
+    }
+
+    // The durable status is Paused after the first pass; the read is applied
+    // (recorded) and the delete is pending at seq 1.
+    assert_eq!(decider.run_status(execution_id).await, RunLifecycle::Paused);
+    let pending = decider.list_pending(execution_id).await;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].tool_id, "stub::delete");
+
+    // ── APPROVE + RESUME: flip paused → running (the CAS the MCP surface does
+    //    in `call_tool_codemode.rs` after authorization) ─────────────────────
+    assert!(
+        decider.resume_to_running(execution_id).await,
+        "resume CAS must transition the paused run to running"
+    );
+
+    // ── SECOND PASS: read REPLAYS (no dispatch); delete now EXECUTES once ────
+    {
+        let mut host = InlineDurableHost {
+            decider: decider.clone(),
+            execution_id: execution_id.to_string(),
+            dispatched: std::collections::HashMap::new(),
+        };
+        let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+            .args(["internal", "code-mode-runner"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn runner (resume pass)");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        writeln!(stdin, "{}", json!({ "type": "start", "code": code })).expect("write start");
+
+        // 1) The read at seq 0 is an APPLIED non-ephemeral entry → REPLAY the
+        //    cached value, do NOT dispatch (proof: dispatch_count stays 0).
+        let read_call = next_runner_msg(&mut stdout);
+        assert_eq!(read_call["id"], json!("stub::read"));
+        assert_eq!(read_call["seq"], json!(0));
+        let reply = host
+            .handle_tool_call(0, "stub::read", &read_call["params"], false)
+            .await;
+        assert_eq!(
+            reply["type"], "tool_result",
+            "replay is delivered as a tool_result"
+        );
+        assert_eq!(
+            reply["result"],
+            json!({ "dispatched": "stub::read" }),
+            "replay must return the value recorded on the first pass"
+        );
+        writeln!(stdin, "{reply}").expect("write replayed read");
+        assert_eq!(
+            host.dispatch_count("stub::read"),
+            0,
+            "the read must be REPLAYED from the durable log, never re-dispatched"
+        );
+
+        // 2) The delete at seq 1 is now an approved (pending) entry → the
+        //    decider transitions pending→executing→Execute, so it DISPATCHES
+        //    exactly once and records its result.
+        let del_call = next_runner_msg(&mut stdout);
+        assert_eq!(del_call["id"], json!("stub::delete"));
+        assert_eq!(del_call["seq"], json!(1));
+        let reply = host
+            .handle_tool_call(1, "stub::delete", &del_call["params"], true)
+            .await;
+        assert_eq!(
+            reply["type"], "tool_result",
+            "the approved delete must now EXECUTE, not pause, got: {reply}"
+        );
+        writeln!(stdin, "{reply}").expect("write delete result");
+        assert_eq!(
+            host.dispatch_count("stub::delete"),
+            1,
+            "the approved destructive delete must dispatch exactly once on resume"
+        );
+
+        // The snippet returns both values → Done.
+        let done = next_runner_msg(&mut stdout);
+        assert_eq!(
+            done["type"], "done",
+            "resume pass must complete, got: {done}"
+        );
+        assert_eq!(
+            done_json_result(&done),
+            &json!({ "a": { "dispatched": "stub::read" }, "b": { "dispatched": "stub::delete" } })
+        );
+
+        drop(stdin);
+        assert!(child.wait().expect("wait resume pass").success());
+    }
+
+    // Mark completed, mirroring the MCP surface's post-settle `set_status`
+    // (`call_tool_codemode.rs` — Running-after-settle → Completed).
+    assert_eq!(
+        decider.run_status(execution_id).await,
+        RunLifecycle::Running,
+        "after the resume pass settles with no new pause, the run is Running"
+    );
+    assert!(
+        decider
+            .set_status(execution_id, RunLifecycle::Completed, None)
+            .await
+            .expect("set_status"),
+        "the settled resume run transitions to Completed"
+    );
+    assert_eq!(
+        decider.run_status(execution_id).await,
+        RunLifecycle::Completed
+    );
+}
+
+/// The real-store analog of the protocol-level `codemode.step` replay test
+/// above: a `codemode.step("x", fn)` journaled through the REAL `SqliteDecider`
+/// replays its recorded value on resume WITHOUT re-running `fn`.
+///
+/// REAL runner drives the two-phase step JS; REAL decider journals + replays via
+/// its `decide`/`record_result` surface. The inline host mirrors
+/// `code_mode_host.rs::decide_step` (decide under the step NAME, non-ephemeral,
+/// no approval) and `record_step`.
+#[tokio::test]
+async fn step_replays_recorded_value_through_real_decider() {
+    let execution_id = "e2e-step";
+    let (decider, _dir) = begin_durable_run(execution_id).await;
+
+    // The same STEP_PROXY the protocol-level step tests use, wiring
+    // `codemode.step` to the runner-side `__labCodemodeStep` bridge.
+    let code = r#"async () => {
+        const v = await codemode.step("x", async () => {
+          await callTool("spy::ran", {});
+          return 7;
+        });
+        return { v: v };
+    }"#;
+
+    // ── FIRST PASS: the step runs fn once and journals its result (7) ───────
+    {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+            .args(["internal", "code-mode-runner"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn runner (step first pass)");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        writeln!(
+            stdin,
+            "{}",
+            json!({ "type": "start", "code": code, "proxy": STEP_PROXY })
+        )
+        .expect("write start");
+
+        // StepBegin — mirror `decide_step`: decide under {"name":"x"},
+        // non-ephemeral, no approval. Fresh entry → Execute → run fn.
+        let begin = next_runner_msg(&mut stdout);
+        assert_eq!(begin["type"], "step_begin", "got: {begin}");
+        assert_eq!(begin["seq"], json!(0));
+        assert_eq!(begin["name"], json!("x"));
+        let decision = decider
+            .decide(
+                execution_id,
+                0,
+                "codemode::step",
+                &json!({ "name": "x" }),
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
+            .await;
+        assert!(
+            matches!(decision, DecideOutcome::Execute),
+            "a fresh step must decide Execute, got: {decision:?}"
+        );
+        writeln!(
+            stdin,
+            "{}",
+            json!({ "type": "step_decision", "seq": 0, "replay": Value::Null })
+        )
+        .expect("write step_decision execute");
+
+        // fn runs → its marker callTool fires (proof fn executed), seq 1.
+        let spy = next_runner_msg(&mut stdout);
+        assert_eq!(spy["type"], "tool_call", "fn must run, got: {spy}");
+        assert_eq!(spy["id"], json!("spy::ran"));
+        writeln!(
+            stdin,
+            "{}",
+            json!({ "type": "tool_result", "seq": 1, "result": {} })
+        )
+        .expect("write spy result");
+
+        // StepResult → record fn's produced value (7) through the REAL decider,
+        // mirroring `record_step` → `record_result`.
+        let result = next_runner_msg(&mut stdout);
+        assert_eq!(result["type"], "step_result", "got: {result}");
+        assert_eq!(result["seq"], json!(0));
+        assert_eq!(result["value"], json!(7));
+        decider
+            .record_result(execution_id, 0, &result["value"])
+            .await
+            .expect("record step result");
+        writeln!(stdin, "{}", json!({ "type": "step_recorded", "seq": 0 }))
+            .expect("write step_recorded");
+
+        let done = next_runner_msg(&mut stdout);
+        assert_eq!(done["type"], "done", "got: {done}");
+        assert_eq!(done_json_result(&done)["v"], json!(7));
+
+        drop(stdin);
+        assert!(child.wait().expect("wait step first pass").success());
+    }
+
+    // ── RESUME: re-run the identical snippet. The step at seq 0 is an APPLIED
+    //    non-ephemeral entry → the decider REPLAYS 7 without running fn. The
+    //    marker `spy::ran` must NEVER fire, and no StepResult is journaled. ──
+    {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+            .args(["internal", "code-mode-runner"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn runner (step resume pass)");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        writeln!(
+            stdin,
+            "{}",
+            json!({ "type": "start", "code": code, "proxy": STEP_PROXY })
+        )
+        .expect("write start");
+
+        let begin = next_runner_msg(&mut stdout);
+        assert_eq!(begin["type"], "step_begin", "got: {begin}");
+        assert_eq!(begin["seq"], json!(0));
+        // The REAL decider replays the recorded value — mirror `decide_step`'s
+        // Replay → StepDecision::Replay(value).
+        let decision = decider
+            .decide(
+                execution_id,
+                0,
+                "codemode::step",
+                &json!({ "name": "x" }),
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
+            .await;
+        let replay_value = match decision {
+            DecideOutcome::Replay(value) => value,
+            other => panic!("resume step must Replay the recorded value, got: {other:?}"),
+        };
+        assert_eq!(replay_value, json!(7), "replay must return the recorded 7");
+        writeln!(
+            stdin,
+            "{}",
+            json!({ "type": "step_decision", "seq": 0, "replay": replay_value })
+        )
+        .expect("write step_decision replay");
+
+        // The very next runner message must be Done — fn never ran (no
+        // `spy::ran` tool_call) and nothing was re-journaled (no step_result).
+        let done = next_runner_msg(&mut stdout);
+        assert_eq!(
+            done["type"], "done",
+            "replay must skip fn: no spy tool_call, no step_result, got: {done}"
+        );
+        assert_eq!(
+            done_json_result(&done)["v"],
+            json!(7),
+            "the resumed step returns the replayed value"
+        );
+
+        drop(stdin);
+        assert!(child.wait().expect("wait step resume pass").success());
+    }
+}
