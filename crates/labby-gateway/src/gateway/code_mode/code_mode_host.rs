@@ -128,9 +128,9 @@ impl CodeModeHost for GatewayManager {
                         message,
                     });
                 }
-                labby_codemode::DecideOutcome::Fail(message) => {
+                labby_codemode::DecideOutcome::Fail { reason, message } => {
                     return Err(ToolError::Sdk {
-                        sdk_kind: "internal_error".to_string(),
+                        sdk_kind: reason.sdk_kind().to_string(),
                         message,
                     });
                 }
@@ -242,10 +242,12 @@ impl CodeModeHost for GatewayManager {
                     message,
                 }
             }
-            labby_codemode::DecideOutcome::Fail(message) => labby_codemode::StepDecision::Error {
-                kind: "internal_error".to_string(),
-                message,
-            },
+            labby_codemode::DecideOutcome::Fail { reason, message } => {
+                labby_codemode::StepDecision::Error {
+                    kind: reason.sdk_kind().to_string(),
+                    message,
+                }
+            }
         }
     }
 
@@ -322,10 +324,12 @@ impl CodeModeHost for GatewayManager {
                     message,
                 }
             }
-            labby_codemode::DecideOutcome::Fail(message) => labby_codemode::StepDecision::Error {
-                kind: "internal_error".to_string(),
-                message,
-            },
+            labby_codemode::DecideOutcome::Fail { reason, message } => {
+                labby_codemode::StepDecision::Error {
+                    kind: reason.sdk_kind().to_string(),
+                    message,
+                }
+            }
         }
     }
 

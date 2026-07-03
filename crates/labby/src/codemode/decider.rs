@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use labby_codemode::host::BoxDecideFuture;
 use labby_codemode::{
-    AuthLoad, BeginRun, CodeModeDecider, DecideOutcome, PendingCall, RunLifecycle, VerifiedAuth,
+    AuthLoad, BeginRun, CodeModeDecider, DecideOutcome, FailReason, PendingCall, RunLifecycle,
+    VerifiedAuth,
 };
 use labby_runtime::error::ToolError;
 use serde_json::Value;
@@ -299,11 +300,19 @@ impl SqliteDecider {
         // Load the run; unknown / tampered → fail closed (V6).
         let run = match self.store.load_run(execution_id).await {
             Ok(Some(run)) => run,
-            Ok(None) => return DecideOutcome::Fail("unknown execution".into()),
-            Err(err) => return DecideOutcome::Fail(err.to_string()),
+            Ok(None) => {
+                return DecideOutcome::Fail {
+                    reason: FailReason::UnknownExecution,
+                    message: "unknown execution".into(),
+                };
+            }
+            Err(err) => return fail_internal(err.to_string()),
         };
         if !run.verified {
-            return DecideOutcome::Fail("integrity check failed".into());
+            return DecideOutcome::Fail {
+                reason: FailReason::IntegrityFailure,
+                message: "integrity check failed".into(),
+            };
         }
 
         // C1 monotonic gate: once a run is not `running` (paused or terminal),
@@ -333,7 +342,7 @@ impl SqliteDecider {
                         .set_status(execution_id, RunStatus::Error, Some(&msg))
                         .await
                     {
-                        return DecideOutcome::Fail(err.to_string());
+                        return fail_internal(err.to_string());
                     }
                     return DecideOutcome::Diverge(msg);
                 }
@@ -360,7 +369,7 @@ impl SqliteDecider {
                             .set_entry_state(execution_id, seq_i, LogState::Executing)
                             .await
                         {
-                            return DecideOutcome::Fail(err.to_string());
+                            return fail_internal(err.to_string());
                         }
                         DecideOutcome::Execute
                     }
@@ -401,7 +410,7 @@ impl SqliteDecider {
                 )
                 .await
             }
-            Err(err) => DecideOutcome::Fail(err.to_string()),
+            Err(err) => fail_internal(err.to_string()),
         }
     }
 
@@ -496,9 +505,12 @@ impl SqliteDecider {
                         "failed to mark Code Mode run errored after oversize args"
                     );
                 }
-                return DecideOutcome::Fail(msg);
+                return DecideOutcome::Fail {
+                    reason: FailReason::ValueTooLarge,
+                    message: msg,
+                };
             }
-            Err(err) => return DecideOutcome::Fail(err.to_string()),
+            Err(err) => return fail_internal(err.to_string()),
         }
 
         if requires_approval {
@@ -509,7 +521,7 @@ impl SqliteDecider {
                 .set_status(execution_id, RunStatus::Paused, None)
                 .await
             {
-                return DecideOutcome::Fail(err.to_string());
+                return fail_internal(err.to_string());
             }
             return DecideOutcome::Pause;
         }
@@ -518,6 +530,15 @@ impl SqliteDecider {
 }
 
 use super::now_ms;
+
+/// A genuine internal fault (SQLite/serialization/status-write) as a terminal
+/// [`DecideOutcome::Fail`]. Keeps the `FailReason::Internal` tagging in one place.
+fn fail_internal(message: String) -> DecideOutcome {
+    DecideOutcome::Fail {
+        reason: FailReason::Internal,
+        message,
+    }
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -673,7 +694,19 @@ mod tests {
                 false,
             )
             .await;
-        assert!(matches!(out, DecideOutcome::Fail(_)));
+        // Oversize args carry the caller-shaped ValueTooLarge reason (→
+        // invalid_param at the host), not a bare internal_error.
+        assert!(
+            matches!(
+                out,
+                DecideOutcome::Fail {
+                    reason: FailReason::ValueTooLarge,
+                    ..
+                }
+            ),
+            "oversize args must fail with ValueTooLarge, got {out:?}"
+        );
+        assert_eq!(FailReason::ValueTooLarge.sdk_kind(), "invalid_param");
         let run = d.store.load_run("e6").await.unwrap().unwrap();
         assert_eq!(run.status, RunStatus::Error);
     }
@@ -844,7 +877,18 @@ mod tests {
         let out = d
             .decide("nope", 0, "svc::read", &serde_json::json!({}), false, false)
             .await;
-        assert!(matches!(out, DecideOutcome::Fail(_)));
+        // An unknown run carries the UnknownExecution reason (→ internal_error at
+        // the host), distinct from a ValueTooLarge / genuine Internal fault.
+        assert!(
+            matches!(
+                out,
+                DecideOutcome::Fail {
+                    reason: FailReason::UnknownExecution,
+                    ..
+                }
+            ),
+            "an unknown execution must fail with UnknownExecution, got {out:?}"
+        );
     }
 
     // ── Wave 3 lifecycle (resume/reject) trait methods ──

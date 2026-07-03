@@ -78,6 +78,37 @@ impl ExecCtx<'_> {
     }
 }
 
+/// Why a [`DecideOutcome::Fail`] terminated the run. Preserved across the decide
+/// boundary so the host can map each cause onto the correct `sdk_kind` instead of
+/// collapsing every failure into `internal_error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailReason {
+    /// No durable run exists for this execution id.
+    UnknownExecution,
+    /// The run row failed HMAC integrity verification (tampered) — fail closed.
+    IntegrityFailure,
+    /// A journaled value exceeded the durable size cap. Caller-shaped
+    /// (`invalid_param`), not an internal fault — the args/result are too big to
+    /// record and must be reduced.
+    ValueTooLarge,
+    /// A genuine internal fault (SQLite/serialization/status-write failure).
+    Internal,
+}
+
+impl FailReason {
+    /// The host `sdk_kind` this failure maps onto. `ValueTooLarge` is
+    /// caller-shaped (`invalid_param`); every other cause is `internal_error`.
+    #[must_use]
+    pub fn sdk_kind(self) -> &'static str {
+        match self {
+            FailReason::ValueTooLarge => "invalid_param",
+            FailReason::UnknownExecution | FailReason::IntegrityFailure | FailReason::Internal => {
+                "internal_error"
+            }
+        }
+    }
+}
+
 /// The durable-execution decision for a single tool call or step.
 ///
 /// Port of Cloudflare's `ToolDecision` (`runtime.ts:127-134`), plus explicit
@@ -95,8 +126,9 @@ pub enum DecideOutcome {
     Pause,
     /// Hard, model-actionable replay divergence (`runtime.ts:437/448`).
     Diverge(String),
-    /// Oversize/unserializable args → terminal run failure (`runtime.ts:494`).
-    Fail(String),
+    /// Terminal run failure. `reason` distinguishes the cause (so the host can
+    /// pick the right `sdk_kind`); `message` is the human-facing detail.
+    Fail { reason: FailReason, message: String },
 }
 
 /// The durable decision for one `codemode.step(name, fn)` boundary, returned by
@@ -228,9 +260,10 @@ pub type BoxDecideFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Sen
 ///   [`reject_paused`](Self::reject_paused)) return `false` when no eligible row
 ///   transitioned (already resumed/terminal, missing, or tampered) — the loser
 ///   of a race or a tampered row is refused, never force-applied.
-/// - [`decide`](Self::decide) returns [`DecideOutcome::Fail`] with an
-///   [`AuthLoad`]-shaped reason for a missing/tampered run and never treats a
-///   tampered row's recorded fields as trustworthy.
+/// - [`decide`](Self::decide) returns [`DecideOutcome::Fail`] with a
+///   [`FailReason`] of `UnknownExecution`/`IntegrityFailure` for a
+///   missing/tampered run and never treats a tampered row's recorded fields as
+///   trustworthy.
 ///
 /// Uniformly: `None`/`Unknown`/`false`/`Tampered` mean "refuse", never "allow".
 pub trait CodeModeDecider: Send + Sync {
