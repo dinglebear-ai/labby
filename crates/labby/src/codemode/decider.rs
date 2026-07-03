@@ -600,6 +600,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_result_failure_leaves_entry_unapplied_and_errors_run() {
+        // F1: if record_result fails (here: oversize result), the log entry must
+        // NOT be marked `applied` (else a resume would replay a NULL result), and
+        // the run must flip to Error so it fails closed rather than allowing a
+        // double-dispatch on resume.
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "e-rec").await;
+        // Fresh non-destructive call → journals + executes (state = executing).
+        let out = d
+            .decide("e-rec", 0, "svc::read", &serde_json::json!({"q": 1}), false, false)
+            .await;
+        assert!(matches!(out, DecideOutcome::Execute));
+        // Record an oversize result → record_result returns Err.
+        let big = "z".repeat(super::super::sqlite_pauses::MAX_DURABLE_VALUE_BYTES + 10);
+        let err = d
+            .record_result("e-rec", 0, &serde_json::json!({"blob": big}))
+            .await
+            .expect_err("oversize result must fail record_result");
+        assert!(matches!(err, ToolError::Sdk { .. }));
+        // Entry stays not-applied (still `executing`) — no NULL result to replay.
+        let entry = d.store.get_log_entry("e-rec", 0).await.unwrap().unwrap();
+        assert_eq!(
+            entry.state,
+            LogState::Executing,
+            "failed record must not mark the entry applied"
+        );
+        assert!(
+            entry.redacted_result.is_none(),
+            "failed record must not persist a result"
+        );
+        // Run flipped to Error (fails closed).
+        let run = d.store.load_run("e-rec").await.unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Error);
+    }
+
+    #[tokio::test]
     async fn unknown_execution_fails() {
         let (d, _dir) = fresh_decider().await;
         let out = d

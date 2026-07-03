@@ -137,10 +137,42 @@ impl CodeModeHost for GatewayManager {
             let outcome = self
                 .dispatch_code_mode_upstream(upstream, tool, params)
                 .await?;
-            decider
-                .record_result(exec_id, ctx.seq, &outcome.value)
-                .await
-                .ok();
+            // F1: a swallowed record_result failure leaves the log entry
+            // `executing`, so a later resume re-executes this (already-applied)
+            // destructive call — a double-dispatch. Fail the run closed instead:
+            // flip durable status to Error and surface an error to the sandbox so
+            // the run cannot silently proceed on unrecorded state. (SqliteDecider
+            // already sets Error on `ValueTooLarge`; this covers every other
+            // record failure too, and re-asserts Error idempotently.)
+            if let Err(err) = decider.record_result(exec_id, ctx.seq, &outcome.value).await {
+                decider
+                    .set_status(
+                        exec_id,
+                        labby_codemode::RunLifecycle::Error,
+                        Some(&err.to_string()),
+                    )
+                    .await
+                    .ok();
+                tracing::error!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "record_result",
+                    kind = "internal_error",
+                    seq = ctx.seq,
+                    upstream = upstream,
+                    tool = tool,
+                    error = %err,
+                    "failed to record Code Mode call result; failing run closed to \
+                     prevent double-dispatch on resume"
+                );
+                return Err(ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: format!(
+                        "failed to durably record the result of `{upstream}::{tool}`; the run \
+                         was failed to prevent re-execution on resume: {err}"
+                    ),
+                });
+            }
             return Ok(outcome);
         }
 
