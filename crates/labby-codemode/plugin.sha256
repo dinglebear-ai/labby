@@ -1,1 +1,6 @@
+# Raw labby-codemode Javy plugin hashes observed across supported Linux build
+# environments. The Wasm runtime embeds and reports the preinitialized plugin
+# hash at build time; this file guards the raw nested plugin artifact before
+# Wizer preinitialization.
 1cb42fd8eadf8c72273f40a75d42b2896d7f48b5a51a2dc6c9c7ea605a8a67d2
+a7ecdc5ee6519fd5e892077aa36a4ddaf35fe8b4126255a056e3e0eb21198b19

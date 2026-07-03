@@ -26,6 +26,7 @@ RUN apt-get update \
       build-essential \
       libssl-dev \
       libclang-dev \
+      curl \
  && rm -rf /var/lib/apt/lists/*
 
 # ── Dependency-caching layer ──────────────────────────────────────────────────

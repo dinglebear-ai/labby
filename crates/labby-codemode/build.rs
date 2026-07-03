@@ -54,14 +54,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::read(plugin_target.join("wasm32-wasip1/release/labby_codemode_javy_plugin.wasm"))?;
     let raw_actual = labby_codemode_build_support::sha256_hex(&raw);
     let expected = std::fs::read_to_string(manifest_dir.join("plugin.sha256"))?;
-    let expected = expected.trim();
-    if expected.is_empty() {
+    let expected_hashes = expected
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect::<Vec<_>>();
+    if expected_hashes.is_empty() {
         return Err("plugin.sha256 must not be empty".into());
     }
-    if expected != raw_actual {
-        return Err(
-            format!("Javy plugin hash mismatch: expected {expected}, got {raw_actual}").into(),
-        );
+    if !expected_hashes
+        .iter()
+        .any(|expected| expected == &raw_actual.as_str())
+    {
+        return Err(format!(
+            "Javy plugin hash mismatch: expected one of {}, got {raw_actual}",
+            expected_hashes.join(", ")
+        )
+        .into());
     }
 
     let initialized = labby_codemode_build_support::preinitialize_javy_plugin(&raw)?;
