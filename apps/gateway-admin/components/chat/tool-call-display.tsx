@@ -186,11 +186,15 @@ export function ToolCallDisplay({ toolCall, isChild = false }: ToolCallDisplayPr
                 <p className={cn(AURORA_MUTED_LABEL, 'mb-1.5 text-aurora-success')}>
                   Output
                 </p>
-                <pre className="aurora-scrollbar overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-[1.5] text-aurora-text-primary">
-                  {typeof toolCall.output === 'string'
-                    ? toolCall.output
-                    : JSON.stringify(toolCall.output, null, 2)}
-                </pre>
+                {typeof toolCall.output === 'string' ? (
+                  <div className="aurora-scrollbar max-h-72 overflow-auto rounded-aurora-1 border border-aurora-border-default/70 bg-aurora-page-bg px-3 py-2.5 text-[12px] leading-[1.6] whitespace-pre-wrap text-aurora-text-primary">
+                    {toolCall.output}
+                  </div>
+                ) : (
+                  <pre className="aurora-scrollbar overflow-x-auto font-mono text-[11px] leading-[1.5] whitespace-pre-wrap text-aurora-text-primary">
+                    {JSON.stringify(toolCall.output, null, 2)}
+                  </pre>
+                )}
               </div>
             )}
           </div>
