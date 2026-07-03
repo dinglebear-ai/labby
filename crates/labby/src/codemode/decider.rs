@@ -719,6 +719,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn step_journals_non_ephemerally_and_replays_recorded_value() {
+        // A `codemode.step` boundary journals non-ephemerally (ephemeral=false):
+        // the recorded value REPLAYS on a resume so `fn` is never re-run. This is
+        // the durable half of what `handle_step_begin_event` + the gateway
+        // `decide_step` hook rely on.
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "e-step").await;
+        let args = serde_json::json!({ "name": "s" });
+        // First pass: fresh non-destructive step → Execute (fn runs).
+        let out = d
+            .decide("e-step", 0, "codemode::step", &args, false, false)
+            .await;
+        assert!(matches!(out, DecideOutcome::Execute));
+        // Record fn's produced value (the nondeterministic result).
+        d.record_result("e-step", 0, &serde_json::json!({ "rand": 0.42 }))
+            .await
+            .unwrap();
+        // Resume: same seq + same step name → replay the cached value, NOT execute.
+        let out = d
+            .decide("e-step", 0, "codemode::step", &args, false, false)
+            .await;
+        match out {
+            DecideOutcome::Replay(v) => assert_eq!(v, serde_json::json!({ "rand": 0.42 })),
+            other => panic!("step replay must return the cached value, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wrapping_nondeterminism_in_step_resumes_cleanly_unwrapped_diverges() {
+        // CONTRAST: the same nondeterministic value behaves differently depending
+        // on whether it is wrapped in codemode.step.
+        //
+        // WRAPPED — the step's divergence key is its NAME (`{"name":"s"}`), not
+        // fn's output. On resume the name is identical, so decide() replays the
+        // recorded value cleanly even though fn would have produced something
+        // different this pass.
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "wrap").await;
+        let step_args = serde_json::json!({ "name": "s" });
+        let _first = d
+            .decide("wrap", 0, "codemode::step", &step_args, false, false)
+            .await;
+        // fn produced 0.42 on the first pass; that value is journaled.
+        d.record_result("wrap", 0, &serde_json::json!(0.42))
+            .await
+            .unwrap();
+        let out = d
+            .decide("wrap", 0, "codemode::step", &step_args, false, false)
+            .await;
+        assert!(
+            matches!(&out, DecideOutcome::Replay(v) if *v == serde_json::json!(0.42)),
+            "wrapped nondeterminism replays cleanly, got {out:?}"
+        );
+
+        // UNWRAPPED — the same nondeterministic value passed as a raw tool-call
+        // ARG is the divergence key. A drift from 0.42 → 0.43 at the same seq is a
+        // hard resume_divergence (fail closed), never a silent stale-result apply.
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "raw").await;
+        let _first = d
+            .decide(
+                "raw",
+                0,
+                "svc::use",
+                &serde_json::json!({ "rand": 0.42 }),
+                false,
+                false,
+            )
+            .await;
+        d.record_result("raw", 0, &serde_json::json!({ "ok": true }))
+            .await
+            .unwrap();
+        let out = d
+            .decide(
+                "raw",
+                0,
+                "svc::use",
+                &serde_json::json!({ "rand": 0.43 }),
+                false,
+                false,
+            )
+            .await;
+        assert!(
+            matches!(out, DecideOutcome::Diverge(_)),
+            "unwrapped nondeterminism must diverge, got {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ephemeral_local_provider_reexecutes_on_replay() {
+        // Local `state`/`git` providers journal EPHEMERALLY (ephemeral=true): the
+        // entry marks applied but a resume RE-EXECUTES it rather than replaying a
+        // stored result — so the FS/git side effect re-runs, never double-applied
+        // silently nor served from stale cache. This is the durable half of the
+        // gateway `decide_local` hook + `enqueue_local_provider_call`.
+        let (d, _dir) = fresh_decider().await;
+        begin_run(&d, "e-local").await;
+        let args = serde_json::json!({ "path": "a.txt" });
+        // First pass: fresh ephemeral call → Execute.
+        let out = d
+            .decide("e-local", 0, "state::writeFile", &args, false, true)
+            .await;
+        assert!(matches!(out, DecideOutcome::Execute));
+        d.record_result("e-local", 0, &serde_json::json!({ "ok": true }))
+            .await
+            .unwrap();
+        // Resume: same seq + same id/args → Execute AGAIN (re-run), not Replay.
+        let out = d
+            .decide("e-local", 0, "state::writeFile", &args, false, true)
+            .await;
+        assert!(
+            matches!(out, DecideOutcome::Execute),
+            "an applied ephemeral entry must re-execute on replay, got {out:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn unknown_execution_fails() {
         let (d, _dir) = fresh_decider().await;
         let out = d

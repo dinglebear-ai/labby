@@ -482,10 +482,20 @@ locally in-sandbox and emits no parent request, so it does **not** consume a
 `seq` and is exempt.) Adding, removing, or reordering any
 of them between pause and resume shifts the `seq` of a later journaled tool call
 and surfaces as `resume_divergence` (fail closed) rather than a silent misapply.
-(A `codemode.step(name, fn)` JS-bridge primitive that would journal arbitrary
-nondeterministic work under its own `seq` is a tracked follow-up, not built here;
-until it lands, nondeterministic snippets fail closed with `resume_divergence`,
-which is safe.)
+
+**`codemode.step(name, fn)` journals arbitrary nondeterministic work.** Wrap
+random/time/drifting reads in `codemode.step(name, fn)` and the value `fn`
+produces is journaled once (on first run) and **replayed** on resume — `fn` is
+not re-run. The step is a two-phase parent round-trip: the runner emits
+`StepBegin{seq, name}`, the host decides replay-vs-execute BEFORE `fn` runs
+(`decide` with `tool_id = "codemode::step"`, `ephemeral = false`), and on execute
+the runner runs `fn`, emits `StepResult{seq, value}` to journal it, and awaits
+`StepRecorded`. The step consumes a `seq` from the same monotonic spine as every
+other request, so its divergence key is the step **name** (not `fn`'s output):
+the same nondeterministic value wrapped in `step` resumes cleanly, while the same
+value used raw as a tool-call arg still diverges. On the write-free / no-decider
+path the host's default `decide_step` returns `Execute` and `record_step` is a
+no-op, so `fn` simply runs normally.
 
 **No truncation.** Any single journaled args/result value over
 `MAX_DURABLE_VALUE_BYTES` (1 MiB) fails the run with a model-actionable message
@@ -500,18 +510,21 @@ sweep fired on pause/resume/reject dispatch — no background timer.
 (`confirm: true`) runs, CLI runs, and runs with no configured pause store take
 the write-free path unchanged.
 
-**Local providers are excluded from the pause-capable path (fail closed).**
+**Local providers are journaled ephemerally on the pause-capable path.**
 Labby's runner-reserved `state.*` / `git.*` local providers (available only to
-unscoped admin/trusted-local callers) dispatch **off** the decider path
-(`runner_drive.rs::enqueue_local_provider_call`), so their calls are never
-journaled and would double-apply on resume. To keep this safe by construction, a
-run for which local providers are allowed is made **non-pause-capable**: it never
-begins a resumable durable run and instead takes the write-free path (no pause,
-no `resume_token`). Consequence: a snippet that uses `state`/`git` cannot pause
-for per-call destructive approval; it runs to completion under its existing
-scope gate. Removing this exclusion requires journaling local-provider calls
-through the decider (or marking them `ephemeral` re-runs) first — see the
-threat-model note in `crates/labby/src/codemode/sqlite_pauses.rs`.
+unscoped admin/trusted-local callers) dispatch inside the runner crate, not via
+`callTool` (`runner_drive.rs::enqueue_local_provider_call`). They are now
+journaled as **ephemeral** durable entries through
+`CodeModeHost::decide_local` / `record_local` (`decide` with `ephemeral = true`),
+so they participate in the `seq` spine and are tool_id/args divergence-checked on
+resume — while an ephemeral entry **re-executes** on replay (the FS/git side
+effect re-runs) rather than being served from a stored result. This removes the
+former fail-closed exclusion that made any run touching `state`/`git`
+non-pause-capable: such runs can now pause for per-call destructive approval and
+resume like any other. On the write-free / no-decider path the default
+`decide_local` returns `Execute` and `record_local` is a no-op, so local calls
+dispatch exactly as before. (The prior threat-model note in
+`crates/labby/src/codemode/sqlite_pauses.rs` is now historical.)
 
 **Resume authorization (fail closed on every gate).** Resuming a paused run
 re-checks, in order and BEFORE the CAS `paused → running`: the HMAC integrity

@@ -43,17 +43,18 @@
 //! - **Local providers (`state`/`git`) + resume (C3):** Labby's runner-reserved
 //!   local providers are dispatched on a separate path
 //!   (`runner_drive::enqueue_local_provider_call`) that does NOT flow through
-//!   `host.call_tool`, so their calls are **not** journaled. A paused run that
-//!   also called a local provider would re-execute that provider on resume
-//!   (double-apply). Mitigation (**implemented, fail closed**): a run for which
-//!   local providers are allowed (unscoped admin/trusted-local, per
-//!   `labby_codemode::local_providers_allowed`) is made **non-pause-capable** in
-//!   `call_tool_codemode.rs` — it never begins a resumable durable run, so there
-//!   is no resume path that could double-apply a `state`/`git` call. Such a run
-//!   cannot pause for per-call destructive approval; it runs to completion under
-//!   its scope gate. Journaling local-provider calls through the decider (or as
-//!   `ephemeral` re-runs) plus a `codemode.step` primitive remain deferred
-//!   follow-ups (plan Wave 4 Task 4.1) that would lift this exclusion.
+//!   `host.call_tool`. They are now journaled as **ephemeral** durable entries
+//!   through `CodeModeHost::decide_local` / `record_local` (`decide` with
+//!   `ephemeral = true`) BEFORE the local dispatch runs, so they participate in
+//!   the `seq` spine and are divergence-checked on resume — while an ephemeral
+//!   entry RE-EXECUTES on replay rather than replaying a stored result, so the
+//!   FS/git side effect re-runs deterministically-enough instead of being
+//!   silently double-applied out of the spine. This **lifted** the former
+//!   fail-closed non-pause-capable exclusion (plan Wave 4 Task 4.1): runs that
+//!   touch `state`/`git` are pause-capable again. The companion
+//!   `codemode.step(name, fn)` primitive (non-ephemeral: journal-once,
+//!   replay-thereafter) journals arbitrary nondeterministic work under the same
+//!   spine — see `docs/dev/CODE_MODE.md`.
 
 use std::path::PathBuf;
 

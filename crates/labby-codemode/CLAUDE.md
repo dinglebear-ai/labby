@@ -123,6 +123,13 @@ a `"kind"` field. `protocol.rs` is the source of truth; the shapes below mirror
 
 // Reply to a tool_call/snippet_resolve with a structured error
 { "type": "tool_error", "seq": <u64>, "kind": "<error kind>", "message": "<string>" }
+
+// Reply to a step_begin: replay the cached value (durable-run resume) or execute fn.
+// replay=null (or absent) ⇒ execute; replay=<json> ⇒ return that value without running fn.
+{ "type": "step_decision", "seq": <u64>, "replay": <json|null> }
+
+// Ack a step_result: the step value was durably recorded; the runner returns it.
+{ "type": "step_recorded", "seq": <u64> }
 ```
 
 **Runner → parent (`CodeModeRunnerOutput`):**
@@ -136,6 +143,14 @@ a `"kind"` field. `protocol.rs` is the source of truth; the shapes below mirror
 
 // Runner wants to resolve a snippet by name
 { "type": "snippet_resolve", "seq": <u64>, "name": "<snippet>", "input": <json> }
+
+// Runner entered codemode.step(name, fn): the host decides replay-vs-execute
+// BEFORE fn runs. Consumes a seq from the same monotonic spine as tool calls.
+{ "type": "step_begin", "seq": <u64>, "name": "<step name>" }
+
+// Runner ran the step fn (decision was execute) and is journaling its result.
+// Reuses the step_begin seq — the host records at that journal entry.
+{ "type": "step_result", "seq": <u64>, "value": <json> }
 
 // Execution completed
 { "type": "done", "result": { "state": "json"|"undefined", "value": <json> }, "logs": ["..."] }

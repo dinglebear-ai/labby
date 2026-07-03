@@ -493,3 +493,31 @@ impl CodeModeHost for NoopHost {
         &self.pool
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A host with NO decider (NoopHost does not override the journaling hooks)
+    /// uses the trait DEFAULT impls: `decide_step`/`decide_local` return
+    /// `Execute` and `record_step`/`record_local` are no-op `Ok(())`. This is
+    /// the write-free / standalone path — `codemode.step`'s `fn` and local
+    /// provider calls run normally without any durable journaling, exactly as
+    /// before the primitive existed.
+    #[tokio::test]
+    async fn default_step_and_local_hooks_execute_and_noop() {
+        let host = NoopHost::default();
+        let ctx = ExecCtx::none();
+        assert!(matches!(
+            host.decide_step(ctx, "s").await,
+            StepDecision::Execute
+        ));
+        assert!(host.record_step(ctx, &Value::Null).await.is_ok());
+        assert!(matches!(
+            host.decide_local(ctx, "state::writeFile", &Value::Null)
+                .await,
+            StepDecision::Execute
+        ));
+        assert!(host.record_local(ctx, &Value::Null).await.is_ok());
+    }
+}
