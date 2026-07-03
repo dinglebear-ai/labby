@@ -103,7 +103,14 @@ impl CodeModeHost for GatewayManager {
         // re-pausing; only genuinely-fresh destructive calls pause.
         if let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) {
             match decider
-                .decide(exec_id, ctx.seq, id, &params, upstream_tool.destructive, false)
+                .decide(
+                    exec_id,
+                    ctx.seq,
+                    id,
+                    &params,
+                    upstream_tool.destructive,
+                    false,
+                )
                 .await
             {
                 labby_codemode::DecideOutcome::Replay(value) => {
@@ -130,10 +137,7 @@ impl CodeModeHost for GatewayManager {
                 // Fall through to the real dispatch, then record the result.
                 labby_codemode::DecideOutcome::Execute => {}
             }
-            validate_code_mode_params_against_schema(
-                &params,
-                upstream_tool.input_schema.as_ref(),
-            )?;
+            validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
             let outcome = self
                 .dispatch_code_mode_upstream(upstream, tool, params)
                 .await?;
@@ -144,7 +148,10 @@ impl CodeModeHost for GatewayManager {
             // the run cannot silently proceed on unrecorded state. (SqliteDecider
             // already sets Error on `ValueTooLarge`; this covers every other
             // record failure too, and re-asserts Error idempotently.)
-            if let Err(err) = decider.record_result(exec_id, ctx.seq, &outcome.value).await {
+            if let Err(err) = decider
+                .record_result(exec_id, ctx.seq, &outcome.value)
+                .await
+            {
                 decider
                     .set_status(
                         exec_id,
@@ -195,7 +202,8 @@ impl CodeModeHost for GatewayManager {
             });
         }
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
-        self.dispatch_code_mode_upstream(upstream, tool, params).await
+        self.dispatch_code_mode_upstream(upstream, tool, params)
+            .await
     }
 
     async fn resolve_snippet(

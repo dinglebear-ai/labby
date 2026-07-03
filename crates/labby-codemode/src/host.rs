@@ -205,17 +205,11 @@ pub trait CodeModeDecider: Send + Sync {
     fn run_status<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, RunLifecycle>;
 
     /// The recorded error message for an `Error` run (audit / envelope).
-    fn run_error<'a>(
-        &'a self,
-        execution_id: &'a str,
-    ) -> BoxDecideFuture<'a, Option<String>>;
+    fn run_error<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, Option<String>>;
 
     /// Pending (awaiting-approval) calls of a paused run (port of
     /// `runtime.ts:640 listPending`).
-    fn list_pending<'a>(
-        &'a self,
-        execution_id: &'a str,
-    ) -> BoxDecideFuture<'a, Vec<PendingCall>>;
+    fn list_pending<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, Vec<PendingCall>>;
 
     /// Mark a run terminal with the given lifecycle status + optional error.
     /// Used for `Completed` after settle and `Rejected` from the reject action.
@@ -228,10 +222,7 @@ pub trait CodeModeDecider: Send + Sync {
 
     /// CAS a paused run `paused → running` (port of `runtime.ts:383 resume`).
     /// Returns `true` iff a paused row transitioned (loser gets `false`).
-    fn resume_to_running<'a>(
-        &'a self,
-        execution_id: &'a str,
-    ) -> BoxDecideFuture<'a, bool>;
+    fn resume_to_running<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, bool>;
 
     /// Reject a run, guarded so it only fires on a still-`paused` run (port of
     /// `runtime.ts:668 reject`). Unlike `set_status`, this cannot force-terminate

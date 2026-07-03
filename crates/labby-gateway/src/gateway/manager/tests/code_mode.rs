@@ -451,10 +451,7 @@ impl CodeModeDecider for SpyDecider {
         Box::pin(async move { None })
     }
 
-    fn list_pending<'a>(
-        &'a self,
-        _execution_id: &'a str,
-    ) -> BoxDecideFuture<'a, Vec<PendingCall>> {
+    fn list_pending<'a>(&'a self, _execution_id: &'a str) -> BoxDecideFuture<'a, Vec<PendingCall>> {
         Box::pin(async move { Vec::new() })
     }
 

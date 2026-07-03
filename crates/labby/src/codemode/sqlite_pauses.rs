@@ -298,43 +298,40 @@ impl CodeModePauseStore {
         let hmac_key = std::sync::Arc::new(codemode_hmac_key().to_vec());
         let path = db_path.clone();
 
-        let (write_pool, read_pool) =
-            tokio::task::spawn_blocking(move || -> Result<_, String> {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| format!("create_dir_all: {e}"))?;
-                }
+        let (write_pool, read_pool) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("create_dir_all: {e}"))?;
+            }
 
-                #[cfg(unix)]
-                create_db_file_0600(&path);
+            #[cfg(unix)]
+            create_db_file_0600(&path);
 
-                let write_manager =
-                    SqliteConnectionManager::file(&path).with_init(pragma_init(false));
-                let write_pool = Pool::builder()
-                    .max_size(1)
-                    .connection_timeout(std::time::Duration::from_secs(30))
-                    .build(write_manager)
-                    .map_err(|e| format!("build write pool: {e}"))?;
+            let write_manager = SqliteConnectionManager::file(&path).with_init(pragma_init(false));
+            let write_pool = Pool::builder()
+                .max_size(1)
+                .connection_timeout(std::time::Duration::from_secs(30))
+                .build(write_manager)
+                .map_err(|e| format!("build write pool: {e}"))?;
 
-                {
-                    let conn = write_pool
-                        .get()
-                        .map_err(|e| format!("get write conn: {e}"))?;
-                    migrate(&conn).map_err(|e| format!("migrate: {e}"))?;
-                }
+            {
+                let conn = write_pool
+                    .get()
+                    .map_err(|e| format!("get write conn: {e}"))?;
+                migrate(&conn).map_err(|e| format!("migrate: {e}"))?;
+            }
 
-                let read_manager =
-                    SqliteConnectionManager::file(&path).with_init(pragma_init(true));
-                let read_pool = Pool::builder()
-                    .max_size(4)
-                    .connection_timeout(std::time::Duration::from_secs(30))
-                    .build(read_manager)
-                    .map_err(|e| format!("build read pool: {e}"))?;
+            let read_manager = SqliteConnectionManager::file(&path).with_init(pragma_init(true));
+            let read_pool = Pool::builder()
+                .max_size(4)
+                .connection_timeout(std::time::Duration::from_secs(30))
+                .build(read_manager)
+                .map_err(|e| format!("build read pool: {e}"))?;
 
-                Ok((write_pool, read_pool))
-            })
-            .await
-            .map_err(|e| CodeModePauseStoreError::Internal(format!("db open join: {e}")))?
-            .map_err(CodeModePauseStoreError::Internal)?;
+            Ok((write_pool, read_pool))
+        })
+        .await
+        .map_err(|e| CodeModePauseStoreError::Internal(format!("db open join: {e}")))?
+        .map_err(CodeModePauseStoreError::Internal)?;
 
         Ok(Self {
             write_pool,
@@ -1077,8 +1074,14 @@ fn prune_terminal(conn: &Connection, keep: i64, protect_id: &str) -> rusqlite::R
         return Ok(());
     }
     for id in ids.into_iter().skip(keep as usize) {
-        conn.execute("DELETE FROM codemode_call_log WHERE run_id = ?1", params![id])?;
-        conn.execute("DELETE FROM codemode_runs WHERE execution_id = ?1", params![id])?;
+        conn.execute(
+            "DELETE FROM codemode_call_log WHERE run_id = ?1",
+            params![id],
+        )?;
+        conn.execute(
+            "DELETE FROM codemode_runs WHERE execution_id = ?1",
+            params![id],
+        )?;
     }
     Ok(())
 }
@@ -1290,7 +1293,10 @@ mod tests {
     #[tokio::test]
     async fn resume_to_running_cas_once() {
         let (store, _dir) = temp_store().await;
-        store.begin(sample_new_run("exec-cas")).await.expect("begin");
+        store
+            .begin(sample_new_run("exec-cas"))
+            .await
+            .expect("begin");
         // Not paused yet → CAS is a no-op.
         assert!(!store.resume_to_running("exec-cas").await.expect("cas"));
         store
@@ -1300,7 +1306,11 @@ mod tests {
         // First CAS wins, second loses.
         assert!(store.resume_to_running("exec-cas").await.expect("cas1"));
         assert!(!store.resume_to_running("exec-cas").await.expect("cas2"));
-        let run = store.load_run("exec-cas").await.expect("load").expect("some");
+        let run = store
+            .load_run("exec-cas")
+            .await
+            .expect("load")
+            .expect("some");
         assert_eq!(run.status, RunStatus::Running);
         assert!(run.verified);
     }
@@ -1308,7 +1318,10 @@ mod tests {
     #[tokio::test]
     async fn hmac_tamper_of_is_admin_makes_verified_false() {
         let (store, dir) = temp_store().await;
-        store.begin(sample_new_run("exec-tamper")).await.expect("begin");
+        store
+            .begin(sample_new_run("exec-tamper"))
+            .await
+            .expect("begin");
         // Flip is_admin directly in the raw file (bypassing the signer).
         let path = dir.path().join("codemode_pauses.db");
         let conn = Connection::open(&path).expect("raw open");
@@ -1323,7 +1336,10 @@ mod tests {
             .await
             .expect("load")
             .expect("some");
-        assert!(!run.verified, "flipped is_admin must fail HMAC verification");
+        assert!(
+            !run.verified,
+            "flipped is_admin must fail HMAC verification"
+        );
     }
 
     #[tokio::test]
@@ -1338,14 +1354,21 @@ mod tests {
         )
         .expect("tamper");
         drop(conn);
-        let run = store.load_run("exec-st").await.expect("load").expect("some");
+        let run = store
+            .load_run("exec-st")
+            .await
+            .expect("load")
+            .expect("some");
         assert!(!run.verified, "flipped status must fail HMAC verification");
     }
 
     #[tokio::test]
     async fn upsert_redacts_args_and_no_raw_secret_on_disk() {
         let (store, dir) = temp_store().await;
-        store.begin(sample_new_run("exec-red")).await.expect("begin");
+        store
+            .begin(sample_new_run("exec-red"))
+            .await
+            .expect("begin");
         store
             .upsert_log_entry(
                 "exec-red",
@@ -1402,7 +1425,10 @@ mod tests {
     #[tokio::test]
     async fn upsert_oversize_args_returns_value_too_large() {
         let (store, _dir) = temp_store().await;
-        store.begin(sample_new_run("exec-big")).await.expect("begin");
+        store
+            .begin(sample_new_run("exec-big"))
+            .await
+            .expect("begin");
         let big = "x".repeat(MAX_DURABLE_VALUE_BYTES + 10);
         let err = store
             .upsert_log_entry(
@@ -1447,16 +1473,16 @@ mod tests {
             .expect("get")
             .expect("some");
         assert_eq!(entry.state, LogState::Applied);
-        assert_eq!(
-            entry.redacted_result,
-            Some(serde_json::json!({"ok": true}))
-        );
+        assert_eq!(entry.redacted_result, Some(serde_json::json!({"ok": true})));
     }
 
     #[tokio::test]
     async fn ephemeral_result_is_not_stored() {
         let (store, _dir) = temp_store().await;
-        store.begin(sample_new_run("exec-eph")).await.expect("begin");
+        store
+            .begin(sample_new_run("exec-eph"))
+            .await
+            .expect("begin");
         store
             .upsert_log_entry(
                 "exec-eph",
@@ -1515,13 +1541,19 @@ mod tests {
     async fn expire_paused_flips_only_stale_rows() {
         let (store, _dir) = temp_store().await;
         // A stale paused run.
-        store.begin(sample_new_run("exec-old")).await.expect("begin");
+        store
+            .begin(sample_new_run("exec-old"))
+            .await
+            .expect("begin");
         store
             .set_status("exec-old", RunStatus::Paused, None)
             .await
             .expect("pause");
         // A fresh paused run.
-        store.begin(sample_new_run("exec-new")).await.expect("begin");
+        store
+            .begin(sample_new_run("exec-new"))
+            .await
+            .expect("begin");
         store
             .set_status("exec-new", RunStatus::Paused, None)
             .await
@@ -1536,7 +1568,11 @@ mod tests {
         let future = now_ms() + 1_000_000;
         let both = store.expire_paused(future).await.expect("expire both");
         assert_eq!(both, 2, "both stale paused runs expire → rejected");
-        let old = store.load_run("exec-old").await.expect("load").expect("some");
+        let old = store
+            .load_run("exec-old")
+            .await
+            .expect("load")
+            .expect("some");
         assert_eq!(old.status, RunStatus::Rejected);
         assert!(old.verified, "expired row re-signed and still verifies");
     }

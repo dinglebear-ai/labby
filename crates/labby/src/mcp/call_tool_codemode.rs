@@ -461,7 +461,9 @@ impl LabMcpServer {
                             "Code Mode run rejected. The pending destructive call was not executed.",
                             &serde_json::json!({ "status": "rejected", "execution_id": token }),
                         );
-                        return Ok(CallToolResult::success(vec![Content::text(env.to_string())]));
+                        return Ok(CallToolResult::success(vec![Content::text(
+                            env.to_string(),
+                        )]));
                     }
                     Ok(false) => {
                         let env = build_error(
@@ -657,13 +659,12 @@ impl LabMcpServer {
                 );
             }
         }
-        let broker = CodeModeBroker::new(Some(manager.as_ref())).with_execution_id(
-            if pause_capable {
+        let broker =
+            CodeModeBroker::new(Some(manager.as_ref())).with_execution_id(if pause_capable {
                 Some(execution_id.clone())
             } else {
                 None
-            },
-        );
+            });
         let before = self.snapshot_catalog().await;
         let mut response = match broker
             .execute(
@@ -748,11 +749,7 @@ impl LabMcpServer {
                         elapsed_ms,
                         "gateway codemode paused awaiting approval"
                     );
-                    return Ok(build_pause_envelope(
-                        service,
-                        &execution_id,
-                        &pending,
-                    ));
+                    return Ok(build_pause_envelope(service, &execution_id, &pending));
                 }
                 labby_codemode::RunLifecycle::Error => {
                     let message = decider
@@ -958,9 +955,7 @@ fn build_pause_envelope(
 ) -> CallToolResult {
     let pending_json: Vec<Value> = pending
         .iter()
-        .map(|p| {
-            serde_json::json!({ "seq": p.seq, "tool_id": p.tool_id })
-        })
+        .map(|p| serde_json::json!({ "seq": p.seq, "tool_id": p.tool_id }))
         .collect();
     let env = build_error_extra(
         service,

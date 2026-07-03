@@ -144,8 +144,15 @@ impl CodeModeDecider for SqliteDecider {
         ephemeral: bool,
     ) -> BoxDecideFuture<'a, DecideOutcome> {
         Box::pin(async move {
-            self.decide_inner(execution_id, seq, tool_id, args, requires_approval, ephemeral)
-                .await
+            self.decide_inner(
+                execution_id,
+                seq,
+                tool_id,
+                args,
+                requires_approval,
+                ephemeral,
+            )
+            .await
         })
     }
 
@@ -189,19 +196,10 @@ impl CodeModeDecider for SqliteDecider {
     }
 
     fn run_error<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, Option<String>> {
-        Box::pin(async move {
-            self.store
-                .run_error(execution_id)
-                .await
-                .ok()
-                .flatten()
-        })
+        Box::pin(async move { self.store.run_error(execution_id).await.ok().flatten() })
     }
 
-    fn list_pending<'a>(
-        &'a self,
-        execution_id: &'a str,
-    ) -> BoxDecideFuture<'a, Vec<PendingCall>> {
+    fn list_pending<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, Vec<PendingCall>> {
         Box::pin(async move {
             self.store
                 .list_pending(execution_id)
@@ -560,7 +558,14 @@ mod tests {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e1").await;
         let out = d
-            .decide("e1", 0, "svc::read", &serde_json::json!({"q": 1}), false, false)
+            .decide(
+                "e1",
+                0,
+                "svc::read",
+                &serde_json::json!({"q": 1}),
+                false,
+                false,
+            )
             .await;
         assert!(matches!(out, DecideOutcome::Execute));
         let entry = d.store.get_log_entry("e1", 0).await.unwrap().unwrap();
@@ -586,12 +591,19 @@ mod tests {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e3").await;
         // First destructive call pauses.
-        let _ = d
+        let _outcome = d
             .decide("e3", 0, "svc::delete", &serde_json::json!({}), true, false)
             .await;
         // A later call at seq 1 gets Pause and journals nothing.
         let out = d
-            .decide("e3", 1, "svc::read", &serde_json::json!({"x": 2}), false, false)
+            .decide(
+                "e3",
+                1,
+                "svc::read",
+                &serde_json::json!({"x": 2}),
+                false,
+                false,
+            )
             .await;
         assert!(matches!(out, DecideOutcome::Pause));
         assert!(d.store.get_log_entry("e3", 1).await.unwrap().is_none());
@@ -602,7 +614,7 @@ mod tests {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e4").await;
         let args = serde_json::json!({"q": "x"});
-        let _ = d.decide("e4", 0, "svc::read", &args, false, false).await;
+        let _outcome = d.decide("e4", 0, "svc::read", &args, false, false).await;
         d.record_result("e4", 0, &serde_json::json!({"ok": true}))
             .await
             .unwrap();
@@ -618,15 +630,29 @@ mod tests {
     async fn mismatched_args_at_seq_diverges_and_errors_run() {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e5").await;
-        let _ = d
-            .decide("e5", 0, "svc::read", &serde_json::json!({"q": "x"}), false, false)
+        let _outcome = d
+            .decide(
+                "e5",
+                0,
+                "svc::read",
+                &serde_json::json!({"q": "x"}),
+                false,
+                false,
+            )
             .await;
         d.record_result("e5", 0, &serde_json::json!({"ok": 1}))
             .await
             .unwrap();
         // Different args at the same seq → hard divergence.
         let out = d
-            .decide("e5", 0, "svc::read", &serde_json::json!({"q": "DIFFERENT"}), false, false)
+            .decide(
+                "e5",
+                0,
+                "svc::read",
+                &serde_json::json!({"q": "DIFFERENT"}),
+                false,
+                false,
+            )
             .await;
         assert!(matches!(out, DecideOutcome::Diverge(_)));
         let run = d.store.load_run("e5").await.unwrap().unwrap();
@@ -639,7 +665,14 @@ mod tests {
         begin_run(&d, "e6").await;
         let big = "z".repeat(super::super::sqlite_pauses::MAX_DURABLE_VALUE_BYTES + 10);
         let out = d
-            .decide("e6", 0, "svc::do", &serde_json::json!({"blob": big}), false, false)
+            .decide(
+                "e6",
+                0,
+                "svc::do",
+                &serde_json::json!({"blob": big}),
+                false,
+                false,
+            )
             .await;
         assert!(matches!(out, DecideOutcome::Fail(_)));
         let run = d.store.load_run("e6").await.unwrap().unwrap();
@@ -656,7 +689,14 @@ mod tests {
         begin_run(&d, "e-rec").await;
         // Fresh non-destructive call → journals + executes (state = executing).
         let out = d
-            .decide("e-rec", 0, "svc::read", &serde_json::json!({"q": 1}), false, false)
+            .decide(
+                "e-rec",
+                0,
+                "svc::read",
+                &serde_json::json!({"q": 1}),
+                false,
+                false,
+            )
             .await;
         assert!(matches!(out, DecideOutcome::Execute));
         // Record an oversize result → record_result returns Err.
@@ -733,7 +773,7 @@ mod tests {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e8").await;
         // Pause it (a destructive fresh call).
-        let _ = d
+        let _outcome = d
             .decide("e8", 0, "svc::delete", &serde_json::json!({}), true, false)
             .await;
         assert_eq!(
@@ -769,8 +809,15 @@ mod tests {
     async fn maybe_expire_rejects_stale_paused_run() {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e-exp").await;
-        let _ = d
-            .decide("e-exp", 0, "svc::delete", &serde_json::json!({}), true, false)
+        let _outcome = d
+            .decide(
+                "e-exp",
+                0,
+                "svc::delete",
+                &serde_json::json!({}),
+                true,
+                false,
+            )
             .await;
         assert_eq!(d.run_status("e-exp").await, RunLifecycle::Paused);
         // Force expiry directly on the store with a future cutoff (bypass the
@@ -785,7 +832,7 @@ mod tests {
     async fn reject_sets_rejected_only_when_paused() {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e9").await;
-        let _ = d
+        let _outcome = d
             .decide("e9", 0, "svc::delete", &serde_json::json!({}), true, false)
             .await;
         // Reject guarded on Paused → succeeds.
@@ -806,8 +853,15 @@ mod tests {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e-rej").await;
         // Pause via a destructive call.
-        let _ = d
-            .decide("e-rej", 0, "svc::delete", &serde_json::json!({}), true, false)
+        let _outcome = d
+            .decide(
+                "e-rej",
+                0,
+                "svc::delete",
+                &serde_json::json!({}),
+                true,
+                false,
+            )
             .await;
         assert_eq!(d.run_status("e-rej").await, RunLifecycle::Paused);
         // reject_paused on a paused run → true + Rejected, pending entry reverted.
@@ -844,10 +898,6 @@ mod tests {
     #[tokio::test]
     async fn reject_paused_is_a_noop_on_an_unknown_run() {
         let (d, _dir) = fresh_decider().await;
-        assert!(
-            !d.reject_paused("nope", None)
-                .await
-                .expect("reject_paused")
-        );
+        assert!(!d.reject_paused("nope", None).await.expect("reject_paused"));
     }
 }
