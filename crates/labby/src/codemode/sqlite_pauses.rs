@@ -136,6 +136,14 @@ pub enum LogState {
     Executing,
     Applied,
     Reverted,
+    /// A corrupt/unrecognized state string read back from disk. Fails closed:
+    /// the decider treats an `Unknown`-state entry as replay divergence and
+    /// refuses to advance the run, mirroring the run-status path where a
+    /// tampered row reads back as `verified == false`. Never written by the
+    /// store — it exists only so a corrupt on-disk value cannot be laundered
+    /// into a valid terminal state (e.g. `Reverted`) that would silently
+    /// re-journal and re-dispatch the call.
+    Unknown,
 }
 
 impl LogState {
@@ -146,17 +154,22 @@ impl LogState {
             LogState::Executing => "executing",
             LogState::Applied => "applied",
             LogState::Reverted => "reverted",
+            LogState::Unknown => "unknown",
         }
     }
 
+    /// Parse a persisted state string. An unrecognized value maps to
+    /// [`LogState::Unknown`] (fail closed) rather than `None` so `row_to_log_entry`
+    /// can surface corruption to the decider instead of silently defaulting to a
+    /// valid terminal state.
     #[must_use]
-    pub fn parse_state(s: &str) -> Option<Self> {
+    pub fn parse_state(s: &str) -> Self {
         match s {
-            "pending" => Some(LogState::Pending),
-            "executing" => Some(LogState::Executing),
-            "applied" => Some(LogState::Applied),
-            "reverted" => Some(LogState::Reverted),
-            _ => None,
+            "pending" => LogState::Pending,
+            "executing" => LogState::Executing,
+            "applied" => LogState::Applied,
+            "reverted" => LogState::Reverted,
+            _ => LogState::Unknown,
         }
     }
 }
@@ -970,7 +983,10 @@ fn row_to_log_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<LogEntry> {
         .as_deref()
         .and_then(|s| serde_json::from_str::<Value>(s).ok());
     let state_str: String = row.get("state")?;
-    let state = LogState::parse_state(&state_str).unwrap_or(LogState::Reverted);
+    // A corrupt/unknown on-disk state is surfaced as `LogState::Unknown` (fail
+    // closed) — NOT laundered into a valid terminal state. The decider refuses
+    // to replay a run whose log entry reads back Unknown.
+    let state = LogState::parse_state(&state_str);
     Ok(LogEntry {
         seq: row.get("seq")?,
         tool_id: row.get("tool_id")?,
@@ -1263,9 +1279,12 @@ mod tests {
             LogState::Applied,
             LogState::Reverted,
         ] {
-            assert_eq!(LogState::parse_state(s.as_str()), Some(s));
+            assert_eq!(LogState::parse_state(s.as_str()), s);
         }
-        assert_eq!(LogState::parse_state("bogus"), None);
+        // A corrupt/unknown state fails closed to `Unknown` rather than being
+        // laundered into a valid terminal state.
+        assert_eq!(LogState::parse_state("bogus"), LogState::Unknown);
+        assert_eq!(LogState::Unknown.as_str(), "unknown");
     }
 
     #[test]
@@ -1360,6 +1379,62 @@ mod tests {
             .expect("load")
             .expect("some");
         assert!(!run.verified, "flipped status must fail HMAC verification");
+    }
+
+    #[tokio::test]
+    async fn hmac_tamper_of_route_scope_makes_verified_false() {
+        // `route_scope` is part of the HMAC-signed tuple (defends the F2
+        // cross-route resume guard): a raw-file edit that moves a run into a
+        // different route scope must fail verification so the resume/reject
+        // handlers fail closed.
+        let (store, dir) = temp_store().await;
+        store.begin(sample_new_run("exec-rs")).await.expect("begin");
+        let path = dir.path().join("codemode_pauses.db");
+        let conn = Connection::open(&path).expect("raw open");
+        conn.execute(
+            "UPDATE codemode_runs SET route_scope = 'protected:evil' \
+             WHERE execution_id = 'exec-rs'",
+            [],
+        )
+        .expect("tamper");
+        drop(conn);
+        let run = store
+            .load_run("exec-rs")
+            .await
+            .expect("load")
+            .expect("some");
+        assert!(
+            !run.verified,
+            "flipped route_scope must fail HMAC verification"
+        );
+    }
+
+    #[tokio::test]
+    async fn hmac_tamper_of_capability_fingerprint_makes_verified_false() {
+        // `capability_filter_fingerprint` is part of the HMAC-signed tuple
+        // (defends the V1 live-authorization resume gate): a raw-file edit that
+        // rewrites the recorded fingerprint must fail verification so a resume
+        // cannot be authorized against a forged capability set.
+        let (store, dir) = temp_store().await;
+        store.begin(sample_new_run("exec-fp")).await.expect("begin");
+        let path = dir.path().join("codemode_pauses.db");
+        let conn = Connection::open(&path).expect("raw open");
+        conn.execute(
+            "UPDATE codemode_runs SET capability_filter_fingerprint = 'forged' \
+             WHERE execution_id = 'exec-fp'",
+            [],
+        )
+        .expect("tamper");
+        drop(conn);
+        let run = store
+            .load_run("exec-fp")
+            .await
+            .expect("load")
+            .expect("some");
+        assert!(
+            !run.verified,
+            "flipped capability_filter_fingerprint must fail HMAC verification"
+        );
     }
 
     #[tokio::test]

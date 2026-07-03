@@ -384,6 +384,15 @@ impl SqliteDecider {
                         )
                         .await
                     }
+                    // A corrupt/unrecognized on-disk state (`LogState::Unknown`)
+                    // fails closed: refuse to replay a run with a corrupt log
+                    // entry rather than laundering it into `Reverted` and
+                    // re-dispatching the call. Mirrors the run-status path, where
+                    // a tampered row reads back `verified == false` and the run
+                    // reads as `RunLifecycle::Unknown` (host.rs).
+                    LogState::Unknown => {
+                        DecideOutcome::Diverge("corrupt log entry state".to_string())
+                    }
                 }
             }
             Ok(None) => {
@@ -899,5 +908,60 @@ mod tests {
     async fn reject_paused_is_a_noop_on_an_unknown_run() {
         let (d, _dir) = fresh_decider().await;
         assert!(!d.reject_paused("nope", None).await.expect("reject_paused"));
+    }
+
+    // ── Fail-closed on a corrupt log-entry state ──
+
+    #[tokio::test]
+    async fn corrupt_log_entry_state_reads_back_unknown_and_diverges_on_decide() {
+        // A corrupt/unknown on-disk `state` string must (a) read back as
+        // `LogState::Unknown` rather than being laundered into a valid terminal
+        // state, and (b) make `decide()` fail closed with `Diverge` on replay —
+        // refusing to re-journal and re-dispatch a call whose recorded state is
+        // corrupt. Mirrors the run-status path where a tampered row reads back
+        // `verified == false`.
+        let (d, dir) = fresh_decider().await;
+        begin_run(&d, "e-corrupt").await;
+        // Journal a fresh non-destructive call at seq 0 (state = executing),
+        // then record its result so it becomes a normal `applied` entry.
+        let args = serde_json::json!({"q": 1});
+        let _outcome = d
+            .decide("e-corrupt", 0, "svc::read", &args, false, false)
+            .await;
+        d.record_result("e-corrupt", 0, &serde_json::json!({"ok": true}))
+            .await
+            .expect("record");
+
+        // Corrupt the entry's state directly in the raw file (bypassing the store).
+        let path = dir.path().join("codemode_pauses.db");
+        let conn = rusqlite::Connection::open(&path).expect("raw open");
+        conn.execute(
+            "UPDATE codemode_call_log SET state = 'bogus' WHERE run_id = 'e-corrupt'",
+            [],
+        )
+        .expect("corrupt state");
+        drop(conn);
+
+        // (a) reads back Unknown
+        let entry = d
+            .store
+            .get_log_entry("e-corrupt", 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            entry.state,
+            LogState::Unknown,
+            "a corrupt state string must read back as Unknown, not a valid terminal state"
+        );
+
+        // (b) re-deciding the same seq with matching args diverges (fails closed)
+        let out = d
+            .decide("e-corrupt", 0, "svc::read", &args, false, false)
+            .await;
+        assert!(
+            matches!(out, DecideOutcome::Diverge(_)),
+            "a corrupt log-entry state must diverge on replay, got {out:?}"
+        );
     }
 }
