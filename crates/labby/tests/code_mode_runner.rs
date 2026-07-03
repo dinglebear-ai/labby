@@ -1223,6 +1223,70 @@ fn run_once(
     msg
 }
 
+fn run_once_expect_error(code: &str, timeout_ms: u64) -> Value {
+    let (mut child, mut stdin, mut stdout) = spawn_pooled_runner();
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "start", "code": code, "timeout_ms": timeout_ms })
+    )
+    .expect("write start");
+    let msg = read_protocol_line(&mut stdout);
+    assert_eq!(
+        msg["type"], "error",
+        "expected error from snippet, got: {msg}"
+    );
+    drop(stdin);
+    child.kill().expect("kill runner");
+    drop(child.wait());
+    msg
+}
+
+#[test]
+fn code_mode_runner_busy_loop_surfaces_timeout() {
+    let error = run_once_expect_error("async () => { while (true) {} }", 100);
+    assert_eq!(error["kind"], "timeout");
+}
+
+#[test]
+fn code_mode_runner_memory_growth_is_bounded() {
+    let error = run_once_expect_error(
+        r#"async () => {
+            const allocations = [];
+            while (true) allocations.push(new ArrayBuffer(1024 * 1024));
+        }"#,
+        1_000,
+    );
+    assert!(
+        matches!(error["kind"].as_str(), Some("server_error" | "timeout")),
+        "memory pressure must surface as a bounded runner error: {error}"
+    );
+}
+
+#[test]
+fn code_mode_runner_rejects_non_json_top_level_result() {
+    let error = run_once_expect_error("async () => function nope() {}", 1_000);
+    assert_eq!(error["kind"], "invalid_param");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Code Mode result must be JSON-serializable")
+    );
+}
+
+#[test]
+fn code_mode_runner_rejects_bigint_tool_params_as_invalid_param() {
+    let error = run_once_expect_error(r#"async () => callTool("lab::bad", { x: 1n })"#, 1_000);
+    assert_eq!(error["kind"], "invalid_param");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("callTool params must be JSON-serializable")
+    );
+}
+
 /// CRITICAL state-isolation test. Run snippet A on a pooled runner that pollutes
 /// the JS global scope and registers a pending tool call, then run snippet B on
 /// the SAME reused process and assert B sees a pristine environment: no leaked

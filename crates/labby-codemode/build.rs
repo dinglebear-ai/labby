@@ -1,7 +1,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
-    let plugin_build_root = PluginBuildRoot::create(&out)?;
+    let mut plugin_build_root = PluginBuildRoot::create(&out)?;
     let staged_plugin = stage_plugin_crate(&manifest_dir, plugin_build_root.path())?;
     let plugin_manifest = staged_plugin.join("Cargo.toml");
     let plugin_target = plugin_build_root.path().join("target");
@@ -52,9 +52,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::read(plugin_target.join("wasm32-wasip1/release/labby_codemode_javy_plugin.wasm"))?;
     let initialized = labby_codemode_build_support::preinitialize_javy_plugin(&raw)?;
     let actual = labby_codemode_build_support::sha256_hex(&initialized);
-    let expected = std::fs::read_to_string("plugin.sha256").unwrap_or_default();
+    let expected = std::fs::read_to_string(manifest_dir.join("plugin.sha256"))?;
     let expected = expected.trim();
-    if !expected.is_empty() && expected != actual {
+    if expected.is_empty() {
+        return Err("plugin.sha256 must not be empty".into());
+    }
+    if expected != actual {
         return Err(format!(
             "preinitialized plugin hash mismatch: expected {expected}, got {actual}"
         )
@@ -64,6 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(out.join("plugin.wasm"), initialized)?;
     println!("cargo:rustc-env=LABBY_CODEMODE_PLUGIN_SHA256={actual}");
     println!("cargo:warning=labby Code Mode plugin sha256 {actual}");
+    plugin_build_root.cleanup();
     Ok(())
 }
 
@@ -74,7 +78,7 @@ fn preserve_env(command: &mut std::process::Command, key: &str) {
 }
 
 struct PluginBuildRoot {
-    path: std::path::PathBuf,
+    path: Option<std::path::PathBuf>,
 }
 
 impl PluginBuildRoot {
@@ -84,17 +88,30 @@ impl PluginBuildRoot {
             std::fs::remove_dir_all(&path)?;
         }
         std::fs::create_dir_all(&path)?;
-        Ok(Self { path })
+        Ok(Self { path: Some(path) })
     }
 
     fn path(&self) -> &std::path::Path {
-        &self.path
+        self.path.as_deref().expect("plugin build root exists")
+    }
+
+    fn cleanup(&mut self) {
+        if let Some(path) = self.path.take()
+            && let Err(err) = std::fs::remove_dir_all(&path)
+        {
+            println!(
+                "cargo:warning=failed to remove Code Mode plugin build root {}: {err}",
+                path.display()
+            );
+        }
     }
 }
 
 impl Drop for PluginBuildRoot {
     fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.path));
+        if let Some(path) = self.path.take() {
+            drop(std::fs::remove_dir_all(path));
+        }
     }
 }
 

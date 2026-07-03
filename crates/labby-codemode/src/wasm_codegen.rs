@@ -17,11 +17,23 @@ globalThis.__labSnippetMaxDepth = 8;
 globalThis.__labSnippetMaxResolves = 32;
 globalThis.__labSnippetMaxBytes = 262144;
 {codec}
+globalThis.__labEncodeJsonValue = (label, value) => {{
+  try {{
+    const encoded = __labEncodeResult(value);
+    const text = JSON.stringify(encoded);
+    if (text === undefined) throw new TypeError(label + " must be JSON-serializable");
+    return JSON.parse(text);
+  }} catch (error) {{
+    const message = String(error && error.message || error);
+    if (message.indexOf("JSON-serializable") !== -1) throw error;
+    throw new TypeError(label + " must be JSON-serializable: " + message);
+  }}
+}};
 globalThis.callTool = (id, params = {{}}) => {{
   if (typeof id !== "string" || id.trim() === "") throw new TypeError("callTool id must be a non-empty string");
   if (params === null || typeof params !== "object" || Array.isArray(params)) throw new TypeError("callTool params must be a JSON object");
   return new Promise((resolve, reject) => {{
-    const seq = globalThis.__labEmitToolCall(JSON.stringify({{ id, params: __labEncodeResult(params) }}));
+    const seq = globalThis.__labEmitToolCall(JSON.stringify({{ id, params: __labEncodeJsonValue("callTool params", params) }}));
     globalThis.__labPendingToolCalls.set(seq, {{ kind: "tool", resolve, reject }});
   }});
 }};
@@ -43,7 +55,7 @@ globalThis.__labRunSnippet = (name, input = {{}}) => {{
   if (globalThis.__labSnippetResolveCount >= globalThis.__labSnippetMaxResolves) return Promise.reject(new Error(JSON.stringify({{kind: "snippet_resolve_limit", message: "snippet resolve limit exceeded"}})));
   globalThis.__labSnippetResolveCount++;
   return new Promise((resolve, reject) => {{
-    const seq = globalThis.__labEmitSnippetResolve(JSON.stringify({{ name, input: __labEncodeResult(input) }}));
+    const seq = globalThis.__labEmitSnippetResolve(JSON.stringify({{ name, input: __labEncodeJsonValue("codemode.run input", input) }}));
     globalThis.__labPendingToolCalls.set(seq, {{ kind: "snippet", name, resolve, reject }});
   }});
 }};
@@ -82,9 +94,14 @@ globalThis.__labSettlePendingOperation = (message) => {{
 globalThis.__labSettleToolCall = globalThis.__labSettlePendingOperation;
 globalThis.__labEmitSuccess = (value) => {{
   try {{
-    globalThis.__labEmitDone(JSON.stringify({{ result: value, has_result: value !== undefined }}));
+    if (value === undefined) {{
+      globalThis.__labEmitDone(JSON.stringify({{ has_result: false }}));
+      return;
+    }}
+    globalThis.__labEmitDone(JSON.stringify({{ result: __labEncodeJsonValue("Code Mode result", value), has_result: true }}));
   }} catch (error) {{
-    const message = "Code Mode result must be JSON-serializable: " + String(error && error.message || error);
+    const raw = String(error && error.message || error);
+    const message = raw.indexOf("Code Mode result must be JSON-serializable") !== -1 ? raw : "Code Mode result must be JSON-serializable: " + raw;
     globalThis.__labEmitDone(JSON.stringify({{ error: message }}));
   }}
 }};
@@ -101,13 +118,21 @@ globalThis.__labMainPromise = (async () => {{
     )
 }
 
+#[cfg(test)]
 pub(crate) async fn compile_code_mode_wasm(
     plugin: &javy_codegen::Plugin,
     code: &str,
     proxy: &str,
 ) -> Result<Vec<u8>> {
     let source = wrap_code_mode_for_wasm(code, proxy);
-    let js = JS::from_string(source);
+    compile_wrapped_code_mode_wasm(plugin, &source).await
+}
+
+pub(crate) async fn compile_wrapped_code_mode_wasm(
+    plugin: &javy_codegen::Plugin,
+    source: &str,
+) -> Result<Vec<u8>> {
+    let js = JS::from_string(source.to_string());
     let mut generator = Generator::new(plugin.clone());
     generator
         .linking(LinkingKind::Dynamic)

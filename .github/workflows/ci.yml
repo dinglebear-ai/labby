@@ -394,6 +394,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - name: Install Code Mode Wasm target
+        shell: pwsh
+        run: rustup target add wasm32-wasip1
       - name: Prune persistent Windows build caches
         shell: pwsh
         run: |
@@ -672,6 +675,8 @@ jobs:
           name: gateway-admin-out
           path: apps/gateway-admin/out
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+        with:
+          targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           save-if: true

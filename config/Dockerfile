@@ -6,6 +6,9 @@ FROM rust:1-slim AS builder
 
 WORKDIR /build
 
+COPY rust-toolchain.toml ./
+RUN rustup target add wasm32-wasip1
+
 # GitHub's container builder has less memory than the release-smoke runners.
 # Keep the container release binary optimized but avoid ThinLTO/codegen-units=1
 # peak memory during the final link.

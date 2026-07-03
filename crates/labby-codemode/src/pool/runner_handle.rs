@@ -256,6 +256,13 @@ impl PooledRunner {
         }
     }
 
+    /// Test-only: emits one blank stdout protocol frame, then stays alive long
+    /// enough for the parent to classify the frame as a protocol violation.
+    #[cfg(all(test, not(windows)))]
+    pub(crate) fn spawn_stub_blank_protocol_frame() -> Result<Self, ToolError> {
+        Self::spawn_stub_command("sh", &["-c", "printf '\\n'; sleep 3600"])
+    }
+
     #[cfg(test)]
     fn spawn_stub_command(program: &str, args: &[&str]) -> Result<Self, ToolError> {
         let temp_dir = tempfile::TempDir::new().map_err(|err| ToolError::Sdk {

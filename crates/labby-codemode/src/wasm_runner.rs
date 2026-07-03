@@ -14,7 +14,7 @@ use crate::error::ToolError;
 use crate::protocol::CodeModeRunnerResult;
 use crate::runner_io::runner_read_input_blocking;
 use crate::wasm_bridge::{WasmRunState, install_lab_imports, settle_pending_operation};
-use crate::wasm_codegen::{compile_code_mode_wasm, wrap_code_mode_for_wasm};
+use crate::wasm_codegen::{compile_wrapped_code_mode_wasm, wrap_code_mode_for_wasm};
 use crate::wasm_plugin::{
     CODE_MODE_WASM_DEFAULT_FUEL, CODE_MODE_WASM_EPOCH_TICK_MS, CODE_MODE_WASM_MEMORY_LIMIT_BYTES,
     CODE_MODE_WASM_PLUGIN_HASH, WasmPlugin, load_wasm_plugin, wasm_limits_disabled,
@@ -82,8 +82,7 @@ impl WasmRunner {
         } else {
             let wasm = generate_wasm_on_blocking_thread(
                 self.plugin.plugin.clone(),
-                code.to_string(),
-                proxy.to_string(),
+                wrapped.clone(),
                 timeout.saturating_sub(Duration::from_millis(50)),
             )?;
             let compile_started = std::time::Instant::now();
@@ -179,8 +178,7 @@ impl WasmRunner {
 
 fn generate_wasm_on_blocking_thread(
     plugin: javy_codegen::Plugin,
-    code: String,
-    proxy: String,
+    source: String,
     timeout: Duration,
 ) -> Result<Vec<u8>, ToolError> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -193,7 +191,7 @@ fn generate_wasm_on_blocking_thread(
                 message: format!("failed to create Code Mode Wasm codegen runtime: {err}"),
             })
             .and_then(|rt| {
-                rt.block_on(compile_code_mode_wasm(&plugin, &code, &proxy))
+                rt.block_on(compile_wrapped_code_mode_wasm(&plugin, &source))
                     .map_err(|err| ToolError::Sdk {
                         sdk_kind: "invalid_param".to_string(),
                         message: format!("failed to generate Code Mode Wasm module: {err}"),

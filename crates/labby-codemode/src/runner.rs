@@ -1,7 +1,7 @@
 //! Code Mode runner subprocess entry point (`internal code-mode-runner`):
 //! the in-process Javy/QuickJS stdio loop.
 
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter};
 use std::process::ExitCode;
 
 use serde_json::Value;
@@ -9,6 +9,7 @@ use serde_json::Value;
 use super::protocol::{
     CodeModeRunnerInput, CodeModeRunnerOutput, CodeModeRunnerState, RUNNER_STATE,
 };
+use super::runner_io::runner_emit_blocking;
 
 pub fn run_code_mode_runner_stdio() -> ExitCode {
     // Security: prevent /proc/<pid>/environ readback of the runner process.
@@ -60,7 +61,7 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             Err(err) => {
-                drop(runner_emit(CodeModeRunnerOutput::Error {
+                drop(runner_emit_blocking(CodeModeRunnerOutput::Error {
                     kind: err.kind,
                     message: err.message,
                     runner_unhealthy: err.runner_unhealthy,
@@ -359,27 +360,12 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
             .map_err(CodeModeRunnerError::from)
     })?;
 
-    runner_emit(CodeModeRunnerOutput::Done {
+    runner_emit_blocking(CodeModeRunnerOutput::Done {
         result,
         logs: Vec::new(),
     })
     .map_err(CodeModeRunnerError::from)?;
     Ok(RunnerLoopOutcome::Completed)
-}
-
-fn runner_emit(output: CodeModeRunnerOutput) -> Result<(), String> {
-    RUNNER_STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let state = state
-            .as_mut()
-            .ok_or_else(|| "runner state is not initialized".to_string())?;
-        serde_json::to_writer(&mut state.writer, &output).map_err(|err| err.to_string())?;
-        state
-            .writer
-            .write_all(b"\n")
-            .map_err(|err| err.to_string())?;
-        state.writer.flush().map_err(|err| err.to_string())
-    })
 }
 
 /// Distinguishes a clean end-of-input (EOF on stdin — the parent dropped this
@@ -391,8 +377,6 @@ enum RunnerReadError {
     /// Any other failure (I/O error, malformed protocol JSON, uninitialized state).
     Other(String),
 }
-
-impl RunnerReadError {}
 
 fn runner_read_input() -> Result<CodeModeRunnerInput, RunnerReadError> {
     RUNNER_STATE.with(|state| {

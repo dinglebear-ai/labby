@@ -74,7 +74,7 @@ jobs:
           path: apps/gateway-admin/out
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},wasm32-wasip1
 
       - name: Install cross
         if: matrix.use-cross == true

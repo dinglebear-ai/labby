@@ -56,6 +56,8 @@ jobs:
       - uses: ./.github/actions/build-gateway-admin
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+        with:
+          targets: wasm32-wasip1
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
 

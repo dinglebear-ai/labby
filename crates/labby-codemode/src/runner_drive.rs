@@ -307,10 +307,6 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             );
                         }
                     };
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-
                     let msg = match serde_json::from_str::<CodeModeRunnerOutput>(&line) {
                         Ok(msg) => msg,
                         Err(err) => {
@@ -1179,6 +1175,29 @@ mod tests {
             }
             DriveOutcome::Completed(_) | DriveOutcome::ExecutionError(_) => {
                 panic!("a never-replying runner must time out as RunnerUnhealthy")
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn drive_runner_rejects_empty_stdout_protocol_frame() {
+        let broker: CodeModeBroker<'_, NoopHost> = CodeModeBroker::new(None);
+        let mut runner =
+            PooledRunner::spawn_stub_blank_protocol_frame().expect("spawn blank-frame stub");
+        let outcome = broker
+            .drive_runner(&mut runner, &test_config(Duration::from_secs(5)))
+            .await;
+        match outcome {
+            DriveOutcome::RunnerUnhealthy(err) => {
+                assert_eq!(err.kind(), "internal_error");
+                assert!(
+                    err.to_string()
+                        .contains("Code Mode runner emitted invalid protocol JSON")
+                );
+            }
+            DriveOutcome::Completed(_) | DriveOutcome::ExecutionError(_) => {
+                panic!("empty stdout protocol frame must evict the runner")
             }
         }
     }
