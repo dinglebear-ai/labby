@@ -103,3 +103,15 @@ Produced an implementation plan for issue #167, ran a 4-agent engineering review
 1. Confirm CI green on the final push (6f3e9859) incl. the Windows self-hosted Test job.
 2. Decide whether to mark PR #182 ready-for-review / merge, or keep draft pending lab-qy0e6.
 3. Follow-up work: lab-qy0e6 (`codemode.step()`), an end-to-end MCP resume/reject harness test, and the dependabot advisory.
+
+---
+
+## Addendum — epic finished (no deferrals)
+
+After the initial closeout, the three items that had been deferred were completed in-PR (user directive: finish the whole epic). PR #182 HEAD `9af86d9a`, 29 feature commits.
+
+1. **`codemode.step(name, fn)`** — replaced the stub (`Promise.resolve().then(fn)`) with a real two-phase determinism primitive: new protocol events `StepBegin`/`StepResult` (out) + `StepDecision`/`StepRecorded` (in), `CodeModeHost::decide_step`/`record_step` (+ `decide_local`/`record_local`) routed through the injected `Arc<dyn CodeModeDecider>`. Local `state`/`git` providers are now journaled **ephemeral** (re-execute on replay) and the fail-closed pause-capability exclusion was lifted. Real-runner tests added.
+2. **Type-hardening of the security spine** — `verified` made unforgeable via `AuthLoad::{Missing,Tampered,Ok(VerifiedAuth)}` (a `Some`/`Ok` can no longer carry a tampered row); `McpRouteScope::from_label` round-trip anchors the cross-route guard; `DecideOutcome::Fail(FailReason)` preserves error taxonomy (`ValueTooLarge → invalid_param`); `NewLogEntry.seq` → `u64`; `Approval`/`Journaling` enums replace `decide`'s adjacent bools. Behavior-preserving (proven by existing gate tests) + new pinning tests.
+3. **True runner-level e2e** — `crates/labby/tests/code_mode_runner.rs`: real runner + real `SqliteDecider` over a temp DB, inline ~40-line host glue mirroring `code_mode_host.rs`/`call_tool_codemode.rs` (cited to prevent drift). Tests: swallowed-pause dispatches nothing + ends paused (C1), resume replays applied calls + executes approved destructive once, step replays recorded value. Full-stack Option A is structurally impossible (crate-private `call_tool_codemode_impl` vs. the runner only spawning under `tests/`) — documented.
+
+**Final verification:** `cargo fmt --all --check` OK; `RUSTFLAGS="-D warnings" cargo check --workspace --all-features --all-targets` clean; `cargo nextest run --workspace --all-features` → **2428 passed, 13 skipped**; `just deny` ok. Beads: `lab-qy0e6` (codemode.step follow-up) closed as done-in-PR; epic `lab-yp0s2` + children ready to close on merge. Only tier-d compensating rollback remains out of scope (as the epic itself specifies).
