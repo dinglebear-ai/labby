@@ -169,7 +169,7 @@ systemd = ["dep:sd-notify"]
 # (`codemode_test_harness`) to integration tests in `tests/`. Requires
 # `gateway` for the Code Mode surface. Enabled by CI's `--all-features`.
 # Production behaviour is unchanged when this feature is off.
-test-support = ["gateway"]
+test-harness = ["gateway"]
 test-utils = []
 [lints]
 workspace = true

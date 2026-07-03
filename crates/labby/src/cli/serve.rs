@@ -1508,7 +1508,7 @@ async fn run_stdio(
         )),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: crate::mcp::server::next_relay_session_id(),
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-harness"))]
         code_mode_widget_callbacks_enabled_for_test: false,
     };
     let running = server.serve(rmcp::transport::stdio()).await?;
@@ -1661,7 +1661,7 @@ fn build_mcp_service_with_scope(
                 )),
                 route_scope,
                 relay_session_id: crate::mcp::server::next_relay_session_id(),
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-harness"))]
                 code_mode_widget_callbacks_enabled_for_test: false,
             })
         },

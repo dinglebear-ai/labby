@@ -1,4 +1,4 @@
-//! Full-stack Code Mode test harness (feature `test-support`, non-default).
+//! Full-stack Code Mode test harness (feature `test-harness`, non-default).
 //!
 //! This module exposes small public wrappers over the crate-private Code Mode
 //! MCP surface so an integration test in `crates/labby/tests/` can drive the
@@ -10,11 +10,17 @@
 //! a real [`SqliteDecider`] / `CodeModePauseStore` on a temp-file DB — with NO
 //! inline host glue.
 //!
-//! It is gated `#[cfg(feature = "test-support")]` and is never compiled into a
+//! It is gated `#[cfg(feature = "test-harness")]` and is never compiled into a
 //! production build. The crate-private constructors it reaches
 //! (`test_gateway_manager`, the `LabMcpServer` struct literal,
 //! `call_tool_codemode_impl`, the widened `#[cfg(any(test, feature =
-//! "test-support"))]` seams) are unchanged for a normal (feature-off) build.
+//! "test-harness"))]` seams) are unchanged for a normal (feature-off) build.
+
+// Test scaffolding: `panic`/`assert` are expected here (the workspace lints
+// `panic = "warn"`, promoted to an error by CI's `-D warnings`). This module is
+// only ever compiled under the non-default `test-harness` feature, never in a
+// production build, so the production-code panic restriction does not apply.
+#![allow(clippy::panic)]
 
 use std::collections::HashMap;
 use std::sync::Arc;

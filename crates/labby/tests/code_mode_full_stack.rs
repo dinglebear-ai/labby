@@ -20,10 +20,13 @@
 //! user). nextest runs each test in its own process, so the per-test env var is
 //! isolated.
 //!
-//! Gated on `test-support` so the file only builds under the feature (CI's
+//! Gated on `test-harness` so the file only builds under the feature (CI's
 //! `--all-features` enables it, pulling in the `codemode_test_harness` wrappers
 //! that expose the crate-private MCP Code Mode surface).
-#![cfg(feature = "test-support")]
+#![cfg(feature = "test-harness")]
+// Test target: explicit `panic!` in assertion helpers is expected. The workspace
+// lints set `panic = "warn"`, which CI promotes to an error via `-D warnings`.
+#![allow(clippy::panic)]
 
 use std::sync::Arc;
 

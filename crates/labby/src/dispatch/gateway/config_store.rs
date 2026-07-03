@@ -186,12 +186,12 @@ fn values_to_service_creds(service: &str, values: &BTreeMap<String, String>) -> 
         .collect()
 }
 
-// Used by `#[cfg(test)]` unit tests and, under `test-support`, by the
+// Used by `#[cfg(test)]` unit tests and, under `test-harness`, by the
 // lib-only `codemode_test_harness`. The `labby` bin compiles this module too
 // (its own crate root is `main.rs`, which does not include the harness), so
-// with `test-support` enabled the bin sees this helper as unused — allow it
+// with `test-harness` enabled the bin sees this helper as unused — allow it
 // there rather than duplicating the helper or leaking it into `main.rs`.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-harness"))]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn test_gateway_manager(
     path: PathBuf,
