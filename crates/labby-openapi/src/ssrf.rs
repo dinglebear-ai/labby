@@ -15,12 +15,19 @@ use crate::error::OpenApiError;
 /// # Errors
 /// Returns [`OpenApiError::SsrfRejected`] when the guard rejects the URL.
 pub fn validate_base_url(cfg: &OpenApiSpecConfig) -> Result<url::Url, OpenApiError> {
-    labby_primitives::ssrf::parse_validated_https_url(cfg.base_url.as_str()).map_err(|e| {
-        OpenApiError::SsrfRejected {
-            label: cfg.label.clone(),
+    validate_https_url(&cfg.label, &cfg.base_url)?;
+    Ok(cfg.base_url.clone())
+}
+
+/// Shared guard: run a URL through the canonical `parse_validated_https_url` and
+/// wrap any rejection in a labeled [`OpenApiError::SsrfRejected`].
+fn validate_https_url(label: &str, url: &url::Url) -> Result<(), OpenApiError> {
+    labby_primitives::ssrf::parse_validated_https_url(url.as_str())
+        .map(|_| ())
+        .map_err(|e| OpenApiError::SsrfRejected {
+            label: label.to_string(),
             reason: e.kind().to_string(),
-        }
-    })
+        })
 }
 
 /// Validate a remote spec-document URL (`SpecSource::Url`) with the SAME canonical
@@ -33,10 +40,5 @@ pub fn validate_base_url(cfg: &OpenApiSpecConfig) -> Result<url::Url, OpenApiErr
 /// # Errors
 /// Returns [`OpenApiError::SsrfRejected`] when the guard rejects the URL.
 pub fn validate_spec_url(label: &str, url: &url::Url) -> Result<(), OpenApiError> {
-    labby_primitives::ssrf::parse_validated_https_url(url.as_str())
-        .map(|_| ())
-        .map_err(|e| OpenApiError::SsrfRejected {
-            label: label.to_string(),
-            reason: e.kind().to_string(),
-        })
+    validate_https_url(label, url)
 }

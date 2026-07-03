@@ -54,16 +54,27 @@ async fn resolve_and_validate(
     port: u16,
     label: &str,
 ) -> Result<Vec<SocketAddr>, OpenApiError> {
-    let addrs: Vec<SocketAddr> =
-        tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, port)))
-            .await
-            .map_err(|_| OpenApiError::ResolveFailed {
-                label: label.to_string(),
-            })?
-            .map_err(|_| OpenApiError::ResolveFailed {
-                label: label.to_string(),
-            })?
-            .collect();
+    // `url::Url::host_str()` returns the BRACKETED form for an IPv6 literal
+    // (`[2606:4700::1111]`), but `tokio::net::lookup_host` only accepts the bare
+    // form — without stripping, every IPv6-literal base/spec URL would fail with
+    // ResolveFailed. `check_host_not_private`/`resolve_to_addrs` still see the
+    // original host string.
+    let lookup_host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    let addrs: Vec<SocketAddr> = tokio::time::timeout(
+        RESOLVE_TIMEOUT,
+        tokio::net::lookup_host((lookup_host, port)),
+    )
+    .await
+    .map_err(|_| OpenApiError::ResolveFailed {
+        label: label.to_string(),
+    })?
+    .map_err(|_| OpenApiError::ResolveFailed {
+        label: label.to_string(),
+    })?
+    .collect();
     if addrs.is_empty() {
         return Err(OpenApiError::ResolveFailed {
             label: label.to_string(),
@@ -106,22 +117,29 @@ async fn pinned_client_for(
     Ok((client, pinned.ip()))
 }
 
-/// Reject a connected peer whose IP does not match the validated pin. This is the
-/// load-bearing DNS-rebinding / redirect-to-internal defense. Returns a
-/// fully-labeled error so callers do not re-wrap.
+/// Reject a connected peer whose IP does not match the validated pin. The
+/// per-request `resolve_to_addrs` pin is the primary DNS-rebinding /
+/// redirect-to-internal defense (reqwest can only connect to the one validated
+/// address); this post-connect re-check is the backstop. It FAILS CLOSED: an
+/// absent peer address (`remote_addr() == None`) is treated as a rejection
+/// rather than silently accepted, so the guard cannot degrade to a no-op if the
+/// client's connector ever changes.
 fn recheck_peer(resp: &reqwest::Response, pinned: IpAddr, label: &str) -> Result<(), OpenApiError> {
-    if let Some(peer) = resp.remote_addr() {
-        if peer.ip() != pinned {
-            return Err(OpenApiError::RequestBlockedPrivateAddr {
-                label: label.to_string(),
-            });
-        }
-        labby_primitives::ssrf::check_ip_not_private(peer.ip(), "openapi peer").map_err(|_| {
-            OpenApiError::RequestBlockedPrivateAddr {
-                label: label.to_string(),
-            }
+    let peer = resp
+        .remote_addr()
+        .ok_or_else(|| OpenApiError::RequestBlockedPrivateAddr {
+            label: label.to_string(),
         })?;
+    if peer.ip() != pinned {
+        return Err(OpenApiError::RequestBlockedPrivateAddr {
+            label: label.to_string(),
+        });
     }
+    labby_primitives::ssrf::check_ip_not_private(peer.ip(), "openapi peer").map_err(|_| {
+        OpenApiError::RequestBlockedPrivateAddr {
+            label: label.to_string(),
+        }
+    })?;
     Ok(())
 }
 
@@ -182,14 +200,15 @@ pub async fn fetch_url_capped(
 }
 
 /// Map a `reqwest` send error to a scrubbed `OpenApiError`. NEVER embeds the
-/// reqwest error's `Display`.
+/// reqwest error's `Display`. A connect failure here is NOT classified as an SSRF
+/// block: the address was already resolved + validated + pinned before the send,
+/// so `is_connect()` means a genuine unreachable/refused/TLS-handshake failure
+/// (down upstream), which maps to `UpstreamRequest`. The SSRF-block classification
+/// (`RequestBlockedPrivateAddr`) comes only from the explicit `resolve_and_validate`
+/// pre-check and the `recheck_peer` post-check.
 fn map_send_err(e: reqwest::Error, label: &str) -> OpenApiError {
     if e.is_timeout() {
         OpenApiError::UpstreamTimeout {
-            label: label.to_string(),
-        }
-    } else if e.is_connect() {
-        OpenApiError::RequestBlockedPrivateAddr {
             label: label.to_string(),
         }
     } else {
@@ -474,4 +493,25 @@ fn apply_body(
         return req;
     }
     req.json(&serde_json::Value::Object(remaining))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ipv6_literal_host_resolves_then_is_ssrf_checked() {
+        // A bracketed IPv6 literal must reach the IP check (loopback `::1` is
+        // rejected as private), NOT fail to parse. Before bracket-stripping this
+        // returned `ResolveFailed`; after, it correctly returns
+        // `RequestBlockedPrivateAddr` — proving `lookup_host` parsed the literal.
+        let err = resolve_and_validate("[::1]", 443, "vendor")
+            .await
+            .expect_err("loopback must be rejected");
+        assert_eq!(
+            err.kind(),
+            "forbidden",
+            "bracketed IPv6 literal must resolve and then be SSRF-rejected, not ResolveFailed: {err:?}"
+        );
+    }
 }
