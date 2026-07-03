@@ -112,8 +112,8 @@ No directly relevant bead was created or closed in this worktree during closeout
 
 - `cargo test ... wasm_codegen::tests runner_drive::tests` failed because `cargo test` accepts one filter. Re-ran as two commands.
 - A runtime unit test for `async () => 1n` failed with `internal_error` because the unit-test binary is not a valid runner executable path; removed the false unit test and kept wrapper-level regression coverage.
-- Stable plugin build initially inherited workspace and global Cargo profile settings requiring unstable `codegen-backend`; fixed by staging the plugin crate, clearing environment, and using an isolated Cargo home.
-- Stable plugin build initially lacked `wasm32-wasip1`; installed the stable target with `rustup target add wasm32-wasip1 --toolchain stable`.
+- Plugin build initially inherited workspace and global Cargo profile settings requiring unstable `codegen-backend`; fixed by staging the plugin crate, clearing environment, and using an isolated Cargo home.
+- Plugin build originally forced `rustup run stable cargo`, which escaped the parent build's toolchain target install in CI; it now defaults to the current Cargo/toolchain unless `LABBY_CODEMODE_PLUGIN_TOOLCHAIN` is set.
 - Agent review waves were partially blocked by agent thread limit.
 - External reviewers were partially blocked by quota/rate limits.
 
@@ -141,7 +141,7 @@ No directly relevant bead was created or closed in this worktree during closeout
 
 ## Risks and Rollback
 
-- The Javy plugin build uses a temp cache and stable `wasm32-wasip1`; builders need that target installed.
+- The Javy plugin build uses a temp cache and the current build toolchain by default; builders need `wasm32-wasip1` installed for that toolchain.
 - CodeRabbit, Copilot, and Codex automated review did not complete due rate/quota limits.
 - Rollback path: revert PR #183 or disable the Wasmtime Code Mode path by reverting the Code Mode runtime commits.
 

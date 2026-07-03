@@ -23,6 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     preserve_env(&mut command, "PATH");
     preserve_env(&mut command, "HOME");
     preserve_env(&mut command, "RUSTUP_HOME");
+    preserve_env(&mut command, "RUSTUP_TOOLCHAIN");
     let status = command
         .current_dir(&staged_plugin)
         .env("CARGO_BUILD_RUSTC_WRAPPER", "")
@@ -117,15 +118,14 @@ impl Drop for PluginBuildRoot {
 
 fn plugin_build_command() -> std::process::Command {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let toolchain =
-        std::env::var("LABBY_CODEMODE_PLUGIN_TOOLCHAIN").unwrap_or_else(|_| "stable".to_string());
-    let mut command = match toolchain.trim() {
-        "" | "current" => std::process::Command::new(cargo),
-        toolchain => {
+    let mut command = match std::env::var("LABBY_CODEMODE_PLUGIN_TOOLCHAIN") {
+        Ok(toolchain) if !toolchain.trim().is_empty() && toolchain.trim() != "current" => {
+            let toolchain = toolchain.trim();
             let mut command = std::process::Command::new("rustup");
             command.args(["run", toolchain, "cargo"]);
             command
         }
+        _ => std::process::Command::new(cargo),
     };
     command.args([
         "build",
