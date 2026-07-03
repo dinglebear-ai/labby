@@ -248,9 +248,13 @@ impl Run {
 
 /// Input for journaling a fresh call. `raw_args` is redacted+hashed inside the
 /// store — the store owns the pre-redaction boundary.
+///
+/// `seq` is `u64` — the protocol/host type — so a caller cannot construct a
+/// negative sequence. The single `as i64` narrowing happens only at the SQL bind
+/// site inside [`CodeModePauseStore::upsert_log_entry`].
 #[derive(Debug, Clone)]
 pub struct NewLogEntry {
-    pub seq: i64,
+    pub seq: u64,
     pub tool_id: String,
     pub raw_args: Value,
     pub requires_approval: bool,
@@ -712,6 +716,10 @@ impl CodeModePauseStore {
             LogState::Executing
         };
         let run = run_id.to_string();
+        // The one and only `as i64` narrowing of `seq`: SQLite has no u64 column
+        // type, but `NewLogEntry.seq` is `u64` so callers can't hand us a
+        // negative sequence.
+        let seq_i = entry.seq as i64;
         self.blocking_write("upsert_log_entry", move |conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO codemode_call_log
@@ -721,7 +729,7 @@ impl CodeModePauseStore {
                  VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, NULL)",
                 params![
                     run,
-                    entry.seq,
+                    seq_i,
                     entry.tool_id,
                     args_hash,
                     redacted_args,

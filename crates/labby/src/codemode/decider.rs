@@ -380,7 +380,7 @@ impl SqliteDecider {
                     LogState::Reverted => {
                         self.journal_fresh(
                             execution_id,
-                            seq_i,
+                            seq,
                             tool_id,
                             args,
                             requires_approval,
@@ -402,7 +402,7 @@ impl SqliteDecider {
             Ok(None) => {
                 self.journal_fresh(
                     execution_id,
-                    seq_i,
+                    seq,
                     tool_id,
                     args,
                     requires_approval,
@@ -466,7 +466,7 @@ impl SqliteDecider {
     async fn journal_fresh(
         &self,
         execution_id: &str,
-        seq: i64,
+        seq: u64,
         tool_id: &str,
         args: &Value,
         requires_approval: bool,
