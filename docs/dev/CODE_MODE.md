@@ -433,13 +433,13 @@ When a durable Code Mode pause store is configured (`~/.labby/codemode_pauses.db
 enabled automatically on the MCP `serve` path), an MCP `codemode` run that is
 **not** pre-confirmed with whole-run `confirm: true` and is **not** a resume
 takes the *pause-capable path*: every upstream tool call is journaled to a
-durable SQLite log, and the first destructive call the caller is not permitted
-to run pauses the whole run awaiting human approval. This is a faithful port of
+durable SQLite log, and the first **unconfirmed destructive** call pauses the
+whole run awaiting human approval. This is a faithful port of
 Cloudflare `agents`' Code Mode durable-execution model
 (`packages/codemode/src/runtime.ts`).
 
-**Contract (MCP-only today.** Code Mode has no CLI/HTTP surface for pause/resume;
-a future CLI/HTTP surface must carry `resume_token` / `confirm` as params.)
+**Contract (MCP-only today).** Code Mode has no CLI/HTTP surface for pause/resume;
+a future CLI/HTTP surface must carry `resume_token` / `confirm` as params.
 
 1. **Pause.** A destructive, unconfirmed call flips the durable run status to
    `paused` and the run halts. The tool result is a `confirmation_required`
@@ -474,10 +474,12 @@ calls.** The runner allocates `seq` from a single monotonic counter shared acros
 `semantic_rank`/`codemode.search` scoring. Only real upstream tool calls are
 written to the durable log, but a replay only lands on the recorded call at a
 given `seq` if every earlier `seq`-consuming request runs in the identical order
-and count. Therefore `codemode.search`, `codemode.describe`, `writeArtifact`, and
+and count. Therefore `codemode.search`, `writeArtifact`, and
 `codemode.run` **participate in the replay `seq` spine and must be deterministic
-across replays**: issue the same discovery/search/artifact/snippet calls, in the
-same order, on a resume as on the first pass. Adding, removing, or reordering any
+across replays**: issue the same search/artifact/snippet calls, in the
+same order, on a resume as on the first pass. (`codemode.describe` is served
+locally in-sandbox and emits no parent request, so it does **not** consume a
+`seq` and is exempt.) Adding, removing, or reordering any
 of them between pause and resume shifts the `seq` of a later journaled tool call
 and surfaces as `resume_divergence` (fail closed) rather than a silent misapply.
 (A `codemode.step(name, fn)` JS-bridge primitive that would journal arbitrary
