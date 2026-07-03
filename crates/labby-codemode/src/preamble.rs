@@ -411,8 +411,7 @@ codemode.run = function(name, input) {{
   return globalThis.__labRunSnippet(name, input == null ? {{}} : input);
 }};
 codemode.step = function(name, fn) {{
-  if (typeof fn !== "function") throw new Error("codemode.step requires a function");
-  return Promise.resolve().then(fn);
+  return globalThis.__labCodemodeStep(name, fn);
 }};
 "##
     ))
@@ -675,7 +674,9 @@ mod tests {
         assert!(js.contains("raw === entry.id || raw === entry.path || raw === entry.helper"));
         assert!(js.contains("ambiguous_target"));
         assert!(js.contains("unknown_tool"));
-        assert!(js.contains("Promise.resolve().then(fn)"));
+        // codemode.step is now a real two-phase durable primitive that delegates
+        // to the runner-side __labCodemodeStep bridge (not the old inline stub).
+        assert!(js.contains("globalThis.__labCodemodeStep(name, fn)"));
     }
 
     #[test]
