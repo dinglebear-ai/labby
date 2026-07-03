@@ -37,6 +37,7 @@ COPY crates/labby-apis/Cargo.toml crates/labby-apis/Cargo.toml
 COPY crates/labby-auth/Cargo.toml crates/labby-auth/Cargo.toml
 COPY crates/labby-runtime/Cargo.toml crates/labby-runtime/Cargo.toml
 COPY crates/labby-codemode/Cargo.toml crates/labby-codemode/Cargo.toml
+COPY crates/labby-codemode/build-support/Cargo.toml crates/labby-codemode/build-support/Cargo.toml
 COPY crates/labby-gateway/Cargo.toml crates/labby-gateway/Cargo.toml
 COPY crates/labby-web/Cargo.toml crates/labby-web/Cargo.toml
 COPY crates/labby-winjob/Cargo.toml crates/labby-winjob/Cargo.toml
@@ -54,6 +55,7 @@ RUN mkdir -p \
       crates/labby-auth/src \
       crates/labby-runtime/src \
       crates/labby-codemode/src \
+      crates/labby-codemode/build-support/src \
       crates/labby-gateway/src \
       crates/labby-web/src \
       crates/labby-winjob/src \
@@ -67,6 +69,7 @@ RUN mkdir -p \
       crates/labby-auth/src/lib.rs \
       crates/labby-runtime/src/lib.rs \
       crates/labby-codemode/src/lib.rs \
+      crates/labby-codemode/build-support/src/lib.rs \
       crates/labby-gateway/src/lib.rs \
       crates/labby-web/src/lib.rs \
       crates/labby-winjob/src/lib.rs \
