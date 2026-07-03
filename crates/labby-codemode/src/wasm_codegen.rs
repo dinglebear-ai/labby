@@ -80,10 +80,18 @@ globalThis.__labSettlePendingOperation = (message) => {{
   throw new Error("runner received unexpected protocol message");
 }};
 globalThis.__labSettleToolCall = globalThis.__labSettlePendingOperation;
+globalThis.__labEmitSuccess = (value) => {{
+  try {{
+    globalThis.__labEmitDone(JSON.stringify({{ result: value, has_result: value !== undefined }}));
+  }} catch (error) {{
+    const message = "Code Mode result must be JSON-serializable: " + String(error && error.message || error);
+    globalThis.__labEmitDone(JSON.stringify({{ error: message }}));
+  }}
+}};
 {proxy}
 globalThis.__labMainPromise = (async () => {{
 {invoker}}})().then(
-  (value) => globalThis.__labEmitDone(JSON.stringify({{ result: value, has_result: value !== undefined }})),
+  (value) => globalThis.__labEmitSuccess(value),
   (error) => globalThis.__labEmitDone(JSON.stringify({{ error: String(error && error.message || error) }}))
 );
 "#,
@@ -124,6 +132,7 @@ mod tests {
         assert!(wrapped.contains("globalThis.__labRunSnippet"));
         assert!(wrapped.contains("globalThis.__labMainPromise"));
         assert!(wrapped.contains("__labEmitDone"));
+        assert!(wrapped.contains("globalThis.__labEmitSuccess"));
     }
 
     #[test]
@@ -140,6 +149,13 @@ mod tests {
         assert!(wrapped.contains("globalThis.__labSettlePendingOperation"));
         assert!(wrapped.contains("pending.resolve(__labDecodeResult(input.result))"));
         assert!(wrapped.contains("pending.reject(new Error(JSON.stringify"));
+    }
+
+    #[test]
+    fn wrapper_reports_non_json_serializable_results() {
+        let wrapped = wrap_code_mode_for_wasm("async () => 1n", "");
+        assert!(wrapped.contains("Code Mode result must be JSON-serializable"));
+        assert!(wrapped.contains("(value) => globalThis.__labEmitSuccess(value)"));
     }
 
     #[test]

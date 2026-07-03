@@ -465,21 +465,25 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             });
                         }
                         CodeModeRunnerOutput::Error { kind, message } => {
-                            // A per-execution error. The runner reset and parked
-                            // (it does NOT exit), so it is safe to reuse — return
-                            // ExecutionError so the pool releases rather than
-                            // evicts.
+                            // A per-execution user error leaves the runner parked
+                            // and reusable. Runner-side infrastructure timeouts
+                            // can leave uncancellable worker threads alive, so
+                            // evict them instead of returning the process to the
+                            // warm pool.
                             stderr.flush_settle().await;
                             stderr.clear().await;
-                            return DriveOutcome::ExecutionError(
-                                CodeModeExecutionError::with_trace(
-                                    ToolError::Sdk {
-                                        sdk_kind: kind,
-                                        message,
-                                    },
-                                    sorted_calls(&state.calls),
-                                ),
+                            let err = CodeModeExecutionError::with_trace(
+                                ToolError::Sdk {
+                                    sdk_kind: kind,
+                                    message,
+                                },
+                                sorted_calls(&state.calls),
                             );
+                            if runner_reported_unhealthy(&err) {
+                                terminate_code_mode_runner(child, child_pid).await;
+                                return DriveOutcome::RunnerUnhealthy(err);
+                            }
+                            return DriveOutcome::ExecutionError(err);
                         }
                     }
                 }
@@ -541,6 +545,13 @@ fn classify_line_result(
             message,
         }
     })
+}
+
+fn runner_reported_unhealthy(err: &CodeModeExecutionError) -> bool {
+    err.kind() == "timeout"
+        && err
+            .to_string()
+            .contains("Code Mode Wasm code generation timed out")
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,5 +1184,29 @@ mod tests {
                 panic!("a never-replying runner must time out as RunnerUnhealthy")
             }
         }
+    }
+
+    #[test]
+    fn runner_side_codegen_timeout_is_unhealthy() {
+        let err = CodeModeExecutionError::with_trace(
+            ToolError::Sdk {
+                sdk_kind: "timeout".to_string(),
+                message: "Code Mode Wasm code generation timed out".to_string(),
+            },
+            Vec::new(),
+        );
+        assert!(runner_reported_unhealthy(&err));
+    }
+
+    #[test]
+    fn ordinary_user_timeout_error_is_reusable() {
+        let err = CodeModeExecutionError::with_trace(
+            ToolError::Sdk {
+                sdk_kind: "timeout".to_string(),
+                message: "user code reported timeout".to_string(),
+            },
+            Vec::new(),
+        );
+        assert!(!runner_reported_unhealthy(&err));
     }
 }
