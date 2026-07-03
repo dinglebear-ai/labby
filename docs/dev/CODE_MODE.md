@@ -139,9 +139,10 @@ allowed_operations = ["getUser", "listUsers"]     # deny-by-default allowlist
 RFC1918 / CGNAT / private-TLD). At request time the outbound client disables
 redirects, forces `https_only`, resolves + validates every IP, pins one validated
 address, and re-checks the connected peer IP — closing the redirect-bypass and
-DNS-rebinding gaps. Default logging captures method / resolved host / path
-template / status / `elapsed_ms` only — never third-party response bodies or
-credentials.
+DNS-rebinding gaps. Each dispatch emits exactly one structured event on both the
+success and failure path — `service`, `action` (operationId), `label`, `host`,
+`method`, `status` (`ok`/`error`), `elapsed_ms`, plus `kind` on failure — never a
+third-party response body, a query-with-auth, or a credential.
 
 **Refresh.** Specs load once at process start (concurrently, per-spec timeout,
 4 MiB body-size cap). A spec that fails to load is omitted with a WARN;
@@ -151,6 +152,12 @@ credentials.
 re-introduce per-operation `input_schema`, per-op JS proxies, and operationId→JS
 sanitization), background `ArcSwap` refresh, per-spec rate/concurrency caps, and
 apiKey-in-query / apiKey-in-cookie injection (header-style only in v1).
+Connection pooling across dispatches is also deferred: because `resolve_to_addrs`
+pins the validated IP at client-build time, v1 builds a fresh pinned client per
+request (no keep-alive reuse across calls). Pooling would require replacing the
+per-call pin with a custom `reqwest::dns::Resolve` that validates every resolved
+IP on a single shared client, keeping the post-connect peer re-check as the
+TOCTOU backstop — a change to the SSRF-critical path deferred out of v1.
 
 Example:
 

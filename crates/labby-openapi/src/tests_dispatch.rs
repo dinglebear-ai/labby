@@ -12,7 +12,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::config::OpenApiCredential;
-use crate::dispatch::dispatch_openapi_call;
+use crate::dispatch::dispatch_openapi_call_no_ssrf as dispatch_openapi_call;
 use crate::registry::{OpenApiRegistry, OperationHandle, SpecEntry};
 
 /// Build a single-op registry whose base_url is `base` (the mock URI) — bypassing
@@ -161,4 +161,79 @@ async fn upstream_error_body_never_leaks_into_error() {
             "response body leaked: {s}"
         );
     }
+}
+
+#[tokio::test]
+async fn path_param_traversal_token_is_rejected() {
+    // A `..`-valued path param must NOT be able to strip the base-path prefix via
+    // Url::join dot-segment normalization. It is rejected before any request.
+    let server = MockServer::start().await;
+    let handle = get_user_handle(&server.uri(), None);
+    let reg = registry_from_handle("vendor", handle);
+    let err = dispatch_openapi_call(
+        &reg,
+        &loopback_client(),
+        "vendor",
+        "getUser",
+        json!({ "id": ".." }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.kind(),
+        "invalid_param",
+        "traversal token must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn path_param_non_scalar_is_rejected() {
+    let server = MockServer::start().await;
+    let reg = registry_from_handle("vendor", get_user_handle(&server.uri(), None));
+    let err = dispatch_openapi_call(
+        &reg,
+        &loopback_client(),
+        "vendor",
+        "getUser",
+        json!({ "id": { "$oid": "deadbeef" } }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.kind(),
+        "invalid_param",
+        "non-scalar path param must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn base_path_prefix_is_preserved_in_request() {
+    // With a base_url carrying a path prefix, the operation's path template is
+    // appended under it — a normal call reaches `/tenant-A/v1/users/7`, proving
+    // the prefix is not stripped for legitimate values.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/tenant-A/v1/users/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "7" })))
+        .mount(&server)
+        .await;
+
+    let handle = OperationHandle {
+        operation_id: "getUser".into(),
+        method: reqwest::Method::GET,
+        path_template: "/users/{id}".into(),
+        base_url: format!("{}/tenant-A/v1", server.uri()).parse().unwrap(),
+        credential: None,
+    };
+    let reg = registry_from_handle("vendor", handle);
+    let out = dispatch_openapi_call(
+        &reg,
+        &loopback_client(),
+        "vendor",
+        "getUser",
+        json!({ "id": "7" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["id"], "7");
 }

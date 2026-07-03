@@ -56,7 +56,7 @@ pub fn convert_spec(
         if !allowed.iter().any(|a| a == &m.name) {
             continue; // deny-by-default
         }
-        let method = parse_method(&m.method);
+        let method = parse_method(label, &m.name, &m.method);
         out.push(OperationDescriptor {
             operation_id: m.name,
             method,
@@ -66,12 +66,21 @@ pub fn convert_spec(
     Ok(out)
 }
 
-/// Map an OpenAPI method string (upper-case) to a `reqwest::Method`. Unknown
-/// verbs fall back to `GET` — the allowlist bounds which operations can even be
-/// dispatched, and rmcp-openapi only emits the standard verbs.
-fn parse_method(raw: &str) -> reqwest::Method {
-    raw.parse::<reqwest::Method>()
-        .unwrap_or(reqwest::Method::GET)
+/// Map an OpenAPI method string to a `reqwest::Method`. `Method::from_str`
+/// accepts any valid HTTP token (including extension verbs), so this only falls
+/// back to `GET` for a genuinely malformed token — which `rmcp-openapi` does not
+/// emit. The fallback is WARN-logged so a malformed spec verb is diagnosable
+/// rather than silently dispatched as GET; the allowlist still bounds dispatch.
+fn parse_method(label: &str, operation_id: &str, raw: &str) -> reqwest::Method {
+    raw.parse::<reqwest::Method>().unwrap_or_else(|_| {
+        tracing::warn!(
+            service = "openapi",
+            label = %label,
+            operation = %operation_id,
+            "openapi: unparseable HTTP method in spec — falling back to GET"
+        );
+        reqwest::Method::GET
+    })
 }
 
 #[cfg(test)]

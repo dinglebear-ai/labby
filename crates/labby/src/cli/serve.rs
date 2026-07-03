@@ -1185,10 +1185,10 @@ async fn build_gateway_runtime(
     // 8s per-spec timeout) and inject both into the gateway host.
     let openapi_provider_config =
         crate::config::load_openapi_provider_config(&config.openapi, &|k| std::env::var(k).ok())?;
-    let openapi_http_client = labby_openapi::http::build_dispatch_client();
+    let openapi_http_client = labby_openapi::http::build_dispatch_client()?;
     let openapi_registry = labby_openapi::OpenApiRegistry::load(
         openapi_provider_config,
-        labby_openapi::http::build_spec_fetch_client(),
+        labby_openapi::http::build_spec_fetch_client()?,
         Duration::from_secs(8),
     )
     .await;

@@ -53,6 +53,28 @@ pub enum OpenApiError {
         /// Spec label.
         label: String,
     },
+    /// The target host could not be resolved (DNS failure, NXDOMAIN, or empty
+    /// resolution). Distinct from `RequestBlockedPrivateAddr` so an operator
+    /// debugging a down/flaky upstream is not sent chasing an SSRF misconfig.
+    #[error("could not resolve host for spec `{label}`")]
+    ResolveFailed {
+        /// Spec label.
+        label: String,
+    },
+    /// A required path parameter was missing, non-scalar, or a traversal token
+    /// (`.`/`..`). Caller-facing (`invalid_param`), never leaks the value.
+    #[error("operation `{label}` path parameter `{param}` is missing or invalid")]
+    InvalidPathParam {
+        /// Spec label (operationId, for attribution).
+        label: String,
+        /// The offending path parameter name (non-secret).
+        param: String,
+    },
+    /// The hardened `reqwest` client could not be built (catastrophic TLS/root
+    /// store init failure). Matches the workspace `HttpClient::new()` fallible
+    /// convention — client builds propagate `Result`, they do not panic.
+    #[error("failed to build hardened HTTP client")]
+    ClientBuildFailed,
     /// The outbound request failed. NO body/url/auth is ever included.
     #[error("upstream request for spec `{label}` failed")]
     UpstreamRequest {
@@ -68,7 +90,15 @@ pub enum OpenApiError {
 }
 
 impl OpenApiError {
-    /// Stable kind tag mirroring the dispatcher error vocabulary.
+    /// Stable kind tag for structured logging.
+    ///
+    /// NOTE: for the load-time-only variants (`SsrfRejected`/`SpecParse`/
+    /// `SpecTooLarge`) this returns `"config_error"` — the accurate *log* tag at
+    /// spec-load time, where these are surfaced (`registry.rs`). Those variants
+    /// never reach a caller as a wire error (dispatch only produces
+    /// `UnknownInstance`/`UnknownOperation`/`RequestBlockedPrivateAddr`/
+    /// `Resolve*`/`Upstream*`), so the `From<OpenApiError> for ToolError`
+    /// mapping to `invalid_param` is a fallback, not the live wire kind.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
@@ -76,9 +106,12 @@ impl OpenApiError {
                 "config_error"
             }
             Self::RequestBlockedPrivateAddr { .. } => "forbidden",
+            Self::InvalidPathParam { .. } => "invalid_param",
             Self::UnknownInstance { .. } => "unknown_instance",
             Self::UnknownOperation { .. } => "unknown_action",
-            Self::UpstreamRequest { .. } => "internal_error",
+            Self::ResolveFailed { .. } | Self::ClientBuildFailed | Self::UpstreamRequest { .. } => {
+                "internal_error"
+            }
             Self::UpstreamTimeout { .. } => "timeout",
         }
     }
@@ -102,6 +135,10 @@ impl From<OpenApiError> for ToolError {
                 message: msg,
                 required_scopes: vec![],
             },
+            OpenApiError::InvalidPathParam { param, .. } => ToolError::InvalidParam {
+                message: msg,
+                param: param.clone(),
+            },
             OpenApiError::SsrfRejected { .. }
             | OpenApiError::SpecParse { .. }
             | OpenApiError::SpecTooLarge { .. } => ToolError::InvalidParam {
@@ -112,7 +149,9 @@ impl From<OpenApiError> for ToolError {
                 sdk_kind: "timeout".into(),
                 message: msg,
             },
-            OpenApiError::UpstreamRequest { .. } => ToolError::Sdk {
+            OpenApiError::ResolveFailed { .. }
+            | OpenApiError::ClientBuildFailed
+            | OpenApiError::UpstreamRequest { .. } => ToolError::Sdk {
                 sdk_kind: "internal_error".into(),
                 message: msg,
             },

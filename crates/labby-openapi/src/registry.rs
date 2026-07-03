@@ -172,6 +172,19 @@ async fn load_one_spec(
             "openapi: MAX_OPERATIONS_PER_SPEC exceeded — extra operations dropped"
         );
     }
+    if operations.is_empty() {
+        // The spec fetched + parsed fine but nothing matched the allowlist. This
+        // spec loads as present-but-empty: its JS shim is emitted yet every call
+        // returns `unknown_action`. Surface it so a fat-fingered / forgotten
+        // `allowed_operations` is diagnosable instead of silently rejecting.
+        tracing::warn!(
+            service = "openapi",
+            label = %spec.label,
+            allowed = spec.allowed_operations.len(),
+            kind = "empty_allowlist",
+            "openapi spec loaded but no operations matched the allowlist"
+        );
+    }
     Ok(SpecEntry { operations })
 }
 
@@ -259,7 +272,7 @@ mod tests {
                 bad_spec("badlabel", "https://10.255.255.1"),
             ],
         };
-        let client = crate::http::build_spec_fetch_client();
+        let client = crate::http::build_spec_fetch_client().expect("test spec client");
         let started = std::time::Instant::now();
         let reg = OpenApiRegistry::load(cfg, client, Duration::from_secs(2)).await;
         assert!(reg.labels().contains(&"goodlabel".to_string()));
@@ -277,7 +290,7 @@ mod tests {
         };
         let reg = OpenApiRegistry::load(
             cfg,
-            crate::http::build_spec_fetch_client(),
+            crate::http::build_spec_fetch_client().expect("test spec client"),
             Duration::from_secs(2),
         )
         .await;

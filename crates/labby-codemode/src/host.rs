@@ -218,6 +218,6 @@ impl CodeModeHost for NoopHost {
     }
 
     fn openapi_http_client(&self) -> reqwest::Client {
-        labby_openapi::http::build_dispatch_client()
+        labby_openapi::http::build_dispatch_client().expect("test dispatch client")
     }
 }

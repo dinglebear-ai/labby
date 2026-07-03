@@ -136,7 +136,7 @@ impl GatewayManager {
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),
             code_mode_runner_pool: Arc::new(crate::gateway::code_mode::RunnerPool::from_env()?),
             openapi_registry: labby_openapi::OpenApiRegistry::default(),
-            openapi_http_client: labby_openapi::http::build_dispatch_client(),
+            openapi_http_client: labby_openapi::http::build_dispatch_client()?,
         })
     }
 

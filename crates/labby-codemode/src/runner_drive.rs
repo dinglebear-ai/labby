@@ -159,8 +159,13 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let (openapi_registry, openapi_http_client) = match self.host {
             Some(host) => (host.openapi_registry(), host.openapi_http_client()),
             None => (
+                // Host-less runs have an empty registry, so this client is never
+                // used to dispatch. Prefer the hardened build; fall back to a
+                // plain client (never sent) if TLS init somehow fails, rather
+                // than panicking a run that cannot call openapi anyway.
                 labby_openapi::OpenApiRegistry::default(),
-                labby_openapi::http::build_dispatch_client(),
+                labby_openapi::http::build_dispatch_client()
+                    .unwrap_or_else(|_| reqwest::Client::new()),
             ),
         };
         let cfg = RunnerConfig {
@@ -1276,7 +1281,8 @@ mod tests {
             trace_params: false,
             capability_filter: ToolScope::default(),
             openapi_registry: labby_openapi::OpenApiRegistry::default(),
-            openapi_http_client: labby_openapi::http::build_dispatch_client(),
+            openapi_http_client: labby_openapi::http::build_dispatch_client()
+                .expect("test dispatch client"),
         }
     }
 
@@ -1289,7 +1295,7 @@ mod tests {
         let lock = LOCAL_PROVIDER_LOCK.get_or_init(|| Mutex::new(()));
         let _held = lock.lock().await; // a slow state/git op holds the lock
         let reg = labby_openapi::OpenApiRegistry::default();
-        let client = labby_openapi::http::build_dispatch_client();
+        let client = labby_openapi::http::build_dispatch_client().expect("test dispatch client");
         let call = LocalProviderCall {
             provider: LocalProviderName::Openapi,
             method: "vendor.getUser".to_string(),
@@ -1456,7 +1462,7 @@ sleep 3600
             }
 
             fn openapi_http_client(&self) -> reqwest::Client {
-                labby_openapi::http::build_dispatch_client()
+                labby_openapi::http::build_dispatch_client().expect("test dispatch client")
             }
         }
 

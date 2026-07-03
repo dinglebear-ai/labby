@@ -16,6 +16,10 @@ use crate::registry::OperationHandle;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PER_CALL_TIMEOUT: Duration = Duration::from_secs(20);
+/// Bound the standalone DNS resolution (`lookup_host`) — reqwest's
+/// `connect_timeout` only covers the subsequent TCP connect, not this lookup, so
+/// a slow/blackholed resolver could otherwise stall a dispatch past the budget.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Base hardened builder shared by every outbound client: redirects off,
 /// https-only, explicit connect/read timeouts, no proxy.
@@ -30,37 +34,57 @@ fn base_builder() -> reqwest::ClientBuilder {
 
 /// Client used to fetch spec documents at load time. The per-request SSRF pin is
 /// applied in [`fetch_url_capped`], so this is a plain hardened base client.
-#[must_use]
-pub fn build_spec_fetch_client() -> reqwest::Client {
-    base_builder().build().expect("build spec fetch client")
+///
+/// # Errors
+/// [`OpenApiError::ClientBuildFailed`] on catastrophic TLS/root-store init
+/// failure — fallible per the workspace `HttpClient::new()` convention.
+pub fn build_spec_fetch_client() -> Result<reqwest::Client, OpenApiError> {
+    base_builder()
+        .build()
+        .map_err(|_| OpenApiError::ClientBuildFailed)
 }
 
 /// Client used for operation dispatch. Same hardening; the per-request pin is
 /// applied in [`execute_operation`]. Kept as a shared handle on the host/runner.
-#[must_use]
-pub fn build_dispatch_client() -> reqwest::Client {
-    base_builder().build().expect("build dispatch client")
+///
+/// # Errors
+/// [`OpenApiError::ClientBuildFailed`] on catastrophic TLS/root-store init
+/// failure — fallible per the workspace `HttpClient::new()` convention.
+pub fn build_dispatch_client() -> Result<reqwest::Client, OpenApiError> {
+    base_builder()
+        .build()
+        .map_err(|_| OpenApiError::ClientBuildFailed)
 }
 
-/// Resolve `host:port`, validate every resolved IP, and return them so a single
-/// one can be pinned. Empty resolution and any private/blocked address are hard
-/// failures.
-async fn resolve_and_validate(host: &str, port: u16) -> Result<Vec<SocketAddr>, OpenApiError> {
-    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|_| OpenApiError::RequestBlockedPrivateAddr {
-            label: String::new(),
-        })?
-        .collect();
+/// Resolve `host:port` (bounded by `RESOLVE_TIMEOUT`), validate every resolved
+/// IP, and return them so a single one can be pinned. A resolution failure or
+/// empty result is [`OpenApiError::ResolveFailed`] (a down/flaky upstream — NOT
+/// an SSRF misconfig); any private/blocked address is
+/// [`OpenApiError::RequestBlockedPrivateAddr`].
+async fn resolve_and_validate(
+    host: &str,
+    port: u16,
+    label: &str,
+) -> Result<Vec<SocketAddr>, OpenApiError> {
+    let addrs: Vec<SocketAddr> =
+        tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, port)))
+            .await
+            .map_err(|_| OpenApiError::ResolveFailed {
+                label: label.to_string(),
+            })?
+            .map_err(|_| OpenApiError::ResolveFailed {
+                label: label.to_string(),
+            })?
+            .collect();
     if addrs.is_empty() {
-        return Err(OpenApiError::RequestBlockedPrivateAddr {
-            label: String::new(),
+        return Err(OpenApiError::ResolveFailed {
+            label: label.to_string(),
         });
     }
     for addr in &addrs {
         labby_primitives::ssrf::check_ip_not_private(addr.ip(), host).map_err(|_| {
             OpenApiError::RequestBlockedPrivateAddr {
-                label: String::new(),
+                label: label.to_string(),
             }
         })?;
     }
@@ -71,43 +95,42 @@ async fn resolve_and_validate(host: &str, port: u16) -> Result<Vec<SocketAddr>, 
 /// URL's host. Returns the client and the pinned IP for the post-connect
 /// re-check. Shrinks the TOCTOU window: reqwest can only connect to the address
 /// we validated.
+///
+/// A fresh client is built per request because `resolve_to_addrs` pins the
+/// validated address at *build* time; reqwest exposes no builder-from-client, so
+/// there is no shared client to reuse here. (Connection pooling across calls is a
+/// documented v1 follow-up — it requires a custom `reqwest::dns::Resolve` on a
+/// shared client instead of per-call `resolve_to_addrs`.)
 async fn pinned_client_for(
-    template: &reqwest::Client,
     url: &url::Url,
+    label: &str,
 ) -> Result<(reqwest::Client, IpAddr), OpenApiError> {
-    // `template` carries the hardened config; we clone its policy by rebuilding
-    // from `base_builder()` (reqwest has no builder-from-client). The template
-    // arg keeps the call sites honest about which logical client is in use.
-    let _ = template;
-    let host = url
-        .host_str()
-        .ok_or_else(|| OpenApiError::RequestBlockedPrivateAddr {
-            label: String::new(),
-        })?;
+    let host = url.host_str().ok_or_else(|| OpenApiError::ResolveFailed {
+        label: label.to_string(),
+    })?;
     let port = url.port_or_known_default().unwrap_or(443);
-    let addrs = resolve_and_validate(host, port).await?;
+    let addrs = resolve_and_validate(host, port, label).await?;
     let pinned = addrs[0];
     let client = base_builder()
         .resolve_to_addrs(host, &[pinned])
         .build()
-        .map_err(|_| OpenApiError::UpstreamRequest {
-            label: String::new(),
-        })?;
+        .map_err(|_| OpenApiError::ClientBuildFailed)?;
     Ok((client, pinned.ip()))
 }
 
 /// Reject a connected peer whose IP does not match the validated pin. This is the
-/// load-bearing DNS-rebinding / redirect-to-internal defense.
-fn recheck_peer(resp: &reqwest::Response, pinned: IpAddr) -> Result<(), OpenApiError> {
+/// load-bearing DNS-rebinding / redirect-to-internal defense. Returns a
+/// fully-labeled error so callers do not re-wrap.
+fn recheck_peer(resp: &reqwest::Response, pinned: IpAddr, label: &str) -> Result<(), OpenApiError> {
     if let Some(peer) = resp.remote_addr() {
         if peer.ip() != pinned {
             return Err(OpenApiError::RequestBlockedPrivateAddr {
-                label: String::new(),
+                label: label.to_string(),
             });
         }
         labby_primitives::ssrf::check_ip_not_private(peer.ip(), "openapi peer").map_err(|_| {
             OpenApiError::RequestBlockedPrivateAddr {
-                label: String::new(),
+                label: label.to_string(),
             }
         })?;
     }
@@ -147,22 +170,23 @@ async fn collect_capped(
 }
 
 /// GET `url` with the hardened pinned client, capping the body at `cap` bytes.
-/// Used for spec fetch at load time.
+/// Used for spec fetch at load time. The `client` arg is unused for the send (the
+/// pin is applied to a freshly built client — see [`pinned_client_for`]); it is
+/// retained so the load path threads the same logical client the caller owns.
 pub async fn fetch_url_capped(
     client: &reqwest::Client,
     url: &url::Url,
     cap: usize,
     label: &str,
 ) -> Result<String, OpenApiError> {
-    let (pinned_client, pinned_ip) = pinned_client_for(client, url).await?;
+    let _ = client;
+    let (pinned_client, pinned_ip) = pinned_client_for(url, label).await?;
     let resp = pinned_client
         .get(url.clone())
         .send()
         .await
         .map_err(|e| map_send_err(e, label))?;
-    recheck_peer(&resp, pinned_ip).map_err(|_| OpenApiError::RequestBlockedPrivateAddr {
-        label: label.to_string(),
-    })?;
+    recheck_peer(&resp, pinned_ip, label)?;
     if !resp.status().is_success() {
         return Err(OpenApiError::SpecParse {
             label: label.to_string(),
@@ -195,10 +219,12 @@ const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Execute one operation against the hardened, per-request-pinned client.
 ///
-/// Path params are substituted (PATH_SEGMENT-encoded) from `params`; the
-/// remaining top-level params become the query string (GET/HEAD/DELETE) or the
-/// JSON request body (POST/PUT/PATCH). The credential is injected server-side —
-/// the caller's `params` never carry it. Non-2xx and body-decode failures map to
+/// Path params are substituted from `params`, each value encoded as an opaque
+/// path segment (dots, slashes, `%`, `?`, `#` all escaped) so a `..` value can
+/// never traverse above the operator-configured base path; the remaining
+/// top-level params become the query string (GET/HEAD/DELETE) or the JSON
+/// request body (POST/PUT/PATCH). The credential is injected server-side — the
+/// caller's `params` never carry it. Non-2xx and body-decode failures map to
 /// `UpstreamRequest` WITHOUT including the response body.
 ///
 /// # Errors
@@ -228,7 +254,7 @@ async fn execute_operation_inner(
     let (used_path_params, url) = build_url_with_params(op, &params)?;
 
     let (send_client, pinned_ip) = if enforce_ssrf {
-        let (c, ip) = pinned_client_for(client, &url).await?;
+        let (c, ip) = pinned_client_for(&url, &op.operation_id).await?;
         (c, Some(ip))
     } else {
         (client.clone(), None)
@@ -242,26 +268,24 @@ async fn execute_operation_inner(
     let resp = req
         .send()
         .await
-        .map_err(|e| map_send_err(e, &op_label(op)))?;
+        .map_err(|e| map_send_err(e, &op.operation_id))?;
     if let Some(pinned_ip) = pinned_ip {
-        recheck_peer(&resp, pinned_ip).map_err(|_| OpenApiError::RequestBlockedPrivateAddr {
-            label: op_label(op),
-        })?;
+        recheck_peer(&resp, pinned_ip, &op.operation_id)?;
     }
 
     let status = resp.status();
     if !status.is_success() {
         // Do NOT include the body — it may carry the upstream response body.
         return Err(OpenApiError::UpstreamRequest {
-            label: op_label(op),
+            label: op.operation_id.clone(),
         });
     }
-    let body = collect_capped(resp, MAX_RESPONSE_BYTES, &op_label(op)).await?;
+    let body = collect_capped(resp, MAX_RESPONSE_BYTES, &op.operation_id).await?;
     if body.trim().is_empty() {
         return Ok(serde_json::Value::Null);
     }
     serde_json::from_str(&body).map_err(|_| OpenApiError::UpstreamRequest {
-        label: op_label(op),
+        label: op.operation_id.clone(),
     })
 }
 
@@ -276,16 +300,58 @@ pub(crate) async fn execute_operation_no_ssrf(
     execute_operation_inner(client, op, params, false).await
 }
 
-/// Operation-scoped label placeholder. The `OperationHandle` does not store its
-/// label (the registry key holds it), so error labels use the operationId — which
-/// is non-secret and sufficient for attribution.
-fn op_label(op: &OperationHandle) -> String {
-    op.operation_id.clone()
+/// Percent-encode a single path segment. Escapes EVERYTHING except the RFC 3986
+/// unreserved set MINUS `.` — so `.` is `%2E`, which means a `..` value can never
+/// survive as a dot-segment that `Url::join` would normalize away. `/`, `?`, `#`,
+/// `%` are all escaped too, so a value can never introduce a new segment or
+/// query/fragment boundary.
+const PATH_SEGMENT_ENCODE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'~');
+
+/// Resolve one required path-param value to a safe, encoded segment string.
+/// Rejects missing/non-scalar/null values and the traversal tokens `.`/`..`
+/// with a caller-facing `InvalidPathParam` (never leaks the value).
+fn path_param_value(
+    op: &OperationHandle,
+    params: &serde_json::Value,
+    name: &str,
+) -> Result<String, OpenApiError> {
+    let raw = params
+        .get(name)
+        .ok_or_else(|| OpenApiError::InvalidPathParam {
+            label: op.operation_id.clone(),
+            param: name.to_string(),
+        })?;
+    let value = match raw {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        // Null / Object / Array are never a valid scalar path segment.
+        _ => {
+            return Err(OpenApiError::InvalidPathParam {
+                label: op.operation_id.clone(),
+                param: name.to_string(),
+            });
+        }
+    };
+    // Defense in depth: reject literal traversal tokens outright (belt to the
+    // encoder's suspenders, which already escapes `.`).
+    if value.is_empty() || value == "." || value == ".." {
+        return Err(OpenApiError::InvalidPathParam {
+            label: op.operation_id.clone(),
+            param: name.to_string(),
+        });
+    }
+    Ok(percent_encoding::utf8_percent_encode(&value, PATH_SEGMENT_ENCODE).to_string())
 }
 
-/// Substitute `{name}` path params from a flat params object, PATH_SEGMENT-encoded.
-/// Returns the resolved URL and the set of param keys consumed as path segments
-/// (so they are not also sent as query/body).
+/// Substitute `{name}` path params from a flat params object, encoding each value
+/// as an opaque path segment (see [`path_param_value`]). Returns the resolved URL
+/// and the set of param keys consumed as path segments (so they are not also sent
+/// as query/body). A `..`-valued param can never shorten the URL below the
+/// operator-configured base path — verified after the join.
 fn build_url_with_params(
     op: &OperationHandle,
     params: &serde_json::Value,
@@ -302,15 +368,8 @@ fn build_url_with_params(
                 }
                 name.push(nc);
             }
-            let value = params
-                .get(&name)
-                .map(json_scalar_to_string)
-                .ok_or_else(|| OpenApiError::UpstreamRequest {
-                    label: op.operation_id.clone(),
-                })?;
-            let encoded: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
-            // form-urlencoded uses '+' for space; path segments want %20.
-            path.push_str(&encoded.replace('+', "%20"));
+            let encoded = path_param_value(op, params, &name)?;
+            path.push_str(&encoded);
             consumed.push(name);
         } else {
             path.push(c);
@@ -319,18 +378,33 @@ fn build_url_with_params(
     // Ensure the base path ends with '/' so `join` appends rather than replaces
     // the last segment (mirrors rmcp-openapi's `with_base_url`).
     let mut base = op.base_url.clone();
-    if !base.path().ends_with('/') {
-        let with_slash = format!("{}/", base.path());
+    let base_path = base.path().to_string();
+    let base_prefix = if base_path.ends_with('/') {
+        base_path.clone()
+    } else {
+        let with_slash = format!("{base_path}/");
         base.set_path(&with_slash);
-    }
+        with_slash
+    };
     let joined =
         base.join(path.trim_start_matches('/'))
             .map_err(|_| OpenApiError::UpstreamRequest {
                 label: op.operation_id.clone(),
             })?;
+    // Belt-and-suspenders: the joined path MUST still start with the operator's
+    // base path prefix. Encoding already prevents `..` traversal; this catches
+    // any residual normalization that would escape the configured scope.
+    if !joined.path().starts_with(base_prefix.trim_end_matches('/')) {
+        return Err(OpenApiError::RequestBlockedPrivateAddr {
+            label: op.operation_id.clone(),
+        });
+    }
     Ok((consumed, joined))
 }
 
+/// Stringify a scalar JSON value for a query pair. Objects/arrays fall back to
+/// their JSON text (query values are far less structurally sensitive than path
+/// segments — the `url` crate percent-encodes them fully).
 fn json_scalar_to_string(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => s.clone(),
