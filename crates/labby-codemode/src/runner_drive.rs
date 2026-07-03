@@ -160,12 +160,19 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             Some(host) => (host.openapi_registry(), host.openapi_http_client()),
             None => (
                 // Host-less runs have an empty registry, so this client is never
-                // used to dispatch. Prefer the hardened build; fall back to a
-                // plain client (never sent) if TLS init somehow fails, rather
-                // than panicking a run that cannot call openapi anyway.
+                // used to dispatch (`registry.operation` errors before any HTTP).
+                // Prefer the hardened build; on the catastrophic TLS-init failure
+                // that makes it fail, log and fall back to a default client — the
+                // fallback is never sent, and `reqwest::Client::new()` would abort
+                // on the same condition anyway, so this only adds a WARN trace.
                 labby_openapi::OpenApiRegistry::default(),
-                labby_openapi::http::build_dispatch_client()
-                    .unwrap_or_else(|_| reqwest::Client::new()),
+                labby_openapi::http::build_dispatch_client().unwrap_or_else(|_| {
+                    tracing::warn!(
+                        service = "openapi",
+                        "hardened dispatch client build failed on host-less run; using default (unused) client"
+                    );
+                    reqwest::Client::new()
+                }),
             ),
         };
         let cfg = RunnerConfig {

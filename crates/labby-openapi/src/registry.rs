@@ -49,11 +49,7 @@ impl OpenApiRegistry {
     /// Load all specs concurrently, each bounded by `per_spec_timeout`. A spec
     /// that fails validation, fetch, or parse is omitted with a WARN. Extra
     /// specs beyond `MAX_SPECS` are dropped with a WARN.
-    pub async fn load(
-        cfg: OpenApiProviderConfig,
-        client: reqwest::Client,
-        per_spec_timeout: Duration,
-    ) -> Self {
+    pub async fn load(cfg: OpenApiProviderConfig, per_spec_timeout: Duration) -> Self {
         let total = cfg.specs.len();
         let specs: Vec<_> = cfg.specs.into_iter().take(MAX_SPECS).collect();
         if total > MAX_SPECS {
@@ -64,22 +60,19 @@ impl OpenApiRegistry {
                 "openapi: MAX_SPECS exceeded — extra specs dropped"
             );
         }
-        let loads = specs.into_iter().map(|spec| {
-            let client = client.clone();
-            async move {
-                let label = spec.label.clone();
-                match tokio::time::timeout(per_spec_timeout, load_one_spec(spec, &client)).await {
-                    Ok(Ok(entry)) => Some((label, entry)),
-                    Ok(Err(e)) => {
-                        tracing::warn!(service = "openapi", label = %label, kind = e.kind(),
+        let loads = specs.into_iter().map(|spec| async move {
+            let label = spec.label.clone();
+            match tokio::time::timeout(per_spec_timeout, load_one_spec(spec)).await {
+                Ok(Ok(entry)) => Some((label, entry)),
+                Ok(Err(e)) => {
+                    tracing::warn!(service = "openapi", label = %label, kind = e.kind(),
                             "openapi spec omitted: load failed");
-                        None
-                    }
-                    Err(_) => {
-                        tracing::warn!(service = "openapi", label = %label, kind = "timeout",
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!(service = "openapi", label = %label, kind = "timeout",
                             "openapi spec omitted: load timed out");
-                        None
-                    }
+                    None
                 }
             }
         });
@@ -141,12 +134,9 @@ impl OpenApiRegistry {
     }
 }
 
-async fn load_one_spec(
-    spec: OpenApiSpecConfig,
-    client: &reqwest::Client,
-) -> Result<SpecEntry, OpenApiError> {
+async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<SpecEntry, OpenApiError> {
     let base_url = crate::ssrf::validate_base_url(&spec)?;
-    let spec_json = fetch_spec_json(&spec.spec_source, client, &spec.label).await?;
+    let spec_json = fetch_spec_json(&spec.spec_source, &spec.label).await?;
     let descriptors =
         crate::convert::convert_spec(&spec.label, &spec_json, &spec.allowed_operations)?;
     let converted = descriptors.len();
@@ -189,15 +179,9 @@ async fn load_one_spec(
 }
 
 /// Fetch a spec document, capped at `MAX_SPEC_BYTES` before parse.
-async fn fetch_spec_json(
-    source: &SpecSource,
-    client: &reqwest::Client,
-    label: &str,
-) -> Result<String, OpenApiError> {
+async fn fetch_spec_json(source: &SpecSource, label: &str) -> Result<String, OpenApiError> {
     match source {
-        SpecSource::Url(url) => {
-            crate::http::fetch_url_capped(client, url, MAX_SPEC_BYTES, label).await
-        }
+        SpecSource::Url(url) => crate::http::fetch_url_capped(url, MAX_SPEC_BYTES, label).await,
         SpecSource::Path(path) => read_path_capped(path, MAX_SPEC_BYTES, label).await,
     }
 }
@@ -272,9 +256,8 @@ mod tests {
                 bad_spec("badlabel", "https://10.255.255.1"),
             ],
         };
-        let client = crate::http::build_spec_fetch_client().expect("test spec client");
         let started = std::time::Instant::now();
-        let reg = OpenApiRegistry::load(cfg, client, Duration::from_secs(2)).await;
+        let reg = OpenApiRegistry::load(cfg, Duration::from_secs(2)).await;
         assert!(reg.labels().contains(&"goodlabel".to_string()));
         assert!(!reg.labels().contains(&"badlabel".to_string()));
         assert!(
@@ -288,12 +271,7 @@ mod tests {
         let cfg = OpenApiProviderConfig {
             specs: vec![good_fixture_spec("vendor")],
         };
-        let reg = OpenApiRegistry::load(
-            cfg,
-            crate::http::build_spec_fetch_client().expect("test spec client"),
-            Duration::from_secs(2),
-        )
-        .await;
+        let reg = OpenApiRegistry::load(cfg, Duration::from_secs(2)).await;
         let op = reg.operation("vendor", "getUser").expect("op present");
         assert_eq!(op.method, reqwest::Method::GET);
         assert_eq!(op.path_template, "/users/{id}");

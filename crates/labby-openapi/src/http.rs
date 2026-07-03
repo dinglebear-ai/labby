@@ -32,18 +32,6 @@ fn base_builder() -> reqwest::ClientBuilder {
         .timeout(PER_CALL_TIMEOUT)
 }
 
-/// Client used to fetch spec documents at load time. The per-request SSRF pin is
-/// applied in [`fetch_url_capped`], so this is a plain hardened base client.
-///
-/// # Errors
-/// [`OpenApiError::ClientBuildFailed`] on catastrophic TLS/root-store init
-/// failure — fallible per the workspace `HttpClient::new()` convention.
-pub fn build_spec_fetch_client() -> Result<reqwest::Client, OpenApiError> {
-    base_builder()
-        .build()
-        .map_err(|_| OpenApiError::ClientBuildFailed)
-}
-
 /// Client used for operation dispatch. Same hardening; the per-request pin is
 /// applied in [`execute_operation`]. Kept as a shared handle on the host/runner.
 ///
@@ -169,17 +157,15 @@ async fn collect_capped(
     })
 }
 
-/// GET `url` with the hardened pinned client, capping the body at `cap` bytes.
-/// Used for spec fetch at load time. The `client` arg is unused for the send (the
-/// pin is applied to a freshly built client — see [`pinned_client_for`]); it is
-/// retained so the load path threads the same logical client the caller owns.
+/// GET `url` with a hardened, per-request-pinned client, capping the body at
+/// `cap` bytes. Used for spec fetch at load time. The client is built fresh here
+/// (the SSRF pin is applied at build time — see [`pinned_client_for`]), so there
+/// is no shared client to thread in.
 pub async fn fetch_url_capped(
-    client: &reqwest::Client,
     url: &url::Url,
     cap: usize,
     label: &str,
 ) -> Result<String, OpenApiError> {
-    let _ = client;
     let (pinned_client, pinned_ip) = pinned_client_for(url, label).await?;
     let resp = pinned_client
         .get(url.clone())

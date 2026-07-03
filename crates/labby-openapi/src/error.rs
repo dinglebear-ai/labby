@@ -65,7 +65,8 @@ pub enum OpenApiError {
     /// (`.`/`..`). Caller-facing (`invalid_param`), never leaks the value.
     #[error("operation `{label}` path parameter `{param}` is missing or invalid")]
     InvalidPathParam {
-        /// Spec label (operationId, for attribution).
+        /// The operationId, for non-secret attribution (dispatch-path errors
+        /// carry the operationId here, not the spec instance label).
         label: String,
         /// The offending path parameter name (non-secret).
         param: String,
@@ -96,9 +97,10 @@ impl OpenApiError {
     /// `SpecTooLarge`) this returns `"config_error"` — the accurate *log* tag at
     /// spec-load time, where these are surfaced (`registry.rs`). Those variants
     /// never reach a caller as a wire error (dispatch only produces
-    /// `UnknownInstance`/`UnknownOperation`/`RequestBlockedPrivateAddr`/
-    /// `Resolve*`/`Upstream*`), so the `From<OpenApiError> for ToolError`
-    /// mapping to `invalid_param` is a fallback, not the live wire kind.
+    /// `UnknownInstance`/`UnknownOperation`/`InvalidPathParam`/
+    /// `RequestBlockedPrivateAddr`/`Resolve*`/`Upstream*`), so the
+    /// `From<OpenApiError> for ToolError` mapping to `invalid_param` is a
+    /// fallback, not the live wire kind.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
