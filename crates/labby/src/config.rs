@@ -1701,6 +1701,18 @@ pub fn load_openapi_provider_config(
     let mut seen = std::collections::HashSet::new();
     for raw in &section.specs {
         let label = raw.label.trim().to_string();
+        // The wire dispatch key is `openapi::<label>.<operationId>`, split on the
+        // first `.` (operationIds may themselves contain `.`). A label containing
+        // `.`, `:`, or whitespace would misroute that split, so restrict labels to
+        // an unambiguous charset. Also keeps the `OPENAPI_<LABEL>_*` credential
+        // env-var lookup well-formed.
+        if label.is_empty()
+            || !label
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(ConfigError::InvalidLabel { label });
+        }
         if labby_openapi::RESERVED_NAMESPACES.contains(&label.as_str()) {
             return Err(ConfigError::ReservedLabel { label });
         }
@@ -2527,6 +2539,20 @@ spec_url = "https://api.example.com/openapi.json"
 allowed_operations = ["getUser"]"#;
         let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
         assert!(matches!(err, ConfigError::ReservedLabel { ref label } if label == "git"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn openapi_dotted_label_rejected() {
+        // A label containing `.` would misroute the `openapi::<label>.<operationId>`
+        // dispatch split — reject it at config load.
+        let toml = r#"[[openapi.specs]]
+label = "ven.dor"
+base_url = "https://api.example.com"
+spec_url = "https://api.example.com/openapi.json"
+allowed_operations = ["getUser"]"#;
+        let err = load_openapi_provider_config(&openapi_section(toml), &|_| None).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidLabel { ref label } if label == "ven.dor"));
     }
 
     #[cfg(feature = "gateway")]

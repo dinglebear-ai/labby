@@ -1,5 +1,5 @@
 use crate::config::{OpenApiSpecConfig, SpecSource};
-use crate::ssrf::validate_base_url;
+use crate::ssrf::{validate_base_url, validate_spec_url};
 
 fn spec(base: &str) -> OpenApiSpecConfig {
     OpenApiSpecConfig {
@@ -34,4 +34,21 @@ fn loopback_rejected() {
 #[test]
 fn plain_http_rejected() {
     assert!(validate_base_url(&spec("http://api.example.com")).is_err());
+}
+
+#[test]
+fn spec_url_public_https_ok() {
+    let url = "https://api.example.com/openapi.json".parse().unwrap();
+    assert!(validate_spec_url("vendor", &url).is_ok());
+}
+
+#[test]
+fn spec_url_private_and_non_https_rejected() {
+    // The remote spec document URL is guarded like base_url — before any fetch.
+    let rfc1918 = "https://10.0.0.5/openapi.json".parse().unwrap();
+    assert!(validate_spec_url("vendor", &rfc1918).is_err());
+    let http = "http://api.example.com/openapi.json".parse().unwrap();
+    assert!(validate_spec_url("vendor", &http).is_err());
+    let loopback = "https://127.0.0.1/openapi.json".parse().unwrap();
+    assert!(validate_spec_url("vendor", &loopback).is_err());
 }

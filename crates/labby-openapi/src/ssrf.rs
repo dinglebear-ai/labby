@@ -22,3 +22,21 @@ pub fn validate_base_url(cfg: &OpenApiSpecConfig) -> Result<url::Url, OpenApiErr
         }
     })
 }
+
+/// Validate a remote spec-document URL (`SpecSource::Url`) with the SAME canonical
+/// guard as [`validate_base_url`], BEFORE the boot-time fetch. Without this the
+/// spec fetch — which happens during `labby serve` startup — could target an
+/// arbitrary endpoint; the request-time peer-IP re-check in `http.rs` still
+/// applies, but this rejects userinfo / non-https / private-TLD / private-IP-literal
+/// spec URLs up front with a clear error rather than mid-fetch.
+///
+/// # Errors
+/// Returns [`OpenApiError::SsrfRejected`] when the guard rejects the URL.
+pub fn validate_spec_url(label: &str, url: &url::Url) -> Result<(), OpenApiError> {
+    labby_primitives::ssrf::parse_validated_https_url(url.as_str())
+        .map(|_| ())
+        .map_err(|e| OpenApiError::SsrfRejected {
+            label: label.to_string(),
+            reason: e.kind().to_string(),
+        })
+}

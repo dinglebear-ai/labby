@@ -178,10 +178,15 @@ async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<SpecEntry, OpenApiErro
     Ok(SpecEntry { operations })
 }
 
-/// Fetch a spec document, capped at `MAX_SPEC_BYTES` before parse.
+/// Fetch a spec document, capped at `MAX_SPEC_BYTES` before parse. A remote
+/// `SpecSource::Url` is SSRF-validated (same canonical guard as `base_url`)
+/// BEFORE any outbound request.
 async fn fetch_spec_json(source: &SpecSource, label: &str) -> Result<String, OpenApiError> {
     match source {
-        SpecSource::Url(url) => crate::http::fetch_url_capped(url, MAX_SPEC_BYTES, label).await,
+        SpecSource::Url(url) => {
+            crate::ssrf::validate_spec_url(label, url)?;
+            crate::http::fetch_url_capped(url, MAX_SPEC_BYTES, label).await
+        }
         SpecSource::Path(path) => read_path_capped(path, MAX_SPEC_BYTES, label).await,
     }
 }
