@@ -24,7 +24,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .env("RUSTFLAGS", "")
         .env("CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS", "")
         .env("CARGO_HOME", plugin_build_root.join("cargo-home"))
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            format!(
+                "--remap-path-prefix={}=/labby-codemode-javy-plugin",
+                plugin_build_root.display()
+            ),
+        )
         .arg("--manifest-path")
         .arg(&plugin_manifest)
         .arg("--target-dir")
