@@ -231,7 +231,7 @@ If `walrus` is already pulled transitively, keep it direct because `wasm_plugin.
 
 - [ ] **Step 4: Decide and implement the plugin artifact source**
 
-Preferred v1 path: build the Lab-owned plugin from source at compile time, run the real `wasmtime-wizer` preinitialization step, write the preinitialized bytes to `OUT_DIR/plugin.wasm`, and assert the SHA256 recorded in `crates/labby-codemode/plugin.sha256` when that file is non-empty. Do not use the default Javy plugin because it does not register Lab's bridge globals and would force a stream-IO protocol rewrite.
+Preferred v1 path: build the Lab-owned plugin from source at compile time, assert the raw plugin SHA256 recorded in `crates/labby-codemode/plugin.sha256`, run the real `wasmtime-wizer` preinitialization step, and write the preinitialized bytes to `OUT_DIR/plugin.wasm`. Do not use the default Javy plugin because it does not register Lab's bridge globals and would force a stream-IO protocol rewrite.
 
 Create `crates/labby-codemode/javy-plugin/Cargo.toml`:
 

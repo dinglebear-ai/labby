@@ -3127,7 +3127,6 @@ dependencies = [
  "walrus",
  "wasmtime",
  "wasmtime-wasi",
- "wasmtime-wizer",
  "wat",
 ]
 

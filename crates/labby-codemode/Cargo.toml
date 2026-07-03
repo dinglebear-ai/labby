@@ -45,7 +45,6 @@ javy-codegen = { git = "https://github.com/bytecodealliance/javy", tag = "v9.0.0
 deterministic-wasi-ctx = "=4.0.3"
 wasmtime = "=45.0.3"
 wasmtime-wasi = "=45.0.3"
-wasmtime-wizer = { version = "=45.0.3", features = ["wasmtime"] }
 
 # JavaScript AST normalization (export-shape detection in normalize.rs).
 boa_ast = "0.21.1"

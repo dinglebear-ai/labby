@@ -41,7 +41,7 @@ Created and used the isolated worktree `codemodel-wasmtime-runtime-implementatio
 - Keep Code Mode as a long-lived runner process with a fresh Wasmtime `Store` and generated instance per execution.
 - Preserve async bridge fan-out with sequence IDs and host-settled pending promises instead of a synchronous bridge.
 - Validate generated Wasm imports against the Javy plugin namespace.
-- Pin `crates/labby-codemode/plugin.sha256` to the preinitialized plugin artifact hash.
+- Pin `crates/labby-codemode/plugin.sha256` to the raw locked Javy plugin artifact hash; the preinitialized hash is emitted as build metadata.
 - Treat runner-side codegen timeout as unhealthy so pooled runners are evicted.
 
 ## Files Changed
@@ -56,7 +56,7 @@ Created and used the isolated worktree `codemodel-wasmtime-runtime-implementatio
 | created | `crates/labby-codemode/javy-plugin/Cargo.toml` | Lab-owned Javy plugin crate | PR #183 file list |
 | created | `crates/labby-codemode/javy-plugin/Cargo.lock` | Locked plugin crate deps | PR #183 file list |
 | created | `crates/labby-codemode/javy-plugin/src/lib.rs` | Plugin bridge exports | PR #183 file list |
-| modified | `crates/labby-codemode/plugin.sha256` | Pin remapped stable preinitialized plugin hash | commit `da50451e` |
+| modified | `crates/labby-codemode/plugin.sha256` | Pin stable raw Javy plugin hash | commit `da50451e` |
 | modified | `crates/labby-codemode/src/runner.rs` | Initialize and reuse Wasmtime runner | PR #183 file list |
 | modified | `crates/labby-codemode/src/runner_drive.rs` | Evict runner on infrastructure timeout | commit `bec77558` |
 | created | `crates/labby-codemode/src/runner_io.rs` | Shared runner protocol I/O helpers | PR #183 file list |

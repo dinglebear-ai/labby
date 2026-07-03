@@ -81,6 +81,8 @@ wrappers = [
     "ittapi",
     "javy",
     "javy-codegen",
+    "javy-plugin-api",
+    "labby-codemode-javy-plugin",
     "swc_common",
     "vergen",
     "vergen-lib",

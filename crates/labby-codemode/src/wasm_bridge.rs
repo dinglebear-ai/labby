@@ -18,7 +18,10 @@ pub(crate) struct WasmRunState {
     pub(crate) compile_src: Option<TypedFunc<(i32, i32), i32>>,
     pub(crate) invoke: Option<TypedFunc<(i32, i32, i32, i32, i32), ()>>,
     pub(crate) cabi_realloc: Option<TypedFunc<(i32, i32, i32, i32), i32>>,
+    pub(crate) settlement_bytecode: Option<(i32, i32)>,
+    pub(crate) pending_settlement_input: Option<String>,
     pub(crate) done: Option<Result<CodeModeRunnerResult, ToolError>>,
+    pub(crate) emitted_operations: u64,
     pub(crate) bridge_roundtrip_ms: u128,
     pub(crate) limiter: crate::wasm_runner::CodeModeLimiter,
 }
@@ -33,7 +36,10 @@ impl Default for WasmRunState {
             compile_src: None,
             invoke: None,
             cabi_realloc: None,
+            settlement_bytecode: None,
+            pending_settlement_input: None,
             done: None,
+            emitted_operations: 0,
             bridge_roundtrip_ms: 0,
             limiter: crate::wasm_runner::CodeModeLimiter,
         }
@@ -149,6 +155,9 @@ pub(crate) fn install_lab_imports(
         lab_emit_snippet_resolve,
     )?;
     linker.func_wrap(namespace, "lab_emit_done", lab_emit_done)?;
+    linker.func_wrap(namespace, "lab_pending_input_len", lab_pending_input_len)?;
+    linker.func_wrap(namespace, "lab_pending_input_copy", lab_pending_input_copy)?;
+    linker.func_wrap(namespace, "lab_console_log", lab_console_log)?;
     Ok(())
 }
 
@@ -220,7 +229,7 @@ fn lab_emit_snippet_resolve(
 }
 
 fn emit_with_payload<T, F>(
-    caller: Caller<'_, WasmRunState>,
+    mut caller: Caller<'_, WasmRunState>,
     ptr: i32,
     len: i32,
     build: F,
@@ -244,6 +253,7 @@ where
     let seq = runner_next_seq_blocking()?;
     let output = build(payload, seq)?;
     runner_emit_blocking(output)?;
+    caller.data_mut().emitted_operations = caller.data().emitted_operations.saturating_add(1);
     Ok(i32::try_from(seq)?)
 }
 
@@ -273,6 +283,65 @@ fn lab_emit_done(mut caller: Caller<'_, WasmRunState>, ptr: i32, len: i32) -> wa
     Ok(())
 }
 
+fn lab_console_log(caller: Caller<'_, WasmRunState>, ptr: i32, len: i32) -> wasmtime::Result<()> {
+    let Some(memory) = caller.data().memory else {
+        return Err(wasmtime::Error::msg(
+            "Code Mode Wasm memory was not registered",
+        ));
+    };
+    let message = read_guest_string(
+        caller.as_context(),
+        &memory,
+        ptr,
+        len,
+        CODE_MODE_WASM_BRIDGE_MAX_BYTES,
+    )?;
+    eprintln!("{message}");
+    Ok(())
+}
+
+fn lab_pending_input_len(caller: Caller<'_, WasmRunState>) -> wasmtime::Result<i32> {
+    let len = caller
+        .data()
+        .pending_settlement_input
+        .as_deref()
+        .map(str::len)
+        .unwrap_or(0);
+    i32::try_from(len).map_err(Into::into)
+}
+
+fn lab_pending_input_copy(
+    mut caller: Caller<'_, WasmRunState>,
+    ptr: i32,
+    len: i32,
+) -> wasmtime::Result<()> {
+    let Some(memory) = caller.data().memory else {
+        return Err(wasmtime::Error::msg(
+            "Code Mode Wasm memory was not registered",
+        ));
+    };
+    if ptr < 0 || len < 0 {
+        return Err(wasmtime::Error::msg(
+            "Code Mode Wasm pending input copy received a negative pointer or length",
+        ));
+    }
+    let input = caller
+        .data()
+        .pending_settlement_input
+        .as_deref()
+        .unwrap_or_default()
+        .as_bytes()
+        .to_vec();
+    let len = usize::try_from(len)?;
+    if len != input.len() {
+        return Err(wasmtime::Error::msg(
+            "Code Mode Wasm pending input copy length changed",
+        ));
+    }
+    memory.write(caller.as_context_mut(), ptr as usize, &input)?;
+    Ok(())
+}
+
 pub(crate) fn settle_pending_operation(
     store: &mut Store<WasmRunState>,
     input: &CodeModeRunnerInput,
@@ -282,16 +351,10 @@ pub(crate) fn settle_pending_operation(
         sdk_kind: "internal_error".to_string(),
         message: format!("failed to encode Code Mode runner input for Wasm: {err}"),
     })?;
-    invoke_plugin_script(
-        store,
-        &format!(
-            "globalThis.__labSettlePendingOperation({});",
-            serde_json::to_string(&message).map_err(|err| ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: format!("failed to quote Code Mode runner input for Wasm: {err}"),
-            })?
-        ),
-    )?;
+    store.data_mut().pending_settlement_input = Some(message);
+    let result = invoke_plugin_function(store, "__labSettlePendingOperationEntrypoint");
+    store.data_mut().pending_settlement_input = None;
+    result?;
     store.data_mut().bridge_roundtrip_ms = store
         .data()
         .bridge_roundtrip_ms
@@ -299,10 +362,85 @@ pub(crate) fn settle_pending_operation(
     Ok(())
 }
 
-pub(crate) fn invoke_plugin_script(
+pub(crate) fn compile_settlement_entrypoints(
+    store: &mut Store<WasmRunState>,
+) -> Result<(), ToolError> {
+    let source = r#"
+export function __labSettlePendingOperationEntrypoint() {
+  globalThis.__labSettlePendingOperation(globalThis.__labReadPendingInput());
+}
+export async function __labPumpEventLoop() {
+  await Promise.resolve();
+}
+"#;
+    let (bytecode_ptr, bytecode_len) = compile_plugin_script(store, source)?;
+    store.data_mut().settlement_bytecode = Some((bytecode_ptr, bytecode_len));
+    Ok(())
+}
+
+pub(crate) fn pump_event_loop(store: &mut Store<WasmRunState>) -> Result<(), ToolError> {
+    invoke_plugin_function(store, "__labPumpEventLoop")
+}
+
+pub(crate) fn invoke_plugin_function(
+    store: &mut Store<WasmRunState>,
+    function_name: &str,
+) -> Result<(), ToolError> {
+    let (bytecode_ptr, bytecode_len) =
+        store
+            .data()
+            .settlement_bytecode
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: "Code Mode Wasm settlement bytecode is not registered".to_string(),
+            })?;
+    let memory = store.data().memory.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: "Code Mode Wasm memory is not registered".to_string(),
+    })?;
+    let cabi_realloc = store
+        .data()
+        .cabi_realloc
+        .clone()
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: "Code Mode Wasm cabi_realloc is not registered".to_string(),
+        })?;
+    let invoke = store.data().invoke.clone().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: "Code Mode Wasm invoke is not registered".to_string(),
+    })?;
+    let name_bytes = function_name.as_bytes();
+    let name_ptr = cabi_realloc
+        .call(
+            store.as_context_mut(),
+            (0, 0, 1, i32::try_from(name_bytes.len()).unwrap()),
+        )
+        .map_err(wasm_call_error)?;
+    memory
+        .write(store.as_context_mut(), name_ptr as usize, name_bytes)
+        .map_err(|err| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to write Code Mode Wasm function name: {err}"),
+        })?;
+    invoke
+        .call(
+            store.as_context_mut(),
+            (
+                bytecode_ptr,
+                bytecode_len,
+                1,
+                name_ptr,
+                i32::try_from(name_bytes.len()).unwrap(),
+            ),
+        )
+        .map_err(wasm_call_error)
+}
+
+pub(crate) fn compile_plugin_script(
     store: &mut Store<WasmRunState>,
     script: &str,
-) -> Result<(), ToolError> {
+) -> Result<(i32, i32), ToolError> {
     let memory = store.data().memory.ok_or_else(|| ToolError::Sdk {
         sdk_kind: "internal_error".to_string(),
         message: "Code Mode Wasm memory is not registered".to_string(),
@@ -323,10 +461,6 @@ pub(crate) fn invoke_plugin_script(
             sdk_kind: "internal_error".to_string(),
             message: "Code Mode Wasm compile-src is not registered".to_string(),
         })?;
-    let invoke = store.data().invoke.clone().ok_or_else(|| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: "Code Mode Wasm invoke is not registered".to_string(),
-    })?;
 
     let bytes = script.as_bytes();
     if bytes.len() > CODE_MODE_WASM_BRIDGE_MAX_BYTES {
@@ -370,12 +504,7 @@ pub(crate) fn invoke_plugin_script(
             message: format!("failed to compile Code Mode Wasm settlement script: {error}"),
         });
     }
-    invoke
-        .call(
-            store.as_context_mut(),
-            (bytecode_ptr, bytecode_len, 0, 0, 0),
-        )
-        .map_err(wasm_call_error)
+    Ok((bytecode_ptr, bytecode_len))
 }
 
 fn wasm_call_error(err: wasmtime::Error) -> ToolError {

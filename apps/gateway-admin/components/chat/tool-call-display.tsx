@@ -187,7 +187,12 @@ export function ToolCallDisplay({ toolCall, isChild = false }: ToolCallDisplayPr
                   Output
                 </p>
                 {typeof toolCall.output === 'string' ? (
-                  <div className="aurora-scrollbar max-h-72 overflow-auto rounded-aurora-1 border border-aurora-border-default/70 bg-aurora-page-bg px-3 py-2.5 text-[12px] leading-[1.6] whitespace-pre-wrap text-aurora-text-primary">
+                  <div
+                    aria-label="Tool output"
+                    className="aurora-scrollbar max-h-72 overflow-auto rounded-aurora-1 border border-aurora-border-default/70 bg-aurora-page-bg px-3 py-2.5 text-[12px] leading-[1.6] whitespace-pre-wrap text-aurora-text-primary focus-visible:border-aurora-accent-primary focus-visible:ring-aurora-accent-primary/34 focus-visible:ring-[3px] focus-visible:outline-none"
+                    role="region"
+                    tabIndex={0}
+                  >
                     {toolCall.output}
                   </div>
                 ) : (

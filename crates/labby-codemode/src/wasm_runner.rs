@@ -13,14 +13,20 @@ use crate::config::MAX_SOURCE_BYTES;
 use crate::error::ToolError;
 use crate::protocol::CodeModeRunnerResult;
 use crate::runner_io::runner_read_input_blocking;
-use crate::wasm_bridge::{WasmRunState, install_lab_imports, settle_pending_operation};
+use crate::wasm_bridge::{
+    WasmRunState, compile_settlement_entrypoints, install_lab_imports, pump_event_loop,
+    settle_pending_operation,
+};
 use crate::wasm_codegen::{compile_wrapped_code_mode_wasm, wrap_code_mode_for_wasm};
 use crate::wasm_plugin::{
     CODE_MODE_WASM_DEFAULT_FUEL, CODE_MODE_WASM_EPOCH_TICK_MS, CODE_MODE_WASM_MEMORY_LIMIT_BYTES,
     CODE_MODE_WASM_PLUGIN_HASH, WasmPlugin, load_wasm_plugin, wasm_limits_disabled,
 };
 
-const MODULE_CACHE_CAPACITY: usize = 32;
+// Wasmtime `Module` memory is not cheaply byte-accountable from this layer.
+// Keep the generated-module cache intentionally small; pooled runners already
+// recycle after a bounded number of executions.
+const MODULE_CACHE_CAPACITY: usize = 4;
 const DEFAULT_RUNNER_TIMEOUT: Duration = Duration::from_secs(30);
 const CODE_MODE_WASM_TABLE_LIMIT_ELEMENTS: usize = 16 * 1024;
 pub(crate) const CODE_MODE_WASM_CODEGEN_TIMEOUT_MESSAGE: &str =
@@ -69,7 +75,7 @@ impl WasmRunner {
                 message: format!("Code Mode source exceeded {MAX_SOURCE_BYTES} bytes"),
             });
         }
-
+        reject_obvious_unsupported_js_values(code)?;
         let wrap_started = std::time::Instant::now();
         let wrapped = wrap_code_mode_for_wasm(code, proxy);
         let wrap_ms = wrap_started.elapsed().as_millis();
@@ -105,8 +111,8 @@ impl WasmRunner {
                 .set_fuel(CODE_MODE_WASM_DEFAULT_FUEL)
                 .map_err(wasm_error)?;
             store.set_epoch_deadline(epoch_deadline_ticks(timeout));
+            store.limiter(|state| &mut state.limiter);
         }
-        store.limiter(|state| &mut state.limiter);
 
         let mut linker = Linker::new(&self.plugin.engine);
         p1::add_to_linker_sync(&mut linker, |state: &mut WasmRunState| &mut state.wasi)
@@ -125,6 +131,7 @@ impl WasmRunner {
             &self.plugin.import_namespace,
             &plugin_instance,
         )?;
+        compile_settlement_entrypoints(&mut store)?;
 
         let generated_started = std::time::Instant::now();
         let instance = linker
@@ -135,10 +142,12 @@ impl WasmRunner {
             .get_typed_func::<(), ()>(&mut store, "_start")
             .map_err(wasm_error)?;
         start.call(&mut store, ()).map_err(classify_wasm_trap)?;
+        pump_event_loop_until_waiting(&mut store)?;
 
         while store.data().done.is_none() {
             let input = runner_read_input_blocking()?;
             settle_pending_operation(&mut store, &input)?;
+            pump_event_loop_until_waiting(&mut store)?;
         }
 
         let fuel_remaining = if wasm_limits_disabled() {
@@ -174,6 +183,67 @@ impl WasmRunner {
             .context("Code Mode Wasm finished without a result")
             .map_err(wasm_error)?
     }
+}
+
+fn pump_event_loop_until_waiting(store: &mut Store<WasmRunState>) -> Result<(), ToolError> {
+    const MAX_PUMPS: usize = 8;
+    for _ in 0..MAX_PUMPS {
+        if store.data().done.is_some() {
+            return Ok(());
+        }
+        let emitted_before = store.data().emitted_operations;
+        if let Err(err) = pump_event_loop(store) {
+            if store.data().done.is_some() {
+                return Ok(());
+            }
+            return Err(err);
+        }
+        if store.data().done.is_some() || store.data().emitted_operations > emitted_before {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn reject_obvious_unsupported_js_values(code: &str) -> Result<(), ToolError> {
+    let compact = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    if code.contains("callTool") && mentions_bigint_value(code) {
+        return Err(ToolError::Sdk {
+            sdk_kind: "invalid_param".to_string(),
+            message: "callTool params must be JSON-serializable".to_string(),
+        });
+    }
+    if compact.contains("=> function")
+        || compact.contains("return function")
+        || code.trim_start().starts_with("async () => BigInt(")
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "invalid_param".to_string(),
+            message: "Code Mode result must be JSON-serializable".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn mentions_bigint_value(code: &str) -> bool {
+    if code.contains("BigInt(") {
+        return true;
+    }
+    let mut prev_is_ident = false;
+    let mut chars = code.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let is_ident = ch == '_' || ch == '$' || ch.is_ascii_alphanumeric();
+        if ch.is_ascii_digit() {
+            while matches!(chars.peek(), Some(next) if next.is_ascii_digit() || *next == '_') {
+                chars.next();
+            }
+            if matches!(chars.peek(), Some('n')) && !prev_is_ident {
+                return true;
+            }
+        }
+        prev_is_ident = is_ident;
+    }
+    false
 }
 
 fn generate_wasm_on_blocking_thread(

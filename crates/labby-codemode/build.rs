@@ -17,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=javy-plugin/Cargo.lock");
     println!("cargo:rerun-if-changed=javy-plugin/src/lib.rs");
     println!("cargo:rerun-if-changed=plugin.sha256");
+    println!("cargo:rerun-if-env-changed=LABBY_CODEMODE_PLUGIN_TOOLCHAIN");
 
     let mut command = plugin_build_command();
     command.env_clear();
@@ -51,23 +52,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let raw =
         std::fs::read(plugin_target.join("wasm32-wasip1/release/labby_codemode_javy_plugin.wasm"))?;
-    let initialized = labby_codemode_build_support::preinitialize_javy_plugin(&raw)?;
-    let actual = labby_codemode_build_support::sha256_hex(&initialized);
+    let raw_actual = labby_codemode_build_support::sha256_hex(&raw);
     let expected = std::fs::read_to_string(manifest_dir.join("plugin.sha256"))?;
     let expected = expected.trim();
     if expected.is_empty() {
         return Err("plugin.sha256 must not be empty".into());
     }
-    if expected != actual {
-        return Err(format!(
-            "preinitialized plugin hash mismatch: expected {expected}, got {actual}"
-        )
-        .into());
+    if expected != raw_actual {
+        return Err(
+            format!("Javy plugin hash mismatch: expected {expected}, got {raw_actual}").into(),
+        );
     }
 
+    let initialized = labby_codemode_build_support::preinitialize_javy_plugin(&raw)?;
+    let actual = labby_codemode_build_support::sha256_hex(&initialized);
+
     std::fs::write(out.join("plugin.wasm"), initialized)?;
+    println!("cargo:warning=labby Code Mode raw plugin sha256 {raw_actual}");
     println!("cargo:rustc-env=LABBY_CODEMODE_PLUGIN_SHA256={actual}");
-    println!("cargo:warning=labby Code Mode plugin sha256 {actual}");
+    println!("cargo:warning=labby Code Mode preinitialized plugin sha256 {actual}");
     plugin_build_root.cleanup();
     Ok(())
 }

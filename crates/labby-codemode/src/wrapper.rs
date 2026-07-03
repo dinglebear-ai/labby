@@ -55,6 +55,9 @@ var __labBinaryTypes = {
   ArrayBuffer: typeof ArrayBuffer !== "undefined" ? ArrayBuffer : null
 };
 function __labEncodeResult(value) {
+  if (typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") {
+    throw new TypeError("unsupported " + typeof value);
+  }
   if (value == null) return value;
   if (typeof ArrayBuffer !== "undefined" && value instanceof ArrayBuffer) {
     return { __labBinary: "base64", type: "ArrayBuffer", data: __labBase64FromBytes(new Uint8Array(value)) };
@@ -133,6 +136,6 @@ pub(crate) fn code_mode_main_invoker(code: &str) -> String {
     );
     body.push_str(");\n");
     body.push_str("  }\n");
-    body.push_str("  return __labEncodeResult(await __codeModeMain());\n");
+    body.push_str("  return await __codeModeMain();\n");
     body
 }

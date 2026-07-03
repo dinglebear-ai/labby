@@ -440,7 +440,12 @@ export function ToolPayloadPreview({
           <CodeBlockCopyButton className="size-7 rounded border border-aurora-border-default bg-aurora-panel-strong text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary" />
         </CodeBlock>
       ) : (
-        <div className="aurora-scrollbar max-h-72 overflow-auto rounded-aurora-1 border border-aurora-border-default/70 bg-aurora-page-bg px-3 py-2.5 text-[12px] leading-[1.6] whitespace-pre-wrap text-aurora-text-primary">
+        <div
+          aria-label={`${label} plain text preview`}
+          className="aurora-scrollbar max-h-72 overflow-auto rounded-aurora-1 border border-aurora-border-default/70 bg-aurora-page-bg px-3 py-2.5 text-[12px] leading-[1.6] whitespace-pre-wrap text-aurora-text-primary focus-visible:border-aurora-accent-primary focus-visible:ring-aurora-accent-primary/34 focus-visible:ring-[3px] focus-visible:outline-none"
+          role="region"
+          tabIndex={0}
+        >
           {text}
         </div>
       )}

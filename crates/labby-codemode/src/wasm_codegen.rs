@@ -16,7 +16,23 @@ globalThis.__labSnippetResolvedBytes = 0;
 globalThis.__labSnippetMaxDepth = 8;
 globalThis.__labSnippetMaxResolves = 32;
 globalThis.__labSnippetMaxBytes = 262144;
+globalThis.__labDoneEmitted = false;
+globalThis.console = {{
+  log: (...args) => globalThis.__labConsoleLog(args.map((arg) => {{
+    try {{
+      if (typeof arg === "string") return arg;
+      return JSON.stringify(arg);
+    }} catch (_error) {{
+      return String(arg);
+    }}
+  }}).join(" ")),
+}};
 {codec}
+globalThis.__labEmitError = (message) => {{
+  if (globalThis.__labDoneEmitted) return;
+  globalThis.__labDoneEmitted = true;
+  globalThis.__labEmitDone(JSON.stringify({{ error: message }}));
+}};
 globalThis.__labEncodeJsonValue = (label, value) => {{
   try {{
     const encoded = __labEncodeResult(value);
@@ -32,8 +48,15 @@ globalThis.__labEncodeJsonValue = (label, value) => {{
 globalThis.callTool = (id, params = {{}}) => {{
   if (typeof id !== "string" || id.trim() === "") throw new TypeError("callTool id must be a non-empty string");
   if (params === null || typeof params !== "object" || Array.isArray(params)) throw new TypeError("callTool params must be a JSON object");
+  let encodedParams;
+  try {{
+    encodedParams = __labEncodeJsonValue("callTool params", params);
+  }} catch (error) {{
+    globalThis.__labEmitError(String(error && error.message || error));
+    return new Promise(() => {{}});
+  }}
   return new Promise((resolve, reject) => {{
-    const seq = globalThis.__labEmitToolCall(JSON.stringify({{ id, params: __labEncodeJsonValue("callTool params", params) }}));
+    const seq = globalThis.__labEmitToolCall(JSON.stringify({{ id, params: encodedParams }}));
     globalThis.__labPendingToolCalls.set(seq, {{ kind: "tool", resolve, reject }});
   }});
 }};
@@ -93,23 +116,26 @@ globalThis.__labSettlePendingOperation = (message) => {{
 }};
 globalThis.__labSettleToolCall = globalThis.__labSettlePendingOperation;
 globalThis.__labEmitSuccess = (value) => {{
+  if (globalThis.__labDoneEmitted) return;
   try {{
     if (value === undefined) {{
+      globalThis.__labDoneEmitted = true;
       globalThis.__labEmitDone(JSON.stringify({{ has_result: false }}));
       return;
     }}
+    globalThis.__labDoneEmitted = true;
     globalThis.__labEmitDone(JSON.stringify({{ result: __labEncodeJsonValue("Code Mode result", value), has_result: true }}));
   }} catch (error) {{
     const raw = String(error && error.message || error);
     const message = raw.indexOf("Code Mode result must be JSON-serializable") !== -1 ? raw : "Code Mode result must be JSON-serializable: " + raw;
-    globalThis.__labEmitDone(JSON.stringify({{ error: message }}));
+    globalThis.__labEmitError(message);
   }}
 }};
 {proxy}
 globalThis.__labMainPromise = (async () => {{
 {invoker}}})().then(
   (value) => globalThis.__labEmitSuccess(value),
-  (error) => globalThis.__labEmitDone(JSON.stringify({{ error: String(error && error.message || error) }}))
+  (error) => globalThis.__labEmitError(String(error && error.message || error))
 );
 "#,
         codec = CODE_MODE_VALUE_CODEC_JS,

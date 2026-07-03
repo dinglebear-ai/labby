@@ -12,6 +12,22 @@ use super::protocol::{
 use super::runner_io::runner_emit_blocking;
 
 pub fn run_code_mode_runner_stdio() -> ExitCode {
+    match std::thread::Builder::new()
+        .name("labby-code-mode-runner-stdio".to_string())
+        .spawn(run_code_mode_runner_stdio_inner)
+    {
+        Ok(handle) => match handle.join() {
+            Ok(code) => code,
+            Err(_) => ExitCode::FAILURE,
+        },
+        Err(err) => {
+            eprintln!("failed to spawn Code Mode runner stdio thread: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_code_mode_runner_stdio_inner() -> ExitCode {
     // Security: prevent /proc/<pid>/environ readback of the runner process.
     // Must be the very first act — do this before any state is initialized.
     #[cfg(all(unix, target_os = "linux"))]
