@@ -19,12 +19,14 @@ ENV CARGO_PROFILE_RELEASE_LTO=false \
 #   pkg-config     — lets -sys crates find system headers
 #   build-essential — C compiler for rusqlite's bundled SQLite + other -sys crates
 #   libssl-dev     — headers/pkg-config metadata for crates pulling openssl-sys
+#   clang          — driver + resource headers for wasm bindgen probes
 #   libclang-dev   — libclang for rquickjs-sys bindgen during Code Mode builds
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       pkg-config \
       build-essential \
       libssl-dev \
+      clang \
       libclang-dev \
       curl \
  && rm -rf /var/lib/apt/lists/*
