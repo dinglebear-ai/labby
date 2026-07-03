@@ -440,8 +440,11 @@ impl LabMcpServer {
                     return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
                 // Symmetric with the resume path (F2): a run may only be
-                // rejected from the same route scope that started it.
-                if reject_auth.route_scope != self.route_scope.label() {
+                // rejected from the same route scope that started it. Compare
+                // PARSED identities — an unparseable stored label fails closed.
+                if crate::mcp::route_scope::RouteScopeIdentity::from_label(&reject_auth.route_scope)
+                    != Some(self.route_scope.identity())
+                {
                     let env = build_error(
                         service,
                         "call_tool",
@@ -560,8 +563,11 @@ impl LabMcpServer {
             // Route-scope identity (F2): the run must be resumed under the SAME
             // protected-route scope it paused in. Fail closed BEFORE the CAS so a
             // run paused under route A cannot be resumed under route B even when
-            // the caller shares the same actor + capability fingerprint.
-            if auth_fields.route_scope != self.route_scope.label() {
+            // the caller shares the same actor + capability fingerprint. Compare
+            // PARSED identities — an unparseable stored label fails closed.
+            if crate::mcp::route_scope::RouteScopeIdentity::from_label(&auth_fields.route_scope)
+                != Some(self.route_scope.identity())
+            {
                 let env = build_error(
                     service,
                     "call_tool",
