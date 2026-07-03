@@ -625,27 +625,20 @@ impl LabMcpServer {
             }
         });
 
-        // Local-provider safety (fail closed): Labby's runner-reserved `state`/
-        // `git` providers dispatch OFF the decider path
-        // (`runner_drive.rs::enqueue_local_provider_call`), so their calls are
-        // never journaled and would double-apply on resume. Any run for which
-        // local providers are allowed (unscoped admin/trusted-local) must NOT
-        // begin a resumable durable run. Excluding it here keeps such runs on the
-        // write-free path (no pause, no resume token) — safe by construction.
-        let local_providers_allowed =
-            labby_codemode::local_providers_allowed(&caller, &capability_filter);
-
         // Pause-capable path: a decider is injected AND this is a fresh,
-        // not-pre-confirmed, non-resume run, AND local providers are not in play.
-        // Begin a durable run before driving so destructive calls can journal +
-        // pause; else take the write-free path (execution_id stays local, no
-        // journaling). A resume never involves local providers (it re-drives a
-        // previously non-local run), so `resuming` keeps its pause capability.
-        let pause_capable = (decider.is_some()
-            && !whole_run_confirm
-            && !has_resume_token
-            && !local_providers_allowed)
-            || resuming;
+        // not-pre-confirmed, non-resume run. Begin a durable run before driving
+        // so destructive calls can journal + pause; else take the write-free
+        // path (execution_id stays local, no journaling).
+        //
+        // Local providers (`state`/`git`) are NO LONGER excluded here: they are
+        // journaled as EPHEMERAL entries through `CodeModeHost::decide_local` /
+        // `record_local` (`runner_drive.rs::enqueue_local_provider_call`), so
+        // they participate in the `seq` spine and are divergence-checked on
+        // resume while re-executing (never replayed-as-cached) — removing the
+        // former fail-closed non-pausability of unscoped admin/trusted-local
+        // runs that touch local providers.
+        let pause_capable =
+            (decider.is_some() && !whole_run_confirm && !has_resume_token) || resuming;
         if let (true, false, Some(decider)) = (pause_capable, resuming, decider.as_ref()) {
             decider.maybe_expire().await;
             if let Err(err) = decider

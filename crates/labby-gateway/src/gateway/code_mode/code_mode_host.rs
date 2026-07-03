@@ -206,6 +206,166 @@ impl CodeModeHost for GatewayManager {
             .await
     }
 
+    async fn decide_step(
+        &self,
+        ctx: labby_codemode::ExecCtx<'_>,
+        name: &str,
+    ) -> labby_codemode::StepDecision {
+        // Only the pause-capable path (decider injected AND durable execution id)
+        // journals steps; otherwise execute fn normally (default-equivalent).
+        let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) else {
+            return labby_codemode::StepDecision::Execute;
+        };
+        // `codemode.step` is a deterministic, non-destructive journal boundary:
+        // the args are the step NAME (the divergence key), never
+        // approval-gated. `ephemeral = false` ⇒ a recorded step value REPLAYS on
+        // resume rather than re-executing (the whole point — deterministic
+        // replay of nondeterministic fn output).
+        let args = serde_json::json!({ "name": name });
+        match decider
+            .decide(exec_id, ctx.seq, "codemode::step", &args, false, false)
+            .await
+        {
+            labby_codemode::DecideOutcome::Replay(value) => {
+                labby_codemode::StepDecision::Replay(value)
+            }
+            labby_codemode::DecideOutcome::Execute => labby_codemode::StepDecision::Execute,
+            // A monotonic pause after an earlier pause (C1 gate) aborts the step
+            // like the pause sentinel does for tool calls.
+            labby_codemode::DecideOutcome::Pause => labby_codemode::StepDecision::Error {
+                kind: "code_mode_paused".to_string(),
+                message: "Code Mode execution paused awaiting approval".to_string(),
+            },
+            labby_codemode::DecideOutcome::Diverge(message) => {
+                labby_codemode::StepDecision::Error {
+                    kind: "resume_divergence".to_string(),
+                    message,
+                }
+            }
+            labby_codemode::DecideOutcome::Fail(message) => labby_codemode::StepDecision::Error {
+                kind: "internal_error".to_string(),
+                message,
+            },
+        }
+    }
+
+    async fn record_step(
+        &self,
+        ctx: labby_codemode::ExecCtx<'_>,
+        value: &Value,
+    ) -> Result<(), ToolError> {
+        let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) else {
+            return Ok(());
+        };
+        // Fail closed on a record failure (mirrors the tool-call record path):
+        // flip the run to Error so a resume cannot replay an unrecorded step.
+        if let Err(err) = decider.record_result(exec_id, ctx.seq, value).await {
+            decider
+                .set_status(
+                    exec_id,
+                    labby_codemode::RunLifecycle::Error,
+                    Some(&err.to_string()),
+                )
+                .await
+                .ok();
+            tracing::error!(
+                surface = "dispatch",
+                service = "code_mode",
+                action = "record_step",
+                kind = "internal_error",
+                seq = ctx.seq,
+                error = %err,
+                "failed to durably record a Code Mode step result; failing run closed"
+            );
+            return Err(ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: format!(
+                    "failed to durably record a codemode.step result; the run was failed \
+                     to prevent re-execution on resume: {err}"
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    async fn decide_local(
+        &self,
+        ctx: labby_codemode::ExecCtx<'_>,
+        id: &str,
+        params: &Value,
+    ) -> labby_codemode::StepDecision {
+        let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) else {
+            return labby_codemode::StepDecision::Execute;
+        };
+        // `ephemeral = true`: local `state`/`git` calls journal for the `seq`
+        // spine + divergence check, but RE-EXECUTE on replay rather than
+        // replaying a stored result — the local FS/git side effect must re-run,
+        // it must never be applied-then-served-from-cache. `requires_approval =
+        // false`: local providers are already scope-gated (unscoped admin only)
+        // and are not per-call destructive-approval boundaries.
+        match decider
+            .decide(exec_id, ctx.seq, id, params, false, true)
+            .await
+        {
+            // Ephemeral entries decide Execute on both fresh journal and replay.
+            labby_codemode::DecideOutcome::Execute => labby_codemode::StepDecision::Execute,
+            labby_codemode::DecideOutcome::Replay(value) => {
+                labby_codemode::StepDecision::Replay(value)
+            }
+            labby_codemode::DecideOutcome::Pause => labby_codemode::StepDecision::Error {
+                kind: "code_mode_paused".to_string(),
+                message: "Code Mode execution paused awaiting approval".to_string(),
+            },
+            labby_codemode::DecideOutcome::Diverge(message) => {
+                labby_codemode::StepDecision::Error {
+                    kind: "resume_divergence".to_string(),
+                    message,
+                }
+            }
+            labby_codemode::DecideOutcome::Fail(message) => labby_codemode::StepDecision::Error {
+                kind: "internal_error".to_string(),
+                message,
+            },
+        }
+    }
+
+    async fn record_local(
+        &self,
+        ctx: labby_codemode::ExecCtx<'_>,
+        value: &Value,
+    ) -> Result<(), ToolError> {
+        let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) else {
+            return Ok(());
+        };
+        if let Err(err) = decider.record_result(exec_id, ctx.seq, value).await {
+            decider
+                .set_status(
+                    exec_id,
+                    labby_codemode::RunLifecycle::Error,
+                    Some(&err.to_string()),
+                )
+                .await
+                .ok();
+            tracing::error!(
+                surface = "dispatch",
+                service = "code_mode",
+                action = "record_local",
+                kind = "internal_error",
+                seq = ctx.seq,
+                error = %err,
+                "failed to durably record a local-provider call result; failing run closed"
+            );
+            return Err(ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: format!(
+                    "failed to durably record a local-provider call; the run was failed to \
+                     prevent re-execution ambiguity on resume: {err}"
+                ),
+            });
+        }
+        Ok(())
+    }
+
     async fn resolve_snippet(
         &self,
         name: &str,
