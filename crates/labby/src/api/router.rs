@@ -1063,7 +1063,11 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
         });
     let spec_for_route = openapi_spec;
 
-    let mut v1 = Router::new().nest("/nodes", super::nodes::routes(state.clone()));
+    let mut v1 = Router::new();
+    #[cfg(feature = "nodes")]
+    {
+        v1 = v1.nest("/nodes", super::nodes::routes(state.clone()));
+    }
 
     if is_master {
         v1 = v1.route("/{service}/actions", get(service_actions));
@@ -1105,8 +1109,12 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
             }
         }
 
+        #[cfg(feature = "acp")]
+        {
+            v1 = v1.nest("/acp", services::acp::routes(state.clone()));
+        }
+
         v1 = v1
-            .nest("/acp", services::acp::routes(state.clone()))
             .route(
                 "/openapi.json",
                 get(move || {
@@ -1142,11 +1150,15 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
                     crate::api::host_validation::host_validation_layer,
                 )),
             )
-            .nest("/stash", services::stash::routes(state.clone()))
             .nest(
                 "/auth/allowed-emails",
                 services::auth_admin::routes(state.clone()),
             );
+
+        #[cfg(feature = "stash")]
+        {
+            v1 = v1.nest("/stash", services::stash::routes(state.clone()));
+        }
 
         #[cfg(feature = "marketplace")]
         {
@@ -1302,7 +1314,7 @@ async fn dev_mockup_named(
 }
 
 // GET /dev/api/nodeinfo — unauthenticated, read-only.
-// Returns config.toml values + ~/.lab/.env contents (secrets masked) so the
+// Returns config.toml values + ~/.labby/.env contents (secrets masked) so the
 // setup wizard can pre-populate all fields without requiring a bearer token.
 async fn dev_nodeinfo(State(state): State<AppState>) -> axum::response::Response {
     use axum::Json;
@@ -1323,7 +1335,7 @@ async fn dev_nodeinfo(State(state): State<AppState>) -> axum::response::Response
         .and_then(|n| n.controller.clone())
         .unwrap_or_else(|| local_host.clone());
 
-    // dotenvy already loaded ~/.lab/.env at startup, so everything is in std::env.
+    // dotenvy already loaded ~/.labby/.env at startup, so everything is in std::env.
     // The UI treats MASKED_SECRET as "value already set — leave blank to keep current value".
     const MASKED_SECRET: &str = "***";
     let secret_suffixes = [
@@ -1536,23 +1548,31 @@ pub fn build_router(
     let mut router = Router::new()
         .route("/health", get(health::health))
         .route("/ready", get(health::ready))
-        // POST /v1/nodes/hello is self-registration — exempt from bearer auth.
-        .nest("/v1/nodes", super::nodes::public_routes(state.clone()))
-        // Backward-compat alias for pre-rename self-registration clients.
-        .nest("/v1/fleet", super::nodes::public_routes(state.clone()))
-        // GET /v1/nodes/ws is outside bearer-auth middleware by design.
-        // The `initialize` JSON-RPC method performs enrollment-token validation; all
-        // subsequent node methods require an active session. See docs/runtime/FLEET_METHODS.md.
-        .route(
-            "/v1/nodes/ws",
-            get(crate::api::nodes::fleet::websocket_upgrade),
-        )
-        // Backward-compat alias for pre-rename websocket clients.
-        .route(
-            "/v1/fleet/ws",
-            get(crate::api::nodes::fleet::websocket_upgrade),
-        )
         .merge(v1_protected);
+    #[cfg(feature = "nodes")]
+    {
+        // Registration order relative to `v1_protected` does not affect auth:
+        // v1_protected is a pre-built sub-router merged wholesale, and its auth
+        // comes from its own route_layer. The routes below are auth-exempt by
+        // construction — do not fold them into v1_protected.
+        router = router
+            // POST /v1/nodes/hello is self-registration — exempt from bearer auth.
+            .nest("/v1/nodes", super::nodes::public_routes(state.clone()))
+            // Backward-compat alias for pre-rename self-registration clients.
+            .nest("/v1/fleet", super::nodes::public_routes(state.clone()))
+            // GET /v1/nodes/ws is outside bearer-auth middleware by design.
+            // The `initialize` JSON-RPC method performs enrollment-token validation; all
+            // subsequent node methods require an active session. See docs/runtime/FLEET_METHODS.md.
+            .route(
+                "/v1/nodes/ws",
+                get(crate::api::nodes::fleet::websocket_upgrade),
+            )
+            // Backward-compat alias for pre-rename websocket clients.
+            .route(
+                "/v1/fleet/ws",
+                get(crate::api::nodes::fleet::websocket_upgrade),
+            );
+    }
     #[cfg(feature = "marketplace")]
     {
         router = router.merge(v0_1_protected);
@@ -3521,6 +3541,7 @@ mod tests {
     }
 
     /// POST /dev/api/marketplace must block mutating actions after auth.
+    #[cfg(feature = "marketplace")]
     #[tokio::test]
     async fn dev_marketplace_blocks_mutating_actions() {
         let state = AppState::new();
@@ -3565,6 +3586,7 @@ mod tests {
     }
 
     /// POST /dev/api/marketplace must require auth when auth is configured.
+    #[cfg(feature = "marketplace")]
     #[tokio::test]
     async fn dev_marketplace_requires_auth_when_configured() {
         let state = AppState::new();
@@ -3613,6 +3635,7 @@ mod tests {
     }
 
     /// POST /dev/api/marketplace remains open in explicit no-auth local mode.
+    #[cfg(feature = "marketplace")]
     #[tokio::test]
     async fn dev_marketplace_allows_no_auth_when_server_has_no_auth() {
         let state = AppState::new();

@@ -126,7 +126,7 @@ async fn plugin_hook_action(params: &Value) -> Result<Value, ToolError> {
         super::plugin_hook::Mode::Check
     };
     let setup = super::plugin_hook::run(mode)?;
-    // sync_plugin_env mutates ~/.lab/.env — only run in Repair mode so
+    // sync_plugin_env mutates ~/.labby/.env — only run in Repair mode so
     // check-mode invocations are guaranteed non-mutating.
     let sync = if repair {
         Some(super::plugin_hook::sync_plugin_env()?)
@@ -1084,7 +1084,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let previous_runtime = crate::registry::runtime_built_in_upstream_apis_enabled();
         let temp = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp.path().join(".config/lab");
+        let config_dir = temp.path().join(".config/labby");
         std::fs::create_dir_all(&config_dir).expect("config dir");
         let config_path = config_dir.join("config.toml");
         std::fs::write(
@@ -1131,7 +1131,7 @@ mod tests {
     async fn settings_config_update_dispatch_persists_and_rejects_stale_previous() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp.path().join(".config/lab");
+        let config_dir = temp.path().join(".config/labby");
         std::fs::create_dir_all(&config_dir).expect("config dir");
         let config_path = config_dir.join("config.toml");
         let original = "# keep me\n[mcp]\nport = 8765\n[plugin_owned]\nfuture = \"keep\"\n";
@@ -1196,7 +1196,7 @@ mod tests {
     async fn settings_config_update_rejects_env_file_shadowed_config_field() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp.path().join(".config/lab");
+        let config_dir = temp.path().join(".config/labby");
         std::fs::create_dir_all(&config_dir).expect("config dir");
         let config_path = config_dir.join("config.toml");
         std::fs::write(&config_path, "[mcp]\nport = 8765\n").expect("write config");
@@ -1314,8 +1314,10 @@ mod tests {
         // Every service that has a PluginMeta entry should appear; synthetic
         // services without meta (doctor/setup) are skipped — they
         // have no env config to render in the wizard.
+        let mut meta_service_count = 0;
         for entry in build_default_registry().services() {
             if service_meta(entry.name).is_some() {
+                meta_service_count += 1;
                 assert!(
                     services.contains_key(entry.name),
                     "missing service: {}",
@@ -1323,7 +1325,13 @@ mod tests {
                 );
             }
         }
-        assert!(!services.is_empty());
+        // In narrow feature slices (e.g. gateway-only) no registered service
+        // carries PluginMeta, so an empty schema is the correct output.
+        assert_eq!(
+            services.is_empty(),
+            meta_service_count == 0,
+            "schema.get must list exactly the services with PluginMeta"
+        );
     }
 
     #[tokio::test]

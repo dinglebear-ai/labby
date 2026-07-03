@@ -260,7 +260,16 @@ impl PooledRunner {
     /// enough for the parent to classify the frame as a protocol violation.
     #[cfg(all(test, not(windows)))]
     pub(crate) fn spawn_stub_blank_protocol_frame() -> Result<Self, ToolError> {
-        Self::spawn_stub_command("sh", &["-c", "printf '\\n'; sleep 3600"])
+        Self::spawn_stub_script("printf '\\n'; sleep 3600")
+    }
+
+    /// Test-only (Unix): spawn a stub that runs an arbitrary `sh` script,
+    /// letting drive-loop tests emit scripted protocol lines (e.g. `ToolCall`
+    /// events) on stdout. `sh` resolves under `env_clear()` via the libc
+    /// default path, same as `cat` in `spawn_stub`.
+    #[cfg(all(test, not(windows)))]
+    pub(crate) fn spawn_stub_script(script: &str) -> Result<Self, ToolError> {
+        Self::spawn_stub_command("sh", &["-c", script])
     }
 
     #[cfg(test)]

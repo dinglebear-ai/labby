@@ -198,8 +198,8 @@ incus_cmd init "$image_alias" "$container_name" --profile default --profile "$pr
 
 log "checking stopped image does not contain persisted runtime state"
 for path in \
-    /home/lab/.lab/.env \
-    /root/.lab/.env \
+    /home/labby/.labby/.env \
+    /root/.labby/.env \
     /run/labby-ts-authkey \
     /var/lib/tailscale/tailscaled.state
 do
@@ -213,7 +213,7 @@ incus_cmd start "$container_name"
 wait_for_running "$container_name"
 
 log "checking baked toolchain"
-incus_cmd exec "$container_name" -- su - lab -c 'set -e
+incus_cmd exec "$container_name" -- su - labby -c 'set -e
 node --version
 npm --version
 uv --version
@@ -236,8 +236,8 @@ log "checking image does not contain runtime secrets"
 # shellcheck disable=SC2016
 incus_cmd exec "$container_name" -- sh -lc 'set -eu
 for path in \
-    /home/lab/.lab/.env \
-    /root/.lab/.env \
+    /home/labby/.labby/.env \
+    /root/.labby/.env \
     /run/labby-ts-authkey
 do
     if test -e "$path"; then

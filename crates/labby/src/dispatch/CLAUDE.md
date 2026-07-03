@@ -196,17 +196,20 @@ pub async fn dispatch_with_client(
 `dispatch_with_client` is what the API handler calls with the pre-built client from
 `AppState`. `dispatch` is what MCP and CLI call.
 
-## Always-on meta-service registration
+## Direct meta-service registration
 
-Always-on meta-services (those without a feature flag) register directly from
-`dispatch::*` in `registry.rs` without a `mcp/services/` shim. This is the
-**canonical pattern** for these services, not an exception. Current examples:
+Meta-services register directly from `dispatch::*` in `registry.rs` without a
+`mcp/services/` shim — whether they are always-on (`doctor`, `logs`) or
+feature-gated (`gateway`, `marketplace`, `acp`). This is the **canonical
+pattern** for these services, not an exception: the registration site may sit
+behind a `#[cfg(feature = ...)]`, but it still points at the shared dispatch
+entry, not an MCP-specific adapter. Current examples:
 
-- `gateway` — `crate::dispatch::gateway::dispatch`
-- `doctor` — `crate::dispatch::doctor::dispatch`
-- `logs` — `crate::dispatch::logs::dispatch`
-- `marketplace` — `crate::dispatch::marketplace::dispatch`
-- `acp` — `crate::dispatch::acp::dispatch::dispatch`
+- `gateway` — `crate::dispatch::gateway::dispatch` (gated: `gateway`)
+- `doctor` — `crate::dispatch::doctor::dispatch` (always-on)
+- `logs` — `crate::dispatch::logs::dispatch` (always-on)
+- `marketplace` — `crate::dispatch::marketplace::dispatch` (gated: `marketplace`)
+- `acp` — `crate::dispatch::acp::dispatch::dispatch` (gated: `acp`)
 
 `mcp/services/` is the **exception layer**, not the default. An adapter lives
 there only when it needs MCP-specific behavior that cannot be represented in

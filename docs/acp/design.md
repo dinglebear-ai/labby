@@ -84,14 +84,16 @@ Current state:
 - runtime/session state: `crates/lab/src/acp/registry.rs`
 - provider runtime: `crates/lab/src/acp/runtime.rs`
 - registry registration: `crates/lab/src/registry.rs::build_default_registry`
-  registers ACP as an always-on service (no feature flag)
+  registers ACP behind the `acp` cargo feature (a member of `all`, excluded
+  from gateway-only builds)
 
 What is now landed (was previously listed missing):
 
 - `lab-apis::acp` capability module
 - shared `dispatch/acp/` service entry following the standard four-file
   layout
-- registry registration as a first-class always-on service
+- registry registration as a first-class service, feature-gated behind the
+  `acp` cargo feature
 - HTTP `POST /v1/acp` shared-action surface alongside browser-compat REST
   routes for SSE
 - MCP one-tool-per-service surface via the catalog-driven `lab.acp` tool
@@ -1121,7 +1123,7 @@ preferences in `config.toml`.
 
 Rules:
 
-- provider credentials and secrets belong in `~/.lab/.env`
+- provider credentials and secrets belong in `~/.labby/.env`
 - ACP non-secret preferences belong in `config.toml`
 - browser chat uses same-origin session auth only and must not depend on
   browser-visible bearer tokens
@@ -1258,7 +1260,7 @@ Retention defaults:
 
 Recommended path/config posture:
 
-- default durable store path under `~/.lab/`
+- default durable store path under `~/.labby/`
 - ACP persistence path should be configurable through `config.toml`
 - an env override may exist later if it aligns with the shared config contract
 
@@ -1544,7 +1546,7 @@ planning, not ad hoc implementation:
 3. Should ACP publish `PluginMeta`, or should product-local always-on services
    use a separate metadata pattern consistent with `gateway`?
 
-   **Resolution:** ACP publishes `PluginMeta` (with `META` constant in `lab-apis::acp`) and is registered via `build_default_registry()` like other always-on services. No separate metadata pattern was needed.
+   **Resolution:** ACP publishes `PluginMeta` (with `META` constant in `lab-apis::acp`) and is registered via `build_default_registry()` like other product-local services (now behind the `acp` cargo feature). No separate metadata pattern was needed.
 
 4. How much of the current `crates/lab/src/acp/` code moves into
    `lab-apis::acp` in the first migration pass versus later cleanup?

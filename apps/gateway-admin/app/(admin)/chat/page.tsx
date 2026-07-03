@@ -1,4 +1,5 @@
 import { ChatShell } from '@/components/chat/chat-shell'
+import { CapabilityGuard } from '@/components/capability-guard'
 
 export const metadata = {
   title: 'Chat',
@@ -6,5 +7,9 @@ export const metadata = {
 }
 
 export default function ChatPage() {
-  return <ChatShell />
+  return (
+    <CapabilityGuard need="acp" label="Chat">
+      <ChatShell />
+    </CapabilityGuard>
+  )
 }

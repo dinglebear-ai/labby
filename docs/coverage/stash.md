@@ -4,7 +4,7 @@
 **Source:** Internal — stash is a product-local service with no upstream HTTP API
 **SDK surface:** N/A — stash is implemented entirely in `crates/lab/src/dispatch/stash/`
 **Shared dispatch:** `crates/lab/src/dispatch/stash/` (catalog.rs, client.rs, params.rs, dispatch.rs)
-**MCP registration:** `crates/lab/src/registry.rs` (always registered, no feature gate)
+**MCP registration:** `crates/lab/src/registry.rs` (registered behind the `stash` cargo feature, member of `all`)
 **CLI surface:** `crates/lab/src/cli/stash.rs`
 **API handler:** `crates/lab/src/api/services/stash.rs`
 
@@ -22,7 +22,7 @@ No env vars required. The stash root is configured via `config.toml`:
 
 ```toml
 [workspace]
-root = "~/.lab/stash"   # default if not set
+root = "~/.labby/stash"   # default if not set
 ```
 
 ## SDK Surface

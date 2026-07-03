@@ -329,7 +329,7 @@ prod-run: build-release
     docker build -f config/Dockerfile.fast -t labby:prod-test .
     docker run -d --name lab-prod-test \
         -p 18765:8765 \
-        -v "${HOME}/.lab:/home/lab/.lab" \
+        -v "${HOME}/.labby:/home/labby/.labby" \
         -e LAB_MCP_HTTP_HOST=0.0.0.0 \
         -e LAB_MCP_HTTP_PORT=8765 \
         -e LAB_UPSTREAM_DISCOVERY_CONCURRENCY=3 \
@@ -349,11 +349,11 @@ prod-run: build-release
     echo "stop with: docker stop lab-prod-test"
 
 # Smoke-test the lab-bg3e.3 setup wizard end-to-end against a throw-away
-# LAB_HOME. Used by CI to verify first-run detection + draft commit cycle
-# without touching the operator's real ~/.lab/.
+# LABBY_HOME. Used by CI to verify first-run detection + draft commit cycle
+# without touching the operator's real ~/.labby/.
 smoke-setup:
     rm -rf /tmp/lab-smoke-home
-    LAB_HOME=/tmp/lab-smoke-home cargo run --all-features -- setup --no-browser --smoke
+    LABBY_HOME=/tmp/lab-smoke-home cargo run --all-features -- setup --no-browser --smoke
 
 # Diagnose the sccache build cache. Reports daemon health (systemd-owned),
 # binary-vs-daemon version skew, cache stats, distributed-build config, and the
@@ -406,3 +406,7 @@ sccache-restart:
     /home/jmagar/.local/sccache --show-stats 2>/dev/null | grep -iE "compile requests|cache location" || true
     echo "✓ restarted. If poisoning persists, wipe on-disk cache:"
     echo "    systemctl --user stop sccache.service && rm -rf ~/.cache/sccache && systemctl --user start sccache.service"
+
+# Compile check for the lean gateway-only slice (base services excluded).
+check-gateway-slice:
+    RUSTFLAGS="" cargo check -p labby --no-default-features --features gateway --all-targets
