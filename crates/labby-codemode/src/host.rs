@@ -99,6 +99,26 @@ pub enum DecideOutcome {
     Fail(String),
 }
 
+/// The durable decision for one `codemode.step(name, fn)` boundary, returned by
+/// [`CodeModeHost::decide_step`] BEFORE the sandbox runs `fn`.
+///
+/// Port of the step half of Cloudflare's `codemode.step` prelude
+/// (`proxy-tool.ts:231-241`): `decide()` runs first; a non-execute decision is
+/// a replay (return the cached value without running `fn`), an execute decision
+/// runs `fn` then records the result. Labby folds Cloudflare's pause/diverge
+/// reasons into an explicit `Error` variant so the driver can map them onto a
+/// sandbox rejection.
+#[derive(Debug, Clone)]
+pub enum StepDecision {
+    /// The step was journaled on a prior pass — return `value`, do NOT run `fn`.
+    Replay(Value),
+    /// Run `fn` for real, then call [`CodeModeHost::record_step`].
+    Execute,
+    /// Divergence / pause / fail — reject the step in the sandbox with this
+    /// `(kind, message)` (mirrors a rejected `callTool`).
+    Error { kind: String, message: String },
+}
+
 /// Neutral lifecycle status of a durable Code Mode run, read by the host after a
 /// pass settles to decide the paused/completed/error envelope. Mirrors the
 /// binary-side `RunStatus`; `Unknown` also covers a tampered (HMAC-failed) row
@@ -281,6 +301,77 @@ pub trait CodeModeHost: Send + Sync {
         scope: &ToolScope,
         ctx: ExecCtx<'_>,
     ) -> impl Future<Output = Result<ToolCallOutcome, ToolError>> + Send;
+
+    /// Decide replay-vs-execute for a `codemode.step(name, fn)` boundary at
+    /// `(execution_id, seq)`, BEFORE the sandbox runs `fn`. The step consumes a
+    /// `seq` from the same monotonic spine as `call_tool`, so it participates in
+    /// the durable replay cursor.
+    ///
+    /// The default impl always returns [`StepDecision::Execute`] — the
+    /// no-decider / standalone / write-free path (CLI, pre-confirmed, tests)
+    /// simply runs `fn` normally, exactly as before this primitive existed.
+    fn decide_step(
+        &self,
+        ctx: ExecCtx<'_>,
+        name: &str,
+    ) -> impl Future<Output = StepDecision> + Send {
+        let _ = (ctx, name);
+        async { StepDecision::Execute }
+    }
+
+    /// Record the value a step's `fn` produced (decision was execute) so a later
+    /// resume replays it without re-running `fn`.
+    ///
+    /// The default impl is a no-op `Ok(())` — the write-free path records
+    /// nothing, so `fn` is simply re-run on any (non-durable) re-execution.
+    fn record_step(
+        &self,
+        ctx: ExecCtx<'_>,
+        value: &Value,
+    ) -> impl Future<Output = Result<(), ToolError>> + Send {
+        let _ = (ctx, value);
+        async { Ok(()) }
+    }
+
+    /// Decide replay-vs-execute for a runner-reserved LOCAL provider call
+    /// (`state::*` / `git::*`) at `(execution_id, seq)`, journaling it as an
+    /// **ephemeral** durable entry.
+    ///
+    /// Local providers dispatch inside the runner crate (not via `call_tool`),
+    /// so before this hook they were invisible to the durable log: on the
+    /// pause-capable path a resumed run would silently re-apply them out of the
+    /// `seq` spine (the fail-closed exclusion that used to make such runs
+    /// non-pausable). Journaling them ephemerally keeps the `seq` spine aligned
+    /// and enforces the tool_id/args divergence check, while `ephemeral = true`
+    /// means a recorded entry RE-EXECUTES on replay (the local FS/git side
+    /// effect is re-run deterministically-enough, never replayed from a stale
+    /// stored result).
+    ///
+    /// `id` is the reserved `<namespace>::<method>` id; `params` are the call
+    /// args (the divergence key). The default impl returns [`StepDecision::Execute`]
+    /// (no-decider / write-free path) so local calls dispatch unchanged.
+    fn decide_local(
+        &self,
+        ctx: ExecCtx<'_>,
+        id: &str,
+        params: &Value,
+    ) -> impl Future<Output = StepDecision> + Send {
+        let _ = (ctx, id, params);
+        async { StepDecision::Execute }
+    }
+
+    /// Record that a local-provider call was applied (marks the ephemeral entry
+    /// `applied`). Because the entry is ephemeral it re-executes on replay
+    /// regardless, so the recorded value is a marker, not a replay source. The
+    /// default impl is a no-op `Ok(())` for the write-free path.
+    fn record_local(
+        &self,
+        ctx: ExecCtx<'_>,
+        value: &Value,
+    ) -> impl Future<Output = Result<(), ToolError>> + Send {
+        let _ = (ctx, value);
+        async { Ok(()) }
+    }
 
     /// Resolve a Code Mode snippet by name (engine lives in-crate; only the
     /// source lookup is host-provided so policy/visibility stays host-side).
