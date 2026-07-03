@@ -1,13 +1,20 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
-    let plugin_build_root = std::env::temp_dir().join("labby-codemode-javy-plugin-v1");
-    let staged_plugin = stage_plugin_crate(&manifest_dir, &plugin_build_root)?;
+    let plugin_build_root = PluginBuildRoot::create(&out)?;
+    let staged_plugin = stage_plugin_crate(&manifest_dir, plugin_build_root.path())?;
     let plugin_manifest = staged_plugin.join("Cargo.toml");
-    let plugin_target = plugin_build_root.join("target");
+    let plugin_target = plugin_build_root.path().join("target");
+    let workspace_target = manifest_dir.join("../../target");
+    std::fs::create_dir_all(&workspace_target)?;
+    let plugin_cargo_home = workspace_target
+        .canonicalize()?
+        .join("labby-codemode-javy-plugin-cargo-home");
+    std::fs::create_dir_all(&plugin_cargo_home)?;
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=javy-plugin/Cargo.toml");
+    println!("cargo:rerun-if-changed=javy-plugin/Cargo.lock");
     println!("cargo:rerun-if-changed=javy-plugin/src/lib.rs");
     println!("cargo:rerun-if-changed=plugin.sha256");
 
@@ -23,12 +30,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .env("SCCACHE_DISABLE", "1")
         .env("RUSTFLAGS", "")
         .env("CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS", "")
-        .env("CARGO_HOME", plugin_build_root.join("cargo-home"))
+        .env("CARGO_HOME", &plugin_cargo_home)
         .env(
             "CARGO_ENCODED_RUSTFLAGS",
             format!(
-                "--remap-path-prefix={}=/labby-codemode-javy-plugin",
-                plugin_build_root.display()
+                "--remap-path-prefix={}=/labby-codemode-javy-plugin\u{1f}--remap-path-prefix={}=/labby-codemode-javy-plugin-cargo-home",
+                plugin_build_root.path().display(),
+                plugin_cargo_home.display()
             ),
         )
         .arg("--manifest-path")
@@ -62,6 +70,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn preserve_env(command: &mut std::process::Command, key: &str) {
     if let Ok(value) = std::env::var(key) {
         command.env(key, value);
+    }
+}
+
+struct PluginBuildRoot {
+    path: std::path::PathBuf,
+}
+
+impl PluginBuildRoot {
+    fn create(out: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = out.join(format!("javy-plugin-build-{}", std::process::id()));
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for PluginBuildRoot {
+    fn drop(&mut self) {
+        drop(std::fs::remove_dir_all(&self.path));
     }
 }
 

@@ -464,7 +464,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 ..response
                             });
                         }
-                        CodeModeRunnerOutput::Error { kind, message } => {
+                        CodeModeRunnerOutput::Error {
+                            kind,
+                            message,
+                            runner_unhealthy,
+                        } => {
                             // A per-execution user error leaves the runner parked
                             // and reusable. Runner-side infrastructure timeouts
                             // can leave uncancellable worker threads alive, so
@@ -479,7 +483,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 },
                                 sorted_calls(&state.calls),
                             );
-                            if runner_reported_unhealthy(&err) {
+                            if runner_unhealthy {
                                 terminate_code_mode_runner(child, child_pid).await;
                                 return DriveOutcome::RunnerUnhealthy(err);
                             }
@@ -545,13 +549,6 @@ fn classify_line_result(
             message,
         }
     })
-}
-
-fn runner_reported_unhealthy(err: &CodeModeExecutionError) -> bool {
-    err.kind() == "timeout"
-        && err
-            .to_string()
-            .contains("Code Mode Wasm code generation timed out")
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,29 +1181,5 @@ mod tests {
                 panic!("a never-replying runner must time out as RunnerUnhealthy")
             }
         }
-    }
-
-    #[test]
-    fn runner_side_codegen_timeout_is_unhealthy() {
-        let err = CodeModeExecutionError::with_trace(
-            ToolError::Sdk {
-                sdk_kind: "timeout".to_string(),
-                message: "Code Mode Wasm code generation timed out".to_string(),
-            },
-            Vec::new(),
-        );
-        assert!(runner_reported_unhealthy(&err));
-    }
-
-    #[test]
-    fn ordinary_user_timeout_error_is_reusable() {
-        let err = CodeModeExecutionError::with_trace(
-            ToolError::Sdk {
-                sdk_kind: "timeout".to_string(),
-                message: "user code reported timeout".to_string(),
-            },
-            Vec::new(),
-        );
-        assert!(!runner_reported_unhealthy(&err));
     }
 }

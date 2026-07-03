@@ -85,7 +85,13 @@ pub(crate) enum CodeModeRunnerOutput {
     Error {
         kind: String,
         message: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        runner_unhealthy: bool,
     },
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -114,4 +120,42 @@ pub(crate) struct CodeModeRunnerState {
 
 thread_local! {
     pub(crate) static RUNNER_STATE: RefCell<Option<CodeModeRunnerState>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_defaults_to_reusable_for_older_runner_frames() {
+        let output: CodeModeRunnerOutput =
+            serde_json::from_str(r#"{"type":"error","kind":"timeout","message":"old"}"#).unwrap();
+        assert_eq!(
+            output,
+            CodeModeRunnerOutput::Error {
+                kind: "timeout".to_string(),
+                message: "old".to_string(),
+                runner_unhealthy: false,
+            }
+        );
+    }
+
+    #[test]
+    fn error_serializes_runner_unhealthy_only_when_true() {
+        let reusable = serde_json::to_value(CodeModeRunnerOutput::Error {
+            kind: "timeout".to_string(),
+            message: "user timeout".to_string(),
+            runner_unhealthy: false,
+        })
+        .unwrap();
+        assert!(reusable.get("runner_unhealthy").is_none());
+
+        let unhealthy = serde_json::to_value(CodeModeRunnerOutput::Error {
+            kind: "timeout".to_string(),
+            message: "codegen timeout".to_string(),
+            runner_unhealthy: true,
+        })
+        .unwrap();
+        assert_eq!(unhealthy.get("runner_unhealthy"), Some(&Value::Bool(true)));
+    }
 }

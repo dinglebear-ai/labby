@@ -63,6 +63,7 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
                 drop(runner_emit(CodeModeRunnerOutput::Error {
                     kind: err.kind,
                     message: err.message,
+                    runner_unhealthy: err.runner_unhealthy,
                 }));
                 // Reset and continue: the per-execution javy runtime is dropped
                 // at the end of `run_code_mode_runner`, so a failed execution
@@ -178,6 +179,7 @@ fn next_jail_seq() -> u64 {
 struct CodeModeRunnerError {
     kind: String,
     message: String,
+    runner_unhealthy: bool,
 }
 
 impl From<String> for CodeModeRunnerError {
@@ -185,15 +187,21 @@ impl From<String> for CodeModeRunnerError {
         Self {
             kind: "server_error".to_string(),
             message,
+            runner_unhealthy: false,
         }
     }
 }
 
 impl From<crate::error::ToolError> for CodeModeRunnerError {
     fn from(error: crate::error::ToolError) -> Self {
+        let runner_unhealthy = error.kind() == "timeout"
+            && error
+                .to_string()
+                .contains(crate::wasm_runner::CODE_MODE_WASM_CODEGEN_TIMEOUT_MESSAGE);
         Self {
             kind: error.kind().to_string(),
             message: error.to_string(),
+            runner_unhealthy,
         }
     }
 }
@@ -243,18 +251,24 @@ fn extract_structured_kind(message: &str) -> Option<String> {
 /// is by design rather than a forgery boundary.
 fn classify_code_mode_rejection(message: String) -> CodeModeRunnerError {
     if let Some(kind) = extract_structured_kind(&message) {
-        return CodeModeRunnerError { kind, message };
+        return CodeModeRunnerError {
+            kind,
+            message,
+            runner_unhealthy: false,
+        };
     }
     if message.contains("JSON-serializable") {
         return CodeModeRunnerError {
             kind: "invalid_param".to_string(),
             message,
+            runner_unhealthy: false,
         };
     }
     let message = add_code_mode_hint("server_error", &message);
     CodeModeRunnerError {
         kind: "server_error".to_string(),
         message,
+        runner_unhealthy: false,
     }
 }
 
@@ -335,6 +349,7 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
                     crate::wasm_runner::WasmRunner::new().map_err(|err| CodeModeRunnerError {
                         kind: "server_error".to_string(),
                         message: format!("failed to initialize Code Mode Wasm runner: {err}"),
+                        runner_unhealthy: false,
                     })?,
                 );
         }

@@ -23,6 +23,8 @@ use crate::wasm_plugin::{
 const MODULE_CACHE_CAPACITY: usize = 32;
 const DEFAULT_RUNNER_TIMEOUT: Duration = Duration::from_secs(30);
 const CODE_MODE_WASM_TABLE_LIMIT_ELEMENTS: usize = 16 * 1024;
+pub(crate) const CODE_MODE_WASM_CODEGEN_TIMEOUT_MESSAGE: &str =
+    "Code Mode Wasm code generation timed out";
 
 pub(crate) struct WasmExecutionTimings {
     pub(crate) wrap_ms: u128,
@@ -203,7 +205,7 @@ fn generate_wasm_on_blocking_thread(
         let (sdk_kind, message) = match err {
             std::sync::mpsc::RecvTimeoutError::Timeout => (
                 "timeout",
-                "Code Mode Wasm code generation timed out".to_string(),
+                CODE_MODE_WASM_CODEGEN_TIMEOUT_MESSAGE.to_string(),
             ),
             std::sync::mpsc::RecvTimeoutError::Disconnected => (
                 "server_error",
