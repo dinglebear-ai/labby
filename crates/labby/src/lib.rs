@@ -28,6 +28,10 @@ pub mod catalog;
 pub mod cli;
 #[cfg(feature = "gateway")]
 pub mod codemode;
+/// Crate-private Code Mode test harness exposed to integration tests under the
+/// non-default `test-support` feature. Never compiled into a production build.
+#[cfg(feature = "test-support")]
+pub mod codemode_test_harness;
 pub mod config;
 #[allow(unreachable_pub)]
 pub mod dispatch;

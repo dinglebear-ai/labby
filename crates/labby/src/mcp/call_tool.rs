@@ -652,7 +652,7 @@ impl LabMcpServer {
     }
 
     fn code_mode_widget_callbacks_enabled(&self) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if self.code_mode_widget_callbacks_enabled_for_test {
             return true;
         }
