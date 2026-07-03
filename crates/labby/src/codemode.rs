@@ -18,3 +18,24 @@
 
 pub mod decider;
 pub mod sqlite_pauses;
+
+/// Milliseconds since the Unix epoch, saturating to 0 on clock error.
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Default abandoned-pause TTL (24h, matching Cloudflare's `DEFAULT_PAUSED_TTL_MS`;
+/// `runtime.ts:156`).
+pub(crate) const DEFAULT_PAUSED_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Configured pause TTL in ms (`LAB_CODE_MODE_PAUSE_TTL_MS`, default 24h).
+pub(crate) fn pause_ttl_ms() -> i64 {
+    std::env::var("LAB_CODE_MODE_PAUSE_TTL_MS")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_PAUSED_TTL_MS)
+}

@@ -46,10 +46,6 @@ fn status_to_lifecycle(s: RunStatus) -> RunLifecycle {
     }
 }
 
-/// Default age after which a paused (awaiting-approval) run can be expired
-/// (24h, matching Cloudflare's `DEFAULT_PAUSED_TTL_MS`; `runtime.ts:156`).
-const DEFAULT_PAUSED_TTL_MS: i64 = 24 * 60 * 60 * 1000;
-
 /// Minimum interval between lazy expiry sweeps (throttle; `Wave 4 Task 4.2`).
 const EXPIRY_SWEEP_INTERVAL_MS: i64 = 60_000;
 
@@ -81,11 +77,7 @@ impl SqliteDecider {
     /// Configured pause TTL in ms (`LAB_CODE_MODE_PAUSE_TTL_MS`, default 24h).
     #[must_use]
     pub fn pause_ttl_ms() -> i64 {
-        std::env::var("LAB_CODE_MODE_PAUSE_TTL_MS")
-            .ok()
-            .and_then(|s| s.parse::<i64>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(DEFAULT_PAUSED_TTL_MS)
+        super::pause_ttl_ms()
     }
 
     /// Lazy, throttled TTL sweep (`Wave 4 Task 4.2`). No-op unless
@@ -522,12 +514,7 @@ impl SqliteDecider {
     }
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+use super::now_ms;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

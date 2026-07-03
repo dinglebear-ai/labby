@@ -656,7 +656,7 @@ impl LabMcpServer {
                     is_admin: is_admin_scope,
                     route_scope: self.route_scope.label(),
                     capability_filter_fingerprint: capability_filter_fingerprint.clone(),
-                    expires_at_ms: now_ms + pause_ttl_ms(),
+                    expires_at_ms: now_ms + crate::codemode::pause_ttl_ms(),
                 })
                 .await
             {
@@ -943,15 +943,6 @@ impl LabMcpServer {
         );
         Ok(call_result_with_structured(output, structured, ui_meta))
     }
-}
-
-/// Configured pause TTL in ms (`LAB_CODE_MODE_PAUSE_TTL_MS`, default 24h).
-fn pause_ttl_ms() -> i64 {
-    std::env::var("LAB_CODE_MODE_PAUSE_TTL_MS")
-        .ok()
-        .and_then(|s| s.parse::<i64>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(24 * 60 * 60 * 1000)
 }
 
 /// Build the paused envelope: a `confirmation_required` error carrying the
