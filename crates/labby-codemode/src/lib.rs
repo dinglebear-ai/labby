@@ -66,7 +66,7 @@ pub use config::{MAX_SOURCE_BYTES, SERVICE};
 /// Single source of truth for the discovery-catalog scope formulas. Hosts
 /// recomputing the sandbox's scope-filtered entry set (e.g. a gateway's
 /// `semantic_rank`) MUST use these rather than restating the formulas.
-pub use execute::{discovery_entry_visible, discovery_render_params};
+pub use execute::{discovery_entry_visible, discovery_render_params, local_providers_allowed};
 pub use host::{
     BeginRun, CodeModeDecider, CodeModeHost, DecideOutcome, ExecCtx, PendingCall, ResolvedSnippet,
     RunAuthFields, RunLifecycle, ToolCallOutcome, ToolsRender,

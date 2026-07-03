@@ -602,12 +602,37 @@ impl LabMcpServer {
             execution_id = token;
         }
 
+        // Build the caller now (before deciding pause-capability) so the
+        // local-provider exclusion below can consult it. Consumed by
+        // `broker.execute` at the end.
+        let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
+            CodeModeCaller::Scoped {
+                capabilities: code_mode_capabilities_for_scopes(&auth.scopes),
+                sub: self.request_subject(context).map(ToOwned::to_owned),
+            }
+        });
+
+        // Local-provider safety (fail closed): Labby's runner-reserved `state`/
+        // `git` providers dispatch OFF the decider path
+        // (`runner_drive.rs::enqueue_local_provider_call`), so their calls are
+        // never journaled and would double-apply on resume. Any run for which
+        // local providers are allowed (unscoped admin/trusted-local) must NOT
+        // begin a resumable durable run. Excluding it here keeps such runs on the
+        // write-free path (no pause, no resume token) — safe by construction.
+        let local_providers_allowed =
+            labby_codemode::local_providers_allowed(&caller, &capability_filter);
+
         // Pause-capable path: a decider is injected AND this is a fresh,
-        // not-pre-confirmed, non-resume run. Begin a durable run before driving
-        // so destructive calls can journal + pause; else take the write-free
-        // path (execution_id stays local, no journaling).
-        let pause_capable =
-            (decider.is_some() && !whole_run_confirm && !has_resume_token) || resuming;
+        // not-pre-confirmed, non-resume run, AND local providers are not in play.
+        // Begin a durable run before driving so destructive calls can journal +
+        // pause; else take the write-free path (execution_id stays local, no
+        // journaling). A resume never involves local providers (it re-drives a
+        // previously non-local run), so `resuming` keeps its pause capability.
+        let pause_capable = (decider.is_some()
+            && !whole_run_confirm
+            && !has_resume_token
+            && !local_providers_allowed)
+            || resuming;
         if let (true, false, Some(decider)) = (pause_capable, resuming, decider.as_ref()) {
             decider.maybe_expire().await;
             if let Err(err) = decider
@@ -639,12 +664,6 @@ impl LabMcpServer {
                 None
             },
         );
-        let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
-            CodeModeCaller::Scoped {
-                capabilities: code_mode_capabilities_for_scopes(&auth.scopes),
-                sub: self.request_subject(context).map(ToOwned::to_owned),
-            }
-        });
         let before = self.snapshot_catalog().await;
         let mut response = match broker
             .execute(
@@ -756,13 +775,39 @@ impl LabMcpServer {
                     return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
                 }
                 // Running (never paused) or already terminal-ok — mark completed
-                // and fall through to the normal completed envelope.
-                _ => {
-                    decider
-                        .set_status(&execution_id, labby_codemode::RunLifecycle::Completed, None)
-                        .await
-                        .ok();
-                }
+                // and fall through to the normal completed envelope. F5: a
+                // swallowed failure here leaves the run non-terminal (it lingers
+                // until TTL expiry). Not a correctness bug for the response, but
+                // log it so the leak is observable.
+                _ => match decider
+                    .set_status(&execution_id, labby_codemode::RunLifecycle::Completed, None)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::warn!(
+                            surface = "mcp",
+                            service = CODE_MODE_SERVICE,
+                            action = "complete",
+                            kind = "internal_error",
+                            execution_id = %execution_id,
+                            "could not mark Code Mode run completed (no row updated); \
+                             run will linger until TTL expiry"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            surface = "mcp",
+                            service = CODE_MODE_SERVICE,
+                            action = "complete",
+                            kind = "internal_error",
+                            execution_id = %execution_id,
+                            error = %err,
+                            "failed to mark Code Mode run completed; run will linger \
+                             until TTL expiry"
+                        );
+                    }
+                },
             }
         }
 

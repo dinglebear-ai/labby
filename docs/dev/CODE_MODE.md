@@ -467,6 +467,24 @@ code hash does not match the paused run — is a hard, model-actionable
 nondeterministic or side-effectful work (random, time, raw reads that drift) in
 `codemode.step` so it is journaled once and replayed thereafter.
 
+**The replay `seq` spine covers every sandbox request, not just journaled tool
+calls.** The runner allocates `seq` from a single monotonic counter shared across
+*all* parent↔runner requests: upstream tool calls, `codemode.search`,
+`writeArtifact`, `codemode.run` snippet resolves, and internal
+`semantic_rank`/`codemode.search` scoring. Only real upstream tool calls are
+written to the durable log, but a replay only lands on the recorded call at a
+given `seq` if every earlier `seq`-consuming request runs in the identical order
+and count. Therefore `codemode.search`, `codemode.describe`, `writeArtifact`, and
+`codemode.run` **participate in the replay `seq` spine and must be deterministic
+across replays**: issue the same discovery/search/artifact/snippet calls, in the
+same order, on a resume as on the first pass. Adding, removing, or reordering any
+of them between pause and resume shifts the `seq` of a later journaled tool call
+and surfaces as `resume_divergence` (fail closed) rather than a silent misapply.
+(A `codemode.step(name, fn)` JS-bridge primitive that would journal arbitrary
+nondeterministic work under its own `seq` is a tracked follow-up, not built here;
+until it lands, nondeterministic snippets fail closed with `resume_divergence`,
+which is safe.)
+
 **No truncation.** Any single journaled args/result value over
 `MAX_DURABLE_VALUE_BYTES` (1 MiB) fails the run with a model-actionable message
 rather than being truncated — truncation would feed resumed code corrupted data.
@@ -479,6 +497,30 @@ sweep fired on pause/resume/reject dispatch — no background timer.
 **Perf scope.** Journaling happens only on the pause-capable path. Pre-confirmed
 (`confirm: true`) runs, CLI runs, and runs with no configured pause store take
 the write-free path unchanged.
+
+**Local providers are excluded from the pause-capable path (fail closed).**
+Labby's runner-reserved `state.*` / `git.*` local providers (available only to
+unscoped admin/trusted-local callers) dispatch **off** the decider path
+(`runner_drive.rs::enqueue_local_provider_call`), so their calls are never
+journaled and would double-apply on resume. To keep this safe by construction, a
+run for which local providers are allowed is made **non-pause-capable**: it never
+begins a resumable durable run and instead takes the write-free path (no pause,
+no `resume_token`). Consequence: a snippet that uses `state`/`git` cannot pause
+for per-call destructive approval; it runs to completion under its existing
+scope gate. Removing this exclusion requires journaling local-provider calls
+through the decider (or marking them `ephemeral` re-runs) first — see the
+threat-model note in `crates/labby/src/codemode/sqlite_pauses.rs`.
+
+**Resume authorization (fail closed on every gate).** Resuming a paused run
+re-checks, in order and BEFORE the CAS `paused → running`: the HMAC integrity
+signature, `status == paused`, resubmitted code hash == recorded `code_hash`,
+`actor_key` identity (None matches only None — never bridging trusted-local ↔
+scoped), the **live** recomputed capabilities (`can_execute`, `is_admin`,
+capability fingerprint — a narrowed/revoked scope fails even when the fingerprint
+matches), and the **route scope** (a run paused under protected route A cannot be
+resumed under route B). Reject applies the same integrity + actor-identity gate
+and only terminates a still-`paused` run, so a `resume_token` holder cannot
+force-terminate another actor's live `running` run.
 
 **Worked MCP example (pause → resume / reject):**
 

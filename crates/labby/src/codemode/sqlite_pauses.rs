@@ -45,10 +45,15 @@
 //!   (`runner_drive::enqueue_local_provider_call`) that does NOT flow through
 //!   `host.call_tool`, so their calls are **not** journaled. A paused run that
 //!   also called a local provider would re-execute that provider on resume
-//!   (double-apply). Local providers only run for unscoped admin/trusted-local
-//!   callers; a fail-closed "non-resumable if a local provider was used" guard
-//!   and `codemode.step` journaling are deferred follow-ups (plan Wave 4 Task
-//!   4.1). Until then, do not rely on resume for runs that touch `state`/`git`.
+//!   (double-apply). Mitigation (**implemented, fail closed**): a run for which
+//!   local providers are allowed (unscoped admin/trusted-local, per
+//!   `labby_codemode::local_providers_allowed`) is made **non-pause-capable** in
+//!   `call_tool_codemode.rs` — it never begins a resumable durable run, so there
+//!   is no resume path that could double-apply a `state`/`git` call. Such a run
+//!   cannot pause for per-call destructive approval; it runs to completion under
+//!   its scope gate. Journaling local-provider calls through the decider (or as
+//!   `ephemeral` re-runs) plus a `codemode.step` primitive remain deferred
+//!   follow-ups (plan Wave 4 Task 4.1) that would lift this exclusion.
 
 use std::path::PathBuf;
 

@@ -419,10 +419,23 @@ impl SqliteDecider {
             Ok(()) => Ok(()),
             Err(CodeModePauseStoreError::ValueTooLarge(msg)) => {
                 // Record on the execution (terminal), then surface the message.
-                self.store
+                if let Err(status_err) = self
+                    .store
                     .set_status(execution_id, RunStatus::Error, Some(&msg))
                     .await
-                    .ok();
+                {
+                    // F6: correctness is fine (we still return Err below); log the
+                    // swallowed status-write failure so it is observable.
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "codemode",
+                        action = "record_result",
+                        kind = "internal_error",
+                        execution_id,
+                        error = %status_err,
+                        "failed to mark Code Mode run errored after oversize result"
+                    );
+                }
                 Err(ToolError::Sdk {
                     sdk_kind: "internal_error".to_string(),
                     message: msg,
@@ -464,10 +477,23 @@ impl SqliteDecider {
         {
             Ok(()) => {}
             Err(CodeModePauseStoreError::ValueTooLarge(msg)) => {
-                self.store
+                if let Err(status_err) = self
+                    .store
                     .set_status(execution_id, RunStatus::Error, Some(&msg))
                     .await
-                    .ok();
+                {
+                    // F6: we still return Fail below (correctness is fine); log
+                    // the swallowed status-write failure so it is observable.
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "codemode",
+                        action = "decide",
+                        kind = "internal_error",
+                        execution_id,
+                        error = %status_err,
+                        "failed to mark Code Mode run errored after oversize args"
+                    );
+                }
                 return DecideOutcome::Fail(msg);
             }
             Err(err) => return DecideOutcome::Fail(err.to_string()),

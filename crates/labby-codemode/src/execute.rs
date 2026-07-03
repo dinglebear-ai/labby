@@ -464,7 +464,17 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
     }
 }
 
-pub(crate) fn local_providers_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
+/// Whether Labby's runner-reserved local Code Mode providers (`state`/`git`)
+/// are injected and callable for this caller + scope: unscoped admin/trusted
+/// callers only.
+///
+/// Exposed `pub` (re-exported from the crate root) so the MCP surface can gate
+/// the durable pause/resume path off it: local-provider calls dispatch OFF the
+/// decider path (`runner_drive.rs::enqueue_local_provider_call`), so they are
+/// never journaled and would double-apply on resume. A run for which local
+/// providers are allowed must therefore never begin a resumable durable run.
+#[must_use]
+pub fn local_providers_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
     caller.is_admin() && !scope.is_scoped()
 }
 
