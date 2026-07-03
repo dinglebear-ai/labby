@@ -166,7 +166,10 @@ jobs:
           persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87
       - name: Cargo Deny (Code Mode Javy plugin)
-        run: cargo deny --manifest-path crates/labby-codemode/javy-plugin/Cargo.toml check advisories bans licenses sources
+        uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87
+        with:
+          manifest-path: crates/labby-codemode/javy-plugin/Cargo.toml
+          command-arguments: advisories bans licenses sources
 
   check:
     name: Check
