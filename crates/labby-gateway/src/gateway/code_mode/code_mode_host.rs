@@ -102,14 +102,19 @@ impl CodeModeHost for GatewayManager {
         // path, so a resume of an approved destructive call re-dispatches without
         // re-pausing; only genuinely-fresh destructive calls pause.
         if let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) {
+            let approval = if upstream_tool.destructive {
+                labby_codemode::Approval::Required
+            } else {
+                labby_codemode::Approval::NotNeeded
+            };
             match decider
                 .decide(
                     exec_id,
                     ctx.seq,
                     id,
                     &params,
-                    upstream_tool.destructive,
-                    false,
+                    approval,
+                    labby_codemode::Journaling::Durable,
                 )
                 .await
             {
@@ -223,7 +228,14 @@ impl CodeModeHost for GatewayManager {
         // replay of nondeterministic fn output).
         let args = serde_json::json!({ "name": name });
         match decider
-            .decide(exec_id, ctx.seq, "codemode::step", &args, false, false)
+            .decide(
+                exec_id,
+                ctx.seq,
+                "codemode::step",
+                &args,
+                labby_codemode::Approval::NotNeeded,
+                labby_codemode::Journaling::Durable,
+            )
             .await
         {
             labby_codemode::DecideOutcome::Replay(value) => {
@@ -306,7 +318,14 @@ impl CodeModeHost for GatewayManager {
         // false`: local providers are already scope-gated (unscoped admin only)
         // and are not per-call destructive-approval boundaries.
         match decider
-            .decide(exec_id, ctx.seq, id, params, false, true)
+            .decide(
+                exec_id,
+                ctx.seq,
+                id,
+                params,
+                labby_codemode::Approval::NotNeeded,
+                labby_codemode::Journaling::Ephemeral,
+            )
             .await
         {
             // Ephemeral entries decide Execute on both fresh journal and replay.

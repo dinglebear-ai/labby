@@ -3127,8 +3127,8 @@ async fn swallowed_pause_via_all_settled_still_pauses_and_dispatches_nothing() {
             0,
             "demo::delete",
             &serde_json::json!({ "id": 1 }),
-            true,
-            false,
+            labby_codemode::Approval::Required,
+            labby_codemode::Journaling::Durable,
         )
         .await;
     assert!(
@@ -3148,8 +3148,8 @@ async fn swallowed_pause_via_all_settled_still_pauses_and_dispatches_nothing() {
             1,
             "demo::delete",
             &serde_json::json!({ "id": 2 }),
-            true,
-            false,
+            labby_codemode::Approval::Required,
+            labby_codemode::Journaling::Durable,
         )
         .await;
     assert!(
@@ -3209,8 +3209,8 @@ async fn resume_executes_approved_destructive_call_and_completes() {
             0,
             "demo::read",
             &serde_json::json!({ "q": 1 }),
-            false,
-            false,
+            labby_codemode::Approval::NotNeeded,
+            labby_codemode::Journaling::Durable,
         )
         .await;
     assert!(matches!(read, labby_codemode::DecideOutcome::Execute));
@@ -3225,8 +3225,8 @@ async fn resume_executes_approved_destructive_call_and_completes() {
             1,
             "demo::delete",
             &serde_json::json!({ "id": 1 }),
-            true,
-            false,
+            labby_codemode::Approval::Required,
+            labby_codemode::Journaling::Durable,
         )
         .await;
     assert!(matches!(del, labby_codemode::DecideOutcome::Pause));
@@ -3255,8 +3255,8 @@ async fn resume_executes_approved_destructive_call_and_completes() {
             0,
             "demo::read",
             &serde_json::json!({ "q": 1 }),
-            false,
-            false,
+            labby_codemode::Approval::NotNeeded,
+            labby_codemode::Journaling::Durable,
         )
         .await;
     match replay {
@@ -3273,8 +3273,8 @@ async fn resume_executes_approved_destructive_call_and_completes() {
             1,
             "demo::delete",
             &serde_json::json!({ "id": 1 }),
-            true,
-            false,
+            labby_codemode::Approval::Required,
+            labby_codemode::Journaling::Durable,
         )
         .await;
     assert!(

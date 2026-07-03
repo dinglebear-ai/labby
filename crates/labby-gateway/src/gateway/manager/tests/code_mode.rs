@@ -414,13 +414,13 @@ impl CodeModeDecider for SpyDecider {
         _seq: u64,
         _tool_id: &'a str,
         _args: &'a Value,
-        requires_approval: bool,
-        _ephemeral: bool,
+        approval: labby_codemode::Approval,
+        _journaling: labby_codemode::Journaling,
     ) -> BoxDecideFuture<'a, DecideOutcome> {
         self.captured_requires_approval
             .lock()
             .unwrap()
-            .push(requires_approval);
+            .push(approval.is_required());
         let outcome = self
             .outcome
             .lock()

@@ -109,6 +109,49 @@ impl FailReason {
     }
 }
 
+/// Whether a call needs per-call human approval before it may dispatch. A named
+/// two-variant enum replacing a bare `bool` at the [`CodeModeDecider::decide`]
+/// boundary, so it cannot be transposed with [`Journaling`] (both were adjacent
+/// `bool`s). A fresh `Required` call journals `pending` and pauses the run; a
+/// `NotNeeded` call executes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approval {
+    /// The call is destructive/unconfirmed — journal pending and pause.
+    Required,
+    /// The call may execute without per-call approval.
+    NotNeeded,
+}
+
+impl Approval {
+    /// `true` iff approval is required (the wire/store bool).
+    #[must_use]
+    pub fn is_required(self) -> bool {
+        matches!(self, Approval::Required)
+    }
+}
+
+/// Whether a journaled entry replays its recorded result or re-executes on
+/// resume. A named two-variant enum replacing a bare `bool` at the
+/// [`CodeModeDecider::decide`] boundary (adjacent to [`Approval`], hence the
+/// transposition risk this removes). `Ephemeral` entries (local `state`/`git`
+/// providers) RE-EXECUTE on replay so the side effect re-runs; `Durable` entries
+/// replay their stored result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Journaling {
+    /// Re-execute on replay (never serve a stored result). Local FS/git calls.
+    Ephemeral,
+    /// Replay the stored result on resume (journal-once). Normal tool calls/steps.
+    Durable,
+}
+
+impl Journaling {
+    /// `true` iff the entry is ephemeral (the wire/store bool).
+    #[must_use]
+    pub fn is_ephemeral(self) -> bool {
+        matches!(self, Journaling::Ephemeral)
+    }
+}
+
 /// The durable-execution decision for a single tool call or step.
 ///
 /// Port of Cloudflare's `ToolDecision` (`runtime.ts:127-134`), plus explicit
@@ -270,14 +313,17 @@ pub trait CodeModeDecider: Send + Sync {
     /// Decide what to do with the call at `(execution_id, seq)`. Ports
     /// `runtime.ts:411 decide`: monotonic pause gate first, then
     /// replay/divergence/journal-and-pause/execute.
+    ///
+    /// `approval` and `journaling` are named enums (not adjacent `bool`s) so the
+    /// two cannot be transposed at a call site.
     fn decide<'a>(
         &'a self,
         execution_id: &'a str,
         seq: u64,
         tool_id: &'a str,
         args: &'a Value,
-        requires_approval: bool,
-        ephemeral: bool,
+        approval: Approval,
+        journaling: Journaling,
     ) -> BoxDecideFuture<'a, DecideOutcome>;
 
     /// Record the real result of an executed call and mark it applied. Ports

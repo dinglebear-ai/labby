@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use labby_codemode::host::BoxDecideFuture;
 use labby_codemode::{
-    AuthLoad, BeginRun, CodeModeDecider, DecideOutcome, FailReason, PendingCall, RunLifecycle,
-    VerifiedAuth,
+    Approval, AuthLoad, BeginRun, CodeModeDecider, DecideOutcome, FailReason, Journaling,
+    PendingCall, RunLifecycle, VerifiedAuth,
 };
 use labby_runtime::error::ToolError;
 use serde_json::Value;
@@ -133,8 +133,8 @@ impl CodeModeDecider for SqliteDecider {
         seq: u64,
         tool_id: &'a str,
         args: &'a Value,
-        requires_approval: bool,
-        ephemeral: bool,
+        approval: Approval,
+        journaling: Journaling,
     ) -> BoxDecideFuture<'a, DecideOutcome> {
         Box::pin(async move {
             self.decide_inner(
@@ -142,8 +142,8 @@ impl CodeModeDecider for SqliteDecider {
                 seq,
                 tool_id,
                 args,
-                requires_approval,
-                ephemeral,
+                approval.is_required(),
+                journaling.is_ephemeral(),
             )
             .await
         })
@@ -583,8 +583,8 @@ mod tests {
                 0,
                 "svc::read",
                 &serde_json::json!({"q": 1}),
-                false,
-                false,
+                Approval::NotNeeded,
+                Journaling::Durable,
             )
             .await;
         assert!(matches!(out, DecideOutcome::Execute));
@@ -597,7 +597,14 @@ mod tests {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e2").await;
         let out = d
-            .decide("e2", 0, "svc::delete", &serde_json::json!({}), true, false)
+            .decide(
+                "e2",
+                0,
+                "svc::delete",
+                &serde_json::json!({}),
+                Approval::Required,
+                Journaling::Durable,
+            )
             .await;
         assert!(matches!(out, DecideOutcome::Pause));
         let run = d.store.load_run("e2").await.unwrap().unwrap();
@@ -612,7 +619,14 @@ mod tests {
         begin_run(&d, "e3").await;
         // First destructive call pauses.
         let _outcome = d
-            .decide("e3", 0, "svc::delete", &serde_json::json!({}), true, false)
+            .decide(
+                "e3",
+                0,
+                "svc::delete",
+                &serde_json::json!({}),
+                Approval::Required,
+                Journaling::Durable,
+            )
             .await;
         // A later call at seq 1 gets Pause and journals nothing.
         let out = d
@@ -621,8 +635,8 @@ mod tests {
                 1,
                 "svc::read",
                 &serde_json::json!({"x": 2}),
-                false,
-                false,
+                Approval::NotNeeded,
+                Journaling::Durable,
             )
             .await;
         assert!(matches!(out, DecideOutcome::Pause));
@@ -634,12 +648,30 @@ mod tests {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e4").await;
         let args = serde_json::json!({"q": "x"});
-        let _outcome = d.decide("e4", 0, "svc::read", &args, false, false).await;
+        let _outcome = d
+            .decide(
+                "e4",
+                0,
+                "svc::read",
+                &args,
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
+            .await;
         d.record_result("e4", 0, &serde_json::json!({"ok": true}))
             .await
             .unwrap();
         // Re-decide same seq with matching args → replay cached, no dispatch.
-        let out = d.decide("e4", 0, "svc::read", &args, false, false).await;
+        let out = d
+            .decide(
+                "e4",
+                0,
+                "svc::read",
+                &args,
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
+            .await;
         match out {
             DecideOutcome::Replay(v) => assert_eq!(v, serde_json::json!({"ok": true})),
             other => panic!("expected Replay, got {other:?}"),
@@ -656,8 +688,8 @@ mod tests {
                 0,
                 "svc::read",
                 &serde_json::json!({"q": "x"}),
-                false,
-                false,
+                Approval::NotNeeded,
+                Journaling::Durable,
             )
             .await;
         d.record_result("e5", 0, &serde_json::json!({"ok": 1}))
@@ -670,8 +702,8 @@ mod tests {
                 0,
                 "svc::read",
                 &serde_json::json!({"q": "DIFFERENT"}),
-                false,
-                false,
+                Approval::NotNeeded,
+                Journaling::Durable,
             )
             .await;
         assert!(matches!(out, DecideOutcome::Diverge(_)));
@@ -690,8 +722,8 @@ mod tests {
                 0,
                 "svc::do",
                 &serde_json::json!({"blob": big}),
-                false,
-                false,
+                Approval::NotNeeded,
+                Journaling::Durable,
             )
             .await;
         // Oversize args carry the caller-shaped ValueTooLarge reason (→
@@ -726,8 +758,8 @@ mod tests {
                 0,
                 "svc::read",
                 &serde_json::json!({"q": 1}),
-                false,
-                false,
+                Approval::NotNeeded,
+                Journaling::Durable,
             )
             .await;
         assert!(matches!(out, DecideOutcome::Execute));
@@ -765,7 +797,14 @@ mod tests {
         let args = serde_json::json!({ "name": "s" });
         // First pass: fresh non-destructive step → Execute (fn runs).
         let out = d
-            .decide("e-step", 0, "codemode::step", &args, false, false)
+            .decide(
+                "e-step",
+                0,
+                "codemode::step",
+                &args,
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
             .await;
         assert!(matches!(out, DecideOutcome::Execute));
         // Record fn's produced value (the nondeterministic result).
@@ -774,7 +813,14 @@ mod tests {
             .unwrap();
         // Resume: same seq + same step name → replay the cached value, NOT execute.
         let out = d
-            .decide("e-step", 0, "codemode::step", &args, false, false)
+            .decide(
+                "e-step",
+                0,
+                "codemode::step",
+                &args,
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
             .await;
         match out {
             DecideOutcome::Replay(v) => assert_eq!(v, serde_json::json!({ "rand": 0.42 })),
@@ -795,14 +841,28 @@ mod tests {
         begin_run(&d, "wrap").await;
         let step_args = serde_json::json!({ "name": "s" });
         let _first = d
-            .decide("wrap", 0, "codemode::step", &step_args, false, false)
+            .decide(
+                "wrap",
+                0,
+                "codemode::step",
+                &step_args,
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
             .await;
         // fn produced 0.42 on the first pass; that value is journaled.
         d.record_result("wrap", 0, &serde_json::json!(0.42))
             .await
             .unwrap();
         let out = d
-            .decide("wrap", 0, "codemode::step", &step_args, false, false)
+            .decide(
+                "wrap",
+                0,
+                "codemode::step",
+                &step_args,
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
             .await;
         assert!(
             matches!(&out, DecideOutcome::Replay(v) if *v == serde_json::json!(0.42)),
@@ -820,8 +880,8 @@ mod tests {
                 0,
                 "svc::use",
                 &serde_json::json!({ "rand": 0.42 }),
-                false,
-                false,
+                Approval::NotNeeded,
+                Journaling::Durable,
             )
             .await;
         d.record_result("raw", 0, &serde_json::json!({ "ok": true }))
@@ -833,8 +893,8 @@ mod tests {
                 0,
                 "svc::use",
                 &serde_json::json!({ "rand": 0.43 }),
-                false,
-                false,
+                Approval::NotNeeded,
+                Journaling::Durable,
             )
             .await;
         assert!(
@@ -855,7 +915,14 @@ mod tests {
         let args = serde_json::json!({ "path": "a.txt" });
         // First pass: fresh ephemeral call → Execute.
         let out = d
-            .decide("e-local", 0, "state::writeFile", &args, false, true)
+            .decide(
+                "e-local",
+                0,
+                "state::writeFile",
+                &args,
+                Approval::NotNeeded,
+                Journaling::Ephemeral,
+            )
             .await;
         assert!(matches!(out, DecideOutcome::Execute));
         d.record_result("e-local", 0, &serde_json::json!({ "ok": true }))
@@ -863,7 +930,14 @@ mod tests {
             .unwrap();
         // Resume: same seq + same id/args → Execute AGAIN (re-run), not Replay.
         let out = d
-            .decide("e-local", 0, "state::writeFile", &args, false, true)
+            .decide(
+                "e-local",
+                0,
+                "state::writeFile",
+                &args,
+                Approval::NotNeeded,
+                Journaling::Ephemeral,
+            )
             .await;
         assert!(
             matches!(out, DecideOutcome::Execute),
@@ -875,7 +949,14 @@ mod tests {
     async fn unknown_execution_fails() {
         let (d, _dir) = fresh_decider().await;
         let out = d
-            .decide("nope", 0, "svc::read", &serde_json::json!({}), false, false)
+            .decide(
+                "nope",
+                0,
+                "svc::read",
+                &serde_json::json!({}),
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
             .await;
         // An unknown run carries the UnknownExecution reason (→ internal_error at
         // the host), distinct from a ValueTooLarge / genuine Internal fault.
@@ -970,7 +1051,14 @@ mod tests {
         begin_run(&d, "e8").await;
         // Pause it (a destructive fresh call).
         let _outcome = d
-            .decide("e8", 0, "svc::delete", &serde_json::json!({}), true, false)
+            .decide(
+                "e8",
+                0,
+                "svc::delete",
+                &serde_json::json!({}),
+                Approval::Required,
+                Journaling::Durable,
+            )
             .await;
         assert_eq!(
             d.run_status("e8").await,
@@ -1011,8 +1099,8 @@ mod tests {
                 0,
                 "svc::delete",
                 &serde_json::json!({}),
-                true,
-                false,
+                Approval::Required,
+                Journaling::Durable,
             )
             .await;
         assert_eq!(d.run_status("e-exp").await, RunLifecycle::Paused);
@@ -1029,7 +1117,14 @@ mod tests {
         let (d, _dir) = fresh_decider().await;
         begin_run(&d, "e9").await;
         let _outcome = d
-            .decide("e9", 0, "svc::delete", &serde_json::json!({}), true, false)
+            .decide(
+                "e9",
+                0,
+                "svc::delete",
+                &serde_json::json!({}),
+                Approval::Required,
+                Journaling::Durable,
+            )
             .await;
         // Reject guarded on Paused → succeeds.
         assert!(
@@ -1055,8 +1150,8 @@ mod tests {
                 0,
                 "svc::delete",
                 &serde_json::json!({}),
-                true,
-                false,
+                Approval::Required,
+                Journaling::Durable,
             )
             .await;
         assert_eq!(d.run_status("e-rej").await, RunLifecycle::Paused);
@@ -1113,7 +1208,14 @@ mod tests {
         // then record its result so it becomes a normal `applied` entry.
         let args = serde_json::json!({"q": 1});
         let _outcome = d
-            .decide("e-corrupt", 0, "svc::read", &args, false, false)
+            .decide(
+                "e-corrupt",
+                0,
+                "svc::read",
+                &args,
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
             .await;
         d.record_result("e-corrupt", 0, &serde_json::json!({"ok": true}))
             .await
@@ -1144,7 +1246,14 @@ mod tests {
 
         // (b) re-deciding the same seq with matching args diverges (fails closed)
         let out = d
-            .decide("e-corrupt", 0, "svc::read", &args, false, false)
+            .decide(
+                "e-corrupt",
+                0,
+                "svc::read",
+                &args,
+                Approval::NotNeeded,
+                Journaling::Durable,
+            )
             .await;
         assert!(
             matches!(out, DecideOutcome::Diverge(_)),
