@@ -493,6 +493,20 @@ impl LabMcpServer {
                 );
                 return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
             }
+            // Route-scope identity (F2): the run must be resumed under the SAME
+            // protected-route scope it paused in. Fail closed BEFORE the CAS so a
+            // run paused under route A cannot be resumed under route B even when
+            // the caller shares the same actor + capability fingerprint.
+            if auth_fields.route_scope != self.route_scope.label() {
+                let env = build_error(
+                    service,
+                    "call_tool",
+                    "forbidden",
+                    "Code Mode run was paused under a different protected-route scope; \
+                     refusing to resume across routes.",
+                );
+                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            }
             // Live authorization (V1 — the critical fix): recompute live caps at
             // resume time. The fingerprint alone is NOT an authz check; the
             // recomputed live capabilities are. If scope narrowed/revoked since

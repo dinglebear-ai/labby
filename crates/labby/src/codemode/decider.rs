@@ -263,6 +263,7 @@ impl CodeModeDecider for SqliteDecider {
                     actor_key: run.actor_key,
                     is_admin: run.is_admin,
                     capability_filter_fingerprint: run.capability_filter_fingerprint,
+                    route_scope: run.route_scope,
                     verified: run.verified,
                     status: status_to_lifecycle(run.status),
                 })
@@ -493,6 +494,10 @@ mod tests {
     }
 
     async fn begin_run(decider: &SqliteDecider, id: &str) {
+        begin_run_scoped(decider, id, "unscoped").await;
+    }
+
+    async fn begin_run_scoped(decider: &SqliteDecider, id: &str, route_scope: &str) {
         decider
             .store
             .begin(NewRun {
@@ -500,7 +505,7 @@ mod tests {
                 code_hash: "hash".to_string(),
                 actor_key: Some("actor".to_string()),
                 is_admin: true,
-                route_scope: "unscoped".to_string(),
+                route_scope: route_scope.to_string(),
                 capability_filter_fingerprint: "fp".to_string(),
                 expires_at_ms: now_ms() + 86_400_000,
             })
@@ -656,7 +661,29 @@ mod tests {
         assert_eq!(fields.actor_key.as_deref(), Some("actor"));
         assert!(fields.is_admin);
         assert_eq!(fields.capability_filter_fingerprint, "fp");
+        assert_eq!(fields.route_scope, "unscoped");
         assert_eq!(fields.status, RunLifecycle::Running);
+    }
+
+    #[tokio::test]
+    async fn run_auth_fields_carries_the_recorded_route_scope() {
+        // F2: the route scope a run began under must be faithfully threaded into
+        // `RunAuthFields` so the resume handler can refuse a cross-route resume
+        // (`auth_fields.route_scope != self.route_scope.label()`). Two runs begun
+        // under different scopes must each report their own.
+        let (d, _dir) = fresh_decider().await;
+        begin_run_scoped(&d, "route-a", "protected:media").await;
+        begin_run_scoped(&d, "route-b", "protected:ops").await;
+        let a = d.run_auth_fields("route-a").await.expect("some");
+        let b = d.run_auth_fields("route-b").await.expect("some");
+        assert_eq!(a.route_scope, "protected:media");
+        assert_eq!(b.route_scope, "protected:ops");
+        // The refusal predicate the handler applies: a run paused under A is
+        // refused when the live route scope is B.
+        assert_ne!(
+            a.route_scope, b.route_scope,
+            "distinct route scopes must not compare equal — the cross-route resume guard"
+        );
     }
 
     #[tokio::test]

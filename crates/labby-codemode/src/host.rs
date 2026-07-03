@@ -144,6 +144,10 @@ pub struct RunAuthFields {
     pub actor_key: Option<String>,
     pub is_admin: bool,
     pub capability_filter_fingerprint: String,
+    /// The route scope label the run was started under. Re-checked at resume
+    /// time (F2) so a run paused under route A cannot be resumed under route B
+    /// even when the caller shares the same capability fingerprint/actor.
+    pub route_scope: String,
     /// HMAC integrity verification result — `false` ⇒ tampered, fail closed.
     pub verified: bool,
     pub status: RunLifecycle,
