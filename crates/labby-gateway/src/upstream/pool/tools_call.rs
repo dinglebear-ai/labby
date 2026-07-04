@@ -124,7 +124,7 @@ mod tests {
     use std::time::Instant;
 
     use rmcp::model::{
-        CallToolRequestParams, CallToolResult, Content, ErrorData, ListToolsResult,
+        CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, ListToolsResult,
         PaginatedRequestParams, ServerCapabilities, ServerInfo,
     };
     use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
@@ -178,7 +178,7 @@ mod tests {
             ) -> Result<CallToolResult, ErrorData> {
                 // 12 MB of 'x' characters — well above the default 10 MB cap.
                 let payload = "x".repeat(12 * 1024 * 1024);
-                Ok(CallToolResult::success(vec![Content::text(payload)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(payload)]))
             }
         }
 

@@ -39,6 +39,7 @@ COPY crates/labby-web/Cargo.toml crates/labby-web/Cargo.toml
 COPY crates/labby-winjob/Cargo.toml crates/labby-winjob/Cargo.toml
 COPY crates/labby-primitives/Cargo.toml crates/labby-primitives/Cargo.toml
 COPY crates/labby-openapi/Cargo.toml crates/labby-openapi/Cargo.toml
+COPY crates/xtask/Cargo.toml crates/xtask/Cargo.toml
 
 # Create stub source files so cargo can parse ALL manifests without error.
 #
@@ -57,8 +58,10 @@ RUN mkdir -p \
       crates/labby-winjob/src \
       crates/labby-primitives/src \
       crates/labby-openapi/src \
+      crates/xtask/src \
       apps/gateway-admin/out \
  && echo 'fn main(){}' > crates/labby/src/main.rs \
+ && echo 'fn main(){}' > crates/xtask/src/main.rs \
  && echo 'fn main(){}' > crates/labby-web/build.rs \
  && touch \
       crates/labby/src/lib.rs \
@@ -82,6 +85,7 @@ RUN mkdir -p \
  && cargo clean -p labby-winjob \
  && cargo clean -p labby-primitives \
  && cargo clean -p labby-openapi \
+ && cargo clean -p xtask \
  && rm -rf \
       crates/*/src \
       apps/gateway-admin/out \

@@ -1528,7 +1528,7 @@ async fn run_stdio(
         node_role: Some(node_role),
         peers: Arc::clone(&notifier.peers),
         logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
-            crate::mcp::logging::logging_level_rank(rmcp::model::LoggingLevel::Info),
+            crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
         )),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: crate::mcp::server::next_relay_session_id(),
@@ -1681,7 +1681,9 @@ fn build_mcp_service_with_scope(
                 node_role,
                 peers,
                 logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
-                    crate::mcp::logging::logging_level_rank(rmcp::model::LoggingLevel::Info),
+                    crate::mcp::logging::logging_level_rank(
+                        crate::mcp::logging::LoggingLevel::Info,
+                    ),
                 )),
                 route_scope,
                 relay_session_id: crate::mcp::server::next_relay_session_id(),

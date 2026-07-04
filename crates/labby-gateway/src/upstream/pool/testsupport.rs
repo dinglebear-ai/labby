@@ -14,10 +14,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rmcp::model::{
-    AnnotateAble, CallToolRequestParams, CallToolResult, ErrorData, GetPromptRequestParams,
-    GetPromptResult, ListPromptsResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, Prompt, PromptMessage, PromptMessageRole, RawResource,
-    ReadResourceRequestParams, ReadResourceResult, ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResult, ErrorData, GetPromptRequestParams, GetPromptResult,
+    ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt,
+    PromptMessage, ReadResourceRequestParams, ReadResourceResult, Resource, Role,
+    ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
@@ -114,12 +114,11 @@ impl ServerHandler for StaticCatalogServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
         Ok(ListResourcesResult::with_all_items(vec![
-            RawResource::new("file:///tmp/upstream-one", "upstream-one").no_annotation(),
-            RawResource::new(
+            Resource::new("file:///tmp/upstream-one", "upstream-one"),
+            Resource::new(
                 "lab://upstream/old-name/file:///tmp/upstream-two",
                 "upstream-two",
-            )
-            .no_annotation(),
+            ),
         ]))
     }
 
@@ -149,7 +148,7 @@ impl ServerHandler for StaticCatalogServer {
     ) -> Result<GetPromptResult, ErrorData> {
         self.get_prompt_count.fetch_add(1, Ordering::SeqCst);
         Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             format!("proxied {}", request.name),
         )]))
     }

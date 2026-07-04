@@ -18,12 +18,12 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{LoggingLevel, ReadResourceResult, ResourceContents};
+use rmcp::model::{ReadResourceResult, ResourceContents};
 use rmcp::service::RequestContext;
 
 use crate::config::UpstreamConfig;
 use crate::dispatch::upstream::pool::{UpstreamPool, redact_resource_uri_for_logging};
-use crate::mcp::logging::DispatchLogOutcome;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::server::LabMcpServer;
 
 impl LabMcpServer {

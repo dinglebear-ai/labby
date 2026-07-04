@@ -16,8 +16,8 @@ use std::time::Instant;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
-    AnnotateAble, ListResourcesResult, LoggingLevel, Meta, PaginatedRequestParams, RawResource,
-    ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+    ListResourcesResult, Meta, PaginatedRequestParams, ReadResourceRequestParams,
+    ReadResourceResult, Resource, ResourceContents,
 };
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
@@ -26,7 +26,7 @@ use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
-use crate::mcp::logging::DispatchLogOutcome;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::server::LabMcpServer;
 
 /// MCP Apps (Claude / SEP-1724) MIME — bound via the tool's `_meta.ui.resourceUri`.
@@ -158,10 +158,9 @@ impl LabMcpServer {
         );
         let auth = auth_context_from_extensions(&context.extensions);
         let mut resources = vec![
-            RawResource::new("lab://catalog", "catalog")
+            Resource::new("lab://catalog", "catalog")
                 .with_description("Full discovery document for all services")
-                .with_mime_type("application/json")
-                .no_annotation(),
+                .with_mime_type("application/json"),
         ];
         if code_mode_app_resources_visible(
             self.code_mode_visibility().await.exposes_synthetic_tools(),
@@ -175,10 +174,9 @@ impl LabMcpServer {
                 let uri = format!("lab://{}/actions", svc.name);
                 let name = format!("{}/actions", svc.name);
                 resources.push(
-                    RawResource::new(uri, name)
+                    Resource::new(uri, name)
                         .with_description(format!("Action list for {}", svc.name))
-                        .with_mime_type("application/json")
-                        .no_annotation(),
+                        .with_mime_type("application/json"),
                 );
             }
         }
@@ -540,13 +538,12 @@ fn code_mode_app_html(uri: &str, history: Option<&Value>) -> Result<String, Stri
     Ok(html)
 }
 
-fn code_mode_app_resource(descriptor: &CodeModeAppResourceDescriptor) -> rmcp::model::Resource {
+fn code_mode_app_resource(descriptor: &CodeModeAppResourceDescriptor) -> Resource {
     let uri = versioned_app_uri(descriptor.uri);
-    RawResource::new(uri.clone(), descriptor.name.to_string())
+    Resource::new(uri.clone(), descriptor.name.to_string())
         .with_description("Read-only MCP App for Code Mode call traces")
         .with_mime_type(descriptor.runtime.mime())
         .with_meta(code_mode_app_resource_meta(&uri))
-        .no_annotation()
 }
 
 /// Host runtime a Code Mode app URI targets. Callers must pass a table URI; an
@@ -581,7 +578,7 @@ fn code_mode_app_resources_visible(
     exposes_synthetic_tools && code_mode_read_scope_allowed(auth)
 }
 
-fn code_mode_app_resources() -> Vec<rmcp::model::Resource> {
+fn code_mode_app_resources() -> Vec<Resource> {
     CODE_MODE_APP_RESOURCE_DESCRIPTORS
         .iter()
         .filter(|descriptor| descriptor.runtime.listed())
@@ -825,6 +822,7 @@ mod tests {
                 assert!(meta.0.get("prefersBorder").is_none());
             }
             ResourceContents::BlobResourceContents { .. } => panic!("expected text resource"),
+            _ => panic!("expected text resource"),
         }
     }
 
