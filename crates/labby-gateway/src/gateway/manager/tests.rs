@@ -313,6 +313,31 @@ fn healthy_entry_with_tool(upstream: &str, tool_name: &str) -> UpstreamEntry {
     )
 }
 
+fn healthy_entry_with_typed_tool(
+    upstream: &str,
+    tool_name: &str,
+    output_schema: serde_json::Value,
+) -> UpstreamEntry {
+    let upstream_name: Arc<str> = Arc::from(upstream);
+    let schema = Arc::new(serde_json::Map::new());
+    let tool = rmcp::model::Tool::new(
+        tool_name.to_string(),
+        format!("{tool_name} description"),
+        schema,
+    );
+    let upstream_tool = UpstreamTool {
+        tool,
+        input_schema: None,
+        output_schema: Some(output_schema),
+        upstream_name: Arc::clone(&upstream_name),
+        destructive: false,
+    };
+    fixture_upstream_entry(
+        upstream,
+        HashMap::from([(tool_name.to_string(), upstream_tool)]),
+    )
+}
+
 fn fixture_upstream_entry(upstream: &str, tools: HashMap<String, UpstreamTool>) -> UpstreamEntry {
     UpstreamEntry {
         name: Arc::from(upstream),

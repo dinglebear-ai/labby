@@ -262,6 +262,18 @@ mod tests {
         }
     }
 
+    fn typed_output_schema() -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "message": { "type": "string" }
+            },
+            "required": ["ok"],
+            "additionalProperties": false
+        })
+    }
+
     #[test]
     fn fresh_tools_round_trips_through_serde() {
         let mut cache = CatalogCache {
@@ -289,6 +301,59 @@ mod tests {
         assert_eq!(tools[0].tool.name.as_ref(), "ping");
         assert!(tools[0].destructive, "destructive flag survives the cache");
         assert_eq!(tools[0].upstream_name.as_ref(), "alpha");
+    }
+
+    #[test]
+    fn fresh_tools_round_trips_output_schema_through_serde() {
+        let output_schema = typed_output_schema();
+        let mut cache = CatalogCache {
+            version: CACHE_VERSION,
+            upstreams: HashMap::new(),
+        };
+        cache.upstreams.insert(
+            "alpha".to_string(),
+            CachedUpstreamCatalog {
+                fingerprint: "fp".to_string(),
+                saved_at_unix: now_unix(),
+                tools: vec![CachedTool {
+                    tool: test_tool("typed").tool,
+                    input_schema: Some(serde_json::json!({"type": "object"})),
+                    output_schema: Some(output_schema.clone()),
+                    destructive: false,
+                }],
+            },
+        );
+
+        let bytes = serde_json::to_vec(&cache).expect("serializes");
+        let restored: CatalogCache = serde_json::from_slice(&bytes).expect("deserializes");
+        let tools = restored.fresh_tools("alpha", "fp").expect("entry is fresh");
+
+        assert_eq!(tools[0].output_schema, Some(output_schema));
+    }
+
+    #[test]
+    fn cache_update_stores_output_schema_for_future_cli_catalogs() {
+        let mut tool = test_tool("typed");
+        let output_schema = typed_output_schema();
+        tool.output_schema = Some(output_schema.clone());
+        let update = CatalogCacheUpdate {
+            upstream_name: "alpha".to_string(),
+            fingerprint: "fp".to_string(),
+            tools: vec![tool],
+        };
+
+        let cached: Vec<CachedTool> = update
+            .tools
+            .into_iter()
+            .map(|tool| CachedTool {
+                tool: tool.tool,
+                input_schema: tool.input_schema,
+                output_schema: tool.output_schema,
+                destructive: tool.destructive,
+            })
+            .collect();
+
+        assert_eq!(cached[0].output_schema, Some(output_schema));
     }
 
     #[test]
