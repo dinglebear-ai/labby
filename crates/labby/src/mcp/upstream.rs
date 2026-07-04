@@ -7,7 +7,7 @@
 //! the dead `static_kind` helper were deleted. Zero behavior change — the
 //! live path already used `canonical_kind`.
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
 use crate::mcp::envelope::{build_error, build_error_extra};
@@ -35,7 +35,7 @@ pub(crate) fn normalize_upstream_result(
             "upstream returned a non-text error payload",
         );
         return (
-            CallToolResult::error(vec![Content::text(envelope.to_string())]),
+            CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]),
             "upstream_error",
             true,
         );
@@ -44,7 +44,7 @@ pub(crate) fn normalize_upstream_result(
     let Ok(parsed) = serde_json::from_str::<Value>(text) else {
         let envelope = build_error(service, action, "upstream_error", text);
         return (
-            CallToolResult::error(vec![Content::text(envelope.to_string())]),
+            CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]),
             "upstream_error",
             true,
         );
@@ -58,7 +58,7 @@ pub(crate) fn normalize_upstream_result(
     let Some(error_obj) = error_obj else {
         let envelope = build_error(service, action, "upstream_error", text);
         return (
-            CallToolResult::error(vec![Content::text(envelope.to_string())]),
+            CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]),
             "upstream_error",
             true,
         );
@@ -88,7 +88,7 @@ pub(crate) fn normalize_upstream_result(
     };
 
     (
-        CallToolResult::error(vec![Content::text(envelope.to_string())]),
+        CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]),
         kind,
         matches!(
             kind,

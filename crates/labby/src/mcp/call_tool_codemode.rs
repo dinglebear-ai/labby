@@ -16,7 +16,7 @@ use labby_codemode::CodeModeExecutedCall;
 use labby_codemode::{MAX_SOURCE_BYTES, SERVICE as CODE_MODE_SERVICE};
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolResult, Content, JsonObject, Meta};
+use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Meta};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
@@ -303,7 +303,9 @@ impl LabMcpServer {
                 "gateway codemode denied by scope"
             );
             let env = tool_error_envelope(service, "call_tool", &err);
-            return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                env.to_string(),
+            )]));
         }
         let Some(manager) = &self.gateway_manager else {
             let envelope = build_error(
@@ -312,7 +314,7 @@ impl LabMcpServer {
                 "unknown_tool",
                 "codemode is not enabled",
             );
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 envelope.to_string(),
             )]));
         };
@@ -327,7 +329,9 @@ impl LabMcpServer {
                     &err.to_string(),
                     &serde_json::json!({ "param": "code" }),
                 );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    env.to_string(),
+                )]));
             }
         };
         let capability_filter =
@@ -335,7 +339,9 @@ impl LabMcpServer {
                 Ok(filter) => filter,
                 Err(err) => {
                     let env = tool_error_envelope(service, "call_tool", &err);
-                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        env.to_string(),
+                    )]));
                 }
             };
         let code_hash = hash_arguments(&Value::String(code.to_string()));
@@ -397,7 +403,9 @@ impl LabMcpServer {
                     "internal_error",
                     "Code Mode durable pause store is not configured; cannot resume.",
                 );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    env.to_string(),
+                )]));
             };
             decider.maybe_expire().await;
 
@@ -417,7 +425,9 @@ impl LabMcpServer {
                             "unknown_execution",
                             "No Code Mode run for this resume_token; nothing to reject.",
                         );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
+                            env.to_string(),
+                        )]));
                     }
                     labby_codemode::AuthLoad::Tampered => {
                         let env = build_error(
@@ -426,7 +436,9 @@ impl LabMcpServer {
                             "internal_error",
                             "Code Mode run integrity check failed; refusing to reject.",
                         );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
+                            env.to_string(),
+                        )]));
                     }
                 };
                 let live_actor = actor_key.map(ToOwned::to_owned);
@@ -437,7 +449,9 @@ impl LabMcpServer {
                         "forbidden",
                         "Only the actor that started a Code Mode run may reject it.",
                     );
-                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        env.to_string(),
+                    )]));
                 }
                 // Symmetric with the resume path (F2): a run may only be
                 // rejected from the same route scope that started it. Compare
@@ -451,7 +465,9 @@ impl LabMcpServer {
                         "forbidden",
                         "A Code Mode run may only be rejected from the route scope that started it.",
                     );
-                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        env.to_string(),
+                    )]));
                 }
                 // Guarded reject: only a still-`paused` run transitions
                 // (`reject_paused`), so this cannot force-terminate a live
@@ -478,7 +494,7 @@ impl LabMcpServer {
                             "Code Mode run rejected. The pending destructive call was not executed.",
                             &serde_json::json!({ "status": "rejected", "execution_id": token }),
                         );
-                        return Ok(CallToolResult::success(vec![Content::text(
+                        return Ok(CallToolResult::success(vec![ContentBlock::text(
                             env.to_string(),
                         )]));
                     }
@@ -490,7 +506,9 @@ impl LabMcpServer {
                             "Code Mode run is not paused (already resumed, rejected, expired, or \
                              unknown); nothing to reject.",
                         );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
+                            env.to_string(),
+                        )]));
                     }
                     Err(err) => {
                         let env = build_error(
@@ -499,7 +517,9 @@ impl LabMcpServer {
                             "internal_error",
                             &format!("failed to reject Code Mode run: {err}"),
                         );
-                        return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
+                            env.to_string(),
+                        )]));
                     }
                 }
             }
@@ -514,7 +534,9 @@ impl LabMcpServer {
                         "unknown_execution",
                         "No paused Code Mode run for this resume_token.",
                     );
-                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        env.to_string(),
+                    )]));
                 }
                 labby_codemode::AuthLoad::Tampered => {
                     let env = build_error(
@@ -523,7 +545,9 @@ impl LabMcpServer {
                         "internal_error",
                         "Code Mode run integrity check failed; refusing to resume.",
                     );
-                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        env.to_string(),
+                    )]));
                 }
             };
             if auth_fields.status != labby_codemode::RunLifecycle::Paused {
@@ -534,7 +558,9 @@ impl LabMcpServer {
                     "Code Mode run is not paused (already resumed, rejected, expired, or \
                      terminal); only a paused run can be resumed.",
                 );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    env.to_string(),
+                )]));
             }
             // Code identity: resubmitted code must hash-match the paused run
             // (source is not persisted — the caller resubmits identical code).
@@ -546,7 +572,9 @@ impl LabMcpServer {
                     "Resubmitted Code Mode code does not match the paused run. Resume must \
                      resubmit the identical code.",
                 );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    env.to_string(),
+                )]));
             }
             // Actor identity (V3): the resuming actor must equal the recorded
             // one (None matches only None — never bridges trusted-local↔scoped).
@@ -558,7 +586,9 @@ impl LabMcpServer {
                     "forbidden",
                     "Only the actor that started a Code Mode run may resume it.",
                 );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    env.to_string(),
+                )]));
             }
             // Route-scope identity (F2): the run must be resumed under the SAME
             // protected-route scope it paused in. Fail closed BEFORE the CAS so a
@@ -575,7 +605,9 @@ impl LabMcpServer {
                     "Code Mode run was paused under a different protected-route scope; \
                      refusing to resume across routes.",
                 );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    env.to_string(),
+                )]));
             }
             // Live authorization (V1 — the critical fix): recompute live caps at
             // resume time. The fingerprint alone is NOT an authz check; the
@@ -601,7 +633,9 @@ impl LabMcpServer {
                     "Code Mode authorization changed since the run paused; refusing to resume \
                      with narrowed or revoked scope.",
                 );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    env.to_string(),
+                )]));
             }
             // CAS Paused→Running; loser gets already_resumed.
             if !decider.resume_to_running(&token).await {
@@ -611,7 +645,9 @@ impl LabMcpServer {
                     "already_resumed",
                     "Code Mode run was concurrently resumed or is no longer paused.",
                 );
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    env.to_string(),
+                )]));
             }
             // Pre-execution intent log (OBSERVABILITY: destructive re-dispatch).
             tracing::info!(
@@ -739,7 +775,9 @@ impl LabMcpServer {
                     })
                     .await;
                 let env = tool_error_envelope(service, "call_tool", &tool_error);
-                return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    env.to_string(),
+                )]));
             }
         };
         response.execution_id = Some(execution_id.clone());
@@ -785,7 +823,9 @@ impl LabMcpServer {
                         "gateway codemode durable error after settle"
                     );
                     let env = build_error(service, "call_tool", "internal_error", &message);
-                    return Ok(CallToolResult::error(vec![Content::text(env.to_string())]));
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        env.to_string(),
+                    )]));
                 }
                 // Running (never paused) or already terminal-ok — mark completed
                 // and fall through to the normal completed envelope. F5: a
@@ -979,7 +1019,7 @@ fn build_pause_envelope(
             "pending": pending_json,
         }),
     );
-    CallToolResult::error(vec![Content::text(env.to_string())])
+    CallToolResult::error(vec![ContentBlock::text(env.to_string())])
 }
 
 fn code_mode_capabilities_for_scopes(scopes: &[String]) -> CodeModeCallerCapabilities {
@@ -998,7 +1038,7 @@ fn call_result_with_structured(
     structured: Value,
     ui_meta: Option<Meta>,
 ) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![Content::text(text)]);
+    let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
     result.structured_content = Some(structured);
     result.meta = ui_meta;
     result

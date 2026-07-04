@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use rmcp::model::{
-    GetPromptResult, ListPromptsResult, Prompt, PromptArgument, PromptMessage, PromptMessageRole,
+    GetPromptResult, ListPromptsResult, Prompt, PromptArgument, PromptMessage, Role,
 };
 
 use crate::registry::{RegisteredService, ToolRegistry};
@@ -99,7 +99,7 @@ fn render_run_action(registry: &ToolRegistry, args: &HashMap<String, String>) ->
         action_summary(action_name, action)
     );
 
-    GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, text)])
+    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)])
         .with_description(format!("Run {service_name}.{action_name}"))
 }
 
@@ -127,7 +127,7 @@ fn render_service_discover(
         action_catalog(service)
     );
 
-    GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, text)])
+    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)])
         .with_description(format!("Discover {service_name}"))
 }
 

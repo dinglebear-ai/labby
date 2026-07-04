@@ -6,7 +6,7 @@
 //! `normalize_upstream_result` intentionally does NOT live here — it is
 //! consolidated into `upstream.rs` (its semantic home) in bead `.5`.
 
-use rmcp::model::{CallToolResult, Content, LoggingLevel};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -14,7 +14,7 @@ use crate::dispatch::error::ToolError as DispatchToolError;
 use crate::mcp::envelope::{build_error, build_error_extra, build_success};
 use crate::mcp::error::DispatchError;
 use crate::mcp::error::canonical_kind;
-use crate::mcp::logging::DispatchLogOutcome;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 
 pub(crate) fn tool_error_envelope(service: &str, action: &str, err: &DispatchToolError) -> Value {
     let Ok(Value::Object(mut serialized)) = serde_json::to_value(err) else {
@@ -76,7 +76,7 @@ pub(crate) fn format_dispatch_result(
             );
             let envelope = build_success(service, action, &v);
             (
-                CallToolResult::success(vec![Content::text(envelope.to_string())]),
+                CallToolResult::success(vec![ContentBlock::text(envelope.to_string())]),
                 DispatchLogOutcome::Success,
             )
         }
@@ -121,7 +121,7 @@ pub(crate) fn format_dispatch_result(
                 |ref extra| build_error_extra(service, action, kind, &message, extra),
             );
             (
-                CallToolResult::error(vec![Content::text(envelope.to_string())]),
+                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]),
                 DispatchLogOutcome::Failure {
                     level: if is_fatal {
                         LoggingLevel::Error

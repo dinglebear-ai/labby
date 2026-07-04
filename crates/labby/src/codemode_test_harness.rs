@@ -194,7 +194,7 @@ fn server_with_manager(manager: Arc<GatewayManager>) -> LabMcpServer {
         node_role: None,
         peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(
-            rmcp::model::LoggingLevel::Emergency,
+            crate::mcp::logging::LoggingLevel::Emergency,
         ))),
         route_scope: McpRouteScope::Root,
         relay_session_id: 0,

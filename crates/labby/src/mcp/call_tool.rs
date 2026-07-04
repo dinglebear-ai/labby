@@ -17,9 +17,7 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, LoggingLevel, LoggingMessageNotificationParam,
-};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
@@ -35,9 +33,10 @@ use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
 use crate::mcp::context::{
     auth_context_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
-use crate::mcp::elicitation::{ElicitResult, elicit_confirm};
+use crate::mcp::elicitation::{ConfirmOutcome, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::DispatchError;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel, spawn_dispatch_notification};
 use crate::mcp::result_format::{
     estimate_tokens_args, format_dispatch_result, tool_error_envelope,
 };
@@ -63,7 +62,7 @@ enum WidgetCallbackGate {
 
 fn route_scope_denied_result(service: &str, action: &str, message: String) -> CallToolResult {
     let envelope = build_error(service, action, "route_scope_denied", &message);
-    CallToolResult::error(vec![Content::text(envelope.to_string())])
+    CallToolResult::error(vec![ContentBlock::text(envelope.to_string())])
 }
 
 fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
@@ -111,39 +110,19 @@ impl LabMcpServer {
             return;
         }
 
-        let peer = context.peer.clone();
         let actor_key = crate::mcp::context::actor_key_from_extensions(&context.extensions)
             .map(ToOwned::to_owned);
-        let service = service.to_string();
-        let action = action.to_string();
-        tokio::spawn(async move {
-            let mut payload = serde_json::json!({
-                "surface": "mcp",
-                "service": service,
-                "action": action,
-                "elapsed_ms": elapsed_ms,
-                "kind": "route_scope_denied",
-            });
-            if let Some(actor_key) = actor_key {
-                payload["actor_key"] = serde_json::json!(actor_key);
-            }
-            if let Err(error) = peer
-                .notify_logging_message(
-                    LoggingMessageNotificationParam::new(LoggingLevel::Warning, payload)
-                        .with_logger("lab.mcp.dispatch"),
-                )
-                .await
-            {
-                tracing::debug!(
-                    surface = "mcp",
-                    service = %service,
-                    action = %action,
-                    level = ?LoggingLevel::Warning,
-                    error = %error,
-                    "failed to send rmcp logging notification"
-                );
-            }
-        });
+        spawn_dispatch_notification(
+            context.peer.clone(),
+            actor_key,
+            service.to_string(),
+            action.to_string(),
+            elapsed_ms,
+            DispatchLogOutcome::Failure {
+                level: LoggingLevel::Warning,
+                kind: "route_scope_denied",
+            },
+        );
     }
 
     pub(crate) async fn call_tool_impl(
@@ -208,7 +187,7 @@ impl LabMcpServer {
                 "not_found",
                 &format!("service `{service}` is not enabled on the mcp surface"),
             );
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 envelope.to_string(),
             )]));
         }
@@ -228,7 +207,7 @@ impl LabMcpServer {
                 &format!("action `{action}` is not exposed for service `{service}`"),
                 &Value::Object(extra),
             );
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 envelope.to_string(),
             )]));
         }
@@ -246,7 +225,7 @@ impl LabMcpServer {
                     Ok(gate) => gate,
                     Err(err) => {
                         let envelope = tool_error_envelope(&service, "call_tool", &err);
-                        return Ok(CallToolResult::error(vec![Content::text(
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
                         )]));
                     }
@@ -265,7 +244,7 @@ impl LabMcpServer {
                              widget callback bypass — use the `execute` tool with confirm:true"
                         ),
                     );
-                    return Ok(CallToolResult::error(vec![Content::text(
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
                     )]));
                 }
@@ -277,7 +256,7 @@ impl LabMcpServer {
                         &format!("tool `{service}` matched multiple MCP App sibling tools"),
                         &serde_json::json!({ "valid": valid }),
                     );
-                    return Ok(CallToolResult::error(vec![Content::text(
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
                     )]));
                 }
@@ -299,7 +278,7 @@ impl LabMcpServer {
                                 "required_scopes": ["lab", "lab:admin"],
                             }),
                         );
-                        return Ok(CallToolResult::error(vec![Content::text(
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
                         )]));
                     }
@@ -320,7 +299,7 @@ impl LabMcpServer {
                         "not_found",
                         &format!("tool `{service}` is hidden while code_mode mode is enabled"),
                     );
-                    return Ok(CallToolResult::error(vec![Content::text(
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
                     )]));
                 }
@@ -341,7 +320,7 @@ impl LabMcpServer {
                 &format!("action `{action}` for service `{service}` requires `lab:admin` scope"),
                 &serde_json::json!({ "required_scopes": ["lab:admin"] }),
             );
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 envelope.to_string(),
             )]));
         }
@@ -355,19 +334,19 @@ impl LabMcpServer {
                 .any(|a| a.name == action && a.destructive);
             if is_destructive {
                 match elicit_confirm(&context, &service, &action).await {
-                    ElicitResult::Confirmed => {}
-                    ElicitResult::Declined | ElicitResult::Cancelled => {
+                    ConfirmOutcome::Confirmed => {}
+                    ConfirmOutcome::Declined | ConfirmOutcome::Cancelled => {
                         let envelope = build_error(
                             &service,
                             &action,
                             "confirmation_required",
                             &format!("action `{action}` is destructive — confirm to proceed"),
                         );
-                        return Ok(CallToolResult::error(vec![Content::text(
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
                         )]));
                     }
-                    ElicitResult::NotSupported => {
+                    ConfirmOutcome::NotSupported => {
                         // Client does not support elicitation — allow params["confirm"] == true
                         // as a machine-to-machine bypass (mirrors HTTP's handle_action()).
                         if params.get("confirm").and_then(Value::as_bool) != Some(true) {
@@ -381,12 +360,12 @@ impl LabMcpServer {
                                  that supports MCP elicitation"
                                 ),
                             );
-                            return Ok(CallToolResult::error(vec![Content::text(
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(
                                 envelope.to_string(),
                             )]));
                         }
                     }
-                    ElicitResult::Failed => {
+                    ConfirmOutcome::Failed => {
                         let envelope = build_error(
                             &service,
                             &action,
@@ -395,7 +374,7 @@ impl LabMcpServer {
                                 "action `{action}` is destructive — confirmation failed, retry with a client that supports MCP elicitation"
                             ),
                         );
-                        return Ok(CallToolResult::error(vec![Content::text(
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
                         )]));
                     }
@@ -441,7 +420,7 @@ impl LabMcpServer {
                         "internal_error",
                         "gateway manager not wired",
                     );
-                    return Ok(CallToolResult::error(vec![Content::text(
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
                     )]));
                 };
@@ -502,7 +481,7 @@ impl LabMcpServer {
                             "internal_error",
                             "gateway manager not wired",
                         );
-                        return Ok(CallToolResult::error(vec![Content::text(
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
                         )]));
                     };
@@ -570,7 +549,7 @@ impl LabMcpServer {
                 "not_found",
                 &format!("service `{service}` not found"),
             );
-            Ok(CallToolResult::error(vec![Content::text(
+            Ok(CallToolResult::error(vec![ContentBlock::text(
                 envelope.to_string(),
             )]))
         }

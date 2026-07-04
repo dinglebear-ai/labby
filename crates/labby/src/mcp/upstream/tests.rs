@@ -3,11 +3,11 @@
 
 use super::normalize_upstream_result;
 use crate::mcp::envelope::build_error;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 
 #[test]
 fn normalize_upstream_result_preserves_user_errors_without_poisoning_health() {
-    let upstream = CallToolResult::error(vec![Content::text(
+    let upstream = CallToolResult::error(vec![ContentBlock::text(
         build_error("radarr", "movie.add", "missing_param", "need title").to_string(),
     )]);
 

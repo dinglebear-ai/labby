@@ -296,6 +296,7 @@ pub(super) fn normalize_resource_result_uri(
             | ResourceContents::BlobResourceContents { uri, .. } => {
                 *uri = gateway_uri.to_string();
             }
+            _ => {}
         }
     }
 
@@ -322,13 +323,14 @@ pub(super) fn cached_upstream_tool(
     upstream_name: &Arc<str>,
 ) -> (String, UpstreamTool) {
     let name = tool.name.to_string();
-    // Absent or null annotations.destructiveHint → false (conservative: only
-    // treat as destructive when explicitly set to true by the upstream server).
-    let destructive = tool
-        .annotations
-        .as_ref()
-        .and_then(|a| a.destructive_hint)
-        .unwrap_or(false);
+    // Fail closed for gateway-side safety gates: an upstream must explicitly
+    // mark a tool read-only or non-destructive before widget callbacks may
+    // bypass destructive confirmation.
+    let destructive = tool.annotations.as_ref().is_none_or(|annotations| {
+        annotations
+            .destructive_hint
+            .unwrap_or_else(|| !annotations.read_only_hint.unwrap_or(false))
+    });
     (
         name,
         UpstreamTool {
@@ -414,5 +416,55 @@ mod tests {
         let (_name, cached) = cached_upstream_tool(tool, &upstream_name);
 
         assert_eq!(cached.output_schema, Some(Value::Object(output_schema)));
+    }
+
+    #[test]
+    fn cached_upstream_tool_fails_closed_without_destructive_annotations() {
+        let upstream_name: Arc<str> = Arc::from("safety");
+        let tool = rmcp::model::Tool::new(
+            "unannotated",
+            "Missing annotations",
+            Arc::new(serde_json::Map::new()),
+        );
+
+        let (_name, cached) = cached_upstream_tool(tool, &upstream_name);
+
+        assert!(
+            cached.destructive,
+            "missing upstream annotations must be treated as destructive"
+        );
+    }
+
+    #[test]
+    fn cached_upstream_tool_honors_explicit_non_destructive_hints() {
+        let upstream_name: Arc<str> = Arc::from("safety");
+
+        let mut read_only =
+            rmcp::model::Tool::new("read_only", "Read only", Arc::new(serde_json::Map::new()));
+        read_only.annotations = Some(rmcp::model::ToolAnnotations::from_raw(
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+        ));
+        let (_name, cached_read_only) = cached_upstream_tool(read_only, &upstream_name);
+        assert!(!cached_read_only.destructive);
+
+        let mut explicitly_non_destructive = rmcp::model::Tool::new(
+            "additive",
+            "Explicitly non-destructive",
+            Arc::new(serde_json::Map::new()),
+        );
+        explicitly_non_destructive.annotations = Some(rmcp::model::ToolAnnotations::from_raw(
+            None,
+            None,
+            Some(false),
+            None,
+            None,
+        ));
+        let (_name, cached_non_destructive) =
+            cached_upstream_tool(explicitly_non_destructive, &upstream_name);
+        assert!(!cached_non_destructive.destructive);
     }
 }
