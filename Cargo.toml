@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/labby-apis", "crates/labby", "crates/labby-auth", "crates/labby-codemode", "crates/labby-gateway", "crates/labby-web", "crates/labby-runtime", "crates/labby-winjob", "crates/labby-primitives", "crates/xtask"]
+members = ["crates/labby-apis", "crates/labby", "crates/labby-auth", "crates/labby-codemode", "crates/labby-gateway", "crates/labby-openapi", "crates/labby-web", "crates/labby-runtime", "crates/labby-winjob", "crates/labby-primitives", "crates/xtask"]
 
 [workspace.package]
 version = "0.30.0"
@@ -85,6 +85,9 @@ rmcp = { version = "1.7", features = [
   "elicitation",
   "schemars",
 ] }
+# OpenAPI-spec parsing for the Code Mode `openapi` provider. PARSE-ONLY — its
+# HTTP executor is never used; labby-openapi owns the hardened outbound client.
+rmcp-openapi = "0.31.2"
 
 # oauth / jwt
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }

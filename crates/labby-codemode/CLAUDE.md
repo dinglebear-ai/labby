@@ -6,12 +6,25 @@ on runner execution, protocol, snippet/artifact handling, normalization, and
 shared Code Mode data types.
 
 Exception: this crate also owns Labby's runner-reserved local Code Mode
-providers (`state` and `git`). They are not host upstream tools. They may be
-injected and dispatched only for unscoped admin/trusted-local callers; any
-route-scoped or tool-scoped run must not see or call them. If Code Mode later
-gains tenant/workspace identity beyond the current local workspace model, move
-the local-provider policy behind a typed host-supplied context rather than
-letting these namespaces become general host tools.
+providers (`state`, `git`, and `openapi`). They are not host upstream tools.
+They may be injected and dispatched only for unscoped admin/trusted-local
+callers; any route-scoped or tool-scoped run must not see or call them. If Code
+Mode later gains tenant/workspace identity beyond the current local workspace
+model, move the local-provider policy behind a typed host-supplied context
+rather than letting these namespaces become general host tools.
+
+`openapi` is the third local provider and the FIRST that does outbound HTTP.
+Unlike `state`/`git` (which touch the local workspace and share
+`LOCAL_PROVIDER_LOCK`), `openapi` dispatches through the isolated `labby-openapi`
+crate's OWN hardened `reqwest` client (redirects off, `https_only`, peer-IP
+re-validated), does **not** share `LOCAL_PROVIDER_LOCK` (it has no shared mutable
+local state), and is wired via two REQUIRED `CodeModeHost` accessors
+(`openapi_registry()` / `openapi_http_client()`). Naming this cost explicitly:
+`openapi` is the first provider requiring cross-crate dispatch wiring — the
+runner reads the registry + client from `self.host` at the config-build site and
+branches on the provider **before** the lock in `enqueue_local_provider_call`.
+No new files were added to `labby-codemode`; the spec-parsing / HTTP code all
+lives in `labby-openapi`.
 
 `codemode.search`/`codemode.describe` intentionally do **not** use this
 admin-only gate. They stay pure in-sandbox JS closures over a catalog that is

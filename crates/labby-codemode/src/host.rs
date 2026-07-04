@@ -536,6 +536,16 @@ pub trait CodeModeHost: Send + Sync {
 
     /// The host-owned warm runner pool the kernel checks runners out of.
     fn runner_pool(&self) -> &RunnerPool;
+
+    /// The host-owned registry of loaded OpenAPI specs for the `openapi` local
+    /// provider. REQUIRED (no default): a missed override is a compile error, not
+    /// a silent feature disable. Hosts with no specs return
+    /// `OpenApiRegistry::default()` (empty).
+    fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry;
+
+    /// The host-owned hardened `reqwest` client for `openapi` dispatch. REQUIRED
+    /// (no default). Tests return `labby_openapi::http::build_dispatch_client()`.
+    fn openapi_http_client(&self) -> reqwest::Client;
 }
 
 /// A no-op host used by tests that drive the runner kernel directly without a
@@ -616,6 +626,14 @@ impl CodeModeHost for NoopHost {
 
     fn runner_pool(&self) -> &RunnerPool {
         &self.pool
+    }
+
+    fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+        labby_openapi::OpenApiRegistry::default()
+    }
+
+    fn openapi_http_client(&self) -> reqwest::Client {
+        labby_openapi::http::build_dispatch_client().expect("test dispatch client")
     }
 }
 

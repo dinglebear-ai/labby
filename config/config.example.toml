@@ -168,6 +168,23 @@
 # max_log_entries = 1000                    # valid range: 1..=100000
 # max_log_bytes = 65536                     # valid range: 1..=104857600
 
+# ── Code Mode `openapi` provider ─────────────────────────────────────────────
+#
+# Turn an operator-configured OpenAPI spec into locally-dispatched Code Mode
+# operations callable as `openapi.call(label, operationId, params)`. Each spec is
+# fetched + parsed once at `labby serve` startup; only admin+unscoped Code Mode
+# callers can use it, and only the operations you explicitly allow-list are
+# dispatchable (deny-by-default). Outbound HTTP is SSRF-hardened (https-only,
+# redirects off, private/loopback/CGNAT addresses rejected). Credentials are NOT
+# set here — they live in .env as OPENAPI_<LABEL>_TOKEN / OPENAPI_<LABEL>_API_KEY.
+#
+# [[openapi.specs]]
+# label = "petstore"                        # [A-Za-z0-9_-] only (no '.', ':', or spaces)
+# base_url = "https://api.example.com/v3"   # MANDATORY — rmcp-openapi never reads the spec's servers[]
+# spec_url = "https://api.example.com/v3/openapi.json"   # OR: spec_path = "/etc/labby/specs/api.json"
+# allowed_operations = ["findPetsByStatus", "getPetById"]   # deny-by-default; empty = nothing dispatchable
+# api_key_header = "X-API-Key"              # optional; header name for an OPENAPI_<LABEL>_API_KEY credential
+
 # ── OAuth Relay Machines ─────────────────────────────────────────────────────
 
 # Full callback base URL for a named remote OAuth listener.

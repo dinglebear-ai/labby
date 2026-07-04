@@ -90,7 +90,8 @@
       "feature": "gateway",
       "dependencies": [
         "dep:labby-codemode",
-        "dep:labby-gateway"
+        "dep:labby-gateway",
+        "dep:labby-openapi"
       ],
       "included_in_default": true,
       "included_in_all": true,

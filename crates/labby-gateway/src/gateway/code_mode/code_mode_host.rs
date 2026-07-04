@@ -516,6 +516,14 @@ impl CodeModeHost for GatewayManager {
     fn runner_pool(&self) -> &RunnerPool {
         self.code_mode_runner_pool()
     }
+
+    fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+        self.openapi_registry.clone()
+    }
+
+    fn openapi_http_client(&self) -> reqwest::Client {
+        self.openapi_http_client.clone()
+    }
 }
 
 /// Gateway-side Code Mode dispatch helpers (not trait methods).

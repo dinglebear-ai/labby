@@ -22,6 +22,7 @@ labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-
 labby-runtime = { path = "../labby-runtime" }
 labby-codemode = { path = "../labby-codemode", optional = true }
 labby-gateway = { path = "../labby-gateway", optional = true }
+labby-openapi = { path = "../labby-openapi", optional = true }
 labby-web = { path = "../labby-web" }
 
 tokio = { workspace = true, features = ["process"] }
@@ -146,7 +147,7 @@ acp = ["dep:agent-client-protocol"]
 acp_registry = ["labby-apis/acp_registry", "labby-runtime/acp_registry"]
 node-runtime = []
 all = ["labby-apis/all", "lab-admin", "acp", "acp_registry", "deploy", "gateway", "marketplace", "nodes", "stash"]
-gateway = ["dep:labby-codemode", "dep:labby-gateway"]
+gateway = ["dep:labby-codemode", "dep:labby-gateway", "dep:labby-openapi"]
 # Depends on `gateway` because marketplace's stdio-install validation reuses
 # the shared spawn-guard/SSRF checks, which now live in labby-gateway (moved
 # out of labby-runtime so labby-auth/labby-codemode don't pull them in).

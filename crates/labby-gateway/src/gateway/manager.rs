@@ -148,6 +148,12 @@ pub struct GatewayManager {
     /// The concrete implementation is storage-backed and lives in the binary
     /// crate; the gateway only sees the neutral `CodeModeDecider` trait.
     pub(super) code_mode_decider: Option<Arc<dyn labby_codemode::CodeModeDecider>>,
+    /// Loaded OpenAPI specs for the Code Mode `openapi` local provider. Built at
+    /// `labby serve` startup (`with_openapi`); an empty registry means no specs
+    /// are configured/loaded (the shim is then never emitted). Cheap `Arc` clone.
+    pub(super) openapi_registry: labby_openapi::OpenApiRegistry,
+    /// Hardened `reqwest` client for `openapi` dispatch. Cheap `Arc` clone.
+    pub(super) openapi_http_client: reqwest::Client,
 }
 
 impl GatewayManager {

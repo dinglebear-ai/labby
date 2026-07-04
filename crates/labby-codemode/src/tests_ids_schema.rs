@@ -42,6 +42,33 @@ fn local_provider_ids_reject_bad_methods() {
 }
 
 #[test]
+fn parses_openapi_provider_call() {
+    use crate::local_provider::LocalProviderName;
+    let c = crate::local_provider::try_parse_local_provider_call("openapi::vendor.getUser")
+        .expect("parse succeeds")
+        .expect("openapi provider detected");
+    assert_eq!(c.provider, LocalProviderName::Openapi);
+    assert_eq!(c.method, "vendor.getUser");
+}
+
+#[test]
+fn openapi_preserves_dotted_operation_id() {
+    use crate::local_provider::LocalProviderName;
+    let c = crate::local_provider::try_parse_local_provider_call("openapi::vendor.pets.list")
+        .expect("parse succeeds")
+        .expect("openapi provider detected");
+    assert_eq!(c.provider, LocalProviderName::Openapi);
+    assert_eq!(c.method, "vendor.pets.list");
+}
+
+#[test]
+fn openapi_is_reserved() {
+    assert!(crate::local_provider::is_reserved_provider_namespace(
+        "openapi"
+    ));
+}
+
+#[test]
 fn artifact_write_protocol_round_trips() {
     let output = CodeModeRunnerOutput::ArtifactWrite {
         seq: 7,
