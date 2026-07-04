@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! `LabMcpServer` — the MCP `ServerHandler` implementation.
 //!
 //! Extracted from `cli/serve.rs` so that both the stdio and HTTP transports

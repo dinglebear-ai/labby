@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Relaying `ClientHandler` for upstream server→client requests.
 //!
 //! The pool's normal upstream connections are served with the unit handler
@@ -76,8 +78,8 @@ use std::time::Instant;
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientInfo, CreateElicitationRequestParams,
-    CreateElicitationResult, CreateMessageRequestParams, CreateMessageResult, ListRootsResult,
+    CallToolRequestParams, CallToolResult, ClientInfo, CreateMessageRequestParams,
+    CreateMessageResult, ElicitRequestParams, ElicitResult, ListRootsResult,
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{ClientHandler, RoleClient, RoleServer};
@@ -170,9 +172,9 @@ impl ClientHandler for RelayClientHandler {
     /// Relay an upstream elicitation request to the downstream agent.
     async fn create_elicitation(
         &self,
-        params: CreateElicitationRequestParams,
+        params: ElicitRequestParams,
         _context: RequestContext<RoleClient>,
-    ) -> Result<CreateElicitationResult, McpError> {
+    ) -> Result<ElicitResult, McpError> {
         tracing::debug!(
             surface = "dispatch",
             service = "upstream.pool",
@@ -576,10 +578,9 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::{
-        CallToolRequestParams, CallToolResult, ClientCapabilities, Content,
-        CreateElicitationRequestParams, CreateElicitationResult, ElicitationAction,
-        ElicitationSchema, ErrorData, PaginatedRequestParams, PrimitiveSchema, ServerCapabilities,
-        ServerInfo,
+        CallToolRequestParams, CallToolResult, ClientCapabilities, ContentBlock,
+        ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, ErrorData,
+        PaginatedRequestParams, PrimitiveSchemaDefinition, ServerCapabilities, ServerInfo,
     };
     use rmcp::service::{RequestContext, RunningService};
     use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
@@ -605,12 +606,12 @@ mod tests {
 
         async fn create_elicitation(
             &self,
-            _params: CreateElicitationRequestParams,
+            _params: ElicitRequestParams,
             _context: RequestContext<RoleClient>,
-        ) -> Result<CreateElicitationResult, McpError> {
+        ) -> Result<ElicitResult, McpError> {
             let mut content = serde_json::Map::new();
             content.insert("confirm".to_string(), serde_json::Value::Bool(true));
-            Ok(CreateElicitationResult::new(ElicitationAction::Accept)
+            Ok(ElicitResult::new(ElicitationAction::Accept)
                 .with_content(serde_json::Value::Object(content)))
         }
     }
@@ -644,11 +645,11 @@ mod tests {
             let schema = ElicitationSchema::builder()
                 .required_property(
                     "confirm",
-                    PrimitiveSchema::Boolean(rmcp::model::BooleanSchema::default()),
+                    PrimitiveSchemaDefinition::Boolean(rmcp::model::BooleanSchema::default()),
                 )
                 .build()
                 .expect("schema builds");
-            let params = CreateElicitationRequestParams::FormElicitationParams {
+            let params = ElicitRequestParams::FormElicitationParams {
                 meta: None,
                 message: "confirm the action?".to_string(),
                 requested_schema: schema,
@@ -659,7 +660,7 @@ mod tests {
                 .await
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             let confirmed = matches!(result.action, ElicitationAction::Accept);
-            Ok(CallToolResult::success(vec![Content::text(format!(
+            Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "confirmed={confirmed}"
             ))]))
         }

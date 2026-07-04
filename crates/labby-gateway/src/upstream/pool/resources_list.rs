@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use rmcp::model::{AnnotateAble, RawResource, Resource};
+use rmcp::model::Resource;
 use serde_json::Value;
 
 use labby_runtime::gateway_config::UpstreamConfig;
@@ -121,10 +121,9 @@ impl UpstreamPool {
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<Resource> {
         let mut out = vec![
-            RawResource::new("lab://gateway/servers", "gateway/servers")
+            Resource::new("lab://gateway/servers", "gateway/servers")
                 .with_description("Index of upstream MCP servers registered with the gateway")
-                .with_mime_type("application/json")
-                .no_annotation(),
+                .with_mime_type("application/json"),
         ];
         let catalog = self.catalog.read().await;
         let mut names: Vec<&String> = catalog.keys().collect();
@@ -134,13 +133,12 @@ impl UpstreamPool {
         names.sort();
         for name in names {
             out.push(
-                RawResource::new(
+                Resource::new(
                     format!("lab://gateway/{name}/schema"),
                     format!("gateway/{name}/schema"),
                 )
                 .with_description(format!("Tool schemas for upstream `{name}`"))
-                .with_mime_type("application/json")
-                .no_annotation(),
+                .with_mime_type("application/json"),
             );
         }
         out
@@ -354,6 +352,7 @@ mod tests {
             .map(|content| match content {
                 ResourceContents::TextResourceContents { uri, .. }
                 | ResourceContents::BlobResourceContents { uri, .. } => uri.as_str(),
+                _ => "",
             })
             .collect();
 

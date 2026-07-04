@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! `read_resource` proxy branch bodies: gateway-synthetic, upstream,
 //! and subject-scoped resource proxying.
 //!

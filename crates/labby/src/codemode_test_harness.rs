@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Full-stack Code Mode test harness (feature `test-harness`, non-default).
 //!
 //! This module exposes small public wrappers over the crate-private Code Mode

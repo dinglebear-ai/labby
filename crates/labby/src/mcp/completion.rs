@@ -31,11 +31,14 @@ pub(crate) fn action_schema() -> serde_json::Map<String, Value> {
 }
 
 pub(crate) fn completion_info(values: Vec<String>) -> CompletionInfo {
-    CompletionInfo {
-        total: Some(values.len() as u32),
-        has_more: Some(false),
-        values,
-    }
+    let total = values.len() as u32;
+    let has_more = values.len() > CompletionInfo::MAX_VALUES;
+    let values = values
+        .into_iter()
+        .take(CompletionInfo::MAX_VALUES)
+        .collect();
+    CompletionInfo::with_pagination(values, Some(total), has_more)
+        .expect("completion values are capped at rmcp's maximum")
 }
 
 pub(crate) fn complete_prompt_arg(

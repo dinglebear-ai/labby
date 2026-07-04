@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Prompt handler bodies (`list_prompts`, `get_prompt`).
 //!
 //! Extracted from `server.rs` (bead `lab-kvji.24.1.2`) as inherent

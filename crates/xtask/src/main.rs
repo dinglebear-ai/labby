@@ -1,6 +1,6 @@
 use std::env;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -370,10 +370,11 @@ impl BenchRow {
     }
 }
 
-fn summarize(label: &str, binary: &PathBuf, case: &str, samples: &[f64]) -> BenchRow {
+fn summarize(label: &str, binary: &Path, case: &str, samples: &[f64]) -> BenchRow {
     let mut sorted = samples.to_vec();
     sorted.sort_by(f64::total_cmp);
     let sum: f64 = sorted.iter().sum();
+    let sample_count = u32::try_from(sorted.len()).unwrap_or(u32::MAX);
     BenchRow {
         label: label.to_string(),
         binary: binary.display().to_string(),
@@ -383,7 +384,7 @@ fn summarize(label: &str, binary: &PathBuf, case: &str, samples: &[f64]) -> Benc
         median_ms: percentile(&sorted, 0.50),
         p95_ms: percentile(&sorted, 0.95),
         max_ms: *sorted.last().unwrap_or(&f64::NAN),
-        mean_ms: sum / sorted.len() as f64,
+        mean_ms: sum / f64::from(sample_count),
     }
 }
 
@@ -391,6 +392,8 @@ fn percentile(sorted: &[f64], pct: f64) -> f64 {
     if sorted.is_empty() {
         return f64::NAN;
     }
-    let idx = ((sorted.len() - 1) as f64 * pct).round() as usize;
+    let max_idx = sorted.len() - 1;
+    let max_idx_f64 = f64::from(u32::try_from(max_idx).unwrap_or(u32::MAX));
+    let idx = (max_idx_f64 * pct).round().clamp(0.0, max_idx_f64) as usize;
     sorted[idx]
 }

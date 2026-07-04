@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! MCP-owned in-process peer construction for built-in Lab services.
 
 use std::sync::Arc;

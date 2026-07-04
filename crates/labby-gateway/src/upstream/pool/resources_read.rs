@@ -67,7 +67,7 @@ impl UpstreamPool {
     /// MCP Apps (mcp-ui) widget resources are referenced by their native
     /// `ui://<upstream>/…` URI — carried in a tool result's
     /// `_meta.ui.resourceUri` — so they must be routed by reverse-lookup and
-    /// returned without any URI rewriting. Content URIs are normalized back to
+    /// returned without any URI rewriting. ContentBlock URIs are normalized back to
     /// the same native URI so the host sees a self-consistent read.
     ///
     /// Returns `None` if no routable upstream lists the URI (caller falls
@@ -321,8 +321,8 @@ mod tests {
         use std::collections::HashMap;
 
         use rmcp::model::{
-            AnnotateAble, ErrorData, ListResourcesResult, PaginatedRequestParams, RawResource,
-            ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+            ErrorData, ListResourcesResult, PaginatedRequestParams, ReadResourceResult, Resource,
+            ResourceContents, ServerCapabilities, ServerInfo,
         };
         use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -341,9 +341,10 @@ mod tests {
                 _: Option<PaginatedRequestParams>,
                 _: rmcp::service::RequestContext<RoleServer>,
             ) -> Result<ListResourcesResult, ErrorData> {
-                Ok(ListResourcesResult::with_all_items(vec![
-                    RawResource::new("file:///tmp/big", "big-resource").no_annotation(),
-                ]))
+                Ok(ListResourcesResult::with_all_items(vec![Resource::new(
+                    "file:///tmp/big",
+                    "big-resource",
+                )]))
             }
             async fn read_resource(
                 &self,

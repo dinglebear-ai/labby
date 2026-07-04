@@ -296,6 +296,7 @@ pub(super) fn normalize_resource_result_uri(
             | ResourceContents::BlobResourceContents { uri, .. } => {
                 *uri = gateway_uri.to_string();
             }
+            _ => {}
         }
     }
 

@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use std::sync::atomic::Ordering;
 
 use rmcp::RoleServer;

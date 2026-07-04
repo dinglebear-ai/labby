@@ -1,11 +1,11 @@
 use rmcp::RoleServer;
 use rmcp::model::{
-    CreateElicitationRequestParams, ElicitationAction, ElicitationSchema, PrimitiveSchema,
+    ElicitRequestParams, ElicitationAction, ElicitationSchema, PrimitiveSchemaDefinition,
 };
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
-pub(crate) enum ElicitResult {
+pub(crate) enum ConfirmOutcome {
     /// User confirmed the destructive action.
     Confirmed,
     /// User explicitly declined.
@@ -22,7 +22,7 @@ pub(crate) async fn elicit_confirm(
     context: &RequestContext<RoleServer>,
     service: &str,
     action: &str,
-) -> ElicitResult {
+) -> ConfirmOutcome {
     if context.peer.supported_elicitation_modes().is_empty() {
         tracing::warn!(
             surface = "mcp",
@@ -35,13 +35,13 @@ pub(crate) async fn elicit_confirm(
             kind = "confirmation_required",
             "destructive action elicitation not supported",
         );
-        return ElicitResult::NotSupported;
+        return ConfirmOutcome::NotSupported;
     }
 
     let Ok(schema) = ElicitationSchema::builder()
         .required_property(
             "confirm",
-            PrimitiveSchema::Boolean(rmcp::model::BooleanSchema::default()),
+            PrimitiveSchemaDefinition::Boolean(rmcp::model::BooleanSchema::default()),
         )
         .build()
     else {
@@ -56,10 +56,10 @@ pub(crate) async fn elicit_confirm(
             kind = "internal_error",
             "destructive action elicitation schema build failed",
         );
-        return ElicitResult::NotSupported;
+        return ConfirmOutcome::NotSupported;
     };
 
-    let params = CreateElicitationRequestParams::FormElicitationParams {
+    let params = ElicitRequestParams::FormElicitationParams {
         meta: None,
         message: format!(
             "Action `{service}.{action}` is destructive and cannot be undone. \
@@ -88,7 +88,7 @@ pub(crate) async fn elicit_confirm(
                         entity_id = %format!("{service}.{action}"),
                         "destructive action elicitation confirmed",
                     );
-                    ElicitResult::Confirmed
+                    ConfirmOutcome::Confirmed
                 } else {
                     tracing::warn!(
                         surface = "mcp",
@@ -101,7 +101,7 @@ pub(crate) async fn elicit_confirm(
                         kind = "confirmation_required",
                         "destructive action elicitation accepted without confirmation",
                     );
-                    ElicitResult::Declined
+                    ConfirmOutcome::Declined
                 }
             }
             ElicitationAction::Decline => {
@@ -116,7 +116,7 @@ pub(crate) async fn elicit_confirm(
                     kind = "confirmation_required",
                     "destructive action elicitation declined",
                 );
-                ElicitResult::Declined
+                ConfirmOutcome::Declined
             }
             ElicitationAction::Cancel => {
                 tracing::warn!(
@@ -130,7 +130,21 @@ pub(crate) async fn elicit_confirm(
                     kind = "confirmation_required",
                     "destructive action elicitation cancelled",
                 );
-                ElicitResult::Cancelled
+                ConfirmOutcome::Cancelled
+            }
+            _ => {
+                tracing::warn!(
+                    surface = "mcp",
+                    service,
+                    action,
+                    actor = "mcp_client",
+                    outcome = "unknown_action",
+                    entity_kind = "destructive_action",
+                    entity_id = %format!("{service}.{action}"),
+                    kind = "confirmation_required",
+                    "destructive action elicitation returned unknown action",
+                );
+                ConfirmOutcome::Cancelled
             }
         },
         Err(_) => {
@@ -145,7 +159,7 @@ pub(crate) async fn elicit_confirm(
                 kind = "confirmation_required",
                 "destructive action elicitation request failed",
             );
-            ElicitResult::Failed
+            ConfirmOutcome::Failed
         }
     }
 }

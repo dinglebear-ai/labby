@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Upstream-proxy tail of `call_tool`: raw upstream proxy + subject-scoped
 //! upstream proxy + the no-dispatcher-wired fallback.
 //!
@@ -21,7 +23,7 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content, JsonObject, LoggingLevel};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, JsonObject, LoggingLevel};
 use rmcp::service::RequestContext;
 
 use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_for_request};
@@ -127,7 +129,7 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 envelope.to_string(),
             )]));
         }
@@ -305,7 +307,7 @@ impl LabMcpServer {
                         },
                     )
                     .await;
-                    return Ok(CallToolResult::error(vec![Content::text(
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
                     )]));
                 }
@@ -357,7 +359,7 @@ impl LabMcpServer {
                         },
                     )
                     .await;
-                    return Ok(CallToolResult::error(vec![Content::text(
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
                     )]));
                 }
@@ -548,7 +550,7 @@ impl LabMcpServer {
                             },
                         )
                         .await;
-                        return Ok(CallToolResult::error(vec![Content::text(
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
                         )]));
                     }

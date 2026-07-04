@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Result/envelope formatting + error-info extraction + token estimation.
 //!
 //! Free functions extracted from `server.rs` (bead `lab-kvji.24.1.1`).
@@ -6,7 +8,7 @@
 //! `normalize_upstream_result` intentionally does NOT live here — it is
 //! consolidated into `upstream.rs` (its semantic home) in bead `.5`.
 
-use rmcp::model::{CallToolResult, Content, LoggingLevel};
+use rmcp::model::{CallToolResult, ContentBlock, LoggingLevel};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -76,7 +78,7 @@ pub(crate) fn format_dispatch_result(
             );
             let envelope = build_success(service, action, &v);
             (
-                CallToolResult::success(vec![Content::text(envelope.to_string())]),
+                CallToolResult::success(vec![ContentBlock::text(envelope.to_string())]),
                 DispatchLogOutcome::Success,
             )
         }
@@ -121,7 +123,7 @@ pub(crate) fn format_dispatch_result(
                 |ref extra| build_error_extra(service, action, kind, &message, extra),
             );
             (
-                CallToolResult::error(vec![Content::text(envelope.to_string())]),
+                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]),
                 DispatchLogOutcome::Failure {
                     level: if is_fatal {
                         LoggingLevel::Error

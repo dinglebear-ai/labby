@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! `labby serve` — start the MCP server.
 
 use std::net::SocketAddr;
