@@ -277,6 +277,59 @@ async fn code_mode_host_list_tools_honors_scoped_namespaces() {
 }
 
 #[tokio::test]
+async fn code_mode_catalog_preserves_upstream_output_schema_for_describe_types() {
+    let output_schema = json!({
+        "type": "object",
+        "properties": {
+            "ok": { "type": "boolean" },
+            "message": { "type": "string" }
+        },
+        "required": ["ok"],
+        "additionalProperties": false
+    });
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
+    pool.insert_entry_for_tests(
+        "alpha",
+        healthy_entry_with_typed_tool("alpha", "typed", output_schema.clone()),
+    )
+    .await;
+
+    let render = CodeModeHost::list_tools(
+        &manager,
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+        false,
+        false,
+    )
+    .await
+    .expect("Code Mode host catalog");
+    let entry = render
+        .entries
+        .iter()
+        .find(|entry| entry.id == "alpha::typed")
+        .expect("typed tool entry");
+
+    assert_eq!(entry.output_schema, Some(output_schema));
+    assert!(
+        entry.dts.contains("type AlphaTypedOutput = {"),
+        "dts must define a concrete output type, got: {}",
+        entry.dts
+    );
+    assert!(
+        entry.dts.contains("ok: boolean;"),
+        "dts must render output properties, got: {}",
+        entry.dts
+    );
+    assert!(
+        !entry.signature.contains("Promise<unknown>"),
+        "signature must not degrade typed output to unknown: {}",
+        entry.signature
+    );
+}
+
+#[tokio::test]
 async fn code_mode_host_list_tools_for_mcp_does_not_block_on_cold_unhealthy_upstreams() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

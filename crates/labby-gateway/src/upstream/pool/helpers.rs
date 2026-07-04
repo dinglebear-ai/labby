@@ -389,4 +389,30 @@ mod tests {
 
         assert_eq!(upstream_target_redacted(&config), "--api-key=[redacted]");
     }
+
+    #[test]
+    fn cached_upstream_tool_preserves_rmcp_output_schema() {
+        let upstream_name: Arc<str> = Arc::from("typed");
+        let mut output_schema = serde_json::Map::new();
+        output_schema.insert("type".to_string(), serde_json::json!("object"));
+        output_schema.insert(
+            "properties".to_string(),
+            serde_json::json!({
+                "ok": { "type": "boolean" },
+                "message": { "type": "string" }
+            }),
+        );
+        output_schema.insert("required".to_string(), serde_json::json!(["ok"]));
+
+        let tool = rmcp::model::Tool::new(
+            "status",
+            "Typed status output",
+            Arc::new(serde_json::Map::new()),
+        )
+        .with_raw_output_schema(Arc::new(output_schema.clone()));
+
+        let (_name, cached) = cached_upstream_tool(tool, &upstream_name);
+
+        assert_eq!(cached.output_schema, Some(Value::Object(output_schema)));
+    }
 }
