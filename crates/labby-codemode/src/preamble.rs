@@ -93,9 +93,9 @@ const JS_RESERVED: &[&str] = &[
 /// Top-level `codemode` helper names owned by Lab's local runtime.
 ///
 /// Namespaces that sanitize to one of these names are suffixed so a
-/// real namespace named `search`, `describe`, or `step` cannot overwrite the
+/// real namespace named `search`, `describe`, `step`, or `batch` cannot overwrite the
 /// local discovery/control helpers.
-const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &["search", "describe", "run", "step"];
+const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &["search", "describe", "run", "step", "batch"];
 
 /// Convert a dotted/hyphenated/slashed/coloned tool name to snake_case.
 ///
@@ -191,6 +191,11 @@ globalThis.codemode = globalThis.codemode || {{}};
 var codemode = globalThis.codemode;
 var __codemodeDiscovery = {json};
 var __codemodeTypes = {types_json};
+var __codemodeHelpers = ["search", "describe", "run", "step", "batch"];
+codemode.__meta__ = codemode.__meta__ || {{}};
+codemode.__meta__.helpers = function() {{
+  return Promise.resolve(__codemodeHelpers.slice());
+}};
 function __codemodeNormalize(value) {{
   return String(value == null ? "" : value)
     .toLowerCase()
@@ -413,6 +418,25 @@ codemode.run = function(name, input) {{
 codemode.step = function(name, fn) {{
   return globalThis.__labCodemodeStep(name, fn);
 }};
+codemode.batch = async function(jobs) {{
+  if (!Array.isArray(jobs)) {{
+    throw new Error("codemode.batch requires an array of jobs");
+  }}
+  var settled = await Promise.allSettled(jobs.map(function(job) {{
+    return typeof job === "function" ? Promise.resolve().then(job) : job;
+  }}));
+  var ok = [];
+  var failed = [];
+  settled.forEach(function(result, index) {{
+    if (result.status === "fulfilled") {{
+      ok.push({{ i: index, value: result.value }});
+    }} else {{
+      var reason = result.reason;
+      failed.push({{ i: index, error: String(reason && reason.message ? reason.message : reason) }});
+    }}
+  }});
+  return {{ ok: ok, failed: failed, all_ok: failed.length === 0 }};
+}};
 "##
     ))
 }
@@ -487,8 +511,8 @@ globalThis.openapi = {
 }
 
 /// Generate a JavaScript preamble string that defines the `codemode` proxy
-/// namespace, plus `codemode.__meta__.namespaces()` and a `__namespaces__`
-/// script-global, for use inside the sandbox.
+/// namespace, plus `codemode.__meta__.namespaces()` / `.helpers()` and a
+/// `__namespaces__` script-global, for use inside the sandbox.
 ///
 /// The output is a JS snippet (not TypeScript) that is prepended to (Boa) or
 /// injected into (Javy) the user code before being sent to the runner
@@ -576,8 +600,11 @@ pub(crate) fn generate_js_proxy_from_catalog(
          globalThis.codemode = globalThis.codemode || {{}};\n\
          var codemode = globalThis.codemode;\n\
          codemode.run = function(name, input) {{ return globalThis.__labRunSnippet(name, input == null ? {{}} : input); }};\n\
+         codemode.batch = async function(jobs) {{ if (!Array.isArray(jobs)) {{ throw new Error(\"codemode.batch requires an array of jobs\"); }} var settled = await Promise.allSettled(jobs.map(function(job) {{ return typeof job === \"function\" ? Promise.resolve().then(job) : job; }})); var ok = []; var failed = []; settled.forEach(function(result, index) {{ if (result.status === \"fulfilled\") {{ ok.push({{ i: index, value: result.value }}); }} else {{ var reason = result.reason; failed.push({{ i: index, error: String(reason && reason.message ? reason.message : reason) }}); }} }}); return {{ ok: ok, failed: failed, all_ok: failed.length === 0 }}; }};\n\
          {parts}\
-         codemode.__meta__ = {{ namespaces: function() {{ return Promise.resolve({namespaces_json}); }} }};\n\
+         codemode.__meta__ = codemode.__meta__ || {{}};\n\
+         codemode.__meta__.namespaces = function() {{ return Promise.resolve({namespaces_json}); }};\n\
+         codemode.__meta__.helpers = codemode.__meta__.helpers || function() {{ return Promise.resolve([\"run\", \"batch\"]); }};\n\
          var __namespaces__ = {namespaces_json};\n"
     ))
 }
@@ -672,6 +699,7 @@ mod tests {
         assert_eq!(namespace_segment("search"), "search_");
         assert_eq!(namespace_segment("describe"), "describe_");
         assert_eq!(namespace_segment("step"), "step_");
+        assert_eq!(namespace_segment("batch"), "batch_");
     }
 
     // ── generate_js_proxy ─────────────────────────────────────────────────────
@@ -689,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_preamble_advertises_search_describe_and_step_semantics() {
+    fn discovery_preamble_advertises_search_describe_step_and_batch_semantics() {
         let entries = vec![
             discovery_entry("github", "search_issues", "Search GitHub issues"),
             discovery_entry("github", "list_pull_requests", "List GitHub pull requests"),
@@ -705,6 +733,16 @@ mod tests {
         // codemode.step is now a real two-phase durable primitive that delegates
         // to the runner-side __labCodemodeStep bridge (not the old inline stub).
         assert!(js.contains("globalThis.__labCodemodeStep(name, fn)"));
+        // codemode.batch is an isolation helper: mixed success/failure jobs
+        // settle independently and return partitioned results.
+        assert!(js.contains("codemode.batch = async function(jobs)"));
+        assert!(js.contains("codemode.__meta__.helpers"));
+        assert!(js.contains("\"batch\""));
+        assert!(js.contains("Promise.allSettled"));
+        assert!(js.contains("Promise.resolve().then(job)"));
+        assert!(js.contains("ok.push({ i: index, value: result.value })"));
+        assert!(js.contains("failed.push({ i: index, error: String"));
+        assert!(js.contains("all_ok: failed.length === 0"));
     }
 
     #[test]
@@ -845,10 +883,19 @@ mod tests {
             js.contains("radarr::movie.search"),
             "method must route to dotted tool id"
         );
-        // PRESENCE: __meta__.namespaces reflects the namespace list
+        // PRESENCE: __meta__.namespaces reflects the namespace list, and
+        // helper metadata is available without replacing discovery metadata.
         assert!(
             js.contains("[\"radarr\"]"),
             "namespaces list must be embedded"
+        );
+        assert!(
+            js.contains("codemode.__meta__.helpers"),
+            "helpers metadata must be embedded"
+        );
+        assert!(
+            js.contains("\"batch\""),
+            "batch helper must be visible in metadata"
         );
         // PRESENCE: null-safe params guard (no nullish-coalescing dependency)
         assert!(
@@ -861,7 +908,7 @@ mod tests {
 
     #[test]
     fn generate_js_proxy_does_not_overwrite_local_discovery_helpers() {
-        for raw in ["search", "describe", "step"] {
+        for raw in ["search", "describe", "step", "batch"] {
             let namespace = namespace_segment(raw);
             let tool = descriptor(raw, "lookup");
             let js = proxy(&[tool], &[raw.to_string()]).expect("proxy");

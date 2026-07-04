@@ -149,6 +149,82 @@ fn code_mode_runner_evaluates_js_in_a_minimal_host_environment() {
     assert!(stderr_text.contains("runner console check"));
 }
 
+#[test]
+fn code_mode_runner_codemode_batch_partitions_success_and_failure() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["internal", "code-mode-runner"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn code mode runner");
+
+    let mut stdin = child.stdin.take().expect("runner stdin");
+    let stdout = child.stdout.take().expect("runner stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    let proxy = r#"globalThis.codemode = globalThis.codemode || {};
+var codemode = globalThis.codemode;
+codemode.batch = async function(jobs) {
+  if (!Array.isArray(jobs)) {
+    throw new Error("codemode.batch requires an array of jobs");
+  }
+  var settled = await Promise.allSettled(jobs.map(function(job) {
+    return typeof job === "function" ? Promise.resolve().then(job) : job;
+  }));
+  var ok = [];
+  var failed = [];
+  settled.forEach(function(result, index) {
+    if (result.status === "fulfilled") {
+      ok.push({ i: index, value: result.value });
+    } else {
+      var reason = result.reason;
+      failed.push({ i: index, error: String(reason && reason.message ? reason.message : reason) });
+    }
+  });
+  return { ok: ok, failed: failed, all_ok: failed.length === 0 };
+};
+"#;
+    let code = r#"async () => {
+        return await codemode.batch([
+          () => Promise.resolve("first"),
+          () => { throw new Error("boom"); },
+          Promise.resolve({ third: true })
+        ]);
+    }"#;
+
+    writeln!(
+        stdin,
+        "{}",
+        json!({
+            "type": "start",
+            "code": code,
+            "proxy": proxy
+        })
+    )
+    .expect("write start");
+
+    let done = read_protocol_line(&mut stdout);
+    assert_eq!(done["type"], "done", "expected done, got: {done}");
+    assert_eq!(
+        done_json_result(&done),
+        &json!({
+            "ok": [
+                { "i": 0, "value": "first" },
+                { "i": 2, "value": { "third": true } }
+            ],
+            "failed": [
+                { "i": 1, "error": "boom" }
+            ],
+            "all_ok": false
+        })
+    );
+
+    drop(stdin);
+    let status = child.wait().expect("wait for runner");
+    assert!(status.success(), "runner exited with {status}");
+}
+
 /// The `search` action passes the caller's code to the runner *raw* (no
 /// `normalize_user_code`). A non-function search input (e.g. `42`) must surface
 /// as `server_error`, preserving the contract the old in-process
