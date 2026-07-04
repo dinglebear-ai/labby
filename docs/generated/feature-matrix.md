@@ -21,6 +21,7 @@ Feature invariant status: clean.
 | labby | `services-all` | IntentionalException | false | false | - |  |
 | labby | `stash` | BaseCapability | true | true | - |  |
 | labby | `systemd` | HelperInternal | false | false | - | `dep:sd-notify` |
+| labby | `test-harness` | IntentionalException | false | false | - | `gateway` |
 | labby | `test-utils` | IntentionalException | false | false | - |  |
 | labby-apis | `acp_registry` | ServicePassthrough | false | true | labby/acp_registry |  |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all | `deploy`<br>`mcpregistry`<br>`acp_registry` |

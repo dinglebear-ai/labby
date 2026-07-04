@@ -54,6 +54,14 @@ impl GatewayManager {
         &self.code_mode_runner_pool
     }
 
+    /// The injected durable-execution decider, if any. `None` ⇒ the write-free,
+    /// no-pause path. The MCP surface drives run lifecycle (begin / status /
+    /// resume / reject) through this.
+    #[must_use]
+    pub fn code_mode_decider(&self) -> Option<&Arc<dyn labby_codemode::CodeModeDecider>> {
+        self.code_mode_decider.as_ref()
+    }
+
     pub async fn record_code_mode_history(&self, entry: CodeModeHistoryEntry) {
         self.code_mode_history.lock().await.push(entry);
     }

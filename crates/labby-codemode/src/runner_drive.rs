@@ -19,7 +19,7 @@ use ulid::Ulid;
 
 use crate::error::ToolError;
 use crate::git::provider::dispatch_git_method;
-use crate::host::CodeModeHost;
+use crate::host::{CodeModeHost, ExecCtx, StepDecision};
 use crate::local_provider::{LocalProviderCall, LocalProviderName};
 use crate::state::provider::dispatch_state_method;
 use crate::state::quota::StateWorkspaceLimits;
@@ -393,6 +393,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 match crate::local_provider::try_parse_local_provider_call(&id) {
                                     Ok(Some(local)) => {
                                         enqueue_local_provider_call(
+                                            self,
                                             seq,
                                             id,
                                             local,
@@ -460,6 +461,24 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 deadline,
                                 cfg,
                                 &mut state,
+                            )
+                            .await
+                            {
+                                return DriveOutcome::RunnerUnhealthy(err);
+                            }
+                        }
+                        CodeModeRunnerOutput::StepBegin { seq, name } => {
+                            if let Err(err) = handle_step_begin_event(
+                                self, seq, name, stdin, child, child_pid, deadline, &mut state,
+                            )
+                            .await
+                            {
+                                return DriveOutcome::RunnerUnhealthy(err);
+                            }
+                        }
+                        CodeModeRunnerOutput::StepResult { seq, value } => {
+                            if let Err(err) = handle_step_result_event(
+                                self, seq, value, stdin, child, child_pid, deadline, &mut state,
                             )
                             .await
                             {
@@ -607,8 +626,15 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
     let surface = cfg.surface;
+    // Durable-run context (pause-capable path). Owned so it can move into the
+    // spawned future; `ExecCtx` borrows it back at the call boundary.
+    let execution_id = broker.execution_id.clone();
     pending_tool_calls.push(Box::pin(async move {
         let call_start = std::time::Instant::now();
+        let ctx = ExecCtx {
+            execution_id: execution_id.as_deref(),
+            seq,
+        };
         let result = broker
             .call_tool_id_before_deadline(
                 &id,
@@ -617,6 +643,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
                 caller,
                 surface,
                 &capability_filter,
+                ctx,
             )
             .await;
         let elapsed_ms = call_start.elapsed().as_millis();
@@ -624,33 +651,108 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     }));
 }
 
-fn enqueue_local_provider_call(
+/// Enqueue a runner-reserved LOCAL provider call (`state::*` / `git::*`).
+///
+/// On the pause-capable path the call is journaled as an **ephemeral** durable
+/// entry (via `host.decide_local` / `host.record_local`) so it participates in
+/// the `seq` spine and its tool_id/args are divergence-checked on resume,
+/// without its FS/git side effect being replayed-as-cached (ephemeral entries
+/// RE-EXECUTE on replay). On the write-free path the default host hooks make
+/// this a no-op and the call dispatches exactly as before.
+///
+/// Free function taking `broker` (not `&self`) so the future captures the
+/// broker with the enclosing loop's lifetime rather than being forced to
+/// `'static` (same pattern as `enqueue_tool_call`).
+#[allow(clippy::too_many_arguments)]
+fn enqueue_local_provider_call<'a, H: CodeModeHost>(
+    broker: &'a CodeModeBroker<'a, H>,
     seq: u64,
     id: String,
     local: LocalProviderCall,
     params: Value,
     cfg: &RunnerConfig,
-    pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'_>>,
+    pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
 ) {
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
+    let execution_id = broker.execution_id.clone();
     pending_tool_calls.push(Box::pin(async move {
         let call_start = std::time::Instant::now();
-        let _guard = LOCAL_PROVIDER_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .await;
-        let result = if super::execute::local_providers_allowed(&caller, &capability_filter) {
-            dispatch_local_provider_stub(local, params).await
-        } else {
-            Err(ToolError::Forbidden {
-                message: "local Code Mode providers require unscoped lab:admin".to_string(),
-                required_scopes: vec!["lab:admin".to_string()],
-            })
+        if !super::execute::local_providers_allowed(&caller, &capability_filter) {
+            return (
+                seq,
+                id,
+                redacted_params,
+                Err(ToolError::Forbidden {
+                    message: "local Code Mode providers require unscoped lab:admin".to_string(),
+                    required_scopes: vec!["lab:admin".to_string()],
+                }),
+                call_start.elapsed().as_millis(),
+            );
+        }
+        let ctx = ExecCtx {
+            execution_id: execution_id.as_deref(),
+            seq,
         };
-        let elapsed_ms = call_start.elapsed().as_millis();
-        (seq, id, redacted_params, result, elapsed_ms)
+        // Journal (ephemeral) BEFORE dispatch so a resume divergence at this seq
+        // is caught before the local side effect runs. On the write-free path
+        // the default `decide_local` returns Execute.
+        if let Some(host) = broker.host {
+            match host.decide_local(ctx, &id, &params).await {
+                StepDecision::Replay(value) => {
+                    // Ephemeral entries never replay a stored result — but honor
+                    // it defensively if a host ever returns one.
+                    return (
+                        seq,
+                        id,
+                        redacted_params,
+                        Ok(value),
+                        call_start.elapsed().as_millis(),
+                    );
+                }
+                StepDecision::Execute => {}
+                StepDecision::Error { kind, message } => {
+                    return (
+                        seq,
+                        id,
+                        redacted_params,
+                        Err(ToolError::Sdk {
+                            sdk_kind: kind,
+                            message,
+                        }),
+                        call_start.elapsed().as_millis(),
+                    );
+                }
+            }
+        }
+        let dispatched = {
+            let _guard = LOCAL_PROVIDER_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .await;
+            dispatch_local_provider_stub(local, params).await
+        };
+        // Record applied (marker; ephemeral re-executes on replay). A record
+        // failure fails the run closed inside the host hook.
+        if let (Some(host), Ok(value)) = (broker.host, &dispatched)
+            && let Err(err) = host.record_local(ctx, value).await
+        {
+            return (
+                seq,
+                id,
+                redacted_params,
+                Err(err),
+                call_start.elapsed().as_millis(),
+            );
+        }
+        (
+            seq,
+            id,
+            redacted_params,
+            dispatched,
+            call_start.elapsed().as_millis(),
+        )
     }));
 }
 
@@ -920,6 +1022,87 @@ async fn resolve_snippet_for_runner<H: CodeModeHost>(
         "Code Mode snippet resolved"
     );
     Ok((code, input))
+}
+
+/// Handle a `StepBegin` event: the sandbox entered `codemode.step(name, fn)`.
+/// Ask the host (via its injected decider) whether to replay a journaled value
+/// or execute `fn`, and reply with a `StepDecision`. On the no-decider /
+/// standalone path the host's default `decide_step` returns `Execute`, so `fn`
+/// runs normally (behavior unchanged from before the primitive existed).
+///
+/// The step consumes the SAME `seq` ordinal space as tool calls (allocated by
+/// the runner's shared `next_runner_seq`), so it participates in the durable
+/// replay cursor — a step added/removed/reordered between pause and resume
+/// shifts a later journaled tool call's `seq` and surfaces as
+/// `resume_divergence`, exactly like `codemode.search`/`writeArtifact`.
+#[allow(clippy::too_many_arguments)]
+async fn handle_step_begin_event<H: CodeModeHost>(
+    broker: &CodeModeBroker<'_, H>,
+    seq: u64,
+    name: String,
+    stdin: &mut ChildStdin,
+    child: &mut tokio::process::Child,
+    child_pid: Option<u32>,
+    deadline: tokio::time::Instant,
+    state: &mut DriveState,
+) -> Result<(), CodeModeExecutionError> {
+    let ctx = ExecCtx {
+        execution_id: broker.execution_id.as_deref(),
+        seq,
+    };
+    let decision = match broker.host {
+        Some(host) => host.decide_step(ctx, &name).await,
+        None => StepDecision::Execute,
+    };
+    let reply = match decision {
+        StepDecision::Replay(value) => CodeModeRunnerInput::StepDecision {
+            seq,
+            replay: Some(value),
+        },
+        StepDecision::Execute => CodeModeRunnerInput::StepDecision { seq, replay: None },
+        StepDecision::Error { kind, message } => {
+            CodeModeRunnerInput::ToolError { seq, kind, message }
+        }
+    };
+    write_runner_input_by_deadline(stdin, &reply, deadline, child, child_pid, &state.calls).await
+}
+
+/// Handle a `StepResult` event: the step's `fn` ran (decision was execute) and
+/// the sandbox is journaling its value. Record it via the host, then ack with
+/// `StepRecorded` so the sandbox returns the value. On the no-decider path the
+/// host's default `record_step` is a no-op `Ok(())`.
+///
+/// A record failure (e.g. oversize value) fails the run closed — mirroring the
+/// tool-call record path in `code_mode_host.rs` — so a resume can never replay
+/// an unrecorded step value.
+#[allow(clippy::too_many_arguments)]
+async fn handle_step_result_event<H: CodeModeHost>(
+    broker: &CodeModeBroker<'_, H>,
+    seq: u64,
+    value: Value,
+    stdin: &mut ChildStdin,
+    child: &mut tokio::process::Child,
+    child_pid: Option<u32>,
+    deadline: tokio::time::Instant,
+    state: &mut DriveState,
+) -> Result<(), CodeModeExecutionError> {
+    let ctx = ExecCtx {
+        execution_id: broker.execution_id.as_deref(),
+        seq,
+    };
+    let record = match broker.host {
+        Some(host) => host.record_step(ctx, &value).await,
+        None => Ok(()),
+    };
+    let reply = match record {
+        Ok(()) => CodeModeRunnerInput::StepRecorded { seq },
+        Err(err) => CodeModeRunnerInput::ToolError {
+            seq,
+            kind: err.kind().to_string(),
+            message: err.user_message().to_string(),
+        },
+    };
+    write_runner_input_by_deadline(stdin, &reply, deadline, child, child_pid, &state.calls).await
 }
 
 /// Assemble the `Done` response. The runner is long-lived (it loops after Done),
@@ -1333,6 +1516,7 @@ sleep 3600
                 _caller: &CodeModeCaller,
                 _surface: CodeModeSurface,
                 _scope: &ToolScope,
+                _ctx: ExecCtx<'_>,
             ) -> Result<ToolCallOutcome, ToolError> {
                 Err(ToolError::Sdk {
                     sdk_kind: "unknown_tool".to_string(),

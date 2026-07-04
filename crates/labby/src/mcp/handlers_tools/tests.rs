@@ -2532,3 +2532,813 @@ async fn service_actions_json_filters_to_allowed_mcp_actions() {
             .any(|action| action["name"] == "session.list")
     );
 }
+
+// ===========================================================================
+// Code Mode durable pause/resume — MCP-surface authorization gates
+//
+// These drive `call_tool_impl` over a duplex transport against a `test_server`
+// whose `code_mode_manager` has a `SqliteDecider` injected, exercising the
+// resume/reject authorization block in `call_tool_codemode.rs` end to end.
+//
+// The gates under test (V1 live-scope, V3 actor, F2 route-scope, V6 integrity,
+// resume-divergence) all run BEFORE `broker.execute`, so they need only a
+// pre-seeded durable run — no runner subprocess or live upstream. A true
+// runner e2e (approved destructive call actually re-dispatching on resume) is
+// NOT expressible here: the runner is spawned via `current_exe()` +
+// `internal code-mode-runner`, which resolves to the labby binary only under
+// `tests/` (CARGO_BIN_EXE_labby), and `call_tool_codemode_impl` is
+// `pub(crate)` and unreachable from that integration harness. The two
+// runner-dependent scenarios (#4 C1 and #7 happy path) are covered at the
+// closest achievable boundary and their limits are documented at each test.
+// ===========================================================================
+
+use crate::codemode::decider::SqliteDecider;
+use crate::codemode::sqlite_pauses::{CodeModePauseStore, NewLogEntry, NewRun, RunStatus};
+// Trait methods (`begin`, `decide`, `run_status`, `resume_to_running`,
+// `set_status`, `record_result`) require the trait in scope; `store()` is inherent.
+use labby_codemode::CodeModeDecider as _;
+
+/// `code_hash` the resume handler computes for a given `code` string
+/// (`hash_arguments(Value::String(code))`).
+fn resume_code_hash(code: &str) -> String {
+    crate::mcp::result_format::hash_arguments(&Value::String(code.to_string()))
+}
+
+/// The capability-filter fingerprint the handler computes for a Root-scope call
+/// whose args carry no `upstreams`/`tools` restriction (the resume shape).
+fn root_scope_resume_fingerprint() -> String {
+    labby_codemode::ToolScope::new(Vec::new(), Vec::new()).fingerprint()
+}
+
+/// The capability-filter fingerprint the handler computes for a protected-route
+/// resume whose route allows no upstreams and whose args carry no
+/// `upstreams`/`tools` restriction. `route_scoped_capability_filter` produces a
+/// `scoped_namespaces(<allowed>, [])` filter, so an empty-upstream protected
+/// route yields the empty-scoped fingerprint. Two protected routes that both
+/// allow no upstreams share this fingerprint — letting the F2 route-scope test
+/// pass the V1 fingerprint gate so ONLY the F2 gate can refuse.
+fn empty_protected_scope_resume_fingerprint() -> String {
+    labby_codemode::ToolScope::scoped_namespaces(Vec::new(), Vec::new()).fingerprint()
+}
+
+/// Build a `code_mode_manager(true)` with a `SqliteDecider` injected over a
+/// fresh temp store. Returns the manager plus the `TempDir` (keep it alive for
+/// the test's lifetime).
+async fn code_mode_manager_with_decider() -> (
+    Arc<crate::dispatch::gateway::manager::GatewayManager>,
+    SqliteDecider,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = CodeModePauseStore::open(dir.path().join("codemode_pauses.db"))
+        .await
+        .expect("open store");
+    let decider = SqliteDecider::new(store);
+
+    let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+    let manager = Arc::new(
+        crate::dispatch::gateway::config_store::test_gateway_manager(
+            std::path::PathBuf::from("config.toml"),
+            runtime,
+        )
+        .with_code_mode_decider(Arc::new(decider.clone())),
+    );
+    manager
+        .seed_config_unchecked_for_tests(
+            crate::config::LabConfig {
+                code_mode: crate::config::CodeModeConfig {
+                    enabled: true,
+                    ..crate::config::CodeModeConfig::default()
+                },
+                ..crate::config::LabConfig::default()
+            }
+            .to_gateway_config(),
+        )
+        .await;
+    (manager, decider, dir)
+}
+
+/// Recorded-authz fields for a seeded paused run.
+struct SeedPausedRun<'a> {
+    execution_id: &'a str,
+    code_hash: String,
+    actor_key: Option<&'a str>,
+    is_admin: bool,
+    route_scope: &'a str,
+    capability_filter_fingerprint: String,
+}
+
+/// Seed a `paused` durable run with a single pending destructive call at seq 0,
+/// exactly as the pause-capable path would leave it after journaling +
+/// flipping to paused. Returns nothing; assert on the store afterward.
+async fn seed_paused_run(store: &CodeModePauseStore, seed: SeedPausedRun<'_>) {
+    store
+        .begin(NewRun {
+            execution_id: seed.execution_id.to_string(),
+            code_hash: seed.code_hash,
+            actor_key: seed.actor_key.map(ToOwned::to_owned),
+            is_admin: seed.is_admin,
+            route_scope: seed.route_scope.to_string(),
+            capability_filter_fingerprint: seed.capability_filter_fingerprint,
+            expires_at_ms: now_ms_test() + 86_400_000,
+        })
+        .await
+        .expect("begin");
+    store
+        .upsert_log_entry(
+            seed.execution_id,
+            NewLogEntry {
+                seq: 0,
+                tool_id: "demo::delete".to_string(),
+                raw_args: serde_json::json!({ "id": 1 }),
+                requires_approval: true,
+                ephemeral: false,
+            },
+        )
+        .await
+        .expect("journal pending");
+    store
+        .set_status(seed.execution_id, RunStatus::Paused, None)
+        .await
+        .expect("pause");
+}
+
+fn now_ms_test() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Build a scoped MCP request context carrying an explicit `actor_key` and
+/// scopes (the `scoped_context` helper hardcodes `actor_key: None`).
+fn scoped_context_with_actor(
+    peer: rmcp::service::Peer<rmcp::RoleServer>,
+    scopes: &[&str],
+    actor_key: Option<&str>,
+) -> rmcp::service::RequestContext<rmcp::RoleServer> {
+    let mut context =
+        rmcp::service::RequestContext::new(rmcp::model::NumberOrString::Number(1), peer);
+    let mut parts = axum::http::Request::new(()).into_parts().0;
+    parts.extensions.insert(crate::api::oauth::AuthContext {
+        sub: "resumer".to_string(),
+        actor_key: actor_key.map(Arc::from),
+        scopes: scopes.iter().map(|s| s.to_string()).collect(),
+        issuer: "https://lab.example.com".to_string(),
+        via_session: true,
+        csrf_token: None,
+        email: None,
+    });
+    context.extensions.insert(parts);
+    context
+}
+
+/// Drive a `codemode` resume/reject through `call_tool_impl` and return the
+/// parsed envelope JSON. `confirm=None` omits the flag; `Some(b)` sets it.
+async fn drive_codemode_resume(
+    context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    running: &rmcp::service::RunningService<rmcp::RoleServer, LabMcpServer>,
+    code: &str,
+    resume_token: &str,
+    confirm: Option<bool>,
+) -> Value {
+    let mut args = serde_json::Map::new();
+    args.insert("code".to_string(), Value::String(code.to_string()));
+    args.insert(
+        "resume_token".to_string(),
+        Value::String(resume_token.to_string()),
+    );
+    if let Some(flag) = confirm {
+        args.insert("confirm".to_string(), Value::Bool(flag));
+    }
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new(CODE_MODE_TOOL_NAME).with_arguments(args),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    serde_json::from_str(text).expect("envelope JSON")
+}
+
+/// Spin a duplex-served `test_server` for the codemode manager and hand back the
+/// running service + a peer for building contexts.
+fn serve_codemode(
+    manager: Arc<crate::dispatch::gateway::manager::GatewayManager>,
+    route_scope: crate::mcp::route_scope::McpRouteScope,
+) -> rmcp::service::RunningService<rmcp::RoleServer, LabMcpServer> {
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        route_scope,
+        rmcp::model::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    )
+}
+
+// ── V1: live scope narrowed since pause ────────────────────────────────────
+
+#[tokio::test]
+async fn resume_refused_when_live_scope_narrowed_since_pause() {
+    let (manager, decider, _dir) = code_mode_manager_with_decider().await;
+    let code = "async () => { await callTool('demo::delete', { id: 1 }); }";
+    // Paused as an admin caller (is_admin = true, fingerprint = the Root resume
+    // shape so the ONLY thing that changes at resume is the admin scope).
+    seed_paused_run(
+        decider.store(),
+        SeedPausedRun {
+            execution_id: "run-v1",
+            code_hash: resume_code_hash(code),
+            actor_key: Some("actor-a"),
+            is_admin: true,
+            route_scope: "root",
+            capability_filter_fingerprint: root_scope_resume_fingerprint(),
+        },
+    )
+    .await;
+
+    let running = serve_codemode(manager, crate::mcp::route_scope::McpRouteScope::Root);
+    // Resume with identical code + confirm:true but WITHOUT lab:admin — only
+    // `lab`. Live caps recompute `is_admin = false`, mismatching the recorded
+    // `is_admin = true` → V1 fails closed.
+    let context = scoped_context_with_actor(running.peer().clone(), &["lab"], Some("actor-a"));
+    let env = drive_codemode_resume(context, &running, code, "run-v1", Some(true)).await;
+
+    assert_eq!(
+        env["error"]["kind"], "forbidden",
+        "narrowed scope must be refused, got {env}"
+    );
+    // The run must NOT have advanced to running — the fail-closed contract.
+    assert_eq!(
+        decider.run_status("run-v1").await,
+        labby_codemode::RunLifecycle::Paused,
+        "a refused resume must leave the run paused, not advance it to running"
+    );
+}
+
+// ── V3: actor identity ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn resume_refused_for_different_actor() {
+    let (manager, decider, _dir) = code_mode_manager_with_decider().await;
+    let code = "async () => { await callTool('demo::delete', { id: 1 }); }";
+    seed_paused_run(
+        decider.store(),
+        SeedPausedRun {
+            execution_id: "run-actor",
+            code_hash: resume_code_hash(code),
+            actor_key: Some("actor-A"),
+            is_admin: true,
+            route_scope: "root",
+            capability_filter_fingerprint: root_scope_resume_fingerprint(),
+        },
+    )
+    .await;
+
+    let running = serve_codemode(manager, crate::mcp::route_scope::McpRouteScope::Root);
+    // Actor B tries to resume actor A's run → forbidden.
+    let context =
+        scoped_context_with_actor(running.peer().clone(), &["lab:admin"], Some("actor-B"));
+    let env = drive_codemode_resume(context, &running, code, "run-actor", Some(true)).await;
+
+    assert_eq!(
+        env["error"]["kind"], "forbidden",
+        "different actor must be refused, got {env}"
+    );
+    assert_eq!(
+        decider.run_status("run-actor").await,
+        labby_codemode::RunLifecycle::Paused,
+        "a refused resume must leave the run paused"
+    );
+}
+
+#[tokio::test]
+async fn resume_actor_none_does_not_bridge_to_scoped() {
+    // A trusted-local run (actor_key = None) must not be resumable by a scoped
+    // actor (Some), and vice-versa — None matches only None.
+    let code = "async () => { await callTool('demo::delete', { id: 1 }); }";
+
+    // (a) trusted-local (None) run, scoped (Some) resumer → forbidden.
+    {
+        let (manager, decider, _dir) = code_mode_manager_with_decider().await;
+        seed_paused_run(
+            decider.store(),
+            SeedPausedRun {
+                execution_id: "run-none",
+                code_hash: resume_code_hash(code),
+                actor_key: None,
+                is_admin: true,
+                route_scope: "root",
+                capability_filter_fingerprint: root_scope_resume_fingerprint(),
+            },
+        )
+        .await;
+        let running = serve_codemode(manager, crate::mcp::route_scope::McpRouteScope::Root);
+        let context =
+            scoped_context_with_actor(running.peer().clone(), &["lab:admin"], Some("actor-scoped"));
+        let env = drive_codemode_resume(context, &running, code, "run-none", Some(true)).await;
+        assert_eq!(
+            env["error"]["kind"], "forbidden",
+            "a scoped actor must not resume a trusted-local (None) run, got {env}"
+        );
+        assert_eq!(
+            decider.run_status("run-none").await,
+            labby_codemode::RunLifecycle::Paused
+        );
+    }
+
+    // (b) scoped (Some) run, trusted-local (None) resumer → forbidden. A None
+    // AuthContext models a local stdio caller; its actor_key is None, so it must
+    // not bridge to a run started by a scoped actor.
+    {
+        let (manager, decider, _dir) = code_mode_manager_with_decider().await;
+        seed_paused_run(
+            decider.store(),
+            SeedPausedRun {
+                execution_id: "run-scoped",
+                code_hash: resume_code_hash(code),
+                actor_key: Some("actor-scoped"),
+                is_admin: true,
+                route_scope: "root",
+                capability_filter_fingerprint: root_scope_resume_fingerprint(),
+            },
+        )
+        .await;
+        let running = serve_codemode(manager, crate::mcp::route_scope::McpRouteScope::Root);
+        // No AuthContext at all → actor_key None (stdio/trusted-local).
+        let context = request_context_with_peer(running.peer().clone());
+        let env = drive_codemode_resume(context, &running, code, "run-scoped", Some(true)).await;
+        assert_eq!(
+            env["error"]["kind"], "forbidden",
+            "a trusted-local (None) resumer must not resume a scoped run, got {env}"
+        );
+        assert_eq!(
+            decider.run_status("run-scoped").await,
+            labby_codemode::RunLifecycle::Paused
+        );
+    }
+}
+
+// ── F2: route-scope identity (resume + reject) ─────────────────────────────
+
+#[tokio::test]
+async fn resume_refused_across_route_scope() {
+    let (manager, decider, _dir) = code_mode_manager_with_decider().await;
+    let code = "async () => { await callTool('demo::delete', { id: 1 }); }";
+    // Paused under protected route A. Seed the fingerprint route B WILL compute
+    // (both routes allow no upstreams → the same empty-scoped fingerprint) and
+    // keep is_admin/lab:admin, so the V1 gate PASSES and only the F2 route-scope
+    // gate can produce the refusal — pinning F2 specifically.
+    seed_paused_run(
+        decider.store(),
+        SeedPausedRun {
+            execution_id: "run-route",
+            code_hash: resume_code_hash(code),
+            actor_key: Some("actor-a"),
+            is_admin: true,
+            route_scope: "protected:alpha",
+            capability_filter_fingerprint: empty_protected_scope_resume_fingerprint(),
+        },
+    )
+    .await;
+
+    // Resume under a DIFFERENT protected route B (both expose code mode so the
+    // call reaches the codemode handler).
+    let route_b = crate::mcp::route_scope::McpRouteScope::protected_subset(
+        "beta",
+        Vec::<String>::new(),
+        Vec::<String>::new(),
+        true,
+    );
+    let running = serve_codemode(manager, route_b);
+    let context =
+        scoped_context_with_actor(running.peer().clone(), &["lab:admin"], Some("actor-a"));
+    let env = drive_codemode_resume(context, &running, code, "run-route", Some(true)).await;
+
+    assert_eq!(
+        env["error"]["kind"], "forbidden",
+        "resume across a different route scope must be refused, got {env}"
+    );
+    assert_eq!(
+        decider.run_status("run-route").await,
+        labby_codemode::RunLifecycle::Paused,
+        "a cross-route resume must leave the run paused"
+    );
+}
+
+#[tokio::test]
+async fn reject_refused_across_route_scope() {
+    let (manager, decider, _dir) = code_mode_manager_with_decider().await;
+    let code = "async () => { await callTool('demo::delete', { id: 1 }); }";
+    seed_paused_run(
+        decider.store(),
+        SeedPausedRun {
+            execution_id: "run-route-rej",
+            code_hash: resume_code_hash(code),
+            actor_key: Some("actor-a"),
+            is_admin: true,
+            route_scope: "protected:alpha",
+            capability_filter_fingerprint: root_scope_resume_fingerprint(),
+        },
+    )
+    .await;
+
+    let route_b = crate::mcp::route_scope::McpRouteScope::protected_subset(
+        "beta",
+        Vec::<String>::new(),
+        Vec::<String>::new(),
+        true,
+    );
+    let running = serve_codemode(manager, route_b);
+    let context =
+        scoped_context_with_actor(running.peer().clone(), &["lab:admin"], Some("actor-a"));
+    // Reject = confirm:false.
+    let env = drive_codemode_resume(context, &running, code, "run-route-rej", Some(false)).await;
+
+    assert_eq!(
+        env["error"]["kind"], "forbidden",
+        "reject across a different route scope must be refused, got {env}"
+    );
+    assert_eq!(
+        decider.run_status("run-route-rej").await,
+        labby_codemode::RunLifecycle::Paused,
+        "a cross-route reject must leave the run paused"
+    );
+}
+
+// ── V6 at the MCP surface: run integrity (resume + reject) ─────────────────
+
+#[tokio::test]
+async fn resume_refused_when_run_integrity_fails() {
+    let (manager, decider, dir) = code_mode_manager_with_decider().await;
+    let code = "async () => { await callTool('demo::delete', { id: 1 }); }";
+    seed_paused_run(
+        decider.store(),
+        SeedPausedRun {
+            execution_id: "run-tamper",
+            code_hash: resume_code_hash(code),
+            actor_key: Some("actor-a"),
+            is_admin: true,
+            route_scope: "root",
+            capability_filter_fingerprint: root_scope_resume_fingerprint(),
+        },
+    )
+    .await;
+    // Tamper the row directly (flip is_admin) → HMAC verify fails.
+    let conn = rusqlite::Connection::open(dir.path().join("codemode_pauses.db")).expect("raw open");
+    conn.execute(
+        "UPDATE codemode_runs SET is_admin = 0 WHERE execution_id = 'run-tamper'",
+        [],
+    )
+    .expect("tamper");
+    drop(conn);
+
+    let running = serve_codemode(manager, crate::mcp::route_scope::McpRouteScope::Root);
+    let context =
+        scoped_context_with_actor(running.peer().clone(), &["lab:admin"], Some("actor-a"));
+    let env = drive_codemode_resume(context, &running, code, "run-tamper", Some(true)).await;
+
+    assert_eq!(
+        env["error"]["kind"], "internal_error",
+        "a tampered run must fail the integrity check before any mutation, got {env}"
+    );
+    // The tampered row reads back Unknown (fail closed) — never advanced.
+    assert_eq!(
+        decider.run_status("run-tamper").await,
+        labby_codemode::RunLifecycle::Unknown,
+        "a tampered run reads Unknown and is never advanced"
+    );
+}
+
+#[tokio::test]
+async fn reject_refused_when_run_integrity_fails() {
+    let (manager, decider, dir) = code_mode_manager_with_decider().await;
+    let code = "async () => { await callTool('demo::delete', { id: 1 }); }";
+    seed_paused_run(
+        decider.store(),
+        SeedPausedRun {
+            execution_id: "run-tamper-rej",
+            code_hash: resume_code_hash(code),
+            actor_key: Some("actor-a"),
+            is_admin: true,
+            route_scope: "root",
+            capability_filter_fingerprint: root_scope_resume_fingerprint(),
+        },
+    )
+    .await;
+    let conn = rusqlite::Connection::open(dir.path().join("codemode_pauses.db")).expect("raw open");
+    conn.execute(
+        "UPDATE codemode_runs SET is_admin = 0 WHERE execution_id = 'run-tamper-rej'",
+        [],
+    )
+    .expect("tamper");
+    drop(conn);
+
+    let running = serve_codemode(manager, crate::mcp::route_scope::McpRouteScope::Root);
+    let context =
+        scoped_context_with_actor(running.peer().clone(), &["lab:admin"], Some("actor-a"));
+    let env = drive_codemode_resume(context, &running, code, "run-tamper-rej", Some(false)).await;
+
+    assert_eq!(
+        env["error"]["kind"], "internal_error",
+        "a tampered run must fail the integrity check before reject mutates state, got {env}"
+    );
+}
+
+// ── Resume divergence: resubmitted code differs ────────────────────────────
+
+#[tokio::test]
+async fn resume_refused_when_resubmitted_code_differs() {
+    let (manager, decider, _dir) = code_mode_manager_with_decider().await;
+    let original = "async () => { await callTool('demo::delete', { id: 1 }); }";
+    seed_paused_run(
+        decider.store(),
+        SeedPausedRun {
+            execution_id: "run-diverge",
+            code_hash: resume_code_hash(original),
+            actor_key: Some("actor-a"),
+            is_admin: true,
+            route_scope: "root",
+            capability_filter_fingerprint: root_scope_resume_fingerprint(),
+        },
+    )
+    .await;
+
+    let running = serve_codemode(manager, crate::mcp::route_scope::McpRouteScope::Root);
+    let context =
+        scoped_context_with_actor(running.peer().clone(), &["lab:admin"], Some("actor-a"));
+    // Correct token + confirm:true but DIFFERENT code.
+    let different = "async () => { await callTool('demo::delete', { id: 2 }); }";
+    let env = drive_codemode_resume(context, &running, different, "run-diverge", Some(true)).await;
+
+    assert_eq!(
+        env["error"]["kind"], "resume_divergence",
+        "resubmitting different code must diverge, got {env}"
+    );
+    assert_eq!(
+        decider.run_status("run-diverge").await,
+        labby_codemode::RunLifecycle::Paused,
+        "a divergent resume must leave the run paused"
+    );
+}
+
+// ── #4 (C1) and #7 (happy path): boundary coverage + documented limits ─────
+
+#[tokio::test]
+async fn swallowed_pause_via_all_settled_still_pauses_and_dispatches_nothing() {
+    // C1 e2e headline: code that wraps a destructive call in Promise.allSettled
+    // then issues a second destructive call must still surface as
+    // `confirmation_required`/status:"paused" (the host reads the DURABLE status
+    // after settle — NOT the sandbox result), and no upstream destructive
+    // dispatch happens.
+    //
+    // LIMIT: a full runner e2e is NOT expressible in this src/ unit harness — the
+    // runner spawns via current_exe()+`internal code-mode-runner`, which is the
+    // labby binary only under tests/ (CARGO_BIN_EXE_labby), and
+    // call_tool_codemode_impl is pub(crate) so tests/ cannot reach it. The
+    // decide-time monotonic gate that MAKES the swallow-proof behavior is proven
+    // directly at the decider boundary here: once a run is paused, EVERY
+    // subsequent decide() returns Pause and journals nothing, so a second
+    // destructive call (the one after allSettled) can drive no dispatch. The
+    // handler's post-settle read of this durable `paused` status → pause envelope
+    // is separately pinned by the resume tests above (which all assert the run
+    // stays Paused).
+    let (_manager, decider, _dir) = code_mode_manager_with_decider().await;
+    decider
+        .begin(labby_codemode::BeginRun {
+            execution_id: "run-c1".to_string(),
+            code_hash: "hash".to_string(),
+            actor_key: Some("actor-a".to_string()),
+            is_admin: true,
+            route_scope: "root".to_string(),
+            capability_filter_fingerprint: root_scope_resume_fingerprint(),
+            expires_at_ms: now_ms_test() + 86_400_000,
+        })
+        .await
+        .expect("begin");
+
+    // First destructive call (inside allSettled) pauses the run.
+    let first = decider
+        .decide(
+            "run-c1",
+            0,
+            "demo::delete",
+            &serde_json::json!({ "id": 1 }),
+            labby_codemode::Approval::Required,
+            labby_codemode::Journaling::Durable,
+        )
+        .await;
+    assert!(
+        matches!(first, labby_codemode::DecideOutcome::Pause),
+        "the first destructive call must pause, got {first:?}"
+    );
+    assert_eq!(
+        decider.run_status("run-c1").await,
+        labby_codemode::RunLifecycle::Paused
+    );
+
+    // Second destructive call (after the swallowed allSettled) — the monotonic
+    // gate returns Pause and records NOTHING, so it can drive no dispatch.
+    let second = decider
+        .decide(
+            "run-c1",
+            1,
+            "demo::delete",
+            &serde_json::json!({ "id": 2 }),
+            labby_codemode::Approval::Required,
+            labby_codemode::Journaling::Durable,
+        )
+        .await;
+    assert!(
+        matches!(second, labby_codemode::DecideOutcome::Pause),
+        "a post-pause call must also pause (monotonic gate), got {second:?}"
+    );
+    // Nothing journaled at seq 1 → no second destructive dispatch is possible.
+    assert!(
+        decider
+            .store()
+            .get_log_entry("run-c1", 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "a swallowed post-pause destructive call must journal nothing (no dispatch)"
+    );
+    // The durable status the host would read after settle is still `paused`.
+    assert_eq!(
+        decider.run_status("run-c1").await,
+        labby_codemode::RunLifecycle::Paused,
+        "the durable status after settle is paused — the host emits confirmation_required"
+    );
+}
+
+#[tokio::test]
+async fn resume_executes_approved_destructive_call_and_completes() {
+    // Happy-path resume: an authorized resume passes every gate, CASes the run
+    // Paused→Running, and re-drives. The approved destructive call executes for
+    // real; an already-applied non-destructive call short-circuits to its
+    // recorded result (Replay, NOT re-dispatch).
+    //
+    // LIMIT: the actual re-dispatch + completion require the runner subprocess
+    // (see the module header), unreachable from call_tool_codemode_impl in this
+    // src/ harness. The two load-bearing decider guarantees are pinned directly:
+    //  (1) an approved (pending) entry transitions to Execute on the resume pass
+    //      (the destructive call re-dispatches), and
+    //  (2) an already-applied non-destructive entry Replays its recorded result
+    //      instead of re-dispatching (proven via the store: no new dispatch).
+    let (_manager, decider, _dir) = code_mode_manager_with_decider().await;
+    decider
+        .begin(labby_codemode::BeginRun {
+            execution_id: "run-happy".to_string(),
+            code_hash: "hash".to_string(),
+            actor_key: Some("actor-a".to_string()),
+            is_admin: true,
+            route_scope: "root".to_string(),
+            capability_filter_fingerprint: root_scope_resume_fingerprint(),
+            expires_at_ms: now_ms_test() + 86_400_000,
+        })
+        .await
+        .expect("begin");
+
+    // seq 0: a non-destructive read runs and records its result on the first pass.
+    let read = decider
+        .decide(
+            "run-happy",
+            0,
+            "demo::read",
+            &serde_json::json!({ "q": 1 }),
+            labby_codemode::Approval::NotNeeded,
+            labby_codemode::Journaling::Durable,
+        )
+        .await;
+    assert!(matches!(read, labby_codemode::DecideOutcome::Execute));
+    decider
+        .record_result("run-happy", 0, &serde_json::json!({ "ok": true }))
+        .await
+        .expect("record");
+    // seq 1: a destructive call pauses the run.
+    let del = decider
+        .decide(
+            "run-happy",
+            1,
+            "demo::delete",
+            &serde_json::json!({ "id": 1 }),
+            labby_codemode::Approval::Required,
+            labby_codemode::Journaling::Durable,
+        )
+        .await;
+    assert!(matches!(del, labby_codemode::DecideOutcome::Pause));
+    assert_eq!(
+        decider.run_status("run-happy").await,
+        labby_codemode::RunLifecycle::Paused
+    );
+
+    // Approve + resume: CAS Paused→Running (what the handler does after all
+    // authz gates pass).
+    assert!(
+        decider.resume_to_running("run-happy").await,
+        "an authorized resume CASes the run to running"
+    );
+    assert_eq!(
+        decider.run_status("run-happy").await,
+        labby_codemode::RunLifecycle::Running
+    );
+
+    // Re-drive pass:
+    // (1) the already-applied non-destructive seq 0 short-circuits to Replay of
+    //     its recorded result — NOT a re-dispatch.
+    let replay = decider
+        .decide(
+            "run-happy",
+            0,
+            "demo::read",
+            &serde_json::json!({ "q": 1 }),
+            labby_codemode::Approval::NotNeeded,
+            labby_codemode::Journaling::Durable,
+        )
+        .await;
+    match replay {
+        labby_codemode::DecideOutcome::Replay(v) => {
+            assert_eq!(v, serde_json::json!({ "ok": true }));
+        }
+        other => panic!("an applied non-destructive call must Replay, got {other:?}"),
+    }
+    // (2) the approved (pending) destructive seq 1 now transitions to Execute —
+    //     the approved destructive call re-dispatches for real on resume.
+    let exec = decider
+        .decide(
+            "run-happy",
+            1,
+            "demo::delete",
+            &serde_json::json!({ "id": 1 }),
+            labby_codemode::Approval::Required,
+            labby_codemode::Journaling::Durable,
+        )
+        .await;
+    assert!(
+        matches!(exec, labby_codemode::DecideOutcome::Execute),
+        "the approved destructive call must Execute (re-dispatch) on resume, got {exec:?}"
+    );
+    // After it records its result the run can complete.
+    decider
+        .record_result("run-happy", 1, &serde_json::json!({ "deleted": 1 }))
+        .await
+        .expect("record delete");
+    assert!(
+        decider
+            .set_status("run-happy", labby_codemode::RunLifecycle::Completed, None)
+            .await
+            .expect("complete")
+    );
+    assert_eq!(
+        decider.run_status("run-happy").await,
+        labby_codemode::RunLifecycle::Completed
+    );
+}
+
+// ── #8: local-provider-allowed runs are not pause-capable ──────────────────
+
+#[tokio::test]
+async fn run_allowing_local_providers_is_not_pause_capable() {
+    // A caller for whom local providers are allowed (unscoped admin / trusted
+    // -local) takes the write-free path: `local_providers_allowed(&caller,
+    // &scope)` gates `pause_capable`, so no durable run is begun and no
+    // resume_token is minted.
+    //
+    // The load-bearing predicate is `labby_codemode::local_providers_allowed`,
+    // which `call_tool_codemode.rs` ANDs into `pause_capable`. Prove it directly:
+    // an unscoped admin/trusted-local caller with an unscoped tool filter is
+    // local-provider-allowed (⇒ NOT pause-capable), while a scoped caller is not.
+    use labby_codemode::{CodeModeCaller, CodeModeCallerCapabilities, ToolScope};
+
+    let trusted_local = CodeModeCaller::TrustedLocal;
+    let unscoped = ToolScope::new(Vec::new(), Vec::new());
+    assert!(
+        labby_codemode::local_providers_allowed(&trusted_local, &unscoped),
+        "a trusted-local caller with an unscoped filter is local-provider-allowed \
+         ⇒ the handler makes the run NOT pause-capable (no durable run, no resume_token)"
+    );
+
+    let unscoped_admin = CodeModeCaller::Scoped {
+        capabilities: CodeModeCallerCapabilities {
+            can_execute: true,
+            can_use_snippets: true,
+            is_admin: true,
+        },
+        sub: Some("admin".to_string()),
+    };
+    assert!(
+        labby_codemode::local_providers_allowed(&unscoped_admin, &unscoped),
+        "an unscoped admin caller is local-provider-allowed ⇒ NOT pause-capable"
+    );
+
+    // A route-scoped run (namespaces present) must NOT allow local providers —
+    // this is the run shape that DOES begin a durable, pause-capable run.
+    let scoped = ToolScope::scoped_namespaces(vec!["demo".to_string()], Vec::new());
+    assert!(
+        !labby_codemode::local_providers_allowed(&unscoped_admin, &scoped),
+        "a route-scoped run must not allow local providers (it is pause-capable)"
+    );
+}

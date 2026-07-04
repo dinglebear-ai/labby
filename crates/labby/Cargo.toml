@@ -165,6 +165,11 @@ fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
 lab-admin = []
 mcpregistry = ["marketplace"]
 systemd = ["dep:sd-notify"]
+# Non-default. Exposes the crate-private Code Mode test harness
+# (`codemode_test_harness`) to integration tests in `tests/`. Requires
+# `gateway` for the Code Mode surface. Enabled by CI's `--all-features`.
+# Production behaviour is unchanged when this feature is off.
+test-harness = ["gateway"]
 test-utils = []
 [lints]
 workspace = true

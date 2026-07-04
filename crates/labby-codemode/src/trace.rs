@@ -23,8 +23,14 @@ pub(crate) fn redact_trace_params(params: &Value, enabled: bool) -> Option<Value
     Some(redact_trace_value(params, DEFAULT_PARAM_BYTES))
 }
 
+/// Redact sensitive keys/values in a JSON tree and cap the serialized size.
+///
+/// Re-exported from `labby-codemode` so hosts (e.g. the durable Code Mode pause
+/// store in the `labby` binary crate) can redact journaled args/results with
+/// the same secret-key dictionary the trace path uses, keeping the crate
+/// storage-neutral while sharing one redaction implementation.
 #[must_use]
-pub(crate) fn redact_trace_value(value: &Value, max_bytes: usize) -> Value {
+pub fn redact_trace_value(value: &Value, max_bytes: usize) -> Value {
     let redacted = redact_value(value, 0);
     let size = serde_json::to_vec(&redacted)
         .map(|bytes| bytes.len())

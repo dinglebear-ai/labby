@@ -191,6 +191,18 @@
     },
     {
       "crate_name": "labby",
+      "feature": "test-harness",
+      "dependencies": [
+        "gateway"
+      ],
+      "included_in_default": false,
+      "included_in_all": false,
+      "classification": "intentional_exception",
+      "mapped_crate_feature": null,
+      "exception_reason": "intentional crate-local exception"
+    },
+    {
+      "crate_name": "labby",
       "feature": "test-utils",
       "dependencies": [],
       "included_in_default": false,

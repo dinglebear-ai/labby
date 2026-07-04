@@ -424,9 +424,145 @@ Destructive upstream tools are gated by host-side metadata before dispatch. In
 the MCP `codemode` surface, callers can explicitly confirm the whole Code Mode
 run with top-level `confirm: true`. Execute-capable scopes (`lab` or
 `lab:admin`) authorize Code Mode execution, but do not implicitly confirm
-destructive upstream effects. Unconfirmed MCP destructive calls fail as
-`confirmation_required`. CLI Code Mode execution permits destructive upstream calls because it is
+destructive upstream effects. CLI Code Mode execution permits destructive upstream calls because it is
 operator-driven.
+
+## Durable pause / resume (mid-script human-in-the-loop)
+
+When a durable Code Mode pause store is configured (`~/.labby/codemode_pauses.db`,
+enabled automatically on the MCP `serve` path), an MCP `codemode` run that is
+**not** pre-confirmed with whole-run `confirm: true` and is **not** a resume
+takes the *pause-capable path*: every upstream tool call is journaled to a
+durable SQLite log, and the first **unconfirmed destructive** call pauses the
+whole run awaiting human approval. This is a faithful port of
+Cloudflare `agents`' Code Mode durable-execution model
+(`packages/codemode/src/runtime.ts`).
+
+**Contract (MCP-only today).** Code Mode has no CLI/HTTP surface for pause/resume;
+a future CLI/HTTP surface must carry `resume_token` / `confirm` as params.
+
+1. **Pause.** A destructive, unconfirmed call flips the durable run status to
+   `paused` and the run halts. The tool result is a `confirmation_required`
+   envelope carrying `status: "paused"`, `execution_id`, `resume_token` (equal
+   to the execution id), and a `pending` array of `{ seq, tool_id }`.
+   Crucially, pausing is enforced by the **durable status**, not by an escaping
+   exception: model code that swallows the pause sentinel (`Promise.allSettled`,
+   `try/catch`) drives no further side effects — a monotonic gate returns "pause"
+   for every subsequent call once the run is not `running` — and the host reads
+   the durable status **after the run settles** to decide the envelope.
+2. **Resume.** Resubmit the **identical** code with `resume_token` + `confirm:
+   true`. The run re-runs from the top with already-applied calls short-circuited
+   to their recorded results (matched by emission `seq` + `(tool_id, canonical
+   args)`); the approved destructive call executes for real, and the run proceeds
+   to the next unconfirmed destructive call or completion.
+3. **Reject.** Resubmit with `resume_token` + `confirm: false` to end the run
+   (`rejected`). A subsequent resume with the same token fails closed.
+
+**Determinism contract.** All code outside connector (`callTool` /
+`codemode.<upstream>.<tool>`) calls and `codemode.step(name, fn)` must be
+deterministic across replays. A journaled call whose `(tool_id, canonical args)`
+diverges from the recorded run at a given `seq` — or a resume whose resubmitted
+code hash does not match the paused run — is a hard, model-actionable
+`resume_divergence` error, never a silent stale-result application. Wrap
+nondeterministic or side-effectful work (random, time, raw reads that drift) in
+`codemode.step` so it is journaled once and replayed thereafter.
+
+**The replay `seq` spine covers every sandbox request, not just journaled tool
+calls.** The runner allocates `seq` from a single monotonic counter shared across
+*all* parent↔runner requests: upstream tool calls, `codemode.search`,
+`writeArtifact`, `codemode.run` snippet resolves, and internal
+`semantic_rank`/`codemode.search` scoring. Only real upstream tool calls are
+written to the durable log, but a replay only lands on the recorded call at a
+given `seq` if every earlier `seq`-consuming request runs in the identical order
+and count. Therefore `codemode.search`, `writeArtifact`, and
+`codemode.run` **participate in the replay `seq` spine and must be deterministic
+across replays**: issue the same search/artifact/snippet calls, in the
+same order, on a resume as on the first pass. (`codemode.describe` is served
+locally in-sandbox and emits no parent request, so it does **not** consume a
+`seq` and is exempt.) Adding, removing, or reordering any
+of them between pause and resume shifts the `seq` of a later journaled tool call
+and surfaces as `resume_divergence` (fail closed) rather than a silent misapply.
+
+**`codemode.step(name, fn)` journals arbitrary nondeterministic work.** Wrap
+random/time/drifting reads in `codemode.step(name, fn)` and the value `fn`
+produces is journaled once (on first run) and **replayed** on resume — `fn` is
+not re-run. The step is a two-phase parent round-trip: the runner emits
+`StepBegin{seq, name}`, the host decides replay-vs-execute BEFORE `fn` runs
+(`decide` with `tool_id = "codemode::step"`, `ephemeral = false`), and on execute
+the runner runs `fn`, emits `StepResult{seq, value}` to journal it, and awaits
+`StepRecorded`. The step consumes a `seq` from the same monotonic spine as every
+other request, so its divergence key is the step **name** (not `fn`'s output):
+the same nondeterministic value wrapped in `step` resumes cleanly, while the same
+value used raw as a tool-call arg still diverges. On the write-free / no-decider
+path the host's default `decide_step` returns `Execute` and `record_step` is a
+no-op, so `fn` simply runs normally.
+
+**No truncation.** Any single journaled args/result value over
+`MAX_DURABLE_VALUE_BYTES` (1 MiB) fails the run with a model-actionable message
+rather than being truncated — truncation would feed resumed code corrupted data.
+Write large data to an artifact/file and pass a small reference instead.
+
+**Expiry.** Abandoned paused (and stale `running`) runs older than
+`LAB_CODE_MODE_PAUSE_TTL_MS` (default 24h) are reclaimed by a lazy, throttled
+sweep fired on pause/resume/reject dispatch — no background timer.
+
+**Perf scope.** Journaling happens only on the pause-capable path. Pre-confirmed
+(`confirm: true`) runs, CLI runs, and runs with no configured pause store take
+the write-free path unchanged.
+
+**Local providers are journaled ephemerally on the pause-capable path.**
+Labby's runner-reserved `state.*` / `git.*` local providers (available only to
+unscoped admin/trusted-local callers) dispatch inside the runner crate, not via
+`callTool` (`runner_drive.rs::enqueue_local_provider_call`). They are now
+journaled as **ephemeral** durable entries through
+`CodeModeHost::decide_local` / `record_local` (`decide` with `ephemeral = true`),
+so they participate in the `seq` spine and are tool_id/args divergence-checked on
+resume — while an ephemeral entry **re-executes** on replay (the FS/git side
+effect re-runs) rather than being served from a stored result. This removes the
+former fail-closed exclusion that made any run touching `state`/`git`
+non-pause-capable: such runs can now pause for per-call destructive approval and
+resume like any other. On the write-free / no-decider path the default
+`decide_local` returns `Execute` and `record_local` is a no-op, so local calls
+dispatch exactly as before. (The prior threat-model note in
+`crates/labby/src/codemode/sqlite_pauses.rs` is now historical.)
+
+**Resume authorization (fail closed on every gate).** Resuming a paused run
+re-checks, in order and BEFORE the CAS `paused → running`: the HMAC integrity
+signature, `status == paused`, resubmitted code hash == recorded `code_hash`,
+`actor_key` identity (None matches only None — never bridging trusted-local ↔
+scoped), the **live** recomputed capabilities (`can_execute`, `is_admin`,
+capability fingerprint — a narrowed/revoked scope fails even when the fingerprint
+matches), and the **route scope** (a run paused under protected route A cannot be
+resumed under route B). Reject applies the same integrity + actor-identity gate
+and only terminates a still-`paused` run, so a `resume_token` holder cannot
+force-terminate another actor's live `running` run.
+
+**Worked MCP example (pause → resume / reject):**
+
+```jsonc
+// 1. Model runs code that calls a destructive upstream tool.
+codemode({ "code": "async () => { await codemode.svc.delete_thing({ id: 42 }); return 'done'; }" })
+// → error envelope:
+{ "kind": "confirmation_required",
+  "status": "paused",
+  "execution_id": "exec_0000001718000000_01J...",
+  "resume_token": "exec_0000001718000000_01J...",
+  "pending": [{ "seq": 0, "tool_id": "svc::delete_thing" }] }
+
+// 2a. Human approves → resubmit the IDENTICAL code + resume_token + confirm:true.
+codemode({ "code": "async () => { await codemode.svc.delete_thing({ id: 42 }); return 'done'; }",
+           "resume_token": "exec_0000001718000000_01J...", "confirm": true })
+// → the approved call re-dispatches for real; the run completes (or pauses at
+//   the next unconfirmed destructive call).
+
+// 2b. Human rejects → resume_token + confirm:false.
+codemode({ "resume_token": "exec_0000001718000000_01J...", "confirm": false })
+// → { "status": "rejected" }. The pending call was never executed.
+```
+
+Code Mode is **MCP-only** today. A future CLI/HTTP surface must carry
+`resume_token` / `confirm` as params to drive the same durable pause/resume
+contract.
 
 ## Scope
 

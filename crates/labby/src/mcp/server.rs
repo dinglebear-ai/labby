@@ -61,7 +61,7 @@ pub struct LabMcpServer {
     /// second half of the upstream relay cache key so a cached relay connection
     /// is bound to exactly this agent (see `dispatch/upstream/pool/relay.rs`).
     pub(crate) relay_session_id: u64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-harness"))]
     pub(crate) code_mode_widget_callbacks_enabled_for_test: bool,
 }
 
