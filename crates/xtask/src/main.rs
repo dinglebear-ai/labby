@@ -244,7 +244,12 @@ impl RunnerProcess {
 
     fn run_start(&mut self, case: &BenchCase, timeout: Duration) -> Result<f64, String> {
         let started = Instant::now();
-        self.write_frame(&json!({ "type": "start", "code": case.code, "proxy": "" }))?;
+        self.write_frame(&json!({
+            "type": "start",
+            "code": case.code,
+            "proxy": "",
+            "timeout_ms": timeout.as_millis(),
+        }))?;
         loop {
             let frame = self.read_frame(timeout)?;
             match frame.get("type").and_then(Value::as_str) {
