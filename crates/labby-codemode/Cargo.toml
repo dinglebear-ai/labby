@@ -14,7 +14,9 @@ publish = false
 
 [dependencies]
 labby-runtime = { path = "../labby-runtime" }
+labby-openapi = { path = "../labby-openapi" }
 
+reqwest = { workspace = true }
 tokio = { workspace = true, features = ["process", "sync"] }
 futures.workspace = true
 serde.workspace = true

@@ -12,7 +12,7 @@ Feature invariant status: clean.
 | labby | `default` | AggregateDefault | false | false | - | `all` |
 | labby | `deploy` | ProductSlice | true | true | labby-apis/deploy | `labby-apis/deploy`<br>`labby-runtime/deploy` |
 | labby | `fs` | ProductSlice | false | false | - | `dep:walkdir`<br>`dep:globset`<br>`dep:unicode-normalization`<br>`dep:rustix` |
-| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway` |
+| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi` |
 | labby | `lab-admin` | ProductSlice | true | true | - |  |
 | labby | `marketplace` | ProductSlice | true | true | labby-apis/mcpregistry | `labby-apis/mcpregistry`<br>`labby-runtime/marketplace`<br>`gateway`<br>`acp`<br>`nodes`<br>`stash` |
 | labby | `mcpregistry` | IntentionalException | true | true | labby-apis/mcpregistry | `marketplace` |
@@ -21,6 +21,7 @@ Feature invariant status: clean.
 | labby | `services-all` | IntentionalException | false | false | - |  |
 | labby | `stash` | BaseCapability | true | true | - |  |
 | labby | `systemd` | HelperInternal | false | false | - | `dep:sd-notify` |
+| labby | `test-harness` | IntentionalException | false | false | - | `gateway` |
 | labby | `test-utils` | IntentionalException | false | false | - |  |
 | labby-apis | `acp_registry` | ServicePassthrough | false | true | labby/acp_registry |  |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all | `deploy`<br>`mcpregistry`<br>`acp_registry` |

@@ -142,6 +142,18 @@ pub struct GatewayManager {
     /// pool; configured from the environment at construction (kill switch:
     /// `LAB_CODE_MODE_POOL_SIZE=0` → spawn-per-execution fallback).
     pub(super) code_mode_runner_pool: Arc<crate::gateway::code_mode::RunnerPool>,
+    /// Optional durable-execution decision layer for Code Mode pause/resume.
+    /// Injected by the `labby` binary (`SqliteDecider` over the pause store).
+    /// `None` ⇒ today's behavior: no journaling, no pause (write-free path).
+    /// The concrete implementation is storage-backed and lives in the binary
+    /// crate; the gateway only sees the neutral `CodeModeDecider` trait.
+    pub(super) code_mode_decider: Option<Arc<dyn labby_codemode::CodeModeDecider>>,
+    /// Loaded OpenAPI specs for the Code Mode `openapi` local provider. Built at
+    /// `labby serve` startup (`with_openapi`); an empty registry means no specs
+    /// are configured/loaded (the shim is then never emitted). Cheap `Arc` clone.
+    pub(super) openapi_registry: labby_openapi::OpenApiRegistry,
+    /// Hardened `reqwest` client for `openapi` dispatch. Cheap `Arc` clone.
+    pub(super) openapi_http_client: reqwest::Client,
 }
 
 impl GatewayManager {

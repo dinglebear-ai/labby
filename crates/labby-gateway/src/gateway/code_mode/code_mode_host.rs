@@ -63,6 +63,7 @@ impl CodeModeHost for GatewayManager {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         _scope: &ToolScope,
+        ctx: labby_codemode::ExecCtx<'_>,
     ) -> Result<ToolCallOutcome, ToolError> {
         let (upstream, tool) =
             labby_codemode::split_namespaced_id(id).ok_or_else(|| ToolError::Sdk {
@@ -76,9 +77,119 @@ impl CodeModeHost for GatewayManager {
             .resolve_code_mode_upstream_tool(upstream, tool, Some(&owner), oauth_subject)
             .await?;
 
-        // Host-side scope check: read-only callers cannot execute a destructive
-        // upstream tool.
-        if upstream_tool.destructive && !destructive_permitted(surface, caller) {
+        // `requires_approval` (the write-free forbidden gate below) reuses the
+        // existing destructive gate: a destructive tool the caller is not
+        // otherwise permitted to run is hard-`forbidden`. Same predicate as the
+        // legacy block — no soft-pass (port of proxy-tool.ts:408 + the :79-97
+        // gate). This is used ONLY on the no-decider path.
+        let requires_approval =
+            upstream_tool.destructive && !destructive_permitted(surface, caller);
+
+        // Durable pause/resume dance (port of proxy-tool.ts:402-428). Active only
+        // on the pause-capable path: a decider is injected AND this run has a
+        // durable execution id. Otherwise fall through to today's behavior.
+        //
+        // On this path EVERY destructive upstream call requires per-call human
+        // approval. The pause-capable path is reached only for an UNCONFIRMED,
+        // execute-capable MCP run (see `pause_capable` gating in
+        // call_tool_codemode.rs) — so `destructive_permitted(Mcp, caller)` is
+        // always true here (it equals `caller.can_execute()`), which would make
+        // the legacy `requires_approval` variable ALWAYS false and the run could
+        // never pause. Pass the raw `upstream_tool.destructive` flag to the
+        // decider so destructive calls journal + pause. The decider's
+        // existing-entry branch replays already-approved (previously `pending`)
+        // calls via pending→executing→Execute BEFORE the fresh journal-and-pause
+        // path, so a resume of an approved destructive call re-dispatches without
+        // re-pausing; only genuinely-fresh destructive calls pause.
+        if let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) {
+            let approval = if upstream_tool.destructive {
+                labby_codemode::Approval::Required
+            } else {
+                labby_codemode::Approval::NotNeeded
+            };
+            match decider
+                .decide(
+                    exec_id,
+                    ctx.seq,
+                    id,
+                    &params,
+                    approval,
+                    labby_codemode::Journaling::Durable,
+                )
+                .await
+            {
+                labby_codemode::DecideOutcome::Replay(value) => {
+                    // Served from the durable log — do NOT dispatch upstream.
+                    return Ok(ToolCallOutcome { value, ui: None });
+                }
+                labby_codemode::DecideOutcome::Pause => {
+                    // Best-effort sandbox halt; the durable status is already
+                    // `paused` and is the source of truth read after settle.
+                    return Err(pause_sentinel_error());
+                }
+                labby_codemode::DecideOutcome::Diverge(message) => {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "resume_divergence".to_string(),
+                        message,
+                    });
+                }
+                labby_codemode::DecideOutcome::Fail { reason, message } => {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: reason.sdk_kind().to_string(),
+                        message,
+                    });
+                }
+                // Fall through to the real dispatch, then record the result.
+                labby_codemode::DecideOutcome::Execute => {}
+            }
+            validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
+            let outcome = self
+                .dispatch_code_mode_upstream(upstream, tool, params)
+                .await?;
+            // F1: a swallowed record_result failure leaves the log entry
+            // `executing`, so a later resume re-executes this (already-applied)
+            // destructive call — a double-dispatch. Fail the run closed instead:
+            // flip durable status to Error and surface an error to the sandbox so
+            // the run cannot silently proceed on unrecorded state. (SqliteDecider
+            // already sets Error on `ValueTooLarge`; this covers every other
+            // record failure too, and re-asserts Error idempotently.)
+            if let Err(err) = decider
+                .record_result(exec_id, ctx.seq, &outcome.value)
+                .await
+            {
+                decider
+                    .set_status(
+                        exec_id,
+                        labby_codemode::RunLifecycle::Error,
+                        Some(&err.to_string()),
+                    )
+                    .await
+                    .ok();
+                tracing::error!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "record_result",
+                    kind = "internal_error",
+                    seq = ctx.seq,
+                    upstream = upstream,
+                    tool = tool,
+                    error = %err,
+                    "failed to record Code Mode call result; failing run closed to \
+                     prevent double-dispatch on resume"
+                );
+                return Err(ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: format!(
+                        "failed to durably record the result of `{upstream}::{tool}`; the run \
+                         was failed to prevent re-execution on resume: {err}"
+                    ),
+                });
+            }
+            return Ok(outcome);
+        }
+
+        // ── Write-free path (no decider / no durable run) — unchanged behavior ──
+        if requires_approval {
             tracing::warn!(
                 surface = "dispatch",
                 service = "code_mode",
@@ -96,73 +207,186 @@ impl CodeModeHost for GatewayManager {
             });
         }
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
+        self.dispatch_code_mode_upstream(upstream, tool, params)
+            .await
+    }
 
-        let Some(pool) = self.current_pool().await else {
-            return Err(ToolError::Sdk {
-                sdk_kind: "upstream_error".to_string(),
-                message: "gateway upstream pool is unavailable".to_string(),
-            });
+    async fn decide_step(
+        &self,
+        ctx: labby_codemode::ExecCtx<'_>,
+        name: &str,
+    ) -> labby_codemode::StepDecision {
+        // Only the pause-capable path (decider injected AND durable execution id)
+        // journals steps; otherwise execute fn normally (default-equivalent).
+        let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) else {
+            return labby_codemode::StepDecision::Execute;
         };
-        let mut upstream_params = CallToolRequestParams::new(tool.to_string());
-        upstream_params.arguments = Some(match params {
-            Value::Object(map) => map,
-            _ => Map::new(),
-        });
-        match pool.call_tool(upstream, upstream_params).await {
-            Some(Ok(result)) => {
-                if result.is_error == Some(true) {
-                    let error_text = result
-                        .content
-                        .first()
-                        .and_then(|content| content.as_text())
-                        .map(|content| content.text.as_str());
-                    let (kind, message, counts_as_failure) =
-                        code_mode_upstream_error_info(error_text);
-                    if counts_as_failure {
-                        pool.record_failure(upstream, message.clone()).await;
-                    } else {
-                        pool.record_success(upstream).await;
-                    }
-                    return Err(ToolError::Sdk {
-                        sdk_kind: kind.to_string(),
-                        message,
-                    });
-                }
-                pool.record_success(upstream).await;
-                let ui = extract_ui_link(&result);
-                if let Some(ui) = ui.as_ref() {
-                    let resource_uri = ui_resource_uri(&ui.ui_meta).unwrap_or("<unknown>");
-                    tracing::info!(
-                        surface = "dispatch",
-                        service = "code_mode",
-                        action = "mcp_app.capture",
-                        upstream,
-                        tool,
-                        resource_uri,
-                        "captured upstream MCP App widget link"
-                    );
-                }
-                Ok(ToolCallOutcome {
-                    value: unwrap_code_mode_upstream_result(result),
-                    ui,
-                })
+        // `codemode.step` is a deterministic, non-destructive journal boundary:
+        // the args are the step NAME (the divergence key), never
+        // approval-gated. `ephemeral = false` ⇒ a recorded step value REPLAYS on
+        // resume rather than re-executing (the whole point — deterministic
+        // replay of nondeterministic fn output).
+        let args = serde_json::json!({ "name": name });
+        match decider
+            .decide(
+                exec_id,
+                ctx.seq,
+                "codemode::step",
+                &args,
+                labby_codemode::Approval::NotNeeded,
+                labby_codemode::Journaling::Durable,
+            )
+            .await
+        {
+            labby_codemode::DecideOutcome::Replay(value) => {
+                labby_codemode::StepDecision::Replay(value)
             }
-            Some(Err(err)) => {
-                pool.record_failure(upstream, err.clone()).await;
-                Err(ToolError::Sdk {
-                    sdk_kind: "upstream_error".to_string(),
-                    message: err,
-                })
+            labby_codemode::DecideOutcome::Execute => labby_codemode::StepDecision::Execute,
+            // A monotonic pause after an earlier pause (C1 gate) aborts the step
+            // like the pause sentinel does for tool calls.
+            labby_codemode::DecideOutcome::Pause => labby_codemode::StepDecision::Error {
+                kind: "code_mode_paused".to_string(),
+                message: "Code Mode execution paused awaiting approval".to_string(),
+            },
+            labby_codemode::DecideOutcome::Diverge(message) => {
+                labby_codemode::StepDecision::Error {
+                    kind: "resume_divergence".to_string(),
+                    message,
+                }
             }
-            None => {
-                pool.record_failure(upstream, format!("upstream `{upstream}` is not connected"))
-                    .await;
-                Err(ToolError::Sdk {
-                    sdk_kind: "not_found".to_string(),
-                    message: format!("upstream tool `{upstream}::{tool}` was not found"),
-                })
+            labby_codemode::DecideOutcome::Fail { reason, message } => {
+                labby_codemode::StepDecision::Error {
+                    kind: reason.sdk_kind().to_string(),
+                    message,
+                }
             }
         }
+    }
+
+    async fn record_step(
+        &self,
+        ctx: labby_codemode::ExecCtx<'_>,
+        value: &Value,
+    ) -> Result<(), ToolError> {
+        let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) else {
+            return Ok(());
+        };
+        // Fail closed on a record failure (mirrors the tool-call record path):
+        // flip the run to Error so a resume cannot replay an unrecorded step.
+        if let Err(err) = decider.record_result(exec_id, ctx.seq, value).await {
+            decider
+                .set_status(
+                    exec_id,
+                    labby_codemode::RunLifecycle::Error,
+                    Some(&err.to_string()),
+                )
+                .await
+                .ok();
+            tracing::error!(
+                surface = "dispatch",
+                service = "code_mode",
+                action = "record_step",
+                kind = "internal_error",
+                seq = ctx.seq,
+                error = %err,
+                "failed to durably record a Code Mode step result; failing run closed"
+            );
+            return Err(ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: format!(
+                    "failed to durably record a codemode.step result; the run was failed \
+                     to prevent re-execution on resume: {err}"
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    async fn decide_local(
+        &self,
+        ctx: labby_codemode::ExecCtx<'_>,
+        id: &str,
+        params: &Value,
+    ) -> labby_codemode::StepDecision {
+        let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) else {
+            return labby_codemode::StepDecision::Execute;
+        };
+        // `ephemeral = true`: local `state`/`git` calls journal for the `seq`
+        // spine + divergence check, but RE-EXECUTE on replay rather than
+        // replaying a stored result — the local FS/git side effect must re-run,
+        // it must never be applied-then-served-from-cache. `requires_approval =
+        // false`: local providers are already scope-gated (unscoped admin only)
+        // and are not per-call destructive-approval boundaries.
+        match decider
+            .decide(
+                exec_id,
+                ctx.seq,
+                id,
+                params,
+                labby_codemode::Approval::NotNeeded,
+                labby_codemode::Journaling::Ephemeral,
+            )
+            .await
+        {
+            // Ephemeral entries decide Execute on both fresh journal and replay.
+            labby_codemode::DecideOutcome::Execute => labby_codemode::StepDecision::Execute,
+            labby_codemode::DecideOutcome::Replay(value) => {
+                labby_codemode::StepDecision::Replay(value)
+            }
+            labby_codemode::DecideOutcome::Pause => labby_codemode::StepDecision::Error {
+                kind: "code_mode_paused".to_string(),
+                message: "Code Mode execution paused awaiting approval".to_string(),
+            },
+            labby_codemode::DecideOutcome::Diverge(message) => {
+                labby_codemode::StepDecision::Error {
+                    kind: "resume_divergence".to_string(),
+                    message,
+                }
+            }
+            labby_codemode::DecideOutcome::Fail { reason, message } => {
+                labby_codemode::StepDecision::Error {
+                    kind: reason.sdk_kind().to_string(),
+                    message,
+                }
+            }
+        }
+    }
+
+    async fn record_local(
+        &self,
+        ctx: labby_codemode::ExecCtx<'_>,
+        value: &Value,
+    ) -> Result<(), ToolError> {
+        let (Some(decider), Some(exec_id)) = (&self.code_mode_decider, ctx.execution_id) else {
+            return Ok(());
+        };
+        if let Err(err) = decider.record_result(exec_id, ctx.seq, value).await {
+            decider
+                .set_status(
+                    exec_id,
+                    labby_codemode::RunLifecycle::Error,
+                    Some(&err.to_string()),
+                )
+                .await
+                .ok();
+            tracing::error!(
+                surface = "dispatch",
+                service = "code_mode",
+                action = "record_local",
+                kind = "internal_error",
+                seq = ctx.seq,
+                error = %err,
+                "failed to durably record a local-provider call result; failing run closed"
+            );
+            return Err(ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: format!(
+                    "failed to durably record a local-provider call; the run was failed to \
+                     prevent re-execution ambiguity on resume: {err}"
+                ),
+            });
+        }
+        Ok(())
     }
 
     async fn resolve_snippet(
@@ -291,6 +515,106 @@ impl CodeModeHost for GatewayManager {
 
     fn runner_pool(&self) -> &RunnerPool {
         self.code_mode_runner_pool()
+    }
+
+    fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+        self.openapi_registry.clone()
+    }
+
+    fn openapi_http_client(&self) -> reqwest::Client {
+        self.openapi_http_client.clone()
+    }
+}
+
+/// Gateway-side Code Mode dispatch helpers (not trait methods).
+impl GatewayManager {
+    /// Dispatch a resolved Code Mode call to the upstream MCP pool and unwrap
+    /// the result. Shared by the durable and write-free `call_tool` paths
+    /// (mcp-ui capture, error classification, success/failure recording).
+    async fn dispatch_code_mode_upstream(
+        &self,
+        upstream: &str,
+        tool: &str,
+        params: Value,
+    ) -> Result<ToolCallOutcome, ToolError> {
+        let Some(pool) = self.current_pool().await else {
+            return Err(ToolError::Sdk {
+                sdk_kind: "upstream_error".to_string(),
+                message: "gateway upstream pool is unavailable".to_string(),
+            });
+        };
+        let mut upstream_params = CallToolRequestParams::new(tool.to_string());
+        upstream_params.arguments = Some(match params {
+            Value::Object(map) => map,
+            _ => Map::new(),
+        });
+        match pool.call_tool(upstream, upstream_params).await {
+            Some(Ok(result)) => {
+                if result.is_error == Some(true) {
+                    let error_text = result
+                        .content
+                        .first()
+                        .and_then(|content| content.as_text())
+                        .map(|content| content.text.as_str());
+                    let (kind, message, counts_as_failure) =
+                        code_mode_upstream_error_info(error_text);
+                    if counts_as_failure {
+                        pool.record_failure(upstream, message.clone()).await;
+                    } else {
+                        pool.record_success(upstream).await;
+                    }
+                    return Err(ToolError::Sdk {
+                        sdk_kind: kind.to_string(),
+                        message,
+                    });
+                }
+                pool.record_success(upstream).await;
+                let ui = extract_ui_link(&result);
+                if let Some(ui) = ui.as_ref() {
+                    let resource_uri = ui_resource_uri(&ui.ui_meta).unwrap_or("<unknown>");
+                    tracing::info!(
+                        surface = "dispatch",
+                        service = "code_mode",
+                        action = "mcp_app.capture",
+                        upstream,
+                        tool,
+                        resource_uri,
+                        "captured upstream MCP App widget link"
+                    );
+                }
+                Ok(ToolCallOutcome {
+                    value: unwrap_code_mode_upstream_result(result),
+                    ui,
+                })
+            }
+            Some(Err(err)) => {
+                pool.record_failure(upstream, err.clone()).await;
+                Err(ToolError::Sdk {
+                    sdk_kind: "upstream_error".to_string(),
+                    message: err,
+                })
+            }
+            None => {
+                pool.record_failure(upstream, format!("upstream `{upstream}` is not connected"))
+                    .await;
+                Err(ToolError::Sdk {
+                    sdk_kind: "not_found".to_string(),
+                    message: format!("upstream tool `{upstream}::{tool}` was not found"),
+                })
+            }
+        }
+    }
+}
+
+/// The best-effort sandbox-halt error returned on a durable pause. The pause is
+/// enforced by the durable status (already flipped to `paused` by `decide`),
+/// NOT by this error propagating — model code may swallow it (`allSettled`/
+/// `try-catch`) and the host still reads the durable status after settle. Port
+/// of the pause sentinel (`proxy-tool.ts:222-224, 650`).
+fn pause_sentinel_error() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "code_mode_paused".to_string(),
+        message: "Code Mode execution paused awaiting approval".to_string(),
     }
 }
 

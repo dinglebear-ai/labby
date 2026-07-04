@@ -812,6 +812,26 @@ pub enum ConfigError {
         field: &'static str,
         value: String,
     },
+    #[error(
+        "openapi spec label '{label}' is reserved — pick another (reserved: state, git, openapi)"
+    )]
+    ReservedLabel { label: String },
+    #[error(
+        "openapi spec label '{label}' is invalid — labels must be non-empty and use only \
+         ASCII letters, digits, '_' or '-' (no '.', ':', or whitespace, which would break \
+         the openapi::<label>.<operationId> dispatch key)"
+    )]
+    InvalidLabel { label: String },
+    #[error("openapi spec label '{label}' is configured more than once")]
+    DuplicateLabel { label: String },
+    #[error("openapi spec '{label}' is missing the mandatory base_url")]
+    MissingBaseUrl { label: String },
+    #[error("openapi spec '{label}' has an invalid base_url")]
+    InvalidBaseUrl { label: String },
+    #[error("openapi spec '{label}' has an invalid spec_url")]
+    InvalidSpecUrl { label: String },
+    #[error("openapi spec '{label}' must set exactly one of spec_url or spec_path")]
+    SpecSourceAmbiguous { label: String },
 }
 
 // ─── Outbound OAuth ──────────────────────────────────────────────────────────

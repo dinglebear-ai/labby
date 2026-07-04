@@ -41,6 +41,10 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
+    # MIT No Attribution (OSI-approved, MIT-equivalent). Pulled in transitively by
+    # borrow-or-share v0.2.4 via fluent-uri -> referencing -> jsonschema -> rmcp-openapi
+    # (the OpenAPI spec parser for the Code Mode `openapi` provider).
+    "MIT-0",
 ]
 
 [bans]
@@ -64,7 +68,10 @@ reason = "Binary-only: lab-apis must stay pure. CLI parsing lives in `labby`."
 
 [[bans.deny]]
 name = "rmcp"
-wrappers = ["labby", "labby-auth", "labby-gateway", "agent-client-protocol"]
+# rmcp-openapi (Code Mode `openapi` provider spec parser) and its actix transport
+# dep both pull rmcp transitively; labby-openapi uses only rmcp-openapi's parse
+# surface, never rmcp directly.
+wrappers = ["labby", "labby-auth", "labby-gateway", "agent-client-protocol", "rmcp-openapi", "rmcp-actix-web"]
 reason = "Binary-only: lab-apis must stay pure. MCP server lives in `labby`."
 
 [[bans.deny]]

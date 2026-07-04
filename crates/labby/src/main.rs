@@ -32,6 +32,8 @@ mod acp;
 mod api;
 mod catalog;
 mod cli;
+#[cfg(feature = "gateway")]
+mod codemode;
 mod config;
 mod dispatch;
 mod docs;

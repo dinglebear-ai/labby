@@ -90,7 +90,8 @@
       "feature": "gateway",
       "dependencies": [
         "dep:labby-codemode",
-        "dep:labby-gateway"
+        "dep:labby-gateway",
+        "dep:labby-openapi"
       ],
       "included_in_default": true,
       "included_in_all": true,
@@ -188,6 +189,18 @@
       "classification": "helper_internal",
       "mapped_crate_feature": null,
       "exception_reason": "helper/internal feature"
+    },
+    {
+      "crate_name": "labby",
+      "feature": "test-harness",
+      "dependencies": [
+        "gateway"
+      ],
+      "included_in_default": false,
+      "included_in_all": false,
+      "classification": "intentional_exception",
+      "mapped_crate_feature": null,
+      "exception_reason": "intentional crate-local exception"
     },
     {
       "crate_name": "labby",

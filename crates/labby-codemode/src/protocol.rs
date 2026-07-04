@@ -35,6 +35,21 @@ pub(crate) enum CodeModeRunnerInput {
         kind: String,
         message: String,
     },
+    /// Reply to a `StepBegin` request with the durable decision for this step.
+    ///
+    /// `replay: Some(value)` ⇒ the step was already journaled on a prior pass;
+    /// the sandbox returns `value` WITHOUT re-running `fn`. `replay: None` ⇒
+    /// execute `fn` for real, then emit `StepResult` to journal its value.
+    StepDecision {
+        seq: u64,
+        #[serde(default)]
+        replay: Option<Value>,
+    },
+    /// Ack a `StepResult`: the step's value was durably recorded. The sandbox
+    /// then returns the value from `codemode.step`.
+    StepRecorded {
+        seq: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,6 +78,20 @@ pub(crate) enum CodeModeRunnerOutput {
         name: String,
         #[serde(default)]
         input: Value,
+    },
+    /// The sandbox entered `codemode.step(name, fn)`. The host decides replay
+    /// vs execute (via its injected decider) BEFORE `fn` runs, and replies with
+    /// a `StepDecision`. This consumes a `seq` from the same monotonic spine as
+    /// tool calls (so the durable replay cursor stays aligned).
+    StepBegin {
+        seq: u64,
+        name: String,
+    },
+    /// The sandbox ran the step `fn` (decision was execute) and is journaling
+    /// its result. The host records it and acks with `StepRecorded`.
+    StepResult {
+        seq: u64,
+        value: Value,
     },
     /// Runner completed successfully. `result` is the serialized return value of
     /// the async function (`Undefined` when the function returns undefined).

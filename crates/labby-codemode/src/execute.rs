@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::error::ToolError;
-use crate::host::CodeModeHost;
+use crate::host::{CodeModeHost, ExecCtx};
 use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
 
 use super::CodeModeBroker;
@@ -204,8 +204,18 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         } else {
             String::new()
         };
+        // The `openapi` shim is emitted ONLY on the host path (this fn) and ONLY
+        // when the gate passes AND the host has ≥1 loaded spec. The host-less
+        // early-return path has no registry, so the shim would only ever error
+        // there (M11).
+        let openapi_provider_js =
+            if local_providers_allowed(caller, scope) && !host.openapi_registry().is_empty() {
+                super::preamble::generate_openapi_provider_js()
+            } else {
+                ""
+            };
         Ok(format!(
-            "{local_provider_js}\n{discovery_js}\n{namespace_js}"
+            "{local_provider_js}\n{openapi_provider_js}\n{discovery_js}\n{namespace_js}"
         ))
     }
 
@@ -287,10 +297,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         caller: CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
+        ctx: ExecCtx<'_>,
     ) -> Result<Value, ToolError> {
         match tokio::time::timeout_at(
             deadline,
-            self.call_tool_id(id, params, caller, surface, scope),
+            self.call_tool_id(id, params, caller, surface, scope, ctx),
         )
         .await
         {
@@ -309,6 +320,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         caller: CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
+        ctx: ExecCtx<'_>,
     ) -> Result<Value, ToolError> {
         let parsed = CodeModeToolId::parse(id)?;
         let Some(host) = self.host else {
@@ -338,7 +350,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 // destructive); it surfaces a `forbidden` error which passes
                 // straight through.
                 let outcome = host
-                    .call_tool(&parsed.raw, params, &caller, surface, scope)
+                    .call_tool(&parsed.raw, params, &caller, surface, scope, ctx)
                     .await?;
                 if let Some(ui) = outcome.ui {
                     if let Ok(mut sink) = self.ui_capture.lock() {
@@ -462,7 +474,17 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
     }
 }
 
-pub(crate) fn local_providers_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
+/// Whether Labby's runner-reserved local Code Mode providers (`state`/`git`)
+/// are injected and callable for this caller + scope: unscoped admin/trusted
+/// callers only.
+///
+/// Exposed `pub` (re-exported from the crate root) so the MCP surface can gate
+/// the durable pause/resume path off it: local-provider calls dispatch OFF the
+/// decider path (`runner_drive.rs::enqueue_local_provider_call`), so they are
+/// never journaled and would double-apply on resume. A run for which local
+/// providers are allowed must therefore never begin a resumable durable run.
+#[must_use]
+pub fn local_providers_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
     caller.is_admin() && !scope.is_scoped()
 }
 
@@ -557,6 +579,7 @@ mod tests {
                 CodeModeCaller::TrustedLocal,
                 CodeModeSurface::Cli,
                 &empty_scope,
+                ExecCtx::none(),
             )
             .await;
         // NoopHost's semantic_rank always returns Ok(vec![]), so this must
@@ -578,6 +601,7 @@ mod tests {
                 CodeModeCaller::TrustedLocal,
                 CodeModeSurface::Cli,
                 &scope,
+                ExecCtx::none(),
             )
             .await;
         assert!(result.is_err());
@@ -672,6 +696,7 @@ mod tests {
                 CodeModeCaller::TrustedLocal,
                 CodeModeSurface::Cli,
                 &ToolScope::default(),
+                ExecCtx::none(),
             )
             .await;
         let value = result.expect("oversized query must be truncated, not errored");

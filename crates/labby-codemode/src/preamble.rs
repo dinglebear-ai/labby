@@ -411,8 +411,7 @@ codemode.run = function(name, input) {{
   return globalThis.__labRunSnippet(name, input == null ? {{}} : input);
 }};
 codemode.step = function(name, fn) {{
-  if (typeof fn !== "function") throw new Error("codemode.step requires a function");
-  return Promise.resolve().then(fn);
+  return globalThis.__labCodemodeStep(name, fn);
 }};
 "##
     ))
@@ -467,6 +466,24 @@ globalThis.git = Object.freeze({
 var git = globalThis.git;
 "#
     .to_string()
+}
+
+/// The `openapi` local-provider shim. Flat and non-discoverable (v1 Decision 3):
+/// there is no per-operation JS proxy, so `operationId` is passed as a string
+/// VALUE and needs no JS-identifier sanitization. Routes through the `callTool`
+/// bridge; the parent intercepts `openapi::<label>.<operationId>`
+/// (`local_provider.rs`). Returns a `const &'static str` — no per-call allocation.
+pub(crate) fn generate_openapi_provider_js() -> &'static str {
+    r#"
+globalThis.openapi = {
+  call: function (label, operationId, params) {
+    if (typeof label !== "string" || typeof operationId !== "string") {
+      throw new Error(JSON.stringify({ kind: "missing_param", message: "openapi.call(label, operationId, params) requires string label and operationId" }));
+    }
+    return callTool("openapi::" + label + "." + operationId, params == null ? {} : params);
+  }
+};
+"#
 }
 
 /// Generate a JavaScript preamble string that defines the `codemode` proxy
@@ -593,6 +610,16 @@ mod tests {
         ToolDescriptor::tool(namespace, tool, "", None, None)
     }
 
+    #[test]
+    fn openapi_shim_is_valid_js() {
+        let js = generate_openapi_provider_js();
+        assert!(js.contains("globalThis.openapi") && js.contains("call"));
+        let mut interner = boa_interner::Interner::default();
+        let parsed = boa_parser::Parser::new(boa_parser::Source::from_bytes(js.as_bytes()))
+            .parse_script(&boa_ast::scope::Scope::new_global(), &mut interner);
+        assert!(parsed.is_ok(), "shim must be valid JS: {parsed:?}");
+    }
+
     /// Generate the runtime proxy from owned descriptors.
     fn proxy(tools: &[ToolDescriptor], namespaces: &[String]) -> Result<String, String> {
         let refs: Vec<&ToolDescriptor> = tools.iter().collect();
@@ -675,7 +702,9 @@ mod tests {
         assert!(js.contains("raw === entry.id || raw === entry.path || raw === entry.helper"));
         assert!(js.contains("ambiguous_target"));
         assert!(js.contains("unknown_tool"));
-        assert!(js.contains("Promise.resolve().then(fn)"));
+        // codemode.step is now a real two-phase durable primitive that delegates
+        // to the runner-side __labCodemodeStep bridge (not the old inline stub).
+        assert!(js.contains("globalThis.__labCodemodeStep(name, fn)"));
     }
 
     #[test]

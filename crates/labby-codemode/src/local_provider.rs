@@ -14,6 +14,10 @@ use crate::types::split_namespaced_id;
 pub(crate) enum LocalProviderName {
     State,
     Git,
+    /// OpenAPI-derived operations dispatched by `labby-openapi`. Unlike `State`/
+    /// `Git`, `Openapi` carries a `<label>.<operationId>` method and is
+    /// dispatched WITHOUT the `LOCAL_PROVIDER_LOCK`.
+    Openapi,
 }
 
 impl LocalProviderName {
@@ -21,6 +25,7 @@ impl LocalProviderName {
         match self {
             Self::State => "state",
             Self::Git => "git",
+            Self::Openapi => "openapi",
         }
     }
 }
@@ -33,7 +38,7 @@ pub(crate) struct LocalProviderCall {
 }
 
 pub(crate) fn is_reserved_provider_namespace(namespace: &str) -> bool {
-    matches!(namespace, "state" | "git")
+    matches!(namespace, "state" | "git" | "openapi")
 }
 
 pub(crate) fn try_parse_local_provider_call(
@@ -55,6 +60,7 @@ pub(crate) fn try_parse_local_provider_call(
     let provider = match namespace {
         "state" => LocalProviderName::State,
         "git" => LocalProviderName::Git,
+        "openapi" => LocalProviderName::Openapi,
         _ => return Ok(None),
     };
 

@@ -1437,3 +1437,190 @@ fn warm_pool_runner_serves_many_executions_on_one_process() {
     let status = child.wait().expect("wait");
     assert!(status.success(), "runner exits cleanly: {status}");
 }
+
+// ── codemode.step durable primitive (real runner + JS bridge) ────────────────
+
+/// Minimal proxy that wires `codemode.step` to the runner-side
+/// `__labCodemodeStep` bridge (the same delegation `preamble.rs` generates), so
+/// these tests exercise the real two-phase step JS without the full catalog.
+const STEP_PROXY: &str = "globalThis.codemode = globalThis.codemode || {};\ncodemode.step = function(name, fn) { return globalThis.__labCodemodeStep(name, fn); };\n";
+
+/// FIRST PASS: `codemode.step` runs `fn` exactly once, then journals its result.
+/// The runner emits `StepBegin`; the parent replies "execute" (`replay: null`);
+/// the runner runs `fn`, emits `StepResult` with the produced value, waits for
+/// the `StepRecorded` ack, and returns the value. A side-effect counter (bumped
+/// via a marker `callTool` inside `fn`) proves `fn` ran exactly once.
+#[test]
+fn codemode_step_executes_fn_once_and_journals_result_on_first_pass() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["internal", "code-mode-runner"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn code mode runner");
+    let mut stdin = child.stdin.take().expect("runner stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("runner stdout"));
+
+    // `fn` bumps a side-effect counter (a marker callTool) then returns 7.
+    let code = r#"async () => {
+        const v = await codemode.step("s", async () => {
+          await callTool("spy::ran", {});
+          return 7;
+        });
+        return { v: v };
+    }"#;
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "start", "code": code, "proxy": STEP_PROXY })
+    )
+    .expect("write start");
+
+    // 1) StepBegin — the host decides BEFORE fn runs. seq 0 (first request).
+    let begin = read_protocol_line(&mut stdout);
+    assert_eq!(begin["type"], "step_begin", "got: {begin}");
+    assert_eq!(begin["seq"], json!(0));
+    assert_eq!(begin["name"], json!("s"));
+    // Reply "execute": no cached value ⇒ run fn.
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "step_decision", "seq": 0, "replay": Value::Null })
+    )
+    .expect("write step_decision execute");
+
+    // 2) fn runs → its marker callTool fires (proof fn executed). seq 1.
+    let spy = read_protocol_line(&mut stdout);
+    assert_eq!(spy["type"], "tool_call", "fn must run its body: {spy}");
+    assert_eq!(spy["id"], json!("spy::ran"));
+    assert_eq!(spy["seq"], json!(1));
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "tool_result", "seq": 1, "result": {} })
+    )
+    .expect("write spy result");
+
+    // 3) fn resolved to 7 → the runner journals it via StepResult (same seq 0 as
+    //    the StepBegin — the host records at the journaled entry).
+    let result = read_protocol_line(&mut stdout);
+    assert_eq!(result["type"], "step_result", "got: {result}");
+    assert_eq!(
+        result["seq"],
+        json!(0),
+        "StepResult reuses the StepBegin seq"
+    );
+    assert_eq!(result["value"], json!(7));
+    writeln!(stdin, "{}", json!({ "type": "step_recorded", "seq": 0 }))
+        .expect("write step_recorded");
+
+    // 4) step returns the value; the snippet returns { v: 7 }.
+    let done = read_protocol_line(&mut stdout);
+    assert_eq!(done["type"], "done", "got: {done}");
+    assert_eq!(done_json_result(&done)["v"], json!(7));
+
+    drop(stdin);
+    assert!(child.wait().expect("wait").success());
+}
+
+/// RESUME/REPLAY: when the host decides "replay", `codemode.step` returns the
+/// cached value WITHOUT running `fn`. The marker `callTool` inside `fn` must
+/// never fire, and no `StepResult` is emitted (nothing to journal on replay).
+#[test]
+fn codemode_step_replays_cached_value_without_rerunning_fn() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["internal", "code-mode-runner"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn code mode runner");
+    let mut stdin = child.stdin.take().expect("runner stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("runner stdout"));
+
+    // The SAME snippet as the first-pass test. On replay, fn's `spy::ran` marker
+    // must NOT fire — proving fn did not run.
+    let code = r#"async () => {
+        const v = await codemode.step("s", async () => {
+          await callTool("spy::ran", {});
+          return 7;
+        });
+        return { v: v };
+    }"#;
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "start", "code": code, "proxy": STEP_PROXY })
+    )
+    .expect("write start");
+
+    let begin = read_protocol_line(&mut stdout);
+    assert_eq!(begin["type"], "step_begin", "got: {begin}");
+    assert_eq!(begin["seq"], json!(0));
+    // Reply "replay" with a cached value — fn must be skipped entirely.
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "step_decision", "seq": 0, "replay": 99 })
+    )
+    .expect("write step_decision replay");
+
+    // The very next runner message must be Done (NOT a spy tool_call and NOT a
+    // step_result) — fn never ran, nothing was re-journaled.
+    let done = read_protocol_line(&mut stdout);
+    assert_eq!(
+        done["type"], "done",
+        "replay must skip fn (no spy call, no step_result): {done}"
+    );
+    assert_eq!(
+        done_json_result(&done)["v"],
+        json!(99),
+        "replay returns the cached value"
+    );
+
+    drop(stdin);
+    assert!(child.wait().expect("wait").success());
+}
+
+/// A non-function `fn` argument rejects the step with a structured
+/// `invalid_param` error (recoverable via `JSON.parse(e.message)`), matching the
+/// callTool error contract — it does not silently proceed.
+#[test]
+fn codemode_step_rejects_non_function_fn() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["internal", "code-mode-runner"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn code mode runner");
+    let mut stdin = child.stdin.take().expect("runner stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("runner stdout"));
+
+    let code = r#"async () => {
+        try {
+          await codemode.step("s", 42);
+          return { caught: false };
+        } catch (e) {
+          const err = JSON.parse(e.message);
+          return { caught: true, kind: err.kind };
+        }
+    }"#;
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "type": "start", "code": code, "proxy": STEP_PROXY })
+    )
+    .expect("write start");
+
+    // No StepBegin is emitted — the guard rejects before any host round-trip.
+    let done = read_protocol_line(&mut stdout);
+    assert_eq!(done["type"], "done", "got: {done}");
+    let value = done_json_result(&done);
+    assert_eq!(value["caught"], json!(true));
+    assert_eq!(value["kind"], json!("invalid_param"));
+
+    drop(stdin);
+    assert!(child.wait().expect("wait").success());
+}

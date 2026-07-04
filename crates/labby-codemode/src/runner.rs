@@ -337,6 +337,24 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
                     }),
                 )?,
             )?;
+            globals.set(
+                "__labEmitStepBegin",
+                javy::quickjs::Function::new(
+                    cx.clone(),
+                    javy::quickjs::prelude::MutFn::new(|cx, args| {
+                        javy_emit_step_begin(javy::Args::hold(cx, args))
+                    }),
+                )?,
+            )?;
+            globals.set(
+                "__labEmitStepResult",
+                javy::quickjs::Function::new(
+                    cx.clone(),
+                    javy::quickjs::prelude::MutFn::new(|cx, args| {
+                        javy_emit_step_result(javy::Args::hold(cx, args))
+                    }),
+                )?,
+            )?;
             Ok(())
         })
         .map_err(javy_error_message)?;
@@ -452,6 +470,19 @@ globalThis.__labRunSnippet = (name, input = {{}}) => {{
     globalThis.__labPendingToolCalls.set(seq, {{ kind: "snippet", name, resolve, reject }});
   }});
 }};
+globalThis.__labCodemodeStep = (name, fn) => {{
+  if (typeof fn !== "function") {{
+    return Promise.reject(new Error(JSON.stringify({{kind: "invalid_param", message: "codemode.step requires a function"}})));
+  }}
+  if (typeof name !== "string" || name.trim() === "") {{
+    return Promise.reject(new Error(JSON.stringify({{kind: "invalid_param", message: "codemode.step name must be a non-empty string"}})));
+  }}
+  // Phase 1: ask the host to decide replay-vs-execute BEFORE running fn.
+  return new Promise((resolve, reject) => {{
+    const seq = globalThis.__labEmitStepBegin(name);
+    globalThis.__labPendingToolCalls.set(seq, {{ kind: "step_begin", name, fn, resolve, reject, __stepBeginSeq: seq }});
+  }});
+}};
 globalThis.__labSettlePendingOperation = (message) => {{
   const input = JSON.parse(message);
   const pending = globalThis.__labPendingToolCalls.get(input.seq);
@@ -459,6 +490,37 @@ globalThis.__labSettlePendingOperation = (message) => {{
     throw new Error("runner received a response for an unknown pending operation");
   }}
   globalThis.__labPendingToolCalls.delete(input.seq);
+  if (input.type === "step_decision") {{
+    if (pending.kind !== "step_begin") {{
+      throw new Error("runner received a step decision for a non-step operation");
+    }}
+    // Replay: the host journaled this step on a prior pass — return the cached
+    // value WITHOUT running fn.
+    if (Object.prototype.hasOwnProperty.call(input, "replay") && input.replay !== null && input.replay !== undefined) {{
+      pending.resolve(__labDecodeResult(input.replay));
+      return;
+    }}
+    // Execute: run fn, then journal its result via a StepResult round-trip.
+    const beginSeq = pending.__stepBeginSeq;
+    Promise.resolve().then(pending.fn).then((value) => {{
+      const encoded = __labEncodeResult(value === undefined ? null : value);
+      return new Promise((resolve, reject) => {{
+        // StepResult reuses the StepBegin seq (the host records at that journal
+        // entry). Key the ack on the same seq — the begin entry was already
+        // deleted above, so there is no collision.
+        globalThis.__labEmitStepResult(beginSeq, encoded);
+        globalThis.__labPendingToolCalls.set(beginSeq, {{ kind: "step_result", value: value, resolve, reject }});
+      }});
+    }}).then(pending.resolve, pending.reject);
+    return;
+  }}
+  if (input.type === "step_recorded") {{
+    if (pending.kind !== "step_result") {{
+      throw new Error("runner received a step recorded ack for a non-step-result operation");
+    }}
+    pending.resolve(pending.value);
+    return;
+  }}
   if (input.type === "tool_result") {{
     pending.resolve(__labDecodeResult(input.result));
     return;
@@ -644,6 +706,65 @@ fn javy_emit_snippet_resolve(args: javy::Args<'_>) -> javy::quickjs::Result<u64>
     let seq = next_runner_seq(&cx)?;
 
     runner_emit(CodeModeRunnerOutput::SnippetResolve { seq, name, input })
+        .map_err(|err| javy_type_error(cx, err))?;
+    Ok(seq)
+}
+
+fn javy_emit_step_begin(args: javy::Args<'_>) -> javy::quickjs::Result<u64> {
+    let (cx, args) = args.release();
+    let name_value = args.0.first().ok_or_else(|| {
+        javy_type_error(cx.clone(), "codemode.step name must be a non-empty string")
+    })?;
+    let name = javy::val_to_string(&cx, name_value.clone())
+        .map_err(|err| javy::to_js_error(cx.clone(), err))?;
+    if name.trim().is_empty() {
+        return Err(javy_type_error(
+            cx.clone(),
+            "codemode.step name must be a non-empty string",
+        ));
+    }
+
+    let seq = next_runner_seq(&cx)?;
+
+    runner_emit(CodeModeRunnerOutput::StepBegin { seq, name })
+        .map_err(|err| javy_type_error(cx, err))?;
+    Ok(seq)
+}
+
+fn javy_emit_step_result(args: javy::Args<'_>) -> javy::quickjs::Result<u64> {
+    let (cx, args) = args.release();
+    // The StepResult targets the SAME seq the StepBegin was journaled under — the
+    // host records the step value at that log-entry seq. This is NOT a fresh seq
+    // allocation (unlike tool calls / step begins): recording the result must land
+    // on the already-journaled step entry, so the caller passes the begin seq back.
+    let seq_value = args
+        .0
+        .first()
+        .ok_or_else(|| javy_type_error(cx.clone(), "codemode.step result requires a seq"))?;
+    let seq_f = seq_value
+        .as_number()
+        .ok_or_else(|| javy_type_error(cx.clone(), "codemode.step result seq must be a number"))?;
+    // seq originates from `next_runner_seq` (a u64 cast to a JS number), so it is
+    // a non-negative integer well within the f64-exact range.
+    let seq = seq_f as u64;
+
+    let value_json = args
+        .0
+        .get(1)
+        .map(|value| cx.json_stringify(value.clone()))
+        .transpose()?
+        .flatten()
+        .map(|value| value.to_string())
+        .transpose()?
+        .unwrap_or_else(|| "null".to_string());
+    let value: Value = serde_json::from_str(&value_json).map_err(|err| {
+        javy_type_error(
+            cx.clone(),
+            format!("codemode.step result must be JSON-serializable: {err}"),
+        )
+    })?;
+
+    runner_emit(CodeModeRunnerOutput::StepResult { seq, value })
         .map_err(|err| javy_type_error(cx, err))?;
     Ok(seq)
 }
