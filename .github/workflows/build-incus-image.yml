@@ -19,17 +19,14 @@ on:
       - Cargo.toml
   pull_request:
     paths:
-      - .github/actions/build-gateway-admin/action.yml
+      # PRs only run the expensive Incus image build when the image definition,
+      # bootstrap/smoke scripts, or this workflow changes. Main pushes stay
+      # broader so the rolling image still captures binary and web asset changes.
       - .github/workflows/build-incus-image.yml
-      - apps/gateway-admin/**
-      - config/Dockerfile
       - config/incus/**
       - scripts/incus-bootstrap.sh
-      - crates/**
       - scripts/ci/build-incus-image.sh
       - scripts/ci/smoke-incus-image.sh
-      - Cargo.lock
-      - Cargo.toml
 
 permissions:
   contents: write
