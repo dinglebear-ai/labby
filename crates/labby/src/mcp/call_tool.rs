@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 //! `call_tool` dispatch entry: arg parse + service lookup, the gateway
 //! meta-tool routing, the post-meta-tool gates
 //! (visibility / action-allowed / code_mode-hidden / admin-scope /
@@ -19,10 +17,7 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, LoggingLevel,
-    LoggingMessageNotificationParam,
-};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
@@ -41,6 +36,7 @@ use crate::mcp::context::{
 use crate::mcp::elicitation::{ConfirmOutcome, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::DispatchError;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel, spawn_dispatch_notification};
 use crate::mcp::result_format::{
     estimate_tokens_args, format_dispatch_result, tool_error_envelope,
 };
@@ -114,39 +110,19 @@ impl LabMcpServer {
             return;
         }
 
-        let peer = context.peer.clone();
         let actor_key = crate::mcp::context::actor_key_from_extensions(&context.extensions)
             .map(ToOwned::to_owned);
-        let service = service.to_string();
-        let action = action.to_string();
-        tokio::spawn(async move {
-            let mut payload = serde_json::json!({
-                "surface": "mcp",
-                "service": service,
-                "action": action,
-                "elapsed_ms": elapsed_ms,
-                "kind": "route_scope_denied",
-            });
-            if let Some(actor_key) = actor_key {
-                payload["actor_key"] = serde_json::json!(actor_key);
-            }
-            if let Err(error) = peer
-                .notify_logging_message(
-                    LoggingMessageNotificationParam::new(LoggingLevel::Warning, payload)
-                        .with_logger("lab.mcp.dispatch"),
-                )
-                .await
-            {
-                tracing::debug!(
-                    surface = "mcp",
-                    service = %service,
-                    action = %action,
-                    level = ?LoggingLevel::Warning,
-                    error = %error,
-                    "failed to send rmcp logging notification"
-                );
-            }
-        });
+        spawn_dispatch_notification(
+            context.peer.clone(),
+            actor_key,
+            service.to_string(),
+            action.to_string(),
+            elapsed_ms,
+            DispatchLogOutcome::Failure {
+                level: LoggingLevel::Warning,
+                kind: "route_scope_denied",
+            },
+        );
     }
 
     pub(crate) async fn call_tool_impl(

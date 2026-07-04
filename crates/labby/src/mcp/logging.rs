@@ -1,13 +1,59 @@
-#![allow(deprecated)]
-
 use std::sync::atomic::Ordering;
 
 use rmcp::RoleServer;
-use rmcp::model::{LoggingLevel, LoggingMessageNotificationParam};
-use rmcp::service::RequestContext;
+use rmcp::service::{Peer, RequestContext};
 use serde_json::json;
 
 use super::server::LabMcpServer;
+
+// rmcp 2.1 deprecates the legacy logging capability under SEP-2577, but the
+// server still supports it for clients that have not moved to protocol logging.
+#[allow(deprecated)]
+use rmcp::model::LoggingLevel as RmcpLoggingLevel;
+#[allow(deprecated)]
+use rmcp::model::LoggingMessageNotificationParam;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoggingLevel {
+    Debug,
+    Info,
+    Notice,
+    Warning,
+    Error,
+    Critical,
+    Alert,
+    Emergency,
+}
+
+impl LoggingLevel {
+    #[allow(deprecated)]
+    pub(crate) fn from_rmcp(level: RmcpLoggingLevel) -> Self {
+        match level {
+            RmcpLoggingLevel::Debug => Self::Debug,
+            RmcpLoggingLevel::Info => Self::Info,
+            RmcpLoggingLevel::Notice => Self::Notice,
+            RmcpLoggingLevel::Warning => Self::Warning,
+            RmcpLoggingLevel::Error => Self::Error,
+            RmcpLoggingLevel::Critical => Self::Critical,
+            RmcpLoggingLevel::Alert => Self::Alert,
+            RmcpLoggingLevel::Emergency => Self::Emergency,
+        }
+    }
+
+    #[allow(deprecated)]
+    fn to_rmcp(self) -> RmcpLoggingLevel {
+        match self {
+            Self::Debug => RmcpLoggingLevel::Debug,
+            Self::Info => RmcpLoggingLevel::Info,
+            Self::Notice => RmcpLoggingLevel::Notice,
+            Self::Warning => RmcpLoggingLevel::Warning,
+            Self::Error => RmcpLoggingLevel::Error,
+            Self::Critical => RmcpLoggingLevel::Critical,
+            Self::Alert => RmcpLoggingLevel::Alert,
+            Self::Emergency => RmcpLoggingLevel::Emergency,
+        }
+    }
+}
 
 pub(crate) enum DispatchLogOutcome {
     Success,
@@ -71,6 +117,37 @@ fn notification_payload(
     (level, payload)
 }
 
+#[allow(deprecated)]
+pub(crate) fn spawn_dispatch_notification(
+    peer: Peer<RoleServer>,
+    actor_key: Option<String>,
+    service: String,
+    action: String,
+    elapsed_ms: u128,
+    outcome: DispatchLogOutcome,
+) {
+    let (level, mut payload) =
+        notification_payload(&service, &action, elapsed_ms, outcome, actor_key.as_deref());
+    tokio::spawn(async move {
+        if let Err(error) = peer
+            .notify_logging_message(
+                LoggingMessageNotificationParam::new(level.to_rmcp(), payload.take())
+                    .with_logger("lab.mcp.dispatch"),
+            )
+            .await
+        {
+            tracing::debug!(
+                surface = "mcp",
+                service = %service,
+                action = %action,
+                level = ?level,
+                error = %error,
+                "failed to send rmcp logging notification"
+            );
+        }
+    });
+}
+
 impl LabMcpServer {
     pub(crate) fn current_logging_level(&self) -> LoggingLevel {
         decode_logging_level(self.logging_level.load(Ordering::Relaxed))
@@ -80,6 +157,7 @@ impl LabMcpServer {
         logging_level_rank(level) >= logging_level_rank(self.current_logging_level())
     }
 
+    #[allow(deprecated)]
     pub(crate) async fn emit_dispatch_notification(
         &self,
         context: &RequestContext<RoleServer>,
@@ -99,7 +177,7 @@ impl LabMcpServer {
         if let Err(error) = context
             .peer
             .notify_logging_message(
-                LoggingMessageNotificationParam::new(level, payload)
+                LoggingMessageNotificationParam::new(level.to_rmcp(), payload)
                     .with_logger("lab.mcp.dispatch"),
             )
             .await
@@ -119,8 +197,7 @@ impl LabMcpServer {
 #[cfg(test)]
 mod tests {
     use super::{decode_logging_level, logging_level_rank, notification_payload};
-    use crate::mcp::logging::DispatchLogOutcome;
-    use rmcp::model::LoggingLevel;
+    use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 
     #[test]
     fn logging_level_encoding_round_trips() {

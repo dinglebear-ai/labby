@@ -1,11 +1,9 @@
-#![allow(deprecated)]
-
 //! MCP-owned in-process peer construction for built-in Lab services.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 
-use rmcp::model::LoggingLevel;
+use crate::mcp::logging::LoggingLevel;
 use rmcp::{RoleClient, ServiceExt};
 use tokio::sync::RwLock;
 

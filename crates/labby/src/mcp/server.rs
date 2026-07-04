@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 //! `LabMcpServer` — the MCP `ServerHandler` implementation.
 //!
 //! Extracted from `cli/serve.rs` so that both the stdio and HTTP transports
@@ -16,8 +14,12 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResult, CompleteRequestParams, CompleteResult,
     GetPromptRequestParams, GetPromptResult, ListPromptsResult, ListResourcesResult,
     ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-    ServerCapabilities, ServerInfo, SetLevelRequestParams,
+    ServerCapabilities, ServerInfo,
 };
+// rmcp 2.1 deprecates legacy logging under SEP-2577; the ServerHandler trait
+// still requires this request type for clients using the old logging flow.
+#[allow(deprecated)]
+use rmcp::model::SetLevelRequestParams;
 use rmcp::service::{NotificationContext, Peer, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use tokio::sync::RwLock;
@@ -28,7 +30,7 @@ use crate::dispatch::gateway::manager::GatewayManager;
 use crate::mcp::completion::{complete_prompt_arg, completion_info};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::subject_from_extensions;
-use crate::mcp::logging::{DispatchLogOutcome, logging_level_rank};
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel, logging_level_rank};
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
@@ -114,6 +116,7 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
 }
 
 impl ServerHandler for LabMcpServer {
+    #[allow(deprecated)]
     fn get_info(&self) -> ServerInfo {
         #[cfg(feature = "gateway")]
         let gateway_manager_configured = self.gateway_manager.is_some();
@@ -144,13 +147,16 @@ impl ServerHandler for LabMcpServer {
         ServerInfo::new(builder.build())
     }
 
+    #[allow(deprecated)]
     async fn set_level(
         &self,
         request: SetLevelRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
-        self.logging_level
-            .store(logging_level_rank(request.level), Ordering::Release);
+        self.logging_level.store(
+            logging_level_rank(LoggingLevel::from_rmcp(request.level)),
+            Ordering::Release,
+        );
         tracing::info!(
             surface = "mcp",
             service = "labby",
@@ -389,7 +395,7 @@ mod tests {
             node_role: None,
             peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
             logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
-                logging_level_rank(rmcp::model::LoggingLevel::Info),
+                logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
             )),
             route_scope: crate::mcp::route_scope::McpRouteScope::Root,
             relay_session_id: 0,

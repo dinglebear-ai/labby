@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 //! Relaying `ClientHandler` for upstream server→client requests.
 //!
 //! The pool's normal upstream connections are served with the unit handler
@@ -78,9 +76,12 @@ use std::time::Instant;
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientInfo, CreateMessageRequestParams,
-    CreateMessageResult, ElicitRequestParams, ElicitResult, ListRootsResult,
+    CallToolRequestParams, CallToolResult, ClientInfo, ElicitRequestParams, ElicitResult,
 };
+// rmcp 2.1 deprecates sampling/roots under SEP-2577, but the relay still
+// mirrors these legacy server-to-client requests for upstream compatibility.
+#[allow(deprecated)]
+use rmcp::model::{CreateMessageRequestParams, CreateMessageResult, ListRootsResult};
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{ClientHandler, RoleClient, RoleServer};
 use tokio::sync::Mutex;
@@ -89,7 +90,10 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::connect::connect_upstream_with_handler;
-use super::helpers::{SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, upstream_transport};
+use super::helpers::{
+    SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, estimate_response_size, max_response_bytes,
+    upstream_transport,
+};
 use super::logging::{
     UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish,
     log_upstream_request_start,
@@ -190,6 +194,11 @@ impl ClientHandler for RelayClientHandler {
     }
 
     /// Relay an upstream sampling request to the downstream agent.
+    ///
+    /// rmcp 2.1 keeps sampling for backwards compatibility but marks it
+    /// deprecated under SEP-2577. Labby intentionally mirrors it while older
+    /// upstreams still raise `sampling/createMessage` during tool calls.
+    #[allow(deprecated)]
     async fn create_message(
         &self,
         params: CreateMessageRequestParams,
@@ -210,6 +219,11 @@ impl ClientHandler for RelayClientHandler {
     }
 
     /// Relay an upstream roots request to the downstream agent.
+    ///
+    /// rmcp 2.1 keeps roots for backwards compatibility but marks it
+    /// deprecated under SEP-2577. Labby intentionally mirrors it while older
+    /// upstreams still raise `roots/list` during tool calls.
+    #[allow(deprecated)]
     async fn list_roots(
         &self,
         _context: RequestContext<RoleClient>,
@@ -332,9 +346,34 @@ impl UpstreamPool {
         let timeout = self.relay_timeout;
         match tokio::time::timeout(timeout, peer.call_tool(params)).await {
             Ok(Ok(result)) => {
+                let response_size = estimate_response_size(&result);
+                let max_bytes = max_response_bytes();
+                if response_size > max_bytes {
+                    self.record_failure_for(
+                        &config.name,
+                        UpstreamCapability::Tools,
+                        format!("response too large: {response_size} bytes"),
+                    )
+                    .await;
+                    log_upstream_request_error(
+                        event,
+                        started.elapsed().as_millis(),
+                        "response_too_large",
+                        None,
+                        Some(response_size),
+                        Some(max_bytes),
+                    );
+                    return Some(Err(format!(
+                        "upstream response too large ({response_size} bytes, max {max_bytes})"
+                    )));
+                }
                 self.record_success_for(&config.name, UpstreamCapability::Tools)
                     .await;
-                log_upstream_request_finish(event, started.elapsed().as_millis(), None);
+                log_upstream_request_finish(
+                    event,
+                    started.elapsed().as_millis(),
+                    Some(response_size),
+                );
                 Some(Ok(result))
             }
             Ok(Err(error)) => {
@@ -1121,6 +1160,128 @@ mod tests {
         );
 
         // Hold the downstream server alive until the relayed call completed.
+        drop(gw_server);
+    }
+
+    /// Relayed calls enforce the same upstream response-size cap as the pooled
+    /// path. The relay invokes `peer.call_tool` directly, so this pins the cap
+    /// at that dedicated branch instead of only proving the shared pooled helper.
+    #[tokio::test]
+    async fn relayed_call_oversized_response_returns_cap_error() {
+        use super::super::entries::healthy_in_process_entry;
+        use crate::upstream::types::UpstreamHealth;
+        use std::collections::HashMap;
+
+        #[derive(Clone)]
+        struct OversizedUpstream;
+        impl ServerHandler for OversizedUpstream {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+            async fn call_tool(
+                &self,
+                _request: CallToolRequestParams,
+                _context: RequestContext<RoleServer>,
+            ) -> Result<CallToolResult, ErrorData> {
+                let payload = "x".repeat(12 * 1024 * 1024);
+                Ok(CallToolResult::success(vec![ContentBlock::text(payload)]))
+            }
+            async fn list_tools(
+                &self,
+                _request: Option<PaginatedRequestParams>,
+                _context: RequestContext<RoleServer>,
+            ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+                Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new(
+                        "big".to_string(),
+                        "returns a large response".to_string(),
+                        Arc::new(serde_json::Map::new()),
+                    ),
+                ]))
+            }
+        }
+
+        let pool = UpstreamPool::new();
+        let config = super::super::testsupport::test_upstream_config();
+        let name_arc: Arc<str> = Arc::from(config.name.as_str());
+        pool.catalog.write().await.insert(
+            config.name.clone(),
+            healthy_in_process_entry(Arc::clone(&name_arc), HashMap::new()),
+        );
+
+        let (gw_server_transport, agent_transport) =
+            tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        tokio::spawn(async move {
+            if let Ok(running) = ().serve(agent_transport).await {
+                running.waiting().await.ok();
+            }
+        });
+        let gw_server = TrivialServer
+            .serve(gw_server_transport)
+            .await
+            .expect("downstream server connects");
+        let downstream = gw_server.peer().clone();
+
+        let (upstream_transport, gw_client_transport) =
+            tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        tokio::spawn(async move {
+            if let Ok(running) = OversizedUpstream.serve(upstream_transport).await {
+                running.waiting().await.ok();
+            }
+        });
+        let service = RelayClientHandler::new(downstream.clone(), Arc::from(config.name.as_str()))
+            .serve(gw_client_transport)
+            .await
+            .expect("relay client connects");
+        let peer = service.peer().clone();
+        let conn = UpstreamConnection {
+            _client_service: service,
+            _server_task: None,
+            peer: peer.clone(),
+            runtime: UpstreamRuntimeMetadata::default(),
+        };
+        pool.relay_connections.write().await.insert(
+            (config.name.clone(), 1, None),
+            RelayCachedConnection {
+                _connection: conn,
+                peer,
+                last_used: Instant::now(),
+            },
+        );
+
+        let result = pool
+            .call_tool_relayed(
+                &config,
+                None,
+                CallToolRequestParams::new("big"),
+                downstream,
+                1,
+            )
+            .await
+            .expect("cached relay connection is present")
+            .expect_err("oversized relayed response should be rejected");
+        assert!(
+            result.contains("too large"),
+            "expected response cap error, got: {result}"
+        );
+
+        let health = pool
+            .upstream_status()
+            .await
+            .into_iter()
+            .find(|(name, _)| name == &config.name)
+            .map(|(_, health)| health)
+            .expect("upstream present in status");
+        assert!(
+            matches!(
+                health,
+                UpstreamHealth::Unhealthy {
+                    consecutive_failures: 1
+                }
+            ),
+            "oversized relayed response must record a circuit-breaker failure, got {health:?}"
+        );
+
         drop(gw_server);
     }
 

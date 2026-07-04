@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 //! Resource handler bodies (`list_resources`, `read_resource`).
 //!
 //! Extracted from `server.rs` (bead `lab-kvji.24.1.3`) as inherent
@@ -18,7 +16,7 @@ use std::time::Instant;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
-    ListResourcesResult, LoggingLevel, Meta, PaginatedRequestParams, ReadResourceRequestParams,
+    ListResourcesResult, Meta, PaginatedRequestParams, ReadResourceRequestParams,
     ReadResourceResult, Resource, ResourceContents,
 };
 use rmcp::service::RequestContext;
@@ -28,7 +26,7 @@ use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
-use crate::mcp::logging::DispatchLogOutcome;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::server::LabMcpServer;
 
 /// MCP Apps (Claude / SEP-1724) MIME — bound via the tool's `_meta.ui.resourceUri`.

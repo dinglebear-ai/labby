@@ -2,7 +2,7 @@ use rmcp::RoleServer;
 use rmcp::model::{
     ElicitRequestParams, ElicitationAction, ElicitationSchema, PrimitiveSchemaDefinition,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{ElicitationMode, RequestContext};
 use serde_json::Value;
 
 pub(crate) enum ConfirmOutcome {
@@ -23,7 +23,11 @@ pub(crate) async fn elicit_confirm(
     service: &str,
     action: &str,
 ) -> ConfirmOutcome {
-    if context.peer.supported_elicitation_modes().is_empty() {
+    if !context
+        .peer
+        .supported_elicitation_modes()
+        .contains(&ElicitationMode::Form)
+    {
         tracing::warn!(
             surface = "mcp",
             service,

@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 //! Result/envelope formatting + error-info extraction + token estimation.
 //!
 //! Free functions extracted from `server.rs` (bead `lab-kvji.24.1.1`).
@@ -8,7 +6,7 @@
 //! `normalize_upstream_result` intentionally does NOT live here — it is
 //! consolidated into `upstream.rs` (its semantic home) in bead `.5`.
 
-use rmcp::model::{CallToolResult, ContentBlock, LoggingLevel};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -16,7 +14,7 @@ use crate::dispatch::error::ToolError as DispatchToolError;
 use crate::mcp::envelope::{build_error, build_error_extra, build_success};
 use crate::mcp::error::DispatchError;
 use crate::mcp::error::canonical_kind;
-use crate::mcp::logging::DispatchLogOutcome;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 
 pub(crate) fn tool_error_envelope(service: &str, action: &str, err: &DispatchToolError) -> Value {
     let Ok(Value::Object(mut serialized)) = serde_json::to_value(err) else {

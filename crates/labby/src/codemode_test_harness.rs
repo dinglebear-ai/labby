@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 //! Full-stack Code Mode test harness (feature `test-harness`, non-default).
 //!
 //! This module exposes small public wrappers over the crate-private Code Mode
@@ -196,7 +194,7 @@ fn server_with_manager(manager: Arc<GatewayManager>) -> LabMcpServer {
         node_role: None,
         peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(
-            rmcp::model::LoggingLevel::Emergency,
+            crate::mcp::logging::LoggingLevel::Emergency,
         ))),
         route_scope: McpRouteScope::Root,
         relay_session_id: 0,

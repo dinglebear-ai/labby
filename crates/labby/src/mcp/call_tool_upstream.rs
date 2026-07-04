@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 //! Upstream-proxy tail of `call_tool`: raw upstream proxy + subject-scoped
 //! upstream proxy + the no-dispatcher-wired fallback.
 //!
@@ -23,13 +21,13 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, JsonObject, LoggingLevel};
-use rmcp::service::RequestContext;
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, JsonObject};
+use rmcp::service::{Peer, RequestContext};
 
 use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_for_request};
 use crate::mcp::envelope::build_error;
 use crate::mcp::error::canonical_kind;
-use crate::mcp::logging::DispatchLogOutcome;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::result_format::{
     estimate_tokens, estimate_tokens_args, format_dispatch_result, tool_error_envelope,
 };
@@ -44,6 +42,13 @@ pub(crate) struct PreResolvedUpstreamTool {
     pub(crate) upstream_name: String,
     pub(crate) tool: UpstreamTool,
     pub(crate) route: &'static str,
+}
+
+fn downstream_supports_relay(peer: &Peer<RoleServer>) -> bool {
+    !peer.supported_elicitation_modes().is_empty()
+        || peer.peer_info().is_some_and(|info| {
+            info.capabilities.sampling.is_some() || info.capabilities.roots.is_some()
+        })
 }
 
 impl LabMcpServer {
@@ -169,7 +174,7 @@ impl LabMcpServer {
             // agent. Falls back to the pooled multiplexed call when the gate is
             // off, the agent can't elicit, or the config can't be resolved.
             let relay_enabled = crate::config::env_flag_enabled("LAB_UPSTREAM_RELAY_ELICITATION")
-                && !context.peer.supported_elicitation_modes().is_empty();
+                && downstream_supports_relay(&context.peer);
             let relay_config = if relay_enabled {
                 match &self.gateway_manager {
                     Some(manager) => manager.upstream_config(&upstream_name).await,
@@ -414,7 +419,7 @@ impl LabMcpServer {
                 // so the dedicated connection authenticates as this caller.
                 let relay_enabled =
                     crate::config::env_flag_enabled("LAB_UPSTREAM_RELAY_ELICITATION")
-                        && !context.peer.supported_elicitation_modes().is_empty();
+                        && downstream_supports_relay(&context.peer);
                 let call_result: Result<CallToolResult, String> = if relay_enabled {
                     tracing::debug!(
                         surface = "mcp",

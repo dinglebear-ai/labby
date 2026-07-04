@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 //! Prompt handler bodies (`list_prompts`, `get_prompt`).
 //!
 //! Extracted from `server.rs` (bead `lab-kvji.24.1.2`) as inherent
@@ -16,8 +14,7 @@ use std::time::Instant;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{
-    GetPromptRequestParams, GetPromptResult, ListPromptsResult, LoggingLevel,
-    PaginatedRequestParams,
+    GetPromptRequestParams, GetPromptResult, ListPromptsResult, PaginatedRequestParams,
 };
 use rmcp::service::RequestContext;
 use serde_json::Value;
@@ -26,7 +23,7 @@ use serde_json::Value;
 use crate::mcp::context::auth_context_from_extensions;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
-use crate::mcp::logging::DispatchLogOutcome;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::server::LabMcpServer;
 
 impl LabMcpServer {
