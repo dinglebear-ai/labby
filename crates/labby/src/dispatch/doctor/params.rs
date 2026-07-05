@@ -154,10 +154,10 @@ mod tests {
     #[test]
     fn parse_proxy_check_rejects_ambiguous_route_variants() {
         for route in [
-            "syslog",
-            "/syslog/",
-            "/syslog?debug=true",
-            "/syslog#fragment",
+            "telemetry",
+            "/telemetry/",
+            "/telemetry?debug=true",
+            "/telemetry#fragment",
         ] {
             let err = parse_proxy_check(&proxy_params(route)).expect_err("route should fail");
             assert_eq!(err.kind(), "invalid_param");
@@ -170,7 +170,7 @@ mod tests {
             let params = serde_json::json!({
                 "app_url": value,
                 "mcp_url": "https://mcp.example.test",
-                "route": "/syslog",
+                "route": "/telemetry",
             });
             let err = parse_proxy_check(&params).expect_err("private IPv6 should fail");
             assert_eq!(err.kind(), "invalid_param", "{value}");

@@ -6,23 +6,26 @@ Feature invariant status: clean.
 
 | Crate | Feature | Class | In Default | In All | Maps To | Dependencies |
 | --- | --- | --- | --- | --- | --- | --- |
-| labby | `acp` | BaseCapability | true | true | - | `dep:agent-client-protocol` |
+| labby | `acp` | BaseCapability | true | true | - | `dep:agent-client-protocol`<br>`dep:r2d2`<br>`dep:r2d2_sqlite` |
 | labby | `acp_registry` | ProductSlice | true | true | labby-apis/acp_registry | `labby-apis/acp_registry`<br>`labby-runtime/acp_registry` |
-| labby | `all` | AggregateDefault | true | true | labby-apis/all | `labby-apis/all`<br>`lab-admin`<br>`acp`<br>`acp_registry`<br>`deploy`<br>`gateway`<br>`marketplace`<br>`nodes`<br>`stash` |
+| labby | `all` | AggregateDefault | true | true | labby-apis/all | `labby-apis/all`<br>`lab-admin`<br>`acp`<br>`acp_registry`<br>`api-docs`<br>`deploy`<br>`gateway-host`<br>`marketplace`<br>`nodes`<br>`stash` |
+| labby | `api-docs` | HelperInternal | true | true | - | `dep:utoipa` |
 | labby | `default` | AggregateDefault | false | false | - | `all` |
 | labby | `deploy` | ProductSlice | true | true | labby-apis/deploy | `labby-apis/deploy`<br>`labby-runtime/deploy` |
 | labby | `fs` | ProductSlice | false | false | - | `dep:walkdir`<br>`dep:globset`<br>`dep:unicode-normalization`<br>`dep:rustix` |
-| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi` |
+| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`dep:r2d2`<br>`dep:r2d2_sqlite`<br>`web-ui` |
+| labby | `gateway-host` | IntentionalException | true | true | - | `gateway` |
 | labby | `lab-admin` | ProductSlice | true | true | - |  |
 | labby | `marketplace` | ProductSlice | true | true | labby-apis/mcpregistry | `labby-apis/mcpregistry`<br>`labby-runtime/marketplace`<br>`gateway`<br>`acp`<br>`nodes`<br>`stash` |
 | labby | `mcpregistry` | IntentionalException | true | true | labby-apis/mcpregistry | `marketplace` |
 | labby | `node-runtime` | BinaryOnly | false | false | - |  |
-| labby | `nodes` | BaseCapability | true | true | - |  |
+| labby | `nodes` | BaseCapability | true | true | - | `dep:r2d2`<br>`dep:r2d2_sqlite`<br>`dep:sysinfo` |
 | labby | `services-all` | IntentionalException | false | false | - |  |
 | labby | `stash` | BaseCapability | true | true | - |  |
 | labby | `systemd` | HelperInternal | false | false | - | `dep:sd-notify` |
 | labby | `test-harness` | IntentionalException | false | false | - | `gateway` |
 | labby | `test-utils` | IntentionalException | false | false | - |  |
+| labby | `web-ui` | HelperInternal | true | true | - | `dep:labby-web` |
 | labby-apis | `acp_registry` | ServicePassthrough | false | true | labby/acp_registry |  |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all | `deploy`<br>`mcpregistry`<br>`acp_registry` |
 | labby-apis | `default` | AggregateDefault | false | false | labby/default |  |

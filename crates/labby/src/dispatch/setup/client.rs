@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use labby_apis::core::EnvVar;
+use labby_primitives::plugin::EnvVar;
 
 use crate::registry::{ToolRegistry, build_default_registry, service_meta};
 

@@ -26,7 +26,7 @@
 //!    layer. Defense-in-depth: if a caller somehow guesses the action
 //!    name, the dispatcher refuses.
 
-use labby_apis::core::action::ActionSpec;
+use labby_primitives::action::ActionSpec;
 use serde_json::Value;
 
 use crate::dispatch::error::ToolError;
@@ -59,7 +59,7 @@ static MCP_ACTIONS: &[ActionSpec] = &[
         description: "List immediate entries of a directory inside the configured workspace root",
         destructive: false,
         requires_admin: false,
-        params: &[labby_apis::core::action::ParamSpec {
+        params: &[labby_primitives::action::ParamSpec {
             name: "path",
             ty: "string",
             required: false,

@@ -24,7 +24,6 @@ use rmcp::service::{NotificationContext, Peer, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use tokio::sync::RwLock;
 
-use crate::config::NodeRole;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::mcp::completion::{complete_prompt_arg, completion_info};
@@ -53,8 +52,6 @@ pub struct LabMcpServer {
     /// Shared gateway manager used to resolve the current live upstream pool.
     #[cfg(feature = "gateway")]
     pub gateway_manager: Option<Arc<GatewayManager>>,
-    /// Resolved role for the current device.
-    pub node_role: Option<NodeRole>,
     /// Connected peers for list-changed notifications.
     pub peers: Arc<RwLock<Vec<Peer<RoleServer>>>>,
     /// Negotiated RMCP logging threshold for this server/session.
@@ -130,7 +127,6 @@ impl ServerHandler for LabMcpServer {
             phase = "server.info",
             builtin_service_count = self.registry.services().len(),
             gateway_manager_configured,
-            node_role = ?self.node_role,
             "advertising MCP server capabilities"
         );
         let builder = ServerCapabilities::builder()
@@ -392,7 +388,6 @@ mod tests {
             registry: std::sync::Arc::new(ToolRegistry::new()),
             #[cfg(feature = "gateway")]
             gateway_manager: None,
-            node_role: None,
             peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
             logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 logging_level_rank(crate::mcp::logging::LoggingLevel::Info),

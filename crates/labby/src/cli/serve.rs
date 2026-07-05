@@ -35,19 +35,8 @@ use crate::dispatch::gateway::manager::{
 };
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::types::CatalogChangeNotifier;
-use crate::dispatch::logs::client::{
-    bootstrap_running_log_system, resolve_queue_capacity, resolve_retention, resolve_store_path,
-    resolve_subscriber_capacity,
-};
 use crate::mcp::peers::PeerNotifier;
 use crate::mcp::server::LabMcpServer;
-#[cfg(feature = "nodes")]
-use crate::node::enrollment::store::EnrollmentStore;
-use crate::node::identity::{resolve_local_hostname, resolve_runtime_role_from_config};
-#[cfg(feature = "nodes")]
-use crate::node::runtime::NodeRuntime;
-#[cfg(feature = "nodes")]
-use crate::node::store::NodeStore;
 use crate::output::theme::{CliTheme, ColorPolicy, RenderContext, RenderEnv};
 #[cfg(target_os = "linux")]
 use crate::process::unix::{exe_path, terminate_sigterm};
@@ -61,26 +50,6 @@ fn stderr_theme() -> CliTheme {
         ColorPolicy::Auto,
         RenderEnv::stderr(),
     ))
-}
-
-/// Role override for `labby serve --role`.
-///
-/// Maps to [`crate::config::NodeRuntimeRole`] at startup; a separate type here
-/// keeps the `clap` dependency out of `config.rs`.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-#[value(rename_all = "kebab-case")]
-pub enum ServeRole {
-    Controller,
-    Node,
-}
-
-impl From<ServeRole> for crate::config::NodeRuntimeRole {
-    fn from(role: ServeRole) -> Self {
-        match role {
-            ServeRole::Controller => crate::config::NodeRuntimeRole::Controller,
-            ServeRole::Node => crate::config::NodeRuntimeRole::Node,
-        }
-    }
 }
 
 /// Transport choices for `labby serve`.
@@ -139,11 +108,6 @@ pub struct ServeArgs {
     /// Example: `--log-level debug`
     #[arg(long)]
     pub log_level: Option<String>,
-    /// Explicit runtime role override. Takes precedence over [node].role in config.toml
-    /// and over hostname-based inference.
-    /// `--role node` requires a controller host to be configured.
-    #[arg(long, value_enum)]
-    pub role: Option<ServeRole>,
     #[command(subcommand)]
     pub command: Option<ServeCommand>,
 }
@@ -157,7 +121,6 @@ pub async fn run_mcp(args: McpServeArgs, config: &LabConfig) -> Result<ExitCode>
             host: None,
             port: None,
             log_level: args.log_level,
-            role: None,
             command: None,
         },
         config,
@@ -205,38 +168,6 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         "starting labby serve bootstrap"
     );
 
-    // ── Role resolution ── must happen BEFORE build_default_registry() so that
-    // node-mode processes exit early without building the full controller registry.
-    let local_host = resolve_local_hostname().context("resolve local hostname")?;
-    let resolved_runtime =
-        resolve_runtime_role_from_config(&local_host, config, args.role.map(Into::into))
-            .context("resolve device runtime role")?;
-    tracing::info!(
-        subsystem = "startup",
-        phase = "bootstrap.device-runtime",
-        node_role = ?resolved_runtime.role,
-        local_host = %resolved_runtime.local_host,
-        master_host = %resolved_runtime.master_host,
-        "node runtime resolved"
-    );
-    #[cfg(feature = "nodes")]
-    let node_runtime = NodeRuntime::from_config(resolved_runtime, config, Some(port))?;
-    #[cfg(feature = "nodes")]
-    let node_role = node_runtime.role();
-    #[cfg(not(feature = "nodes"))]
-    let node_role = resolve_node_role_without_nodes(&resolved_runtime)?;
-    #[cfg(not(feature = "nodes"))]
-    warn_ignored_node_config_without_nodes(config);
-    #[cfg(not(feature = "acp"))]
-    warn_ignored_acp_env_without_acp();
-
-    // Early return for node (non-controller) processes: skip the full
-    // controller startup (registry build, OAuth, gateway, logs system, web UI, etc.).
-    #[cfg(feature = "nodes")]
-    if matches!(node_role, crate::config::NodeRole::NonMaster) {
-        return run_node_mode(transport, args.command.as_ref(), config, node_runtime, port).await;
-    }
-
     crate::registry::set_runtime_built_in_upstream_apis_enabled(
         config.services.built_in_upstream_apis_enabled,
     );
@@ -252,44 +183,6 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         selected_service_count = registry.services().len(),
         "service registry ready"
     );
-    #[cfg(feature = "nodes")]
-    let (node_store, enrollment_store) = {
-        let log_retention_days = config
-            .node
-            .as_ref()
-            .and_then(|n| n.log_retention_days)
-            .unwrap_or(crate::node::log_store::DEFAULT_RETENTION_DAYS);
-        let node_log_db_path = node_runtime.home_dir().join(".labby/node-logs.sqlite");
-        let node_store = match crate::node::log_store::SqliteNodeLogStore::open(
-            node_log_db_path.clone(),
-            log_retention_days,
-        )
-        .await
-        {
-            Ok(log_store) => {
-                tracing::info!(
-                    path = %node_log_db_path.display(),
-                    retention_days = log_retention_days,
-                    "node log store opened"
-                );
-                Arc::new(NodeStore::with_log_store(log_store))
-            }
-            Err(err) => {
-                tracing::warn!(
-                    path = %node_log_db_path.display(),
-                    error = %err,
-                    "node log store unavailable; falling back to in-memory store"
-                );
-                Arc::new(NodeStore::default())
-            }
-        };
-        let enrollment_store = Arc::new(
-            EnrollmentStore::open(node_runtime.home_dir().join(".labby/node-enrollments.json"))
-                .await
-                .context("open node enrollment store")?,
-        );
-        (node_store, enrollment_store)
-    };
 
     let stdio_mode = should_run_stdio(transport, args.command.as_ref());
     let spawn_depth = resolve_lab_spawn_depth(std::env::var("LAB_SPAWN_DEPTH").ok());
@@ -330,30 +223,6 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     .await?;
     #[cfg(not(feature = "gateway"))]
     reject_protected_routes_without_gateway(config)?;
-    let logs_system = bootstrap_running_log_system(
-        resolve_store_path(Some(config)),
-        resolve_retention(Some(config)),
-        resolve_queue_capacity(Some(config)),
-        resolve_subscriber_capacity(Some(config)),
-    )
-    .await?;
-
-    // Create the ACP session registry before the HTTP/stdio split so both transports
-    // share the same process-global dispatch slot (intra-process only — stdio and
-    // HTTP modes are mutually exclusive within one process).
-    #[cfg(feature = "acp")]
-    let acp_registry = {
-        let acp_registry = Arc::new(crate::acp::registry::AcpSessionRegistry::from_env().await);
-        crate::dispatch::acp::install_registry(Arc::clone(&acp_registry));
-        acp_registry.restore_from_db().await;
-        tracing::info!(
-            subsystem = "acp",
-            phase = "ready",
-            "ACP session registry installed"
-        );
-        acp_registry
-    };
-
     if stdio_mode {
         tracing::info!(
             subsystem = "api_server",
@@ -370,7 +239,6 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             return run_stdio(
                 Arc::new(registry),
                 Arc::clone(&gateway_manager),
-                node_role,
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -381,7 +249,6 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         {
             return run_stdio(
                 Arc::new(registry),
-                node_role,
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -412,7 +279,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // (`bearer_token = Some(token)`), so the running server always
     // authenticates with the token it just wrote even if the env reload fails.
     // We THEN reload the file via dotenvy so downstream LAB_MCP_HTTP_TOKEN
-    // readers (e.g. node master client, `logs`) also see it. dotenvy owns its
+    // readers also see it. dotenvy owns its
     // own set_var, keeping this crate unsafe-free (the workspace forbids
     // unsafe_code) and not overriding already-set vars.
     if crate::dispatch::setup::should_bootstrap(
@@ -491,10 +358,6 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let mut state = AppState::from_registry(registry)
         .with_config(config.clone())
         .with_http_bind_host(host.clone());
-    #[cfg(feature = "acp")]
-    {
-        state = state.with_acp_registry(Arc::clone(&acp_registry));
-    }
     if auth_configured {
         match crate::observability::activity::ActorKeyDeriver::load_or_create() {
             Ok(deriver) => {
@@ -536,88 +399,6 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             "lab web UI started without authentication; any local process can write ~/.labby/.env"
         );
     }
-
-    #[cfg(feature = "nodes")]
-    {
-        state = state.with_node_store(Arc::clone(&node_store));
-        state = state.with_enrollment_store(Arc::clone(&enrollment_store));
-    }
-    state = state.with_log_system(logs_system);
-    #[cfg(feature = "marketplace")]
-    let _registry_sync_keepalive = {
-        let db_path = crate::config::registry_db_path();
-        match crate::dispatch::marketplace::store::RegistryStore::open(&db_path).await {
-            Ok(store) => {
-                let store = Arc::new(store);
-                state = state.with_registry_store(Arc::clone(&store));
-                let sync_store = Arc::clone(&store);
-                match crate::dispatch::marketplace::mcp_client::require_mcp_client() {
-                    Ok(sync_client) => Some(tokio::spawn(async move {
-                        // Fire immediately at startup — do not wait for the first interval tick.
-                        if let Err(e) = crate::dispatch::marketplace::sync::perform_sync(
-                            &sync_store,
-                            &sync_client,
-                            false,
-                            "startup",
-                        )
-                        .await
-                        {
-                            tracing::warn!(
-                                service = "mcpregistry",
-                                event = "sync.failed",
-                                error = %e,
-                                "initial sync failed; will retry next hour"
-                            );
-                        }
-                        let mut interval = tokio::time::interval(Duration::from_secs(3600));
-                        // Skip missed ticks — if a sync takes >1h, Burst would fire again immediately.
-                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                        // Consume the immediate tick so the first loop iteration is at T+1h.
-                        interval.tick().await;
-                        loop {
-                            interval.tick().await;
-                            if let Err(e) = crate::dispatch::marketplace::sync::perform_sync(
-                                &sync_store,
-                                &sync_client,
-                                false,
-                                "hourly",
-                            )
-                            .await
-                            {
-                                tracing::warn!(
-                                    service = "mcpregistry",
-                                    event = "sync.failed",
-                                    error = %e,
-                                    "hourly sync failed; will retry next hour"
-                                );
-                            }
-                        }
-                    })),
-                    Err(e) => {
-                        tracing::warn!(
-                            service = "mcpregistry",
-                            event = "sync.client.unavailable",
-                            error = %e,
-                            "mcpregistry client unavailable; registry background sync disabled"
-                        );
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    service = "mcpregistry",
-                    event = "store.open.failed",
-                    error = %e,
-                    "registry store unavailable; /v0.1 will return 503"
-                );
-                None
-            }
-        }
-    };
-    // `_registry_sync_keepalive` keeps the background sync task alive for the
-    // duration of `serve`; binding it by name preserves the JoinHandle.
-    state = state.with_node_role(node_role);
 
     // Wire the configured workspace root into AppState so the fs
     // service serves `fs.list` / `fs.preview` without re-reading config
@@ -694,9 +475,6 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         web_ui_auth_disabled = state.web_ui_auth_disabled,
         "startup plan resolved"
     );
-
-    #[cfg(feature = "nodes")]
-    node_runtime.start_background_tasks();
 
     run_http(
         &host,
@@ -1327,154 +1105,9 @@ fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
     Ok(())
 }
 
-/// Companion to `resolve_node_role_without_nodes`: the role guard already
-/// rejects `node.role = "node"`, but the remaining fleet/node keys are
-/// harmless in a no-nodes build — warn that they're ignored instead of
-/// silently dropping them.
-#[cfg(not(feature = "nodes"))]
-fn warn_ignored_node_config_without_nodes(config: &LabConfig) {
-    let mut ignored: Vec<&str> = Vec::new();
-    if let Some(node) = config.node.as_ref() {
-        if node.controller.is_some() {
-            ignored.push("node.controller");
-        }
-        if node.log_retention_days.is_some() {
-            ignored.push("node.log_retention_days");
-        }
-    }
-    if config
-        .device
-        .as_ref()
-        .is_some_and(|device| device.master.is_some())
-    {
-        ignored.push("device.master");
-    }
-    if !ignored.is_empty() {
-        tracing::warn!(
-            subsystem = "startup",
-            phase = "bootstrap.device-runtime",
-            ignored_keys = ?ignored,
-            "fleet/node configuration is set but this build has no fleet support (nodes feature); values ignored"
-        );
-    }
-}
-
-/// Warn once when ACP-shaped env keys are present in a build without the
-/// `acp` feature. Key names only — never values (LAB_ACP_HMAC_SECRET is a
-/// secret).
-#[cfg(not(feature = "acp"))]
-fn warn_ignored_acp_env_without_acp() {
-    let present: Vec<&str> = [
-        "LAB_ACP_DB",
-        "LAB_ACP_SESSION_DIR",
-        "ACP_CODEX_COMMAND",
-        "LAB_ACP_HMAC_SECRET",
-    ]
-    .into_iter()
-    .filter(|key| std::env::var_os(key).is_some())
-    .collect();
-    if !present.is_empty() {
-        tracing::warn!(
-            subsystem = "startup",
-            phase = "bootstrap.plan",
-            ignored_keys = ?present,
-            "ACP environment configuration is set but this build has no ACP support (acp feature); values ignored"
-        );
-    }
-}
-
-/// Mirror of `reject_protected_routes_without_gateway`: a build without the
-/// `nodes` feature can only run as a controller. Fail loudly if config asks
-/// for node mode instead of silently ignoring it.
-#[cfg(not(feature = "nodes"))]
-fn resolve_node_role_without_nodes(
-    resolved: &crate::config::ResolvedNodeRuntime,
-) -> Result<crate::config::NodeRole> {
-    let role = resolved.role;
-    if matches!(role, crate::config::NodeRole::NonMaster) {
-        anyhow::bail!(
-            "node (non-controller) role is configured but this labby build does not include fleet support (built without the `nodes` feature)"
-        );
-    }
-    Ok(role)
-}
-
-#[cfg(all(test, not(feature = "nodes")))]
-mod resolve_node_role_without_nodes_tests {
-    use super::resolve_node_role_without_nodes;
-    use crate::config::{NodeRole, ResolvedNodeRuntime};
-
-    #[test]
-    fn non_master_role_errors_and_mentions_nodes_feature() {
-        let resolved = ResolvedNodeRuntime {
-            local_host: "worker-01".to_string(),
-            master_host: "controller".to_string(),
-            role: NodeRole::NonMaster,
-        };
-        let err = resolve_node_role_without_nodes(&resolved)
-            .expect_err("NonMaster must be rejected in a build without the nodes feature");
-        assert!(
-            err.to_string().contains("nodes"),
-            "error should point at the missing `nodes` feature, got: {err}"
-        );
-    }
-
-    #[test]
-    fn master_role_is_allowed() {
-        let resolved = ResolvedNodeRuntime {
-            local_host: "controller".to_string(),
-            master_host: "controller".to_string(),
-            role: NodeRole::Master,
-        };
-        let role = resolve_node_role_without_nodes(&resolved)
-            .expect("Master role must be allowed without the nodes feature");
-        assert!(matches!(role, NodeRole::Master));
-    }
-}
-
-/// Run the minimal node-mode startup path.
-///
-/// Called when role resolution determines the process is a non-controller node.
-/// Skips the full controller startup (registry build, OAuth, gateway, logs system,
-/// web UI, marketplace sync, EnrollmentStore, etc.) and runs only what a node needs:
-/// background tasks (metadata upload, bootstrap logs, WebSocket flush) and a
-/// loopback health server to keep the process alive and signal systemd readiness.
-#[cfg(feature = "nodes")]
-async fn run_node_mode(
-    transport: Transport,
-    command: Option<&ServeCommand>,
-    config: &LabConfig,
-    node_runtime: NodeRuntime,
-    port: u16,
-) -> Result<ExitCode> {
-    // Stdio mode is not designed for node-mode operation.
-    if should_run_stdio(transport, command) {
-        anyhow::bail!("labby serve mcp --stdio is not supported in node mode");
-    }
-
-    tracing::info!(
-        surface = "node",
-        service = "runtime",
-        action = "node_mode.start",
-        node_id = %node_runtime.local_host(),
-        port,
-        controller_host = %config.node.as_ref().and_then(|n| n.controller.as_deref()).unwrap_or("<none>"),
-        "starting node runtime (non-controller mode)"
-    );
-
-    // Start background tasks: metadata upload, bootstrap log collection, WebSocket flush.
-    // These are fire-and-forget — start_background_tasks spawns a detached task and returns
-    // immediately so the health server loop starts without being blocked by network timeouts.
-    node_runtime.start_background_tasks();
-
-    // Run the loopback health server as the process keep-alive.
-    crate::node::health::run_loopback_health_server(port).await
-}
-
 async fn run_stdio(
     registry: Arc<ToolRegistry>,
     #[cfg(feature = "gateway")] gateway_manager: Arc<GatewayManager>,
-    node_role: crate::config::NodeRole,
     notifier: PeerNotifier,
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
@@ -1510,7 +1143,6 @@ async fn run_stdio(
         phase = "start",
         transport = "stdio",
         services = registry.services().len(),
-        node_role = ?node_role,
         "starting stdio mcp server"
     );
     tracing::info!(
@@ -1525,7 +1157,6 @@ async fn run_stdio(
         registry,
         #[cfg(feature = "gateway")]
         gateway_manager: Some(Arc::clone(&gateway_manager)),
-        node_role: Some(node_role),
         peers: Arc::clone(&notifier.peers),
         logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
             crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
@@ -1647,7 +1278,6 @@ fn build_mcp_service_with_scope(
     // All HTTP sessions share the same PeerNotifier (and thus the same peers
     // vec) so that gateway reload notifications reach every connected session.
     let shared_peers = Arc::clone(&notifier.peers);
-    let node_role = state.node_role;
     let route_scope_label = route_scope.label();
 
     Ok(StreamableHttpService::new(
@@ -1670,7 +1300,6 @@ fn build_mcp_service_with_scope(
                 transport = "http",
                 services = reg.services().len(),
                 gateway_manager_configured,
-                node_role = ?node_role,
                 route_scope = %route_scope_label,
                 "initializing HTTP MCP session handler"
             );
@@ -1678,7 +1307,6 @@ fn build_mcp_service_with_scope(
                 registry: reg,
                 #[cfg(feature = "gateway")]
                 gateway_manager: manager,
-                node_role,
                 peers,
                 logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
                     crate::mcp::logging::logging_level_rank(

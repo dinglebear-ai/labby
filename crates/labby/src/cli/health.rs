@@ -20,44 +20,7 @@ pub struct HealthRow {
 
 /// Run the health subcommand.
 pub async fn run(format: OutputFormat) -> Result<ExitCode> {
-    let mut rows: Vec<HealthRow> = Vec::new();
-
-    // Probe mcpregistry (uses configured or default public registry URL; no credentials required).
-    #[cfg(feature = "marketplace")]
-    {
-        use labby_apis::core::ServiceClient;
-
-        use crate::dispatch::marketplace::mcp_client;
-        let row = match mcp_client::require_mcp_client() {
-            Ok(client) => match client.health().await {
-                Ok(status) => HealthRow {
-                    service: "mcpregistry".into(),
-                    reachable: status.reachable,
-                    auth_ok: status.auth_ok,
-                    version: status.version,
-                    latency_ms: status.latency_ms,
-                    message: status.message,
-                },
-                Err(_) => HealthRow {
-                    service: "mcpregistry".into(),
-                    reachable: false,
-                    auth_ok: false,
-                    version: None,
-                    latency_ms: 0,
-                    message: Some("health probe failed".into()),
-                },
-            },
-            Err(_) => HealthRow {
-                service: "mcpregistry".into(),
-                reachable: false,
-                auth_ok: false,
-                version: None,
-                latency_ms: 0,
-                message: Some("not configured".into()),
-            },
-        };
-        rows.push(row);
-    }
+    let rows: Vec<HealthRow> = Vec::new();
 
     let any_unhealthy = rows.iter().any(|r| !r.reachable || !r.auth_ok);
     print(&rows, format)?;

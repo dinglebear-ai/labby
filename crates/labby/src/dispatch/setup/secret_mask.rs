@@ -4,7 +4,7 @@
 //! runtime registry. Secret values are replaced with [`SECRET_SENTINEL`]
 //! before they leave the dispatch layer.
 
-use labby_apis::setup::SECRET_SENTINEL;
+use crate::dispatch::setup::SECRET_SENTINEL;
 
 use super::client::{cached_secret_keys, key_matches_secret_suffix};
 

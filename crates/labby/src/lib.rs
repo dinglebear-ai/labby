@@ -19,8 +19,6 @@
     )
 )]
 
-#[cfg(feature = "acp")]
-pub mod acp;
 #[allow(unreachable_pub)]
 pub mod api;
 pub mod catalog;
@@ -37,14 +35,12 @@ pub mod config;
 pub mod dispatch;
 #[allow(unreachable_pub)]
 pub mod docs;
-#[cfg(test)]
+mod entrypoint;
 #[allow(dead_code)]
 pub mod log_fmt;
 #[allow(unreachable_pub)]
 pub mod mcp;
 pub mod net;
-#[allow(unreachable_pub)]
-pub mod node;
 #[allow(unreachable_pub)]
 pub mod oauth;
 #[allow(unreachable_pub)]
@@ -58,3 +54,5 @@ pub mod registry;
 pub mod test_support;
 #[cfg(feature = "fs")]
 pub mod workspace;
+
+pub use entrypoint::run;

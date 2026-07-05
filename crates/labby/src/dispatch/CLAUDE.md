@@ -199,7 +199,7 @@ pub async fn dispatch_with_client(
 ## Direct meta-service registration
 
 Meta-services register directly from `dispatch::*` in `registry.rs` without a
-`mcp/services/` shim — whether they are always-on (`doctor`, `logs`) or
+`mcp/services/` shim — whether they are always-on (`doctor`) or
 feature-gated (`gateway`, `marketplace`, `acp`). This is the **canonical
 pattern** for these services, not an exception: the registration site may sit
 behind a `#[cfg(feature = ...)]`, but it still points at the shared dispatch
@@ -207,7 +207,6 @@ entry, not an MCP-specific adapter. Current examples:
 
 - `gateway` — `crate::dispatch::gateway::dispatch` (gated: `gateway`)
 - `doctor` — `crate::dispatch::doctor::dispatch` (always-on)
-- `logs` — `crate::dispatch::logs::dispatch` (always-on)
 - `marketplace` — `crate::dispatch::marketplace::dispatch` (gated: `marketplace`)
 - `acp` — `crate::dispatch::acp::dispatch::dispatch` (gated: `acp`)
 

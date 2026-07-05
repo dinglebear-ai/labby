@@ -106,7 +106,7 @@ payloads are not normal `/v1/{service}` dispatches.
 
 Streamable HTTP MCP routes are long-lived protocol routes, not ordinary JSON
 REST calls. This applies to Lab's own `/mcp` route and to Gateway-managed
-protected MCP routes such as `https://mcp.example.com/syslog`.
+protected MCP routes such as `https://mcp.example.com/telemetry`.
 
 Any SWAG/nginx, Traefik, or tunnel layer in front of Lab must:
 
@@ -122,7 +122,7 @@ Gateway-managed protected MCP routes also need the matching route-specific
 metadata path to reach Lab, for example:
 
 ```text
-/.well-known/oauth-protected-resource/syslog
+/.well-known/oauth-protected-resource/telemetry
 ```
 
 Do not let a shared OAuth discovery include or edge auth layer swallow those

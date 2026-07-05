@@ -68,18 +68,11 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
         ),
         auth("GET", "/v1/nodes", "nodes", "list fleet nodes"),
         auth("GET", "/v1/nodes/{node_id}", "nodes", "get fleet node"),
-        auth("POST", "/v1/nodes/logs/search", "nodes", "search node logs"),
         auth(
             "POST",
             "/v1/nodes/oauth/relay/start",
             "nodes",
             "start node OAuth relay",
-        ),
-        auth(
-            "POST",
-            "/v1/nodes/syslog/batch",
-            "nodes",
-            "ingest syslog batch",
         ),
         auth("POST", "/v1/gateway", "gateway", "gateway action dispatch"),
         auth("POST", "/v1/acp", "acp", "ACP action dispatch"),
@@ -110,13 +103,6 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
         ),
         host_validated_auth("POST", "/v1/doctor", "doctor", "doctor action dispatch"),
         host_validated_auth("POST", "/v1/setup", "setup", "setup action dispatch"),
-        auth(
-            "POST",
-            "/v1/logs/search",
-            "logs",
-            "search local-master logs",
-        ),
-        auth("GET", "/v1/logs/stream", "logs", "SSE log stream"),
         auth(
             "GET",
             "/v1/gateway/oauth/status",

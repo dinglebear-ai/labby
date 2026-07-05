@@ -21,7 +21,26 @@ mod secret_mask;
 mod settings;
 mod state;
 mod token;
+mod types;
 
 pub use bootstrap::{BootstrapOutcome, bootstrap, bootstrap_action, should_bootstrap};
 pub use catalog::{ACTIONS, PLUGIN_LIFECYCLE_ACTIONS};
 pub use dispatch::dispatch;
+pub use types::{
+    CommitOutcome, DraftEntry, SECRET_SENTINEL, SetupClient, SetupSnapshot, SetupState,
+};
+
+use labby_primitives::plugin::{Category, PluginMeta};
+
+/// Compile-time metadata for the setup Bootstrap service.
+pub const META: PluginMeta = PluginMeta {
+    name: "setup",
+    display_name: "Setup",
+    description: "First-run + draft-commit configuration flow",
+    category: Category::Bootstrap,
+    docs_url: "",
+    required_env: &[],
+    optional_env: &[],
+    default_port: None,
+    supports_multi_instance: false,
+};

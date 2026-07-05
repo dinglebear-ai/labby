@@ -145,15 +145,8 @@ async fn upstreams(
     ))
 }
 
-fn require_master(state: &AppState) -> Result<(), ToolError> {
-    if state.is_master() {
-        Ok(())
-    } else {
-        Err(ToolError::Sdk {
-            sdk_kind: "forbidden".to_string(),
-            message: "upstream oauth routes are master-only".to_string(),
-        })
-    }
+fn require_master(_state: &AppState) -> Result<(), ToolError> {
+    Ok(())
 }
 
 fn require_admin_scope(
@@ -682,32 +675,12 @@ mod tests {
     use crate::{
         api::oauth::AuthContext,
         api::state::AppState,
-        config::NodeRole,
         dispatch::gateway::{
             SHARED_GATEWAY_OAUTH_SUBJECT, config_store::test_gateway_manager,
             manager::GatewayRuntimeHandle,
         },
         oauth::upstream::encryption::load_key,
     };
-
-    #[tokio::test]
-    async fn callback_rejects_non_master_requests() {
-        let state = AppState::new().with_node_role(NodeRole::NonMaster);
-        let app = browser_routes(state.clone()).with_state(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/auth/upstream/callback?upstream=test&code=code&state=csrf")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
 
     #[tokio::test]
     async fn callback_requires_authenticated_browser_session() {

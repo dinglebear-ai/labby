@@ -39,11 +39,6 @@ url.workspace = true
 javy = { version = "7.0.0" }
 anyhow = "1"
 
-# JavaScript AST normalization (export-shape detection in normalize.rs).
-boa_ast = "0.21.1"
-boa_interner = "0.21.1"
-boa_parser = "0.21.1"
-
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = [
   "signal",

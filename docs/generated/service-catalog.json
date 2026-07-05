@@ -168,27 +168,6 @@
     "metadata_source": "registry synthetic metadata"
   },
   {
-    "name": "logs",
-    "display_name": "logs",
-    "description": "Search and stream local-master runtime logs",
-    "category": "bootstrap",
-    "status": "available",
-    "feature": null,
-    "exposure": "always_on",
-    "surfaces": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": true
-    },
-    "default_port": null,
-    "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
-    "supports_multi_instance": false,
-    "metadata_source": "registry synthetic metadata"
-  },
-  {
     "name": "marketplace",
     "display_name": "Marketplace",
     "description": "Browse Claude Code/Codex marketplaces, MCP Registry servers, ACP agents, and installable components",

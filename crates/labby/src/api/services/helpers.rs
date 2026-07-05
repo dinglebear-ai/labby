@@ -15,7 +15,7 @@ use axum::{Json, http::HeaderMap};
 use serde_json::Value;
 use tracing::Instrument;
 
-use labby_apis::core::action::ActionSpec;
+use labby_primitives::action::ActionSpec;
 
 use crate::api::error::ApiError;
 use crate::api::{ActionRequest, oauth::AuthContext};
@@ -287,7 +287,7 @@ where
 mod tests {
     use super::*;
     use crate::test_support::{SharedBuf, captured_logs};
-    use labby_apis::core::action::{ActionSpec, ParamSpec};
+    use labby_primitives::action::{ActionSpec, ParamSpec};
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::Mutex;

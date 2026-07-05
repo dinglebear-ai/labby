@@ -1,4 +1,4 @@
-use labby_apis::core::action::{ActionSpec, ParamSpec};
+use labby_primitives::action::{ActionSpec, ParamSpec};
 
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
@@ -93,7 +93,7 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "route",
                 ty: "string",
                 required: true,
-                description: "Protected MCP public route path, e.g. /syslog",
+                description: "Protected MCP public route path, e.g. /telemetry",
             },
             ParamSpec {
                 name: "backend_url",

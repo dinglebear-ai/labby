@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
-use labby_apis::core::action::ActionSpec;
+use labby_primitives::action::ActionSpec;
 use serde_json::Value;
 
 use crate::dispatch::error::ToolError;

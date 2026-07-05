@@ -6,7 +6,7 @@
 use super::complete_prompt_arg;
 use crate::dispatch::error::ToolError;
 use crate::registry::{RegisteredService, ToolRegistry};
-use labby_apis::core::action::ActionSpec;
+use labby_primitives::action::ActionSpec;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;

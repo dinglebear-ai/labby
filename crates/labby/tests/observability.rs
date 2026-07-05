@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use labby::api::ActionRequest;
 use labby::api::services::helpers::handle_action;
 use labby::dispatch::error::ToolError;
-use labby_apis::core::action::{ActionSpec, ParamSpec};
+use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
 use tracing_subscriber::fmt;
 use tracing_subscriber::fmt::MakeWriter;

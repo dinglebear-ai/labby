@@ -51,7 +51,7 @@ pub struct DoctorProxyArgs {
     /// Public MCP gateway URL, e.g. https://mcp.example.com (default: LAB_MCP_GATEWAY_URL)
     #[arg(long)]
     pub mcp_url: Option<String>,
-    /// Protected MCP public route path, e.g. /syslog
+    /// Protected MCP public route path, e.g. /telemetry
     #[arg(long)]
     pub route: String,
     /// Optional private backend origin for backend-leak probe, e.g. http://mcp-backend:3100

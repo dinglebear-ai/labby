@@ -53,7 +53,6 @@ async fn connect_in_process_service_peer(
     let server = LabMcpServer {
         registry: Arc::new(registry),
         gateway_manager: None,
-        node_role: None,
         peers: Arc::new(RwLock::new(Vec::new())),
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,

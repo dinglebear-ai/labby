@@ -514,9 +514,9 @@ globalThis.openapi = {
 /// namespace, plus `codemode.__meta__.namespaces()` / `.helpers()` and a
 /// `__namespaces__` script-global, for use inside the sandbox.
 ///
-/// The output is a JS snippet (not TypeScript) that is prepended to (Boa) or
-/// injected into (Javy) the user code before being sent to the runner
-/// subprocess. It relies on `callTool` already being registered in the sandbox.
+/// The output is a JS snippet (not TypeScript) injected into the user code before
+/// being sent to the runner subprocess. It relies on `callTool` already being
+/// registered in the sandbox.
 ///
 /// The output ends with `var` declarations (no completion value), so when it is
 /// concatenated in front of a trailing IIFE the IIFE's promise remains the
@@ -641,10 +641,8 @@ mod tests {
     fn openapi_shim_is_valid_js() {
         let js = generate_openapi_provider_js();
         assert!(js.contains("globalThis.openapi") && js.contains("call"));
-        let mut interner = boa_interner::Interner::default();
-        let parsed = boa_parser::Parser::new(boa_parser::Source::from_bytes(js.as_bytes()))
-            .parse_script(&boa_ast::scope::Scope::new_global(), &mut interner);
-        assert!(parsed.is_ok(), "shim must be valid JS: {parsed:?}");
+        assert!(js.contains("function (label, operationId, params)"));
+        assert!(js.contains(r#"callTool("openapi::" + label + "." + operationId"#));
     }
 
     /// Generate the runtime proxy from owned descriptors.

@@ -3,7 +3,7 @@
 //! These live in the dispatch layer so they are accessible from both `system.rs`
 //! and `cli/doctor.rs` without creating a cli → dispatch dependency.
 
-use labby_apis::core::plugin::EnvVar;
+use labby_primitives::plugin::EnvVar;
 use serde::{Deserialize, Serialize};
 
 /// Severity of a single doctor finding.

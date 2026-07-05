@@ -1,8 +1,4 @@
-#[cfg(feature = "acp")]
-pub mod acp;
 pub mod clients;
-#[cfg(feature = "deploy")]
-pub mod deploy;
 pub mod doctor;
 pub mod error;
 pub mod fs;
@@ -11,18 +7,11 @@ pub mod fs_atomic;
 pub mod gateway;
 pub mod helpers;
 pub mod lab_admin;
-pub mod logs;
-#[cfg(feature = "marketplace")]
-pub mod marketplace;
-#[cfg(feature = "nodes")]
-pub mod node;
 pub mod path_safety;
 pub mod redact;
 pub mod security;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;
-#[cfg(feature = "stash")]
-pub mod stash;
 #[cfg(feature = "gateway")]
 pub mod upstream;

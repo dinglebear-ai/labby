@@ -2,8 +2,8 @@
 //! startup; the MCP server walks the registry to expose tools and the
 //! catalog module walks it to produce discovery docs.
 
-use labby_apis::core::PluginMeta;
-use labby_apis::core::action::ActionSpec;
+use labby_primitives::action::ActionSpec;
+use labby_primitives::plugin::PluginMeta;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -43,75 +43,6 @@ macro_rules! dispatch_fn {
                     > + Send,
             >,
         > { Box::pin(async move { $f(&action, params).await }) }
-    };
-}
-
-/// Register a standard service (feature name == module name, uses `dispatch::$svc`).
-///
-/// Expands to the `#[cfg(feature)] { reg.register(RegisteredService { ... }) }` block,
-/// eliminating the 7-line boilerplate that would otherwise be repeated per service.
-///
-/// Two forms:
-/// - Default: `register_service!(reg, "foo", foo)` — uses `dispatch::foo::ACTIONS` and
-///   `dispatch::foo::dispatch`.
-/// - Override: `register_service!(reg, "foo", foo, actions = $expr, dispatch = $expr)` —
-///   for services whose catalog is exposed through `actions()` instead of a top-level
-///   `ACTIONS` const, or for proven MCP-specific exception modules.
-///
-/// # Consistency invariant
-///
-/// The `actions` slice and the `dispatch` function **must be kept in sync** by the author:
-///
-/// - If `ACTIONS` is non-empty (status `"available"`), the dispatch function **must** handle
-///   at least `"help"` and every action listed in `ACTIONS`, returning `Ok(Value)`.
-/// - If `ACTIONS` is empty (status `"stub"`), the dispatch function is never called by agents
-///   that filter on `status == "available"`, but it may still be invoked directly. A stub
-///   dispatch should return an `unknown_action` envelope for all inputs.
-///
-/// A debug-build runtime check is performed in [`ToolRegistry::register`]: it asserts that
-/// `status` is consistent with `actions.len()`.
-macro_rules! register_service {
-    // Full override: custom actions expr and dispatch expr (for migrated services).
-    ($reg:expr, $feature:literal, $svc:ident, actions = $actions:expr, dispatch = $dispatch:expr) => {
-        #[cfg(feature = $feature)]
-        {
-            let meta = labby_apis::$svc::META;
-            let actions: &'static [ActionSpec] = $actions;
-            $reg.register(RegisteredService {
-                name: meta.name,
-                description: meta.description,
-                category: category_slug(meta.category),
-                kind: registered_service_kind(meta.name, meta.category),
-                status: if actions.is_empty() {
-                    "stub"
-                } else {
-                    "available"
-                },
-                actions,
-                dispatch: $dispatch,
-            });
-        }
-    };
-    // Default: use dispatch::$svc ACTIONS const and dispatch fn.
-    ($reg:expr, $feature:literal, $svc:ident) => {
-        #[cfg(feature = $feature)]
-        {
-            let meta = labby_apis::$svc::META;
-            let actions: &'static [ActionSpec] = crate::dispatch::$svc::ACTIONS;
-            $reg.register(RegisteredService {
-                name: meta.name,
-                description: meta.description,
-                category: category_slug(meta.category),
-                kind: registered_service_kind(meta.name, meta.category),
-                status: if actions.is_empty() {
-                    "stub"
-                } else {
-                    "available"
-                },
-                actions,
-                dispatch: dispatch_fn!(crate::dispatch::$svc::dispatch),
-            });
-        }
     };
 }
 
@@ -352,21 +283,12 @@ impl labby_gateway::gateway::service_registry::GatewayServiceRegistry for ToolRe
 }
 
 const ALWAYS_VISIBLE_SERVICES: &[&str] = &[
-    "init",
     "setup",
     "doctor",
-    "plugins",
     "gateway",
     "help",
     "completions",
-    "scaffold",
-    "audit",
-    "marketplace",
-    "logs",
     "snippets",
-    "device",
-    "acp",
-    "stash",
 ];
 
 #[must_use]
@@ -471,6 +393,8 @@ pub fn build_docs_registry() -> ToolRegistry {
 
 #[allow(clippy::too_many_lines)]
 fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
+    #[cfg(not(feature = "lab-admin"))]
+    let _ = apply_runtime_conditions;
     let mut reg = ToolRegistry::new();
 
     #[cfg(feature = "gateway")]
@@ -486,7 +410,7 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
 
     // doctor is always-on (bootstrap utility; no feature flag).
     {
-        let meta = labby_apis::doctor::META;
+        let meta = crate::dispatch::doctor::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -499,7 +423,7 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     }
     // setup is always-on (Bootstrap orchestrator; no feature flag).
     {
-        let meta = labby_apis::setup::META;
+        let meta = crate::dispatch::setup::META;
         reg.register(RegisteredService {
             name: meta.name,
             description: meta.description,
@@ -511,16 +435,6 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         });
     }
 
-    reg.register(RegisteredService {
-        name: "logs",
-        description: "Search and stream local-master runtime logs",
-        category: "bootstrap",
-        kind: RegisteredServiceKind::BootstrapOperator,
-        status: "available",
-        actions: crate::dispatch::logs::ACTIONS,
-        dispatch: dispatch_fn!(crate::dispatch::logs::dispatch),
-    });
-
     #[cfg(feature = "gateway")]
     reg.register(RegisteredService::bootstrap_operator(
         "snippets",
@@ -529,71 +443,6 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         crate::dispatch::snippets::ACTIONS,
         dispatch_fn!(crate::dispatch::snippets::dispatch),
     ));
-
-    #[cfg(feature = "nodes")]
-    reg.register(RegisteredService {
-        name: "device",
-        description: "Manage fleet device enrollments",
-        category: "bootstrap",
-        kind: RegisteredServiceKind::BootstrapOperator,
-        status: "available",
-        actions: crate::mcp::services::nodes::ACTIONS,
-        dispatch: dispatch_fn!(crate::mcp::services::nodes::dispatch),
-    });
-
-    #[cfg(feature = "marketplace")]
-    {
-        let meta = labby_apis::marketplace::META;
-        reg.register(RegisteredService {
-            name: meta.name,
-            description: meta.description,
-            category: category_slug(meta.category),
-            kind: registered_service_kind(meta.name, meta.category),
-            status: "available",
-            actions: crate::dispatch::marketplace::actions(),
-            dispatch: dispatch_fn!(crate::dispatch::marketplace::dispatch),
-        });
-    }
-
-    // acp is feature-gated: chat/session runtime for the web UI (required by marketplace).
-    #[cfg(feature = "acp")]
-    {
-        let meta = labby_apis::acp::META;
-        reg.register(RegisteredService {
-            name: meta.name,
-            description: meta.description,
-            category: category_slug(meta.category),
-            kind: registered_service_kind(meta.name, meta.category),
-            status: "available",
-            actions: crate::dispatch::acp::catalog::ACTIONS,
-            dispatch: dispatch_fn!(crate::dispatch::acp::dispatch::dispatch),
-        });
-    }
-
-    // stash is feature-gated: versioned component snapshots (required by marketplace).
-    #[cfg(feature = "stash")]
-    {
-        let meta = labby_apis::stash::META;
-        reg.register(RegisteredService {
-            name: meta.name,
-            description: meta.description,
-            category: category_slug(meta.category),
-            kind: registered_service_kind(meta.name, meta.category),
-            status: "available",
-            actions: crate::dispatch::stash::catalog::ACTIONS,
-            dispatch: dispatch_fn!(crate::dispatch::stash::dispatch::dispatch),
-        });
-    }
-
-    // Audit anchor: register_service!(reg, "beads"
-
-    register_service!(
-        reg,
-        "deploy",
-        deploy,
-        actions = crate::mcp::services::deploy::ACTIONS,
-        dispatch = dispatch_fn!(crate::mcp::services::deploy::dispatch)
-    );
 
     #[cfg(feature = "lab-admin")]
     if !apply_runtime_conditions || lab_admin_enabled() {
@@ -644,11 +493,8 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
 
 #[must_use]
 pub fn service_meta(name: &str) -> Option<&'static PluginMeta> {
-    match name {
-        #[cfg(feature = "deploy")]
-        "deploy" => Some(&labby_apis::deploy::META),
-        _ => None,
-    }
+    let _ = name;
+    None
 }
 
 /// Returns `true` when admin is enabled via `LAB_ADMIN_ENABLED=1` env var
@@ -666,28 +512,15 @@ fn lab_admin_enabled() -> bool {
         .unwrap_or(false)
 }
 
-const fn category_slug(cat: labby_apis::core::Category) -> &'static str {
-    use labby_apis::core::Category;
-    match cat {
-        Category::Media => "media",
-        Category::Servarr => "servarr",
-        Category::Indexer => "indexer",
-        Category::Download => "download",
-        Category::Notes => "notes",
-        Category::Documents => "documents",
-        Category::Network => "network",
-        Category::Notifications => "notifications",
-        Category::Ai => "ai",
-        Category::Bootstrap => "bootstrap",
-        Category::Marketplace => "marketplace",
-    }
+const fn category_slug(cat: labby_primitives::plugin::Category) -> &'static str {
+    cat.as_str()
 }
 
 fn registered_service_kind(
     name: &'static str,
-    category: labby_apis::core::Category,
+    category: labby_primitives::plugin::Category,
 ) -> RegisteredServiceKind {
-    use labby_apis::core::Category;
+    use labby_primitives::plugin::Category;
 
     if name == "beads" {
         return RegisteredServiceKind::BuiltInUpstreamApi;
@@ -698,9 +531,7 @@ fn registered_service_kind(
     }
 
     match name {
-        "doctor" | "setup" | "marketplace" | "deploy" | "acp" | "stash" | "loggifly" => {
-            RegisteredServiceKind::BootstrapOperator
-        }
+        "doctor" | "setup" | "loggifly" => RegisteredServiceKind::BootstrapOperator,
         _ => RegisteredServiceKind::BuiltInUpstreamApi,
     }
 }
@@ -711,7 +542,7 @@ mod tests {
         RegisteredService, RegisteredServiceKind, ToolRegistry, build_default_registry,
         filter_built_in_upstream_apis, is_built_in_upstream_api_service, service_meta,
     };
-    use labby_apis::core::action::ActionSpec;
+    use labby_primitives::action::ActionSpec;
     use serde_json::Value;
     use std::future::Future;
     use std::time::Duration;
@@ -766,26 +597,17 @@ mod tests {
             .iter()
             .map(|service| service.name)
             .collect();
-        // `mut` is only exercised when at least one feature-gated push compiles;
-        // slice builds with none of these features would otherwise warn.
-        #[cfg_attr(
-            not(any(
-                feature = "acp",
-                feature = "stash",
-                feature = "gateway",
-                feature = "marketplace"
-            )),
-            allow(unused_mut)
-        )]
         let mut kept_services = vec!["setup", "doctor"];
-        #[cfg(feature = "acp")]
-        kept_services.push("acp");
-        #[cfg(feature = "stash")]
-        kept_services.push("stash");
         #[cfg(feature = "gateway")]
         kept_services.push("gateway");
-        #[cfg(feature = "marketplace")]
-        kept_services.push("marketplace");
+        #[cfg(feature = "gateway")]
+        kept_services.push("snippets");
+        #[cfg(feature = "fs")]
+        kept_services.push("fs");
+        #[cfg(feature = "lab-admin")]
+        if lab_admin_enabled() {
+            kept_services.push("lab_admin");
+        }
         for kept in kept_services {
             assert!(names.contains(kept), "{kept} should stay available");
         }
@@ -842,115 +664,30 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "marketplace"))]
     #[test]
-    fn default_registry_omits_marketplace_without_feature() {
-        assert!(
-            !registry_has_service("marketplace"),
-            "marketplace must not register without the `marketplace` feature"
-        );
-    }
-
-    #[cfg(feature = "marketplace")]
-    #[test]
-    fn default_registry_includes_marketplace_with_feature() {
-        assert!(
-            registry_has_service("marketplace"),
-            "marketplace must register with the `marketplace` feature"
-        );
-    }
-
-    #[cfg(not(feature = "acp"))]
-    #[test]
-    fn default_registry_omits_acp_without_feature() {
-        assert!(
-            !registry_has_service("acp"),
-            "acp must not register without the `acp` feature"
-        );
-    }
-
-    #[cfg(feature = "acp")]
-    #[test]
-    fn default_registry_includes_acp_with_feature() {
-        assert!(
-            registry_has_service("acp"),
-            "acp must register with the `acp` feature"
-        );
-    }
-
-    #[cfg(not(feature = "stash"))]
-    #[test]
-    fn default_registry_omits_stash_without_feature() {
-        assert!(
-            !registry_has_service("stash"),
-            "stash must not register without the `stash` feature"
-        );
-    }
-
-    #[cfg(feature = "stash")]
-    #[test]
-    fn default_registry_includes_stash_with_feature() {
-        assert!(
-            registry_has_service("stash"),
-            "stash must register with the `stash` feature"
-        );
-    }
-
-    #[cfg(not(feature = "nodes"))]
-    #[test]
-    fn default_registry_omits_device_without_nodes_feature() {
-        assert!(
-            !registry_has_service("device"),
-            "device must not register without the `nodes` feature"
-        );
-    }
-
-    #[cfg(feature = "nodes")]
-    #[test]
-    fn default_registry_includes_device_with_nodes_feature() {
-        assert!(
-            registry_has_service("device"),
-            "device must register with the `nodes` feature"
-        );
+    fn retired_services_never_register() {
+        for retired in ["acp", "device", "deploy", "marketplace", "stash"] {
+            assert!(
+                !registry_has_service(retired),
+                "{retired} has been retired from the gateway host"
+            );
+        }
     }
 
     /// Guard that the MCP registry and the HTTP router mount identical service sets.
-    ///
-    /// Both sides are derived from the same authoritative source — `labby_apis::<service>::META.name`
-    /// — guarded by the same `#[cfg(feature)]` attributes used in `build_default_registry()` and
-    /// `build_router()`. Adding a new service only requires touching those two sites;
-    /// this test self-updates through the shared feature flag.
     ///
     /// If this test fails, a service was registered in the MCP registry but not mounted in the
     /// HTTP router (or vice versa). Both must be updated together.
     #[test]
     fn registry_and_router_service_sets_are_identical() {
-        // Derive the expected HTTP router service set from labby_apis META constants.
-        // These are the same names used by build_router(), so any rename
-        // in labby_apis automatically propagates here without manual updates.
-        //
-        // Assumption: every HTTP route mount uses exactly `META.name` as its path prefix.
-        // If a service is added to build_router() under a different name than
-        // META.name, that divergence will NOT be caught here. The trade-off is accepted:
-        // the router consistently derives its path prefix from META.name, and if that
-        // ever changes the build itself would break on the feature-gated import.
         let http_router_services: std::collections::HashSet<&'static str> = {
             let mut s = std::collections::HashSet::new();
-            #[cfg(feature = "acp")]
-            s.insert(labby_apis::acp::META.name);
-            #[cfg(feature = "nodes")]
-            s.insert("device");
             #[cfg(feature = "gateway")]
             s.insert("gateway");
             #[cfg(feature = "gateway")]
             s.insert("snippets");
-            s.insert("logs");
-            #[cfg(feature = "marketplace")]
-            s.insert(labby_apis::marketplace::META.name);
-            s.insert(labby_apis::doctor::META.name); // always-on
-            s.insert(labby_apis::setup::META.name); // always-on
-            #[cfg(feature = "stash")]
-            s.insert(labby_apis::stash::META.name);
+            s.insert(crate::dispatch::doctor::META.name); // always-on
+            s.insert(crate::dispatch::setup::META.name); // always-on
             #[cfg(feature = "fs")]
             s.insert("fs");
             s
@@ -962,11 +699,8 @@ mod tests {
 
         let only_in_registry: Vec<&&str> = registry_services
             .iter()
-            // lab_admin is MCP-only: no HTTP route by design (runtime opt-in via LAB_ADMIN_ENABLED=1)
-            // deploy is MCP+CLI-only for V1; HTTP API surface is deferred (see docs/runtime/DEPLOY_SERVICE.md)
-            .filter(|n| {
-                !http_router_services.contains(**n) && **n != "lab_admin" && **n != "deploy"
-            })
+            // lab_admin is MCP-only: no HTTP route by design (runtime opt-in via LAB_ADMIN_ENABLED=1).
+            .filter(|n| !http_router_services.contains(**n) && **n != "lab_admin")
             .collect();
         let only_in_router: Vec<&&str> = http_router_services
             .iter()

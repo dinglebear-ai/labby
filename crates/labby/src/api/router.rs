@@ -11,7 +11,7 @@ use axum::{
     extract::{ConnectInfo, Query, State},
     http::{HeaderName, HeaderValue, Method, Request, StatusCode, header},
     middleware::Next,
-    response::{Html, IntoResponse},
+    response::IntoResponse,
     routing::{get, post},
 };
 use subtle::ConstantTimeEq;
@@ -48,26 +48,6 @@ fn lab_auth_deriver(
             .map(crate::observability::activity::ActorKey::into_arc)
     })
 }
-
-#[cfg(feature = "marketplace")]
-const DEV_MARKETPLACE_READ_ACTIONS: &[&str] = &[
-    "help",
-    "schema",
-    "sources.list",
-    "plugins.list",
-    "plugin.get",
-    "plugin.artifacts",
-    "plugin.workspace",
-    "plugin.components",
-    "plugin.deploy.preview",
-    "agent.list",
-    "agent.get",
-    "mcp.config",
-    "mcp.list",
-    "mcp.get",
-    "mcp.versions",
-    "mcp.meta.get",
-];
 
 pub(crate) fn tokens_equal(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
@@ -1055,65 +1035,57 @@ fn derive_actor_key(
 /// Build the `/v1` sub-router with all feature-gated service routes.
 #[cfg_attr(not(feature = "fs"), allow(unused_variables))]
 fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppState> {
-    let is_master = state.is_master();
+    #[cfg(feature = "api-docs")]
     let openapi_spec: Arc<String> = super::openapi::build_openapi_spec(state.registry.services())
         .unwrap_or_else(|e| {
             tracing::error!(error = %e, "failed to serialize OpenAPI spec");
             Arc::new(String::from(r#"{"error":"spec generation failed"}"#))
         });
+    #[cfg(feature = "api-docs")]
     let spec_for_route = openapi_spec;
 
     let mut v1 = Router::new();
-    #[cfg(feature = "nodes")]
+    v1 = v1.route("/{service}/actions", get(service_actions));
+    v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
+
+    #[cfg(feature = "gateway")]
     {
-        v1 = v1.nest("/nodes", super::nodes::routes(state.clone()));
+        // upstream oauth must be nested before /gateway so its more-specific prefix wins;
+        // only mount when the gateway manager is present (oauth requires it).
+        if state.gateway_manager.is_some() {
+            v1 = v1.nest(
+                "/gateway/oauth",
+                crate::api::upstream_oauth::gateway_routes(state.clone()),
+            );
+        }
+
+        // SECURITY (T1): gateway admin actions spawn arbitrary local stdio commands
+        // with labby's full process environment. Refuse to mount /v1/gateway when
+        // auth is not configured — unauthenticated HTTP access to gateway admin
+        // actions is a critical vulnerability. Mirror the /v1/fs refusal pattern.
+        if api_auth_configured {
+            v1 = v1.nest("/gateway", services::gateway::routes(state.clone()));
+            v1 = v1.nest("/snippets", services::snippets::routes(state.clone()));
+        } else {
+            tracing::warn!(
+                subsystem = "startup",
+                phase = "gateway.mount.skipped",
+                reason = "no_auth_configured",
+                "gateway service routes not mounted: HTTP API has no auth configured. \
+                 Set LAB_MCP_HTTP_TOKEN or LAB_AUTH_MODE=oauth to enable /v1/gateway. \
+                 Gateway admin actions can spawn arbitrary processes — never expose them unauthenticated."
+            );
+            tracing::warn!(
+                subsystem = "startup",
+                phase = "snippets.mount.skipped",
+                reason = "no_auth_configured",
+                "snippets service routes not mounted: executable snippets require API auth"
+            );
+        }
     }
 
-    if is_master {
-        v1 = v1.route("/{service}/actions", get(service_actions));
-        v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
-
-        #[cfg(feature = "gateway")]
-        {
-            // upstream oauth must be nested before /gateway so its more-specific prefix wins;
-            // only mount when the gateway manager is present (oauth requires it).
-            if state.gateway_manager.is_some() {
-                v1 = v1.nest(
-                    "/gateway/oauth",
-                    crate::api::upstream_oauth::gateway_routes(state.clone()),
-                );
-            }
-
-            // SECURITY (T1): gateway admin actions spawn arbitrary local stdio commands
-            // with labby's full process environment. Refuse to mount /v1/gateway when
-            // auth is not configured — unauthenticated HTTP access to gateway admin
-            // actions is a critical vulnerability. Mirror the /v1/fs refusal pattern.
-            if api_auth_configured {
-                v1 = v1.nest("/gateway", services::gateway::routes(state.clone()));
-                v1 = v1.nest("/snippets", services::snippets::routes(state.clone()));
-            } else {
-                tracing::warn!(
-                    subsystem = "startup",
-                    phase = "gateway.mount.skipped",
-                    reason = "no_auth_configured",
-                    "gateway service routes not mounted: HTTP API has no auth configured. \
-                     Set LAB_MCP_HTTP_TOKEN or LAB_AUTH_MODE=oauth to enable /v1/gateway. \
-                     Gateway admin actions can spawn arbitrary processes — never expose them unauthenticated."
-                );
-                tracing::warn!(
-                    subsystem = "startup",
-                    phase = "snippets.mount.skipped",
-                    reason = "no_auth_configured",
-                    "snippets service routes not mounted: executable snippets require API auth"
-                );
-            }
-        }
-
-        #[cfg(feature = "acp")]
-        {
-            v1 = v1.nest("/acp", services::acp::routes(state.clone()));
-        }
-
+    #[cfg(feature = "api-docs")]
+    {
         v1 = v1
             .route(
                 "/openapi.json",
@@ -1132,98 +1104,58 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
             )
             .route(
                 "/docs",
-                get(|| async { Html(include_str!("openapi_docs.html")) }),
-            )
-            // All v1 unauthenticated route groups (marketplace, doctor, setup)
-            // are gated by host_validation_layer — non-loopback
-            // Host headers are rejected before reaching the dispatcher (DNS
-            // rebinding mitigation for the v1 wizard, lab-bg3e.3.3).
-            .nest(
-                "/doctor",
-                services::doctor::routes(state.clone()).layer(axum::middleware::from_fn(
-                    crate::api::host_validation::host_validation_layer,
-                )),
-            )
-            .nest(
-                "/setup",
-                services::setup::routes(state.clone()).layer(axum::middleware::from_fn(
-                    crate::api::host_validation::host_validation_layer,
-                )),
-            )
-            .nest(
-                "/auth/allowed-emails",
-                services::auth_admin::routes(state.clone()),
+                get(|| async { axum::response::Html(include_str!("openapi_docs.html")) }),
             );
+    }
 
-        #[cfg(feature = "stash")]
-        {
-            v1 = v1.nest("/stash", services::stash::routes(state.clone()));
-        }
+    v1 = v1
+        // Unauthenticated route groups are gated by host_validation_layer —
+        // non-loopback Host headers are rejected before reaching the dispatcher
+        // (DNS rebinding mitigation for the v1 wizard, lab-bg3e.3.3).
+        .nest(
+            "/doctor",
+            services::doctor::routes(state.clone()).layer(axum::middleware::from_fn(
+                crate::api::host_validation::host_validation_layer,
+            )),
+        )
+        .nest(
+            "/setup",
+            services::setup::routes(state.clone()).layer(axum::middleware::from_fn(
+                crate::api::host_validation::host_validation_layer,
+            )),
+        )
+        .nest(
+            "/auth/allowed-emails",
+            services::auth_admin::routes(state.clone()),
+        );
 
-        #[cfg(feature = "marketplace")]
-        {
-            v1 = v1.nest(
-                "/marketplace",
-                services::marketplace::routes(state.clone()).layer(axum::middleware::from_fn(
-                    crate::api::host_validation::host_validation_layer,
-                )),
-            );
-        }
-
-        let has_logs_service = state
-            .registry
-            .services()
-            .iter()
-            .any(|service| service.name == "logs");
-        if api_auth_configured && has_logs_service {
-            v1 = v1.nest("/logs", services::logs::routes(state.clone()));
-        } else if !api_auth_configured && has_logs_service {
+    #[cfg(feature = "fs")]
+    if state
+        .registry
+        .services()
+        .iter()
+        .any(|service| service.name == "fs")
+    {
+        // SECURITY: fs operations read workspace files, so the workspace
+        // runtime refuses to mount them on an unauthenticated API surface.
+        // Static web UI auth settings do not bypass `/v1` auth when
+        // bearer/OAuth auth is configured.
+        if crate::workspace::WorkspaceRuntime::should_mount_http_routes(
+            state.web_ui_auth_disabled,
+            api_auth_configured,
+        ) {
+            v1 = v1.nest("/fs", services::fs::routes(state.clone()));
+        } else {
             tracing::warn!(
                 subsystem = "startup",
-                phase = "logs.mount.skipped",
-                reason = "no_auth_configured",
-                "logs service routes not mounted: /v1/logs exposes runtime log and metrics data and requires API auth"
+                phase = "fs.mount.skipped",
+                reason = "web_ui_auth_disabled",
+                "fs service is configured but LAB_WEB_UI_AUTH_DISABLED=true would expose workspace files unauthenticated; refusing to mount /v1/fs"
             );
-        }
-
-        #[cfg(feature = "fs")]
-        if state
-            .registry
-            .services()
-            .iter()
-            .any(|service| service.name == "fs")
-        {
-            // SECURITY: fs operations read workspace files, so the workspace
-            // runtime refuses to mount them on an unauthenticated API surface.
-            // Static web UI auth settings do not bypass `/v1` auth when
-            // bearer/OAuth auth is configured.
-            if crate::workspace::WorkspaceRuntime::should_mount_http_routes(
-                state.web_ui_auth_disabled,
-                api_auth_configured,
-            ) {
-                v1 = v1.nest("/fs", services::fs::routes(state.clone()));
-            } else {
-                tracing::warn!(
-                    subsystem = "startup",
-                    phase = "fs.mount.skipped",
-                    reason = "web_ui_auth_disabled",
-                    "fs service is configured but LAB_WEB_UI_AUTH_DISABLED=true would expose workspace files unauthenticated; refusing to mount /v1/fs"
-                );
-            }
         }
     }
 
-    let _ = is_master;
-
     v1
-}
-
-/// Build the `/v0.1` sub-router with registry REST endpoints.
-///
-/// Auth middleware is applied via `route_layer()` — same pattern as `/v1`.
-#[cfg(feature = "marketplace")]
-fn build_v0_1_router() -> Router<AppState> {
-    Router::new().nest("/v0.1", services::registry_v01::routes())
 }
 
 // ── Dev mockup file server ────────────────────────────────────────────────
@@ -1316,24 +1248,19 @@ async fn dev_mockup_named(
 // GET /dev/api/nodeinfo — unauthenticated, read-only.
 // Returns config.toml values + ~/.labby/.env contents (secrets masked) so the
 // setup wizard can pre-populate all fields without requiring a bearer token.
-async fn dev_nodeinfo(State(state): State<AppState>) -> axum::response::Response {
+async fn dev_nodeinfo(State(_state): State<AppState>) -> axum::response::Response {
     use axum::Json;
 
-    let local_host =
-        crate::node::identity::resolve_local_hostname().unwrap_or_else(|_| "local".into());
-    let master_url = state
-        .config
-        .deploy
-        .as_ref()
-        .and_then(|d| d.defaults.as_ref())
-        .and_then(|d| d.master_url.clone())
-        .unwrap_or_default();
-    let controller = state
-        .config
-        .node
-        .as_ref()
-        .and_then(|n| n.controller.clone())
-        .unwrap_or_else(|| local_host.clone());
+    let local_host = std::env::var("HOSTNAME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "local".into());
 
     // dotenvy already loaded ~/.labby/.env at startup, so everything is in std::env.
     // The UI treats MASKED_SECRET as "value already set — leave blank to keep current value".
@@ -1394,43 +1321,9 @@ async fn dev_nodeinfo(State(state): State<AppState>) -> axum::response::Response
 
     Json(serde_json::json!({
         "local_host": local_host,
-        "controller": controller,
-        "master_url": master_url,
         "env": env_values,
     }))
     .into_response()
-}
-
-#[cfg(feature = "marketplace")]
-async fn dev_marketplace_readonly(
-    headers: axum::http::HeaderMap,
-    Json(req): Json<crate::api::ActionRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let action = req.action.trim().to_string();
-    if !DEV_MARKETPLACE_READ_ACTIONS.contains(&action.as_str()) {
-        return Err(ApiError(ToolError::Sdk {
-            sdk_kind: "dev_preview_read_only".to_string(),
-            message: format!("dev preview route blocked mutating marketplace action `{action}`"),
-        }));
-    }
-
-    let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
-    services::helpers::handle_action(
-        "marketplace",
-        "api",
-        request_id,
-        req,
-        crate::dispatch::marketplace::actions(),
-        |action, params| async move {
-            crate::dispatch::marketplace::dispatch_with_port(
-                &action,
-                params,
-                &services::marketplace::WsNodeRpcPort,
-            )
-            .await
-        },
-    )
-    .await
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1471,7 +1364,6 @@ pub fn build_router(
     // Build separate protected sub-routers so `/v1/*` can accept browser
     // sessions while `/mcp` remains token-authenticated only.
     let v1_router = Router::new().nest("/v1", v1);
-    let is_master = state.is_master();
     let resource_url: Option<Arc<str>> = auth_state
         .as_ref()
         .and_then(|state| state.config.public_url.as_ref().map(url::Url::as_str))
@@ -1507,16 +1399,6 @@ pub fn build_router(
         v1_router
     };
 
-    #[cfg(feature = "marketplace")]
-    let v0_1_protected = {
-        let v0_1_router = build_v0_1_router();
-        if needs_auth {
-            v0_1_router.route_layer(make_auth_layer(true))
-        } else {
-            v0_1_router
-        }
-    };
-
     let auth_state_for_mcp = auth_state.clone();
     let static_token_for_mcp = static_token.clone();
     let actor_key_deriver_for_mcp = state.actor_key_deriver.clone();
@@ -1549,44 +1431,16 @@ pub fn build_router(
         .route("/health", get(health::health))
         .route("/ready", get(health::ready))
         .merge(v1_protected);
-    #[cfg(feature = "nodes")]
-    {
-        // Registration order relative to `v1_protected` does not affect auth:
-        // v1_protected is a pre-built sub-router merged wholesale, and its auth
-        // comes from its own route_layer. The routes below are auth-exempt by
-        // construction — do not fold them into v1_protected.
-        router = router
-            // POST /v1/nodes/hello is self-registration — exempt from bearer auth.
-            .nest("/v1/nodes", super::nodes::public_routes(state.clone()))
-            // Backward-compat alias for pre-rename self-registration clients.
-            .nest("/v1/fleet", super::nodes::public_routes(state.clone()))
-            // GET /v1/nodes/ws is outside bearer-auth middleware by design.
-            // The `initialize` JSON-RPC method performs enrollment-token validation; all
-            // subsequent node methods require an active session. See docs/runtime/FLEET_METHODS.md.
-            .route(
-                "/v1/nodes/ws",
-                get(crate::api::nodes::fleet::websocket_upgrade),
-            )
-            // Backward-compat alias for pre-rename websocket clients.
-            .route(
-                "/v1/fleet/ws",
-                get(crate::api::nodes::fleet::websocket_upgrade),
-            );
-    }
-    #[cfg(feature = "marketplace")]
-    {
-        router = router.merge(v0_1_protected);
-    }
     #[cfg(feature = "gateway")]
-    if is_master {
+    {
         router = router
             .merge(crate::api::upstream_oauth::browser_routes(state.clone()))
             .merge(crate::api::upstream_oauth::well_known_routes(state.clone()));
     }
-    if let Some(mcp) = mcp_protected.filter(|_| is_master) {
+    if let Some(mcp) = mcp_protected {
         router = router.merge(mcp);
     }
-    if is_master && let Some(auth_state) = auth_state.as_ref() {
+    if let Some(auth_state) = auth_state.as_ref() {
         let _ = auth_state;
         router = router
             .route(
@@ -1628,7 +1482,7 @@ pub fn build_router(
     // over the SPA. See docs/design/component-development.md §5 (two-tier
     // serving model) for the full rationale.
     //
-    // /dev/api/*                  → read-only dispatch endpoints (marketplace guard, nodeinfo)
+    // /dev/api/*                  → local development helper endpoints
     // /dev/mockup, /dev/mockup/*  → Tier 1 mockup file server: serves HTML from
     //                     ~/.superpowers/brainstorm/content/{name}.html directly.
     //                     Keep this out of `/dev` so real Next.js dev pages can render.
@@ -1639,8 +1493,6 @@ pub fn build_router(
         .route("/dev/mockup/", get(dev_mockup))
         .route("/dev/mockup/{name}", get(dev_mockup_named))
         .route("/dev/mockup/{name}/", get(dev_mockup_named));
-    #[cfg(feature = "marketplace")]
-    let dev_routes = dev_routes.route("/dev/api/marketplace", post(dev_marketplace_readonly));
     let dev_routes = if needs_auth {
         dev_routes.route_layer(make_auth_layer(true))
     } else {
@@ -1876,27 +1728,6 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["kind"], "not_found");
-    }
-
-    #[tokio::test]
-    async fn logs_routes_are_not_mounted_without_api_auth() {
-        let state = AppState::new();
-        let app = build_router_with_bearer(state, None, None);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/logs")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        r#"{"action":"logs.metrics","params":{"window":"24h"}}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -2603,9 +2434,9 @@ mod tests {
             ),
         );
         let config = protected_route_config(
-            "syslog",
+            "telemetry",
             "mcp.example.com",
-            "/syslog",
+            "/telemetry",
             "http://10.0.0.2:3100",
         );
         manager
@@ -2621,7 +2452,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/.well-known/oauth-protected-resource/syslog")
+                    .uri("/.well-known/oauth-protected-resource/telemetry")
                     .header(header::HOST, "mcp.example.com")
                     .body(Body::empty())
                     .unwrap(),
@@ -2634,7 +2465,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["resource"], "https://mcp.example.com/syslog");
+        assert_eq!(json["resource"], "https://mcp.example.com/telemetry");
     }
 
     #[cfg(feature = "gateway")]
@@ -2648,9 +2479,9 @@ mod tests {
             ),
         );
         let config = protected_route_config(
-            "syslog",
+            "telemetry",
             "mcp.example.com",
-            "/syslog",
+            "/telemetry",
             "http://10.0.0.2:3100",
         );
         manager
@@ -2666,7 +2497,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/syslog/.well-known/oauth-protected-resource")
+                    .uri("/telemetry/.well-known/oauth-protected-resource")
                     .header(header::HOST, "mcp.example.com")
                     .body(Body::empty())
                     .unwrap(),
@@ -2679,7 +2510,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["resource"], "https://mcp.example.com/syslog");
+        assert_eq!(json["resource"], "https://mcp.example.com/telemetry");
     }
 
     #[cfg(feature = "gateway")]
@@ -2693,9 +2524,9 @@ mod tests {
             ),
         );
         let config = protected_route_config(
-            "syslog",
+            "telemetry",
             "mcp.example.com",
-            "/syslog",
+            "/telemetry",
             "http://10.0.0.2:3100",
         );
         manager
@@ -2711,7 +2542,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/syslog")
+                    .uri("/telemetry")
                     .header(header::HOST, "mcp.example.com")
                     .body(Body::empty())
                     .unwrap(),
@@ -2722,7 +2553,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
-            "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/syslog\", scope=\"mcp:read mcp:write\""
+            "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/telemetry\", scope=\"mcp:read mcp:write\""
         );
     }
 
@@ -2747,7 +2578,8 @@ mod tests {
                 crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
             ),
         );
-        let config = protected_route_config("syslog", "mcp.example.com", "/syslog", &backend.uri());
+        let config =
+            protected_route_config("telemetry", "mcp.example.com", "/telemetry", &backend.uri());
         manager
             .seed_config_unchecked_for_tests(config.to_gateway_config())
             .await;
@@ -2755,7 +2587,7 @@ mod tests {
             .with_config(config)
             .with_gateway_manager(manager);
         let auth_state = test_lab_auth_state().await;
-        let token = issue_test_route_token(&auth_state, "https://mcp.example.com/syslog");
+        let token = issue_test_route_token(&auth_state, "https://mcp.example.com/telemetry");
         let app = build_router(
             state,
             Some("static-token".to_string()),
@@ -2768,7 +2600,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/syslog")
+                    .uri("/telemetry")
                     .header(header::HOST, "mcp.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
@@ -2903,7 +2735,8 @@ mod tests {
                 crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
             ),
         );
-        let config = protected_route_config("syslog", "syslog.example.com", "/mcp", &backend.uri());
+        let config =
+            protected_route_config("telemetry", "telemetry.example.com", "/mcp", &backend.uri());
         manager
             .seed_config_unchecked_for_tests(config.to_gateway_config())
             .await;
@@ -2911,7 +2744,7 @@ mod tests {
             .with_config(config)
             .with_gateway_manager(manager);
         let auth_state = test_lab_auth_state().await;
-        let token = issue_test_route_token(&auth_state, "https://syslog.example.com/mcp");
+        let token = issue_test_route_token(&auth_state, "https://telemetry.example.com/mcp");
         let local_mcp = Router::new().route(
             "/mcp",
             post(|| async { Json(serde_json::json!({"local": true})) }),
@@ -2929,7 +2762,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/mcp")
-                    .header(header::HOST, "syslog.example.com")
+                    .header(header::HOST, "telemetry.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
@@ -3449,168 +3282,6 @@ mod tests {
         session
     }
 
-    /// `/v0.1/servers` requires bearer auth — unauthenticated requests must get 401,
-    /// authenticated requests must reach the handler (200 or 503 if store uninitialized).
-    #[cfg(feature = "marketplace")]
-    #[tokio::test]
-    async fn v01_servers_requires_auth() {
-        let state = AppState::new();
-        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
-
-        // Unauthenticated → 401
-        let unauth_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/v0.1/servers")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            unauth_response.status(),
-            StatusCode::UNAUTHORIZED,
-            "/v0.1/servers must reject unauthenticated requests"
-        );
-        let body = axum::body::to_bytes(unauth_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["kind"], "auth_failed");
-
-        // Authenticated → reaches handler (200 OK or 503 if store not initialized)
-        let auth_response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/v0.1/servers")
-                    .header(header::AUTHORIZATION, "Bearer secret-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = auth_response.status();
-        assert!(
-            status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-            "/v0.1/servers with valid token must return 200 or 503 (store not initialized), got {status}"
-        );
-        if status == StatusCode::SERVICE_UNAVAILABLE {
-            let body = axum::body::to_bytes(auth_response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(json["kind"], "service_unavailable");
-        }
-    }
-
-    /// POST /dev/api/marketplace must accept whitelisted read-only actions after auth.
-    #[cfg(feature = "marketplace")]
-    #[tokio::test]
-    async fn dev_marketplace_allows_whitelisted_read_actions() {
-        let state = AppState::new();
-        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
-
-        for action in DEV_MARKETPLACE_READ_ACTIONS {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/dev/api/marketplace")
-                        .header(header::CONTENT_TYPE, "application/json")
-                        .header(header::AUTHORIZATION, "Bearer secret-token")
-                        .body(Body::from(
-                            serde_json::to_string(&serde_json::json!({ "action": action }))
-                                .unwrap(),
-                        ))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-
-            // 200 OK or 4xx from dispatch (action not implemented in test env) — never 403
-            assert_ne!(
-                response.status(),
-                StatusCode::FORBIDDEN,
-                "read-only action `{action}` must not be blocked by dev guard"
-            );
-        }
-    }
-
-    /// POST /dev/api/marketplace must block mutating actions after auth.
-    #[cfg(feature = "marketplace")]
-    #[tokio::test]
-    async fn dev_marketplace_blocks_mutating_actions() {
-        let state = AppState::new();
-        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
-
-        for action in &[
-            "plugin.install",
-            "plugin.uninstall",
-            "sources.add",
-            "sources.remove",
-            "plugin.workspace.save",
-            "plugin.deploy",
-        ] {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/dev/api/marketplace")
-                        .header(header::CONTENT_TYPE, "application/json")
-                        .header(header::AUTHORIZATION, "Bearer secret-token")
-                        .body(Body::from(
-                            serde_json::to_string(&serde_json::json!({ "action": action }))
-                                .unwrap(),
-                        ))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-
-            assert_eq!(
-                response.status(),
-                StatusCode::FORBIDDEN,
-                "mutating action `{action}` must be blocked by dev guard"
-            );
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(json["kind"], "dev_preview_read_only");
-        }
-    }
-
-    /// POST /dev/api/marketplace must require auth when auth is configured.
-    #[cfg(feature = "marketplace")]
-    #[tokio::test]
-    async fn dev_marketplace_requires_auth_when_configured() {
-        let state = AppState::new();
-        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/dev/api/marketplace")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"action":"plugin.install"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            response.status(),
-            StatusCode::UNAUTHORIZED,
-            "/dev/api/marketplace must use auth middleware when auth is configured"
-        );
-    }
-
     #[tokio::test]
     async fn dev_mockup_routes_require_auth_when_configured() {
         let state = AppState::new();
@@ -3631,32 +3302,6 @@ mod tests {
             response.status(),
             StatusCode::UNAUTHORIZED,
             "/dev mockup routes must use auth middleware when auth is configured"
-        );
-    }
-
-    /// POST /dev/api/marketplace remains open in explicit no-auth local mode.
-    #[cfg(feature = "marketplace")]
-    #[tokio::test]
-    async fn dev_marketplace_allows_no_auth_when_server_has_no_auth() {
-        let state = AppState::new();
-        let app = build_router_with_bearer(state, None, None);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/dev/api/marketplace")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"action":"plugin.install"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            response.status(),
-            StatusCode::FORBIDDEN,
-            "no-auth local mode should still reach the read-only dev guard"
         );
     }
 }

@@ -11,9 +11,9 @@
 //! gate decision over the full audit, so streaming is reserved for a
 //! future `setup.audit.preview` action that wraps `stream_audit_full`.
 
-use labby_apis::core::PluginMeta;
-use labby_apis::core::action::ActionSpec;
-use labby_apis::setup::{CommitOutcome, DraftEntry, SetupClient};
+use crate::dispatch::setup::{CommitOutcome, DraftEntry, SetupClient};
+use labby_primitives::action::ActionSpec;
+use labby_primitives::plugin::PluginMeta;
 use serde_json::{Value, json};
 
 use std::time::Duration;
@@ -211,7 +211,7 @@ fn schema_get_action(params: &Value) -> Result<Value, ToolError> {
 }
 
 fn service_schema(entry: &RegisteredService, meta: &PluginMeta) -> Value {
-    let env_var_to_schema = |is_required: bool, var: &labby_apis::core::EnvVar| -> Value {
+    let env_var_to_schema = |is_required: bool, var: &labby_primitives::plugin::EnvVar| -> Value {
         let mut entry = serde_json::Map::new();
         entry.insert("name".into(), json!(var.name));
         entry.insert("description".into(), json!(var.description));
@@ -562,8 +562,8 @@ fn settings_surfaces_json(cfg: &crate::config::LabConfig) -> Value {
     })
 }
 
-fn ui_schema_to_json(ui: &labby_apis::core::plugin_ui::UiSchema) -> Value {
-    use labby_apis::core::plugin_ui::FieldKind;
+fn ui_schema_to_json(ui: &labby_primitives::plugin_ui::UiSchema) -> Value {
+    use labby_primitives::plugin_ui::FieldKind;
     let kind_str = match ui.kind {
         FieldKind::Text => "text",
         FieldKind::Secret => "secret",

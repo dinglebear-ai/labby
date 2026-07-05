@@ -305,7 +305,7 @@ mod tests {
         let report = check_proxy(ProxyCheckParams {
             app_url: &server_uri,
             mcp_url: &server_uri,
-            route: "/syslog",
+            route: "/telemetry",
             backend_url: None,
         })
         .await
@@ -325,9 +325,9 @@ mod tests {
         let server_uri = server.uri();
         mount_app_health(&server).await;
         Mock::given(method("GET"))
-            .and(path("/.well-known/oauth-protected-resource/syslog"))
+            .and(path("/.well-known/oauth-protected-resource/telemetry"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "resource": "https://wrong.example.com/syslog",
+                "resource": "https://wrong.example.com/telemetry",
                 "authorization_servers":[server_uri.clone()]
             })))
             .mount(&server)
@@ -338,7 +338,7 @@ mod tests {
         let report = check_proxy(ProxyCheckParams {
             app_url: &server_uri,
             mcp_url: &server_uri,
-            route: "/syslog",
+            route: "/telemetry",
             backend_url: None,
         })
         .await
@@ -353,7 +353,7 @@ mod tests {
         let server_uri = server.uri();
         mount_app_health(&server).await;
         Mock::given(method("GET"))
-            .and(path("/.well-known/oauth-protected-resource/syslog"))
+            .and(path("/.well-known/oauth-protected-resource/telemetry"))
             .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
             .mount(&server)
             .await;
@@ -363,7 +363,7 @@ mod tests {
         let report = check_proxy(ProxyCheckParams {
             app_url: &server_uri,
             mcp_url: &server_uri,
-            route: "/syslog",
+            route: "/telemetry",
             backend_url: None,
         })
         .await
@@ -379,7 +379,7 @@ mod tests {
         mount_app_health(&server).await;
         mount_matching_metadata(&server, &server_uri).await;
         Mock::given(method("GET"))
-            .and(path("/syslog"))
+            .and(path("/telemetry"))
             .respond_with(
                 ResponseTemplate::new(401)
                     .insert_header("www-authenticate", "Basic realm=\"legacy\""),
@@ -391,7 +391,7 @@ mod tests {
         let report = check_proxy(ProxyCheckParams {
             app_url: &server_uri,
             mcp_url: &server_uri,
-            route: "/syslog",
+            route: "/telemetry",
             backend_url: None,
         })
         .await
@@ -417,7 +417,7 @@ mod tests {
         let report = check_proxy(ProxyCheckParams {
             app_url: &server_uri,
             mcp_url: &server_uri,
-            route: "/syslog",
+            route: "/telemetry",
             backend_url: None,
         })
         .await
@@ -435,7 +435,7 @@ mod tests {
         mount_matching_metadata(&server, &server_uri).await;
         // Protected route response leaks the backend origin in the body
         Mock::given(method("GET"))
-            .and(path("/syslog"))
+            .and(path("/telemetry"))
             .respond_with(
                 ResponseTemplate::new(401)
                     .set_body_string(format!(
@@ -444,7 +444,7 @@ mod tests {
                     .insert_header(
                         "www-authenticate",
                         format!(
-                            "Bearer resource_metadata=\"{server_uri}/.well-known/oauth-protected-resource/syslog\""
+                            "Bearer resource_metadata=\"{server_uri}/.well-known/oauth-protected-resource/telemetry\""
                         ),
                     ),
             )
@@ -455,7 +455,7 @@ mod tests {
         let report = check_proxy(ProxyCheckParams {
             app_url: &server_uri,
             mcp_url: &server_uri,
-            route: "/syslog",
+            route: "/telemetry",
             backend_url: Some(backend_url),
         })
         .await
@@ -477,7 +477,7 @@ mod tests {
         let report = check_proxy(ProxyCheckParams {
             app_url: &server_uri,
             mcp_url: &server_uri,
-            route: "/syslog",
+            route: "/telemetry",
             backend_url: Some(backend_url),
         })
         .await
@@ -496,9 +496,9 @@ mod tests {
 
     async fn mount_matching_metadata(server: &MockServer, server_uri: &str) {
         Mock::given(method("GET"))
-            .and(path("/.well-known/oauth-protected-resource/syslog"))
+            .and(path("/.well-known/oauth-protected-resource/telemetry"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "resource": format!("{server_uri}/syslog"),
+                "resource": format!("{server_uri}/telemetry"),
                 "authorization_servers": [server_uri],
             })))
             .mount(server)
@@ -507,11 +507,11 @@ mod tests {
 
     async fn mount_bearer_challenge(server: &MockServer, server_uri: &str) {
         Mock::given(method("GET"))
-            .and(path("/syslog"))
+            .and(path("/telemetry"))
             .respond_with(ResponseTemplate::new(401).insert_header(
                 "www-authenticate",
                 format!(
-                    "Bearer resource_metadata=\"{server_uri}/.well-known/oauth-protected-resource/syslog\""
+                    "Bearer resource_metadata=\"{server_uri}/.well-known/oauth-protected-resource/telemetry\""
                 ),
             ))
             .mount(server)

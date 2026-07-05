@@ -145,7 +145,7 @@ fn service_summary(service_name: &str, service: Option<&RegisteredService>) -> S
 
 fn action_summary(
     action_name: &str,
-    action: Option<&labby_apis::core::action::ActionSpec>,
+    action: Option<&labby_primitives::action::ActionSpec>,
 ) -> String {
     match action {
         Some(action) => format!(
@@ -188,7 +188,7 @@ fn action_catalog(service: Option<&RegisteredService>) -> String {
     }
 }
 
-fn render_params(params: &[labby_apis::core::action::ParamSpec]) -> String {
+fn render_params(params: &[labby_primitives::action::ParamSpec]) -> String {
     if params.is_empty() {
         return "none".to_string();
     }
@@ -216,7 +216,7 @@ fn render_params(params: &[labby_apis::core::action::ParamSpec]) -> String {
 mod tests {
     use super::{get, list_all};
     use crate::registry::{RegisteredService, ToolRegistry};
-    use labby_apis::core::action::{ActionSpec, ParamSpec};
+    use labby_primitives::action::{ActionSpec, ParamSpec};
     use serde_json::Value;
     use std::collections::HashMap;
 

@@ -56,10 +56,12 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
         match run_code_mode_runner() {
             Ok(RunnerLoopOutcome::Completed) => {
                 // Reset per-execution state and park for the next Start.
+                cleanup_execution_jail(false);
                 reset_runner_seq();
             }
             Ok(RunnerLoopOutcome::InputClosed) => {
                 // Parent closed the pipe; shut the process down cleanly.
+                cleanup_execution_jail(true);
                 return ExitCode::SUCCESS;
             }
             Err(err) => {
@@ -71,6 +73,7 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
                 // at the end of `run_code_mode_runner`, so a failed execution
                 // leaves no JS state behind. Whether to reuse or recycle this
                 // process is the parent pool's decision.
+                cleanup_execution_jail(false);
                 reset_runner_seq();
             }
         }
@@ -99,11 +102,10 @@ fn reset_runner_seq() {
 }
 
 thread_local! {
-    /// Stable base directory the per-execution jails live under — the runner's
-    /// spawn cwd (the per-runner `TempDir` the parent set). Captured lazily on
-    /// the first execution so each new jail is anchored here, never nested inside
-    /// the previous execution's jail.
-    static JAIL_BASE: std::cell::RefCell<Option<std::path::PathBuf>> =
+    /// Stable temp directory the per-execution jails live under. The runner owns
+    /// this `TempDir` directly so jails never land in the repo even if the
+    /// parent process starts the runner from a workspace cwd.
+    static JAIL_BASE: std::cell::RefCell<Option<tempfile::TempDir>> =
         const { std::cell::RefCell::new(None) };
     /// The current per-execution jail subdir, so the next execution can remove
     /// it before creating a fresh one. `None` until the first execution.
@@ -113,21 +115,11 @@ thread_local! {
 
 /// Create a fresh empty per-execution working directory and `chdir` into it,
 /// removing the previous execution's directory first. Best-effort: on any
-/// failure the process is left in a still-valid isolated cwd — the prior jail if
-/// it was never touched, otherwise the stable spawn base (the per-runner
-/// `TempDir`), since the prior jail is removed up front. See the call site for
-/// why this is defense-in-depth rather than a hard containment boundary.
+/// failure the process is left in a still-valid isolated cwd — the owned
+/// `/tmp/labby-codemode-*` base when available. See the call site for why this
+/// is defense-in-depth rather than a hard containment boundary.
 fn reset_execution_jail() {
-    // Resolve (and remember) the stable base = the spawn cwd. The first call
-    // captures it before we ever chdir into a subdir, so subsequent jails are
-    // siblings, not nested.
-    let base = JAIL_BASE.with(|cell| {
-        let mut cell = cell.borrow_mut();
-        if cell.is_none() {
-            *cell = std::env::current_dir().ok();
-        }
-        cell.clone()
-    });
+    let base = jail_base_path();
     let Some(base) = base else {
         return;
     };
@@ -137,6 +129,7 @@ fn reset_execution_jail() {
         // Remove the previous execution's jail (if any) so no file state from a
         // prior caller survives on this pooled process.
         if let Some(previous) = cell.take() {
+            drop(std::env::set_current_dir(&base));
             drop(std::fs::remove_dir_all(&previous));
         }
         let unique = format!("exec-{}-{}", std::process::id(), next_jail_seq());
@@ -158,6 +151,40 @@ fn reset_execution_jail() {
             drop(std::env::set_current_dir(&base));
         }
     });
+}
+
+fn jail_base_path() -> Option<std::path::PathBuf> {
+    JAIL_BASE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none() {
+            let temp_dir = tempfile::Builder::new()
+                .prefix("labby-codemode-")
+                .tempdir()
+                .ok()?;
+            *cell = Some(temp_dir);
+        }
+        cell.as_ref().map(|dir| dir.path().to_path_buf())
+    })
+}
+
+fn cleanup_execution_jail(drop_base: bool) {
+    let base = JAIL_BASE.with(|cell| cell.borrow().as_ref().map(|dir| dir.path().to_path_buf()));
+
+    EXECUTION_JAIL.with(|cell| {
+        if let Some(jail) = cell.borrow_mut().take() {
+            if let Some(base) = &base {
+                drop(std::env::set_current_dir(base));
+            }
+            drop(std::fs::remove_dir_all(jail));
+        }
+    });
+
+    if drop_base {
+        drop(std::env::set_current_dir(std::env::temp_dir()));
+        JAIL_BASE.with(|cell| {
+            drop(cell.borrow_mut().take());
+        });
+    }
 }
 
 fn next_jail_seq() -> u64 {
@@ -402,8 +429,8 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
 }
 
 fn wrap_code_mode(code: &str, proxy: &str) -> String {
-    // The execute wrapper body (assign → typeof check → invoke) is shared with
-    // the Boa path via `code_mode_main_invoker` so the contract cannot diverge.
+    // The execute wrapper body (assign → typeof check → invoke) has a single
+    // source in `code_mode_main_invoker` so the contract cannot diverge.
     // It is interpolated as a named arg (`{invoker}`) so its literal JS braces
     // are substituted verbatim and need no `{{`/`}}` escaping.
     let invoker = code_mode_main_invoker(code);

@@ -403,7 +403,7 @@ pub fn build_health_paths() -> Vec<(String, PathItem)> {
 /// Each service gets `POST /v1/{service}` with the `ActionRequest` body schema.
 #[must_use]
 pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> {
-    let mut paths = service_names
+    let paths = service_names
         .iter()
         .map(|svc| {
             let path = format!("/v1/{svc}");
@@ -501,47 +501,6 @@ pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> 
             (path, item)
         })
         .collect::<Vec<_>>();
-
-    if service_names.iter().any(|name| name == "logs") {
-        let stream_item = PathItemBuilder::new()
-            .operation(
-                utoipa::openapi::HttpMethod::Get,
-                OperationBuilder::new()
-                    .tag("logs")
-                    .summary(Some("Subscribe to live local-master log events"))
-                    .description(Some(
-                        "Server-sent events stream for live local-master logs. API clients use bearer auth here, while the hosted gateway-admin browser consumes the same endpoint with same-origin session auth.",
-                    ))
-                    .responses(
-                        ResponsesBuilder::new()
-                            .response(
-                                "200",
-                                ResponseBuilder::new()
-                                    .description("SSE event stream")
-                                    .content(
-                                        "text/event-stream",
-                                        ContentBuilder::new()
-                                            .schema(Some(RefOr::T(
-                                                ObjectBuilder::new()
-                                                    .schema_type(SchemaType::Type(Type::String))
-                                                    .build()
-                                                    .into(),
-                                            )))
-                                            .build(),
-                                    )
-                                    .build(),
-                            )
-                            .build(),
-                    )
-                    .security(SecurityRequirement::new::<&str, [&str; 0], &str>(
-                        "bearer_auth",
-                        [],
-                    ))
-                    .build(),
-            )
-            .build();
-        paths.push(("/v1/logs/stream".to_string(), stream_item));
-    }
 
     paths
 }
@@ -918,8 +877,7 @@ mod tests {
 
         // Service paths should have POST operations with security requirement
         for (path, item) in paths {
-            if path.starts_with("/v1/") && !path.ends_with("/actions") && path != "/v1/logs/stream"
-            {
+            if path.starts_with("/v1/") && !path.ends_with("/actions") {
                 let post = item.get("post");
                 assert!(
                     post.is_some(),
@@ -933,13 +891,5 @@ mod tests {
                 }
             }
         }
-
-        let stream = paths
-            .get("/v1/logs/stream")
-            .expect("missing /v1/logs/stream path");
-        assert!(
-            stream.get("get").is_some(),
-            "/v1/logs/stream should expose GET for SSE"
-        );
     }
 }

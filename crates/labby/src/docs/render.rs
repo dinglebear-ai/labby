@@ -314,7 +314,7 @@ impl ParamLike for ParamEntry {
     }
 }
 
-impl ParamLike for labby_apis::core::action::ParamSpec {
+impl ParamLike for labby_primitives::action::ParamSpec {
     fn name(&self) -> &str {
         self.name
     }

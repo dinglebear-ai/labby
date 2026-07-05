@@ -5,13 +5,5 @@
 //! specific to the MCP surface and cannot be represented by shared dispatch
 //! alone.
 
-#[cfg(feature = "deploy")]
-pub mod deploy;
-
-// Device enrollment actions are MCP-only for now and live outside the shared
-// service-dispatch pattern.
-#[cfg(feature = "nodes")]
-pub mod nodes;
-
 #[cfg(feature = "fs")]
 pub mod fs;

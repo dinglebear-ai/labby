@@ -50,7 +50,6 @@ Controller HTTP routes include:
 - `GET /v1/nodes/enrollments`
 - `POST /v1/nodes/enrollments/{node_id}/approve`
 - `POST /v1/nodes/enrollments/{node_id}/deny`
-- `POST /v1/nodes/logs/search`
 - full service routes under `/v1/{service}`
 - `/mcp` when HTTP MCP transport is enabled
 
@@ -62,7 +61,7 @@ Node mode starts only:
 
 - node identity and role resolution
 - local node runtime queue
-- local metadata and bootstrap log collection
+- local metadata collection
 - outbound WebSocket client to the controller
 - command execution handlers required by controller-initiated node RPC
 - optional local-only health readiness endpoints
@@ -96,10 +95,9 @@ After connection, the node sends JSON-RPC messages for:
 - node initialization and enrollment status
 - metadata upload
 - status upload
-- log event upload
 - command result and command output frames
 
-The node must queue outbound metadata, status, and log events locally before delivery. Queue entries are acknowledged only after the controller accepts the corresponding WebSocket message.
+The node must queue outbound metadata and status locally before delivery. Queue entries are acknowledged only after the controller accepts the corresponding WebSocket message.
 
 ## Node HTTP Surface
 
@@ -117,7 +115,7 @@ No node-local route may expose fleet inventory, enrollments, service dispatch, m
 Current implementation note:
 
 - Non-controller HTTP is not health-only today.
-- `/v1/nodes/*` is mounted in the shared router and includes compatibility routes such as `/v1/nodes/hello`, `/v1/nodes/status`, `/v1/nodes/metadata`, `/v1/nodes/syslog/batch`, and `/v1/nodes/oauth/relay/start`.
+- `/v1/nodes/*` is mounted in the shared router and includes compatibility routes such as `/v1/nodes/hello`, `/v1/nodes/status`, `/v1/nodes/metadata`, and `/v1/nodes/oauth/relay/start`.
 - Some controller-only routes fail closed on non-controller nodes, but the routes still exist.
 - Node health uses the shared `labby serve` host binding today; it is not forced to `127.0.0.1` yet.
 
@@ -229,7 +227,6 @@ These node-local routes are not part of the node runtime contract:
 
 - `POST /v1/nodes/status`
 - `POST /v1/nodes/metadata`
-- `POST /v1/nodes/syslog/batch`
 - `POST /v1/nodes/oauth/relay/start`
 - `GET /v1/nodes`
 - `GET /v1/nodes/{node_id}`

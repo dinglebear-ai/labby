@@ -13,24 +13,14 @@ pub mod helpers;
 /// Admin-only allowlist management (`/v1/auth/allowed-emails`).
 pub mod auth_admin;
 
-#[cfg(feature = "acp")]
-pub mod acp;
 /// `GET /v1/catalog` — filtered service+action catalog for the ⌘K palette.
 pub mod catalog;
 pub mod doctor;
 #[cfg(feature = "gateway")]
 pub mod gateway;
-pub mod logs;
-#[cfg(feature = "marketplace")]
-pub mod marketplace;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;
-#[cfg(feature = "stash")]
-pub mod stash;
-
-#[cfg(feature = "marketplace")]
-pub mod registry_v01;
 
 #[cfg(feature = "fs")]
 pub mod fs;

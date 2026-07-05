@@ -79,7 +79,7 @@ impl Visit for EventFieldCollector {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-pub(crate) struct PremiumEventFormatter;
+pub struct PremiumEventFormatter;
 
 fn write_level(writer: &mut Writer<'_>, level: tracing::Level, ansi: bool) -> stdfmt::Result {
     let s = if ansi {

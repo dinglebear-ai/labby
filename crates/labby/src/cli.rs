@@ -15,24 +15,14 @@ pub mod helpers;
 pub mod incus;
 #[cfg(feature = "gateway")]
 pub mod internal;
-pub mod logs;
-#[cfg(feature = "marketplace")]
-pub mod marketplace;
-#[cfg(feature = "nodes")]
-pub mod nodes;
 pub mod oauth;
 pub mod params;
 pub mod serve;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;
-#[cfg(feature = "stash")]
-pub mod stash;
 pub mod style;
 pub mod update;
-
-#[cfg(feature = "deploy")]
-pub mod deploy;
 // [lab-scaffold: cli-modules]
 
 use std::process::ExitCode;
@@ -80,9 +70,6 @@ pub enum Command {
     Doctor(doctor::DoctorArgs),
     /// Generate and verify code-owned documentation artifacts.
     Docs(docs::DocsArgs),
-    /// Query nodes from the configured controller.
-    #[cfg(feature = "nodes")]
-    Nodes(nodes::NodesArgs),
     /// Quick reachability check for configured services.
     Health,
     /// Bootstrap the supported Incus Labby gateway container.
@@ -101,17 +88,6 @@ pub enum Command {
     Snippets(snippets::SnippetsArgs),
     /// Run local OAuth callback relay helpers.
     Oauth(oauth::OauthArgs),
-    /// Query labby runtime logs (local store; fleet search requires the nodes feature).
-    Logs(logs::LogsArgs),
-    /// Claude plugin marketplace manager.
-    #[cfg(feature = "marketplace")]
-    Marketplace(marketplace::MarketplaceArgs),
-    /// Component versioning and deployment.
-    #[cfg(feature = "stash")]
-    Stash(stash::StashArgs),
-    /// Deploy the local lab release binary to SSH targets.
-    #[cfg(feature = "deploy")]
-    Deploy(deploy::DeployArgs),
     /// Hidden internal process helpers.
     #[cfg(feature = "gateway")]
     #[command(hide = true)]
@@ -127,8 +103,6 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Mcp(args) => serve::run_mcp(args, &config).await,
         Command::Doctor(args) => doctor::run(args, format).await,
         Command::Docs(args) => docs::run(args, format),
-        #[cfg(feature = "nodes")]
-        Command::Nodes(args) => nodes::run(args, format, &config).await,
         Command::Health => health::run(format).await,
         Command::Setup(args) => setup::run(args, format).await,
         Command::Incus(args) => incus::run(args, format).await,
@@ -139,13 +113,6 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         #[cfg(feature = "gateway")]
         Command::Snippets(args) => snippets::run(args, format, &config).await,
         Command::Oauth(args) => oauth::run(args, &config).await,
-        Command::Logs(args) => logs::run(args, format, &config).await,
-        #[cfg(feature = "marketplace")]
-        Command::Marketplace(args) => marketplace::run(args, format).await,
-        #[cfg(feature = "stash")]
-        Command::Stash(args) => stash::run(args, format).await,
-        #[cfg(feature = "deploy")]
-        Command::Deploy(args) => dispatch_deploy(args, format, config.deploy.clone()).await,
         #[cfg(feature = "gateway")]
         Command::Internal(args) => internal::run(args),
         // [lab-scaffold: cli-dispatch]
@@ -296,19 +263,4 @@ mod tests {
         let cli = Cli::parse_from(["labby", "snippets", "test", "--all"]);
         assert!(matches!(cli.command, Command::Snippets(_)));
     }
-}
-
-/// Deploy dispatch extracted to a helper so the match arm stays a single expression,
-/// which prevents rustfmt from merging the `// [lab-scaffold: cli-dispatch]` anchor
-/// with a trailing `}`.
-#[cfg(feature = "deploy")]
-async fn dispatch_deploy(
-    args: deploy::DeployArgs,
-    format: OutputFormat,
-    deploy_cfg: Option<crate::config::DeployPreferences>,
-) -> Result<ExitCode> {
-    let runner = crate::dispatch::deploy::client::build_runner(deploy_cfg.unwrap_or_default());
-    deploy::run(args, format, &runner)
-        .await
-        .map(|()| ExitCode::SUCCESS)
 }

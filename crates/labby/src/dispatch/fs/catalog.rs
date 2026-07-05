@@ -7,7 +7,7 @@
 //! plus a body-controlled preview call can exfiltrate any readable file
 //! in one round-trip).
 
-use labby_apis::core::action::{ActionSpec, ParamSpec};
+use labby_primitives::action::{ActionSpec, ParamSpec};
 
 /// Full action catalog for the `fs` service. Includes both `fs.list`
 /// (MCP + HTTP) and `fs.preview` (HTTP-only). Built-in actions `help` and
