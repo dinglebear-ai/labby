@@ -138,29 +138,10 @@ Compute `actor_key` once when binding an authenticated session, then clone that
 bound value into later events. Do not derive it inside tracing subscriber
 callbacks or per-log-event hot paths.
 
-New activity-producing callsites should build events through
-`observability::activity_event::ActivityEvent`. The builder takes typed
-`Subsystem`, `Surface`, and `LogLevel` values from
-`dispatch::logs::types`, then produces a `RawLogEvent` for the existing ingest
-pipeline. Do not add new activity callsites that spell `surface` or
-`subsystem` as string literals.
-
 The raw subject remains a credential-adjacent identifier and must not be stored
 in persisted log fields or returned to the Activity UI. A short redacted display
 tag is allowed only for human diagnostics and must not be used for
 authorization or filtering.
-
-### Local Log Ingest Boundary
-
-The local-master `logs` subsystem is a shared observability consumer, not a replacement for dispatch logging.
-
-Rules:
-
-- `main.rs` owns tracing setup and attaches the local log ingest layer once
-- normalization and redaction happen before persistence and before SSE fanout
-- the local store is fed from tracing-aware runtime events, not by scraping terminal output
-- `/v1/logs/stream` is live push from the in-process subscriber hub, not database tailing
-- reserved remote-ingest fields remain in the event model intentionally so future fleet and syslog ingest can converge on the same query contract without schema churn
 
 ### Device Runtime Ingest
 
@@ -170,14 +151,11 @@ At minimum, the following actions must be traceable on the master:
 
 - `device.status`
 - `device.metadata`
-- `device.syslog.batch`
-- `device.logs.search`
 - `device.oauth.relay.start`
 - `fleet.ws.initialize`
 - `fleet.ws.enrollment_required`
-- `fleet.ws.log.event`
 
-Non-master startup warnings for failed websocket connect, initialize, metadata upload, status push, or bootstrap log delivery must be logged without leaking device tokens or raw secret config content.
+Non-master startup warnings for failed websocket connect, initialize, metadata upload, or status push must be logged without leaking device tokens or raw secret config content.
 
 ### Shared Outbound Requests
 
@@ -394,8 +372,7 @@ Additional rules:
 
 Shell wrapper boundary: the user-installed `lab` shell wrapper emits CLI-PREFLIGHT output via `printf` to
 stderr before the Rust binary starts. This output is pre-binary and therefore not processed by
-`init_tracing()`, `LogIngestLayer`, or any redaction rules. Treat it as an unstructured stderr
-boundary — it must not emit credential-bearing content.
+`init_tracing()` or any redaction rules. Treat it as an unstructured stderr boundary — it must not emit credential-bearing content.
 
 ### Upstream OAuth Redaction
 

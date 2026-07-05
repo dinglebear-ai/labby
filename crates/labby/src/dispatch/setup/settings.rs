@@ -735,64 +735,6 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             Some("1024"),
         ),
     ];
-    // Fleet/node settings only exist in builds with the `nodes` feature.
-    // A no-nodes build must not advertise or accept them: a settings write of
-    // `node.role = "node"` would be persisted with a success envelope and then
-    // fail the next `labby serve` startup (the no-nodes role guard rejects
-    // NonMaster), turning one accepted write into a deferred crash loop.
-    #[cfg(feature = "nodes")]
-    fields.extend([
-        editable(
-            "advanced",
-            "node.controller",
-            "Node controller",
-            "Controller host for node runtime.",
-            SettingsBackend::ConfigToml,
-            SettingsControl::Text,
-            SettingsApplyMode::Restart,
-            None,
-            Some("node-a"),
-        ),
-        number_editable(
-            "advanced",
-            "node.log_retention_days",
-            "Node log retention days",
-            "How many days of node logs to retain.",
-            SettingsApplyMode::Partial,
-            1,
-            3650,
-            Some("30"),
-        ),
-        enum_editable(
-            "advanced",
-            "node.role",
-            "Node role",
-            "Explicit runtime role for this device.",
-            SettingsApplyMode::Restart,
-            vec![
-                SettingsOption {
-                    value: "controller",
-                    label: "Controller",
-                },
-                SettingsOption {
-                    value: "node",
-                    label: "Node",
-                },
-            ],
-            Some("controller"),
-        ),
-        editable(
-            "advanced",
-            "device.master",
-            "Legacy device master",
-            "Legacy master host for device runtime.",
-            SettingsBackend::ConfigToml,
-            SettingsControl::Text,
-            SettingsApplyMode::Restart,
-            None,
-            Some("node-a"),
-        ),
-    ]);
     fields.extend([
         number_editable(
             "advanced",
@@ -1435,7 +1377,7 @@ fn validate_string_field(field: &SettingsFieldSpec, value: &str) -> Result<(), T
 
 pub fn env_entries_from_updates(
     entries: &[SettingsUpdateEntry],
-) -> Result<Vec<labby_apis::setup::DraftEntry>, ToolError> {
+) -> Result<Vec<crate::dispatch::setup::DraftEntry>, ToolError> {
     let fields = settings_fields_by_key();
     let mut out = Vec::new();
     for entry in entries {
@@ -1475,7 +1417,7 @@ pub fn env_entries_from_updates(
             }
             _ => return Err(invalid_field(field, "has unsupported env control")),
         };
-        out.push(labby_apis::setup::DraftEntry {
+        out.push(crate::dispatch::setup::DraftEntry {
             key: entry.key.clone(),
             value,
         });
@@ -1658,10 +1600,8 @@ fn build_env_schema() -> Vec<EnvSettingSpec> {
             }
         }
     }
-    // A build without the `acp` feature must not advertise ACP env keys: the
-    // generated env-reference.json is baked in at compile time and still lists
-    // them even though no code in this build reads them.
-    #[cfg(not(feature = "acp"))]
+    // ACP is retired from the gateway host; do not advertise stale env keys
+    // even if generated env-reference.json still contains them.
     by_key.retain(|key, _| !(key.starts_with("LAB_ACP_") || key.starts_with("ACP_")));
     by_key.into_values().collect()
 }
@@ -1874,14 +1814,10 @@ mod tests {
     #[test]
     fn env_schema_merges_generated_reference_and_plugin_meta() {
         let specs = env_schema();
-        let mut keys = vec!["LAB_PUBLIC_URL", "LAB_MCP_HTTP_TOKEN"];
-        // ACP env keys are filtered out of the schema in no-acp builds.
-        #[cfg(feature = "acp")]
-        keys.push("LAB_ACP_DB");
+        let keys = vec!["LAB_PUBLIC_URL", "LAB_MCP_HTTP_TOKEN"];
         for key in keys {
             assert!(specs.iter().any(|spec| spec.key == key), "missing {key}");
         }
-        #[cfg(not(feature = "acp"))]
         assert!(
             !specs
                 .iter()

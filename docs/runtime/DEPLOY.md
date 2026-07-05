@@ -70,7 +70,7 @@ Then start:
 labby serve
 ```
 
-The node runtime will queue metadata and bootstrap logs locally, open its WebSocket session automatically, and keep retrying until the controller admits the node.
+The node runtime will queue metadata locally, open its WebSocket session automatically, and keep retrying until the controller admits the node.
 
 ## Enrollment Rollout
 

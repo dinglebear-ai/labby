@@ -20,9 +20,8 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [acp/design.md](./acp/design.md) for ACP design details and [acp/research-findings.md](./acp/research-findings.md) for the supporting research notes.
 - Use [coverage/README.md](./coverage/README.md), [upstream-api/README.md](./upstream-api/README.md), [generated/README.md](./generated/README.md), and [features/README.md](./features/README.md) for directory-level indexes.
 - Use [MCPREGISTRY_METADATA.md](./services/MCPREGISTRY_METADATA.md) for Lab-owned registry metadata layered onto the mirrored MCP Registry surface.
-- Use [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md), [FLEET_LOGS.md](./runtime/FLEET_LOGS.md), and [DEPLOY.md](./runtime/DEPLOY.md) for the master/non-master fleet runtime, device inventory, and deployment model.
+- Use [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md) and [DEPLOY.md](./runtime/DEPLOY.md) for the master/non-master fleet runtime, device inventory, and deployment model.
 - Use [MONITORS.md](./services/MONITORS.md) for Claude Code monitor definitions (`plugins/monitors/monitors.json`) and the `labby deploy monitor` command.
-- Use [LOCAL_LOGS.md](./services/LOCAL_LOGS.md) for the local-master runtime log store, `/v1/logs`, SSE streaming, and gateway-admin `/logs`.
 - See [UPSTREAM.md](./services/UPSTREAM.md) for upstream MCP gateway setup, configuration, tool merging, circuit breaker behavior, and resource proxying.
 - Consult [TRANSPORT.md](./surfaces/TRANSPORT.md) for stdio and streamable HTTP transport configuration, middleware stack, and session management.
 - Use [OBSERVABILITY.md](./dev/OBSERVABILITY.md) for the mandatory logging, correlation, redaction, and verification contract.
@@ -116,10 +115,6 @@ The docs are split by topic so contributors do not have to recover architecture,
   Controller/node runtime split, node-only artifact rules, HTTP surface boundaries, and rollout verification requirements.
 - [FLEET_METHODS.md](./runtime/FLEET_METHODS.md)
   Fleet WebSocket JSON-RPC method contract and enrollment/session behavior.
-- [FLEET_LOGS.md](./runtime/FLEET_LOGS.md)
-  Fleet log ingestion, queueing, search, and current storage limits.
-- [LOCAL_LOGS.md](./services/LOCAL_LOGS.md)
-  Local-master runtime logging: shared store, bounded search/tail actions, SSE streaming, retention, and future fleet/syslog seams.
 - [DEPLOY.md](./runtime/DEPLOY.md)
   Device-runtime deployment model for master and non-master machines.
 - [DEPLOY_SERVICE.md](./runtime/DEPLOY_SERVICE.md)
@@ -216,8 +211,6 @@ Use the smallest correct doc:
 - mirrored MCP Registry metadata contract: [MCPREGISTRY_METADATA.md](./services/MCPREGISTRY_METADATA.md)
 - node runtime roles, fleet ingest, and master gating: [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md)
 - controller/node runtime split and node artifact contract: [NODE_RUNTIME_CONTRACT.md](./runtime/NODE_RUNTIME_CONTRACT.md)
-- fleet log ingestion and search: [FLEET_LOGS.md](./runtime/FLEET_LOGS.md)
-- local-master runtime log store and SSE console: [LOCAL_LOGS.md](./services/LOCAL_LOGS.md)
 - deployment topology and rollout guidance: [DEPLOY.md](./runtime/DEPLOY.md)
 - upstream MCP proxy, circuit breaker, resource proxying: [UPSTREAM.md](./services/UPSTREAM.md)
 - transport configuration, middleware, sessions: [TRANSPORT.md](./surfaces/TRANSPORT.md)

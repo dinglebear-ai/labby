@@ -26,10 +26,8 @@ Canonical HTTP routes:
 - `GET /v1/nodes/enrollments`
 - `POST /v1/nodes/enrollments/{node_id}/approve`
 - `POST /v1/nodes/enrollments/{node_id}/deny`
-- `POST /v1/nodes/logs/search`
 - `POST /v1/nodes/hello`
 - `POST /v1/nodes/oauth/relay/start`
-- `POST /v1/nodes/syslog/batch`
 - `GET /v1/nodes/ws`
 
 Canonical websocket contract (see `docs/FLEET_METHODS.md` for full spec):
@@ -39,7 +37,6 @@ Canonical websocket contract (see `docs/FLEET_METHODS.md` for full spec):
 - `nodes/ping` — liveness check
 - `nodes/status.push` — telemetry push
 - `nodes/metadata.push` — discovered config push
-- `nodes/log.event` — structured log batch push
 - `nodes/device.enroll` — node identity upsert (idempotent, role-checked)
 - `nodes/command.invoke` — initiate remote command execution
 - `nodes/command.output` — stream command output chunks

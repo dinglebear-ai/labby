@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use labby_apis::setup::DraftEntry;
+use crate::dispatch::setup::DraftEntry;
 
 use crate::config::env_merge::{
     self, EnvEntry, MergeError, MergeOutcome, MergeRequest, strip_quotes,

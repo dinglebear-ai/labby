@@ -15,7 +15,7 @@ use crate::mcp::handlers_tools::{code_mode_tool_meta, code_mode_trace_output_sch
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
 use crate::registry::{RegisteredService, ToolRegistry};
-use labby_apis::core::action::ActionSpec;
+use labby_primitives::action::ActionSpec;
 use rmcp::model::{CallToolRequestParams, Meta, Tool};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -100,7 +100,6 @@ fn test_server(
     LabMcpServer {
         registry: Arc::new(registry),
         gateway_manager,
-        node_role: None,
         peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(logging_level))),
         route_scope,
@@ -2233,7 +2232,6 @@ async fn server_reads_current_pool_from_gateway_manager() {
     let server = LabMcpServer {
         registry: Arc::new(ToolRegistry::new()),
         gateway_manager: Some(Arc::clone(&manager)),
-        node_role: None,
         peers: Arc::clone(&notifier.peers),
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(
             crate::mcp::logging::LoggingLevel::Info,

@@ -137,18 +137,14 @@ impl CatalogCache {
 /// but each write carries the latest visible merge). Failed-to-probe upstreams
 /// must NOT be passed here — leaving them absent means the next run retries.
 ///
-/// The write is offloaded to `tokio::task::spawn_blocking` so the async
-/// runtime thread is not stalled by multi-MB `std::fs` I/O. The write is
-/// also skipped entirely when no entry has changed (content-identical update).
+/// The write is completed before returning so one-shot CLI invocations do not
+/// exit before a refreshed cache lands on disk. The write is skipped entirely
+/// only when no entry has changed and no TTL timestamp needs renewal.
 pub(crate) fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
     if updates.is_empty() {
         return;
     }
-    // Offload blocking I/O to the threadpool so the async runtime is not
-    // stalled by a multi-MB filesystem write.
-    tokio::task::spawn_blocking(move || {
-        merge_and_store_blocking(updates);
-    });
+    merge_and_store_blocking(updates);
 }
 
 fn merge_and_store_blocking(updates: Vec<CatalogCacheUpdate>) {
@@ -157,40 +153,7 @@ fn merge_and_store_blocking(updates: Vec<CatalogCacheUpdate>) {
     let saved_at_unix = now_unix();
     let mut changed = false;
     for update in updates {
-        let tools: Vec<CachedTool> = update
-            .tools
-            .into_iter()
-            .map(|tool| CachedTool {
-                tool: tool.tool,
-                input_schema: tool.input_schema,
-                output_schema: tool.output_schema,
-                destructive: tool.destructive,
-            })
-            .collect();
-
-        // Skip this entry when the fingerprint and tool list are already
-        // identical to what is on disk — avoids redundant writes when the
-        // catalog has not changed since the last run.
-        let unchanged = cache
-            .upstreams
-            .get(&update.upstream_name)
-            .is_some_and(|existing| {
-                existing.fingerprint == update.fingerprint
-                    && tools_fingerprint_matches(existing, &tools)
-            });
-        if unchanged {
-            continue;
-        }
-
-        changed = true;
-        cache.upstreams.insert(
-            update.upstream_name,
-            CachedUpstreamCatalog {
-                fingerprint: update.fingerprint,
-                saved_at_unix,
-                tools,
-            },
-        );
+        changed |= merge_update_into_cache(&mut cache, update, saved_at_unix);
     }
 
     if !changed {
@@ -205,6 +168,45 @@ fn merge_and_store_blocking(updates: Vec<CatalogCacheUpdate>) {
             "failed to persist code_mode catalog cache"
         );
     }
+}
+
+fn merge_update_into_cache(
+    cache: &mut CatalogCache,
+    update: CatalogCacheUpdate,
+    saved_at_unix: u64,
+) -> bool {
+    let tools: Vec<CachedTool> = update
+        .tools
+        .into_iter()
+        .map(|tool| CachedTool {
+            tool: tool.tool,
+            input_schema: tool.input_schema,
+            output_schema: tool.output_schema,
+            destructive: tool.destructive,
+        })
+        .collect();
+
+    let unchanged = cache
+        .upstreams
+        .get(&update.upstream_name)
+        .is_some_and(|existing| {
+            existing.fingerprint == update.fingerprint
+                && existing.saved_at_unix == saved_at_unix
+                && tools_fingerprint_matches(existing, &tools)
+        });
+    if unchanged {
+        return false;
+    }
+
+    cache.upstreams.insert(
+        update.upstream_name,
+        CachedUpstreamCatalog {
+            fingerprint: update.fingerprint,
+            saved_at_unix,
+            tools,
+        },
+    );
+    true
 }
 
 /// Returns `true` when the serialised tool list of `existing` matches `tools`.
@@ -385,6 +387,56 @@ mod tests {
             "fingerprint mismatch"
         );
         assert!(cache.fresh_tools("missing", "fp").is_none());
+    }
+
+    #[test]
+    fn identical_update_renews_saved_at_so_expired_entries_become_fresh() {
+        let mut cache = CatalogCache {
+            version: CACHE_VERSION,
+            upstreams: HashMap::new(),
+        };
+        let stale_saved_at = now_unix() - CACHE_TTL.as_secs() - 60;
+        let tool = CachedTool {
+            tool: test_tool("ping").tool,
+            input_schema: Some(serde_json::json!({"type": "object"})),
+            output_schema: None,
+            destructive: false,
+        };
+        cache.upstreams.insert(
+            "alpha".to_string(),
+            CachedUpstreamCatalog {
+                fingerprint: "fp".to_string(),
+                saved_at_unix: stale_saved_at,
+                tools: vec![tool.clone()],
+            },
+        );
+
+        let changed = merge_update_into_cache(
+            &mut cache,
+            CatalogCacheUpdate {
+                upstream_name: "alpha".to_string(),
+                fingerprint: "fp".to_string(),
+                tools: vec![UpstreamTool {
+                    tool: tool.tool,
+                    input_schema: tool.input_schema,
+                    output_schema: tool.output_schema,
+                    upstream_name: Arc::from("alpha"),
+                    destructive: tool.destructive,
+                }],
+            },
+            now_unix(),
+        );
+
+        assert!(changed, "TTL renewal must persist even when tools match");
+        let entry = cache.upstreams.get("alpha").expect("cache entry");
+        assert!(
+            entry.saved_at_unix > stale_saved_at,
+            "saved_at_unix should be renewed"
+        );
+        assert!(
+            cache.fresh_tools("alpha", "fp").is_some(),
+            "renewed entry should be fresh"
+        );
     }
 
     #[test]

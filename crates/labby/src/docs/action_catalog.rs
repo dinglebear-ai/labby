@@ -57,7 +57,7 @@ pub(super) fn build_action_catalog(services: &[RegisteredService]) -> Vec<Action
 
 fn canonical_actions_for_service<'a>(
     service: &'a RegisteredService,
-) -> &'a [labby_apis::core::action::ActionSpec] {
+) -> &'a [labby_primitives::action::ActionSpec] {
     #[cfg(feature = "fs")]
     if service.name == "fs" {
         return crate::dispatch::fs::catalog::ACTIONS;

@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+profile="${LABBY_BENCH_PROFILE:-release-fast}"
+features="${LABBY_BENCH_FEATURES:-gateway-host}"
+package="${LABBY_BENCH_PACKAGE:-labby}"
+target_dir="${LABBY_BENCH_TARGET_DIR:-target/labby-slim-bench}"
+clean=0
+json=0
+
+usage() {
+  cat <<'USAGE'
+usage: scripts/bench-labby-slimming [--clean] [--json]
+
+Benchmarks the selected labby feature slice and prints build time, binary size,
+and dependency counts. Defaults:
+
+  LABBY_BENCH_FEATURES=gateway-host
+  LABBY_BENCH_PROFILE=release-fast
+  LABBY_BENCH_TARGET_DIR=target/labby-slim-bench
+
+Set those environment variables to compare slices/profiles.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --clean) clean=1 ;;
+    --json) json=1 ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ "$clean" -eq 1 ]; then
+  rm -rf "$target_dir"
+fi
+
+mkdir -p "$target_dir"
+
+tree_file="$target_dir/cargo-tree.txt"
+metadata_file="$target_dir/cargo-metadata.json"
+direct_tree_file="$target_dir/cargo-tree-direct.txt"
+build_log="$target_dir/build.log"
+timing_file="$target_dir/timing.txt"
+
+cargo tree \
+  -p "$package" \
+  --no-default-features \
+  --features "$features" \
+  -e normal \
+  --prefix none \
+  > "$tree_file"
+
+cargo tree \
+  -p "$package" \
+  --no-default-features \
+  --features "$features" \
+  -e normal \
+  --depth 1 \
+  --prefix none \
+  > "$direct_tree_file"
+
+cargo metadata \
+  --no-default-features \
+  --features "$features" \
+  --format-version 1 \
+  > "$metadata_file"
+
+dep_count="$(awk '{print $1}' "$tree_file" | sort -u | wc -l | tr -d ' ')"
+direct_dep_count="$(awk 'NR > 1 && $1 != "[dev-dependencies]" { print $1 }' "$direct_tree_file" | sort -u | wc -l | tr -d ' ')"
+
+if ! /usr/bin/time -f 'elapsed_real=%E
+elapsed_seconds=%e' -o "$timing_file" \
+  cargo build \
+    -p "$package" \
+    --no-default-features \
+    --features "$features" \
+    --profile "$profile" \
+    --target-dir "$target_dir" \
+    --bin labby \
+    > "$build_log" 2>&1; then
+  cat "$build_log" >&2
+  exit 1
+fi
+
+binary="$target_dir/$profile/labby"
+if [ ! -x "$binary" ]; then
+  echo "expected binary missing: $binary" >&2
+  exit 1
+fi
+
+elapsed_real="$(awk -F= '/^elapsed_real=/{print $2}' "$timing_file")"
+elapsed_seconds="$(awk -F= '/^elapsed_seconds=/{print $2}' "$timing_file")"
+binary_bytes="$(stat -c '%s' "$binary")"
+binary_human="$(du -h "$binary" | awk '{print $1}')"
+
+if [ "$json" -eq 1 ]; then
+  jq -n \
+    --arg package "$package" \
+    --arg features "$features" \
+    --arg profile "$profile" \
+    --arg target_dir "$target_dir" \
+    --arg binary "$binary" \
+    --arg elapsed_real "$elapsed_real" \
+    --argjson elapsed_seconds "$elapsed_seconds" \
+    --argjson dep_count "$dep_count" \
+    --argjson direct_dep_count "$direct_dep_count" \
+    --argjson binary_bytes "$binary_bytes" \
+    --arg binary_human "$binary_human" \
+    '{
+      package: $package,
+      features: $features,
+      profile: $profile,
+      target_dir: $target_dir,
+      binary: $binary,
+      elapsed_real: $elapsed_real,
+      elapsed_seconds: $elapsed_seconds,
+      dependency_count: $dep_count,
+      direct_dependency_count: $direct_dep_count,
+      binary_bytes: $binary_bytes,
+      binary_human: $binary_human
+    }'
+else
+  cat <<EOF
+labby slimming benchmark
+feature slice     $features
+profile           $profile
+target dir        $target_dir
+elapsed           $elapsed_real (${elapsed_seconds}s)
+binary            $binary_human ($binary_bytes bytes)
+dependencies      $dep_count total, $direct_dep_count direct
+build log         $build_log
+cargo tree        $tree_file
+EOF
+fi

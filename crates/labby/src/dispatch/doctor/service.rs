@@ -6,13 +6,34 @@
 
 use std::sync::Arc;
 
-use labby_apis::core::ServiceStatus;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use crate::dispatch::clients::ServiceClients;
 use crate::dispatch::error::ToolError;
 
 use super::types::{Finding, Severity};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ServiceStatus {
+    reachable: bool,
+    auth_ok: bool,
+    version: Option<String>,
+    latency_ms: u64,
+    message: Option<String>,
+}
+
+impl ServiceStatus {
+    fn unreachable(message: impl Into<String>) -> Self {
+        Self {
+            reachable: false,
+            auth_ok: false,
+            version: None,
+            latency_ms: 0,
+            message: Some(message.into()),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public API

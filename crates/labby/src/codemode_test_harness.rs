@@ -191,7 +191,6 @@ fn server_with_manager(manager: Arc<GatewayManager>) -> LabMcpServer {
     LabMcpServer {
         registry: Arc::new(ToolRegistry::new()),
         gateway_manager: Some(manager),
-        node_role: None,
         peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(
             crate::mcp::logging::LoggingLevel::Emergency,

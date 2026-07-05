@@ -1,5 +1,4 @@
 use super::state::AppState;
-use crate::config::NodeRole;
 use axum::{
     body::Body,
     extract::{Request, State},
@@ -43,18 +42,6 @@ fn web_asset_response(asset: AssetResponse, method: &Method) -> Response {
 pub async fn serve_web_request(State(state): State<AppState>, request: Request) -> Response {
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
         return StatusCode::NOT_FOUND.into_response();
-    }
-
-    if matches!(state.node_role, Some(NodeRole::NonMaster)) {
-        tracing::warn!(
-            path = %request.uri().path(),
-            "rejected web ui request on non-master node"
-        );
-        return (
-            StatusCode::FORBIDDEN,
-            "web ui is disabled on non-master devices",
-        )
-            .into_response();
     }
 
     // Source precedence is product policy and stays here: a configured directory

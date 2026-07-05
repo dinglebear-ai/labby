@@ -1,9 +1,4 @@
-//! User-code normalization for the Code Mode sandbox (Boa parser/interner based).
-
-// Code Mode normalizes user code via the Boa parser/interner (rlib-only). The JS
-// engine that actually runs code (both `execute` and `search`) is Javy/QuickJS.
-use boa_interner::{Interner, ToIndentedString, ToInternedString};
-use boa_parser::{Parser, Source as ParserSource};
+//! User-code normalization for the Code Mode sandbox.
 
 /// Normalize user-submitted code before sandbox execution.
 ///
@@ -14,20 +9,16 @@ use boa_parser::{Parser, Source as ParserSource};
 /// `main();` call would break the wrapper (the grouping would contain a Promise
 /// or two statements). Transforms:
 /// 1. Strip markdown fences (```javascript/typescript/``` wrappers).
-/// 2. Bare `function main` / `async function main` declarations → parenthesize
-///    into an expression `(async function main() {...})` — NO trailing `main();`.
+/// 2. Bare `function main` / `async function main` declarations are wrapped and
+///    called from an async arrow.
 /// 3. `export default [async] function` → strip `export default ` and
 ///    parenthesize the function expression — NO trailing IIFE `()`.
 /// 4. A bare arrow `async () => {...}` passes through unchanged (it is already a
 ///    function expression).
 /// 5. Loose statements / trailing expressions are wrapped in `async () => { ... }`;
 ///    if the trailing statement looks like an expression, it is returned.
-/// 6. `export default <X>` preceded by prologue statements
-///    (`const x = 1; export default async () => x`) keeps the prologue and
-///    invokes the default-export entry so it closes over those bindings —
-///    handled via the AST when Boa can parse it, and via a textual fallback for
-///    the one form it cannot (an *async* arrow in default-export position; a
-///    plain arrow parses as a DefaultAssignmentExpression and uses the AST).
+/// 6. `export default <X>` preceded by prologue statements keeps the prologue
+///    and invokes the default-export entry so it closes over those bindings.
 ///
 /// Only `execute` normalizes the caller's code through this before handing it to
 /// the Javy runner. `search` passes its code to the runner *raw* (no
@@ -51,25 +42,18 @@ pub fn normalize_user_code(code: &str) -> String {
         }
         return normalize_user_code(inner);
     }
-    if let Some(normalized) = normalize_user_code_parsed(code) {
-        return normalized;
+    if let Some(name) = function_declaration_name(code) {
+        return format!("async () => {{\n{code}\nreturn {name}();\n}}");
     }
-    // Reached only when the code parses as neither a module nor a script — i.e.
-    // an *async arrow* function in `export default` position after a prologue
-    // (`const x = 1; export default async () => x`): Boa's parse_module cannot
-    // parse an *async* arrow default export (a plain arrow parses fine as a
-    // DefaultAssignmentExpression and takes the AST path), and `export` is invalid
-    // in a script, so both parses above returned `None`. Recover textually here.
-    // This is safe against
-    // false positives: valid script code that merely contains the literal
-    // "; export default " (e.g. inside a string) parses as a script above and
-    // never reaches this point. Run the prologue first and invoke the no-prologue
-    // entry inside one wrapper so it closes over the prologue's bindings.
+    if is_bare_function_expression(code) || is_bare_arrow_expression(code) {
+        return strip_trailing_statement_semicolon(code);
+    }
     if let Some((prologue, value)) = split_prologue_export_default(code) {
-        let value = value.trim().trim_end_matches(';').trim();
+        let value = strip_trailing_named_exports(value)
+            .trim()
+            .trim_end_matches(';')
+            .trim();
         if !value.is_empty() {
-            // The prologue is kept verbatim except for named exports, whose
-            // `export` keyword would be a syntax error inside the wrapper.
             let prologue = strip_prologue_exports(prologue);
             let entry = normalize_user_code(&format!("export default {value}"));
             return format!("async () => {{\n{prologue}\nreturn await ({entry})();\n}}");
@@ -91,9 +75,7 @@ pub fn normalize_user_code(code: &str) -> String {
 /// fires when a real prologue precedes an otherwise-unparseable arrow default.
 fn split_prologue_export_default(code: &str) -> Option<(&str, &str)> {
     const NEEDLE: &str = "export default ";
-    let mut from = 0;
-    while let Some(rel) = code[from..].find(NEEDLE) {
-        let idx = from + rel;
+    for idx in export_default_indices(code, NEEDLE) {
         let before = code[..idx].trim_end();
         // A real statement terminator wins as-is. Only when `before` does not
         // already end at a boundary do we retry after stripping a trailing
@@ -117,9 +99,87 @@ fn split_prologue_export_default(code: &str) -> Option<(&str, &str)> {
         {
             return Some((before, &code[idx + NEEDLE.len()..]));
         }
-        from = idx + NEEDLE.len();
     }
     None
+}
+
+fn export_default_indices<'a>(code: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Code,
+        Single,
+        Double,
+        Template,
+        LineComment,
+        BlockComment,
+    }
+
+    let mut hits = Vec::new();
+    let mut state = State::Code;
+    let mut escaped = false;
+    let mut iter = code.char_indices().peekable();
+    while let Some((idx, ch)) = iter.next() {
+        match state {
+            State::Code => {
+                if code[idx..].starts_with(needle) {
+                    hits.push(idx);
+                }
+                match ch {
+                    '\'' => state = State::Single,
+                    '"' => state = State::Double,
+                    '`' => state = State::Template,
+                    '/' if iter.peek().is_some_and(|(_, next)| *next == '/') => {
+                        iter.next();
+                        state = State::LineComment;
+                    }
+                    '/' if iter.peek().is_some_and(|(_, next)| *next == '*') => {
+                        iter.next();
+                        state = State::BlockComment;
+                    }
+                    _ => {}
+                }
+            }
+            State::Single => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '\'' {
+                    state = State::Code;
+                }
+            }
+            State::Double => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    state = State::Code;
+                }
+            }
+            State::Template => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '`' {
+                    state = State::Code;
+                }
+            }
+            State::LineComment => {
+                if ch == '\n' {
+                    state = State::Code;
+                }
+            }
+            State::BlockComment => {
+                if ch == '*' && iter.peek().is_some_and(|(_, next)| *next == '/') {
+                    iter.next();
+                    state = State::Code;
+                }
+            }
+        }
+    }
+    hits.into_iter()
 }
 
 fn wrap_loose_code_as_async_arrow(code: &str) -> String {
@@ -156,236 +216,30 @@ fn strip_code_fences(code: &str) -> &str {
     trimmed
 }
 
-fn normalize_user_code_parsed(source: &str) -> Option<String> {
-    normalize_module_code(source).or_else(|| normalize_script_code(source))
-}
-
-/// Whether an export declaration is an `export default ...` form (vs a named
-/// export, `export { ... }`, or a re-export).
-fn is_default_export(decl: &boa_ast::declaration::ExportDeclaration) -> bool {
-    use boa_ast::declaration::ExportDeclaration as E;
-    matches!(
-        decl,
-        E::DefaultFunctionDeclaration(_)
-            | E::DefaultGeneratorDeclaration(_)
-            | E::DefaultAsyncFunctionDeclaration(_)
-            | E::DefaultAsyncGeneratorDeclaration(_)
-            | E::DefaultClassDeclaration(_)
-            | E::DefaultAssignmentExpression(_)
-    )
-}
-
-fn normalize_module_code(source: &str) -> Option<String> {
-    let mut interner = Interner::default();
-    let mut parser = Parser::new(ParserSource::from_bytes(source.as_bytes()));
-    let module = parser
-        .parse_module(&boa_ast::scope::Scope::new_global(), &mut interner)
-        .ok()?;
-    // Separate the `export default` declaration from any prologue statements, so a
-    // module with leading statements (`const x = 1; export default <X>`) keeps
-    // those bindings. Rendering only the export left the default's free variables
-    // undefined at runtime. Imports are skipped — the sandbox has no module loader.
-    let mut prologue: Vec<String> = Vec::new();
-    let mut export = None;
-    for item in module.items().items() {
-        // Capture the `export default` declaration specifically — not just any
-        // export. A *named* export (`export const y = 1`, `export { ... }`, a
-        // re-export) must not shadow the default and cause normalization to bail.
-        if let boa_ast::ModuleItem::ExportDeclaration(decl) = item
-            && is_default_export(decl)
-        {
-            export = Some(decl);
+fn strip_prologue_exports(prologue: &str) -> String {
+    let mut out = Vec::new();
+    for line in prologue.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("import ") || trimmed.starts_with("export {") {
             continue;
         }
-        // Everything else: statements and binding-carrying named exports become
-        // prologue (with `export` stripped); imports / `export {}` lists / re-exports
-        // have no sandbox-runtime role and render to nothing.
-        if let Some(rendered) = render_prologue_item(item, &interner) {
-            prologue.push(rendered);
-        }
-    }
-    let entry = match export?.as_ref() {
-        boa_ast::declaration::ExportDeclaration::DefaultAssignmentExpression(expr) => {
-            normalize_user_code(&expr.to_interned_string(&interner))
-        }
-        boa_ast::declaration::ExportDeclaration::DefaultFunctionDeclaration(function) => {
-            wrap_default_fn_as_iife(&function.to_indented_string(&interner, 0))
-        }
-        boa_ast::declaration::ExportDeclaration::DefaultAsyncFunctionDeclaration(function) => {
-            wrap_default_fn_as_iife(&function.to_indented_string(&interner, 0))
-        }
-        boa_ast::declaration::ExportDeclaration::DefaultClassDeclaration(class) => format!(
-            "async () => {{\nreturn ({});\n}}",
-            class.to_indented_string(&interner, 0)
-        ),
-        _ => return None,
-    };
-    if prologue.is_empty() {
-        Some(entry)
-    } else {
-        let prologue = prologue.join("\n");
-        Some(format!(
-            "async () => {{\n{prologue}\nreturn await ({entry})();\n}}"
-        ))
-    }
-}
-
-/// Render a non-default module item as prologue source, with any `export` keyword
-/// stripped. Returns `None` for items with no sandbox-runtime role: `export default`
-/// (handled by the caller), `export { a, b }` lists, re-exports, and imports (the
-/// sandbox has no module loader). Binding-carrying named exports (`export const`,
-/// `export var`, `export function`, `export class`) keep their binding so a default
-/// that references them resolves at runtime.
-fn render_prologue_item(item: &boa_ast::ModuleItem, interner: &Interner) -> Option<String> {
-    match item {
-        boa_ast::ModuleItem::StatementListItem(stmt) => Some(stmt.to_indented_string(interner, 0)),
-        boa_ast::ModuleItem::ExportDeclaration(decl) => match decl.as_ref() {
-            boa_ast::declaration::ExportDeclaration::VarStatement(var) => {
-                Some(var.to_interned_string(interner))
-            }
-            boa_ast::declaration::ExportDeclaration::Declaration(d) => {
-                Some(d.to_indented_string(interner, 0))
-            }
-            _ => None,
-        },
-        boa_ast::ModuleItem::ImportDeclaration(_) => None,
-    }
-}
-
-/// Strip `export` keywords from a textual-fallback prologue by reparsing it.
-///
-/// The async-arrow `export default` fallback keeps the prologue verbatim, but a
-/// prologue may carry named exports (`export const helper = ...`) whose `export`
-/// keyword is a syntax error inside the generated `async () => { ... }` wrapper.
-/// Unlike the full input, the prologue alone has no async-arrow default and so
-/// parses cleanly as a module — reparse it and re-render statements and
-/// binding-carrying named exports without `export`. Returns the prologue unchanged
-/// if it does not parse as a module (e.g. a plain script prologue), preserving the
-/// prior behavior for the common no-named-export case.
-fn strip_prologue_exports(prologue: &str) -> String {
-    let mut interner = Interner::default();
-    let mut parser = Parser::new(ParserSource::from_bytes(prologue.as_bytes()));
-    let Ok(module) = parser.parse_module(&boa_ast::scope::Scope::new_global(), &mut interner)
-    else {
-        return prologue.to_string();
-    };
-    // Only rewrite when the prologue carries a non-statement item — a named
-    // export whose `export` keyword must be stripped, or an `import` that must be
-    // dropped (no loader in the sandbox; left verbatim it is a syntax error inside
-    // the wrapper). A pure-statement prologue is kept verbatim so re-rendering
-    // never perturbs the common case.
-    let needs_rewrite = module
-        .items()
-        .items()
-        .iter()
-        .any(|item| !matches!(item, boa_ast::ModuleItem::StatementListItem(_)));
-    if !needs_rewrite {
-        return prologue.to_string();
-    }
-    module
-        .items()
-        .items()
-        .iter()
-        .filter_map(|item| render_prologue_item(item, &interner))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Wrap a rendered `export default` function declaration as an immediately
-/// invoked expression inside an async arrow wrapper.
-///
-/// Boa renders an *anonymous* `export default [async] function() {...}` with the
-/// synthesized name `default` (`async function default() {...}`). `default` is a
-/// reserved word, so that is a syntax error when used as an expression in the
-/// IIFE. Drop the synthesized name to recover a valid anonymous function
-/// expression. (A genuinely named `export default function foo() {}` keeps `foo`
-/// and is untouched.)
-fn wrap_default_fn_as_iife(rendered: &str) -> String {
-    let rendered = strip_synthesized_default_name(rendered);
-    format!("async () => {{\nreturn ({rendered})();\n}}")
-}
-
-/// Remove Boa's synthesized `default` name from an anonymous default-export
-/// function (`[async] function default(...)`), anchored at the leading function
-/// keyword. Anchoring matters: an unanchored replace would also rewrite a
-/// `function default(` substring appearing *inside* the body (e.g. in a string
-/// literal of a genuinely-named default export), silently corrupting it.
-fn strip_synthesized_default_name(rendered: &str) -> String {
-    for (synthesized, anonymous) in [
-        ("async function default(", "async function("),
-        ("async function default (", "async function ("),
-        ("function default(", "function("),
-        ("function default (", "function ("),
-    ] {
-        if let Some(rest) = rendered.strip_prefix(synthesized) {
-            return format!("{anonymous}{rest}");
-        }
-    }
-    rendered.to_string()
-}
-
-fn normalize_script_code(source: &str) -> Option<String> {
-    let mut interner = Interner::default();
-    let mut parser = Parser::new(ParserSource::from_bytes(source.as_bytes()));
-    let script = parser
-        .parse_script(&boa_ast::scope::Scope::new_global(), &mut interner)
-        .ok()?;
-    let statements = script.statements().statements();
-    if statements.is_empty() {
-        return Some("async () => {}".to_string());
-    }
-
-    if let [item] = statements {
-        match item {
-            boa_ast::StatementListItem::Statement(statement) => {
-                if let boa_ast::Statement::Expression(expr) = statement.as_ref() {
-                    if matches!(
-                        expr.flatten(),
-                        boa_ast::Expression::ArrowFunction(_)
-                            | boa_ast::Expression::AsyncArrowFunction(_)
-                    ) {
-                        return Some(strip_trailing_statement_semicolon(source));
-                    }
-                    return Some(format!(
-                        "async () => {{\nreturn ({})\n}}",
-                        expr.to_interned_string(&interner)
-                    ));
-                }
-            }
-            boa_ast::StatementListItem::Declaration(declaration) => {
-                if let Some(name) = function_declaration_name(declaration.as_ref(), &interner) {
-                    return Some(format!(
-                        "async () => {{\n{}\nreturn {name}();\n}}",
-                        declaration.to_indented_string(&interner, 0)
-                    ));
-                }
-            }
-        }
-    }
-
-    if let Some((last, before)) = statements.split_last()
-        && let boa_ast::StatementListItem::Statement(statement) = last
-        && let boa_ast::Statement::Expression(expr) = statement.as_ref()
-    {
-        let before = before
-            .iter()
-            .map(|item| item.to_indented_string(&interner, 0))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let expr = expr.to_interned_string(&interner);
-        return Some(if before.trim().is_empty() {
-            format!("async () => {{\nreturn ({expr})\n}}")
+        if let Some(rest) = trimmed.strip_prefix("export ") {
+            let indent_len = line.len() - trimmed.len();
+            out.push(format!("{}{}", &line[..indent_len], rest));
         } else {
-            format!("async () => {{\n{before}\nreturn ({expr})\n}}")
-        });
+            out.push(line.to_string());
+        }
     }
+    out.join("\n")
+}
 
-    let body = statements
-        .iter()
-        .map(|item| item.to_indented_string(&interner, 0))
-        .collect::<Vec<_>>()
-        .join("\n");
-    Some(format!("async () => {{\n{body}\n}}"))
+fn strip_trailing_named_exports(value: &str) -> &str {
+    for marker in ["\nexport ", "\r\nexport "] {
+        if let Some((before, _)) = value.split_once(marker) {
+            return before;
+        }
+    }
+    value
 }
 
 fn strip_trailing_statement_semicolon(source: &str) -> String {
@@ -511,25 +365,42 @@ fn trailing_comment_start(source: &str) -> Option<usize> {
     }
 }
 
-fn function_declaration_name(
-    declaration: &boa_ast::Declaration,
-    interner: &Interner,
-) -> Option<String> {
-    match declaration {
-        boa_ast::Declaration::FunctionDeclaration(function) => {
-            Some(function.name().to_interned_string(interner))
-        }
-        boa_ast::Declaration::AsyncFunctionDeclaration(function) => {
-            Some(function.name().to_interned_string(interner))
-        }
-        boa_ast::Declaration::GeneratorDeclaration(function) => {
-            Some(function.name().to_interned_string(interner))
-        }
-        boa_ast::Declaration::AsyncGeneratorDeclaration(function) => {
-            Some(function.name().to_interned_string(interner))
-        }
-        _ => None,
+fn function_declaration_name(code: &str) -> Option<&str> {
+    let code = code.trim_start();
+    let rest = code
+        .strip_prefix("async function ")
+        .or_else(|| code.strip_prefix("function "))?;
+    let name = rest.split_once('(')?.0.trim();
+    (!name.is_empty()).then_some(name)
+}
+
+fn is_bare_function_expression(code: &str) -> bool {
+    let code = code.trim_start();
+    code.starts_with("async function") || code.starts_with("function")
+}
+
+fn is_bare_arrow_expression(code: &str) -> bool {
+    let code = strip_trailing_statement_semicolon(code);
+    if !code.contains("=>") {
+        return false;
     }
+    if code.ends_with("()") || code.ends_with(");") {
+        return false;
+    }
+    code.starts_with("async ")
+        || code.starts_with('(')
+        || code
+            .split_once("=>")
+            .is_some_and(|(params, _)| is_identifier(params.trim()))
+}
+
+fn is_identifier(candidate: &str) -> bool {
+    let mut chars = candidate.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first == '$' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
 }
 
 fn looks_like_returnable_expression(statement: &str) -> bool {

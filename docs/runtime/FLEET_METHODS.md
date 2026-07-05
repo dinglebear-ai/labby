@@ -153,41 +153,6 @@ Reports discovered service configuration on the node.
 
 ---
 
-### `nodes/log.event`
-
-**Direction:** client → server  
-**Auth required:** yes  
-**Phase:** stable  
-
-Batch-uploads structured log events from the node.
-
-**Params:**
-```jsonc
-{
-  "node_id": "<node_id>",
-  "events": [
-    {
-      "node_id": "<node_id>",
-      "source": "syslog",
-      "timestamp_unix_ms": 1700000000000,
-      "level": "info",
-      "message": "kernel: started",
-      "fields": {}
-    }
-  ]
-}
-```
-
-**Result:** `{}`
-
-**Error kinds:**
-| Kind | Meaning |
-|------|---------|
-| `auth_failed` | Session not initialized |
-| `invalid_param` | `node_id` mismatch, malformed events, or per-event validation error |
-
----
-
 ### `nodes/device.enroll`
 
 **Direction:** client → server  

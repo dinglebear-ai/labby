@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "api-docs")]
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use labby_apis::core::{EnvVar, PluginMeta};
+use labby_primitives::plugin::{EnvVar, PluginMeta};
 use serde::Deserialize;
 
 use super::routes::{build_route_docs, service_has_action_api_route};
@@ -11,9 +12,11 @@ use super::types::{
     DocsProjection, EnvDoc, FeatureClass, FeatureDoc, FeatureMatrix, FeatureMismatch, ServiceDoc,
     ServiceExposure, SurfaceAvailability,
 };
-use crate::api::openapi::build_openapi_spec;
 use crate::catalog::build_catalog;
 use crate::registry::{RegisteredService, build_docs_registry};
+
+#[cfg(feature = "api-docs")]
+use crate::api::openapi::build_openapi_spec;
 
 const LABBY_CRATE: &str = "labby";
 const LABBY_APIS_CRATE: &str = "labby-apis";
@@ -40,8 +43,11 @@ pub fn build_docs_projection(repo_root: &Path) -> Result<DocsProjection> {
         .map(|service| service.name.clone())
         .collect::<Vec<_>>();
     let api_routes = build_route_docs(&api_route_services);
+    #[cfg(feature = "api-docs")]
     let openapi_json =
         Arc::unwrap_or_clone(build_openapi_spec(services).context("failed to build OpenAPI spec")?);
+    #[cfg(not(feature = "api-docs"))]
+    let openapi_json = String::new();
     Ok(DocsProjection {
         mcp_help,
         service_catalog,
@@ -660,25 +666,14 @@ pub(crate) fn secret_example_is_suspicious(value: &str) -> bool {
 }
 
 fn sdk_only_metas() -> Vec<&'static PluginMeta> {
-    vec![
-        #[cfg(feature = "acp_registry")]
-        &labby_apis::acp_registry::META,
-        #[cfg(feature = "marketplace")]
-        &labby_apis::mcpregistry::META,
-    ]
+    Vec::new()
 }
 
 #[allow(clippy::too_many_lines)]
 fn meta_for(name: &str) -> Option<&'static PluginMeta> {
     match name {
-        "marketplace" => Some(&labby_apis::marketplace::META),
-        "doctor" => Some(&labby_apis::doctor::META),
-        "setup" => Some(&labby_apis::setup::META),
-        "stash" => Some(&labby_apis::stash::META),
-        "acp" => Some(&labby_apis::acp::META),
-        "device_runtime" => Some(&labby_apis::device_runtime::META),
-        #[cfg(feature = "deploy")]
-        "deploy" => Some(&labby_apis::deploy::META),
+        "doctor" => Some(&crate::dispatch::doctor::META),
+        "setup" => Some(&crate::dispatch::setup::META),
         _ => None,
     }
 }

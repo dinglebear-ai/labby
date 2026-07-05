@@ -5,15 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(feature = "acp")]
-use crate::acp::registry::AcpSessionRegistry;
 use crate::catalog::{Catalog, build_catalog};
-use crate::config::{LabConfig, NodeRole};
+use crate::config::LabConfig;
 use crate::dispatch::clients::ServiceClients;
-#[cfg(feature = "nodes")]
-use crate::node::enrollment::store::EnrollmentStore;
-#[cfg(feature = "nodes")]
-use crate::node::store::NodeStore;
 use crate::registry::{ToolRegistry, build_default_registry};
 
 const DEFAULT_PROTECTED_MCP_CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -61,19 +55,6 @@ pub struct AppState {
     /// `None` when gateway management is not wired for this process.
     #[cfg(feature = "gateway")]
     pub gateway_manager: Option<Arc<crate::dispatch::gateway::manager::GatewayManager>>,
-    /// Shared fleet state store for node runtime ingestion.
-    #[cfg(feature = "nodes")]
-    pub node_store: Option<Arc<NodeStore>>,
-    /// Shared durable enrollment store for fleet websocket admission control.
-    #[cfg(feature = "nodes")]
-    pub enrollment_store: Option<Arc<EnrollmentStore>>,
-    /// Shared local-master log runtime used by API SSE and adapter-local lookups.
-    pub logs_system: Option<Arc<crate::dispatch::logs::types::LogSystem>>,
-    /// Shared ACP session registry for browser chat/session routes.
-    #[cfg(feature = "acp")]
-    pub acp_registry: Arc<AcpSessionRegistry>,
-    /// Resolved node role for the current process.
-    pub node_role: Option<NodeRole>,
     /// Optional directory containing exported Labby web assets.
     pub web_assets_dir: Option<Arc<PathBuf>>,
     /// Whether to serve Labby assets embedded into the lab binary.
@@ -95,11 +76,6 @@ pub struct AppState {
     pub bearer_token: Option<Arc<str>>,
     /// HTTP bind host resolved by `labby serve`.
     pub http_bind_host: Option<Arc<String>>,
-    /// Shared SQLite-backed MCP registry store for `/v0.1` read endpoints.
-    ///
-    /// `None` when the `marketplace` feature is disabled or the store failed to open.
-    #[cfg(feature = "marketplace")]
-    pub registry_store: Option<Arc<crate::dispatch::marketplace::store::RegistryStore>>,
 }
 
 impl AppState {
@@ -119,13 +95,6 @@ impl AppState {
     /// `enabled_services` is derived from the registry entries so the router
     /// can skip mounting handlers for services that were filtered out.
     ///
-    /// # ACP registry invariant
-    ///
-    /// `acp_registry` is initialized to a fresh, uninstalled registry.
-    /// When ACP dispatch actions are in scope, call `.with_acp_registry(arc)` with
-    /// the same `Arc` passed to `dispatch::acp::install_registry()` in `cli/serve.rs`.
-    /// Skipping this step causes HTTP handlers and MCP dispatch to use different
-    /// registry instances, silently losing session visibility.
     #[must_use]
     pub fn from_registry(registry: ToolRegistry) -> Self {
         let enabled_services: HashSet<String> = registry
@@ -149,14 +118,6 @@ impl AppState {
             actor_key_deriver: None,
             #[cfg(feature = "gateway")]
             gateway_manager: None,
-            #[cfg(feature = "nodes")]
-            node_store: None,
-            #[cfg(feature = "nodes")]
-            enrollment_store: None,
-            logs_system: None,
-            #[cfg(feature = "acp")]
-            acp_registry: Arc::new(AcpSessionRegistry::new()),
-            node_role: None,
             web_assets_dir: None,
             embedded_web_assets: false,
             workspace_root: None,
@@ -164,8 +125,6 @@ impl AppState {
             bearer_token: None,
             http_bind_host: None,
             server_start: std::time::Instant::now(),
-            #[cfg(feature = "marketplace")]
-            registry_store: None,
         }
     }
 
@@ -212,32 +171,6 @@ impl AppState {
         manager: Arc<crate::dispatch::gateway::manager::GatewayManager>,
     ) -> Self {
         self.gateway_manager = Some(manager);
-        self
-    }
-
-    #[cfg(feature = "nodes")]
-    #[must_use]
-    pub fn with_node_store(mut self, store: Arc<NodeStore>) -> Self {
-        self.node_store = Some(store);
-        self
-    }
-
-    #[cfg(feature = "nodes")]
-    #[must_use]
-    pub fn with_enrollment_store(mut self, store: Arc<EnrollmentStore>) -> Self {
-        self.enrollment_store = Some(store);
-        self
-    }
-
-    #[must_use]
-    pub fn with_log_system(mut self, system: Arc<crate::dispatch::logs::types::LogSystem>) -> Self {
-        self.logs_system = Some(system);
-        self
-    }
-
-    #[must_use]
-    pub fn with_node_role(mut self, role: NodeRole) -> Self {
-        self.node_role = Some(role);
         self
     }
 
@@ -290,58 +223,6 @@ impl AppState {
     #[must_use]
     pub fn with_http_bind_host(mut self, host: impl Into<String>) -> Self {
         self.http_bind_host = Some(Arc::new(host.into()));
-        self
-    }
-
-    /// Returns `true` unless the current process is explicitly in `NonMaster` role.
-    ///
-    /// **Scope of this check vs. `require_master_store`** (lab-zxx5.27):
-    /// Both read `self.node_role` — that's the security invariant. But they
-    /// answer different questions:
-    /// - `is_master()` is used for ROUTE MOUNTING ("should this server expose
-    ///   controller-only routes at all?"). Returns `true` when `node_role` is
-    ///   `None` (unset = legacy default of master) or `Some(Master)`.
-    /// - `require_master_store()` is used PER-REQUEST ("can THIS request
-    ///   access the node store?") and additionally requires the fleet store
-    ///   to be configured. On a master-roled server without a store it
-    ///   fails closed at the handler.
-    ///
-    /// This asymmetry is intentional. Both paths fail closed on NonMaster.
-    /// A master-roled server without a store mounts controller routes (via
-    /// `is_master()`) but each request still fails at `require_master_store`
-    /// with a handler-level error, surfacing the misconfiguration. Do NOT
-    /// add the store check to `is_master()` — router-level gating on
-    /// runtime-state presence is the wrong layer.
-    ///
-    /// **Security note:** any NEW authorization gate in the codebase must
-    /// read `self.node_role` to stay consistent with this pair. Do not add
-    /// an alternate field or a separate role lookup.
-    #[must_use]
-    pub fn is_master(&self) -> bool {
-        !matches!(self.node_role, Some(NodeRole::NonMaster))
-    }
-
-    /// Attach a pre-built ACP session registry so `AppState` shares the same `Arc`
-    /// as the process-global dispatch slot installed in `cli/serve.rs`.
-    ///
-    /// **Must be called** after `dispatch::acp::install_registry()` with the same `Arc`
-    /// whenever ACP dispatch actions are in scope. See the invariant note on
-    /// `from_registry()`.
-    #[cfg(feature = "acp")]
-    #[must_use]
-    pub fn with_acp_registry(mut self, registry: Arc<AcpSessionRegistry>) -> Self {
-        self.acp_registry = registry;
-        self
-    }
-
-    /// Attach the shared MCP registry store for `/v0.1` read endpoints.
-    #[cfg(feature = "marketplace")]
-    #[must_use]
-    pub fn with_registry_store(
-        mut self,
-        store: Arc<crate::dispatch::marketplace::store::RegistryStore>,
-    ) -> Self {
-        self.registry_store = Some(store);
         self
     }
 }

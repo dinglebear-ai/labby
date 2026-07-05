@@ -51,8 +51,7 @@ When `labby serve` starts, it resolves the local hostname and node role, creates
   - mounts `/health`, `/ready`, and `/v1/nodes/*`
   - disables the Web UI, MCP, gateway management, and the service REST surface
   - scans local MCP config inventory and queues metadata
-  - collects bootstrap logs and queues them locally
-  - starts a long-lived websocket session to the controller and drains metadata, status, and log envelopes over that connection
+  - starts a long-lived websocket session to the controller and drains metadata and status envelopes over that connection
 
 ## Fleet Transport
 
@@ -68,7 +67,6 @@ Non-controller nodes now use a websocket-first fleet transport:
 5. once approved, keep the socket open and send:
    - `nodes/metadata.push`
    - `nodes/status.push`
-   - `nodes/log.event`
 
 Unknown nodes are rejected at `initialize` and recorded as pending enrollments on the controller. Operators approve or deny them through the controller API, CLI, or MCP surface.
 
@@ -87,7 +85,6 @@ Read-oriented routes (controller-only):
 - `GET /v1/nodes/enrollments`
 - `GET /v1/nodes`
 - `GET /v1/nodes/{node_id}`
-- `POST /v1/nodes/logs/search`
 
 Fleet read routes are controller-only. On a non-controller node they return a structured `not_found` error rather than exposing an empty or partial local view.
 
@@ -109,7 +106,7 @@ Each discovered file is reported with:
 
 This is inventory only. The controller stores the uploaded metadata in memory for fleet inspection.
 
-## Log Buffering
+## Outbound Queue
 
 Node outbound delivery uses a durable local queue rooted at:
 
@@ -119,12 +116,9 @@ Node outbound delivery uses a durable local queue rooted at:
 
 Rules:
 
-- non-controller nodes append metadata, status, and log envelopes locally first
+- non-controller nodes append metadata and status envelopes locally first
 - the queue is acknowledged only after the controller accepts each websocket request
 - failed uploads remain on disk for the next flush attempt
-- the controller stores ingested normalized log events in `~/.labby/node-logs.sqlite`
-
-The current bootstrap collector is intentionally minimal. It normalizes into the shared `DeviceLogEvent` shape (Rust type name — do not rename) and is expected to grow without changing the node API contract.
 
 ## Enrollment
 

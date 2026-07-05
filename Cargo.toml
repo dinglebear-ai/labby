@@ -84,10 +84,6 @@ rmcp = { version = "2.1", features = [
   "elicitation",
   "schemars",
 ] }
-# OpenAPI-spec parsing for the Code Mode `openapi` provider. PARSE-ONLY — its
-# HTTP executor is never used; labby-openapi owns the hardened outbound client.
-rmcp-openapi = "0.31.2"
-
 # oauth / jwt
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 rsa = "0.10.0-rc.16"

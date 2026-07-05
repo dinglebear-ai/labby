@@ -3498,11 +3498,11 @@ backend_mcp_path = "/mcp"
         let mut cfg = toml::from_str::<LabConfig>(
             r#"
 [[protected_mcp_routes]]
-name = "syslog"
+name = "telemetry"
 enabled = true
 public_host = "mcp.example.com"
-public_path = "/syslog"
-upstream = " syslog "
+public_path = "/telemetry"
+upstream = " telemetry "
 "#,
         )
         .expect("protected route parses");
@@ -3512,7 +3512,7 @@ upstream = " syslog "
 
         assert_eq!(
             cfg.protected_mcp_routes[0].upstream.as_deref(),
-            Some("syslog")
+            Some("telemetry")
         );
         assert_eq!(cfg.protected_mcp_routes[0].backend_url, "");
         assert_eq!(cfg.protected_mcp_routes[0].backend_mcp_path, "/mcp");
@@ -3551,9 +3551,9 @@ expose_code_mode = true
     fn protected_route_legacy_backend_url_maps_to_proxy_target() {
         let toml = r#"
 [[protected_mcp_routes]]
-name = "syslog"
+name = "telemetry"
 public_host = "mcp.example.com"
-public_path = "/syslog"
+public_path = "/telemetry"
 backend_url = "http://10.0.0.2:3100/mcp"
 "#;
 

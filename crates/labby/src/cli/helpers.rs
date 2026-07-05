@@ -8,7 +8,7 @@ use anyhow::Result;
 use dialoguer::Confirm;
 use serde_json::Value;
 
-use labby_apis::core::action::ActionSpec;
+use labby_primitives::action::ActionSpec;
 
 use crate::dispatch::error::ToolError;
 use crate::output::theme::CliTheme;

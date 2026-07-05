@@ -1,6 +1,6 @@
 //! First-run detection + state-machine evaluator for `setup.state`.
 
-use labby_apis::setup::{SetupSnapshot, SetupState};
+use crate::dispatch::setup::{SetupSnapshot, SetupState};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 

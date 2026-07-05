@@ -1,6 +1,6 @@
 //! Action catalog for the `setup` Bootstrap orchestrator.
 
-use labby_apis::core::action::{ActionSpec, ParamSpec};
+use labby_primitives::action::{ActionSpec, ParamSpec};
 
 /// Plugin-lifecycle action names — canonical dotted forms paired with their
 /// deprecated snake_case aliases. **Single source of truth** for the HTTP

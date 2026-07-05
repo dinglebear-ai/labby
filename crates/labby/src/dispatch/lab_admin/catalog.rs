@@ -1,4 +1,4 @@
-use labby_apis::core::action::{ActionSpec, ParamSpec};
+use labby_primitives::action::{ActionSpec, ParamSpec};
 
 /// Action catalog for the internal `lab_admin` tool.
 ///

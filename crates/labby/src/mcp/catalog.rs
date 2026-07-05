@@ -67,9 +67,6 @@ impl LabMcpServer {
         if !self.route_scope.allows_service(service) {
             return false;
         }
-        if matches!(self.node_role, Some(crate::config::NodeRole::NonMaster)) {
-            return false;
-        }
         #[cfg(feature = "gateway")]
         match &self.gateway_manager {
             Some(manager) => manager.surface_enabled_for_service(service, "mcp").await,

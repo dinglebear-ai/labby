@@ -317,17 +317,17 @@ GET /.well-known/oauth-protected-resource/<route-path>
 ```
 
 For a route configured as `public_host = "mcp.example.com"` and
-`public_path = "/syslog"`, clients discover:
+`public_path = "/telemetry"`, clients discover:
 
 ```http
-GET https://mcp.example.com/.well-known/oauth-protected-resource/syslog
+GET https://mcp.example.com/.well-known/oauth-protected-resource/telemetry
 ```
 
 The metadata `resource` value is the public MCP resource:
 
 ```json
 {
-  "resource": "https://mcp.example.com/syslog",
+  "resource": "https://mcp.example.com/telemetry",
   "authorization_servers": ["https://lab.example.com"],
   "scopes_supported": ["mcp:read", "mcp:write"],
   "bearer_methods_supported": ["header"]
@@ -337,12 +337,12 @@ The metadata `resource` value is the public MCP resource:
 An unauthenticated request to the route returns a route-specific challenge:
 
 ```http
-WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/syslog"
+WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/telemetry"
 ```
 
 OAuth clients must request a token for the route resource
-`https://mcp.example.com/syslog` and present that token to
-`https://mcp.example.com/syslog`. The backend MCP URL remains private and must
+`https://mcp.example.com/telemetry` and present that token to
+`https://mcp.example.com/telemetry`. The backend MCP URL remains private and must
 not appear in public metadata, public challenges, or public error bodies.
 
 Static bearer compatibility does not make a public protected MCP route an OAuth

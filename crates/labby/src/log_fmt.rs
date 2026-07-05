@@ -1,1 +1,1 @@
-pub(crate) mod formatter;
+pub mod formatter;

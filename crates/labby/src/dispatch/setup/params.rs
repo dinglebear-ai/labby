@@ -1,6 +1,6 @@
 //! Param coercion for the `setup` dispatch service.
 
-use labby_apis::setup::DraftEntry;
+use crate::dispatch::setup::DraftEntry;
 use serde_json::Value;
 
 use crate::dispatch::error::ToolError;

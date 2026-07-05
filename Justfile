@@ -108,6 +108,17 @@ host-sync:
       exit 1
     fi
 
+# Benchmark the gateway-host feature slice used by the normal hosted gateway
+# deployment: gateway + web UI + OAuth, without optional all-features extras.
+bench-slim clean="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=()
+    if [ "{{clean}}" = "clean" ]; then
+      args+=(--clean)
+    fi
+    scripts/bench-labby-slimming "${args[@]}"
+
 host-service-install:
     #!/usr/bin/env bash
     set -euo pipefail

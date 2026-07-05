@@ -1,6 +1,6 @@
 //! API surface for `lab`.
 //!
-//! Thin axum layer over `lab-apis` clients. Mirrors the MCP dispatch shape:
+//! Thin axum layer over Labby dispatch. Mirrors the MCP dispatch shape:
 //! one route group per service, action + params dispatch, structured JSON
 //! error envelopes with stable `kind` tags.
 //!
@@ -32,10 +32,6 @@ pub mod upstream_oauth;
 /// Browser-session endpoints for the hosted UI.
 pub mod browser_session;
 
-/// Node runtime routes mounted under `/v1/nodes/*`.
-#[cfg(feature = "nodes")]
-pub mod nodes;
-
 /// Static Labby web asset serving helpers.
 pub mod web;
 
@@ -46,6 +42,7 @@ pub mod host_validation;
 pub mod services;
 
 /// OpenAPI 3.1 schema generation (all utoipa coupling lives here).
+#[cfg(feature = "api-docs")]
 #[allow(clippy::needless_for_each)]
 pub mod openapi;
 
@@ -55,7 +52,8 @@ pub mod openapi;
 /// struct and forwards `action` + `params` to the corresponding dispatch
 /// function, keeping HTTP and MCP input semantics aligned while each transport
 /// owns its response envelope.
-#[derive(Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[cfg_attr(feature = "api-docs", derive(utoipa::ToSchema))]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ActionRequest {
     pub action: String,
     #[serde(default)]

@@ -4,7 +4,9 @@
       "crate_name": "labby",
       "feature": "acp",
       "dependencies": [
-        "dep:agent-client-protocol"
+        "dep:agent-client-protocol",
+        "dep:r2d2",
+        "dep:r2d2_sqlite"
       ],
       "included_in_default": true,
       "included_in_all": true,
@@ -33,8 +35,9 @@
         "lab-admin",
         "acp",
         "acp_registry",
+        "api-docs",
         "deploy",
-        "gateway",
+        "gateway-host",
         "marketplace",
         "nodes",
         "stash"
@@ -44,6 +47,18 @@
       "classification": "aggregate_default",
       "mapped_crate_feature": "labby-apis/all",
       "exception_reason": "aggregate/default feature"
+    },
+    {
+      "crate_name": "labby",
+      "feature": "api-docs",
+      "dependencies": [
+        "dep:utoipa"
+      ],
+      "included_in_default": true,
+      "included_in_all": true,
+      "classification": "helper_internal",
+      "mapped_crate_feature": null,
+      "exception_reason": "helper/internal feature"
     },
     {
       "crate_name": "labby",
@@ -91,13 +106,28 @@
       "dependencies": [
         "dep:labby-codemode",
         "dep:labby-gateway",
-        "dep:labby-openapi"
+        "dep:labby-openapi",
+        "dep:r2d2",
+        "dep:r2d2_sqlite",
+        "web-ui"
       ],
       "included_in_default": true,
       "included_in_all": true,
       "classification": "product_slice",
       "mapped_crate_feature": null,
       "exception_reason": "standalone product slice"
+    },
+    {
+      "crate_name": "labby",
+      "feature": "gateway-host",
+      "dependencies": [
+        "gateway"
+      ],
+      "included_in_default": true,
+      "included_in_all": true,
+      "classification": "intentional_exception",
+      "mapped_crate_feature": null,
+      "exception_reason": "intentional crate-local exception"
     },
     {
       "crate_name": "labby",
@@ -151,7 +181,11 @@
     {
       "crate_name": "labby",
       "feature": "nodes",
-      "dependencies": [],
+      "dependencies": [
+        "dep:r2d2",
+        "dep:r2d2_sqlite",
+        "dep:sysinfo"
+      ],
       "included_in_default": true,
       "included_in_all": true,
       "classification": "base_capability",
@@ -211,6 +245,18 @@
       "classification": "intentional_exception",
       "mapped_crate_feature": null,
       "exception_reason": "intentional crate-local exception"
+    },
+    {
+      "crate_name": "labby",
+      "feature": "web-ui",
+      "dependencies": [
+        "dep:labby-web"
+      ],
+      "included_in_default": true,
+      "included_in_all": true,
+      "classification": "helper_internal",
+      "mapped_crate_feature": null,
+      "exception_reason": "helper/internal feature"
     },
     {
       "crate_name": "labby-apis",

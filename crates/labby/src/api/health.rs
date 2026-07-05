@@ -26,7 +26,8 @@ use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use super::state::AppState;
 
 /// Response body for health/readiness probes.
-#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+#[cfg_attr(feature = "api-docs", derive(utoipa::ToSchema))]
+#[derive(Debug, serde::Serialize)]
 pub struct HealthResponse {
     /// Status string: `"ok"` for liveness, `"ready"` or `"not_ready"` for
     /// readiness.
@@ -49,10 +50,9 @@ pub struct HealthResponse {
 /// Liveness probe. Returns 200 as long as the process is running.
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let uptime_s = state.server_start.elapsed().as_secs();
-    let mode = if state.is_master() { "master" } else { "node" };
     Json(HealthResponse {
         status: "ok".to_string(),
-        mode: Some(mode.to_string()),
+        mode: Some("gateway-host".to_string()),
         pid: Some(std::process::id()),
         uptime_s: Some(uptime_s),
         pending: None,

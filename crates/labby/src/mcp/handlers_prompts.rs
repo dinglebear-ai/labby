@@ -422,7 +422,6 @@ mod tests {
             registry: Arc::new(build_default_registry()),
             #[cfg(feature = "gateway")]
             gateway_manager: None,
-            node_role: None,
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
             route_scope,

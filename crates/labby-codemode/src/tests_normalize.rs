@@ -141,11 +141,8 @@ fn normalize_user_code_wraps_export_default_sync_function_as_iife() {
 
 #[test]
 fn normalize_user_code_wraps_export_default_arrow_with_prologue() {
-    // Boa's parse_module cannot parse an arrow in default-export position, so a
-    // module with a prologue (`const x = 1; export default async () => x`) used
-    // to fall through to loose-wrapping, which left `export default` inside the
-    // wrapper body and produced invalid JS. The prologue-aware fallback must turn
-    // it into a single valid function expression that runs the prologue and
+    // A module with a prologue (`const x = 1; export default async () => x`) must
+    // turn into a single valid function expression that runs the prologue and
     // invokes the arrow (which closes over the prologue binding).
     let result = super::normalize_user_code("const x = 1; export default async () => x");
     assert!(
@@ -168,10 +165,7 @@ fn normalize_user_code_wraps_export_default_arrow_with_prologue() {
 
 #[test]
 fn normalize_user_code_wraps_export_default_plain_arrow_with_prologue() {
-    // A *plain* (non-async) arrow default export parses fine as a
-    // DefaultAssignmentExpression, so unlike the async arrow it goes through the
-    // AST path (normalize_module_code), not the textual fallback. The prologue
-    // must still be preserved and the arrow invoked.
+    // The prologue must be preserved and the arrow invoked.
     let result = super::normalize_user_code("const n = 7;\nexport default () => n;");
     assert!(!result.contains("export default"), "got: {result}");
     assert!(result.starts_with("async () => {"), "got: {result}");
@@ -179,15 +173,12 @@ fn normalize_user_code_wraps_export_default_plain_arrow_with_prologue() {
         result.contains("const n = 7"),
         "prologue must be kept: {result}"
     );
-    // Boa reformats the arrow body (`() => n` → `() => { return n; }`), so assert
-    // behavior, not exact shape: the prologue runs and the arrow (which returns n)
-    // is invoked, not returned uncalled.
     assert!(
         result.contains("return await ("),
         "the entry must be invoked: {result}"
     );
     assert!(
-        result.contains("return n"),
+        result.contains("() => n"),
         "arrow body must reference n: {result}"
     );
 }
@@ -347,12 +338,8 @@ fn normalize_user_code_export_default_with_trailing_named_export() {
 
 #[test]
 fn normalize_user_code_named_default_function_body_literal_not_corrupted() {
-    // wrap_default_fn_as_iife strips only Boa's synthesized leading `default`
-    // name. A genuinely-named default export whose body contains the literal
-    // `function default(` (here inside a string) must survive verbatim — an
-    // unanchored replace would corrupt it to `function(`. Needs a NAMED fn plus a
-    // prologue to route through the AST (a bare default takes the start-anchored
-    // strip path).
+    // A genuinely-named default export whose body contains the literal
+    // `function default(` (here inside a string) must survive verbatim.
     let result = super::normalize_user_code(
         "const x = 1;\nexport default function named() { return \"function default(\"; }",
     );

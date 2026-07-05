@@ -673,7 +673,6 @@ mod tests {
         LabMcpServer {
             registry: std::sync::Arc::new(crate::registry::ToolRegistry::new()),
             gateway_manager: Some(manager),
-            node_role: None,
             peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
             logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 crate::mcp::logging::logging_level_rank(LoggingLevel::Emergency),

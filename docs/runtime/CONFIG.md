@@ -171,7 +171,6 @@ Rules:
 | Key | Env override | Default | Description |
 |-----|-------------|---------|-------------|
 | `controller` | — | local hostname | Hostname of the fleet controller node. |
-| `log_retention_days` | — | `7` | Retention window for durable node log events. |
 
 Example:
 
@@ -669,10 +668,10 @@ the same source of truth.
 
 ```toml
 [[protected_mcp_routes]]
-name = "syslog"
+name = "telemetry"
 enabled = true
 public_host = "mcp.example.com"
-public_path = "/syslog"
+public_path = "/telemetry"
 backend_url = "http://node.internal.example:3100/mcp"
 scopes = ["mcp:read", "mcp:write"]
 health_path = "/health"
