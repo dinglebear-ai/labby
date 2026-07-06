@@ -360,16 +360,23 @@ jobs:
           # Age-prune first (files older than 14 days), then enforce the hard
           # size cap by wiping the whole dir if it's still over budget --
           # mirrors the Windows job's Prune-ByAge + Enforce-HardCap sequence.
+          # Deliberately no `-type d -empty -delete` pass here: `find` treats
+          # the search root itself as a candidate, so right after `mkdir -p`
+          # (dir freshly created, still empty) it would delete SCCACHE_DIR
+          # itself, and the `du` below would then fail on a missing directory
+          # -- under `set -euo pipefail` that aborts the whole step silently
+          # with no output (confirmed by reproducing it directly on the
+          # runner). Orphaned empty subdirs left behind by the file-pruning
+          # line are harmless; sccache manages its own directory structure.
           find "$SCCACHE_DIR" -type f -mtime +14 -delete 2>/dev/null || true
-          find "$SCCACHE_DIR" -type d -empty -delete 2>/dev/null || true
-          size_bytes=$(du -sb "$SCCACHE_DIR" 2>/dev/null | cut -f1)
-          size_bytes=${size_bytes:-0}
-          cap_bytes=$((20 * 1024 * 1024 * 1024))
-          if [ "$size_bytes" -gt "$cap_bytes" ]; then
-            echo "::warning::sccache dir is $((size_bytes / 1024 / 1024 / 1024)) GiB, above the 20 GiB cap; wiping it."
+          size_kib=$(du -sk "$SCCACHE_DIR" 2>/dev/null | cut -f1)
+          size_kib=${size_kib:-0}
+          cap_kib=$((20 * 1024 * 1024))
+          if [ "$size_kib" -gt "$cap_kib" ]; then
+            echo "::warning::sccache dir is $((size_kib / 1024 / 1024)) GiB, above the 20 GiB cap; wiping it."
             rm -rf "${SCCACHE_DIR:?}"/*
           fi
-          echo "sccache dir ready at $SCCACHE_DIR ($((size_bytes / 1024 / 1024 / 1024)) GiB, cap 20 GiB)"
+          echo "sccache dir ready at $SCCACHE_DIR ($((size_kib / 1024 / 1024)) GiB, cap 20 GiB)"
       - name: Point RUSTC_WRAPPER at sccache
         run: |
           echo "RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
@@ -391,14 +398,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$SCCACHE_DIR"
-          size_bytes=$(du -sb "$SCCACHE_DIR" 2>/dev/null | cut -f1)
-          size_bytes=${size_bytes:-0}
-          cap_bytes=$((20 * 1024 * 1024 * 1024))
-          if [ "$size_bytes" -gt "$cap_bytes" ]; then
-            echo "::warning::sccache dir grew to $((size_bytes / 1024 / 1024 / 1024)) GiB, above the 20 GiB cap; wiping it."
+          size_kib=$(du -sk "$SCCACHE_DIR" 2>/dev/null | cut -f1)
+          size_kib=${size_kib:-0}
+          cap_kib=$((20 * 1024 * 1024))
+          if [ "$size_kib" -gt "$cap_kib" ]; then
+            echo "::warning::sccache dir grew to $((size_kib / 1024 / 1024)) GiB, above the 20 GiB cap; wiping it."
             rm -rf "${SCCACHE_DIR:?}"/*
           fi
-          echo "sccache dir final size: $((size_bytes / 1024 / 1024 / 1024)) GiB (cap 20 GiB)"
+          echo "sccache dir final size: $((size_kib / 1024 / 1024)) GiB (cap 20 GiB)"
 
   test-fork:
     name: Test
