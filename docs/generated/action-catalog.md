@@ -6,37 +6,6 @@ This is a global inventory, not the active runtime exposure or authorization pol
 
 | Service | Action | Built-in | Destructive | Params | Returns | Surfaces |
 | --- | --- | --- | --- | --- | --- | --- |
-| `acp` | `help` | false | false |  | `Catalog` | cli, mcp, api |
-| `acp` | `provider.get` | false | false | `provider*: string` | `Value` | cli, mcp, api |
-| `acp` | `provider.list` | false | false |  | `Value` | cli, mcp, api |
-| `acp` | `provider.select` | false | false | `provider*: string` | `Value` | cli, mcp, api |
-| `acp` | `schema` | false | false | `action*: string` | `Schema` | cli, mcp, api |
-| `acp` | `session.bulk_close` | false | true | `selector*: object`<br>`principal*: string` | `{ "closed": string[], "failed": [{ "id": string, "kind": string, "message": string }] }` | cli, mcp, api |
-| `acp` | `session.cancel` | false | true | `session_id*: string`<br>`principal: string` | `Value` | cli, mcp, api |
-| `acp` | `session.close` | false | true | `session_id*: string`<br>`principal: string` | `Value` | cli, mcp, api |
-| `acp` | `session.events` | false | false | `session_id*: string`<br>`since: integer` | `{ "events": AcpEvent[], "count": number }` | cli, mcp, api |
-| `acp` | `session.get` | false | false | `session_id*: string` | `Value` | cli, mcp, api |
-| `acp` | `session.list` | false | false | `principal: string` | `Value` | cli, mcp, api |
-| `acp` | `session.permission.approve` | false | true | `session_id*: string`<br>`request_id*: string`<br>`option_id*: string`<br>`principal: string`<br>`confirm*: boolean` | `Value` | cli, mcp, api |
-| `acp` | `session.permission.reject` | false | false | `session_id*: string`<br>`request_id*: string`<br>`principal: string` | `Value` | cli, mcp, api |
-| `acp` | `session.prompt` | false | false | `session_id*: string`<br>`text*: string`<br>`principal*: string`<br>`provider: string`<br>`continuity_mode: string`<br>`page_context: object` | `Value` | cli, mcp, api |
-| `acp` | `session.start` | false | false | `provider: string`<br>`title: string`<br>`cwd: string`<br>`principal: string` | `Value` | cli, mcp, api |
-| `acp` | `session.start_and_prompt` | false | false | `provider: string`<br>`model: string`<br>`title: string`<br>`cwd: string`<br>`prompt*: string`<br>`page_context: object`<br>`principal*: string` | `Value` | cli, mcp, api |
-| `acp` | `session.subscribe_ticket` | false | false | `session_id*: string`<br>`principal: string` | `Value` | cli, mcp, api |
-| `deploy` | `config.list` | false | false |  | `ConfigListing` | cli, mcp |
-| `deploy` | `deploy.plan` | false | false | `targets*: string[]` | `DeployPlan` | cli, mcp |
-| `deploy` | `deploy.rollback` | false | true | `targets*: string[]`<br>`confirm*: boolean` | `DeployRunSummary` | cli, mcp |
-| `deploy` | `deploy.run` | false | true | `targets*: string[]`<br>`confirm*: boolean`<br>`max_parallel: integer`<br>`fail_fast: boolean` | `DeployRunSummary` | cli, mcp |
-| `deploy` | `help` | false | false |  | `Catalog` | cli, mcp |
-| `deploy` | `plan` | false | false | `targets*: string[]` | `DeployPlan` | cli, mcp |
-| `deploy` | `rollback` | false | true | `targets*: string[]`<br>`confirm*: boolean` | `DeployRunSummary` | cli, mcp |
-| `deploy` | `run` | false | true | `targets*: string[]`<br>`confirm*: boolean`<br>`max_parallel: integer`<br>`fail_fast: boolean` | `DeployRunSummary` | cli, mcp |
-| `deploy` | `schema` | false | false | `action*: string` | `Schema` | cli, mcp |
-| `device` | `enrollments.approve` | false | true | `node_id*: string`<br>`note: string` | `Value` | mcp, api, web |
-| `device` | `enrollments.deny` | false | true | `node_id*: string`<br>`reason: string` | `Value` | mcp, api, web |
-| `device` | `enrollments.list` | false | false |  | `Value` | mcp, api, web |
-| `device` | `help` | false | false |  | `Catalog` | mcp, api, web |
-| `device` | `schema` | false | false | `action*: string` | `Schema` | mcp, api, web |
 | `doctor` | `audit.full` | false | false |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false |  | `DoctorReport` | cli, mcp, api |
 | `doctor` | `help` | false | false |  | `Catalog` | cli, mcp, api |
@@ -108,46 +77,6 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `lab_admin` | `help` | false | false |  | `Catalog` | cli, mcp |
 | `lab_admin` | `onboarding.audit` | false | false | `services*: string[]` | `AuditReport` | cli, mcp |
 | `lab_admin` | `schema` | false | false | `action*: string` | `Schema` | cli, mcp |
-| `marketplace` | `agent.get` | false | false | `id*: string` | `Agent` | cli, mcp, api, web |
-| `marketplace` | `agent.install` | false | true | `id*: string`<br>`node_ids*: array`<br>`platform: string`<br>`confirm*: boolean` | `InstallResults` | cli, mcp, api, web |
-| `marketplace` | `agent.list` | false | false |  | `Agent[]` | cli, mcp, api, web |
-| `marketplace` | `agent.uninstall` | false | true | `id*: string`<br>`confirm*: boolean` | `UninstallResult` | cli, mcp, api, web |
-| `marketplace` | `artifact.config.set` | false | false | `plugin_id*: string`<br>`strategy: string`<br>`notify: boolean`<br>`artifact_path: string` | `ConfigSetResult` | cli, mcp, api, web |
-| `marketplace` | `artifact.diff` | false | false | `plugin_id*: string`<br>`artifact_path: string`<br>`instance: string` | `ArtifactDiffResult` | cli, mcp, api, web |
-| `marketplace` | `artifact.fork` | false | true | `plugin_id*: string`<br>`artifacts: array` | `ForkResponse` | cli, mcp, api, web |
-| `marketplace` | `artifact.list` | false | false | `plugin_id: string`<br>`instance: string` | `ForkedPluginStatus[]` | cli, mcp, api, web |
-| `marketplace` | `artifact.merge.suggest` | false | false | `plugin_id*: string`<br>`artifact_path*: string` | `MergeSuggestResult` | cli, mcp, api, web |
-| `marketplace` | `artifact.patch` | false | false | `plugin_id*: string`<br>`artifact_path*: string`<br>`patch*: string`<br>`description: string`<br>`instance: string` | `PatchResult` | cli, mcp, api, web |
-| `marketplace` | `artifact.reset` | false | true | `plugin_id*: string`<br>`artifacts: array`<br>`instance: string` | `ResetResult` | cli, mcp, api, web |
-| `marketplace` | `artifact.unfork` | false | true | `plugin_id*: string`<br>`artifacts: array`<br>`instance: string` | `UnforkResult` | cli, mcp, api, web |
-| `marketplace` | `artifact.update.apply` | false | true | `plugin_id*: string`<br>`strategy: string`<br>`artifact_path: string` | `ApplyResult` | cli, mcp, api, web |
-| `marketplace` | `artifact.update.check` | false | false | `plugin_id: string` | `UpdateCheckResult[]` | cli, mcp, api, web |
-| `marketplace` | `artifact.update.preview` | false | false | `plugin_id*: string`<br>`artifact_path: string` | `UpdatePreviewResult` | cli, mcp, api, web |
-| `marketplace` | `help` | false | false |  | `Catalog` | cli, mcp, api, web |
-| `marketplace` | `mcp.config` | false | false |  | `RegistryConfig` | cli, mcp, api, web |
-| `marketplace` | `mcp.get` | false | false | `name*: string` | `ServerResponse` | cli, mcp, api, web |
-| `marketplace` | `mcp.install` | false | true | `name*: string`<br>`gateway_ids: array`<br>`client_targets: array`<br>`bearer_token_env: string`<br>`version: string`<br>`env_values: object`<br>`confirm*: boolean` | `InstallResults` | cli, mcp, api, web |
-| `marketplace` | `mcp.list` | false | false | `search: string`<br>`owner: string`<br>`limit: integer`<br>`cursor: string`<br>`version: string`<br>`updated_since: string`<br>`featured: boolean`<br>`reviewed: boolean`<br>`recommended: boolean`<br>`hidden: boolean`<br>`tag: string` | `ServerListResponse` | cli, mcp, api, web |
-| `marketplace` | `mcp.meta.delete` | false | false | `name*: string`<br>`version: string` | `RegistryLocalMetaDeleteResult` | cli, mcp, api, web |
-| `marketplace` | `mcp.meta.get` | false | false | `name*: string`<br>`version: string` | `RegistryLocalMeta` | cli, mcp, api, web |
-| `marketplace` | `mcp.meta.set` | false | false | `name*: string`<br>`version: string`<br>`metadata*: object`<br>`updated_by: string` | `RegistryLocalMeta` | cli, mcp, api, web |
-| `marketplace` | `mcp.sync` | false | false |  | `SyncResult` | cli, mcp, api, web |
-| `marketplace` | `mcp.uninstall` | false | true | `gateway_name*: string`<br>`confirm*: boolean` | `GatewayView` | cli, mcp, api, web |
-| `marketplace` | `mcp.validate` | false | false | `server_json*: object` | `ValidationResult` | cli, mcp, api, web |
-| `marketplace` | `mcp.versions` | false | false | `name*: string` | `ServerListResponse` | cli, mcp, api, web |
-| `marketplace` | `plugin.artifacts` | false | false | `id*: string` | `Artifact[]` | cli, mcp, api, web |
-| `marketplace` | `plugin.cherry_pick` | false | true | `plugin_id*: string`<br>`components*: array`<br>`node_ids*: array`<br>`scope*: string`<br>`project_path: string`<br>`confirm*: boolean` | `CherryPickResults` | cli, mcp, api, web |
-| `marketplace` | `plugin.deploy` | false | true | `id*: string` | `DeployResult` | cli, mcp, api, web |
-| `marketplace` | `plugin.deploy.preview` | false | false | `id*: string` | `DeployPreviewResult` | cli, mcp, api, web |
-| `marketplace` | `plugin.get` | false | false | `id*: string` | `Plugin` | cli, mcp, api, web |
-| `marketplace` | `plugin.install` | false | true | `id*: string` | `InstallResult` | cli, mcp, api, web |
-| `marketplace` | `plugin.save` | false | false | `id*: string`<br>`path*: string`<br>`content*: string` | `SaveResult` | cli, mcp, api, web |
-| `marketplace` | `plugin.uninstall` | false | true | `id*: string` | `UninstallResult` | cli, mcp, api, web |
-| `marketplace` | `plugin.workspace` | false | false | `id*: string` | `PluginWorkspace` | cli, mcp, api, web |
-| `marketplace` | `plugins.list` | false | false | `marketplace: string`<br>`kind: string`<br>`installed: bool`<br>`query: string` | `Plugin[]` | cli, mcp, api, web |
-| `marketplace` | `schema` | false | false | `action*: string` | `Schema` | cli, mcp, api, web |
-| `marketplace` | `sources.add` | false | true | `repo: string`<br>`url: string`<br>`autoUpdate: boolean` | `AddResult` | cli, mcp, api, web |
-| `marketplace` | `sources.list` | false | false |  | `Marketplace[]` | cli, mcp, api, web |
 | `setup` | `bootstrap` | false | false |  | `BootstrapOutcome` | cli, mcp, api, web |
 | `setup` | `check` | false | false |  | `SetupReport` | cli, mcp, api, web |
 | `setup` | `draft.commit` | false | true | `force: boolean` | `CommitOutcome` | cli, mcp, api, web |
@@ -189,22 +118,3 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `snippets` | `snippets.remove` | false | true | `name*: string` | `SnippetRemoveResult` | cli, mcp, api |
 | `snippets` | `snippets.test` | false | false | `name: string`<br>`params: object`<br>`all: boolean` | `SnippetTestResult` | cli, mcp, api |
 | `snippets` | `snippets.validate` | false | false | `name: string`<br>`body: string` | `SnippetValidation` | cli, mcp, api |
-| `stash` | `component.adopt` | false | true | `kind*: string`<br>`name*: string`<br>`label: string`<br>`source_path*: string`<br>`origin*: object`<br>`save_label: string` | `AdoptResult` | cli, mcp, api |
-| `stash` | `component.create` | false | false | `kind*: string`<br>`name*: string`<br>`label: string` | `ComponentDetail` | cli, mcp, api |
-| `stash` | `component.deploy` | false | true | `id*: string`<br>`target_id*: string`<br>`revision_id: string` | `DeployResult` | cli, mcp, api |
-| `stash` | `component.export` | false | true | `id*: string`<br>`output_path*: string`<br>`include_secrets: boolean`<br>`force: boolean` | `ExportResult` | cli, mcp, api |
-| `stash` | `component.get` | false | false | `id*: string` | `ComponentDetail` | cli, mcp, api |
-| `stash` | `component.import` | false | true | `id*: string`<br>`source_path*: string`<br>`kind: string` | `ImportResult` | cli, mcp, api |
-| `stash` | `component.revisions` | false | false | `id*: string` | `Revision[]` | cli, mcp, api |
-| `stash` | `component.save` | false | false | `id*: string`<br>`label: string` | `SaveResult` | cli, mcp, api |
-| `stash` | `component.workspace` | false | false | `id*: string` | `WorkspacePath` | cli, mcp, api |
-| `stash` | `components.list` | false | false |  | `ComponentSummary[]` | cli, mcp, api |
-| `stash` | `help` | false | false |  | `Catalog` | cli, mcp, api |
-| `stash` | `provider.link` | false | true | `id*: string`<br>`kind*: string`<br>`label*: string`<br>`config*: object` | `Provider` | cli, mcp, api |
-| `stash` | `provider.pull` | false | true | `id*: string`<br>`provider_id*: string` | `SyncResult` | cli, mcp, api |
-| `stash` | `provider.push` | false | true | `id*: string`<br>`provider_id*: string` | `SyncResult` | cli, mcp, api |
-| `stash` | `providers.list` | false | false |  | `Provider[]` | cli, mcp, api |
-| `stash` | `schema` | false | false | `action*: string` | `Schema` | cli, mcp, api |
-| `stash` | `target.add` | false | false | `name*: string`<br>`kind*: string`<br>`path: string`<br>`gateway_id: string` | `Target` | cli, mcp, api |
-| `stash` | `target.remove` | false | true | `id*: string` | `RemoveResult` | cli, mcp, api |
-| `stash` | `targets.list` | false | false |  | `Target[]` | cli, mcp, api |

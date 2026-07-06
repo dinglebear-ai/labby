@@ -542,6 +542,8 @@ mod tests {
         RegisteredService, RegisteredServiceKind, ToolRegistry, build_default_registry,
         filter_built_in_upstream_apis, is_built_in_upstream_api_service, service_meta,
     };
+    #[cfg(feature = "lab-admin")]
+    use super::lab_admin_enabled;
     use labby_primitives::action::ActionSpec;
     use serde_json::Value;
     use std::future::Future;
