@@ -1,89 +1,5 @@
 [
   {
-    "name": "acp",
-    "display_name": "ACP",
-    "description": "Agent Client Protocol — session management and provider orchestration",
-    "category": "ai",
-    "status": "available",
-    "feature": "acp",
-    "exposure": "feature_gated",
-    "surfaces": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "default_port": null,
-    "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
-    "supports_multi_instance": false,
-    "metadata_source": "registry + PluginMeta"
-  },
-  {
-    "name": "acp_registry",
-    "display_name": "ACP Registry",
-    "description": "ACP Agent Registry — discover and install ACP-compatible AI coding agents",
-    "category": "marketplace",
-    "status": "sdk_only",
-    "feature": "acp_registry",
-    "exposure": "sdk_only",
-    "surfaces": {
-      "cli": false,
-      "mcp": false,
-      "api": false,
-      "web_ui": false
-    },
-    "default_port": null,
-    "docs_url": "https://agentclientprotocol.com",
-    "coverage_doc": "docs/coverage/acp_registry.md",
-    "upstream_doc": null,
-    "supports_multi_instance": false,
-    "metadata_source": "PluginMeta only"
-  },
-  {
-    "name": "deploy",
-    "display_name": "Deploy",
-    "description": "Build-and-push the lab release binary to SSH targets with integrity verification",
-    "category": "bootstrap",
-    "status": "available",
-    "feature": "deploy",
-    "exposure": "feature_gated",
-    "surfaces": {
-      "cli": true,
-      "mcp": true,
-      "api": false,
-      "web_ui": false
-    },
-    "default_port": null,
-    "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
-    "supports_multi_instance": false,
-    "metadata_source": "registry + PluginMeta"
-  },
-  {
-    "name": "device",
-    "display_name": "device",
-    "description": "Manage fleet device enrollments",
-    "category": "bootstrap",
-    "status": "available",
-    "feature": "nodes",
-    "exposure": "feature_gated",
-    "surfaces": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": true
-    },
-    "default_port": null,
-    "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
-    "supports_multi_instance": false,
-    "metadata_source": "registry synthetic metadata"
-  },
-  {
     "name": "doctor",
     "display_name": "Doctor",
     "description": "Comprehensive health audit: env vars, system probes, and service reachability",
@@ -168,48 +84,6 @@
     "metadata_source": "registry synthetic metadata"
   },
   {
-    "name": "marketplace",
-    "display_name": "Marketplace",
-    "description": "Browse Claude Code/Codex marketplaces, MCP Registry servers, ACP agents, and installable components",
-    "category": "marketplace",
-    "status": "available",
-    "feature": "marketplace",
-    "exposure": "feature_gated",
-    "surfaces": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": true
-    },
-    "default_port": null,
-    "docs_url": null,
-    "coverage_doc": null,
-    "upstream_doc": null,
-    "supports_multi_instance": false,
-    "metadata_source": "registry + PluginMeta"
-  },
-  {
-    "name": "mcpregistry",
-    "display_name": "MCP Registry",
-    "description": "MCP Registry v0.1 — discover and validate MCP servers",
-    "category": "marketplace",
-    "status": "sdk_only",
-    "feature": "marketplace",
-    "exposure": "sdk_only",
-    "surfaces": {
-      "cli": false,
-      "mcp": false,
-      "api": false,
-      "web_ui": false
-    },
-    "default_port": null,
-    "docs_url": "https://registry.modelcontextprotocol.io",
-    "coverage_doc": "docs/coverage/mcpregistry.md",
-    "upstream_doc": null,
-    "supports_multi_instance": false,
-    "metadata_source": "PluginMeta only"
-  },
-  {
     "name": "setup",
     "display_name": "Setup",
     "description": "First-run + draft-commit configuration flow",
@@ -250,26 +124,5 @@
     "upstream_doc": null,
     "supports_multi_instance": false,
     "metadata_source": "registry synthetic metadata"
-  },
-  {
-    "name": "stash",
-    "display_name": "Stash",
-    "description": "Component versioning and deployment — track, snapshot, and deploy Claude Code artefacts",
-    "category": "bootstrap",
-    "status": "available",
-    "feature": "stash",
-    "exposure": "feature_gated",
-    "surfaces": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "default_port": null,
-    "docs_url": null,
-    "coverage_doc": "docs/coverage/stash.md",
-    "upstream_doc": null,
-    "supports_multi_instance": false,
-    "metadata_source": "registry + PluginMeta"
   }
 ]

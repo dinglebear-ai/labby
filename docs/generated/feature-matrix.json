@@ -2,69 +2,14 @@
   "features": [
     {
       "crate_name": "labby",
-      "feature": "acp",
-      "dependencies": [
-        "dep:agent-client-protocol",
-        "dep:r2d2",
-        "dep:r2d2_sqlite"
-      ],
-      "included_in_default": true,
-      "included_in_all": true,
-      "classification": "base_capability",
-      "mapped_crate_feature": null,
-      "exception_reason": "feature-gated base capability"
-    },
-    {
-      "crate_name": "labby",
-      "feature": "acp_registry",
-      "dependencies": [
-        "labby-apis/acp_registry",
-        "labby-runtime/acp_registry"
-      ],
-      "included_in_default": true,
-      "included_in_all": true,
-      "classification": "product_slice",
-      "mapped_crate_feature": "labby-apis/acp_registry",
-      "exception_reason": "standalone product slice"
-    },
-    {
-      "crate_name": "labby",
       "feature": "all",
       "dependencies": [
-        "labby-apis/all",
         "lab-admin",
-        "acp",
-        "acp_registry",
         "api-docs",
-        "deploy",
         "gateway-host",
-        "marketplace",
-        "nodes",
-        "stash"
-      ],
-      "included_in_default": true,
-      "included_in_all": true,
-      "classification": "aggregate_default",
-      "mapped_crate_feature": "labby-apis/all",
-      "exception_reason": "aggregate/default feature"
-    },
-    {
-      "crate_name": "labby",
-      "feature": "api-docs",
-      "dependencies": [
-        "dep:utoipa"
-      ],
-      "included_in_default": true,
-      "included_in_all": true,
-      "classification": "helper_internal",
-      "mapped_crate_feature": null,
-      "exception_reason": "helper/internal feature"
-    },
-    {
-      "crate_name": "labby",
-      "feature": "default",
-      "dependencies": [
-        "all"
+        "fs",
+        "systemd",
+        "test-harness"
       ],
       "included_in_default": false,
       "included_in_all": false,
@@ -74,16 +19,27 @@
     },
     {
       "crate_name": "labby",
-      "feature": "deploy",
+      "feature": "api-docs",
       "dependencies": [
-        "labby-apis/deploy",
-        "labby-runtime/deploy"
+        "dep:utoipa"
       ],
-      "included_in_default": true,
+      "included_in_default": false,
       "included_in_all": true,
-      "classification": "product_slice",
-      "mapped_crate_feature": "labby-apis/deploy",
-      "exception_reason": "standalone product slice"
+      "classification": "helper_internal",
+      "mapped_crate_feature": null,
+      "exception_reason": "helper/internal feature"
+    },
+    {
+      "crate_name": "labby",
+      "feature": "default",
+      "dependencies": [
+        "gateway-host"
+      ],
+      "included_in_default": false,
+      "included_in_all": false,
+      "classification": "aggregate_default",
+      "mapped_crate_feature": null,
+      "exception_reason": "aggregate/default feature"
     },
     {
       "crate_name": "labby",
@@ -95,7 +51,7 @@
         "dep:rustix"
       ],
       "included_in_default": false,
-      "included_in_all": false,
+      "included_in_all": true,
       "classification": "product_slice",
       "mapped_crate_feature": null,
       "exception_reason": "standalone product slice"
@@ -133,64 +89,11 @@
       "crate_name": "labby",
       "feature": "lab-admin",
       "dependencies": [],
-      "included_in_default": true,
-      "included_in_all": true,
-      "classification": "product_slice",
-      "mapped_crate_feature": null,
-      "exception_reason": "standalone product slice"
-    },
-    {
-      "crate_name": "labby",
-      "feature": "marketplace",
-      "dependencies": [
-        "labby-apis/mcpregistry",
-        "labby-runtime/marketplace",
-        "gateway",
-        "acp",
-        "nodes",
-        "stash"
-      ],
-      "included_in_default": true,
-      "included_in_all": true,
-      "classification": "product_slice",
-      "mapped_crate_feature": "labby-apis/mcpregistry",
-      "exception_reason": "standalone product slice"
-    },
-    {
-      "crate_name": "labby",
-      "feature": "mcpregistry",
-      "dependencies": [
-        "marketplace"
-      ],
-      "included_in_default": true,
-      "included_in_all": true,
-      "classification": "intentional_exception",
-      "mapped_crate_feature": "labby-apis/mcpregistry",
-      "exception_reason": "intentional crate-local exception"
-    },
-    {
-      "crate_name": "labby",
-      "feature": "node-runtime",
-      "dependencies": [],
       "included_in_default": false,
-      "included_in_all": false,
-      "classification": "binary_only",
-      "mapped_crate_feature": null,
-      "exception_reason": "binary-only Lab feature"
-    },
-    {
-      "crate_name": "labby",
-      "feature": "nodes",
-      "dependencies": [
-        "dep:r2d2",
-        "dep:r2d2_sqlite",
-        "dep:sysinfo"
-      ],
-      "included_in_default": true,
       "included_in_all": true,
-      "classification": "base_capability",
+      "classification": "product_slice",
       "mapped_crate_feature": null,
-      "exception_reason": "feature-gated base capability"
+      "exception_reason": "standalone product slice"
     },
     {
       "crate_name": "labby",
@@ -204,22 +107,12 @@
     },
     {
       "crate_name": "labby",
-      "feature": "stash",
-      "dependencies": [],
-      "included_in_default": true,
-      "included_in_all": true,
-      "classification": "base_capability",
-      "mapped_crate_feature": null,
-      "exception_reason": "feature-gated base capability"
-    },
-    {
-      "crate_name": "labby",
       "feature": "systemd",
       "dependencies": [
         "dep:sd-notify"
       ],
       "included_in_default": false,
-      "included_in_all": false,
+      "included_in_all": true,
       "classification": "helper_internal",
       "mapped_crate_feature": null,
       "exception_reason": "helper/internal feature"
@@ -231,7 +124,7 @@
         "gateway"
       ],
       "included_in_default": false,
-      "included_in_all": false,
+      "included_in_all": true,
       "classification": "intentional_exception",
       "mapped_crate_feature": null,
       "exception_reason": "intentional crate-local exception"
@@ -264,8 +157,8 @@
       "dependencies": [],
       "included_in_default": false,
       "included_in_all": true,
-      "classification": "service_passthrough",
-      "mapped_crate_feature": "labby/acp_registry",
+      "classification": "sdk_only",
+      "mapped_crate_feature": null,
       "exception_reason": null
     },
     {
@@ -298,8 +191,8 @@
       "dependencies": [],
       "included_in_default": false,
       "included_in_all": true,
-      "classification": "service_passthrough",
-      "mapped_crate_feature": "labby/deploy",
+      "classification": "sdk_only",
+      "mapped_crate_feature": null,
       "exception_reason": null
     },
     {
@@ -308,8 +201,8 @@
       "dependencies": [],
       "included_in_default": false,
       "included_in_all": true,
-      "classification": "service_passthrough",
-      "mapped_crate_feature": "labby/mcpregistry",
+      "classification": "sdk_only",
+      "mapped_crate_feature": null,
       "exception_reason": null
     },
     {
