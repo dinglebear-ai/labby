@@ -1869,6 +1869,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[cfg(feature = "api-docs")]
     #[tokio::test]
     async fn openapi_json_requires_bearer_auth() {
         let state = AppState::new();
@@ -1886,6 +1887,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(feature = "api-docs")]
     #[tokio::test]
     async fn openapi_json_returns_spec_with_auth() {
         let state = AppState::new();
@@ -1913,6 +1915,7 @@ mod tests {
         assert!(spec["paths"].as_object().is_some());
     }
 
+    #[cfg(feature = "api-docs")]
     #[tokio::test]
     async fn docs_endpoint_returns_html_with_auth() {
         let state = AppState::new();

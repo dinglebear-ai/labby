@@ -1,24 +1,34 @@
 use super::state::AppState;
 use axum::{
-    body::Body,
     extract::{Request, State},
-    http::{Method, StatusCode, header},
+    http::{Method, StatusCode},
     response::{IntoResponse, Response},
 };
-use labby_web::{AssetResponse, AssetSource, serve_asset};
 
 /// Whether the embedded SPA bundle (`index.html`) shipped in this binary.
 ///
 /// Delegates to `labby-web`, which owns the build-time embedded asset
 /// table. Used by the serve path and router tests to decide whether the
-/// embedded fallback is meaningful.
+/// embedded fallback is meaningful. Always `false` when the `web-ui`
+/// feature (pulled in by `gateway`) is disabled, since no asset bundle is
+/// compiled in for that build.
+#[cfg(feature = "web-ui")]
 pub fn embedded_web_assets_available() -> bool {
     labby_web::embedded_assets_available()
 }
 
+#[cfg(not(feature = "web-ui"))]
+pub fn embedded_web_assets_available() -> bool {
+    false
+}
+
 /// Turn a resolved asset into an axum response, honoring `HEAD` (headers only).
-fn web_asset_response(asset: AssetResponse, method: &Method) -> Response {
-    let AssetResponse {
+#[cfg(feature = "web-ui")]
+fn web_asset_response(asset: labby_web::AssetResponse, method: &Method) -> Response {
+    use axum::body::Body;
+    use axum::http::header;
+
+    let labby_web::AssetResponse {
         bytes,
         content_type,
         cache_control,
@@ -39,7 +49,10 @@ fn web_asset_response(asset: AssetResponse, method: &Method) -> Response {
     response
 }
 
+#[cfg(feature = "web-ui")]
 pub async fn serve_web_request(State(state): State<AppState>, request: Request) -> Response {
+    use labby_web::{AssetSource, serve_asset};
+
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -60,4 +73,13 @@ pub async fn serve_web_request(State(state): State<AppState>, request: Request) 
         Ok(asset) => web_asset_response(asset, request.method()),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// No asset bundle is compiled in without `web-ui` — the SPA fallback route
+/// is never mounted in that build (see `router.rs`'s `web_assets_enabled()`
+/// gate), but this stub keeps the handler path referenceable from shared,
+/// always-compiled code.
+#[cfg(not(feature = "web-ui"))]
+pub async fn serve_web_request(State(_state): State<AppState>, _request: Request) -> Response {
+    StatusCode::NOT_FOUND.into_response()
 }

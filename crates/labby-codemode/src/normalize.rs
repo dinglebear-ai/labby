@@ -103,7 +103,16 @@ fn split_prologue_export_default(code: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn export_default_indices<'a>(code: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+/// Iterate over `code`'s character positions annotated with whether that
+/// position is in normal code (vs inside a string/template literal or a
+/// comment), so callers can safely pattern-match braces/needles without being
+/// fooled by an identical character sitting inside a string or comment.
+///
+/// Shared by [`export_default_indices`] (needle search) and
+/// [`matching_brace_end`] (brace-depth tracking) — both need the same
+/// string/comment-aware walk, just a different thing to do with each
+/// in-code character.
+fn scan_code_positions(code: &str) -> impl Iterator<Item = (usize, char)> + '_ {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum State {
         Code,
@@ -121,9 +130,7 @@ fn export_default_indices<'a>(code: &'a str, needle: &'a str) -> impl Iterator<I
     while let Some((idx, ch)) = iter.next() {
         match state {
             State::Code => {
-                if code[idx..].starts_with(needle) {
-                    hits.push(idx);
-                }
+                hits.push((idx, ch));
                 match ch {
                     '\'' => state = State::Single,
                     '"' => state = State::Double,
@@ -180,6 +187,12 @@ fn export_default_indices<'a>(code: &'a str, needle: &'a str) -> impl Iterator<I
         }
     }
     hits.into_iter()
+}
+
+fn export_default_indices<'a>(code: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+    scan_code_positions(code)
+        .filter(move |(idx, _)| code[*idx..].starts_with(needle))
+        .map(|(idx, _)| idx)
 }
 
 fn wrap_loose_code_as_async_arrow(code: &str) -> String {
@@ -365,18 +378,72 @@ fn trailing_comment_start(source: &str) -> Option<usize> {
     }
 }
 
+/// Returns the function's name, but ONLY when `code` is a *bare* declaration —
+/// i.e. the declaration's body brace-balances all the way to the end of
+/// `code` (aside from trailing whitespace/semicolons). Without this check, a
+/// prologue like `function mk() {...}\nconst tool = mk();\nexport default
+/// ...;` would be misidentified as a single wrapped declaration (matching
+/// only the `function ` prefix) and its trailing statements silently
+/// swallowed into a bogus `return mk();` — the multi-statement prologue path
+/// (`split_prologue_export_default`) must handle that case instead.
 fn function_declaration_name(code: &str) -> Option<&str> {
     let code = code.trim_start();
     let rest = code
         .strip_prefix("async function ")
         .or_else(|| code.strip_prefix("function "))?;
     let name = rest.split_once('(')?.0.trim();
-    (!name.is_empty()).then_some(name)
+    if name.is_empty() {
+        return None;
+    }
+    let body_start = code.find('{')?;
+    let body_end = matching_brace_end(code, body_start)?;
+    code[body_end..]
+        .trim()
+        .trim_end_matches(';')
+        .trim()
+        .is_empty()
+        .then_some(name)
 }
 
+/// Given the byte index of an opening `{`, returns the index just past its
+/// matching `}`, tracking string/template/comment state so braces inside
+/// those do not throw off the depth count.
+/// Given the byte offset of an opening `{` in `code`, returns the offset just
+/// past its matching `}`, using [`scan_code_positions`] so braces inside a
+/// string/template literal or a comment don't throw off the depth count.
+fn matching_brace_end(code: &str, open_brace: usize) -> Option<usize> {
+    let mut depth: i32 = 0;
+    for (offset, ch) in scan_code_positions(&code[open_brace..]) {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open_brace + offset + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether `code` IN ITS ENTIRETY is a single function expression (named or
+/// anonymous) — i.e. the function's body brace-balances all the way to the
+/// end of `code`. A prefix match alone would misidentify a prologue like
+/// `function mk() {...}\nconst tool = mk();` (a function decl followed by
+/// more statements) as a bare expression and silently drop everything after
+/// it — see [`function_declaration_name`] for the same failure mode.
 fn is_bare_function_expression(code: &str) -> bool {
     let code = code.trim_start();
-    code.starts_with("async function") || code.starts_with("function")
+    if !(code.starts_with("async function") || code.starts_with("function")) {
+        return false;
+    }
+    let Some(body_start) = code.find('{') else {
+        return false;
+    };
+    matching_brace_end(code, body_start)
+        .is_some_and(|end| code[end..].trim().trim_end_matches(';').trim().is_empty())
 }
 
 fn is_bare_arrow_expression(code: &str) -> bool {
@@ -422,6 +489,8 @@ fn looks_like_returnable_expression(statement: &str) -> bool {
                     | "function"
                     | "class"
                     | "throw"
+                    | "export"
+                    | "import"
             )
         )
 }
