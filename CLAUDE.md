@@ -345,10 +345,15 @@ just clean      # cargo clean
 just mcp-token  # rotate the MCP bearer token in ~/.labby/.env
 ```
 
-Releases: push a `vX.Y.Z` tag (after bumping the workspace `version` in
-`Cargo.toml` and adding a CHANGELOG entry) — `release.yml` builds the
-Linux/Windows archives, publishes the GitHub Release, and pushes the GHCR
-image. There is no cargo-release config; the bump/tag is manual.
+Releases: `release-please.yml` watches green CI runs on `main`, maintains a
+release PR that bumps `[workspace.package] version` in `Cargo.toml` (and the
+matching `Cargo.lock` entries) and updates `CHANGELOG.md` from Conventional
+Commits (`release-please-config.json` / `.release-please-manifest.json`).
+Merging that PR creates the `vX.Y.Z` tag and GitHub Release, which triggers
+`release.yml` to build the Linux/Windows archives, publish the release, and
+push the GHCR image. Requires the `RELEASE_PLEASE_TOKEN` repo secret (a PAT
+or GitHub App token with `contents: write` + `pull-requests: write` — the
+default `GITHUB_TOKEN` won't trigger the downstream tag-push workflow).
 
 Default verification targets the all-features build. If you run a reduced feature set for a narrow task, treat any warning cleanup decisions from that mode as provisional until they are checked again with `--all-features`.
 
@@ -429,7 +434,7 @@ just test-integration
 - GitHub Actions
 - Matrix: linux x86_64
 - Checks: clippy, rustfmt, cargo-deny, nextest
-- Release: cargo-release → GitHub Releases with pre-built binaries (linux x86_64, linux aarch64)
+- Release: release-please → GitHub Releases with pre-built binaries (linux x86_64, linux aarch64)
 
 ## Style
 
