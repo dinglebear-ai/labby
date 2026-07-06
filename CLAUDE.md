@@ -2,7 +2,7 @@
 
 ## What is this?
 
-`lab` is a pluggable homelab CLI + MCP server SDK in Rust. One binary exposes CLI, MCP, HTTP API, and Labby web UI surfaces for product-local control-plane services. Standalone Cargo product slices currently include `gateway`, `marketplace`, `fs`, `deploy`, and `acp_registry`; base services include `doctor`, `setup`, `logs`, `device`, `stash`, and `acp`. Base capabilities `acp`, `nodes`, and `stash` are feature-gated (all included in `all`); a gateway-only build (`--no-default-features --features gateway`) excludes them. MCP dispatch still uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
+`lab` is a pluggable homelab CLI + MCP server SDK in Rust. One binary exposes CLI, MCP, HTTP API, and Labby web UI surfaces for product-local control-plane services. The "Slim labby gateway host" pass removed the `marketplace`/`deploy`/`acp_registry`/`acp`/`nodes`/`stash`/`logs`/`device` services and their `labby` crate features entirely (that logic now lives only in `labby-runtime`/`labby-apis`, exercised via `extracted-crate-slices` in CI, not as standalone `labby` product slices). Standalone Cargo product slices on `labby` now are just `gateway` and `fs`; `doctor`, `setup`, and `snippets` (gateway-gated) are always-on bootstrap services. MCP dispatch still uses a single tool per runtime service with an `action` + `params` shape instead of hundreds of per-method tools.
 
 Start with `docs/README.md` for the docs index. The topic docs in `docs/` are the source of truth; if this file disagrees with them, this file is stale.
 
