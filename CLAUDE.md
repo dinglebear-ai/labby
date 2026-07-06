@@ -48,6 +48,17 @@ lives in `labby-web`. Windows process-tree reaping lives in `labby-winjob`.
 CLI, MCP, HTTP API adapters, config loading, product dispatch, and the `labby`
 binary live in `labby`.
 
+## OpenWiki
+
+This repository has documentation located in the `/openwiki` directory.
+
+Start here:
+- [OpenWiki quickstart](openwiki/quickstart.md)
+
+OpenWiki includes repository overview, architecture notes, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+When working in this repository, read the OpenWiki quickstart first, then follow its links to the relevant architecture, workflow, domain, operation, and testing notes.
+
 ```
 lab/
 ├── crates/
