@@ -9,9 +9,10 @@
 //! holds the live `Arc<RwLock<LabConfig>>`, writes the gateway-owned sections
 //! back into it on `persist`, and renders the full `LabConfig` through the
 //! verbatim `toml_edit` merge path (`write_gateway_config`) that preserves
-//! foreign top-level keys byte-for-byte. Env writes go through the host's real
-//! backup-first / atomic `write_env` helpers and refresh any cached service
-//! clients.
+//! foreign top-level keys byte-for-byte. Env writes go through the host's
+//! canonical [`crate::config::env_merge`] backup-first / atomic merge
+//! primitive (via [`crate::config::write_service_creds`]) and refresh any
+//! cached service clients.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,7 +21,7 @@ use std::sync::{Arc, RwLock};
 use labby_gateway::gateway::config_store::{GatewayConfigStore, StoreFuture};
 use labby_runtime::gateway_config::{GatewayConfig, ResolvedPublicUrls};
 
-use crate::config::{EnvCredential, LabConfig, backup_env, env_is_up_to_date, home_dir, write_env};
+use crate::config::{EnvCredential, LabConfig, home_dir};
 use crate::dispatch::clients::SharedServiceClients;
 use crate::dispatch::error::ToolError;
 
@@ -64,34 +65,38 @@ impl LabConfigStore {
             .unwrap_or_else(|| PathBuf::from(".env"))
     }
 
-    /// Backup-first atomic write of `creds`, then refresh cached clients.
+    /// Backup-first atomic write of `creds` via the canonical
+    /// [`crate::config::env_merge`] merge primitive, then refresh cached
+    /// clients if anything actually changed.
     async fn write_creds_and_refresh(&self, creds: Vec<EnvCredential>) -> Result<(), ToolError> {
+        if creds.is_empty() {
+            return Ok(());
+        }
         let env_path = self.resolved_env_path();
-        if !creds.is_empty() && !env_is_up_to_date(&env_path, &creds) {
-            let env_path_for_write = env_path.clone();
-            tokio::task::spawn_blocking(move || -> Result<(), ToolError> {
-                drop(backup_env(&env_path_for_write).map_err(|e| {
-                    ToolError::internal_message(format!("failed to back up env file: {e}"))
-                })?);
-                write_env(&env_path_for_write, &creds, true).map_err(|e| {
-                    ToolError::internal_message(format!("failed to write env file: {e}"))
-                })?;
-                Ok(())
-            })
-            .await
-            .map_err(|e| ToolError::internal_message(format!("env write task failed: {e}")))??;
+        let env_path_for_write = env_path.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            crate::config::write_service_creds(&env_path_for_write, &creds, true)
+        })
+        .await
+        .map_err(|e| ToolError::internal_message(format!("env write task failed: {e}")))?
+        .map_err(|e| ToolError::internal_message(format!("failed to write env file: {e}")))?;
 
-            if let Some(service_clients) = &self.service_clients {
-                service_clients
-                    .refresh_from_env_path(&env_path)
-                    .await
-                    .map_err(|e| {
-                        ToolError::internal_message(format!(
-                            "failed to refresh service clients from {}: {e}",
-                            env_path.display()
-                        ))
-                    })?;
-            }
+        // merge() is idempotent — `written == 0` means every requested key
+        // already matched, so there is nothing for cached clients to pick up.
+        if outcome.written == 0 {
+            return Ok(());
+        }
+
+        if let Some(service_clients) = &self.service_clients {
+            service_clients
+                .refresh_from_env_path(&env_path)
+                .await
+                .map_err(|e| {
+                    ToolError::internal_message(format!(
+                        "failed to refresh service clients from {}: {e}",
+                        env_path.display()
+                    ))
+                })?;
         }
         Ok(())
     }

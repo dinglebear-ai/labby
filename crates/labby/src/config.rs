@@ -2007,16 +2007,17 @@ pub struct EnvCredential {
 }
 
 /// Merge `creds` into the `.env` file at `path` via the canonical
-/// [`env_merge::merge`] primitive. Preferred over [`write_env`] /
-/// [`write_env_pairs`] for new code: handles backup, atomic write,
-/// mtime-skew detection, retention pruning, and 0600 perms in one call.
+/// [`env_merge::merge`] primitive. The single sanctioned way to write
+/// [`EnvCredential`]s: handles backup, atomic write, mtime-skew detection,
+/// retention pruning, and 0600 perms in one call. [`write_env_pairs`] remains
+/// for callers that already have flat `(key, value)` pairs instead of
+/// [`EnvCredential`]s.
 ///
 /// Returns the underlying merge outcome (skipped conflicts, backup path,
 /// prune stats).
 ///
 /// # Errors
 /// Returns the typed [`env_merge::MergeError`] on any merge failure.
-#[allow(dead_code)]
 pub fn write_service_creds(
     path: &Path,
     creds: &[EnvCredential],
@@ -2048,225 +2049,14 @@ pub fn write_service_creds(
     )
 }
 
-/// Maximum number of `.env.bak.*` files to retain alongside a given `.env`.
-///
-/// Older backups are pruned after a new one is written. Keeping an unbounded
-/// set of backups accumulates world-readable copies of all tokens when the
-/// `.env` itself is corrected to 0o600 but the backup directory is not.
-const ENV_BACKUP_RETAIN: usize = 3;
-
-/// Copy `path` to `path.bak.<unix-seconds>`, restricted to mode 0o600.
-///
-/// After writing the new backup, prunes old `.env.bak.*` siblings so at most
-/// [`ENV_BACKUP_RETAIN`] backups exist. A no-op (synthetic path returned) when
-/// `path` does not exist.
-///
-/// # Errors
-/// Returns an error if the backup write fails.
-pub fn backup_env(path: &Path) -> Result<PathBuf> {
-    if !path.exists() {
-        // Nothing to back up; return a synthetic path for display only.
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        return Ok(PathBuf::from(format!("{}.bak.{ts}", path.display())));
-    }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let backup = PathBuf::from(format!("{}.bak.{ts}", path.display()));
-
-    // S2: write backup with 0o600 — never use std::fs::copy which inherits
-    // the umask and can produce world-readable secret copies.
-    {
-        let content =
-            std::fs::read(path).with_context(|| format!("read {} for backup", path.display()))?;
-        let mut file = open_secret_file(&backup)
-            .with_context(|| format!("create backup {}", backup.display()))?;
-        file.write_all(&content)
-            .with_context(|| format!("write backup {}", backup.display()))?;
-        file.sync_all()
-            .with_context(|| format!("sync backup {}", backup.display()))?;
-    }
-
-    // Prune old backups, keeping only ENV_BACKUP_RETAIN most recent.
-    prune_env_backups(path);
-
-    Ok(backup)
-}
-
-/// Delete old `.env.bak.*` siblings of `env_path`, keeping the
-/// [`ENV_BACKUP_RETAIN`] most recent entries (sorted lexicographically by name,
-/// which sorts by timestamp since the suffix is a unix-second integer).
-fn prune_env_backups(env_path: &Path) {
-    let Some(parent) = env_path.parent() else {
-        return;
-    };
-    let Some(stem) = env_path.file_name().and_then(|n| n.to_str()) else {
-        return;
-    };
-    let prefix = format!("{stem}.bak.");
-
-    let Ok(mut entries) = std::fs::read_dir(parent).map(|rd| {
-        rd.filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(|n| n.starts_with(&prefix))
-            })
-            .map(|e| e.path())
-            .collect::<Vec<_>>()
-    }) else {
-        return;
-    };
-
-    entries.sort();
-
-    if entries.len() > ENV_BACKUP_RETAIN {
-        for old in &entries[..entries.len() - ENV_BACKUP_RETAIN] {
-            if let Err(e) = std::fs::remove_file(old) {
-                tracing::warn!(
-                    path = %old.display(),
-                    error = %e,
-                    "failed to prune old env backup"
-                );
-            }
-        }
-    }
-}
-
-/// Merge `new_creds` into the `.env` file at `path`.
-///
-/// 1. Backup is the caller's responsibility — call [`backup_env`] before this.
-/// 2. Atomic write: `path.tmp` → rename.
-/// 3. Existing key order and comments are preserved.
-/// 4. Comments (`#`) and blank lines pass through unchanged.
-/// 5. Dedupe: one entry per key.
-/// 6. Conflicts (key exists, different value): skip-and-warn unless `force=true`.
-/// 7. Values containing whitespace or shell metacharacters are double-quoted.
-/// 8. Idempotence: caller must check before invoking (this fn always writes).
-///
-/// Returns a `Vec<String>` of warnings for skipped conflicts.
-///
-/// # Errors
-/// Returns an error if the tmp file cannot be written or renamed.
-pub fn write_env(path: &Path, new_creds: &[EnvCredential], force: bool) -> Result<Vec<String>> {
-    // Read the existing file (empty if absent).
-    let existing_raw = if path.exists() {
-        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
-    } else {
-        String::new()
-    };
-    let existing_lines: Vec<&str> = existing_raw.lines().collect();
-
-    // Build map of existing key → value from non-comment lines.
-    let mut existing: HashMap<String, String> = HashMap::new();
-    for line in &existing_lines {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = trimmed.split_once('=') {
-            existing.insert(k.trim().to_owned(), v.trim().to_owned());
-        }
-    }
-
-    // Collect all (key, value) pairs to write from new_creds.
-    let mut to_write: Vec<(String, String)> = Vec::new();
-    for cred in new_creds {
-        let svc_upper = cred.service.to_uppercase();
-        if let Some(url) = &cred.url {
-            to_write.push((format!("{svc_upper}_URL"), url.clone()));
-        }
-        if let Some(secret) = &cred.secret {
-            to_write.push((cred.env_field.clone(), secret.clone()));
-        }
-    }
-
-    // Process each pair: classify as NEW, SAME, or CONFLICT.
-    let mut conflicts: Vec<String> = Vec::new();
-    // Track keys that are overrides (force=true conflicts).
-    let mut override_keys: HashMap<String, String> = HashMap::new();
-    // Track keys that are genuinely new.
-    let mut new_keys: Vec<(String, String)> = Vec::new();
-
-    for (key, value) in &to_write {
-        match existing.get(key) {
-            None => new_keys.push((key.clone(), value.clone())),
-            Some(existing_val) if existing_val == value => {
-                // Idempotent — already present with same value, skip.
-            }
-            Some(existing_val) => {
-                if force {
-                    override_keys.insert(key.clone(), value.clone());
-                } else {
-                    conflicts.push(format!(
-                        "CONFLICT: {key} already set to {existing_val:?}; skipping (use --force to overwrite)"
-                    ));
-                }
-            }
-        }
-    }
-
-    // Build the new file: start with existing lines, applying overrides in-place.
-    let mut out_lines: Vec<String> = Vec::new();
-    for line in &existing_lines {
-        let trimmed = line.trim();
-        if !trimmed.is_empty()
-            && !trimmed.starts_with('#')
-            && let Some((k, _)) = trimmed.split_once('=')
-        {
-            let key = k.trim();
-            if let Some(new_val) = override_keys.get(key) {
-                out_lines.push(format!("{}={}", key, quote_env_value(new_val)));
-                continue;
-            }
-        }
-        out_lines.push((*line).to_owned());
-    }
-
-    // Append new keys at the end.
-    if !new_keys.is_empty() {
-        if !out_lines.last().is_none_or(|l| l.trim().is_empty()) {
-            out_lines.push(String::new()); // blank separator
-        }
-        for (key, value) in &new_keys {
-            out_lines.push(format!("{}={}", key, quote_env_value(value)));
-        }
-    }
-
-    // S2: Atomic write with 0o600 — write to .tmp (mode 0o600), sync, rename.
-    // The file is never world-readable even momentarily.
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create dir {}", parent.display()))?;
-    }
-
-    let tmp_path = PathBuf::from(format!("{}.tmp", path.display()));
-    {
-        let mut file = open_secret_file(&tmp_path)
-            .with_context(|| format!("create {}", tmp_path.display()))?;
-        for line in &out_lines {
-            writeln!(file, "{line}").with_context(|| format!("write {}", tmp_path.display()))?;
-        }
-        file.sync_all()
-            .with_context(|| format!("sync {}", tmp_path.display()))?;
-    }
-    std::fs::rename(&tmp_path, path)
-        .with_context(|| format!("rename {} → {}", tmp_path.display(), path.display()))?;
-    restrict_secret_file_permissions(path)
-        .with_context(|| format!("chmod 0o600 {}", path.display()))?;
-
-    Ok(conflicts)
-}
-
 /// Write raw `(key, value)` pairs into the `.env` file at `path`.
 ///
-/// Identical merge semantics to [`write_env`]: atomic write, existing order preserved,
-/// conflicts skipped unless `force=true`, idempotent on same values.
-/// Returns a `Vec<String>` of conflict warnings.
+/// Atomic write, existing order preserved, conflicts skipped unless
+/// `force=true`, idempotent on same values. Returns a `Vec<String>` of
+/// conflict warnings.
 ///
-/// Prefer this over [`write_env`] when callers already have flat env pairs.
+/// Prefer [`write_service_creds`] when callers have [`EnvCredential`]s
+/// instead of flat env pairs.
 ///
 /// # Errors
 /// Returns an error if the tmp file cannot be written or renamed.
@@ -2359,51 +2149,6 @@ pub fn write_env_pairs(
         .with_context(|| format!("chmod 0o600 {}", path.display()))?;
 
     Ok(conflicts)
-}
-
-/// Returns true if all (key, value) pairs that would be written by `write_env`
-/// are already present in `path` with matching values. Used to implement
-/// idempotence: if this returns true, skip backup and write entirely.
-pub fn env_is_up_to_date(path: &Path, new_creds: &[EnvCredential]) -> bool {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let existing: HashMap<String, String> = raw
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
-        .filter_map(|l| {
-            l.split_once('=').map(|(k, v)| {
-                let trimmed = v.trim();
-                // Strip surrounding double quotes so that quoted values
-                // written by write_env() compare equal to the raw secret.
-                let unquoted = trimmed
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .map_or_else(
-                        || trimmed.to_owned(),
-                        // Unescape sequences that write_env() would have escaped.
-                        |inner| inner.replace(r#"\""#, "\"").replace(r"\\", r"\"),
-                    );
-                (k.trim().to_owned(), unquoted)
-            })
-        })
-        .collect();
-
-    for cred in new_creds {
-        let svc_upper = cred.service.to_uppercase();
-        if let Some(url) = &cred.url {
-            let key = format!("{svc_upper}_URL");
-            if existing.get(&key).map(String::as_str) != Some(url.as_str()) {
-                return false;
-            }
-        }
-        if let Some(secret) = &cred.secret
-            && existing.get(&cred.env_field).map(String::as_str) != Some(secret.as_str())
-        {
-            return false;
-        }
-    }
-    true
 }
 
 // ── Secret file helpers (S2 / O-M4) ─────────────────────────────────────────
@@ -3056,7 +2801,7 @@ root = "/srv/lab-stash"
         assert!(!format!("{:?}", def.get("USERNAME").unwrap()).contains("[REDACTED]"));
     }
 
-    // ─── write_env / backup_env tests ───────────────────────────────────────
+    // ─── write_service_creds tests ──────────────────────────────────────────
 
     fn radarr_cred() -> EnvCredential {
         EnvCredential {
@@ -3068,73 +2813,67 @@ root = "/srv/lab-stash"
     }
 
     #[test]
-    fn write_env_adds_new_keys() {
+    fn write_service_creds_adds_new_keys() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
-        let warnings = write_env(&path, &[radarr_cred()], false).unwrap();
-        assert!(warnings.is_empty());
+        let outcome = write_service_creds(&path, &[radarr_cred()], false).unwrap();
+        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.written, 2);
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("RADARR_URL=http://localhost:7878"));
         assert!(content.contains("RADARR_API_KEY=abc123"));
     }
 
     #[test]
-    fn write_env_preserves_comments_and_blanks() {
+    fn write_service_creds_preserves_comments_and_blanks() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
         std::fs::write(&path, "# my comment\nOTHER=val\n").unwrap();
-        write_env(&path, &[radarr_cred()], false).unwrap();
+        write_service_creds(&path, &[radarr_cred()], false).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("# my comment"));
         assert!(content.contains("OTHER=val"));
     }
 
     #[test]
-    fn write_env_conflict_skip_without_force() {
+    fn write_service_creds_conflict_skip_without_force() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
         std::fs::write(&path, "RADARR_API_KEY=oldvalue\n").unwrap();
-        let warnings = write_env(&path, &[radarr_cred()], false).unwrap();
-        assert!(!warnings.is_empty());
+        let outcome = write_service_creds(&path, &[radarr_cred()], false).unwrap();
+        assert!(!outcome.skipped.is_empty());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("oldvalue"));
         assert!(!content.contains("abc123"));
     }
 
     #[test]
-    fn write_env_conflict_overwrite_with_force() {
+    fn write_service_creds_conflict_overwrite_with_force() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
         std::fs::write(&path, "RADARR_API_KEY=oldvalue\n").unwrap();
-        let warnings = write_env(&path, &[radarr_cred()], true).unwrap();
-        assert!(warnings.is_empty());
+        let outcome = write_service_creds(&path, &[radarr_cred()], true).unwrap();
+        assert!(outcome.skipped.is_empty());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("abc123"));
         assert!(!content.contains("oldvalue"));
     }
 
     #[test]
-    fn env_is_up_to_date_returns_true_when_matching() {
+    fn write_service_creds_is_idempotent_when_matching() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
-        std::fs::write(
-            &path,
-            "RADARR_URL=http://localhost:7878\nRADARR_API_KEY=abc123\n",
-        )
-        .unwrap();
-        assert!(env_is_up_to_date(&path, &[radarr_cred()]));
+        write_service_creds(&path, &[radarr_cred()], false).unwrap();
+        // Re-running with the exact same creds must be a written=0 no-op --
+        // this is the signal crate::dispatch::gateway::config_store relies on
+        // to skip a service-client refresh cycle.
+        let outcome = write_service_creds(&path, &[radarr_cred()], false).unwrap();
+        assert_eq!(outcome.written, 0);
+        assert!(outcome.backup_path.is_none());
     }
 
     #[test]
-    fn env_is_up_to_date_returns_false_when_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".env");
-        std::fs::write(&path, "RADARR_URL=http://localhost:7878\n").unwrap();
-        assert!(!env_is_up_to_date(&path, &[radarr_cred()]));
-    }
-
-    #[test]
-    fn write_env_quotes_value_with_special_chars() {
+    fn write_service_creds_quotes_value_with_special_chars() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
         let cred = EnvCredential {
@@ -3143,28 +2882,9 @@ root = "/srv/lab-stash"
             secret: Some("has space".to_owned()),
             env_field: "SVC_KEY".to_owned(),
         };
-        write_env(&path, &[cred], false).unwrap();
+        write_service_creds(&path, &[cred], false).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("SVC_KEY=\"has space\""));
-    }
-
-    #[test]
-    fn env_is_up_to_date_handles_quoted_values() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".env");
-        let cred = EnvCredential {
-            service: "svc".to_owned(),
-            url: None,
-            secret: Some("has space".to_owned()),
-            env_field: "SVC_KEY".to_owned(),
-        };
-        // write_env quotes values with spaces
-        write_env(&path, &[cred.clone()], false).unwrap();
-        // env_is_up_to_date must strip quotes before comparing
-        assert!(
-            env_is_up_to_date(&path, &[cred]),
-            "quoted value in .env should match raw secret"
-        );
     }
 
     #[test]
@@ -3827,7 +3547,7 @@ service_scope = "user"
 
     #[test]
     #[cfg(unix)]
-    fn write_env_creates_file_with_mode_0o600() {
+    fn write_service_creds_creates_file_with_mode_0o600() {
         let dir = tempfile::tempdir().expect("tempdir");
         let env_path = dir.path().join(".env");
 
@@ -3838,61 +3558,19 @@ service_scope = "user"
             env_field: "MYSERVICE_TOKEN".to_string(),
         }];
 
-        write_env(&env_path, &creds, false).expect("write_env");
+        write_service_creds(&env_path, &creds, false).expect("write_service_creds");
 
         assert_eq!(
             file_mode(&env_path),
             0o600,
-            ".env must be 0o600 after write_env"
+            ".env must be 0o600 after write_service_creds"
         );
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn backup_env_creates_backup_with_mode_0o600() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let env_path = dir.path().join(".env");
-        std::fs::write(&env_path, "ORIGINAL_TOKEN=abc\n").expect("write source");
-
-        let backup = backup_env(&env_path).expect("backup_env");
-
-        assert!(backup.exists(), "backup file must exist");
-        assert_eq!(
-            file_mode(&backup),
-            0o600,
-            ".env.bak.* must be 0o600 after backup_env"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn backup_env_prunes_old_backups() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let env_path = dir.path().join(".env");
-        std::fs::write(&env_path, "TOKEN=x\n").expect("write");
-
-        // Pre-create ENV_BACKUP_RETAIN + 2 old backups.
-        for i in 0..ENV_BACKUP_RETAIN + 2 {
-            std::fs::write(dir.path().join(format!(".env.bak.{i}")), "old").expect("write old bak");
-        }
-
-        backup_env(&env_path).expect("backup_env");
-
-        let count = std::fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_str()
-                    .is_some_and(|n| n.starts_with(".env.bak."))
-            })
-            .count();
-
-        assert!(
-            count <= ENV_BACKUP_RETAIN,
-            "backup count {count} must be <= ENV_BACKUP_RETAIN ({ENV_BACKUP_RETAIN})"
-        );
-    }
+    // Backup-file 0o600 perms and retention pruning are covered directly by
+    // env_merge's own unix_perms_set_to_0600 / backup_pruning_keeps_last_ten
+    // tests -- write_service_creds delegates entirely to env_merge::merge for
+    // that behavior and adds no file-handling logic of its own.
 
     #[test]
     #[cfg(unix)]
