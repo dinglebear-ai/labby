@@ -42,9 +42,11 @@ skill-drift:
 deny:
     cargo deny check
 
-# Build debug binary with all features
+# Build with all features using the release-fast profile (optimized, no LTO/codegen-units=1
+# slowdown). Use `cargo build --workspace --all-features` directly for a debug-assertions/
+# full-unwind dev build instead.
 build:
-    cargo build --workspace --all-features
+    cargo build --workspace --all-features --profile {{local_release_profile}}
 
 # Build release binary with all features.
 # bin/labby is the container bind-mount (docker-compose.yml); the plugin does
