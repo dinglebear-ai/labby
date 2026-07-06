@@ -316,6 +316,18 @@ jobs:
     # Self-hosted Linux runner on a PUBLIC repo: fork PRs must NEVER reach it.
     # Run on self-hosted for trusted events and same-repo PRs only.
     # Fork PRs are routed to `test-fork` on github-hosted Ubuntu.
+    #
+    # linux-lab is a persistent, durable machine (same category as the
+    # windows-lab self-hosted runner below), so it gets sccache wired the same
+    # way: a persistent SCCACHE_DIR under $HOME, RUSTC_WRAPPER pointed
+    # directly at the installed sccache binary (not scripts/cargo-rustc-wrapper
+    # — that shim's binary-sync side effect is pointless in CI, same reasoning
+    # as the top-level RUSTC_WRAPPER clear), size-capped and age-pruned before
+    # and after the run. Swatinem/rust-cache stays for its lockfile-keyed
+    # target/ tarball restore; sccache adds object-level caching on top for
+    # partial invalidations that restore doesn't cover (dependency bumps,
+    # source-only changes). ubuntu-latest jobs (test-fork, etc.) remain
+    # untouched — a persistent cache gains nothing on an ephemeral runner.
     runs-on: [self-hosted, linux-lab]
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
@@ -335,6 +347,33 @@ jobs:
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+      - name: Install sccache
+        uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
+      - name: Resolve persistent sccache dir under this runner's $HOME
+        run: |
+          echo "SCCACHE_DIR=$HOME/.cache/labby-ci-sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_CACHE_SIZE=20G" >> "$GITHUB_ENV"
+      - name: Prune and cap persistent sccache dir
+        run: |
+          set -euo pipefail
+          mkdir -p "$SCCACHE_DIR"
+          # Age-prune first (files older than 14 days), then enforce the hard
+          # size cap by wiping the whole dir if it's still over budget --
+          # mirrors the Windows job's Prune-ByAge + Enforce-HardCap sequence.
+          find "$SCCACHE_DIR" -type f -mtime +14 -delete 2>/dev/null || true
+          find "$SCCACHE_DIR" -type d -empty -delete 2>/dev/null || true
+          size_bytes=$(du -sb "$SCCACHE_DIR" 2>/dev/null | cut -f1)
+          size_bytes=${size_bytes:-0}
+          cap_bytes=$((20 * 1024 * 1024 * 1024))
+          if [ "$size_bytes" -gt "$cap_bytes" ]; then
+            echo "::warning::sccache dir is $((size_bytes / 1024 / 1024 / 1024)) GiB, above the 20 GiB cap; wiping it."
+            rm -rf "${SCCACHE_DIR:?}"/*
+          fi
+          echo "sccache dir ready at $SCCACHE_DIR ($((size_bytes / 1024 / 1024 / 1024)) GiB, cap 20 GiB)"
+      - name: Point RUSTC_WRAPPER at sccache
+        run: |
+          echo "RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
+          echo "CARGO_BUILD_RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
       - run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()
@@ -344,6 +383,22 @@ jobs:
           path: target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 14
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+      - name: Enforce sccache dir cap (post-run)
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "$SCCACHE_DIR"
+          size_bytes=$(du -sb "$SCCACHE_DIR" 2>/dev/null | cut -f1)
+          size_bytes=${size_bytes:-0}
+          cap_bytes=$((20 * 1024 * 1024 * 1024))
+          if [ "$size_bytes" -gt "$cap_bytes" ]; then
+            echo "::warning::sccache dir grew to $((size_bytes / 1024 / 1024 / 1024)) GiB, above the 20 GiB cap; wiping it."
+            rm -rf "${SCCACHE_DIR:?}"/*
+          fi
+          echo "sccache dir final size: $((size_bytes / 1024 / 1024 / 1024)) GiB (cap 20 GiB)"
 
   test-fork:
     name: Test
