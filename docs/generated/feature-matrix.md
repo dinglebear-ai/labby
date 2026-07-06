@@ -13,17 +13,15 @@ Feature invariant status: clean.
 | labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`dep:r2d2`<br>`dep:r2d2_sqlite`<br>`web-ui` |
 | labby | `gateway-host` | IntentionalException | true | true | - | `gateway` |
 | labby | `lab-admin` | ProductSlice | false | true | - |  |
-| labby | `services-all` | IntentionalException | false | false | - |  |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |
 | labby | `test-harness` | IntentionalException | false | true | - | `gateway` |
-| labby | `test-utils` | IntentionalException | false | false | - |  |
 | labby | `web-ui` | HelperInternal | true | true | - | `dep:labby-web` |
 | labby-apis | `acp_registry` | SdkOnly | false | true | - |  |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all | `deploy`<br>`mcpregistry`<br>`acp_registry` |
 | labby-apis | `default` | AggregateDefault | false | false | labby/default |  |
 | labby-apis | `deploy` | SdkOnly | false | true | - |  |
 | labby-apis | `mcpregistry` | SdkOnly | false | true | - |  |
-| labby-apis | `test-utils` | HelperInternal | false | false | labby/test-utils |  |
+| labby-apis | `test-utils` | HelperInternal | false | false | - |  |
 | labby-auth | `default` | AggregateDefault | true | true | - |  |
 | labby-auth | `http-axum` | ExtractedCrate | true | true | - | `dep:axum`<br>`dep:tower` |
 | labby-auth | `upstream-oauth-rmcp` | ExtractedCrate | true | true | - | `dep:rmcp-client`<br>`dep:oauth2`<br>`dep:anyhow` |

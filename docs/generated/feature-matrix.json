@@ -97,16 +97,6 @@
     },
     {
       "crate_name": "labby",
-      "feature": "services-all",
-      "dependencies": [],
-      "included_in_default": false,
-      "included_in_all": false,
-      "classification": "intentional_exception",
-      "mapped_crate_feature": null,
-      "exception_reason": "intentional crate-local exception"
-    },
-    {
-      "crate_name": "labby",
       "feature": "systemd",
       "dependencies": [
         "dep:sd-notify"
@@ -125,16 +115,6 @@
       ],
       "included_in_default": false,
       "included_in_all": true,
-      "classification": "intentional_exception",
-      "mapped_crate_feature": null,
-      "exception_reason": "intentional crate-local exception"
-    },
-    {
-      "crate_name": "labby",
-      "feature": "test-utils",
-      "dependencies": [],
-      "included_in_default": false,
-      "included_in_all": false,
       "classification": "intentional_exception",
       "mapped_crate_feature": null,
       "exception_reason": "intentional crate-local exception"
@@ -212,7 +192,7 @@
       "included_in_default": false,
       "included_in_all": false,
       "classification": "helper_internal",
-      "mapped_crate_feature": "labby/test-utils",
+      "mapped_crate_feature": null,
       "exception_reason": "helper/internal feature"
     },
     {
