@@ -140,8 +140,6 @@ gateway = [
 gateway-host = ["gateway"]
 web-ui = ["dep:labby-web"]
 api-docs = ["dep:utoipa"]
-services-all = [
-]
 default = ["gateway-host"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
 lab-admin = []
@@ -151,6 +149,5 @@ systemd = ["dep:sd-notify"]
 # `gateway` for the Code Mode surface. Enabled by CI's `--all-features`.
 # Production behaviour is unchanged when this feature is off.
 test-harness = ["gateway"]
-test-utils = []
 [lints]
 workspace = true
