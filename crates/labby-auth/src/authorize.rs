@@ -106,6 +106,7 @@ pub async fn browser_login(
         scope: state.config.default_scope.clone(),
         code_challenge: provider_code_challenge,
         code_challenge_method: "S256".to_string(),
+        force_consent: true,
     })?;
     info!(
         oauth_state_id = %oauth_state_id,
@@ -246,11 +247,19 @@ pub async fn authorize(
         })
         .await?;
 
+    // We don't know which Google subject is about to sign in until they come
+    // back from the consent screen, so use "has this gateway ever minted a
+    // refresh token before" as a single-tenant proxy for "already granted."
+    // Forcing full re-consent on every DCR client attempt (Raycast, Warp,
+    // etc.) adds an interactive round trip long enough for impatient clients
+    // to time out and retry before the human finishes clicking through it.
+    let force_consent = !state.store.has_any_refresh_token().await?;
     let location = state.google.authorize_url(&AuthorizeUrlRequest {
         state: request_state,
         scope: scope.clone(),
         code_challenge: provider_code_challenge,
         code_challenge_method: "S256".to_string(),
+        force_consent,
     })?;
     info!(
         client_id = %query.client_id,
@@ -965,6 +974,46 @@ pub mod tests {
             .to_str()
             .unwrap();
         assert!(location.contains("accounts.google.com"));
+        assert!(location.contains("prompt=consent"));
+    }
+
+    #[tokio::test]
+    async fn authorize_omits_forced_consent_once_a_refresh_token_already_exists() {
+        let state = test_auth_state_with_registered_client().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "existing-refresh".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-user".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: now_unix(),
+                expires_at: now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(location.contains("accounts.google.com"));
+        assert!(!location.contains("prompt="));
     }
 
     #[tokio::test]

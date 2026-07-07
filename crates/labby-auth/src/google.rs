@@ -30,6 +30,12 @@ pub struct AuthorizeUrlRequest {
     pub scope: String,
     pub code_challenge: String,
     pub code_challenge_method: String,
+    /// Force Google's full "wants access" consent screen even if the user
+    /// already granted these scopes. Needed the first time (to guarantee a
+    /// refresh token comes back), but forcing it on every retry adds a slow,
+    /// interactive round trip that impatient MCP clients can time out on
+    /// before the human finishes clicking through it.
+    pub force_consent: bool,
 }
 
 #[derive(Clone)]
@@ -309,11 +315,13 @@ impl GoogleProvider {
             .append_pair("response_type", "code")
             .append_pair("scope", &scope)
             .append_pair("access_type", "offline")
-            .append_pair("prompt", "consent")
             .append_pair("include_granted_scopes", "true")
             .append_pair("state", &request.state)
             .append_pair("code_challenge", &request.code_challenge)
             .append_pair("code_challenge_method", &request.code_challenge_method);
+        if request.force_consent {
+            url.query_pairs_mut().append_pair("prompt", "consent");
+        }
         debug!(
             provider = "google",
             oauth_state_id = %fingerprint(&request.state),
@@ -614,6 +622,16 @@ mod tests {
         assert!(url.as_str().contains("code_challenge="));
     }
 
+    #[test]
+    fn google_authorize_url_omits_prompt_when_consent_not_forced() {
+        let provider = test_google_provider();
+        let mut request = sample_request();
+        request.force_consent = false;
+        let url = provider.authorize_url(&request).unwrap();
+        assert!(url.as_str().contains("access_type=offline"));
+        assert!(!url.as_str().contains("prompt="));
+    }
+
     #[tokio::test]
     async fn google_exchange_parses_subject_and_refresh_token() {
         let provider = mocked_google_provider().await;
@@ -813,6 +831,7 @@ mod tests {
             scope: "lab".to_string(),
             code_challenge: "challenge".to_string(),
             code_challenge_method: "S256".to_string(),
+            force_consent: true,
         }
     }
 
