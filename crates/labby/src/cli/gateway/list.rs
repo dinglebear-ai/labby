@@ -1,14 +1,13 @@
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use anyhow::Result;
 
+use crate::cli::gateway::LazyGatewayManager;
 use crate::config::LabConfig;
-use crate::dispatch::gateway::manager::GatewayManager;
 use crate::dispatch::gateway::view_models::ServerView;
 use crate::output::OutputFormat;
 
-use super::remote;
+use crate::live_gateway as remote;
 
 /// Render `gateway list` with a typed per-server layout instead of the generic
 /// Value-shape table (which renders nested objects as `{N keys}` placeholders).
@@ -23,11 +22,11 @@ use super::remote;
 /// otherwise report everything as disconnected -- or spawn all upstreams
 /// fresh just to answer this one read.
 pub(super) async fn run_gateway_list(
-    manager: Arc<GatewayManager>,
+    manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
     format: OutputFormat,
 ) -> Result<ExitCode> {
-    let servers = match fetch_servers(&manager, config).await {
+    let servers = match fetch_servers(manager, config).await {
         Ok(s) => s,
         Err(err) => {
             return Err(anyhow::anyhow!(
@@ -53,7 +52,7 @@ pub(super) async fn run_gateway_list(
 }
 
 async fn fetch_servers(
-    manager: &Arc<GatewayManager>,
+    manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
 ) -> Result<Vec<ServerView>, crate::dispatch::error::ToolError> {
     if let Some(live) = remote::detect(config).await {
@@ -65,6 +64,12 @@ async fn fetch_servers(
         // didn't parse as expected -- better to answer from local state than
         // to fail the whole command over a shape mismatch.
     }
+    let manager = manager.get().await.map_err(|e| {
+        crate::dispatch::error::ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to build local gateway manager: {e}"),
+        }
+    })?;
     manager.list().await
 }
 
