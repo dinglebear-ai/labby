@@ -42,7 +42,7 @@ use tracing::info;
 use crate::sqlite::SqliteStore;
 use crate::types::UpstreamOauthCredentialRow;
 use crate::upstream::encryption::EncryptionKey;
-use crate::upstream::refresh::RefreshLocks;
+use crate::upstream::refresh::{RefreshFailureCache, RefreshLocks};
 use crate::upstream::store::{SqliteCredentialStore, SqliteStateStore};
 use crate::upstream::types::{BeginAuthorization, OauthError};
 
@@ -59,6 +59,9 @@ pub struct UpstreamOauthManager {
     upstream: UpstreamConfig,
     redirect_uri: Arc<String>,
     locks: Arc<RefreshLocks>,
+    /// Tracks recent refresh failures so a known-dead credential fails fast
+    /// instead of hitting the authorization server on every request.
+    refresh_failures: Arc<RefreshFailureCache>,
     /// Cached AS metadata (fetched once per upstream, shared across subjects).
     metadata_cache: Arc<RwLock<Option<AuthorizationMetadata>>>,
 }
@@ -81,6 +84,7 @@ impl UpstreamOauthManager {
             upstream,
             redirect_uri: Arc::new(redirect_uri),
             locks: Arc::new(RefreshLocks::new()),
+            refresh_failures: Arc::new(RefreshFailureCache::new()),
             metadata_cache: Arc::new(RwLock::new(None)),
         }
     }
@@ -302,11 +306,16 @@ impl UpstreamOauthManager {
             "upstream oauth: authorization completed, tokens stored"
         );
 
+        // A fresh grant supersedes whatever was failing before -- don't make
+        // the caller wait out the circuit-breaker cooldown after fixing it.
+        self.refresh_failures.clear(&self.upstream.name, subject);
+
         Ok(())
     }
 
     /// Delete all stored credentials for `subject` and evict any cached state.
     pub async fn clear_credentials(&self, subject: &str) -> Result<(), OauthError> {
+        self.refresh_failures.clear(&self.upstream.name, subject);
         self.sqlite
             .delete_upstream_oauth_credentials(&self.upstream.name, subject)
             .await
@@ -412,17 +421,35 @@ impl UpstreamOauthManager {
         let refresh_state = credential_row
             .as_ref()
             .and_then(|row| TokenRefreshState::from_row(row, now_unix().ok()?));
+        let refresh_due = refresh_state
+            .as_ref()
+            .is_some_and(TokenRefreshState::refresh_due);
         if let Some(state) = refresh_state.as_ref() {
             self.log_expiring_token(subject, state, started.elapsed().as_millis());
             self.log_refresh_attempt(subject, state, started.elapsed().as_millis());
         }
 
+        if refresh_due && self.refresh_failures.recently_failed(&self.upstream.name, subject) {
+            tracing::warn!(
+                upstream = %self.upstream.name,
+                provider = %self.oauth_provider_label(),
+                subject,
+                scope = %self.oauth_scope_label(),
+                kind = "oauth_needs_reauth",
+                elapsed_ms = started.elapsed().as_millis(),
+                fallback = "reauthorization_required",
+                "upstream oauth: token refresh skipped, recently failed"
+            );
+            return Err(OauthError::NeedsReauth(format!(
+                "upstream '{}' subject '{subject}' refresh failed recently; skipping retry until cooldown elapses",
+                self.upstream.name
+            )));
+        }
+
         manager.get_access_token().await.map_err(|e| {
             let mapped = map_auth_error(e);
-            if refresh_state
-                .as_ref()
-                .is_some_and(TokenRefreshState::refresh_due)
-            {
+            if refresh_due {
+                self.refresh_failures.record_failure(&self.upstream.name, subject);
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),
@@ -437,10 +464,8 @@ impl UpstreamOauthManager {
             mapped
         })?;
 
-        if refresh_state
-            .as_ref()
-            .is_some_and(TokenRefreshState::refresh_due)
-        {
+        self.refresh_failures.clear(&self.upstream.name, subject);
+        if refresh_due {
             tracing::info!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
@@ -529,17 +554,35 @@ impl UpstreamOauthManager {
         let refresh_state = credential_row
             .as_ref()
             .and_then(|row| TokenRefreshState::from_row(row, now_unix().ok()?));
+        let refresh_due = refresh_state
+            .as_ref()
+            .is_some_and(TokenRefreshState::refresh_due);
         if let Some(state) = refresh_state.as_ref() {
             self.log_expiring_token(subject, state, started.elapsed().as_millis());
             self.log_refresh_attempt(subject, state, started.elapsed().as_millis());
         }
 
+        if refresh_due && self.refresh_failures.recently_failed(&self.upstream.name, subject) {
+            tracing::warn!(
+                upstream = %self.upstream.name,
+                provider = %self.oauth_provider_label(),
+                subject,
+                scope = %self.oauth_scope_label(),
+                kind = "oauth_needs_reauth",
+                elapsed_ms = started.elapsed().as_millis(),
+                fallback = "reauthorization_required",
+                "upstream oauth: token refresh skipped, recently failed (with_client)"
+            );
+            return Err(OauthError::NeedsReauth(format!(
+                "upstream '{}' subject '{subject}' refresh failed recently; skipping retry until cooldown elapses",
+                self.upstream.name
+            )));
+        }
+
         manager.get_access_token().await.map_err(|e| {
             let mapped = map_auth_error(e);
-            if refresh_state
-                .as_ref()
-                .is_some_and(TokenRefreshState::refresh_due)
-            {
+            if refresh_due {
+                self.refresh_failures.record_failure(&self.upstream.name, subject);
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),
@@ -554,10 +597,8 @@ impl UpstreamOauthManager {
             mapped
         })?;
 
-        if refresh_state
-            .as_ref()
-            .is_some_and(TokenRefreshState::refresh_due)
-        {
+        self.refresh_failures.clear(&self.upstream.name, subject);
+        if refresh_due {
             tracing::info!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
