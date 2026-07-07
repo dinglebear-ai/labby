@@ -544,3 +544,53 @@ async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets() 
     );
     assert!(!logs.contains(&state), "csrf state leaked: {logs}");
 }
+
+#[tokio::test]
+async fn build_auth_client_with_logs_near_expiry_refresh_lifecycle() {
+    // Regression test for the live P-H4 pool path (`build_auth_client_with`,
+    // reached via `AuthClientCache::get_or_build_capped`): it used to swallow
+    // the get_access_token() outcome with no success/failure log at all,
+    // unlike its `build_auth_client` twin above, which masked a stuck
+    // token-refresh failure in production for weeks.
+    let _tracing_lock = TRACING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let buf = SharedBuf::default();
+    let subscriber = tracing_subscriber::registry()
+        .with(EnvFilter::new("labby=info"))
+        .with(
+            fmt::layer()
+                .json()
+                .with_writer(buf.clone())
+                .with_ansi(false)
+                .without_time(),
+        );
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let h = Harness::new().await;
+    h.mount_no_resource_metadata().await;
+    h.mount_metadata(Some(&h.as_url()), Some(&["S256"]), None)
+        .await;
+    h.mount_token_endpoint_with_expires(10).await;
+    let m = h.manager(h.upstream_cfg(preregistered()));
+
+    let begin = m.begin_authorization("alice").await.expect("begin");
+    let authorize_url = Url::parse(&begin.authorization_url).unwrap();
+    let state = authorize_url
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.into_owned())
+        .expect("state");
+    m.complete_authorization_callback("alice", "fake-code", &state)
+        .await
+        .expect("exchange");
+
+    let _client = m
+        .build_auth_client_with("alice", reqwest::Client::new())
+        .await
+        .expect("auth client");
+
+    drop(_guard);
+    let logs = captured_logs(&buf);
+    assert!(logs.contains("upstream oauth: access token nearing expiry"));
+    assert!(logs.contains("upstream oauth: token refresh attempt"));
+    assert!(logs.contains("upstream oauth: token refresh succeeded (with_client)"));
+}

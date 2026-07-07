@@ -534,10 +534,40 @@ impl UpstreamOauthManager {
             self.log_refresh_attempt(subject, state, started.elapsed().as_millis());
         }
 
-        manager
-            .get_access_token()
-            .await
-            .map_err(|e| map_auth_error(e))?;
+        manager.get_access_token().await.map_err(|e| {
+            let mapped = map_auth_error(e);
+            if refresh_state
+                .as_ref()
+                .is_some_and(TokenRefreshState::refresh_due)
+            {
+                tracing::warn!(
+                    upstream = %self.upstream.name,
+                    provider = %self.oauth_provider_label(),
+                    subject,
+                    scope = %self.oauth_scope_label(),
+                    kind = mapped.kind(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    fallback = "reauthorization_required",
+                    "upstream oauth: token refresh failed (with_client)"
+                );
+            }
+            mapped
+        })?;
+
+        if refresh_state
+            .as_ref()
+            .is_some_and(TokenRefreshState::refresh_due)
+        {
+            tracing::info!(
+                upstream = %self.upstream.name,
+                provider = %self.oauth_provider_label(),
+                subject,
+                scope = %self.oauth_scope_label(),
+                elapsed_ms = started.elapsed().as_millis(),
+                fallback = "none",
+                "upstream oauth: token refresh succeeded (with_client)"
+            );
+        }
 
         Ok(AuthClient::new(http_client, manager))
     }
