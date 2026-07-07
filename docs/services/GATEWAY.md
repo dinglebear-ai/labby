@@ -274,6 +274,30 @@ Observability requirements for that reconcile:
 - redact credential-bearing URLs, commands, args, and token-derived values in
   both logs and returned management views
 
+## CLI Vs. Live Daemon
+
+The reconcile model above describes what happens *inside one process*. The
+CLI and the running `labby serve` daemon are separate processes, each with
+their own in-memory `GatewayManager` -- a `labby gateway add` invocation
+that builds its own throwaway manager would write `config.toml` correctly
+but leave an already-running daemon (and the WebUI/MCP clients it serves)
+unaware of the change until restarted or sent `SIGUSR1`.
+
+To avoid that divergence, `labby gateway <subcommand>` first probes for a
+live daemon (local bind address, then `LAB_MCP_GATEWAY_URL`/`LAB_PUBLIC_URL`
+in order) and, if one responds, dispatches through its real HTTP API
+(`POST /v1/gateway`, or the `codemode` MCP tool for `gateway code exec`) --
+the same path the WebUI itself uses, since the WebUI is served *by* the live
+daemon and shares its manager directly. Only when no daemon is reachable
+does the CLI fall back to mutating `config.toml` locally, which is what
+keeps bootstrap flows (`labby setup --provision`, the very first
+`gateway add` before `labby serve` exists) working standalone.
+
+Running the CLI from a different machine than the daemon requires
+`LAB_MCP_HTTP_TOKEN` and `LAB_PUBLIC_URL` (or `LAB_MCP_GATEWAY_URL`) in that
+machine's `~/.labby/.env` -- see `docs/runtime/ENV.md` § "Remote Gateway CLI
+Usage" for the exact variables and fallback behavior.
+
 ## Examples
 
 ### CLI

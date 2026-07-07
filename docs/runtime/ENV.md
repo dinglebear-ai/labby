@@ -49,6 +49,38 @@ Rules:
 - the old external issuer variables (`LAB_OAUTH_ISSUER`, `LAB_OAUTH_AUDIENCE`, `LAB_OAUTH_CLIENT_ID`) are no longer used
 - `LAB_PUBLIC_URL` also feeds RFC 9728 metadata, JWT issuer/audience, and HTTP allowed-host derivation
 
+## Remote Gateway CLI Usage
+
+`labby gateway <subcommand>` (add/update/remove/reload/enable/disable/list/
+mcp auth */protected-route */discover/import/code *) prefers the live
+`labby serve` daemon's HTTP API over its own local `config.toml` mutation --
+see `docs/services/GATEWAY.md` for why that split exists. To reach a daemon
+running on a different host (not just the one the CLI happens to run on),
+the invoking machine needs exactly two things in its `~/.labby/.env`:
+
+```env
+LAB_MCP_HTTP_TOKEN=same-token-as-the-daemon
+LAB_PUBLIC_URL=https://labby.example.com
+```
+
+- `LAB_MCP_HTTP_TOKEN` must be the *same* token the daemon itself uses for
+  bearer auth (copy it from the daemon host's `~/.labby/.env`). Without it,
+  the CLI still finds and reaches the daemon but every dispatch fails with
+  `auth_failed`.
+- `LAB_PUBLIC_URL` (or `LAB_MCP_GATEWAY_URL` if the gateway is split onto a
+  separate hostname from the main app) is how the CLI locates the daemon
+  when it isn't on the same host. Detection tries the local bind address
+  first (`LAB_MCP_HTTP_HOST`/`LAB_MCP_HTTP_PORT`, then `config.toml`'s
+  `[mcp]` section, then `127.0.0.1:8765`) and falls through to
+  `LAB_MCP_GATEWAY_URL` then `LAB_PUBLIC_URL` in order, using whichever
+  responds first to `/health`.
+- If neither URL is reachable (or the token is missing/wrong), the CLI
+  falls back to mutating its own local `config.toml` instead of erroring --
+  which keeps bootstrap flows (`labby setup --provision`, the very first
+  `gateway add` before `labby serve` exists) working, but means a config
+  change made this way won't show up on a *different* running daemon until
+  one of the above is fixed.
+
 ## Service Environment Variables
 
 Service credentials follow the standard pattern `{SERVICE}_URL`,
