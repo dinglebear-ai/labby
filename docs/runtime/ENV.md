@@ -81,6 +81,16 @@ LAB_PUBLIC_URL=https://labby.example.com
   change made this way won't show up on a *different* running daemon until
   one of the above is fixed.
 
+Verified against a completely bare `~/.labby/` containing nothing but the
+two lines above (no `config.toml`, no local databases): both a read
+(`gateway list`) and a mutation (`gateway add`) reached and used the live
+remote daemon correctly, and the mutation did not write a local
+`config.toml` at all. One harmless side effect worth knowing: the CLI still
+creates a local `~/.labby/auth.db` (+ `-shm`/`-wal`) regardless, because it
+builds its own (unused, when the remote path succeeds) local `GatewayManager`
+*before* deciding whether to go remote or local -- that file stays empty and
+isn't required for the remote path to work.
+
 ## Service Environment Variables
 
 Service credentials follow the standard pattern `{SERVICE}_URL`,
