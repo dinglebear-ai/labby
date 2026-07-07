@@ -522,6 +522,9 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn build(max_bytes: usize) -> BodyCappedHttpClient {
+        // See upstream/pool.rs::UpstreamPool::new for why this call is
+        // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let inner = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()

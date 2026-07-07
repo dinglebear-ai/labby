@@ -31,6 +31,7 @@ getrandom = "0.4"
 jsonwebtoken.workspace = true
 labby-runtime = { path = "../labby-runtime" }
 reqwest.workspace = true
+rustls.workspace = true
 rsa.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

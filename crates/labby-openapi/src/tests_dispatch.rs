@@ -38,6 +38,10 @@ fn get_user_handle(base: &str, credential: Option<OpenApiCredential>) -> Operati
 /// A dispatch client that does NOT apply the SSRF pin, so wiremock on 127.0.0.1
 /// is reachable. Production uses `build_dispatch_client` + the per-request pin.
 fn loopback_client() -> reqwest::Client {
+    // See http.rs::base_builder() for why this call is needed under
+    // "rustls-no-provider" -- this test module builds its own client rather
+    // than reusing base_builder(), so it needs its own install.
+    drop(rustls::crypto::ring::default_provider().install_default());
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(5))

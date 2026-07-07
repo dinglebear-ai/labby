@@ -290,6 +290,9 @@ async fn archive_download_client(
     // list is non-empty.
     let pinned = addrs[0];
 
+    // See core/http.rs::with_default_headers for why this call is needed
+    // under "rustls-no-provider" -- idempotent, safe to ignore Err.
+    drop(rustls::crypto::ring::default_provider().install_default());
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()

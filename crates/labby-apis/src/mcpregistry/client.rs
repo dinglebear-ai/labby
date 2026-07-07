@@ -30,6 +30,9 @@ impl McpRegistryClient {
     /// Returns [`RegistryError::Api`] if the TLS backend or redirect policy
     /// fails to initialise.
     pub fn new(base_url: &str) -> Result<Self, RegistryError> {
+        // See core/http.rs::with_default_headers for why this call is
+        // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let inner = reqwest::Client::builder()
             .user_agent(concat!("lab-apis/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(5))

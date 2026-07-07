@@ -26,14 +26,26 @@ futures = "0.3"
 tempfile = "3.27"
 
 # http / serde / errors
+#
+# "rustls-no-provider" (not "rustls") deliberately skips reqwest's default
+# aws-lc-rs crypto provider selection -- aws-lc-sys is a from-source C/asm
+# build that costs meaningful compile time on every build regardless of
+# feature flags. `rustls` below pulls in `ring` instead (pure Rust, no C
+# build) and crates/labby's entrypoint installs it as the process-wide
+# default via rustls::crypto::ring::default_provider().install_default()
+# before any TLS connection can be made. Do not add a `rustls` feature that
+# re-enables aws-lc-rs (or a fresh dependency on `rustls` without
+# default-features = false) -- either would silently reintroduce the C build
+# via Cargo's feature unification.
 reqwest = { version = "0.13", default-features = false, features = [
-  "rustls",
+  "rustls-no-provider",
   "json",
   "gzip",
   "stream",
   "form",
   "multipart",
 ] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 base64 = "0.22"
 url = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }

@@ -663,6 +663,9 @@ async fn systemctl_service_identity() -> Result<(Option<String>, Option<u32>), T
 }
 
 async fn check_ready(port: u16) -> Result<bool, String> {
+    // See api/state.rs::build_protected_mcp_http_client for why this call is
+    // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
+    drop(rustls::crypto::ring::default_provider().install_default());
     let url = format!("http://127.0.0.1:{port}/ready");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))

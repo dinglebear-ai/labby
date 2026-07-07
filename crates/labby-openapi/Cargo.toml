@@ -15,6 +15,7 @@ labby-runtime = { path = "../labby-runtime" }
 labby-primitives = { path = "../labby-primitives" }
 tokio = { workspace = true, features = ["sync", "time", "rt", "net"] }
 reqwest = { workspace = true }
+rustls.workspace = true
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

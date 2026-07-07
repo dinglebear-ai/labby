@@ -245,6 +245,9 @@ pub(super) async fn connect_http_upstream<H: ClientHandler>(
     let base_client = if let Some(c) = shared_client {
         c.clone()
     } else {
+        // See upstream/pool.rs::UpstreamPool::new for why this call is
+        // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         reqwest::Client::builder()
             .timeout(DEFAULT_REQUEST_TIMEOUT)
             .build()?

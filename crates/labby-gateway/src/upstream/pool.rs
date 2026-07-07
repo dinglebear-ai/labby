@@ -219,6 +219,14 @@ impl UpstreamPool {
     /// Create a new empty pool.
     #[must_use]
     pub fn new() -> Self {
+        // reqwest is built workspace-wide with "rustls-no-provider" (root
+        // Cargo.toml) so it never silently pulls in aws-lc-rs; a rustls
+        // crypto provider must be installed before the first TLS-capable
+        // client is built. `crates/labby/src/entrypoint.rs::run()` does this
+        // for the real binary; test binaries never go through it, so this
+        // call is also needed here. Idempotent -- Err just means a provider
+        // (this one) is already installed, safe to ignore.
+        drop(rustls::crypto::ring::default_provider().install_default());
         // Build a shared reqwest::Client that lives for the pool's lifetime.
         // All non-OAuth HTTP connects reuse this client so TLS sessions and
         // keep-alive connections are pooled across upstreams (P-M10).

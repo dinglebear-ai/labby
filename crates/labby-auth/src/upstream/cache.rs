@@ -366,6 +366,9 @@ mod tests {
     }
 
     async fn dummy_auth_client() -> Arc<AuthClient<reqwest::Client>> {
+        // See google.rs::GoogleProvider::new for why this call is needed
+        // under "rustls-no-provider" -- idempotent, safe to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let manager = AuthorizationManager::new("http://localhost")
             .await
             .expect("authorization manager");

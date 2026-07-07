@@ -121,6 +121,10 @@ impl UpstreamOauthManager {
         let oauth_cfg = self.oauth_config()?;
         let upstream_url = self.upstream_url()?;
 
+        // rmcp's AuthorizationManager builds its own internal reqwest client.
+        // See google.rs::GoogleProvider::new for why this call is needed
+        // under "rustls-no-provider" -- idempotent, safe to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let mut manager = AuthorizationManager::new(upstream_url.as_str())
             .await
             .map_err(|e| {
@@ -448,6 +452,9 @@ impl UpstreamOauthManager {
             );
         }
 
+        // See google.rs::GoogleProvider::new for why this call is needed
+        // under "rustls-no-provider" -- idempotent, safe to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         Ok(AuthClient::new(reqwest::Client::new(), manager))
     }
 
@@ -670,6 +677,9 @@ impl UpstreamOauthManager {
         let upstream_url = self.upstream_url()?;
         let oauth_cfg = self.oauth_config()?;
 
+        // See begin_authorization above for why this call is needed under
+        // "rustls-no-provider" -- idempotent, safe to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let mut manager = AuthorizationManager::new(upstream_url.as_str())
             .await
             .map_err(|e| OauthError::Internal(format!("create auth manager: {e}")))?;
@@ -1045,6 +1055,9 @@ async fn discover_metadata_via_protected_resource(
 ) -> Result<Option<AuthorizationMetadata>, OauthError> {
     let upstream = url::Url::parse(upstream_url)
         .map_err(|error| OauthError::Internal(format!("invalid upstream url: {error}")))?;
+    // See google.rs::GoogleProvider::new for why this call is needed
+    // under "rustls-no-provider" -- idempotent, safe to ignore Err.
+    drop(rustls::crypto::ring::default_provider().install_default());
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()

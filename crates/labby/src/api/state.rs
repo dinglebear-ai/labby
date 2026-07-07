@@ -239,6 +239,11 @@ fn protected_mcp_connect_timeout() -> Duration {
 }
 
 fn build_protected_mcp_http_client() -> reqwest::Client {
+    // See entrypoint.rs::run for why this call is needed under
+    // "rustls-no-provider" -- idempotent, safe to ignore Err. entrypoint::run
+    // already installs it for the real binary; test binaries don't go
+    // through it.
+    drop(rustls::crypto::ring::default_provider().install_default());
     reqwest::Client::builder()
         // Keep long-lived MCP streams possible, but fail unreachable upstreams
         // instead of letting proxy connection attempts hang indefinitely.
