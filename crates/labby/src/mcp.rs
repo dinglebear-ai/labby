@@ -2,6 +2,8 @@
 //! the Model Context Protocol. See `crates/lab/src/mcp/CLAUDE.md` for
 //! the full rulebook on dispatch, envelopes, and the shared catalog.
 
+#[cfg(feature = "gateway")]
+pub mod bridge;
 pub mod call_tool;
 #[cfg(feature = "gateway")]
 pub mod call_tool_codemode;

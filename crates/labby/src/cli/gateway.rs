@@ -8,7 +8,6 @@ mod code;
 mod dispatch;
 mod list;
 mod oauth;
-mod remote;
 
 pub use args::*;
 
@@ -105,6 +104,48 @@ fn filtered_builtin_service_registry(config: &LabConfig) -> ToolRegistry {
     )
 }
 
+/// Defers building the CLI's own local `GatewayManager` until something
+/// actually needs it.
+///
+/// Every gateway subcommand now tries the live daemon's HTTP API first (see
+/// `remote.rs`) and only falls back to local dispatch on failure. Building
+/// `GatewayManager` unconditionally up front -- as this crate did before --
+/// has real side effects regardless of whether it's ever used: it opens (and
+/// creates, if absent) `~/.labby/auth.db` for the upstream OAuth credential
+/// store. `LazyGatewayManager` makes that cost pay-for-what-you-use: the
+/// local manager, and its `auth.db`, only come into existence if the remote
+/// path was actually unreachable.
+pub(crate) struct LazyGatewayManager<'a> {
+    config: &'a LabConfig,
+    discover_upstreams: bool,
+    cell: tokio::sync::OnceCell<Arc<GatewayManager>>,
+}
+
+impl<'a> LazyGatewayManager<'a> {
+    pub(crate) fn new(config: &'a LabConfig, discover_upstreams: bool) -> Self {
+        Self {
+            config,
+            discover_upstreams,
+            cell: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// Build (on first call) or return the already-built local manager.
+    pub(crate) async fn get(&self) -> Result<Arc<GatewayManager>> {
+        self.cell
+            .get_or_try_init(|| build_manager(self.config, self.discover_upstreams))
+            .await
+            .cloned()
+    }
+
+    /// The manager if `get()` was ever called successfully, without
+    /// triggering a build. Used at exit to skip the upstream-pool drain
+    /// entirely when the local manager was never actually constructed.
+    pub(crate) fn built(&self) -> Option<Arc<GatewayManager>> {
+        self.cell.get().cloned()
+    }
+}
+
 pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) -> Result<ExitCode> {
     let discover_upstreams = !(matches!(
         &args.command,
@@ -118,22 +159,22 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
                 }),
         })
     ) || matches!(&args.command, GatewayCommand::ProtectedRoute(_)));
-    let manager = build_manager(config, discover_upstreams).await?;
+    let lazy_manager = LazyGatewayManager::new(config, discover_upstreams);
     // Race the command against SIGINT/SIGTERM so the drain below also runs
     // when the invocation is killed externally (e.g. `timeout 100s labby
     // gateway code exec ...` SIGTERMs at the deadline). Without this the
     // default signal disposition kills the process before the drain and
     // orphans spawned stdio upstream children.
     let result = tokio::select! {
-        result = dispatch_command(Arc::clone(&manager), config, args, format) => result,
+        result = dispatch_command(&lazy_manager, config, args, format) => result,
         code = shutdown_signal() => Ok(ExitCode::from(code)),
     };
-    // INVARIANT: drain the upstream pool before the one-shot CLI exits. The
-    // manager is installed into a process-global (`install_gateway_manager`),
-    // so `UpstreamConnection` Drop never runs at process exit and spawned
-    // stdio upstream process groups (npx/uvx trees) would be orphaned —
-    // repeated invocations leak hundreds of child processes.
-    if let Some(pool) = manager.current_pool().await {
+    // INVARIANT: drain the upstream pool before the one-shot CLI exits, but
+    // only if a local manager was ever actually built -- if every dispatch
+    // went through the live daemon, there's no local pool to drain.
+    if let Some(manager) = lazy_manager.built()
+        && let Some(pool) = manager.current_pool().await
+    {
         pool.drain_for_swap("gateway.cli.exit").await;
     }
     result

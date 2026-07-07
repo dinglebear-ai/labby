@@ -1,14 +1,12 @@
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::cli::gateway::GatewayOauthUpstreamArgs;
+use crate::cli::gateway::{GatewayOauthUpstreamArgs, LazyGatewayManager};
 use crate::config::LabConfig;
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
-use crate::dispatch::gateway::manager::GatewayManager;
 use crate::output::OutputFormat;
 
 use super::dispatch::dispatch_gateway_action;
@@ -19,7 +17,7 @@ struct GatewayOauthStartView {
 }
 
 pub(super) async fn run_gateway_oauth_start(
-    manager: Arc<GatewayManager>,
+    manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
     args: GatewayOauthUpstreamArgs,
     format: OutputFormat,
@@ -27,7 +25,7 @@ pub(super) async fn run_gateway_oauth_start(
     let params = json!({ "upstream": args.name, "subject": args.subject });
     let start = std::time::Instant::now();
     let value = dispatch_gateway_action(
-        &manager,
+        manager,
         config,
         "gateway.oauth.start".to_string(),
         params,
@@ -85,7 +83,7 @@ pub(super) async fn run_gateway_oauth_start(
             ))
         );
         let wait_value = dispatch_gateway_action(
-            &manager,
+            manager,
             config,
             "gateway.oauth.wait".to_string(),
             json!({

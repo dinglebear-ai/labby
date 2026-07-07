@@ -36,6 +36,9 @@ pub mod dispatch;
 #[allow(unreachable_pub)]
 pub mod docs;
 mod entrypoint;
+#[cfg(feature = "gateway")]
+#[allow(unreachable_pub)]
+pub mod live_gateway;
 #[allow(dead_code)]
 pub mod log_fmt;
 #[allow(unreachable_pub)]

@@ -185,6 +185,29 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     );
 
     let stdio_mode = should_run_stdio(transport, args.command.as_ref());
+
+    // `labby` should have exactly one canonical, long-running gateway; every
+    // other invocation is a thin client to it. A stdio instance is normally
+    // that canonical instance itself (self-sufficient, nothing to bridge
+    // to) -- but if a real daemon is already reachable, become a pure
+    // protocol bridge to it instead of standing up a second, independent
+    // GatewayManager with its own config view, upstream connections, and
+    // OAuth state. See `crate::live_gateway` and `crate::mcp::bridge` for the
+    // full rationale; this mirrors what the `gateway` CLI subcommands
+    // already do for their own dispatch.
+    #[cfg(feature = "gateway")]
+    if stdio_mode
+        && let Some(live) = crate::live_gateway::detect(config).await
+    {
+        tracing::info!(
+            subsystem = "startup",
+            phase = "bridge.detected",
+            transport = ?transport,
+            "found a live labby serve daemon; running as a thin stdio bridge to it instead of a standalone instance"
+        );
+        return run_stdio_bridge(live).await;
+    }
+
     let spawn_depth = resolve_lab_spawn_depth(std::env::var("LAB_SPAWN_DEPTH").ok());
     let suppress_upstream_runtime = stdio_recursion_guard_active(stdio_mode, spawn_depth);
     let mut bearer_token = http_token();
@@ -1103,6 +1126,36 @@ fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Run as a pure stdio<->streamable-HTTP bridge to an already-detected live
+/// daemon. No `GatewayManager`, no upstream pool, no local OAuth state --
+/// every request is forwarded to `live` and its response piped straight
+/// back. See `crate::mcp::bridge` for what is and isn't forwarded.
+#[cfg(feature = "gateway")]
+async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<ExitCode> {
+    use crate::mcp::bridge::BridgeServerHandler;
+
+    let service = live
+        .connect_service()
+        .await
+        .context("connect to live labby serve daemon for stdio bridging")?;
+    let handler = BridgeServerHandler::new(service);
+    let running = handler.serve(rmcp::transport::stdio()).await?;
+    tracing::info!(
+        subsystem = "startup",
+        phase = "ready",
+        transport = "stdio-bridge",
+        "labby serve ready (bridging to live daemon)"
+    );
+    running.waiting().await?;
+    tracing::info!(
+        subsystem = "startup",
+        phase = "stop",
+        transport = "stdio-bridge",
+        "labby serve stdio bridge stopped"
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn run_stdio(
