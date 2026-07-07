@@ -102,6 +102,37 @@ Auth-adjacent routes mounted on this server, including `/auth/session`,
 part of the same request-id and structured-error contract even when their
 payloads are not normal `/v1/{service}` dispatches.
 
+### Connecting As A Generic HTTP MCP Client
+
+This is the common case: any MCP-capable app (Raycast, Warp, Claude.ai,
+Claude Desktop, or anything else that speaks streamable HTTP MCP) pointed
+directly at `/mcp` over HTTPS. **It needs only the URL and one auth
+credential — nothing else to install or configure:**
+
+- **Bearer mode**: the client's MCP config takes the server URL
+  (`https://labby.example.com/mcp`) plus an `Authorization: Bearer
+  <LAB_MCP_HTTP_TOKEN>` header. That's the entire setup.
+- **OAuth mode**: the client's MCP config takes just the URL; the client
+  discovers the authorization/token endpoints via the standard
+  `/.well-known/oauth-authorization-server` metadata and drives the user
+  through the Google login in a browser. No token to copy anywhere.
+
+No `~/.labby/.env`, no local `config.toml`, no `labby` binary on that
+machine at all — the client is a completely independent MCP implementation
+talking straight to the HTTP API.
+
+**This is a different scenario from "remote gateway CLI usage" and "remote
+MCP stdio usage"** (`docs/runtime/ENV.md`) and the CLI-vs-live-daemon /
+stdio-bridge sections in `docs/services/GATEWAY.md`. Those cover running
+the actual `labby` binary itself somewhere other than the daemon's host —
+e.g. `labby gateway add` from a laptop, or `labby serve --transport stdio`
+bridging into the daemon for an editor that wants to spawn a local process
+rather than connect over HTTP directly. Those need `LAB_MCP_HTTP_TOKEN` and
+`LAB_PUBLIC_URL`/`LAB_MCP_GATEWAY_URL` in `~/.labby/.env` specifically
+*because* they're a copy of the `labby` binary trying to locate and
+authenticate to a different one. A generic external HTTP MCP client never
+runs any `labby` code at all, so none of that applies to it.
+
 ### Reverse Proxy Requirements For MCP Routes
 
 Streamable HTTP MCP routes are long-lived protocol routes, not ordinary JSON
