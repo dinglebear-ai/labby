@@ -37,6 +37,10 @@ nix = { version = "0.31", default-features = false, features = [
 ] }
 futures.workspace = true
 reqwest.workspace = true
+# Direct dep (not just transitive via reqwest) so entrypoint.rs can install
+# the process-wide ring crypto provider at startup. See the root Cargo.toml
+# comment on `reqwest`/`rustls` for why.
+rustls.workspace = true
 url.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }

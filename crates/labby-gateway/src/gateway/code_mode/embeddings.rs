@@ -36,7 +36,12 @@ pub(crate) const TEI_MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 /// client reuses connections across `/embed` calls instead of paying a fresh
 /// connector (and TLS handshake) per request. The per-request timeout stays
 /// on the request builder ([`TEI_REQUEST_TIMEOUT`]).
-static TEI_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static TEI_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    // See upstream/pool.rs::UpstreamPool::new for why this call is needed
+    // under "rustls-no-provider" -- idempotent, safe to ignore Err.
+    drop(rustls::crypto::ring::default_provider().install_default());
+    reqwest::Client::new()
+});
 
 #[derive(Debug, Deserialize)]
 struct TeiEmbedResponse(Vec<Vec<f32>>);

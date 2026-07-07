@@ -67,6 +67,9 @@ pub async fn serve_local_relay(
         "oauth relay local listener ready"
     );
 
+    // See api/state.rs::build_protected_mcp_http_client for why this call is
+    // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
+    drop(rustls::crypto::ring::default_provider().install_default());
     let state = RelayState {
         resolved_target: config.resolved_target,
         request_timeout: config.request_timeout,
@@ -337,6 +340,10 @@ mod tests {
         })
         .await;
 
+        // See api/state.rs::build_protected_mcp_http_client for why this
+        // call is needed under "rustls-no-provider" -- idempotent, safe
+        // to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let response = reqwest::Client::new()
             .post(format!(
                 "http://{}/callback/node-a/extra?code=abc&state=xyz",
@@ -413,6 +420,10 @@ mod tests {
         })
         .await;
 
+        // See api/state.rs::build_protected_mcp_http_client for why this
+        // call is needed under "rustls-no-provider" -- idempotent, safe
+        // to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let response = reqwest::Client::new()
             .get(format!("http://{}/callback2/extra?code=abc", relay_addr))
             .send()
@@ -447,6 +458,10 @@ mod tests {
         });
         sleep(Duration::from_millis(25)).await;
 
+        // See api/state.rs::build_protected_mcp_http_client for why this
+        // call is needed under "rustls-no-provider" -- idempotent, safe
+        // to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let response = reqwest::Client::new()
             .get(format!("http://{}/callback/node-a?code=abc", relay_addr))
             .send()
@@ -490,6 +505,10 @@ mod tests {
         })
         .await;
 
+        // See api/state.rs::build_protected_mcp_http_client for why this
+        // call is needed under "rustls-no-provider" -- idempotent, safe
+        // to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let response = reqwest::Client::new()
             .get(format!("http://{}/callback/node-a?code=abc", relay_addr))
             .send()

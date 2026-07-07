@@ -351,6 +351,16 @@ fn run_root_catalog(flags: &GlobalFlags) -> ExitCode {
 
 #[tokio::main]
 pub async fn run() -> ExitCode {
+    // Must happen before any TLS connection is possible (reqwest is built with
+    // "rustls-no-provider" specifically so this call site controls the crypto
+    // backend instead of reqwest silently defaulting to aws-lc-rs). `ring` is
+    // pure Rust with no C/asm build step, unlike aws-lc-sys. Only fails if a
+    // default provider was already installed by something else in-process,
+    // which cannot happen this early.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("no rustls crypto provider should be installed yet");
+
     // Pre-parse shim: root `help` / `--help` / `-h` renders the Aurora catalog,
     // which clap cannot express via derive (it would auto-handle `--help` and
     // panics on a duplicate `help`). Every *non-root* help path (`gateway help`,

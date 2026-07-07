@@ -24,6 +24,15 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Base hardened builder shared by every outbound client: redirects off,
 /// https-only, explicit connect/read timeouts, no proxy.
 fn base_builder() -> reqwest::ClientBuilder {
+    // reqwest is built workspace-wide with "rustls-no-provider" (see root
+    // Cargo.toml) so it never silently pulls in aws-lc-rs; the caller must
+    // install a rustls crypto provider before the first TLS-capable client is
+    // built. `crates/labby/src/entrypoint.rs::run()` does this for the real
+    // binary, but test binaries never go through it, so `Client::builder()`
+    // would otherwise panic with "No provider set" the first time a test
+    // constructs one. `install_default()` is idempotent -- Err just means a
+    // provider (this one) is already installed, safe to ignore.
+    drop(rustls::crypto::ring::default_provider().install_default());
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .https_only(true)

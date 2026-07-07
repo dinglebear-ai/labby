@@ -122,6 +122,16 @@ impl HttpClient {
         auth: Auth,
         headers: reqwest::header::HeaderMap,
     ) -> Result<Self, ApiError> {
+        // reqwest is built workspace-wide with "rustls-no-provider" (root
+        // Cargo.toml) so it never silently pulls in aws-lc-rs; the caller
+        // must install a rustls crypto provider before the first TLS-capable
+        // client is built. `crates/labby/src/entrypoint.rs::run()` does this
+        // for the real binary, but test binaries never go through it, so
+        // `Client::builder().build()` would otherwise panic with "No
+        // provider set" the first time a test constructs a client.
+        // `install_default()` is idempotent -- Err just means a provider
+        // (this one) is already installed, safe to ignore.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let inner = Client::builder()
             .user_agent(concat!("lab-apis/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(5))

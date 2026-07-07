@@ -295,6 +295,9 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
     let base = url.trim_end_matches('/').trim_end_matches("/mcp");
     let health_url = format!("{base}/health");
 
+    // See api/state.rs::build_protected_mcp_http_client for why this call is
+    // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
+    drop(rustls::crypto::ring::default_provider().install_default());
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()

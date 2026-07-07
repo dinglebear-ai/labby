@@ -6,6 +6,9 @@ use super::params::ProxyCheckParams;
 use super::types::{Finding, Report, Severity};
 
 pub async fn check_proxy(params: ProxyCheckParams<'_>) -> Result<Report, ToolError> {
+    // See api/state.rs::build_protected_mcp_http_client for why this call is
+    // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
+    drop(rustls::crypto::ring::default_provider().install_default());
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
