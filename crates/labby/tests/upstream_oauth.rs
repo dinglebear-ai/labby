@@ -594,3 +594,84 @@ async fn build_auth_client_with_logs_near_expiry_refresh_lifecycle() {
     assert!(logs.contains("upstream oauth: token refresh attempt"));
     assert!(logs.contains("upstream oauth: token refresh succeeded (with_client)"));
 }
+
+#[tokio::test]
+async fn build_auth_client_with_skips_live_retry_after_a_recent_failure() {
+    // Regression test for the refresh-failure circuit breaker: once a
+    // refresh fails for a near-expiry credential, a second call within the
+    // cooldown window must fail fast without a second live request to the
+    // authorization server -- this is what used to hammer Google's token
+    // endpoint on every single request for a dead refresh token.
+    let h = Harness::new().await;
+    h.mount_no_resource_metadata().await;
+    h.mount_metadata(Some(&h.as_url()), Some(&["S256"]), None)
+        .await;
+
+    // First /token call (the initial code exchange) succeeds with a token
+    // that's already within the proactive refresh window.
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "access-xyz",
+            "token_type": "Bearer",
+            "expires_in": 10,
+            "refresh_token": "refresh-xyz",
+            "scope": "read"
+        })))
+        .up_to_n_times(1)
+        .mount(&h.mock)
+        .await;
+    // Every subsequent /token call (the refresh attempt(s)) fails like a
+    // revoked/expired refresh token does against the real Google endpoint.
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "invalid_grant",
+            "error_description": "Token has been expired or revoked."
+        })))
+        .mount(&h.mock)
+        .await;
+
+    let m = h.manager(h.upstream_cfg(preregistered()));
+    let begin = m.begin_authorization("alice").await.expect("begin");
+    let authorize_url = Url::parse(&begin.authorization_url).unwrap();
+    let state = authorize_url
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.into_owned())
+        .expect("state");
+    m.complete_authorization_callback("alice", "fake-code", &state)
+        .await
+        .expect("exchange");
+
+    let first = m
+        .build_auth_client_with("alice", reqwest::Client::new())
+        .await;
+    assert!(matches!(first, Err(OauthError::NeedsReauth(_))));
+    let token_calls_after_first_failure = h
+        .mock
+        .received_requests()
+        .await
+        .expect("record enabled")
+        .iter()
+        .filter(|r| r.url.path() == "/token")
+        .count();
+
+    let second = m
+        .build_auth_client_with("alice", reqwest::Client::new())
+        .await;
+    assert!(matches!(second, Err(OauthError::NeedsReauth(_))));
+    let token_calls_after_second_attempt = h
+        .mock
+        .received_requests()
+        .await
+        .expect("record enabled")
+        .iter()
+        .filter(|r| r.url.path() == "/token")
+        .count();
+
+    assert_eq!(
+        token_calls_after_first_failure, token_calls_after_second_attempt,
+        "second build_auth_client_with call should have been skipped by the circuit breaker, not hit the authorization server again"
+    );
+}

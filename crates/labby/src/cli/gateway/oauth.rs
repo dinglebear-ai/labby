@@ -6,9 +6,12 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::cli::gateway::GatewayOauthUpstreamArgs;
+use crate::config::LabConfig;
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::output::OutputFormat;
+
+use super::dispatch::dispatch_gateway_action;
 
 #[derive(Debug, Deserialize)]
 struct GatewayOauthStartView {
@@ -17,20 +20,25 @@ struct GatewayOauthStartView {
 
 pub(super) async fn run_gateway_oauth_start(
     manager: Arc<GatewayManager>,
+    config: &LabConfig,
     args: GatewayOauthUpstreamArgs,
     format: OutputFormat,
 ) -> Result<ExitCode> {
     let params = json!({ "upstream": args.name, "subject": args.subject });
     let start = std::time::Instant::now();
-    let value =
-        crate::dispatch::gateway::dispatch_with_manager(&manager, "gateway.oauth.start", params)
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "{}",
-                    serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
-                )
-            })?;
+    let value = dispatch_gateway_action(
+        &manager,
+        config,
+        "gateway.oauth.start".to_string(),
+        params,
+    )
+    .await
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
+        )
+    })?;
     tracing::info!(
         surface = "cli",
         service = "gateway",
@@ -76,9 +84,10 @@ pub(super) async fn run_gateway_oauth_start(
                 args.name, subject
             ))
         );
-        let wait_value = crate::dispatch::gateway::dispatch_with_manager(
+        let wait_value = dispatch_gateway_action(
             &manager,
-            "gateway.oauth.wait",
+            config,
+            "gateway.oauth.wait".to_string(),
             json!({
                 "upstream": args.name,
                 "subject": subject,

@@ -10,13 +10,36 @@ use crate::cli::gateway::{
     GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand, GatewayUpdateArgs,
 };
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
-use crate::config::ProtectedMcpRouteConfig;
+use crate::config::{LabConfig, ProtectedMcpRouteConfig};
+use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::output::OutputFormat;
 
 use super::code::run_gateway_code;
 use super::list::run_gateway_list;
 use super::oauth::run_gateway_oauth_start;
+use super::remote;
+
+/// Dispatch `action`/`params` against the live `labby serve` daemon if one is
+/// reachable, falling back to the CLI's own local `GatewayManager` otherwise.
+///
+/// This is what keeps CLI mutations (`add`, `update`, `remove`, `reload`, ...)
+/// from silently diverging from what the WebUI/MCP surfaces see: the WebUI is
+/// served *by* the live daemon and shares its manager directly, while a CLI
+/// invocation is a separate process with its own throwaway manager built
+/// fresh from `config.toml`. See `super::remote` module docs for the full
+/// rationale.
+pub(super) async fn dispatch_gateway_action(
+    manager: &Arc<GatewayManager>,
+    config: &LabConfig,
+    action: String,
+    params: Value,
+) -> Result<Value, ToolError> {
+    if let Some(live) = remote::detect(config).await {
+        return live.dispatch_action(&action, params).await;
+    }
+    crate::dispatch::gateway::dispatch_with_manager(manager, &action, params).await
+}
 
 fn protected_route_target_from_args(
     gateway_subset: bool,
@@ -142,6 +165,7 @@ fn insert_if_some<T: serde::Serialize>(
 
 pub(super) async fn dispatch_command(
     manager: Arc<GatewayManager>,
+    config: &LabConfig,
     args: GatewayArgs,
     format: OutputFormat,
 ) -> Result<ExitCode> {
@@ -155,11 +179,11 @@ pub(super) async fn dispatch_command(
         GatewayCommand::Mcp(args) => match args.command {
             GatewayMcpCommand::Auth(args) => match args.command {
                 GatewayMcpAuthCommand::Start(args) => {
-                    return run_gateway_oauth_start(manager, args, format).await;
+                    return run_gateway_oauth_start(manager, config, args, format).await;
                 }
                 GatewayMcpAuthCommand::Open(mut args) => {
                     args.open = true;
-                    return run_gateway_oauth_start(manager, args, format).await;
+                    return run_gateway_oauth_start(manager, config, args, format).await;
                 }
                 GatewayMcpAuthCommand::Status(args) => {
                     return run_action_command(
@@ -168,10 +192,7 @@ pub(super) async fn dispatch_command(
                         json!({ "upstream": args.name, "subject": args.subject }),
                         format,
                         |action, params| async move {
-                            crate::dispatch::gateway::dispatch_with_manager(
-                                &manager, &action, params,
-                            )
-                            .await
+                            dispatch_gateway_action(&manager, config, action, params).await
                         },
                     )
                     .await;
@@ -183,10 +204,7 @@ pub(super) async fn dispatch_command(
                         json!({ "upstream": args.name, "subject": args.subject }),
                         format,
                         |action, params| async move {
-                            crate::dispatch::gateway::dispatch_with_manager(
-                                &manager, &action, params,
-                            )
-                            .await
+                            dispatch_gateway_action(&manager, config, action, params).await
                         },
                     )
                     .await;
@@ -199,8 +217,7 @@ pub(super) async fn dispatch_command(
                     json!({}),
                     format,
                     |action, params| async move {
-                        crate::dispatch::gateway::dispatch_with_manager(&manager, &action, params)
-                            .await
+                        dispatch_gateway_action(&manager, config, action, params).await
                     },
                 )
                 .await;
@@ -216,8 +233,7 @@ pub(super) async fn dispatch_command(
                     }),
                     format,
                     |action, params| async move {
-                        crate::dispatch::gateway::dispatch_with_manager(&manager, &action, params)
-                            .await
+                        dispatch_gateway_action(&manager, config, action, params).await
                     },
                 )
                 .await;
@@ -235,8 +251,7 @@ pub(super) async fn dispatch_command(
                     }),
                     format,
                     |action, params| async move {
-                        crate::dispatch::gateway::dispatch_with_manager(&manager, &action, params)
-                            .await
+                        dispatch_gateway_action(&manager, config, action, params).await
                     },
                 )
                 .await;
@@ -252,19 +267,18 @@ pub(super) async fn dispatch_command(
                     }),
                     format,
                     |action, params| async move {
-                        crate::dispatch::gateway::dispatch_with_manager(&manager, &action, params)
-                            .await
+                        dispatch_gateway_action(&manager, config, action, params).await
                     },
                 )
                 .await;
             }
         },
         GatewayCommand::List => {
-            return run_gateway_list(manager, format).await;
+            return run_gateway_list(manager, config, format).await;
         }
         command => {
             if let GatewayCommand::Code(args) = command {
-                return run_gateway_code(manager, args, format).await;
+                return run_gateway_code(manager, config, args, format).await;
             }
             let mut confirmed = true;
             let mut dry_run = false;
@@ -432,7 +446,7 @@ pub(super) async fn dispatch_command(
                 confirmed,
                 format,
                 |action, params| async move {
-                    crate::dispatch::gateway::dispatch_with_manager(&manager, &action, params).await
+                    dispatch_gateway_action(&manager, config, action, params).await
                 },
             )
             .await;

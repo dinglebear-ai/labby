@@ -3,9 +3,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
+use crate::config::LabConfig;
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::dispatch::gateway::view_models::ServerView;
 use crate::output::OutputFormat;
+
+use super::remote;
 
 /// Render `gateway list` with a typed per-server layout instead of the generic
 /// Value-shape table (which renders nested objects as `{N keys}` placeholders).
@@ -13,11 +16,18 @@ use crate::output::OutputFormat;
 /// Format inspired by `claude mcp list` (status icon + one-line per server)
 /// and `codex mcp list` (column alignment). JSON mode preserves the full
 /// `ServerView` shape for downstream consumers.
+///
+/// Prefers the live `labby serve` daemon's runtime status (connected/tool
+/// counts/pids reflect its actually-connected upstream pool) over the CLI's
+/// own throwaway manager, which only lazily seeds connections and would
+/// otherwise report everything as disconnected -- or spawn all upstreams
+/// fresh just to answer this one read.
 pub(super) async fn run_gateway_list(
     manager: Arc<GatewayManager>,
+    config: &LabConfig,
     format: OutputFormat,
 ) -> Result<ExitCode> {
-    let servers = match manager.list().await {
+    let servers = match fetch_servers(&manager, config).await {
         Ok(s) => s,
         Err(err) => {
             return Err(anyhow::anyhow!(
@@ -40,6 +50,22 @@ pub(super) async fn run_gateway_list(
 
     render_gateway_list_human(&servers, format);
     Ok(ExitCode::SUCCESS)
+}
+
+async fn fetch_servers(
+    manager: &Arc<GatewayManager>,
+    config: &LabConfig,
+) -> Result<Vec<ServerView>, crate::dispatch::error::ToolError> {
+    if let Some(live) = remote::detect(config).await {
+        let value = live.dispatch_action("gateway.list", serde_json::json!({})).await?;
+        if let Ok(servers) = serde_json::from_value::<Vec<ServerView>>(value) {
+            return Ok(servers);
+        }
+        // Fall through to local dispatch if the live daemon's response
+        // didn't parse as expected -- better to answer from local state than
+        // to fail the whole command over a shape mismatch.
+    }
+    manager.list().await
 }
 
 #[allow(clippy::print_stdout)]

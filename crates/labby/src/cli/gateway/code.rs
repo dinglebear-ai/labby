@@ -3,54 +3,96 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use labby_codemode::MAX_SOURCE_BYTES;
+use serde_json::json;
 
 use crate::cli::gateway::{GatewayCodeArgs, GatewayCodeCommand};
+use crate::config::LabConfig;
 use crate::dispatch::gateway::code_mode::{CodeModeBroker, CodeModeCaller, CodeModeSurface};
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::output::OutputFormat;
 
+use super::dispatch::dispatch_gateway_action;
+use super::remote;
+
 pub(super) async fn run_gateway_code(
     manager: Arc<GatewayManager>,
+    config: &LabConfig,
     args: GatewayCodeArgs,
     format: OutputFormat,
 ) -> Result<ExitCode> {
-    let broker = CodeModeBroker::new(Some(manager.as_ref()));
-    let caller = CodeModeCaller::TrustedLocal;
-    let surface = CodeModeSurface::Cli;
-
     match args.command {
         GatewayCodeCommand::Status => {
-            crate::output::print(&manager.code_mode_config().await, format)?;
+            let value =
+                dispatch_gateway_action(&manager, config, "gateway.code_mode.get".to_string(), json!({}))
+                    .await?;
+            crate::output::print(&value, format)?;
         }
         GatewayCodeCommand::Enable => {
-            let mut next = manager.code_mode_config().await;
-            next.enabled = true;
-            let updated = manager.set_code_mode_config(next, None, None).await?;
-            crate::output::print(&updated, format)?;
+            let value = dispatch_gateway_action(
+                &manager,
+                config,
+                "gateway.code_mode.set".to_string(),
+                json!({ "enabled": true }),
+            )
+            .await?;
+            crate::output::print(&value, format)?;
         }
         GatewayCodeCommand::Disable => {
-            let mut next = manager.code_mode_config().await;
-            next.enabled = false;
-            let updated = manager.set_code_mode_config(next, None, None).await?;
-            crate::output::print(&updated, format)?;
+            let value = dispatch_gateway_action(
+                &manager,
+                config,
+                "gateway.code_mode.set".to_string(),
+                json!({ "enabled": false }),
+            )
+            .await?;
+            crate::output::print(&value, format)?;
         }
         GatewayCodeCommand::Exec { code, file } => {
             let code = read_code_mode_source(code, file, MAX_SOURCE_BYTES as u64)?;
-            let config = manager.code_mode_config().await;
-            let response = broker
-                .execute(
-                    &code,
-                    caller,
-                    surface,
-                    config,
-                    crate::dispatch::gateway::code_mode::ToolScope::default(),
-                )
-                .await?;
+            let response = execute_code_mode(&manager, config, &code).await?;
             crate::output::print(&response, format)?;
         }
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Prefer executing against the live daemon's actual `codemode` MCP tool
+/// (warm upstream connections, real circuit-breaker/OAuth state) over the
+/// CLI's own throwaway `CodeModeBroker`, which lazily cold-connects whatever
+/// the snippet touches and never shares in-memory state (OAuth refresh
+/// circuit breaker included) with the process actually serving traffic.
+async fn execute_code_mode(
+    manager: &Arc<GatewayManager>,
+    config: &LabConfig,
+    code: &str,
+) -> Result<serde_json::Value> {
+    if let Some(live) = remote::detect(config).await {
+        match live.call_codemode_tool(code).await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                tracing::warn!(
+                    surface = "cli",
+                    service = "gateway",
+                    action = "gateway.code.exec",
+                    error = %error,
+                    "remote code mode execution failed, falling back to local broker"
+                );
+            }
+        }
+    }
+
+    let broker = CodeModeBroker::new(Some(manager.as_ref()));
+    let response = broker
+        .execute(
+            code,
+            CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Cli,
+            manager.code_mode_config().await,
+            crate::dispatch::gateway::code_mode::ToolScope::default(),
+        )
+        .await?;
+    Ok(serde_json::to_value(response)?)
 }
 
 fn read_code_mode_source(

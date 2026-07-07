@@ -8,6 +8,7 @@ mod code;
 mod dispatch;
 mod list;
 mod oauth;
+mod remote;
 
 pub use args::*;
 
@@ -124,7 +125,7 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
     // default signal disposition kills the process before the drain and
     // orphans spawned stdio upstream children.
     let result = tokio::select! {
-        result = dispatch_command(Arc::clone(&manager), args, format) => result,
+        result = dispatch_command(Arc::clone(&manager), config, args, format) => result,
         code = shutdown_signal() => Ok(ExitCode::from(code)),
     };
     // INVARIANT: drain the upstream pool before the one-shot CLI exits. The
