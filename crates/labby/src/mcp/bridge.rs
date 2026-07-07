@@ -11,20 +11,28 @@
 //! daemon: config, upstream connections, and OAuth refresh state all live in
 //! exactly one place.
 //!
-//! Only forwarded: the operations real MCP clients actually exercise in
-//! practice (tools, resources, prompts). `set_level`/`complete`/task
-//! management fall through to `ServerHandler`'s defaults rather than being
-//! wired through -- they're rarely used and the default behavior (declining
-//! or no-op) is a reasonable placeholder; wire them through here if a real
-//! client needs them forwarded too.
+//! Everything `Peer<RoleClient>` exposes a matching method for is forwarded:
+//! tools, resources, prompts, `complete`, `set_level`, `subscribe`/
+//! `unsubscribe`, and the `cancelled`/`progress`/`roots_list_changed`
+//! notifications in both directions. The one thing that genuinely can't be
+//! forwarded is task management (`enqueue_task`/`list_tasks`/`get_task_info`/
+//! `get_task_result`/`cancel_task`, the SEP-1319 async-task extension) --
+//! `rmcp` 2.1's `Peer<RoleClient>` has no client-side method for any of
+//! these, so there is nothing to call on the remote connection without
+//! hand-rolling raw JSON-RPC outside the typed API. They fall through to
+//! `ServerHandler`'s defaults (`method_not_found`), which is what a client
+//! would see against an `rmcp` server that doesn't implement tasks anyway.
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult,
-    ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult, ServerCapabilities,
-    ServerInfo,
+    CallToolRequestParams, CallToolResult, CancelledNotificationParam, CompleteRequestParams,
+    CompleteResult, GetPromptRequestParams, GetPromptResult, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProgressNotificationParam, ReadResourceRequestParams, ReadResourceResult, ServerCapabilities,
+    ServerInfo, SubscribeRequestParams, UnsubscribeRequestParams,
 };
-use rmcp::service::{Peer, RequestContext, RunningService};
+#[allow(deprecated)]
+use rmcp::model::SetLevelRequestParams;
+use rmcp::service::{NotificationContext, Peer, RequestContext, RunningService};
 use rmcp::{ErrorData, RoleClient, RoleServer, ServerHandler};
 
 /// Holds the live connection to the real daemon. `_service` keeps the
@@ -58,12 +66,15 @@ fn bridge_error(action: &str, error: impl std::fmt::Display) -> ErrorData {
 }
 
 impl ServerHandler for BridgeServerHandler {
+    #[allow(deprecated)]
     fn get_info(&self) -> ServerInfo {
         let builder = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
+            .enable_resources_subscribe()
             .enable_prompts()
-            .enable_completions();
+            .enable_completions()
+            .enable_logging();
         ServerInfo::new(builder.build())
     }
 
@@ -142,5 +153,101 @@ impl ServerHandler for BridgeServerHandler {
             .get_prompt(request)
             .await
             .map_err(|e| bridge_error("get_prompt", e))
+    }
+
+    async fn complete(
+        &self,
+        request: CompleteRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CompleteResult, ErrorData> {
+        self.peer
+            .complete(request)
+            .await
+            .map_err(|e| bridge_error("complete", e))
+    }
+
+    #[allow(deprecated)]
+    async fn set_level(
+        &self,
+        request: SetLevelRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        self.peer
+            .set_level(request)
+            .await
+            .map_err(|e| bridge_error("set_level", e))
+    }
+
+    async fn subscribe(
+        &self,
+        request: SubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        self.peer
+            .subscribe(request)
+            .await
+            .map_err(|e| bridge_error("subscribe", e))
+    }
+
+    async fn unsubscribe(
+        &self,
+        request: UnsubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        self.peer
+            .unsubscribe(request)
+            .await
+            .map_err(|e| bridge_error("unsubscribe", e))
+    }
+
+    /// Forward a downstream cancellation onto the real connection so an
+    /// in-flight remote call (e.g. a long-running `codemode` execution)
+    /// actually gets interrupted, instead of running to completion
+    /// unaffected while the caller thinks they cancelled it.
+    async fn on_cancelled(
+        &self,
+        notification: CancelledNotificationParam,
+        _context: NotificationContext<RoleServer>,
+    ) {
+        if let Err(error) = self.peer.notify_cancelled(notification).await {
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "bridge.notify_cancelled",
+                subsystem = "mcp_bridge",
+                error = %error,
+                "failed to forward cancellation to live daemon"
+            );
+        }
+    }
+
+    async fn on_progress(
+        &self,
+        notification: ProgressNotificationParam,
+        _context: NotificationContext<RoleServer>,
+    ) {
+        if let Err(error) = self.peer.notify_progress(notification).await {
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "bridge.notify_progress",
+                subsystem = "mcp_bridge",
+                error = %error,
+                "failed to forward progress notification to live daemon"
+            );
+        }
+    }
+
+    async fn on_roots_list_changed(&self, _context: NotificationContext<RoleServer>) {
+        if let Err(error) = self.peer.notify_roots_list_changed().await {
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "bridge.notify_roots_list_changed",
+                subsystem = "mcp_bridge",
+                error = %error,
+                "failed to forward roots-list-changed notification to live daemon"
+            );
+        }
     }
 }
