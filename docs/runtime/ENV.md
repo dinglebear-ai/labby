@@ -85,11 +85,26 @@ Verified against a completely bare `~/.labby/` containing nothing but the
 two lines above (no `config.toml`, no local databases): both a read
 (`gateway list`) and a mutation (`gateway add`) reached and used the live
 remote daemon correctly, and the mutation did not write a local
-`config.toml` at all. One harmless side effect worth knowing: the CLI still
-creates a local `~/.labby/auth.db` (+ `-shm`/`-wal`) regardless, because it
-builds its own (unused, when the remote path succeeds) local `GatewayManager`
-*before* deciding whether to go remote or local -- that file stays empty and
-isn't required for the remote path to work.
+`config.toml` at all. The local `GatewayManager` (and its `~/.labby/auth.db`)
+is now built lazily and only comes into existence if remote detection
+genuinely fails -- a successful remote dispatch touches no local files at
+all.
+
+## Remote MCP Stdio Usage
+
+`labby serve --transport stdio` (a.k.a. `labby mcp`) applies the same
+principle at the protocol level, not just for gateway-management actions:
+before building anything local, it probes for a live daemon exactly like the
+CLI does above. If one is reachable, the stdio process runs as a pure
+bridge -- every `tools/`, `resources/`, and `prompts/` request coming in over
+stdio is forwarded to the live daemon's own MCP endpoint and the response
+piped straight back, with no local `GatewayManager`, upstream pool, or OAuth
+state of its own. This is what keeps a locally spawned stdio MCP client
+(e.g. an editor or agent configured to run `labby mcp` instead of connecting
+to the daemon directly over HTTP) from becoming a second, silently-diverging
+gateway instance. Same two env vars as above make this reachable from a
+different host; same fallback (standalone, full local instance) applies if
+no daemon is reachable.
 
 ## Service Environment Variables
 
