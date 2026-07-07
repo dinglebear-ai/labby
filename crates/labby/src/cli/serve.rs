@@ -1134,13 +1134,18 @@ fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
 /// back. See `crate::mcp::bridge` for what is and isn't forwarded.
 #[cfg(feature = "gateway")]
 async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<ExitCode> {
-    use crate::mcp::bridge::BridgeServerHandler;
+    use crate::mcp::bridge::{BridgeClientHandler, BridgeServerHandler};
 
+    // Shared with `BridgeClientHandler` so the daemon's server->client
+    // requests (elicitation/sampling/roots) have the one downstream peer to
+    // relay to, once `BridgeServerHandler::on_initialized` populates it.
+    let downstream = Arc::new(tokio::sync::OnceCell::new());
+    let client_handler = BridgeClientHandler::new(Arc::clone(&downstream));
     let service = live
-        .connect_service()
+        .connect_service(client_handler)
         .await
         .context("connect to live labby serve daemon for stdio bridging")?;
-    let handler = BridgeServerHandler::new(service);
+    let handler = BridgeServerHandler::new(service, downstream);
     let running = handler.serve(rmcp::transport::stdio()).await?;
     tracing::info!(
         subsystem = "startup",

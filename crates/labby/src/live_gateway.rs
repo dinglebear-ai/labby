@@ -167,7 +167,7 @@ impl LiveGateway {
     pub async fn call_codemode_tool(&self, code: &str) -> anyhow::Result<Value> {
         use rmcp::model::CallToolRequestParams;
 
-        let service = self.connect_service().await?;
+        let service = self.connect_service(()).await?;
         let peer = service.peer().clone();
 
         let mut arguments = serde_json::Map::new();
@@ -193,7 +193,16 @@ impl LiveGateway {
     /// resulting `Peer<RoleClient>` for as long as they need it (e.g. the
     /// stdio bridge holds one for its entire process lifetime, versus
     /// `call_codemode_tool` above which opens one per call).
-    pub async fn connect_service(&self) -> anyhow::Result<RunningService<RoleClient, ()>> {
+    ///
+    /// Generic over the `ClientHandler` so callers that need the daemon's
+    /// server->client requests (elicitation/sampling/roots) answered --
+    /// rather than declined, which is what the unit handler `()` does --
+    /// can pass one that forwards them somewhere (see
+    /// `crate::mcp::bridge::BridgeClientHandler`).
+    pub async fn connect_service<H: rmcp::ClientHandler>(
+        &self,
+        handler: H,
+    ) -> anyhow::Result<RunningService<RoleClient, H>> {
         use rmcp::transport::streamable_http_client::{
             StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
         };
@@ -202,7 +211,7 @@ impl LiveGateway {
             StreamableHttpClientTransportConfig::with_uri(format!("{}/mcp", self.base_url));
         transport_config.auth_header = self.token.clone();
         let worker = StreamableHttpClientWorker::new(self.client.clone(), transport_config);
-        Ok(().serve(worker).await?)
+        Ok(handler.serve(worker).await?)
     }
 }
 
