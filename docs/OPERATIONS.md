@@ -32,7 +32,7 @@ Usage:
 ```bash
 ./scripts/check-oauth.sh                          # auto-loads ~/.labby/.env, defaults to localhost:8080
 ./scripts/check-oauth.sh https://lab.example.com  # explicit URL
-LAB_BASE_URL=https://lab.example.com ./scripts/check-oauth.sh
+LABBY_BASE_URL=https://lab.example.com ./scripts/check-oauth.sh
 ```
 
 Exit codes: `0` = pass, `1` = one or more failures. Suitable for post-deploy CI gates.
@@ -43,19 +43,19 @@ Complements `labby doctor`, which checks internal state (config, file permission
 
 Purpose:
 
-- generate or rotate `LAB_MCP_HTTP_TOKEN`
+- generate or rotate `LABBY_MCP_HTTP_TOKEN`
 - update the env file safely
 
 ## OAuth Auth State
 
-When `LAB_AUTH_MODE=oauth`, `lab` persists local auth state on disk:
+When `LABBY_AUTH_MODE=oauth`, `lab` persists local auth state on disk:
 
 - SQLite database: `~/.labby/auth.db` by default
 - JWT signing key: `~/.labby/auth-jwt.pem` by default
 
 Rules:
 
-- `LAB_AUTH_ADMIN_EMAIL` must be set to the bootstrap admin's Google email; startup fails closed if it is missing so no Google account can authenticate without explicit permission
+- `LABBY_AUTH_ADMIN_EMAIL` must be set to the bootstrap admin's Google email; startup fails closed if it is missing so no Google account can authenticate without explicit permission
 - both files must use restrictive permissions; on Unix, `lab` requires they are not group- or world-readable
 - new files are created with `0600` permissions on Unix
 - the SQLite store is opened in WAL mode with a non-zero busy timeout
@@ -113,7 +113,7 @@ default_port = 38935
 4. Complete the OAuth login flow in the browser before either listener exits.
 
 If you need public `https://` redirect URIs for a relay or browser-facing callback domain,
-remember to allowlist them in `lab-auth` with `LAB_AUTH_ALLOWED_REDIRECT_URIS` or
+remember to allowlist them in `lab-auth` with `LABBY_AUTH_ALLOWED_REDIRECT_URIS` or
 `[auth].allowed_client_redirect_uris`. Loopback redirects (`http://127.0.0.1`, `localhost`) and
 native-app private-use URI scheme redirects (RFC 8252 §7.1, e.g. `com.raycast:/oauth`,
 `warp://mcp/oauth2callback`) never need an allowlist entry — only an app the OS has registered
@@ -129,8 +129,8 @@ the known drift points and the reasoning, so they are not silently "fixed" by ac
 
 | Surface | Value | Why |
 |---------|-------|-----|
-| `docker-compose.yml` (dev) | `LAB_UPSTREAM_DISCOVERY_CONCURRENCY=16` | Fast local warmup; developer wants all ~20 upstreams ready quickly |
-| `docker-compose.prod.yml` (prod default) | `LAB_UPSTREAM_DISCOVERY_CONCURRENCY=3` | Conservative rate-limit budget; a misconfigured upstream causes one timeout slot, not a 16× fan-out storm |
+| `docker-compose.yml` (dev) | `LABBY_UPSTREAM_DISCOVERY_CONCURRENCY=16` | Fast local warmup; developer wants all ~20 upstreams ready quickly |
+| `docker-compose.prod.yml` (prod default) | `LABBY_UPSTREAM_DISCOVERY_CONCURRENCY=3` | Conservative rate-limit budget; a misconfigured upstream causes one timeout slot, not a 16× fan-out storm |
 
 The 5× difference hides spawn-storm bugs in dev that only surface at scale. To test prod-like
 behavior locally, use `just prod-run` (see below) — it starts the image with prod defaults.
@@ -154,7 +154,7 @@ behavior locally, use `just prod-run` (see below) — it starts the image with p
 | Surface | Image tag |
 |---------|-----------|
 | Dev | `labby:dev` (local build, `Dockerfile.fast`) |
-| Prod | `${LAB_IMAGE:-ghcr.io/jmagar/lab:latest}` |
+| Prod | `${LABBY_IMAGE:-ghcr.io/jmagar/lab:latest}` |
 
 ### Testing prod parity locally
 
@@ -212,7 +212,7 @@ In the current Linux `x86_64` v1 target, every supported fleet member runs `labb
 Setup order:
 
 1. Pick one machine as the master and start it first with `labby serve`.
-2. If you use bearer auth, set `LAB_MCP_HTTP_TOKEN` on the master before starting it and reuse that same token on every non-master device that reports to it.
+2. If you use bearer auth, set `LABBY_MCP_HTTP_TOKEN` on the master before starting it and reuse that same token on every non-master device that reports to it.
 3. On each non-master, set the master machine name in `~/.labby/config.toml`:
 
 ```toml
@@ -241,7 +241,7 @@ Useful HTTP checks:
 
 ```bash
 curl http://<device>:8765/health
-curl -H "Authorization: Bearer $LAB_MCP_HTTP_TOKEN" http://<controller>:8765/v1/nodes/devices
+curl -H "Authorization: Bearer $LABBY_MCP_HTTP_TOKEN" http://<controller>:8765/v1/nodes/devices
 ```
 
 Current operational limits:

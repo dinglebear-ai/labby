@@ -12,11 +12,11 @@
 //!
 //! Detection isn't loopback-only: it tries, in order, the local bind address
 //! (fast path when co-located with the daemon), then the gateway's own
-//! configured public URLs (`LAB_MCP_GATEWAY_URL`, `LAB_PUBLIC_URL` --
+//! configured public URLs (`LABBY_MCP_GATEWAY_URL`, `LABBY_PUBLIC_URL` --
 //! resolved the same way `LabConfig::public_urls()` already does everywhere
 //! else). That means a thin client reaches the real daemon whether it runs
 //! inside the same container/host as `labby serve` or from any other machine
-//! that shares `~/.labby/.env` (for `LAB_MCP_HTTP_TOKEN`).
+//! that shares `~/.labby/.env` (for `LABBY_MCP_HTTP_TOKEN`).
 
 use std::time::Duration;
 
@@ -44,7 +44,7 @@ pub struct LiveGateway {
 
 /// Candidate base URLs to try, in priority order: the local bind address
 /// `labby serve` itself would resolve (identical env-var → config → default
-/// order as `cli/serve.rs`: `LAB_MCP_HTTP_HOST`/`LAB_MCP_HTTP_PORT`, then
+/// order as `cli/serve.rs`: `LABBY_MCP_HTTP_HOST`/`LABBY_MCP_HTTP_PORT`, then
 /// `config.mcp.host`/`.port`, then `127.0.0.1:8765`), followed by the
 /// gateway's own configured public URLs. The local candidate is tried first
 /// because it's a fast same-host round trip when co-located with the daemon;
@@ -52,8 +52,8 @@ pub struct LiveGateway {
 /// else.
 fn candidate_base_urls(config: &LabConfig) -> Vec<String> {
     candidate_base_urls_from(
-        std::env::var("LAB_MCP_HTTP_HOST").ok(),
-        std::env::var("LAB_MCP_HTTP_PORT").ok(),
+        std::env::var("LABBY_MCP_HTTP_HOST").ok(),
+        std::env::var("LABBY_MCP_HTTP_PORT").ok(),
         config,
     )
 }
@@ -95,7 +95,7 @@ fn candidate_base_urls_from(
 /// (bootstrap, `labby doctor`, the very first `gateway add`) keeps working.
 pub async fn detect(config: &LabConfig) -> Option<LiveGateway> {
     let client = reqwest::Client::builder().build().ok()?;
-    let token = std::env::var("LAB_MCP_HTTP_TOKEN").ok();
+    let token = std::env::var("LABBY_MCP_HTTP_TOKEN").ok();
 
     for base_url in candidate_base_urls(config) {
         let Ok(health) = client

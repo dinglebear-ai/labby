@@ -68,7 +68,7 @@ Dispatch layers may add the following kinds on top of SDK errors:
 - `path_traversal` — a path escapes its target root (contains `..`, is absolute, or canonicalizes outside the root). This is the **canonical** path-escape kind, emitted across the dispatch layer (`path_safety.rs`, `helpers::reject_path_traversal`, the Code Mode artifact containment check, and stash import/export) and by the ACP binary installer (`AcpInstallerError::PathTraversal` → `path_traversal`). HTTP 422. The older `path_traversal_rejected` spelling is retained only by the Fleet-WS marketplace installer (see below) for back-compat; new emitters must use `path_traversal`.
 - `symlink_rejected` — a symlink was encountered along a write/walk path where symlinks are disallowed. Emitted by the dispatch layer (stash save/import/export, Code Mode artifact containment) and the Fleet-WS marketplace installer. HTTP 422.
 
-> Note: Code Mode artifact writes (`writeArtifact(path, content, options?)`) reuse only kinds already defined in this contract — no artifact-specific kind is introduced. They emit `invalid_param` (empty/absolute/`..` path after `\`→`/` normalization, content over the configured size cap — default 8 MiB, raise with `LAB_CODE_MODE_ARTIFACT_MAX_MIB` — or a `content_type` over 256 bytes), `path_traversal`/`symlink_rejected` (the post-join containment check found the destination escaping the per-run root or resolving through a symlinked ancestor), or `internal_error` (a host-side filesystem write/flush failure).
+> Note: Code Mode artifact writes (`writeArtifact(path, content, options?)`) reuse only kinds already defined in this contract — no artifact-specific kind is introduced. They emit `invalid_param` (empty/absolute/`..` path after `\`→`/` normalization, content over the configured size cap — default 8 MiB, raise with `LABBY_CODE_MODE_ARTIFACT_MAX_MIB` — or a `content_type` over 256 bytes), `path_traversal`/`symlink_rejected` (the post-join containment check found the destination escaping the per-run root or resolving through a symlinked ancestor), or `internal_error` (a host-side filesystem write/flush failure).
 
 > Note: `code_mode_disabled` and `code_execution_failed` are removed from the contract.
 > Code Mode execution disabled → `internal_error`. Sandbox/runner JS evaluation failure
@@ -247,7 +247,7 @@ The following kinds are emitted exclusively by the HTTP surface. MCP handles the
 
 #### `upstream_error`
 
-**When:** A proxied upstream MCP server call fails — connection lost, timeout, response too large (`LAB_UPSTREAM_MAX_RESPONSE_BYTES`, default 10 MB), or the upstream returned an error.
+**When:** A proxied upstream MCP server call fails — connection lost, timeout, response too large (`LABBY_UPSTREAM_MAX_RESPONSE_BYTES`, default 10 MB), or the upstream returned an error.
 
 **Surface:** MCP only. Upstream proxy is MCP-transport infrastructure.
 
@@ -272,7 +272,7 @@ The upstream OAuth (outbound) surface adds five stable kinds for operator- and u
 **When:** The persisted upstream OAuth credential can no longer be used to obtain a valid access token, and the user must re-initiate authorization. Concrete triggers:
 
 - the authorization server returned `invalid_grant` on refresh (refresh token revoked, rotated twice, or otherwise invalidated)
-- the encrypted `token_blob` failed to decrypt (for example after `LAB_OAUTH_ENCRYPTION_KEY` rotation)
+- the encrypted `token_blob` failed to decrypt (for example after `LABBY_OAUTH_ENCRYPTION_KEY` rotation)
 - a 401 was received on a non-idempotent request and retry is not safe
 - no persisted credential exists yet for the `(upstream, subject)` pair
 
@@ -454,7 +454,7 @@ surfaced via `DeployError::kind()` in `lab-apis/src/deploy/error.rs`:
 | `kind` | HTTP status | Meaning |
 |--------|-------------|---------|
 | `validation_failed` | 422 | Bad input (host alias, remote_path allowlist, etc.). _(shared kind)_ |
-| `auth_failed` | 401 | `LAB_DEPLOY_TOKEN` missing or headless `confirm: true` rejected. _(shared kind)_ |
+| `auth_failed` | 401 | Deploy-specific auth token missing or headless `confirm: true` rejected. _(shared kind)_ |
 | `ssh_unreachable` | 502 | SSH connection or auth failed for a target. |
 | `build_failed` | 502 | Local `cargo build --release --all-features -p labby` failed. |
 | `preflight_failed` | 502 | Remote arch probe, writable-dir check, or sha256 probe failed. |

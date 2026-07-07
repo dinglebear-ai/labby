@@ -56,52 +56,52 @@ pub struct SetupReport {
     pub checks: Vec<SetupCheck>,
 }
 
-/// Mapping from `CLAUDE_PLUGIN_OPTION_<OPTION>` to the LAB_* env var name.
+/// Mapping from `CLAUDE_PLUGIN_OPTION_<OPTION>` to the LABBY_* env var name.
 ///
-/// Only options that have a direct LAB_* env var equivalent are listed.
+/// Only options that have a direct LABBY_* env var equivalent are listed.
 /// `server_url` is intentionally absent — it's a client-side MCP connection
 /// target, not a server env var. `mcp_host`/`mcp_port` are config.toml fields
 /// with no env var override, so they're also absent.
 const PLUGIN_OPTION_MAP: &[(&str, &str)] = &[
-    ("CLAUDE_PLUGIN_OPTION_API_TOKEN", "LAB_MCP_HTTP_TOKEN"),
-    ("CLAUDE_PLUGIN_OPTION_AUTH_MODE", "LAB_AUTH_MODE"),
-    ("CLAUDE_PLUGIN_OPTION_PUBLIC_URL", "LAB_PUBLIC_URL"),
+    ("CLAUDE_PLUGIN_OPTION_API_TOKEN", "LABBY_MCP_HTTP_TOKEN"),
+    ("CLAUDE_PLUGIN_OPTION_AUTH_MODE", "LABBY_AUTH_MODE"),
+    ("CLAUDE_PLUGIN_OPTION_PUBLIC_URL", "LABBY_PUBLIC_URL"),
     (
         "CLAUDE_PLUGIN_OPTION_MCP_GATEWAY_URL",
-        "LAB_MCP_GATEWAY_URL",
+        "LABBY_MCP_GATEWAY_URL",
     ),
-    ("CLAUDE_PLUGIN_OPTION_ADMIN_ENABLED", "LAB_ADMIN_ENABLED"),
-    ("CLAUDE_PLUGIN_OPTION_LOG_FILTER", "LAB_LOG"),
-    ("CLAUDE_PLUGIN_OPTION_LOG_FORMAT", "LAB_LOG_FORMAT"),
-    ("CLAUDE_PLUGIN_OPTION_CORS_ORIGINS", "LAB_CORS_ORIGINS"),
+    ("CLAUDE_PLUGIN_OPTION_ADMIN_ENABLED", "LABBY_ADMIN_ENABLED"),
+    ("CLAUDE_PLUGIN_OPTION_LOG_FILTER", "LABBY_LOG"),
+    ("CLAUDE_PLUGIN_OPTION_LOG_FORMAT", "LABBY_LOG_FORMAT"),
+    ("CLAUDE_PLUGIN_OPTION_CORS_ORIGINS", "LABBY_CORS_ORIGINS"),
     (
         "CLAUDE_PLUGIN_OPTION_GOOGLE_CLIENT_ID",
-        "LAB_GOOGLE_CLIENT_ID",
+        "LABBY_GOOGLE_CLIENT_ID",
     ),
     (
         "CLAUDE_PLUGIN_OPTION_GOOGLE_CLIENT_SECRET",
-        "LAB_GOOGLE_CLIENT_SECRET",
+        "LABBY_GOOGLE_CLIENT_SECRET",
     ),
     (
         "CLAUDE_PLUGIN_OPTION_AUTH_ADMIN_EMAIL",
-        "LAB_AUTH_ADMIN_EMAIL",
+        "LABBY_AUTH_ADMIN_EMAIL",
     ),
 ];
 
-/// Reverse map: LAB_* env var → plugin userConfig field name, for export.
+/// Reverse map: LABBY_* env var → plugin userConfig field name, for export.
 const ENV_TO_FIELD_MAP: &[(&str, &str, bool)] = &[
     // (lab_env_var, userConfig_field_name, is_sensitive)
-    ("LAB_MCP_HTTP_TOKEN", "api_token", true),
-    ("LAB_AUTH_MODE", "auth_mode", false),
-    ("LAB_PUBLIC_URL", "public_url", false),
-    ("LAB_MCP_GATEWAY_URL", "mcp_gateway_url", false),
-    ("LAB_ADMIN_ENABLED", "admin_enabled", false),
-    ("LAB_LOG", "log_filter", false),
-    ("LAB_LOG_FORMAT", "log_format", false),
-    ("LAB_CORS_ORIGINS", "cors_origins", false),
-    ("LAB_GOOGLE_CLIENT_ID", "google_client_id", false),
-    ("LAB_GOOGLE_CLIENT_SECRET", "google_client_secret", true),
-    ("LAB_AUTH_ADMIN_EMAIL", "auth_admin_email", false),
+    ("LABBY_MCP_HTTP_TOKEN", "api_token", true),
+    ("LABBY_AUTH_MODE", "auth_mode", false),
+    ("LABBY_PUBLIC_URL", "public_url", false),
+    ("LABBY_MCP_GATEWAY_URL", "mcp_gateway_url", false),
+    ("LABBY_ADMIN_ENABLED", "admin_enabled", false),
+    ("LABBY_LOG", "log_filter", false),
+    ("LABBY_LOG_FORMAT", "log_format", false),
+    ("LABBY_CORS_ORIGINS", "cors_origins", false),
+    ("LABBY_GOOGLE_CLIENT_ID", "google_client_id", false),
+    ("LABBY_GOOGLE_CLIENT_SECRET", "google_client_secret", true),
+    ("LABBY_AUTH_ADMIN_EMAIL", "auth_admin_email", false),
 ];
 
 #[derive(Debug, Clone, Serialize)]

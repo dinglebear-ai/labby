@@ -12,7 +12,7 @@ STORAGE_POOL_DRIVER="${LABBY_INCUS_STORAGE_DRIVER:-zfs}"
 STORAGE_POOL_NAME="${LABBY_INCUS_STORAGE_POOL:-}"
 STORAGE_POOL_SOURCE="${LABBY_INCUS_STORAGE_SOURCE:-${LABBY_INCUS_ZFS_SOURCE:-}}"
 RUNTIME_PROFILE_NAME=""
-VERSION="${LAB_INSTALL_VERSION:-}"
+VERSION="${LABBY_INSTALL_VERSION:-}"
 LOCAL_BINARY=""
 SKIP_INSTALL=0
 DRY_RUN=0
@@ -576,11 +576,11 @@ else
     fallback="$ALLOW_SOURCE_FALLBACK"
     run incus file push scripts/install.sh "$NAME/tmp/labby-install.sh"
     run incus exec "$NAME" -- env \
-        LAB_INSTALL_DIR=/usr/local/bin \
-        LAB_INSTALL_REPO=jmagar/labby \
-        LAB_INSTALL_VERSION="$VERSION" \
-        LAB_REQUIRE_CHECKSUM=1 \
-        LAB_ALLOW_SOURCE_FALLBACK="$fallback" \
+        LABBY_INSTALL_DIR=/usr/local/bin \
+        LABBY_INSTALL_REPO=jmagar/labby \
+        LABBY_INSTALL_VERSION="$VERSION" \
+        LABBY_REQUIRE_CHECKSUM=1 \
+        LABBY_ALLOW_SOURCE_FALLBACK="$fallback" \
         sh /tmp/labby-install.sh
     run incus exec "$NAME" -- rm -f /tmp/labby-install.sh
 fi

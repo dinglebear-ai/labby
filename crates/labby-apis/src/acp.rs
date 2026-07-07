@@ -39,14 +39,14 @@ pub const META: PluginMeta = PluginMeta {
     required_env: &[],
     optional_env: &[
         EnvVar {
-            name: "LAB_ACP_DB",
+            name: "LABBY_ACP_DB",
             description: "Path to ACP SQLite database",
             example: "~/.labby/acp.db",
             secret: false,
             ui: Some(&TEXT_OPTIONAL_FIELD),
         },
         EnvVar {
-            name: "LAB_ACP_HMAC_SECRET",
+            name: "LABBY_ACP_HMAC_SECRET",
             description: "HMAC key for permission outcome signing; auto-generated if absent",
             example: "",
             secret: true,

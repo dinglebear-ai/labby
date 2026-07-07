@@ -11,7 +11,7 @@ image_definition="$repo_root/config/incus/labby-image.yaml"
 image_name="labby-incus-x86_64-unknown-linux-gnu.tar.xz"
 secret_env_vars=(
     TS_AUTHKEY
-    LAB_MCP_HTTP_TOKEN
+    LABBY_MCP_HTTP_TOKEN
     OPENAI_API_KEY
     ANTHROPIC_API_KEY
     GITHUB_TOKEN

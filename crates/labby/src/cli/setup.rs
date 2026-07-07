@@ -9,7 +9,7 @@
 //! - first-run: instructions to start `labby serve` and visit `/setup`, or
 //! - re-run: instructions to visit `/settings`.
 //!
-//! Honors `LAB_SKIP_SETUP=1` and `--no-setup` for CI / power users.
+//! Honors `LABBY_SKIP_SETUP=1` and `--no-setup` for CI / power users.
 //!
 //! Browser auto-launch is intentionally deferred to a follow-up so this PR
 //! avoids adding the `webbrowser` dependency. The bead's locked decision
@@ -51,7 +51,7 @@ pub struct SetupArgs {
     #[arg(long, value_enum, default_value_t = SetupModeArg::Full, hide = true)]
     pub mode: SetupModeArg,
 
-    /// Skip the wizard and exit cleanly. Equivalent to LAB_SKIP_SETUP=1.
+    /// Skip the wizard and exit cleanly. Equivalent to LABBY_SKIP_SETUP=1.
     #[arg(long, hide = true)]
     pub no_setup: bool,
 
@@ -106,7 +106,7 @@ pub enum SetupCommand {
         #[arg(long)]
         no_repair: bool,
     },
-    /// Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LAB_* vars.
+    /// Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars.
     PluginSync(PluginSyncArgs),
     /// Read ~/.labby/.env and print current values keyed by userConfig field name.
     PluginExport,
@@ -136,7 +136,7 @@ pub struct WizardArgs {
     /// Setup UI mode. Standalone setup defaults to full; /setup-core passes plugin.
     #[arg(long, value_enum, default_value_t = SetupModeArg::Full)]
     pub mode: SetupModeArg,
-    /// Skip the wizard and exit cleanly. Equivalent to LAB_SKIP_SETUP=1.
+    /// Skip the wizard and exit cleanly. Equivalent to LABBY_SKIP_SETUP=1.
     #[arg(long)]
     pub no_setup: bool,
     /// Do not attempt to open the browser.
@@ -358,7 +358,7 @@ async fn run_wizard(args: WizardArgs, format: OutputFormat) -> Result<ExitCode> 
         eprintln!(
             "{}",
             theme.muted(
-                "setup skipped (LAB_SKIP_SETUP=1 or --no-setup); run `labby setup wizard` manually when ready"
+                "setup skipped (LABBY_SKIP_SETUP=1 or --no-setup); run `labby setup wizard` manually when ready"
             )
         );
         return Ok(ExitCode::SUCCESS);
@@ -401,7 +401,7 @@ async fn run_wizard(args: WizardArgs, format: OutputFormat) -> Result<ExitCode> 
     eprintln!();
     eprintln!(
         "{}",
-        theme.muted("Tip: set LAB_SKIP_SETUP=1 to suppress this message in CI.")
+        theme.muted("Tip: set LABBY_SKIP_SETUP=1 to suppress this message in CI.")
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -583,7 +583,7 @@ async fn run_incus_backup_command(args: IncusBackupArgs, format: OutputFormat) -
 }
 
 fn setup_skip_requested() -> bool {
-    std::env::var("LAB_SKIP_SETUP").as_deref() == Ok("1")
+    std::env::var("LABBY_SKIP_SETUP").as_deref() == Ok("1")
 }
 
 fn require_incus_backup_confirmation(container: &str, yes: bool) -> Result<()> {

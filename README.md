@@ -75,8 +75,8 @@ operator provisioning or environment setup. The scripts only install the binary
 (from a release or fallback source build); all first-run provisioning is handled
 inside `labby` via `labby serve` bootstrap and `labby setup`.
 
-Override install behavior with `LAB_INSTALL_DIR`, `LAB_INSTALL_VERSION`, or
-`LAB_INSTALL_REPO`.
+Override install behavior with `LABBY_INSTALL_DIR`, `LABBY_INSTALL_VERSION`, or
+`LABBY_INSTALL_REPO`.
 
 ### Build From Source
 
@@ -104,18 +104,18 @@ labby serve --host 127.0.0.1 --port 8765
 ### First Run
 
 For loopback development, `labby serve` can bootstrap a missing bearer token for
-you. If `LAB_MCP_HTTP_TOKEN` is absent and `LAB_AUTH_MODE` is not `oauth`, it
+you. If `LABBY_MCP_HTTP_TOKEN` is absent and `LABBY_AUTH_MODE` is not `oauth`, it
 generates a token, writes a minimal `~/.labby/.env`, reloads it into the running
 process, prints the setup URL, and continues. The token itself is stored in
 `~/.labby/.env` rather than printed.
 
 Bootstrap writes these required `setup` keys if no env exists yet:
 
-- `LAB_MCP_HTTP_TOKEN` (generated random 64-character hex token)
-- `LAB_MCP_TRANSPORT=http`
-- `LAB_MCP_HTTP_HOST=127.0.0.1`
-- `LAB_MCP_HTTP_PORT=8765`
-- `LAB_AUTH_MODE=bearer`
+- `LABBY_MCP_HTTP_TOKEN` (generated random 64-character hex token)
+- `LABBY_MCP_TRANSPORT=http`
+- `LABBY_MCP_HTTP_HOST=127.0.0.1`
+- `LABBY_MCP_HTTP_PORT=8765`
+- `LABBY_AUTH_MODE=bearer`
 
 It also enforces secure file creation via Lab's `env_merge` path (`0600` perms on
 Unix) and then skips creating anything else until the web wizard runs.
@@ -124,7 +124,7 @@ For explicit setup:
 
 ```bash
 mkdir -p ~/.labby
-printf 'LAB_AUTH_MODE=bearer\nLAB_MCP_HTTP_TOKEN=%s\n' "$(openssl rand -hex 32)" > ~/.labby/.env
+printf 'LABBY_AUTH_MODE=bearer\nLABBY_MCP_HTTP_TOKEN=%s\n' "$(openssl rand -hex 32)" > ~/.labby/.env
 chmod 600 ~/.labby/.env
 labby setup
 labby serve --host 127.0.0.1 --port 8765
@@ -261,7 +261,7 @@ Generic action dispatch:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8765/v1/gateway \
-  -H "Authorization: Bearer $LAB_MCP_HTTP_TOKEN" \
+  -H "Authorization: Bearer $LABBY_MCP_HTTP_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"action":"gateway.list","params":{}}'
 ```
@@ -300,7 +300,7 @@ Configuration is split deliberately:
 
 | Data | Location | Examples |
 | --- | --- | --- |
-| Secrets and endpoint values | `~/.labby/.env` | `LAB_MCP_HTTP_TOKEN`, `LAB_GOOGLE_CLIENT_SECRET`, upstream bearer token env values |
+| Secrets and endpoint values | `~/.labby/.env` | `LABBY_MCP_HTTP_TOKEN`, `LABBY_GOOGLE_CLIENT_SECRET`, upstream bearer token env values |
 | Preferences | `config.toml` | transport, CORS, auth mode, workspace root, gateway spawn guard, registry URLs |
 
 `config.toml` is searched in this order:
@@ -321,22 +321,21 @@ Useful environment variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `LAB_MCP_HTTP_TOKEN` | Static bearer token for protected admin/API/MCP routes. |
-| `LAB_AUTH_MODE` | `bearer` or `oauth`. |
-| `LAB_PUBLIC_URL` | Public base URL for OAuth metadata, issuer/audience, callbacks, and allowed-host derivation. |
-| `LAB_GOOGLE_CLIENT_ID` / `LAB_GOOGLE_CLIENT_SECRET` | Google OAuth credentials for OAuth mode. |
-| `LAB_AUTH_ADMIN_EMAIL` | Bootstrap admin email; required in OAuth mode. |
-| `LAB_OAUTH_ENCRYPTION_KEY` | Base64 32-byte key required for encrypted upstream OAuth credentials. Rotation requires reauthorizing affected upstreams. |
-| `LAB_WEB_ASSETS_DIR` | Override static Labby export directory. |
-| `LAB_WEB_UI_AUTH_DISABLED` | Development-only browser auth bypass. |
-| `LAB_LOG` / `LAB_LOG_FORMAT` / `LAB_LOG_COLOR` | Tracing filter, text/json format, and non-TTY color policy. |
-| `LAB_LOG_DIR` | Optional rolling JSON file log directory. |
-| `LAB_LOCAL_LOGS_STORE_PATH` | SQLite store path for the local activity log service. |
-| `LAB_ACTOR_KEY_SECRET` | Stable secret for redacted actor correlation in logs. |
-| `LAB_ADMIN_ENABLED` | Runtime opt-in for the `lab_admin` tool. |
+| `LABBY_MCP_HTTP_TOKEN` | Static bearer token for protected admin/API/MCP routes. |
+| `LABBY_AUTH_MODE` | `bearer` or `oauth`. |
+| `LABBY_PUBLIC_URL` | Public base URL for OAuth metadata, issuer/audience, callbacks, and allowed-host derivation. |
+| `LABBY_GOOGLE_CLIENT_ID` / `LABBY_GOOGLE_CLIENT_SECRET` | Google OAuth credentials for OAuth mode. |
+| `LABBY_AUTH_ADMIN_EMAIL` | Bootstrap admin email; required in OAuth mode. |
+| `LABBY_OAUTH_ENCRYPTION_KEY` | Base64 32-byte key required for encrypted upstream OAuth credentials. Rotation requires reauthorizing affected upstreams. |
+| `LABBY_WEB_ASSETS_DIR` | Override static Labby export directory. |
+| `LABBY_WEB_UI_AUTH_DISABLED` | Development-only browser auth bypass. |
+| `LABBY_LOG` / `LABBY_LOG_FORMAT` / `LABBY_LOG_COLOR` | Tracing filter, text/json format, and non-TTY color policy. |
+| `LABBY_LOG_DIR` | Optional rolling JSON file log directory. |
+| `LABBY_ACTOR_KEY_SECRET` | Stable secret for redacted actor correlation in logs. |
+| `LABBY_ADMIN_ENABLED` | Runtime opt-in for the `lab_admin` tool. |
 
 Bearer auth is an operator/admin shortcut for Lab routes. Public protected MCP
-routes validate route-scoped Lab OAuth JWTs; do not treat `LAB_MCP_HTTP_TOKEN` as
+routes validate route-scoped Lab OAuth JWTs; do not treat `LABBY_MCP_HTTP_TOKEN` as
 a public resource credential.
 
 When driving the web UI with automation while OAuth is enabled, pass the bearer
@@ -344,7 +343,7 @@ token as a same-origin header. `/auth/session` recognizes that token and returns
 synthetic admin session:
 
 ```bash
-TOKEN=$(awk -F= '/^LAB_MCP_HTTP_TOKEN=/{print $2}' ~/.labby/.env)
+TOKEN=$(awk -F= '/^LABBY_MCP_HTTP_TOKEN=/{print $2}' ~/.labby/.env)
 agent-browser open http://127.0.0.1:8765/chat \
   --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
 ```
@@ -430,7 +429,7 @@ just dev              # alias for just dev-container
 just dev-debug        # alias for just dev-container-debug
 just install          # build-release + symlink ~/.local/bin/labby
 just prod-run         # local prod-like image smoke on port 18765
-just mcp-token        # rotate LAB_MCP_HTTP_TOKEN in .env
+just mcp-token        # rotate LABBY_MCP_HTTP_TOKEN in .env
 ```
 
 Authoritative Rust verification is all-features:

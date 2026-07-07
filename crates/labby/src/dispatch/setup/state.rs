@@ -116,8 +116,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let env = temp.path().join(".env");
         let draft = temp.path().join(".env.draft");
-        std::fs::write(&env, "LAB_MCP_HTTP_TOKEN=abc\n").unwrap();
-        std::fs::write(&draft, "LAB_TEST=1\n# comment\nOTHER=2\n").unwrap();
+        std::fs::write(&env, "LABBY_MCP_HTTP_TOKEN=abc\n").unwrap();
+        std::fs::write(&draft, "LABBY_TEST=1\n# comment\nOTHER=2\n").unwrap();
 
         let metadata = draft_metadata(&env, &draft);
 

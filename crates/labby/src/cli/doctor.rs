@@ -45,10 +45,10 @@ pub enum DoctorCheck {
 
 #[derive(Debug, Args)]
 pub struct DoctorProxyArgs {
-    /// Public Lab app URL, e.g. https://lab.example.com (default: LAB_PUBLIC_URL)
+    /// Public Lab app URL, e.g. https://lab.example.com (default: LABBY_PUBLIC_URL)
     #[arg(long)]
     pub app_url: Option<String>,
-    /// Public MCP gateway URL, e.g. https://mcp.example.com (default: LAB_MCP_GATEWAY_URL)
+    /// Public MCP gateway URL, e.g. https://mcp.example.com (default: LABBY_MCP_GATEWAY_URL)
     #[arg(long)]
     pub mcp_url: Option<String>,
     /// Protected MCP public route path, e.g. /telemetry
@@ -162,19 +162,19 @@ async fn run_proxy(args: DoctorProxyArgs, format: OutputFormat) -> Result<ExitCo
     let app_url = args
         .app_url
         .or_else(|| {
-            std::env::var("LAB_PUBLIC_URL")
+            std::env::var("LABBY_PUBLIC_URL")
                 .ok()
                 .filter(|v| !v.is_empty())
         })
-        .ok_or_else(|| anyhow::anyhow!("--app-url is required (or set LAB_PUBLIC_URL)"))?;
+        .ok_or_else(|| anyhow::anyhow!("--app-url is required (or set LABBY_PUBLIC_URL)"))?;
     let mcp_url = args
         .mcp_url
         .or_else(|| {
-            std::env::var("LAB_MCP_GATEWAY_URL")
+            std::env::var("LABBY_MCP_GATEWAY_URL")
                 .ok()
                 .filter(|v| !v.is_empty())
         })
-        .ok_or_else(|| anyhow::anyhow!("--mcp-url is required (or set LAB_MCP_GATEWAY_URL)"))?;
+        .ok_or_else(|| anyhow::anyhow!("--mcp-url is required (or set LABBY_MCP_GATEWAY_URL)"))?;
     let mut params = serde_json::json!({
         "app_url": app_url,
         "mcp_url": mcp_url,

@@ -6,7 +6,7 @@ Configuration is intentionally split between secrets and preferences.
 
 | Category | Where | Examples |
 |----------|-------|----------|
-| Secrets | `~/.labby/.env` | `*_API_KEY`, `*_TOKEN`, `*_PASSWORD`, `LAB_MCP_HTTP_TOKEN` |
+| Secrets | `~/.labby/.env` | `*_API_KEY`, `*_TOKEN`, `*_PASSWORD`, `LABBY_MCP_HTTP_TOKEN` |
 | Service endpoints | `~/.labby/.env` | `RADARR_URL`, `PLEX_URL`, other per-instance upstream URLs |
 | Non-secret preferences and defaults | `config.toml` | logging, MCP transport, CORS, admin flags, registry URLs, workspace roots, per-service prefs |
 
@@ -79,8 +79,8 @@ Value precedence at point of use (highest wins):
 
 ### First-run bootstrap
 
-On first run, `labby serve` detects a missing MCP token (no `LAB_MCP_HTTP_TOKEN`
-and `LAB_AUTH_MODE` != `oauth`) and self-bootstraps: it generates a 64-char hex
+On first run, `labby serve` detects a missing MCP token (no `LABBY_MCP_HTTP_TOKEN`
+and `LABBY_AUTH_MODE` != `oauth`) and self-bootstraps: it generates a 64-char hex
 bearer token, writes a minimal `~/.labby/.env` (token + loopback MCP defaults via
 the atomic `env_merge` path), reloads that file into the process environment via
 `dotenvy` so the token is visible process-wide, prints the
@@ -89,15 +89,15 @@ file for the token, and continues startup.
 
 It writes these base keys:
 
-- `LAB_MCP_HTTP_TOKEN` (generated token, 64-char hex)
-- `LAB_MCP_TRANSPORT=http`
-- `LAB_MCP_HTTP_HOST=127.0.0.1`
-- `LAB_MCP_HTTP_PORT=8765`
-- `LAB_AUTH_MODE=bearer`
+- `LABBY_MCP_HTTP_TOKEN` (generated token, 64-char hex)
+- `LABBY_MCP_TRANSPORT=http`
+- `LABBY_MCP_HTTP_HOST=127.0.0.1`
+- `LABBY_MCP_HTTP_PORT=8765`
+- `LABBY_AUTH_MODE=bearer`
 
 The web `/setup` wizard then owns all further configuration.
 
-Set `LAB_MCP_HTTP_TOKEN` or `LAB_AUTH_MODE=oauth` beforehand to opt out.
+Set `LABBY_MCP_HTTP_TOKEN` or `LABBY_AUTH_MODE=oauth` beforehand to opt out.
 The generated `~/.labby/.env` is written `0600` on Unix;
 **Windows ACL hardening is still pending**
 (`env_merge::set_secure_perms` is a no-op on non-unix), so on Windows the token
@@ -116,20 +116,22 @@ to the wizard and CLI.
 
 | Key | Env override | Default | Description |
 |-----|-------------|---------|-------------|
-| `filter` | `LAB_LOG` | `"labby=info,lab_apis=warn"` | Tracing filter directive |
-| `format` | `LAB_LOG_FORMAT` | `"text"` | Log format: `"text"` or `"json"` |
+| `filter` | `LABBY_LOG` | `"labby=info,lab_apis=warn"` | Tracing filter directive |
+| `format` | `LABBY_LOG_FORMAT` | `"text"` | Log format: `"text"` or `"json"` |
 
 ### `[local_logs]`
 
 Controller runtime log store preferences.
 
-| Key | Env override | Default | Description |
-|-----|-------------|---------|-------------|
-| `store_path` | `LAB_LOCAL_LOGS_STORE_PATH` | `~/.labby/logs.db` | Embedded SQLite store path for persisted controller runtime logs |
-| `retention_days` | `LAB_LOCAL_LOGS_RETENTION_DAYS` | `7` | Time-based retention window in days |
-| `max_bytes` | `LAB_LOCAL_LOGS_MAX_BYTES` | `268435456` | Size-based retention limit in logical stored bytes |
-| `queue_capacity` | `LAB_LOCAL_LOGS_QUEUE_CAPACITY` | `1024` | Bounded ingest queue size for the long-lived runtime |
-| `subscriber_capacity` | `LAB_LOCAL_LOGS_SUBSCRIBER_CAPACITY` | `256` | Bounded live fanout ring size for SSE subscribers |
+| Key | Default | Description |
+|-----|---------|-------------|
+| `store_path` | `~/.labby/logs.db` | Embedded SQLite store path for persisted controller runtime logs |
+| `retention_days` | `7` | Time-based retention window in days |
+| `max_bytes` | `268435456` | Size-based retention limit in logical stored bytes |
+| `queue_capacity` | `1024` | Bounded ingest queue size for the long-lived runtime |
+| `subscriber_capacity` | `256` | Bounded live fanout ring size for SSE subscribers |
+
+These are `config.toml`-only preferences; there is no env-var override for this section.
 
 Example:
 
@@ -153,18 +155,18 @@ Rules:
 
 | Key | Env override | Default | Description |
 |-----|-------------|---------|-------------|
-| `transport` | `LAB_MCP_TRANSPORT` | `"http"` | MCP transport: `"stdio"` or `"http"` |
-| `host` | `LAB_MCP_HTTP_HOST` | `"127.0.0.1"` | HTTP bind address |
-| `port` | `LAB_MCP_HTTP_PORT` | `8765` | HTTP bind port |
-| `session_ttl_secs` | `LAB_MCP_SESSION_TTL_SECS` | `300` | HTTP MCP session keep-alive TTL (seconds) |
-| `stateful` | `LAB_MCP_STATEFUL` | `true` | Whether HTTP MCP uses stateful sessions |
-| `allowed_hosts` | `LAB_MCP_ALLOWED_HOSTS` | `[]` | Additional allowed hosts for DNS rebinding protection |
+| `transport` | `LABBY_MCP_TRANSPORT` | `"http"` | MCP transport: `"stdio"` or `"http"` |
+| `host` | `LABBY_MCP_HTTP_HOST` | `"127.0.0.1"` | HTTP bind address |
+| `port` | `LABBY_MCP_HTTP_PORT` | `8765` | HTTP bind port |
+| `session_ttl_secs` | `LABBY_MCP_SESSION_TTL_SECS` | `300` | HTTP MCP session keep-alive TTL (seconds) |
+| `stateful` | `LABBY_MCP_STATEFUL` | `true` | Whether HTTP MCP uses stateful sessions |
+| `allowed_hosts` | `LABBY_MCP_ALLOWED_HOSTS` | `[]` | Additional allowed hosts for DNS rebinding protection |
 
 ### `[api]`
 
 | Key | Env override | Default | Description |
 |-----|-------------|---------|-------------|
-| `cors_origins` | `LAB_CORS_ORIGINS` | `[]` | Additional CORS origins (loopback always included) |
+| `cors_origins` | `LABBY_CORS_ORIGINS` | `[]` | Additional CORS origins (loopback always included) |
 
 ### `[node]`
 
@@ -187,14 +189,13 @@ Rules:
 - legacy `[device].master` is still read for compatibility, but new config should use `[node].controller`
 - Docker/Compose deployments should expose the host hostname to the container.
   The bundled Compose file mounts `/etc/hostname` at `/run/host/hostname`, which
-  is checked before the container's own `HOSTNAME`. Set `LAB_HOST_HOSTNAME`
-  only when that host-file mount is unavailable.
+  is checked before the container's own `HOSTNAME`.
 
 ### `[web]`
 
 | Key | Env override | Default | Description |
 |-----|-------------|---------|-------------|
-| `assets_dir` | `LAB_WEB_ASSETS_DIR` | auto-detect | Path to exported Labby assets served by `labby serve` |
+| `assets_dir` | `LABBY_WEB_ASSETS_DIR` | auto-detect | Path to exported Labby assets served by `labby serve` |
 
 ### `[workspace]`
 
@@ -363,7 +364,7 @@ content is then written into a fresh per-run directory under
 Artifact **content** is written to disk and never returned to the model (only
 the receipt is), so its size cap is a resource bound, **not** a context guard. A
 single artifact defaults to a **8 MiB** cap, overridable with
-`LAB_CODE_MODE_ARTIFACT_MAX_MIB` (in MiB); oversized content is rejected with
+`LABBY_CODE_MODE_ARTIFACT_MAX_MIB` (in MiB); oversized content is rejected with
 `invalid_param`. Keep it below ~64 so a write stays under the runner's JS heap
 and fails cleanly instead of as an opaque out-of-memory trap. `options.contentType`
 defaults to `text/plain` when omitted or blank and is itself capped at 256 bytes
@@ -378,10 +379,10 @@ still making them available on disk.
 The store is bounded on two axes, pruned on the first artifact write of a run
 (never on search or no-write runs):
 
-- **Run count** — keeps the newest `LAB_CODE_MODE_ARTIFACT_RETENTION_RUNS`
+- **Run count** — keeps the newest `LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS`
   (default `200`) run directories; `0` disables the count rule.
 - **Total bytes** — drops the oldest runs until the whole store fits
-  `LAB_CODE_MODE_ARTIFACT_MAX_STORE_MIB` (default `4096`, i.e. 4 GiB); `0`
+  `LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB` (default `4096`, i.e. 4 GiB); `0`
   disables the byte rule. This matters once artifacts can be several MiB each,
   where a run-count cap alone no longer bounds disk usage.
 
@@ -422,7 +423,7 @@ The node runtime reuses the same target model when `POST /v1/nodes/oauth/relay/s
 
 | Key | Env override | Default | Description |
 |-----|-------------|---------|-------------|
-| `enabled` | `LAB_ADMIN_ENABLED=1` | `false` | Enable the `lab_admin` MCP tool |
+| `enabled` | `LABBY_ADMIN_ENABLED=1` | `false` | Enable the `lab_admin` MCP tool |
 
 ### `[services]`
 
@@ -538,8 +539,8 @@ If env-based instance definitions become unwieldy, the project can later move in
 
 HTTP auth is mode-based.
 
-- `LAB_AUTH_MODE=bearer` preserves the existing static bearer flow and still uses `LAB_MCP_HTTP_TOKEN`.
-- `LAB_AUTH_MODE=oauth` enables the internal Google-backed authorization server and requires `LAB_PUBLIC_URL`.
+- `LABBY_AUTH_MODE=bearer` preserves the existing static bearer flow and still uses `LABBY_MCP_HTTP_TOKEN`.
+- `LABBY_AUTH_MODE=oauth` enables the internal Google-backed authorization server and requires `LABBY_PUBLIC_URL`.
 
 Full details in [OAUTH.md](./OAUTH.md).
 
@@ -547,23 +548,23 @@ Full details in [OAUTH.md](./OAUTH.md).
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `LAB_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
-| `LAB_MCP_HTTP_TOKEN` | bearer mode only | Static bearer token for protected HTTP routes. |
-| `LAB_PUBLIC_URL` | oauth mode | Public base URL for metadata, JWT issuer/audience, callback construction, and allowed-host derivation. Path-prefixed deployments are supported. |
-| `LAB_AUTH_SQLITE_PATH` | no | Override path for the auth SQLite database. Defaults to `~/.labby/auth.db`. |
-| `LAB_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. Defaults to `~/.labby/auth-jwt.pem`. |
-| `LAB_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
-| `LAB_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
-| `LAB_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LAB_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
-| `LAB_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
-| `LAB_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated non-loopback redirect URI patterns. Host wildcards must be full labels, not raw suffix globs. |
-| `LAB_AUTH_ADMIN_EMAIL` | oauth mode | Google email of the bootstrap admin permitted to log in. Normalized to lowercase. **Required** in oauth mode — startup fails if unset so no Google account can authenticate unless explicitly permitted. The id_token's `email_verified` claim is enforced (unverified accounts are rejected even when the address matches). Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
-| `LAB_AUTH_ACCESS_TOKEN_TTL_SECS` | no | Override lab-issued JWT access token lifetime. Defaults to `3600`. |
-| `LAB_AUTH_REFRESH_TOKEN_TTL_SECS` | no | Override refresh token lifetime. Defaults to `2592000` (30 days). |
-| `LAB_AUTH_CODE_TTL_SECS` | no | Override authorization code lifetime. Defaults to `300`. |
-| `LAB_AUTH_REGISTER_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `POST /register`. Defaults to `20`. |
-| `LAB_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `/authorize` and hosted browser-login initiation. Defaults to `60`. |
-| `LAB_AUTH_MAX_PENDING_OAUTH_STATES` | no | Maximum non-expired authorization and browser-login states kept in the auth store. Defaults to `1024`. |
+| `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
+| `LABBY_MCP_HTTP_TOKEN` | bearer mode only | Static bearer token for protected HTTP routes. |
+| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata, JWT issuer/audience, callback construction, and allowed-host derivation. Path-prefixed deployments are supported. |
+| `LABBY_AUTH_SQLITE_PATH` | no | Override path for the auth SQLite database. Defaults to `~/.labby/auth.db`. |
+| `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. Defaults to `~/.labby/auth-jwt.pem`. |
+| `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
+| `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
+| `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
+| `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
+| `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated non-loopback redirect URI patterns. Host wildcards must be full labels, not raw suffix globs. |
+| `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Google email of the bootstrap admin permitted to log in. Normalized to lowercase. **Required** in oauth mode — startup fails if unset so no Google account can authenticate unless explicitly permitted. The id_token's `email_verified` claim is enforced (unverified accounts are rejected even when the address matches). Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
+| `LABBY_AUTH_ACCESS_TOKEN_TTL_SECS` | no | Override lab-issued JWT access token lifetime. Defaults to `3600`. |
+| `LABBY_AUTH_REFRESH_TOKEN_TTL_SECS` | no | Override refresh token lifetime. Defaults to `2592000` (30 days). |
+| `LABBY_AUTH_CODE_TTL_SECS` | no | Override authorization code lifetime. Defaults to `300`. |
+| `LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `POST /register`. Defaults to `20`. |
+| `LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `/authorize` and hosted browser-login initiation. Defaults to `60`. |
+| `LABBY_AUTH_MAX_PENDING_OAUTH_STATES` | no | Maximum non-expired authorization and browser-login states kept in the auth store. Defaults to `1024`. |
 
 ### config.toml
 
@@ -591,7 +592,7 @@ Environment variables override `[auth]` values field-by-field.
 
 ## Node Runtime Auth
 
-If the controller protects `/v1/*` with `LAB_MCP_HTTP_TOKEN`, controller-routed `labby nodes` / `labby logs` commands reuse that bearer token automatically.
+If the controller protects `/v1/*` with `LABBY_MCP_HTTP_TOKEN`, controller-routed `labby nodes` / `labby logs` commands reuse that bearer token automatically.
 
 Fleet websocket sessions are separate from that bearer auth path. Node-to-controller delivery is admitted through the enrollment store using the node token (`device_token` wire field) presented during websocket `initialize`.
 
@@ -613,15 +614,15 @@ query string when proxying the callback.
 When `labby serve` can find exported Labby assets, it serves the web UI from the
 same origin as the API and MCP server. Asset directory resolution is:
 
-1. `LAB_WEB_ASSETS_DIR`
+1. `LABBY_WEB_ASSETS_DIR`
 2. `[web].assets_dir` in `config.toml`
 3. repo-local fallback: `apps/gateway-admin/out`
 
 The web shell is public; the UI then talks to same-origin `/v1/*` and `/mcp`.
-Set `LAB_WEB_UI_AUTH_DISABLED=true` only for local development or trusted
+Set `LABBY_WEB_UI_AUTH_DISABLED=true` only for local development or trusted
 reverse-proxy setups where browser auth is intentionally bypassed. The legacy
-alias `LAB_WEB_UI_DISABLE_AUTH` is still accepted, but new configs should use
-`LAB_WEB_UI_AUTH_DISABLED`.
+alias `LABBY_WEB_UI_DISABLE_AUTH` is still accepted, but new configs should use
+`LABBY_WEB_UI_AUTH_DISABLED`.
 
 ## Upstream MCP Servers
 
@@ -635,7 +636,7 @@ Full details in [UPSTREAM.md](../services/UPSTREAM.md).
 [[upstream]]
 name = "remote-lab"
 url = "https://lab2.example.com/mcp"
-bearer_token_env = "LAB_UPSTREAM_TOKEN"
+bearer_token_env = "LABBY_UPSTREAM_TOKEN"
 proxy_resources = true
 expose_tools = ["search_repos", "github_*"]
 code_mode_hint = "search repositories, issues, pull requests, and code"
@@ -795,15 +796,15 @@ upstream 'acme' has both bearer_token_env and oauth configured — pick one
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LAB_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum response size from upstream servers. |
-| `LAB_OAUTH_ENCRYPTION_KEY` | — | **Required when any upstream has `[upstream.oauth]` set.** Base64-encoded 32-byte key used with chacha20poly1305 to encrypt persisted upstream OAuth token responses at rest. Loaded once at startup; startup fails fast if missing, not decodable, or not exactly 32 bytes. Generate with `openssl rand -base64 32`. |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum response size from upstream servers. |
+| `LABBY_OAUTH_ENCRYPTION_KEY` | — | **Required when any upstream has `[upstream.oauth]` set.** Base64-encoded 32-byte key used with chacha20poly1305 to encrypt persisted upstream OAuth token responses at rest. Loaded once at startup; startup fails fast if missing, not decodable, or not exactly 32 bytes. Generate with `openssl rand -base64 32`. |
 | (per `bearer_token_env`) | — | Bearer token for each upstream, named in config. |
 | (per `client_secret_env`) | — | OAuth client secret for a preregistered confidential upstream, named in config. |
 
 **Key rotation procedure:** rotate by (1) generating a new key, (2) clearing
 all persisted upstream OAuth credentials (`POST /v1/gateway/oauth/clear?upstream=<name>&confirm=true`
 per upstream, or remove rows from `upstream_oauth_credentials`), (3) updating
-`LAB_OAUTH_ENCRYPTION_KEY` in `~/.labby/.env`, (4) restarting `lab`, (5) asking
+`LABBY_OAUTH_ENCRYPTION_KEY` in `~/.labby/.env`, (4) restarting `lab`, (5) asking
 each user to re-authorize each upstream. Decryption under the wrong key
 surfaces as `oauth_needs_reauth`, never as an internal error.
 
@@ -811,15 +812,15 @@ surfaces as `oauth_needs_reauth`, never as an internal error.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LAB_MCP_TRANSPORT` | `http` | Transport: `stdio` or `http`. |
-| `LAB_MCP_HTTP_HOST` | `127.0.0.1` | HTTP bind address. |
-| `LAB_MCP_HTTP_PORT` | `8765` | HTTP bind port. |
-| `LAB_MCP_HTTP_TOKEN` | — | Static bearer token for HTTP auth. |
-| `LAB_MCP_SESSION_TTL_SECS` | `300` | MCP session keep-alive TTL (seconds). |
-| `LAB_MCP_STATEFUL` | `true` | Whether to use stateful MCP sessions. |
-| `LAB_MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames for DNS rebinding protection. |
-| `LAB_CORS_ORIGINS` | — | Comma-separated CORS origin allowlist. |
-| `LAB_WEB_ASSETS_DIR` | — | Override path to exported Labby assets for `labby serve`. |
+| `LABBY_MCP_TRANSPORT` | `http` | Transport: `stdio` or `http`. |
+| `LABBY_MCP_HTTP_HOST` | `127.0.0.1` | HTTP bind address. |
+| `LABBY_MCP_HTTP_PORT` | `8765` | HTTP bind port. |
+| `LABBY_MCP_HTTP_TOKEN` | — | Static bearer token for HTTP auth. |
+| `LABBY_MCP_SESSION_TTL_SECS` | `300` | MCP session keep-alive TTL (seconds). |
+| `LABBY_MCP_STATEFUL` | `true` | Whether to use stateful MCP sessions. |
+| `LABBY_MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames for DNS rebinding protection. |
+| `LABBY_CORS_ORIGINS` | — | Comma-separated CORS origin allowlist. |
+| `LABBY_WEB_ASSETS_DIR` | — | Override path to exported Labby assets for `labby serve`. |
 
 Full details in [TRANSPORT.md](../surfaces/TRANSPORT.md).
 
@@ -848,12 +849,12 @@ env_file:
   (`docker compose restart labby-master`).
 - Copy `config/config.example.toml` to `~/.labby/config.toml` and uncomment
   sections as needed.
-- The container overrides two env vars that would be wrong inside the container
+- The container overrides an env var that would be wrong inside the container
   even if set in `~/.labby/.env`:
-  - `LAB_WEB_ASSETS_DIR=""` — clears any host filesystem path so the binary
+  - `LABBY_WEB_ASSETS_DIR=""` — clears any host filesystem path so the binary
     falls back to its embedded assets.
-  - `LAB_LOCAL_LOGS_STORE_PATH="/home/labby/.local/share/labby/logs.db"` — routes
-    the log store into the named `labby-data` volume.
+  - The log store's `store_path` is instead routed into the named `labby-data`
+    volume via `[local_logs]` in the container's `config.toml`.
 - Docker-specific ACP provider config is mounted from
   `config/acp-providers.docker.json` to `/home/labby/.labby/acp-providers.json`.
   That file uses container paths and passes

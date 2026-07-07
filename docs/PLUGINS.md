@@ -50,6 +50,6 @@ snake_case names remain as deprecated aliases:
 These four actions are restricted to loopback-only HTTP; both the canonical and
 the alias forms are gated identically.
 
-`plugin.install` and `plugin.uninstall` validate the registered service slug, derive `lab-<service>@lab`, check the org against `LAB_PLUGIN_ALLOWLIST`, and call the configured Claude Code CLI. Set `LAB_CLAUDE_BIN` when the binary is not named `claude`.
+`plugin.install` and `plugin.uninstall` validate the registered service slug, derive `lab-<service>@lab`, check the org against `LABBY_PLUGIN_ALLOWLIST`, and call the configured Claude Code CLI. Set `LABBY_CLAUDE_BIN` when the binary is not named `claude`.
 
-`labby help` and `lab://catalog` are env-aware by default: services with missing required env vars are hidden. Use `LAB_SHOW_ALL=1` or `labby help --all` to show the full compiled catalog.
+`labby help` and `lab://catalog` are env-aware by default: services with missing required env vars are hidden. Use `LABBY_SHOW_ALL=1` or `labby help --all` to show the full compiled catalog.

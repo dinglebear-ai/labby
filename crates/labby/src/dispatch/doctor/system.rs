@@ -322,14 +322,14 @@ pub fn run_auth_checks() -> Vec<Finding> {
     let mut findings = Vec::new();
     let home = std::env::var("HOME").unwrap_or_default();
 
-    let mode = std::env::var("LAB_AUTH_MODE")
+    let mode = std::env::var("LABBY_AUTH_MODE")
         .unwrap_or_default()
         .to_lowercase();
     let is_oauth = mode == "oauth";
 
-    let bearer_token = std::env::var("LAB_MCP_HTTP_TOKEN").unwrap_or_default();
-    let google_id = std::env::var("LAB_GOOGLE_CLIENT_ID").unwrap_or_default();
-    let google_secret = std::env::var("LAB_GOOGLE_CLIENT_SECRET").unwrap_or_default();
+    let bearer_token = std::env::var("LABBY_MCP_HTTP_TOKEN").unwrap_or_default();
+    let google_id = std::env::var("LABBY_GOOGLE_CLIENT_ID").unwrap_or_default();
+    let google_secret = std::env::var("LABBY_GOOGLE_CLIENT_SECRET").unwrap_or_default();
     let has_google = !google_id.is_empty() && !google_secret.is_empty();
 
     // --- Auth mode ---
@@ -341,7 +341,7 @@ pub fn run_auth_checks() -> Vec<Finding> {
     findings.push(auth_finding(
         "auth:mode",
         Severity::Ok,
-        format!("LAB_AUTH_MODE={mode_label}"),
+        format!("LABBY_AUTH_MODE={mode_label}"),
     ));
 
     // --- Safety gate ---
@@ -387,25 +387,25 @@ pub fn run_auth_checks() -> Vec<Finding> {
             (
                 Severity::Warn,
                 format!(
-                    "LAB_MCP_HTTP_TOKEN is set ({len} chars) — too short; regenerate: openssl rand -hex 32"
+                    "LABBY_MCP_HTTP_TOKEN is set ({len} chars) — too short; regenerate: openssl rand -hex 32"
                 ),
             )
         } else {
             (
                 Severity::Ok,
-                format!("LAB_MCP_HTTP_TOKEN is set ({len} chars)"),
+                format!("LABBY_MCP_HTTP_TOKEN is set ({len} chars)"),
             )
         }
     } else if is_oauth {
         (
             Severity::Ok,
-            "LAB_MCP_HTTP_TOKEN not set — OAuth-only mode (MCP clients must use the OAuth flow)"
+            "LABBY_MCP_HTTP_TOKEN not set — OAuth-only mode (MCP clients must use the OAuth flow)"
                 .into(),
         )
     } else {
         (
             Severity::Fail,
-            "LAB_MCP_HTTP_TOKEN not set — set it or enable OAuth: LAB_AUTH_MODE=oauth".into(),
+            "LABBY_MCP_HTTP_TOKEN not set — set it or enable OAuth: LABBY_AUTH_MODE=oauth".into(),
         )
     };
     findings.push(auth_finding(
@@ -414,29 +414,29 @@ pub fn run_auth_checks() -> Vec<Finding> {
         bearer_message,
     ));
 
-    // --- LAB_PUBLIC_URL ---
-    let public_url = std::env::var("LAB_PUBLIC_URL").unwrap_or_default();
+    // --- LABBY_PUBLIC_URL ---
+    let public_url = std::env::var("LABBY_PUBLIC_URL").unwrap_or_default();
     let (url_severity, url_message) = if !public_url.is_empty() {
         if public_url.starts_with("http://") || public_url.starts_with("https://") {
-            (Severity::Ok, format!("LAB_PUBLIC_URL={public_url}"))
+            (Severity::Ok, format!("LABBY_PUBLIC_URL={public_url}"))
         } else {
             (
                 Severity::Fail,
                 format!(
-                    "LAB_PUBLIC_URL={public_url} — not a valid URL (must start with http:// or https://)"
+                    "LABBY_PUBLIC_URL={public_url} — not a valid URL (must start with http:// or https://)"
                 ),
             )
         }
     } else if is_oauth {
         (
             Severity::Fail,
-            "LAB_PUBLIC_URL not set — required for OAuth (JWT issuer, audience, metadata URLs)"
+            "LABBY_PUBLIC_URL not set — required for OAuth (JWT issuer, audience, metadata URLs)"
                 .into(),
         )
     } else {
         (
             Severity::Warn,
-            "LAB_PUBLIC_URL not set — required if using LAB_AUTH_MODE=oauth".into(),
+            "LABBY_PUBLIC_URL not set — required if using LABBY_AUTH_MODE=oauth".into(),
         )
     };
     findings.push(auth_finding("auth:public-url", url_severity, url_message));
@@ -445,9 +445,9 @@ pub fn run_auth_checks() -> Vec<Finding> {
     let (gid_severity, gid_message) = oauth_required_env(
         &google_id,
         is_oauth,
-        "LAB_GOOGLE_CLIENT_ID is set",
-        "LAB_GOOGLE_CLIENT_ID not set — required for LAB_AUTH_MODE=oauth",
-        "LAB_GOOGLE_CLIENT_ID not set — required if using LAB_AUTH_MODE=oauth",
+        "LABBY_GOOGLE_CLIENT_ID is set",
+        "LABBY_GOOGLE_CLIENT_ID not set — required for LABBY_AUTH_MODE=oauth",
+        "LABBY_GOOGLE_CLIENT_ID not set — required if using LABBY_AUTH_MODE=oauth",
     );
     findings.push(auth_finding(
         "auth:google-client-id",
@@ -458,9 +458,9 @@ pub fn run_auth_checks() -> Vec<Finding> {
     let (gsec_severity, gsec_message) = oauth_required_env(
         &google_secret,
         is_oauth,
-        "LAB_GOOGLE_CLIENT_SECRET is set",
-        "LAB_GOOGLE_CLIENT_SECRET not set — required for LAB_AUTH_MODE=oauth",
-        "LAB_GOOGLE_CLIENT_SECRET not set — required if using LAB_AUTH_MODE=oauth",
+        "LABBY_GOOGLE_CLIENT_SECRET is set",
+        "LABBY_GOOGLE_CLIENT_SECRET not set — required for LABBY_AUTH_MODE=oauth",
+        "LABBY_GOOGLE_CLIENT_SECRET not set — required if using LABBY_AUTH_MODE=oauth",
     );
     findings.push(auth_finding(
         "auth:google-client-secret",
@@ -470,9 +470,9 @@ pub fn run_auth_checks() -> Vec<Finding> {
 
     // --- Auth store files (only meaningful when OAuth is configured) ---
     if is_oauth || has_google {
-        let sqlite_path = std::env::var("LAB_AUTH_SQLITE_PATH")
+        let sqlite_path = std::env::var("LABBY_AUTH_SQLITE_PATH")
             .unwrap_or_else(|_| format!("{home}/.labby/auth.db"));
-        let key_path = std::env::var("LAB_AUTH_KEY_PATH")
+        let key_path = std::env::var("LABBY_AUTH_KEY_PATH")
             .unwrap_or_else(|_| format!("{home}/.labby/auth-jwt.pem"));
 
         let sqlite_exists = std::path::Path::new(&sqlite_path).exists();

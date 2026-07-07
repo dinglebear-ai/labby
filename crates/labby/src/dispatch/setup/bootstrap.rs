@@ -26,7 +26,7 @@ pub enum BootstrapOutcome {
 
 /// Decide whether `labby serve` should self-bootstrap: only when there is no
 /// MCP bearer token configured AND OAuth is not the active mode. `oauth_mode`
-/// is `true` when `LAB_AUTH_MODE=oauth`.
+/// is `true` when `LABBY_AUTH_MODE=oauth`.
 #[must_use]
 pub fn should_bootstrap(token_configured: bool, oauth_mode: bool) -> bool {
     !token_configured && !oauth_mode
@@ -68,11 +68,11 @@ fn bootstrap_at(env: &Path) -> Result<BootstrapOutcome, ToolError> {
 
     let token = generate_mcp_token();
     let entries = vec![
-        EnvEntry::new("LAB_MCP_HTTP_TOKEN", token.clone()),
-        EnvEntry::new("LAB_MCP_TRANSPORT", "http"),
-        EnvEntry::new("LAB_MCP_HTTP_HOST", "127.0.0.1"),
-        EnvEntry::new("LAB_MCP_HTTP_PORT", "8765"),
-        EnvEntry::new("LAB_AUTH_MODE", "bearer"),
+        EnvEntry::new("LABBY_MCP_HTTP_TOKEN", token.clone()),
+        EnvEntry::new("LABBY_MCP_TRANSPORT", "http"),
+        EnvEntry::new("LABBY_MCP_HTTP_HOST", "127.0.0.1"),
+        EnvEntry::new("LABBY_MCP_HTTP_PORT", "8765"),
+        EnvEntry::new("LABBY_AUTH_MODE", "bearer"),
     ];
 
     // `env_merge::merge` creates the parent dir (`create_dir_all`) and applies
@@ -121,8 +121,8 @@ mod tests {
         assert_eq!(token.len(), 64);
 
         let body = std::fs::read_to_string(&env_file).expect("read .env");
-        assert!(body.contains("LAB_MCP_HTTP_TOKEN="));
-        assert!(body.contains("LAB_AUTH_MODE=bearer"));
+        assert!(body.contains("LABBY_MCP_HTTP_TOKEN="));
+        assert!(body.contains("LABBY_AUTH_MODE=bearer"));
 
         // Second call must be a no-op (file already exists).
         let second = bootstrap_at(&env_file).expect("second bootstrap");
@@ -136,7 +136,7 @@ mod tests {
     fn bootstrap_never_clobbers_an_existing_operator_env() {
         let dir = tempfile::tempdir().expect("tempdir");
         let env_file = dir.path().join(".env");
-        std::fs::write(&env_file, "LAB_MCP_HTTP_TOKEN=preexisting-operator-token\n")
+        std::fs::write(&env_file, "LABBY_MCP_HTTP_TOKEN=preexisting-operator-token\n")
             .expect("seed operator .env");
 
         let outcome = bootstrap_at(&env_file).expect("bootstrap over existing file");

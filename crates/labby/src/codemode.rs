@@ -31,9 +31,9 @@ pub(crate) fn now_ms() -> i64 {
 /// `runtime.ts:156`).
 pub(crate) const DEFAULT_PAUSED_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// Configured pause TTL in ms (`LAB_CODE_MODE_PAUSE_TTL_MS`, default 24h).
+/// Configured pause TTL in ms (`LABBY_CODE_MODE_PAUSE_TTL_MS`, default 24h).
 pub(crate) fn pause_ttl_ms() -> i64 {
-    std::env::var("LAB_CODE_MODE_PAUSE_TTL_MS")
+    std::env::var("LABBY_CODE_MODE_PAUSE_TTL_MS")
         .ok()
         .and_then(|s| s.parse::<i64>().ok())
         .filter(|v| *v > 0)

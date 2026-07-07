@@ -173,7 +173,7 @@ impl LabMcpServer {
             // server→client requests (elicitation/sampling/roots) down to the
             // agent. Falls back to the pooled multiplexed call when the gate is
             // off, the agent can't elicit, or the config can't be resolved.
-            let relay_enabled = crate::config::env_flag_enabled("LAB_UPSTREAM_RELAY_ELICITATION")
+            let relay_enabled = crate::config::env_flag_enabled("LABBY_UPSTREAM_RELAY_ELICITATION")
                 && downstream_supports_relay(&context.peer);
             let relay_config = if relay_enabled {
                 match &self.gateway_manager {
@@ -418,7 +418,7 @@ impl LabMcpServer {
                 // downstream agent. The relay connect forwards `oauth_subject`
                 // so the dedicated connection authenticates as this caller.
                 let relay_enabled =
-                    crate::config::env_flag_enabled("LAB_UPSTREAM_RELAY_ELICITATION")
+                    crate::config::env_flag_enabled("LABBY_UPSTREAM_RELAY_ELICITATION")
                         && downstream_supports_relay(&context.peer);
                 let call_result: Result<CallToolResult, String> = if relay_enabled {
                     tracing::debug!(

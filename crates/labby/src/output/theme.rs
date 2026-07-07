@@ -90,7 +90,7 @@ impl RenderEnv {
             lang: std::env::var("LC_ALL")
                 .ok()
                 .or_else(|| std::env::var("LANG").ok()),
-            lab_symbols: std::env::var("LAB_SYMBOLS").ok(),
+            lab_symbols: std::env::var("LABBY_SYMBOLS").ok(),
         }
     }
 }

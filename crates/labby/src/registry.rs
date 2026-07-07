@@ -293,7 +293,7 @@ const ALWAYS_VISIBLE_SERVICES: &[&str] = &[
 
 #[must_use]
 pub fn lab_show_all_enabled() -> bool {
-    crate::config::env_flag_enabled("LAB_SHOW_ALL")
+    crate::config::env_flag_enabled("LABBY_SHOW_ALL")
 }
 
 #[must_use]
@@ -464,8 +464,8 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     // invalid configuration as a warning once at boot.
     //
     // SECURITY: unlike `/v1/fs` (which refuses to mount when
-    // `LAB_WEB_UI_AUTH_DISABLED=true`), MCP `fs` registration has no
-    // env-driven refusal. MCP transport auth (`LAB_MCP_HTTP_TOKEN` /
+    // `LABBY_WEB_UI_AUTH_DISABLED=true`), MCP `fs` registration has no
+    // env-driven refusal. MCP transport auth (`LABBY_MCP_HTTP_TOKEN` /
     // OAuth, or stdio reachability) is the sole gate. See
     // `crates/lab/src/mcp/CLAUDE.md` § "Transport auth for fs".
     //
@@ -497,12 +497,12 @@ pub fn service_meta(name: &str) -> Option<&'static PluginMeta> {
     None
 }
 
-/// Returns `true` when admin is enabled via `LAB_ADMIN_ENABLED=1` env var
+/// Returns `true` when admin is enabled via `LABBY_ADMIN_ENABLED=1` env var
 /// or `admin.enabled = true` in config.toml (env var takes precedence).
 #[cfg(feature = "lab-admin")]
 fn lab_admin_enabled() -> bool {
     // Env var overrides config.toml.
-    if let Ok(value) = std::env::var("LAB_ADMIN_ENABLED") {
+    if let Ok(value) = std::env::var("LABBY_ADMIN_ENABLED") {
         return value == "1";
     }
     // Fall back to config.toml — load is cheap (cached by the OS) and this
@@ -701,7 +701,7 @@ mod tests {
 
         let only_in_registry: Vec<&&str> = registry_services
             .iter()
-            // lab_admin is MCP-only: no HTTP route by design (runtime opt-in via LAB_ADMIN_ENABLED=1).
+            // lab_admin is MCP-only: no HTTP route by design (runtime opt-in via LABBY_ADMIN_ENABLED=1).
             .filter(|n| !http_router_services.contains(**n) && **n != "lab_admin")
             .collect();
         let only_in_router: Vec<&&str> = http_router_services

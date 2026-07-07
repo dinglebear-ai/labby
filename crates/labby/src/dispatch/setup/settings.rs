@@ -389,7 +389,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
     let mut fields = vec![
         editable(
             "core",
-            "LAB_MCP_HTTP_HOST",
+            "LABBY_MCP_HTTP_HOST",
             "Bind host",
             "Environment override for HTTP MCP bind host.",
             SettingsBackend::Env,
@@ -400,7 +400,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         ),
         editable(
             "core",
-            "LAB_MCP_HTTP_PORT",
+            "LABBY_MCP_HTTP_PORT",
             "Bind port",
             "Environment override for HTTP MCP bind port.",
             SettingsBackend::Env,
@@ -411,7 +411,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         ),
         editable(
             "core",
-            "LAB_LOG",
+            "LABBY_LOG",
             "Log filter",
             "Tracing filter directive.",
             SettingsBackend::Env,
@@ -422,7 +422,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         ),
         enum_env(
             "core",
-            "LAB_LOG_FORMAT",
+            "LABBY_LOG_FORMAT",
             "Log format",
             "Set json for structured logs.",
             vec![
@@ -439,7 +439,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         ),
         editable(
             "surfaces",
-            "LAB_PUBLIC_URL",
+            "LABBY_PUBLIC_URL",
             "Public app URL env",
             "Environment override for the public Lab UI and OAuth issuer URL.",
             SettingsBackend::Env,
@@ -450,7 +450,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         ),
         editable(
             "surfaces",
-            "LAB_MCP_GATEWAY_URL",
+            "LABBY_MCP_GATEWAY_URL",
             "Public MCP gateway URL env",
             "Environment override for the public MCP gateway base URL.",
             SettingsBackend::Env,
@@ -463,18 +463,18 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "core",
             "log.filter",
             "Log filter default",
-            "config.toml tracing filter directive; LAB_LOG overrides it.",
+            "config.toml tracing filter directive; LABBY_LOG overrides it.",
             SettingsBackend::ConfigToml,
             SettingsControl::Text,
             SettingsApplyMode::Restart,
-            Some("LAB_LOG"),
+            Some("LABBY_LOG"),
             Some("labby=info,labby_apis=warn"),
         ),
         enum_editable_with_env(
             "core",
             "log.format",
             "Log format default",
-            "config.toml log format; LAB_LOG_FORMAT overrides it.",
+            "config.toml log format; LABBY_LOG_FORMAT overrides it.",
             SettingsApplyMode::Restart,
             vec![
                 SettingsOption {
@@ -486,7 +486,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
                     label: "JSON",
                 },
             ],
-            Some("LAB_LOG_FORMAT"),
+            Some("LABBY_LOG_FORMAT"),
             Some("text"),
         ),
         editable(
@@ -526,7 +526,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "mcp.transport",
             "MCP transport",
-            "Default MCP transport; LAB_MCP_TRANSPORT overrides it.",
+            "Default MCP transport; LABBY_MCP_TRANSPORT overrides it.",
             SettingsApplyMode::Restart,
             vec![
                 SettingsOption {
@@ -538,73 +538,73 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
                     label: "stdio",
                 },
             ],
-            Some("LAB_MCP_TRANSPORT"),
+            Some("LABBY_MCP_TRANSPORT"),
             Some("http"),
         ),
         editable(
             "surfaces",
             "mcp.host",
             "MCP HTTP host",
-            "TOML default for HTTP MCP host; LAB_MCP_HTTP_HOST overrides it.",
+            "TOML default for HTTP MCP host; LABBY_MCP_HTTP_HOST overrides it.",
             SettingsBackend::ConfigToml,
             SettingsControl::Text,
             SettingsApplyMode::Restart,
-            Some("LAB_MCP_HTTP_HOST"),
+            Some("LABBY_MCP_HTTP_HOST"),
             Some("127.0.0.1"),
         ),
         number_editable_with_env(
             "surfaces",
             "mcp.port",
             "MCP HTTP port",
-            "TOML default for HTTP MCP port; LAB_MCP_HTTP_PORT overrides it.",
+            "TOML default for HTTP MCP port; LABBY_MCP_HTTP_PORT overrides it.",
             SettingsApplyMode::Restart,
             1,
             65535,
-            Some("LAB_MCP_HTTP_PORT"),
+            Some("LABBY_MCP_HTTP_PORT"),
             Some("8765"),
         ),
         number_editable_with_env(
             "surfaces",
             "mcp.session_ttl_secs",
             "MCP session TTL",
-            "Default session keep-alive TTL in seconds; LAB_MCP_SESSION_TTL_SECS overrides it.",
+            "Default session keep-alive TTL in seconds; LABBY_MCP_SESSION_TTL_SECS overrides it.",
             SettingsApplyMode::Restart,
             1,
             86_400,
-            Some("LAB_MCP_SESSION_TTL_SECS"),
+            Some("LABBY_MCP_SESSION_TTL_SECS"),
             Some("3600"),
         ),
         editable(
             "surfaces",
             "mcp.stateful",
             "Stateful MCP sessions",
-            "Whether HTTP MCP uses stateful sessions by default; LAB_MCP_STATEFUL overrides it.",
+            "Whether HTTP MCP uses stateful sessions by default; LABBY_MCP_STATEFUL overrides it.",
             SettingsBackend::ConfigToml,
             SettingsControl::Bool,
             SettingsApplyMode::Restart,
-            Some("LAB_MCP_STATEFUL"),
+            Some("LABBY_MCP_STATEFUL"),
             Some("true"),
         ),
         editable(
             "surfaces",
             "mcp.allowed_hosts",
             "Allowed hosts",
-            "Additional DNS rebinding allowed hosts; LAB_MCP_ALLOWED_HOSTS overrides it.",
+            "Additional DNS rebinding allowed hosts; LABBY_MCP_ALLOWED_HOSTS overrides it.",
             SettingsBackend::ConfigToml,
             SettingsControl::StringList,
             SettingsApplyMode::Restart,
-            Some("LAB_MCP_ALLOWED_HOSTS"),
+            Some("LABBY_MCP_ALLOWED_HOSTS"),
             Some("lab.example.com"),
         ),
         editable(
             "surfaces",
             "api.cors_origins",
             "CORS origins",
-            "Additional CORS origins. Loopback origins are always included; LAB_CORS_ORIGINS overrides this list.",
+            "Additional CORS origins. Loopback origins are always included; LABBY_CORS_ORIGINS overrides this list.",
             SettingsBackend::ConfigToml,
             SettingsControl::StringList,
             SettingsApplyMode::Restart,
-            Some("LAB_CORS_ORIGINS"),
+            Some("LABBY_CORS_ORIGINS"),
             Some("https://lab.example.com"),
         ),
         editable(
@@ -626,7 +626,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             SettingsBackend::ConfigToml,
             SettingsControl::Url,
             SettingsApplyMode::Restart,
-            Some("LAB_PUBLIC_URL"),
+            Some("LABBY_PUBLIC_URL"),
             Some("https://lab.example.com"),
         ),
         editable(
@@ -637,7 +637,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             SettingsBackend::ConfigToml,
             SettingsControl::Url,
             SettingsApplyMode::Restart,
-            Some("LAB_MCP_GATEWAY_URL"),
+            Some("LABBY_MCP_GATEWAY_URL"),
             Some("https://mcp.example.com"),
         ),
         editable(
@@ -1532,33 +1532,33 @@ fn build_env_schema() -> Vec<EnvSettingSpec> {
     }
     for (key, description, example, secret) in [
         (
-            "LAB_MCP_HTTP_HOST",
+            "LABBY_MCP_HTTP_HOST",
             "HTTP MCP bind host.",
             "127.0.0.1",
             false,
         ),
-        ("LAB_MCP_HTTP_PORT", "HTTP MCP bind port.", "8765", false),
+        ("LABBY_MCP_HTTP_PORT", "HTTP MCP bind port.", "8765", false),
         (
-            "LAB_LOG",
+            "LABBY_LOG",
             "Tracing filter directive.",
             "labby=info,labby_apis=warn",
             false,
         ),
-        ("LAB_LOG_FORMAT", "Log format.", "json", false),
+        ("LABBY_LOG_FORMAT", "Log format.", "json", false),
         (
-            "LAB_PUBLIC_URL",
+            "LABBY_PUBLIC_URL",
             "Public Lab app URL.",
             "https://lab.example.com",
             false,
         ),
         (
-            "LAB_MCP_GATEWAY_URL",
+            "LABBY_MCP_GATEWAY_URL",
             "Public MCP gateway URL.",
             "https://mcp.example.com",
             false,
         ),
         (
-            "LAB_MCP_HTTP_TOKEN",
+            "LABBY_MCP_HTTP_TOKEN",
             "Bearer token for the HTTP MCP/API surface.",
             "<token>",
             true,
@@ -1602,19 +1602,19 @@ fn build_env_schema() -> Vec<EnvSettingSpec> {
     }
     // ACP is retired from the gateway host; do not advertise stale env keys
     // even if generated env-reference.json still contains them.
-    by_key.retain(|key, _| !(key.starts_with("LAB_ACP_") || key.starts_with("ACP_")));
+    by_key.retain(|key, _| !(key.starts_with("LABBY_ACP_") || key.starts_with("ACP_")));
     by_key.into_values().collect()
 }
 
 fn is_editable_core_env(key: &str) -> bool {
     matches!(
         key,
-        "LAB_MCP_HTTP_HOST"
-            | "LAB_MCP_HTTP_PORT"
-            | "LAB_LOG"
-            | "LAB_LOG_FORMAT"
-            | "LAB_PUBLIC_URL"
-            | "LAB_MCP_GATEWAY_URL"
+        "LABBY_MCP_HTTP_HOST"
+            | "LABBY_MCP_HTTP_PORT"
+            | "LABBY_LOG"
+            | "LABBY_LOG_FORMAT"
+            | "LABBY_PUBLIC_URL"
+            | "LABBY_MCP_GATEWAY_URL"
     )
 }
 
@@ -1658,17 +1658,17 @@ mod tests {
     fn env_override_metadata_is_present_for_shadowed_toml_fields() {
         let fields = settings_fields();
         for (key, env) in [
-            ("log.filter", "LAB_LOG"),
-            ("log.format", "LAB_LOG_FORMAT"),
-            ("mcp.transport", "LAB_MCP_TRANSPORT"),
-            ("mcp.host", "LAB_MCP_HTTP_HOST"),
-            ("mcp.port", "LAB_MCP_HTTP_PORT"),
-            ("mcp.session_ttl_secs", "LAB_MCP_SESSION_TTL_SECS"),
-            ("mcp.stateful", "LAB_MCP_STATEFUL"),
-            ("mcp.allowed_hosts", "LAB_MCP_ALLOWED_HOSTS"),
-            ("api.cors_origins", "LAB_CORS_ORIGINS"),
-            ("public_urls.app", "LAB_PUBLIC_URL"),
-            ("public_urls.mcp_gateway", "LAB_MCP_GATEWAY_URL"),
+            ("log.filter", "LABBY_LOG"),
+            ("log.format", "LABBY_LOG_FORMAT"),
+            ("mcp.transport", "LABBY_MCP_TRANSPORT"),
+            ("mcp.host", "LABBY_MCP_HTTP_HOST"),
+            ("mcp.port", "LABBY_MCP_HTTP_PORT"),
+            ("mcp.session_ttl_secs", "LABBY_MCP_SESSION_TTL_SECS"),
+            ("mcp.stateful", "LABBY_MCP_STATEFUL"),
+            ("mcp.allowed_hosts", "LABBY_MCP_ALLOWED_HOSTS"),
+            ("api.cors_origins", "LABBY_CORS_ORIGINS"),
+            ("public_urls.app", "LABBY_PUBLIC_URL"),
+            ("public_urls.mcp_gateway", "LABBY_MCP_GATEWAY_URL"),
         ] {
             assert_eq!(
                 fields
@@ -1712,18 +1712,18 @@ mod tests {
     #[test]
     fn env_update_accepts_only_allowlisted_core_env_keys() {
         let entries = vec![SettingsUpdateEntry {
-            key: "LAB_MCP_HTTP_PORT".into(),
+            key: "LABBY_MCP_HTTP_PORT".into(),
             value: json!(8766),
             previous: json!(8765),
             unset: false,
             previous_present: true,
         }];
         let parsed = env_entries_from_updates(&entries).unwrap();
-        assert_eq!(parsed[0].key, "LAB_MCP_HTTP_PORT");
+        assert_eq!(parsed[0].key, "LABBY_MCP_HTTP_PORT");
         assert_eq!(parsed[0].value, "8766");
 
         let rejected = vec![SettingsUpdateEntry {
-            key: "LAB_MCP_HTTP_TOKEN".into(),
+            key: "LABBY_MCP_HTTP_TOKEN".into(),
             value: json!("secret"),
             previous: json!(null),
             unset: false,
@@ -1737,7 +1737,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let env_path = temp.path().join(".env");
         let entries = vec![SettingsUpdateEntry {
-            key: "LAB_LOG".into(),
+            key: "LABBY_LOG".into(),
             value: json!("labby=debug"),
             previous: json!("labby=info"),
             unset: false,
@@ -1745,7 +1745,7 @@ mod tests {
         }];
 
         crate::dispatch::helpers::with_env_override(
-            HashMap::from([("LAB_LOG".to_string(), "labby=info".to_string())]),
+            HashMap::from([("LABBY_LOG".to_string(), "labby=info".to_string())]),
             || validate_env_previous(&entries, &env_path),
         )
         .expect("process value should satisfy previous");
@@ -1814,19 +1814,19 @@ mod tests {
     #[test]
     fn env_schema_merges_generated_reference_and_plugin_meta() {
         let specs = env_schema();
-        let keys = vec!["LAB_PUBLIC_URL", "LAB_MCP_HTTP_TOKEN"];
+        let keys = vec!["LABBY_PUBLIC_URL", "LABBY_MCP_HTTP_TOKEN"];
         for key in keys {
             assert!(specs.iter().any(|spec| spec.key == key), "missing {key}");
         }
         assert!(
             !specs
                 .iter()
-                .any(|spec| spec.key.starts_with("LAB_ACP_") || spec.key.starts_with("ACP_")),
+                .any(|spec| spec.key.starts_with("LABBY_ACP_") || spec.key.starts_with("ACP_")),
             "no-acp builds must not advertise ACP env keys"
         );
         let token = specs
             .iter()
-            .find(|spec| spec.key == "LAB_MCP_HTTP_TOKEN")
+            .find(|spec| spec.key == "LABBY_MCP_HTTP_TOKEN")
             .unwrap();
         assert!(token.secret, "token must be secret");
     }
@@ -1834,7 +1834,7 @@ mod tests {
     #[test]
     fn env_schema_only_marks_low_risk_core_env_editable() {
         let specs = env_schema();
-        for key in ["LAB_LOG", "LAB_PUBLIC_URL", "LAB_MCP_GATEWAY_URL"] {
+        for key in ["LABBY_LOG", "LABBY_PUBLIC_URL", "LABBY_MCP_GATEWAY_URL"] {
             assert!(
                 specs.iter().find(|spec| spec.key == key).unwrap().editable,
                 "{key} should be editable"
@@ -1843,7 +1843,7 @@ mod tests {
         assert!(
             !specs
                 .iter()
-                .find(|spec| spec.key == "LAB_MCP_HTTP_TOKEN")
+                .find(|spec| spec.key == "LABBY_MCP_HTTP_TOKEN")
                 .unwrap()
                 .editable
         );

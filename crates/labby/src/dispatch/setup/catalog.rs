@@ -191,7 +191,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "settings.env.update",
-        description: "Admin-only targeted .env settings update for known low-risk LAB_* keys",
+        description: "Admin-only targeted .env settings update for known low-risk LABBY_* keys",
         destructive: true,
         requires_admin: true,
         returns: "SettingsState",
@@ -219,7 +219,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "plugin_sync",
-        description: "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LAB_* vars",
+        description: "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars",
         destructive: true,
         requires_admin: false,
         returns: "PluginSyncOutcome",

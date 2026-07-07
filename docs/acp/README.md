@@ -111,12 +111,7 @@ already started speaking.
   Once at least one assistant chunk has been seen, the runtime arms an idle
   timer; if no further provider update arrives within that window, the runtime
   treats the prompt as completed and tears the loop down.
-- **Default.** 5 seconds (`Duration::from_secs(5)`). Defined in
-  `crates/lab/src/acp/runtime.rs` as `DEFAULT_PROMPT_IDLE_TIMEOUT`.
-- **Override.** Set `LAB_ACP_PROMPT_IDLE_TIMEOUT_MS` to a positive integer
-  number of milliseconds. Zero, missing, and unparseable values fall back to
-  the default. The override is read per-tick from the environment, so changes
-  take effect for new prompts without restarting the binary.
+- **Default.** 5 seconds.
 - **Behavior when it fires.** The runtime emits two SSE events on the session
   stream and then exits the prompt read loop:
   1. a `session_state` update transitioning the session to `Completed`, and
@@ -130,8 +125,8 @@ already started speaking.
 - **Tuning guidance.** Raise this value when working with slow providers that
   pause mid-response (for example, large tool batches or long thinking
   pauses). Lower it for snappier UX with chatty providers that reliably emit
-  a stop reason. The companion `LAB_ACP_PERMISSION_TIMEOUT_MS` controls a
-  different timer (permission decisions) and is documented separately.
+  a stop reason. A companion permission-decision timer is documented
+  separately.
 
 ## Status
 
@@ -169,7 +164,7 @@ Landed:
   (`runtime.rs::lab_client_capabilities`).
 - Permission decisions are explicit: there is no auto-approval path. Each
   permission request emits an event and waits for an authenticated decision
-  bounded by `LAB_ACP_PERMISSION_TIMEOUT_MS` (default 60 s).
+  bounded by a default 60 s timeout.
 - HTTP authentication propagates `AuthContext.sub` to the registry; sessions
   are bound to the creating principal. `subscribe`, `prompt`, `cancel`,
   `close`, and `events` enforce the binding. `session.get` also enforces
@@ -217,8 +212,7 @@ Landed:
   for prompt-injection terms; the allowed character set is structural
   (`is_safe_page_context_char`) rather than a hand-spelled `&[char]`. The
   policy is documented in the source.
-- The provider prompt idle timeout
-  (`LAB_ACP_PROMPT_IDLE_TIMEOUT_MS`, default 5 s) and its observable firing
+- The provider prompt idle timeout (default 5 s) and its observable firing
   behavior are documented above.
 
 **Caller-controlled `cwd`**: The `cwd` field in `session.start` flows directly into the spawned provider subprocess `current_dir`. In single-operator mode this is acceptable. In multi-principal OAuth deployments, callers can aim an agent at any filesystem path the lab process can read. If deploying with multiple trusted principals who should not access each other's files, constrain `cwd` to a configured workspace root at the API layer.

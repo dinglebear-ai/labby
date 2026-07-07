@@ -15,9 +15,9 @@ Rules:
 
 - `labby serve` starts the hosted HTTP runtime by default
 - `labby mcp` is the explicit child-process stdio entrypoint
-- HTTP supports `LAB_AUTH_MODE=bearer|oauth`
-- bearer mode preserves `LAB_MCP_HTTP_TOKEN`
-- oauth mode requires `LAB_PUBLIC_URL` and Google client credentials
+- HTTP supports `LABBY_AUTH_MODE=bearer|oauth`
+- bearer mode preserves `LABBY_MCP_HTTP_TOKEN`
+- oauth mode requires `LABBY_PUBLIC_URL` and Google client credentials
 - transport changes must not change dispatch or catalog behavior
 - HTTP transport may expose opt-in CORS origins
 
@@ -40,9 +40,9 @@ support must reflect the running server, not a partial or hypothetical build.
 
 When `labby serve` is active, `lab` exposes two auth modes:
 
-- `LAB_AUTH_MODE=bearer`
-  `LAB_MCP_HTTP_TOKEN` remains the only credential. This preserves existing HTTP deployments.
-- `LAB_AUTH_MODE=oauth`
+- `LABBY_AUTH_MODE=bearer`
+  `LABBY_MCP_HTTP_TOKEN` remains the only credential. This preserves existing HTTP deployments.
+- `LABBY_AUTH_MODE=oauth`
   `lab` runs its own authorization server, brokers Google sign-in server-side, and issues `lab` access tokens plus refresh tokens only when upstream Google auth granted offline refresh capability.
 
 OAuth mode keeps Google access and refresh tokens inside the server. MCP clients only receive `lab` tokens.
@@ -492,7 +492,7 @@ When `call_tool` receives a tool name that is not a built-in service, the dispat
 - if the tool belongs to a healthy upstream, the call is forwarded
 - the upstream pool records success or failure for circuit breaker tracking
 - on failure, the response uses the `upstream_error` error kind
-- response size is capped at `LAB_UPSTREAM_MAX_RESPONSE_BYTES` (default 10 MB)
+- response size is capped at `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` (default 10 MB)
 
 ## Resource Proxying
 

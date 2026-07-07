@@ -75,7 +75,7 @@ impl SqliteDecider {
         &self.store
     }
 
-    /// Configured pause TTL in ms (`LAB_CODE_MODE_PAUSE_TTL_MS`, default 24h).
+    /// Configured pause TTL in ms (`LABBY_CODE_MODE_PAUSE_TTL_MS`, default 24h).
     #[must_use]
     pub fn pause_ttl_ms() -> i64 {
         super::pause_ttl_ms()

@@ -898,7 +898,7 @@ Test: append 100 entries, corrupt one line, assert verify detects.
 ### E2E integration test (from CEO addendum, detailed here)
 `tests/fleet_e2e.rs::test_remote_plugin_install_via_ws` (`#[ignore]`):
 1. Spawn in-process axum master (random port, bound to 127.0.0.1)
-2. Spawn device binary subprocess with `LAB_MASTER_URL=ws://127.0.0.1:<port>/v1/fleet/ws`, test token
+2. Spawn device binary subprocess with `LABBY_MASTER_URL=ws://127.0.0.1:<port>/v1/fleet/ws`, test token
 3. Wait for enrollment (poll `GET /v1/fleet/devices` until device appears)
 4. Master issues `gateway({"action":"plugin.install","instance":"<device_id>","params":{"url":"..."}})`
 5. Assert response arrives within 30s with `kind: ok`
@@ -1040,7 +1040,7 @@ Master routes events only to matching subscriptions. Reduces fanout 100×+ in ty
   Sec-WebSocket-Protocol: lab-bearer, <base64-token>
   ```
   Master extracts token from subprotocol in a custom axum extractor and validates against the operator session.
-- Required `Origin` header validation to prevent CSWSH (cross-site WebSocket hijacking via session cookies). Allowlist: `LAB_PUBLIC_URL` value. Reject if `Origin` absent or mismatched.
+- Required `Origin` header validation to prevent CSWSH (cross-site WebSocket hijacking via session cookies). Allowlist: `LABBY_PUBLIC_URL` value. Reject if `Origin` absent or mismatched.
 - Redact `Sec-WebSocket-Protocol` from request logs — it carries the token.
 
 ### SSRF in policy editor (HIGH, new)

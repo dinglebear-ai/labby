@@ -414,11 +414,11 @@ fn preflight_decision(
 }
 
 fn configured_local_port() -> u16 {
-    let env_file_port = env_file_value("LAB_MCP_HTTP_PORT");
+    let env_file_port = env_file_value("LABBY_MCP_HTTP_PORT");
     let config_port = crate::config::load_toml(&crate::config::toml_candidates())
         .ok()
         .and_then(|config| config.mcp.port);
-    let process_port = std::env::var("LAB_MCP_HTTP_PORT").ok();
+    let process_port = std::env::var("LABBY_MCP_HTTP_PORT").ok();
     configured_local_port_from(
         env_file_port.as_deref(),
         config_port,

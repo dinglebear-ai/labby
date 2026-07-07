@@ -11,43 +11,43 @@ and auth setup. The complete per-service env inventory is generated from
 Bearer mode:
 
 ```env
-LAB_AUTH_MODE=bearer
-LAB_MCP_HTTP_TOKEN=replace-me
+LABBY_AUTH_MODE=bearer
+LABBY_MCP_HTTP_TOKEN=replace-me
 ```
 
 OAuth mode:
 
 ```env
-LAB_AUTH_MODE=oauth
-LAB_PUBLIC_URL=https://lab.example.com
-LAB_GOOGLE_CLIENT_ID=google-client-id
-LAB_GOOGLE_CLIENT_SECRET=google-client-secret
-LAB_AUTH_ADMIN_EMAIL=admin@example.com
+LABBY_AUTH_MODE=oauth
+LABBY_PUBLIC_URL=https://lab.example.com
+LABBY_GOOGLE_CLIENT_ID=google-client-id
+LABBY_GOOGLE_CLIENT_SECRET=google-client-secret
+LABBY_AUTH_ADMIN_EMAIL=admin@example.com
 ```
 
 Optional auth overrides:
 
 ```env
-LAB_AUTH_SQLITE_PATH=/var/lib/labby/auth.db
-LAB_AUTH_KEY_PATH=/var/lib/labby/auth-jwt.pem
-LAB_AUTH_ALLOWED_REDIRECT_URIS=https://callback.example.com/callback/*
-LAB_GOOGLE_CALLBACK_PATH=/auth/google/callback
-LAB_GOOGLE_SCOPES=openid,email,profile
-LAB_AUTH_ACCESS_TOKEN_TTL_SECS=3600
-LAB_AUTH_REFRESH_TOKEN_TTL_SECS=2592000
-LAB_AUTH_CODE_TTL_SECS=300
+LABBY_AUTH_SQLITE_PATH=/var/lib/labby/auth.db
+LABBY_AUTH_KEY_PATH=/var/lib/labby/auth-jwt.pem
+LABBY_AUTH_ALLOWED_REDIRECT_URIS=https://callback.example.com/callback/*
+LABBY_GOOGLE_CALLBACK_PATH=/auth/google/callback
+LABBY_GOOGLE_SCOPES=openid,email,profile
+LABBY_AUTH_ACCESS_TOKEN_TTL_SECS=3600
+LABBY_AUTH_REFRESH_TOKEN_TTL_SECS=2592000
+LABBY_AUTH_CODE_TTL_SECS=300
 ```
 
 These non-secret overrides can also live in `config.toml` under `[auth]`.
 
 Rules:
 
-- `LAB_AUTH_MODE` defaults to `bearer`
-- bearer mode keeps using `LAB_MCP_HTTP_TOKEN`
-- oauth mode requires `LAB_PUBLIC_URL`, `LAB_GOOGLE_CLIENT_ID`, `LAB_GOOGLE_CLIENT_SECRET`, and `LAB_AUTH_ADMIN_EMAIL`
-- `LAB_AUTH_ADMIN_EMAIL` is the bootstrap admin Google email; startup fails closed if unset under oauth mode so no Google account can authenticate without explicit permission. Future SQLite-backed allowlist (web-UI managed) will grant access to additional users.
-- the old external issuer variables (`LAB_OAUTH_ISSUER`, `LAB_OAUTH_AUDIENCE`, `LAB_OAUTH_CLIENT_ID`) are no longer used
-- `LAB_PUBLIC_URL` also feeds RFC 9728 metadata, JWT issuer/audience, and HTTP allowed-host derivation
+- `LABBY_AUTH_MODE` defaults to `bearer`
+- bearer mode keeps using `LABBY_MCP_HTTP_TOKEN`
+- oauth mode requires `LABBY_PUBLIC_URL`, `LABBY_GOOGLE_CLIENT_ID`, `LABBY_GOOGLE_CLIENT_SECRET`, and `LABBY_AUTH_ADMIN_EMAIL`
+- `LABBY_AUTH_ADMIN_EMAIL` is the bootstrap admin Google email; startup fails closed if unset under oauth mode so no Google account can authenticate without explicit permission. Future SQLite-backed allowlist (web-UI managed) will grant access to additional users.
+- the old external issuer variables (`LABBY_OAUTH_ISSUER`, `LABBY_OAUTH_AUDIENCE`, `LABBY_OAUTH_CLIENT_ID`) are no longer used
+- `LABBY_PUBLIC_URL` also feeds RFC 9728 metadata, JWT issuer/audience, and HTTP allowed-host derivation
 
 ## Remote Gateway CLI Usage
 
@@ -59,20 +59,20 @@ running on a different host (not just the one the CLI happens to run on),
 the invoking machine needs exactly two things in its `~/.labby/.env`:
 
 ```env
-LAB_MCP_HTTP_TOKEN=same-token-as-the-daemon
-LAB_PUBLIC_URL=https://labby.example.com
+LABBY_MCP_HTTP_TOKEN=same-token-as-the-daemon
+LABBY_PUBLIC_URL=https://labby.example.com
 ```
 
-- `LAB_MCP_HTTP_TOKEN` must be the *same* token the daemon itself uses for
+- `LABBY_MCP_HTTP_TOKEN` must be the *same* token the daemon itself uses for
   bearer auth (copy it from the daemon host's `~/.labby/.env`). Without it,
   the CLI still finds and reaches the daemon but every dispatch fails with
   `auth_failed`.
-- `LAB_PUBLIC_URL` (or `LAB_MCP_GATEWAY_URL` if the gateway is split onto a
+- `LABBY_PUBLIC_URL` (or `LABBY_MCP_GATEWAY_URL` if the gateway is split onto a
   separate hostname from the main app) is how the CLI locates the daemon
   when it isn't on the same host. Detection tries the local bind address
-  first (`LAB_MCP_HTTP_HOST`/`LAB_MCP_HTTP_PORT`, then `config.toml`'s
+  first (`LABBY_MCP_HTTP_HOST`/`LABBY_MCP_HTTP_PORT`, then `config.toml`'s
   `[mcp]` section, then `127.0.0.1:8765`) and falls through to
-  `LAB_MCP_GATEWAY_URL` then `LAB_PUBLIC_URL` in order, using whichever
+  `LABBY_MCP_GATEWAY_URL` then `LABBY_PUBLIC_URL` in order, using whichever
   responds first to `/health`.
 - If neither URL is reachable (or the token is missing/wrong), the CLI
   falls back to mutating its own local `config.toml` instead of erroring --

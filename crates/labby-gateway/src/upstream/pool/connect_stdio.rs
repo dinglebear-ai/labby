@@ -24,7 +24,7 @@ use super::stdio_stderr::{
 ///   scrubbed environment (`cmd.env_clear()`). Only vars in `STDIO_ENV_ALLOWLIST`
 ///   (runtime essentials: PATH, HOME, TZ, SSL roots, …) are forwarded; the
 ///   upstream's declared `env` map and the optional bearer-token var are then
-///   layered on top. `LAB_*` secrets and every other ambient labby env var are
+///   layered on top. `LABBY_*` secrets and every other ambient labby env var are
 ///   excluded.
 ///
 /// - **Spawn-guard allowlist (S6 — accepted residual):** `validate_stdio_command`
@@ -126,7 +126,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     use tokio::process::Command;
 
     // SECURITY (S1): never inherit labby's full environment — it holds
-    // LAB_OAUTH_ENCRYPTION_KEY and every upstream credential. Start from a
+    // LABBY_OAUTH_ENCRYPTION_KEY and every upstream credential. Start from a
     // scrubbed allowlist of runtime essentials (so npx/uvx/docker/etc. can still
     // find binaries, caches, and TLS roots), then layer the upstream's declared
     // env (and bearer token, below) on top.
@@ -187,7 +187,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     // A stdio MCP server logs to stderr (stdout is the JSON-RPC channel), so the
     // child's stderr is the ONLY place its server-side diagnostics go. Capture
     // it by default and forward into the gateway log at the level resolved from
-    // `LAB_GW_UPSTREAM_STDERR` (default DEBUG; `off` discards).
+    // `LABBY_GW_UPSTREAM_STDERR` (default DEBUG; `off` discards).
     let stderr_level = upstream_stderr_log_level();
     let stderr_capture = StdioDiagnostics::default();
     let stderr_cfg = || Stdio::piped();

@@ -137,7 +137,7 @@ target/debug/labby incus setup --local-binary target/debug/labby
 
 By default, `labby setup` installs the latest Labby release. Use the explicit
 `labby incus setup --version vX.Y.Z` form when you need reproducibility, or set
-`LAB_INSTALL_VERSION` for the checkout-local bootstrap script.
+`LABBY_INSTALL_VERSION` for the checkout-local bootstrap script.
 
 The checkout-local `scripts/incus-bootstrap.sh` remains available for
 contributor debugging and CI image smoke tests, but the supported operator entry
@@ -176,7 +176,7 @@ state/authkey files, or common secret env vars.
 
 Release archives are currently published for amd64 Linux. On arm64 hosts, use
 `--local-binary` with a locally built `labby` binary, or opt into the slower
-source build fallback with `--allow-source-fallback` / `LAB_ALLOW_SOURCE_FALLBACK=1`.
+source build fallback with `--allow-source-fallback` / `LABBY_ALLOW_SOURCE_FALLBACK=1`.
 
 ## Golden Snapshots
 

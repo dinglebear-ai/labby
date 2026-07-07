@@ -45,25 +45,25 @@ fn human_console_target_enabled(target: &str) -> bool {
 
 /// Initialize tracing.
 ///
-/// Accepts config.toml log preferences; env vars `LAB_LOG` / `LAB_LOG_FORMAT`
+/// Accepts config.toml log preferences; env vars `LABBY_LOG` / `LABBY_LOG_FORMAT`
 /// override them when set.
 fn init_tracing(
     log: &config::LogPreferences,
     color_policy: ColorPolicy,
     filter_override: Option<&str>,
 ) -> tracing_appender::non_blocking::WorkerGuard {
-    // Priority: explicit CLI override > LAB_LOG env var > config.toml > default.
+    // Priority: explicit CLI override > LABBY_LOG env var > config.toml > default.
     let filter = if let Some(directive) = filter_override {
         EnvFilter::new(directive)
     } else {
-        EnvFilter::try_from_env("LAB_LOG").unwrap_or_else(|_| {
+        EnvFilter::try_from_env("LABBY_LOG").unwrap_or_else(|_| {
             let directive = log.filter.as_deref().unwrap_or("labby=info,rmcp=warn");
             EnvFilter::new(directive)
         })
     };
 
     // ── Rolling file appender (survives OOM — guard must live as long as main) ──
-    let log_dir = std::env::var("LAB_LOG_DIR").unwrap_or_else(|_| {
+    let log_dir = std::env::var("LABBY_LOG_DIR").unwrap_or_else(|_| {
         format!(
             "{}/.local/share/labby/logs",
             std::env::var("HOME").unwrap_or_default()
@@ -81,7 +81,7 @@ fn init_tracing(
 
     let (non_blocking_file, _log_guard) = tracing_appender::non_blocking(file_appender);
 
-    let use_json = match std::env::var("LAB_LOG_FORMAT").ok() {
+    let use_json = match std::env::var("LABBY_LOG_FORMAT").ok() {
         Some(v) => v.eq_ignore_ascii_case("json"),
         None => log
             .format
@@ -154,13 +154,13 @@ fn parse_color_value(value: &str) -> ColorPolicy {
 /// Resolve the effective color policy.
 ///
 /// The CLI `--color` flag wins when set explicitly; when it is `Auto`, the
-/// `LAB_LOG_COLOR` env var can force or disable color (e.g. inside Docker where
+/// `LABBY_LOG_COLOR` env var can force or disable color (e.g. inside Docker where
 /// there is no TTY). This is the single source of truth shared by the catalog
 /// shim, the clap parser's `ColorChoice`, and `init_tracing` so help color and
 /// log color never drift.
 fn resolve_color_policy(cli_color: ColorPolicy) -> ColorPolicy {
     if cli_color == ColorPolicy::Auto {
-        match std::env::var("LAB_LOG_COLOR")
+        match std::env::var("LABBY_LOG_COLOR")
             .ok()
             .as_deref()
             .map(str::to_lowercase)
@@ -176,7 +176,7 @@ fn resolve_color_policy(cli_color: ColorPolicy) -> ColorPolicy {
 }
 
 /// Map a resolved [`ColorPolicy`] onto clap's [`ColorChoice`] so themed clap
-/// help obeys `--color` / `NO_COLOR` / `LAB_LOG_COLOR`. `Auto` defers to clap's
+/// help obeys `--color` / `NO_COLOR` / `LABBY_LOG_COLOR`. `Auto` defers to clap's
 /// own TTY + `NO_COLOR` detection.
 const fn color_choice_for(policy: ColorPolicy) -> ColorChoice {
     match policy {
@@ -421,7 +421,7 @@ pub async fn run() -> ExitCode {
     //    directly to avoid mutating the environment (crate forbids unsafe_code).
     // For one-shot CLI commands (not Serve/Mcp) we silence labby's INFO chatter
     // by default — upstream connect/discovery events would otherwise flood
-    // ordinary commands like `gateway list`. LAB_LOG still wins when set.
+    // ordinary commands like `gateway list`. LABBY_LOG still wins when set.
     let log_filter_override: Option<String> = match &cli.command {
         cli::Command::Serve(args) => args
             .log_level
@@ -431,16 +431,16 @@ pub async fn run() -> ExitCode {
             .log_level
             .as_ref()
             .map(|level| format!("labby={level},warn")),
-        _ if std::env::var_os("LAB_LOG").is_none() => {
+        _ if std::env::var_os("LABBY_LOG").is_none() => {
             // Silence upstream connect/discovery warnings — failures are surfaced
             // inline in command output (e.g. `gateway list`); raw events just leak
-            // above the human-readable result. Set LAB_LOG=labby=warn to see them.
+            // above the human-readable result. Set LABBY_LOG=labby=warn to see them.
             Some("labby=warn,labby::dispatch::upstream=error,rmcp=warn".to_string())
         }
         _ => None,
     };
 
-    // LAB_LOG_COLOR overrides the CLI default when running without a TTY (e.g.
+    // LABBY_LOG_COLOR overrides the CLI default when running without a TTY (e.g.
     // inside Docker). The CLI --color flag wins when the user sets it explicitly,
     // but since clap cannot distinguish "user passed --color auto" from "defaulted
     // to auto", the env var only activates when the policy is Auto. Shared with

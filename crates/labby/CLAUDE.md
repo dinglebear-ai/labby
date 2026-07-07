@@ -17,7 +17,7 @@ All surface code (axum, rmcp, ratatui, clap) is compiled unconditionally — fea
 
 ## Entry Point
 
-`main.rs`: `init_tracing()` → `config::load()` (non-fatal; warns and continues) → `cli::dispatch()`. ANSI colors are stderr-TTY-gated here. JSON logs via `LAB_LOG_FORMAT=json`.
+`main.rs`: `init_tracing()` → `config::load()` (non-fatal; warns and continues) → `cli::dispatch()`. ANSI colors are stderr-TTY-gated here. JSON logs via `LABBY_LOG_FORMAT=json`.
 
 ## Config Loading
 

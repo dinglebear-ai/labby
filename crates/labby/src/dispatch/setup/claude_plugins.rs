@@ -19,7 +19,7 @@ use crate::registry::service_meta;
 use super::client::{cached_registry, env_path};
 use super::draft;
 
-const DEFAULT_ORG: &str = match option_env!("LAB_PLUGIN_ORG") {
+const DEFAULT_ORG: &str = match option_env!("LABBY_PLUGIN_ORG") {
     Some(value) => value,
     None => "lab",
 };
@@ -279,7 +279,7 @@ struct CommandOutput {
 }
 
 async fn run_claude(args: &[&str], failure_kind: &'static str) -> Result<CommandOutput, ToolError> {
-    let claude_bin = std::env::var("LAB_CLAUDE_BIN")
+    let claude_bin = std::env::var("LABBY_CLAUDE_BIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "claude".to_string());

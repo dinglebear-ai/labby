@@ -293,11 +293,11 @@ HTTP dispatch additionally carries `request_id` when available. Outbound request
 - `ERROR` — unhandled / fatal errors (panics, internal_error)
 
 **Environment variables:**
-- `LAB_LOG` — tracing filter directive (default: `labby=info,labby_apis=warn`)
-- `LAB_LOG_FORMAT=json` — emit newline-delimited JSON (for prod/CI)
-- `LAB_LOG_COLOR=force` — force ANSI colors even without a TTY (e.g. `docker compose logs -f`); also accepts `plain`/`never`/`0` to disable colors
+- `LABBY_LOG` — tracing filter directive (default: `labby=info,labby_apis=warn`)
+- `LABBY_LOG_FORMAT=json` — emit newline-delimited JSON (for prod/CI)
+- `LABBY_LOG_COLOR=force` — force ANSI colors even without a TTY (e.g. `docker compose logs -f`); also accepts `plain`/`never`/`0` to disable colors
 
-ANSI colors are enabled only when `stderr` is a TTY (`std::io::stderr().is_terminal()`), or when `LAB_LOG_COLOR=force` is set.
+ANSI colors are enabled only when `stderr` is a TTY (`std::io::stderr().is_terminal()`), or when `LABBY_LOG_COLOR=force` is set.
 
 The product API surface uses `surface = "api"` in dispatch logs. Keep docs, tests, and new instrumentation aligned with that label.
 
@@ -385,10 +385,10 @@ prod-like image smoke, and Docker-specific ACP adapter work. Use
 
 ### Bearer auth in dev (driving the UI with agent-browser)
 
-When OAuth is configured (`LAB_AUTH_MODE=oauth`), browser users still hit the Google login flow. Automation tooling (e.g. `agent-browser`, curl) can pass the static bearer token as a header and be treated as an admin session for both `/v1/*` API calls AND the AuthBootstrap session-state endpoint.
+When OAuth is configured (`LABBY_AUTH_MODE=oauth`), browser users still hit the Google login flow. Automation tooling (e.g. `agent-browser`, curl) can pass the static bearer token as a header and be treated as an admin session for both `/v1/*` API calls AND the AuthBootstrap session-state endpoint.
 
 ```bash
-TOKEN=$(grep "LAB_MCP_HTTP_TOKEN" .env | cut -d= -f2)
+TOKEN=$(grep "LABBY_MCP_HTTP_TOKEN" .env | cut -d= -f2)
 
 # All /v1/* calls
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8765/v1/acp/provider

@@ -173,6 +173,9 @@ pub(crate) fn rank_by_similarity(
 }
 
 #[cfg(test)]
+// panic! in match arms below is a normal test-assertion idiom, not production
+// code the lint is meant to guard.
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 
@@ -197,13 +200,23 @@ mod tests {
     #[test]
     fn cosine_similarity_zero_vector_returns_zero_not_nan() {
         let result = cosine_similarity(&[0.0, 0.0], &[1.0, 1.0]);
-        assert_eq!(result, 0.0);
+        // Exact by construction: the zero-magnitude guard clause returns a
+        // literal 0.0, not an arithmetic result.
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(result, 0.0);
+        }
         assert!(!result.is_nan());
     }
 
     #[test]
     fn cosine_similarity_mismatched_lengths_returns_zero() {
-        assert_eq!(cosine_similarity(&[1.0, 2.0], &[1.0]), 0.0);
+        // Exact by construction: the length-mismatch guard clause returns a
+        // literal 0.0, not an arithmetic result.
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(cosine_similarity(&[1.0, 2.0], &[1.0]), 0.0);
+        }
     }
 
     #[test]

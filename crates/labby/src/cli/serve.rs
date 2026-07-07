@@ -58,7 +58,7 @@ fn stderr_theme() -> CliTheme {
 pub enum Transport {
     /// stdin/stdout framing (available via `labby mcp`).
     Stdio,
-    /// HTTP transport (default) — requires `LAB_MCP_HTTP_TOKEN` or OAuth when exposed remotely.
+    /// HTTP transport (default) — requires `LABBY_MCP_HTTP_TOKEN` or OAuth when exposed remotely.
     Http,
 }
 
@@ -82,7 +82,7 @@ pub struct McpServeArgs {
     #[arg(long, value_delimiter = ',')]
     pub services: Vec<String>,
     /// Override the log filter level for this process.
-    /// Sets `LAB_LOG=labby=<level>,warn` before tracing init.
+    /// Sets `LABBY_LOG=labby=<level>,warn` before tracing init.
     /// Example: `--log-level debug`
     #[arg(long)]
     pub log_level: Option<String>,
@@ -104,7 +104,7 @@ pub struct ServeArgs {
     #[arg(long)]
     pub port: Option<u16>,
     /// Override the log filter level for this process.
-    /// Sets `LAB_LOG=labby=<level>,warn` before tracing init.
+    /// Sets `LABBY_LOG=labby=<level>,warn` before tracing init.
     /// Example: `--log-level debug`
     #[arg(long)]
     pub log_level: Option<String>,
@@ -133,7 +133,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let transport = resolve_transport(
         args.transport,
         args.command.as_ref(),
-        std::env::var("LAB_MCP_TRANSPORT").ok(),
+        std::env::var("LABBY_MCP_TRANSPORT").ok(),
         config.mcp.transport.as_deref(),
     )?;
     tracing::info!(
@@ -148,12 +148,12 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // This way an invalid host string only errors when the hosted HTTP app path is chosen.
     let host = args
         .host
-        .or_else(|| std::env::var("LAB_MCP_HTTP_HOST").ok())
+        .or_else(|| std::env::var("LABBY_MCP_HTTP_HOST").ok())
         .or_else(|| config.mcp.host.clone())
         .unwrap_or_else(|| "127.0.0.1".to_string());
     let port = resolve_port(
         args.port,
-        std::env::var("LAB_MCP_HTTP_PORT").ok(),
+        std::env::var("LABBY_MCP_HTTP_PORT").ok(),
         config.mcp.port,
     )?;
     let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
@@ -208,7 +208,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         return run_stdio_bridge(live).await;
     }
 
-    let spawn_depth = resolve_lab_spawn_depth(std::env::var("LAB_SPAWN_DEPTH").ok());
+    let spawn_depth = resolve_lab_spawn_depth(std::env::var("LABBY_SPAWN_DEPTH").ok());
     let suppress_upstream_runtime = stdio_recursion_guard_active(stdio_mode, spawn_depth);
     let mut bearer_token = http_token();
     let auth_config =
@@ -281,7 +281,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     }
 
     if host.is_empty() {
-        anyhow::bail!("HTTP host cannot be empty — set LAB_MCP_HTTP_HOST or mcp.host in config");
+        anyhow::bail!("HTTP host cannot be empty — set LABBY_MCP_HTTP_HOST or mcp.host in config");
     }
 
     #[cfg(feature = "gateway")]
@@ -301,7 +301,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // The generated token is made authoritative in-process immediately
     // (`bearer_token = Some(token)`), so the running server always
     // authenticates with the token it just wrote even if the env reload fails.
-    // We THEN reload the file via dotenvy so downstream LAB_MCP_HTTP_TOKEN
+    // We THEN reload the file via dotenvy so downstream LABBY_MCP_HTTP_TOKEN
     // readers also see it. dotenvy owns its
     // own set_var, keeping this crate unsafe-free (the workspace forbids
     // unsafe_code) and not overriding already-set vars.
@@ -325,7 +325,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 tracing::info!(
                     surface = "cli",
                     service = "serve",
-                    "first run: generated LAB_MCP_HTTP_TOKEN and wrote ~/.labby/.env"
+                    "first run: generated LABBY_MCP_HTTP_TOKEN and wrote ~/.labby/.env"
                 );
                 // Do NOT print the token itself — stderr is commonly captured
                 // by systemd/journald/Docker, which would persist the secret
@@ -338,7 +338,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 );
                 eprintln!("  Open http://{host}:{port}/setup to finish configuration.");
                 eprintln!(
-                    "  For remote clients, read the token from that file (e.g. `grep LAB_MCP_HTTP_TOKEN {}`).\n",
+                    "  For remote clients, read the token from that file (e.g. `grep LABBY_MCP_HTTP_TOKEN {}`).\n",
                     env_path.display()
                 );
             }
@@ -357,7 +357,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     if !auth_configured && !is_loopback_host(&host) {
         anyhow::bail!(
             "refusing to bind HTTP on {host}:{port} without authentication. \
-             Set LAB_MCP_HTTP_TOKEN or LAB_AUTH_MODE=oauth, or bind to \
+             Set LABBY_MCP_HTTP_TOKEN or LABBY_AUTH_MODE=oauth, or bind to \
              127.0.0.1 for local-only access."
         );
     }
@@ -413,7 +413,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         let banner = "==================================================================\n\
                       ⚠  Lab web UI is running WITHOUT authentication.\n\
                       ⚠  Any local process can read or modify your configuration.\n\
-                      ⚠  Set up OAuth (LAB_AUTH_MODE=oauth) to secure the API.\n\
+                      ⚠  Set up OAuth (LABBY_AUTH_MODE=oauth) to secure the API.\n\
                       ==================================================================";
         eprintln!("\n{}\n", stderr_theme().warn(banner));
         tracing::warn!(
@@ -532,7 +532,7 @@ fn workspace_runtime_home_from_env_values(
 }
 
 fn resolve_web_assets_dir(web: &crate::config::WebPreferences) -> Option<PathBuf> {
-    let from_env = std::env::var("LAB_WEB_ASSETS_DIR")
+    let from_env = std::env::var("LABBY_WEB_ASSETS_DIR")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from);
@@ -589,7 +589,7 @@ fn resolve_transport(
     }
     if let Some(value) = env {
         return Transport::from_str(&value, true)
-            .map_err(|err| anyhow::anyhow!("invalid LAB_MCP_TRANSPORT value `{value}`: {err}"));
+            .map_err(|err| anyhow::anyhow!("invalid LABBY_MCP_TRANSPORT value `{value}`: {err}"));
     }
     if let Some(value) = config {
         return Transport::from_str(value, true)
@@ -605,14 +605,14 @@ fn resolve_port(cli: Option<u16>, env: Option<String>, config: Option<u16>) -> R
     if let Some(value) = env {
         return value
             .parse::<u16>()
-            .with_context(|| format!("invalid LAB_MCP_HTTP_PORT value `{value}`"));
+            .with_context(|| format!("invalid LABBY_MCP_HTTP_PORT value `{value}`"));
     }
     Ok(config.unwrap_or(8765))
 }
 
 /// Return the bearer token if configured, or `None` for auth-free operation.
 fn http_token() -> Option<String> {
-    std::env::var("LAB_MCP_HTTP_TOKEN")
+    std::env::var("LABBY_MCP_HTTP_TOKEN")
         .ok()
         .filter(|value| !value.is_empty())
 }
@@ -907,7 +907,7 @@ async fn build_gateway_runtime(
         );
         None
     } else {
-        let upstream_oauth_key = std::env::var("LAB_OAUTH_ENCRYPTION_KEY").ok();
+        let upstream_oauth_key = std::env::var("LABBY_OAUTH_ENCRYPTION_KEY").ok();
         crate::oauth::upstream::runtime::build_upstream_oauth_runtime(
             &config.upstream,
             auth_config,
@@ -1179,7 +1179,7 @@ async fn run_stdio(
             phase = "stdio.recursion_guard",
             transport = "stdio",
             spawn_depth,
-            "LAB_SPAWN_DEPTH is set for stdio MCP serve; upstream spawning is disabled in this mode"
+            "LABBY_SPAWN_DEPTH is set for stdio MCP serve; upstream spawning is disabled in this mode"
         );
     } else {
         tracing::info!(
@@ -1289,7 +1289,7 @@ fn build_mcp_service_with_scope(
     let gateway_manager = state.gateway_manager.clone();
 
     let session_ttl_secs = resolve_session_ttl_secs(
-        std::env::var("LAB_MCP_SESSION_TTL_SECS").ok(),
+        std::env::var("LABBY_MCP_SESSION_TTL_SECS").ok(),
         mcp_config.session_ttl_secs,
     )?;
 
@@ -1301,7 +1301,7 @@ fn build_mcp_service_with_scope(
     let session_manager = Arc::new(session_manager);
 
     let stateful =
-        resolve_stateful_mode(std::env::var("LAB_MCP_STATEFUL").ok(), mcp_config.stateful)?;
+        resolve_stateful_mode(std::env::var("LABBY_MCP_STATEFUL").ok(), mcp_config.stateful)?;
 
     let mut allowed_hosts = allowed_hosts(
         mcp_config.allowed_hosts.as_deref().unwrap_or(&[]),
@@ -1419,13 +1419,13 @@ fn build_protected_mcp_router(
 
 /// Build the allowed hosts list for DNS rebinding protection.
 ///
-/// Reads `LAB_MCP_ALLOWED_HOSTS` (comma-separated) and the resolved resource
+/// Reads `LABBY_MCP_ALLOWED_HOSTS` (comma-separated) and the resolved resource
 /// URL. Always includes loopback defaults. Rejects wildcard.
 fn resolve_session_ttl_secs(env: Option<String>, config: Option<u64>) -> Result<u64> {
     if let Some(value) = env {
         return value
             .parse::<u64>()
-            .with_context(|| format!("invalid LAB_MCP_SESSION_TTL_SECS value `{value}`"));
+            .with_context(|| format!("invalid LABBY_MCP_SESSION_TTL_SECS value `{value}`"));
     }
     Ok(config.unwrap_or(300))
 }
@@ -1434,7 +1434,7 @@ fn resolve_stateful_mode(env: Option<String>, config: Option<bool>) -> Result<bo
     if let Some(value) = env {
         return value
             .parse::<bool>()
-            .with_context(|| format!("invalid LAB_MCP_STATEFUL value `{value}`"));
+            .with_context(|| format!("invalid LABBY_MCP_STATEFUL value `{value}`"));
     }
     Ok(config.unwrap_or(true))
 }
@@ -1454,12 +1454,12 @@ fn allowed_hosts(config_allowed_hosts: &[String], resource_url: Option<&str>) ->
             hosts.push(h.to_string());
         }
     }
-    if let Ok(extra) = std::env::var("LAB_MCP_ALLOWED_HOSTS") {
+    if let Ok(extra) = std::env::var("LABBY_MCP_ALLOWED_HOSTS") {
         for h in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             // Reject wildcard — would disable Host header validation entirely
             if h == "*" {
                 tracing::warn!(
-                    "ignoring wildcard '*' in LAB_MCP_ALLOWED_HOSTS — \
+                    "ignoring wildcard '*' in LABBY_MCP_ALLOWED_HOSTS — \
                      would disable DNS rebinding protection"
                 );
                 continue;

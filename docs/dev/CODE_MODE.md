@@ -454,7 +454,7 @@ back into `list_tools`, so the model-facing surface remains collapsed.
 Destructive sibling callbacks return `confirmation_required`; callers should use
 the `codemode` tool with `confirm:true` for destructive upstream actions.
 
-`LAB_CODE_MODE_WIDGET_CALLBACKS=1` remains as a broader legacy operator bypass.
+`LABBY_CODE_MODE_WIDGET_CALLBACKS=1` remains as a broader legacy operator bypass.
 With that variable set, any known exposed non-destructive upstream tool may pass
 the raw-tool gate while Code Mode is enabled. It does not bypass destructive
 confirmation. Leave it off unless a legacy widget depends on callbacks that
@@ -569,7 +569,7 @@ rather than being truncated — truncation would feed resumed code corrupted dat
 Write large data to an artifact/file and pass a small reference instead.
 
 **Expiry.** Abandoned paused (and stale `running`) runs older than
-`LAB_CODE_MODE_PAUSE_TTL_MS` (default 24h) are reclaimed by a lazy, throttled
+`LABBY_CODE_MODE_PAUSE_TTL_MS` (default 24h) are reclaimed by a lazy, throttled
 sweep fired on pause/resume/reject dispatch — no background timer.
 
 **Perf scope.** Journaling happens only on the pause-capable path. Pre-confirmed
@@ -678,12 +678,12 @@ run, so isolation holds by construction.
   (killed + respawned) after a fixed number of executions as cheap insurance
   against native-side leaks.
 - **Configuration / kill switch** (environment, read at startup):
-  - `LAB_CODE_MODE_POOL_SIZE` — number of pooled runners (default `2`, clamped to
-    `16`). **`LAB_CODE_MODE_POOL_SIZE=0` disables pooling entirely**, falling back
+  - `LABBY_CODE_MODE_POOL_SIZE` — number of pooled runners (default `2`, clamped to
+    `16`). **`LABBY_CODE_MODE_POOL_SIZE=0` disables pooling entirely**, falling back
     to spawn-per-execution with behavior identical to the pre-pool path.
-  - `LAB_CODE_MODE_POOL_RECYCLE_AFTER` — executions before a runner is recycled
+  - `LABBY_CODE_MODE_POOL_RECYCLE_AFTER` — executions before a runner is recycled
     (default `100`).
-  - `LAB_CODE_MODE_POOL_MAX_OVERFLOW` — cap on simultaneous ephemeral overflow
+  - `LABBY_CODE_MODE_POOL_MAX_OVERFLOW` — cap on simultaneous ephemeral overflow
     runners (default `8`).
 
   The conservative default (`size = 2`) keeps idle memory bounded while absorbing

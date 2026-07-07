@@ -28,7 +28,7 @@
 //!
 //! (b) **Minimal child environment**
 //!     The stdio spawn path now uses `env_clear()` plus a small allowlist, so
-//!     children do not inherit ambient `LAB_*` secrets from labby.  The ignored
+//!     children do not inherit ambient `LABBY_*` secrets from labby.  The ignored
 //!     real-spawn test and the Linux `/proc/<pid>/environ` regression test below
 //!     cover that hardened contract.
 //!
@@ -138,7 +138,7 @@ fn gateway_stdio_child_reaped_after_pipe_close() {
 // ---------------------------------------------------------------------------
 
 /// Verifies that `connect_stdio_upstream` spawns children with a scrubbed
-/// environment — `LAB_*` secrets and other non-allowlisted vars must NOT be
+/// environment — `LABBY_*` secrets and other non-allowlisted vars must NOT be
 /// visible inside the child process.
 ///
 /// **Implementation:** spawns a child via the pool's stdio connect path using
@@ -169,11 +169,11 @@ fn gateway_stdio_child_does_not_inherit_secret_env() {
     // STDIO_ENV_ALLOWLIST in connect_stdio.rs).  The canary is set in the
     // parent process environment via Command::env() below; because env_clear
     // strips the parent env before layering the allowlist, the child must NOT
-    // see a LAB_* key that was only in the parent's environment.
+    // see a LABBY_* key that was only in the parent's environment.
     //
     // NOTE: std::env::set_var is unsafe in Rust 2024 — we never mutate the
     // parent process env; instead we rely on /proc/<pid>/environ inspection.
-    const CANARY_KEY: &str = "LAB_TEST_SECRET_CANARY_MUST_NOT_INHERIT";
+    const CANARY_KEY: &str = "LABBY_TEST_SECRET_CANARY_MUST_NOT_INHERIT";
     const CANARY_VAL: &str = "top-secret-canary-12345";
 
     // Use `env` (POSIX, always available) to print the child environment.
@@ -182,7 +182,7 @@ fn gateway_stdio_child_does_not_inherit_secret_env() {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
 
     // Build an UpstreamConfig that passes the canary via the parent env
-    // (simulating an ambient LAB_* secret) rather than via config.env so
+    // (simulating an ambient LABBY_* secret) rather than via config.env so
     // the env_clear path would strip it.
     // We cannot safely set_var; instead we inject via a temp helper below.
     //
@@ -229,13 +229,13 @@ fn gateway_stdio_child_does_not_inherit_secret_env() {
     drop(rt);
 }
 
-/// Regression test: `connect_stdio_upstream` must NOT forward parent `LAB_*`
+/// Regression test: `connect_stdio_upstream` must NOT forward parent `LABBY_*`
 /// env vars to the child process.
 ///
 /// This test is hermetic and does NOT require a binary or network.  It works
 /// by inspecting `/proc/<pid>/environ` (Linux only) on a child spawned via
 /// a minimal command (`cat /dev/null`).  Because `connect_stdio_upstream` uses
-/// `env_clear()` + the `STDIO_ENV_ALLOWLIST`, a `LAB_*` var visible in the
+/// `env_clear()` + the `STDIO_ENV_ALLOWLIST`, a `LABBY_*` var visible in the
 /// parent (read via `std::env::var`) must NOT appear in the child.
 ///
 /// The test is non-`#[ignore]` on Linux CI because it requires no external
@@ -244,7 +244,7 @@ fn gateway_stdio_child_does_not_inherit_secret_env() {
 #[cfg(target_os = "linux")]
 fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
     // We can't set_var (unsafe in Rust 2024), so we check that an env var
-    // that WOULD be present in a typical labby process (like LAB_LOG) is NOT
+    // that WOULD be present in a typical labby process (like LABBY_LOG) is NOT
     // visible to a child spawned with env_clear().
     //
     // The test is self-contained: we spawn `cat` reading piped stdin (so it
@@ -253,13 +253,13 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
     // with env_clear() applied (mirroring what connect_stdio_upstream does),
     // then read /proc/<pid>/environ.
     //
-    // Any LAB_* var in the *parent* environment that is NOT in the
+    // Any LABBY_* var in the *parent* environment that is NOT in the
     // STDIO_ENV_ALLOWLIST must be absent from the child.
     //
     // Because std::env::set_var is unsafe we instead check that a known-absent
-    // key from the allowlist ("LAB_LOG_CANARY_FOR_TEST") is not present —
-    // all LAB_* keys are excluded by env_clear() regardless.
-    const CANARY_KEY: &str = "LAB_LOG_CANARY_REGRESSION_MUST_NOT_APPEAR";
+    // key from the allowlist ("LABBY_LOG_CANARY_FOR_TEST") is not present —
+    // all LABBY_* keys are excluded by env_clear() regardless.
+    const CANARY_KEY: &str = "LABBY_LOG_CANARY_REGRESSION_MUST_NOT_APPEAR";
 
     // Allowlist mirrors connect_stdio.rs STDIO_ENV_ALLOWLIST (subset for the test).
     const ALLOWLIST: &[&str] = &["PATH", "HOME", "USER", "LANG", "TZ"];
@@ -308,13 +308,13 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
         );
     }
 
-    // Verify that no LAB_* key from the parent leaked into the child.
-    // We check all currently-set LAB_* vars in the parent.
+    // Verify that no LABBY_* key from the parent leaked into the child.
+    // We check all currently-set LABBY_* vars in the parent.
     for (key, _) in std::env::vars() {
-        if key.starts_with("LAB_") {
+        if key.starts_with("LABBY_") {
             assert!(
                 !env_str.contains(&format!("{key}=")),
-                "LAB_* var '{key}' must not appear in child env after env_clear"
+                "LABBY_* var '{key}' must not appear in child env after env_clear"
             );
         }
     }

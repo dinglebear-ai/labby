@@ -65,13 +65,13 @@ pub(crate) fn env_flag_enabled(name: &str) -> bool {
 ///
 /// Default: **off**. When the synthetic surface is on, raw upstream tools are
 /// hidden from `list_tools` and normally not callable by name. Setting
-/// `LAB_CODE_MODE_WIDGET_CALLBACKS=1` (or `true`/`yes`) lets a rendered widget's
+/// `LABBY_CODE_MODE_WIDGET_CALLBACKS=1` (or `true`/`yes`) lets a rendered widget's
 /// callback reach the upstream proxy by tool name — the tool stays out of
 /// `list_tools`, so this only relaxes callability, never visibility. Operators
 /// opt in knowingly because it also lets any caller on the session (including
 /// the model) invoke a known upstream tool by name.
 pub(crate) fn code_mode_widget_callbacks_enabled() -> bool {
-    env_flag_enabled("LAB_CODE_MODE_WIDGET_CALLBACKS")
+    env_flag_enabled("LABBY_CODE_MODE_WIDGET_CALLBACKS")
 }
 
 use anyhow::{Context, Result};
@@ -80,8 +80,8 @@ use serde::{Deserialize, Serialize, Serializer};
 use tempfile::NamedTempFile;
 
 pub const DEFAULT_MCPREGISTRY_URL: &str = "https://registry.modelcontextprotocol.io";
-pub const WEB_UI_AUTH_DISABLED_ENV: &str = "LAB_WEB_UI_AUTH_DISABLED";
-pub const WEB_UI_AUTH_DISABLED_LEGACY_ENV: &str = "LAB_WEB_UI_DISABLE_AUTH";
+pub const WEB_UI_AUTH_DISABLED_ENV: &str = "LABBY_WEB_UI_AUTH_DISABLED";
+pub const WEB_UI_AUTH_DISABLED_LEGACY_ENV: &str = "LABBY_WEB_UI_DISABLE_AUTH";
 const DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS: u64 = 30_000;
 /// Default deadline for a *relayed* upstream tool call (see
 /// [`LabConfig::upstream_relay_timeout`]).
@@ -113,7 +113,7 @@ pub struct LabConfig {
     /// MCP server defaults.
     #[serde(default)]
     pub mcp: McpPreferences,
-    /// Logging preferences (overridden by `LAB_LOG` / `LAB_LOG_FORMAT` env vars).
+    /// Logging preferences (overridden by `LABBY_LOG` / `LABBY_LOG_FORMAT` env vars).
     #[serde(default)]
     pub log: LogPreferences,
     /// Local-master log subsystem preferences.
@@ -157,7 +157,7 @@ pub struct LabConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
     /// Maximum time to wait for one *relayed* upstream tool call — the opt-in
-    /// path (`LAB_UPSTREAM_RELAY_ELICITATION`) that forwards an upstream's
+    /// path (`LABBY_UPSTREAM_RELAY_ELICITATION`) that forwards an upstream's
     /// `elicitation/create`/`sampling`/`roots` request down to the downstream
     /// agent. Because a relayed call blocks on a human answering an elicitation,
     /// it gets its own, longer deadline instead of `upstream_request_timeout_ms`
@@ -251,15 +251,15 @@ impl LabConfig {
     /// Resolve the canonical public URL pair after env-over-config merge.
     ///
     /// Precedence (highest wins):
-    ///   1. `LAB_PUBLIC_URL` env var (app), `LAB_MCP_GATEWAY_URL` env var (gateway)
+    ///   1. `LABBY_PUBLIC_URL` env var (app), `LABBY_MCP_GATEWAY_URL` env var (gateway)
     ///   2. `config.toml` `[public_urls]` section
     ///   3. Legacy `[auth].public_url` field (app only, for backward compat)
     pub fn public_urls(&self) -> ResolvedPublicUrls {
         // Env wins
-        let env_app = std::env::var("LAB_PUBLIC_URL")
+        let env_app = std::env::var("LABBY_PUBLIC_URL")
             .ok()
             .filter(|v| !v.is_empty());
-        let env_gw = std::env::var("LAB_MCP_GATEWAY_URL")
+        let env_gw = std::env::var("LABBY_MCP_GATEWAY_URL")
             .ok()
             .filter(|v| !v.is_empty());
 
@@ -829,8 +829,8 @@ pub struct McpPreferences {
 /// e.g. `https://mcp.example.com`.  When absent the gateway is assumed to be
 /// reachable at the app URL.
 ///
-/// Values are read from config.toml; env vars `LAB_PUBLIC_URL` (app) and
-/// `LAB_MCP_GATEWAY_URL` (mcp_gateway) take precedence and may be set in
+/// Values are read from config.toml; env vars `LABBY_PUBLIC_URL` (app) and
+/// `LABBY_MCP_GATEWAY_URL` (mcp_gateway) take precedence and may be set in
 /// `~/.labby/.env`.
 ///
 /// Accessor: [`LabConfig::public_urls()`] returns a resolved [`ResolvedPublicUrls`].
@@ -850,7 +850,7 @@ pub struct PublicUrlsConfig {
 /// File-backed auth preferences merged with environment variables at startup.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthFileConfig {
-    /// `bearer` preserves LAB_MCP_HTTP_TOKEN; `oauth` enables the internal auth server.
+    /// `bearer` preserves LABBY_MCP_HTTP_TOKEN; `oauth` enables the internal auth server.
     #[serde(default)]
     pub mode: Option<String>,
     /// Public URL used for metadata and Google callback construction.
@@ -899,13 +899,13 @@ pub struct AuthFileConfig {
 /// This is the preferred entry point. Precedence for the public URL is:
 /// 1. `[auth].public_url` (legacy field, preserved for backward compatibility)
 /// 2. `[public_urls].app` (canonical new location)
-/// 3. `LAB_PUBLIC_URL` env var (handled downstream by [`resolve_auth`])
+/// 3. `LABBY_PUBLIC_URL` env var (handled downstream by [`resolve_auth`])
 ///
 /// When `[auth].public_url` is absent, `[public_urls].app` is promoted into the
 /// auth config so downstream code resolves a consistent effective URL.
 pub fn resolve_auth_for_config(cfg: &LabConfig) -> Result<auth_config::AuthConfig> {
     // Compute the effective public URL: [auth].public_url > [public_urls].app.
-    // The env var LAB_PUBLIC_URL is handled downstream by resolve_auth().
+    // The env var LABBY_PUBLIC_URL is handled downstream by resolve_auth().
     let effective_public_url = cfg
         .auth
         .as_ref()
@@ -924,16 +924,16 @@ pub fn resolve_auth_for_config(cfg: &LabConfig) -> Result<auth_config::AuthConfi
 ///
 /// Env vars take precedence over config file values.
 /// Prefer [`resolve_auth_for_config`] when a full `LabConfig` is available,
-/// so that `[public_urls].app` is used as a fallback for `LAB_PUBLIC_URL`.
+/// so that `[public_urls].app` is used as a fallback for `LABBY_PUBLIC_URL`.
 pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::AuthConfig> {
     let mut merged: HashMap<String, String> = HashMap::new();
 
     if let Some(config) = config {
-        insert_if_some(&mut merged, "LAB_AUTH_MODE", config.mode.clone());
-        insert_if_some(&mut merged, "LAB_PUBLIC_URL", config.public_url.clone());
+        insert_if_some(&mut merged, "LABBY_AUTH_MODE", config.mode.clone());
+        insert_if_some(&mut merged, "LABBY_PUBLIC_URL", config.public_url.clone());
         insert_if_some(
             &mut merged,
-            "LAB_AUTH_SQLITE_PATH",
+            "LABBY_AUTH_SQLITE_PATH",
             config
                 .sqlite_path
                 .as_ref()
@@ -941,7 +941,7 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
         );
         insert_if_some(
             &mut merged,
-            "LAB_AUTH_KEY_PATH",
+            "LABBY_AUTH_KEY_PATH",
             config
                 .key_path
                 .as_ref()
@@ -949,64 +949,67 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
         );
         insert_if_some(
             &mut merged,
-            "LAB_AUTH_BOOTSTRAP_SECRET",
+            "LABBY_AUTH_BOOTSTRAP_SECRET",
             config.bootstrap_secret.clone(),
         );
         if let Some(patterns) = config.allowed_client_redirect_uris.as_ref() {
             insert_if_some(
                 &mut merged,
-                "LAB_AUTH_ALLOWED_REDIRECT_URIS",
+                "LABBY_AUTH_ALLOWED_REDIRECT_URIS",
                 Some(patterns.join(",")),
             );
         }
         insert_if_some(
             &mut merged,
-            "LAB_GOOGLE_CLIENT_ID",
+            "LABBY_GOOGLE_CLIENT_ID",
             config.google_client_id.clone(),
         );
         insert_if_some(
             &mut merged,
-            "LAB_GOOGLE_CLIENT_SECRET",
+            "LABBY_GOOGLE_CLIENT_SECRET",
             config.google_client_secret.clone(),
         );
         insert_if_some(
             &mut merged,
-            "LAB_GOOGLE_CALLBACK_PATH",
+            "LABBY_GOOGLE_CALLBACK_PATH",
             config.google_callback_path.clone(),
         );
         if let Some(scopes) = config.google_scopes.as_ref() {
-            insert_if_some(&mut merged, "LAB_GOOGLE_SCOPES", Some(scopes.join(",")));
+            insert_if_some(&mut merged, "LABBY_GOOGLE_SCOPES", Some(scopes.join(",")));
         }
         insert_if_some(
             &mut merged,
-            "LAB_AUTH_ACCESS_TOKEN_TTL_SECS",
+            "LABBY_AUTH_ACCESS_TOKEN_TTL_SECS",
             config.access_token_ttl_secs.map(|value| value.to_string()),
         );
         insert_if_some(
             &mut merged,
-            "LAB_AUTH_REFRESH_TOKEN_TTL_SECS",
+            "LABBY_AUTH_REFRESH_TOKEN_TTL_SECS",
             config.refresh_token_ttl_secs.map(|value| value.to_string()),
         );
         insert_if_some(
             &mut merged,
-            "LAB_AUTH_CODE_TTL_SECS",
+            "LABBY_AUTH_CODE_TTL_SECS",
             config.auth_code_ttl_secs.map(|value| value.to_string()),
         );
         insert_if_some(
             &mut merged,
-            "LAB_AUTH_ADMIN_EMAIL",
+            "LABBY_AUTH_ADMIN_EMAIL",
             config.admin_email.clone(),
         );
     }
 
     for (key, value) in std::env::vars() {
-        if key.starts_with("LAB_AUTH_") || key == "LAB_PUBLIC_URL" || key.starts_with("LAB_GOOGLE_")
+        if key.starts_with("LABBY_AUTH_") || key == "LABBY_PUBLIC_URL" || key.starts_with("LABBY_GOOGLE_")
         {
             merged.insert(key, value);
         }
     }
 
-    auth_config::AuthConfig::from_sources(merged).map_err(anyhow::Error::from)
+    auth_config::AuthConfigBuilder::new()
+        .env_prefix("LABBY")
+        .build_from_sources(merged)
+        .map_err(anyhow::Error::from)
 }
 
 fn insert_if_some(target: &mut HashMap<String, String>, key: &str, value: Option<String>) {
@@ -1019,16 +1022,16 @@ fn insert_if_some(target: &mut HashMap<String, String>, key: &str, value: Option
 
 /// Load `.env` + `config.toml` from the standard locations.
 ///
-/// These map to `LAB_LOG` and `LAB_LOG_FORMAT` env vars but live in TOML so
+/// These map to `LABBY_LOG` and `LABBY_LOG_FORMAT` env vars but live in TOML so
 /// operators don't need to clutter `.env` with non-secret preferences.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogPreferences {
     /// Tracing filter directive (e.g. `"labby=info,labby_apis=warn"`).
-    /// Overridden by `LAB_LOG` env var.
+    /// Overridden by `LABBY_LOG` env var.
     #[serde(default)]
     pub filter: Option<String>,
     /// Log format: `"text"` (default) or `"json"`.
-    /// Overridden by `LAB_LOG_FORMAT` env var.
+    /// Overridden by `LABBY_LOG_FORMAT` env var.
     #[serde(default)]
     pub format: Option<String>,
 }
@@ -1058,7 +1061,7 @@ pub struct LocalLogsPreferences {
 pub struct ApiPreferences {
     /// Additional CORS origins (comma-separated string or TOML array).
     /// Loopback origins are always included.
-    /// Overridden by `LAB_CORS_ORIGINS` env var.
+    /// Overridden by `LABBY_CORS_ORIGINS` env var.
     #[serde(default)]
     pub cors_origins: Vec<String>,
 }
@@ -1166,7 +1169,7 @@ pub struct OauthMachineConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AdminPreferences {
     /// Enable the `lab_admin` MCP tool. Default: `false`.
-    /// Overridden by `LAB_ADMIN_ENABLED=1` env var.
+    /// Overridden by `LABBY_ADMIN_ENABLED=1` env var.
     #[serde(default)]
     pub enabled: bool,
 }
@@ -2717,7 +2720,7 @@ root = "/srv/lab-stash"
         assert!(
             error
                 .to_string()
-                .contains("invalid LAB_WEB_UI_AUTH_DISABLED value")
+                .contains("invalid LABBY_WEB_UI_AUTH_DISABLED value")
         );
     }
 

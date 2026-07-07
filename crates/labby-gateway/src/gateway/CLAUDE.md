@@ -101,7 +101,7 @@ process environment.** The following invariants are NON-NEGOTIABLE:
    `pool/connect_stdio.rs` calls `cmd.env_clear()` and then layers only the
    entries in `STDIO_ENV_ALLOWLIST` (PATH, HOME, TZ, SSL roots, and a small set
    of runtime-essential vars) before adding the upstream's declared `env` map.
-   `LAB_*` secrets and every other ambient labby env var are excluded by default.
+   `LABBY_*` secrets and every other ambient labby env var are excluded by default.
    To extend the allowlist, add entries to `STDIO_ENV_ALLOWLIST` in
    `pool/connect_stdio.rs` with a comment justifying why the var is safe to
    forward. Integration tests in `crates/labby/tests/gateway_stdio_spawn.rs` that
@@ -132,7 +132,7 @@ Any doc or comment that says "Wasmtime", "fuel budget", or
 
 **Runner process hardening is IMPLEMENTED (not "planned").** The Code Mode
 runner subprocess is spawned with `env_clear()` (`pool/runner_handle.rs`, in
-`PooledRunner::spawn` — the child inherits *no* labby environment, so `LAB_*`
+`PooledRunner::spawn` — the child inherits *no* labby environment, so `LABBY_*`
 secrets cannot leak) and on
 Linux calls `prctl(PR_SET_DUMPABLE, 0)` as its first act (`runner.rs:22`) to
 block `/proc/<pid>/environ` readback. Combined with the per-run `TempDir` cwd

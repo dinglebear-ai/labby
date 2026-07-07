@@ -12,7 +12,7 @@
 //! queueing unboundedly. A runner that crashes, times out, or reaches the
 //! recycle-after-K threshold is evicted and a fresh one is spawned.
 //!
-//! Kill switch: `LAB_CODE_MODE_POOL_SIZE=0` disables pooling entirely and the
+//! Kill switch: `LABBY_CODE_MODE_POOL_SIZE=0` disables pooling entirely and the
 //! drive layer falls back to the historical spawn-per-execution path.
 
 use std::collections::VecDeque;

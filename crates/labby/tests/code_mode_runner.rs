@@ -1430,7 +1430,7 @@ fn warm_pool_runner_recovers_after_execution_error_and_serves_next_start() {
 }
 
 /// Security invariants hold on a LONG-LIVED (pooled) runner: the process is
-/// spawned with `env_clear()` so no ambient/`LAB_*` vars are visible to JS, and
+/// spawned with `env_clear()` so no ambient/`LABBY_*` vars are visible to JS, and
 /// on Linux `/proc/<pid>/environ` is unreadable (PR_SET_DUMPABLE). We set a
 /// sentinel env var in the PARENT and prove it is invisible to the child after
 /// at least one execution (i.e. on the warm process), then check `/proc`.
@@ -1439,8 +1439,8 @@ fn warm_pool_runner_preserves_env_isolation_on_reused_process() {
     // A sentinel the child must NOT see. env_clear() drops it.
     let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
         .args(["internal", "code-mode-runner"])
-        .env("LAB_SECRET_SENTINEL", "do-not-leak")
-        .env("LAB_MCP_HTTP_TOKEN", "super-secret")
+        .env("LABBY_SECRET_SENTINEL", "do-not-leak")
+        .env("LABBY_MCP_HTTP_TOKEN", "super-secret")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1466,11 +1466,11 @@ fn warm_pool_runner_preserves_env_isolation_on_reused_process() {
                 let text = String::from_utf8_lossy(&bytes);
                 assert!(
                     !text.contains("do-not-leak"),
-                    "env_clear must remove LAB_SECRET_SENTINEL from the runner env"
+                    "env_clear must remove LABBY_SECRET_SENTINEL from the runner env"
                 );
                 assert!(
                     !text.contains("super-secret"),
-                    "env_clear must remove LAB_MCP_HTTP_TOKEN from the runner env"
+                    "env_clear must remove LABBY_MCP_HTTP_TOKEN from the runner env"
                 );
             }
             Err(err) => {
