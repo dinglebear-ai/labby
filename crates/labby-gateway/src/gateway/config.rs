@@ -1008,7 +1008,7 @@ pub(crate) fn default_gateway_bearer_env_name(name: &str) -> String {
     } else {
         normalized
     };
-    format!("LAB_GW_{inner}_AUTH_HEADER")
+    format!("LABBY_GW_{inner}_AUTH_HEADER")
 }
 
 fn looks_like_raw_bearer_token(value: &str) -> bool {

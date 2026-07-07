@@ -94,7 +94,7 @@ mod tests {
     fn discard_removes_existing_draft_and_reports_missing_as_noop() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env.draft");
-        fs::write(&path, "LAB_TEST=1\n").unwrap();
+        fs::write(&path, "LABBY_TEST=1\n").unwrap();
 
         assert!(discard(&path).unwrap());
         assert!(!path.exists());

@@ -1030,11 +1030,11 @@ fn insert_upstream_accepts_valid_names() {
 fn default_gateway_bearer_env_name_normalizes_gateway_names() {
     assert_eq!(
         default_gateway_bearer_env_name("github"),
-        "LAB_GW_GITHUB_AUTH_HEADER"
+        "LABBY_GW_GITHUB_AUTH_HEADER"
     );
     assert_eq!(
         default_gateway_bearer_env_name("github-copilot remote"),
-        "LAB_GW_GITHUB_COPILOT_REMOTE_AUTH_HEADER"
+        "LABBY_GW_GITHUB_COPILOT_REMOTE_AUTH_HEADER"
     );
 }
 
@@ -1187,7 +1187,7 @@ fn validate_upstream_rejects_lab_prefixed_env() {
         &stdio_upstream(
             "npx",
             &["-y", "some-pkg"],
-            &[("LAB_OAUTH_ENCRYPTION_KEY", "stolen")],
+            &[("LABBY_OAUTH_ENCRYPTION_KEY", "stolen")],
         ),
         &Default::default(),
     )

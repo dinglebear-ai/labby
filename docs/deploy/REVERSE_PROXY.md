@@ -6,7 +6,7 @@ front of that listener and configure public MCP routes in Lab.
 
 ## Model
 
-- `LAB_PUBLIC_URL` is the Lab app and OAuth issuer, for example `https://lab.example.com`.
+- `LABBY_PUBLIC_URL` is the Lab app and OAuth issuer, for example `https://lab.example.com`.
 - Each protected MCP route has its own public resource identity, for example `https://mcp.example.com/tools`.
 - The reverse proxy forwards public hosts to Lab without rewriting the path.
 - Lab matches `Host + path`, serves route-specific OAuth metadata, validates route-audience JWTs, and proxies accepted MCP traffic to the private backend.

@@ -1188,14 +1188,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
 /// Process-wide HMAC key for run-field integrity signing.
 ///
-/// Loaded from `LAB_CODEMODE_HMAC_SECRET`; falls back to an ephemeral key seeded
+/// Loaded from `LABBY_CODEMODE_HMAC_SECRET`; falls back to an ephemeral key seeded
 /// from PID + startup timestamp (rotates per process — cross-restart
 /// verification requires setting the env var). Mirrors `acp_hmac_key`.
 fn codemode_hmac_key() -> &'static [u8] {
     use std::sync::OnceLock;
     static KEY: OnceLock<Vec<u8>> = OnceLock::new();
     KEY.get_or_init(|| {
-        if let Ok(secret) = std::env::var("LAB_CODEMODE_HMAC_SECRET") {
+        if let Ok(secret) = std::env::var("LABBY_CODEMODE_HMAC_SECRET") {
             if !secret.is_empty() {
                 return secret.into_bytes();
             }
@@ -1205,8 +1205,8 @@ fn codemode_hmac_key() -> &'static [u8] {
             service = "codemode",
             action = "hmac_key_init",
             kind = "ephemeral_key",
-            "LAB_CODEMODE_HMAC_SECRET is not set; using an ephemeral HMAC key. \
-             Set LAB_CODEMODE_HMAC_SECRET in ~/.labby/.env for cross-restart protection."
+            "LABBY_CODEMODE_HMAC_SECRET is not set; using an ephemeral HMAC key. \
+             Set LABBY_CODEMODE_HMAC_SECRET in ~/.labby/.env for cross-restart protection."
         );
         let pid = std::process::id();
         let now = std::time::SystemTime::now()

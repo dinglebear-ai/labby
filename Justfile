@@ -36,7 +36,7 @@ lint: skill-drift test-cargo-wrapper
 
 # Check hand-authored skills for known stale or unsafe patterns
 skill-drift:
-    LAB_ALLOW_MISSING_DOZZLE=1 plugins/scripts/check-dozzle-skill
+    LABBY_ALLOW_MISSING_DOZZLE=1 plugins/scripts/check-dozzle-skill
 
 # License and vulnerability audit
 deny:
@@ -72,10 +72,10 @@ _install-labby-bin profile:
     #!/usr/bin/env bash
     set -euo pipefail
     profile="{{profile}}"
-    LAB_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-    case "$LAB_TARGET_DIR" in
-      /*) LABBY_BIN="$LAB_TARGET_DIR/$profile/labby" ;;
-      *)  LABBY_BIN="$(pwd)/$LAB_TARGET_DIR/$profile/labby" ;;
+    LABBY_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+    case "$LABBY_TARGET_DIR" in
+      /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;
+      *)  LABBY_BIN="$(pwd)/$LABBY_TARGET_DIR/$profile/labby" ;;
     esac
     if [ ! -x "$LABBY_BIN" ]; then
       echo "$profile binary not found at $LABBY_BIN — run the matching build first" >&2
@@ -129,10 +129,10 @@ host-service-install:
       export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
     fi
     CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-16}" cargo build --workspace --all-features --profile "$profile" --bin labby
-    LAB_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-    case "$LAB_TARGET_DIR" in
-      /*) LABBY_BIN="$LAB_TARGET_DIR/$profile/labby" ;;
-      *)  LABBY_BIN="$(pwd)/$LAB_TARGET_DIR/$profile/labby" ;;
+    LABBY_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+    case "$LABBY_TARGET_DIR" in
+      /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;
+      *)  LABBY_BIN="$(pwd)/$LABBY_TARGET_DIR/$profile/labby" ;;
     esac
     sudo install -D -m 755 "$LABBY_BIN" /usr/local/bin/labby
     sudo /usr/local/bin/labby setup host-service install -y
@@ -170,10 +170,10 @@ sync-container:
       export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
     fi
 
-    LAB_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-    case "$LAB_TARGET_DIR" in
-      /*) LABBY_BIN="$LAB_TARGET_DIR/$profile/labby" ;;
-      *)  LABBY_BIN="$repo/$LAB_TARGET_DIR/$profile/labby" ;;
+    LABBY_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+    case "$LABBY_TARGET_DIR" in
+      /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;
+      *)  LABBY_BIN="$repo/$LABBY_TARGET_DIR/$profile/labby" ;;
     esac
 
     release_stale=0
@@ -199,7 +199,7 @@ sync-container:
     echo "labby → $LABBY_BIN"
 
     compose=(docker compose -f docker-compose.yml)
-    container_sentinel="$LAB_TARGET_DIR/.labby-container-built"
+    container_sentinel="$LABBY_TARGET_DIR/.labby-container-built"
     image_stale=0
     if ! docker image inspect labby:dev >/dev/null 2>&1; then
       image_stale=1
@@ -290,11 +290,11 @@ run *ARGS:
 chat-local:
     #!/usr/bin/env bash
     set -euo pipefail
-    export LAB_WEB_UI_AUTH_DISABLED=true
-    export LAB_MCP_HTTP_TOKEN="${LAB_MCP_HTTP_TOKEN:-dev-token}"
-    export LAB_CORS_ORIGINS="${LAB_CORS_ORIGINS:-http://node-a:3000,http://127.0.0.1:3000,http://localhost:3000}"
-    export LAB_CHAT_LOCAL_PORT="${LAB_CHAT_LOCAL_PORT:-8766}"
-    cargo run --all-features --bin labby -- serve --host 0.0.0.0 --port "${LAB_CHAT_LOCAL_PORT}"
+    export LABBY_WEB_UI_AUTH_DISABLED=true
+    export LABBY_MCP_HTTP_TOKEN="${LABBY_MCP_HTTP_TOKEN:-dev-token}"
+    export LABBY_CORS_ORIGINS="${LABBY_CORS_ORIGINS:-http://node-a:3000,http://127.0.0.1:3000,http://localhost:3000}"
+    export LABBY_CHAT_LOCAL_PORT="${LABBY_CHAT_LOCAL_PORT:-8766}"
+    cargo run --all-features --bin labby -- serve --host 0.0.0.0 --port "${LABBY_CHAT_LOCAL_PORT}"
 
 # Format all code
 fmt:
@@ -317,19 +317,19 @@ mcp-token:
         exit 1
     fi
     token=$(openssl rand -hex 32)
-    if grep -q '^LAB_MCP_HTTP_TOKEN=' .env; then
+    if grep -q '^LABBY_MCP_HTTP_TOKEN=' .env; then
         # macOS/BSD sed compat: write to tmp then move
         tmp=$(mktemp)
-        awk -v t="$token" '/^LAB_MCP_HTTP_TOKEN=/{print "LAB_MCP_HTTP_TOKEN=" t; next} {print}' .env > "$tmp"
+        awk -v t="$token" '/^LABBY_MCP_HTTP_TOKEN=/{print "LABBY_MCP_HTTP_TOKEN=" t; next} {print}' .env > "$tmp"
         mv "$tmp" .env
-        echo "✓ rotated LAB_MCP_HTTP_TOKEN in .env"
+        echo "✓ rotated LABBY_MCP_HTTP_TOKEN in .env"
     else
-        echo "LAB_MCP_HTTP_TOKEN=$token" >> .env
-        echo "✓ appended LAB_MCP_HTTP_TOKEN to .env"
+        echo "LABBY_MCP_HTTP_TOKEN=$token" >> .env
+        echo "✓ appended LABBY_MCP_HTTP_TOKEN to .env"
     fi
     echo "  $token"
 
-# Run the prod image locally with prod-like env (LAB_UPSTREAM_DISCOVERY_CONCURRENCY=3, no
+# Run the prod image locally with prod-like env (LABBY_UPSTREAM_DISCOVERY_CONCURRENCY=3, no
 # bind-mounted binary). Useful for testing spawn-storm safeguards and discovery timeouts that
 # are masked by the dev stack's higher concurrency default (16). Starts detached, polls /health
 # for up to 60s, then prints the container ID. Stop with: docker stop lab-prod-test
@@ -343,9 +343,9 @@ prod-run: build-release
     docker run -d --name lab-prod-test \
         -p 18765:8765 \
         -v "${HOME}/.labby:/home/labby/.labby" \
-        -e LAB_MCP_HTTP_HOST=0.0.0.0 \
-        -e LAB_MCP_HTTP_PORT=8765 \
-        -e LAB_UPSTREAM_DISCOVERY_CONCURRENCY=3 \
+        -e LABBY_MCP_HTTP_HOST=0.0.0.0 \
+        -e LABBY_MCP_HTTP_PORT=8765 \
+        -e LABBY_UPSTREAM_DISCOVERY_CONCURRENCY=3 \
         labby:prod-test
     echo "container started — polling http://localhost:18765/health (60s timeout)..."
     deadline=$(( $(date +%s) + 60 ))

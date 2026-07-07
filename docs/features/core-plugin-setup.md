@@ -69,7 +69,7 @@ The first acceptance criterion below is to reopen the three premature closures a
 - [ ] `setup.uninstall_plugin` action — same shape, calls `claude plugin uninstall`. Destructive.
 - [ ] `setup.installed_plugins` action — read-only `claude plugin list` parser; powers re-run mode and the wizard's per-service Enabled badge.
 - [ ] These three actions are **only mounted on the HTTP API when bound to a loopback address**. Non-loopback bind logs a single startup line that they are skipped. They are unconditionally available over stdio MCP and the CLI shim.
-- [ ] Package allowlist: requests with package IDs not matching a configured prefix (`LAB_PLUGIN_ALLOWLIST`, default `@lab,@yourorg`) return `package_not_allowlisted`.
+- [ ] Package allowlist: requests with package IDs not matching a configured prefix (`LABBY_PLUGIN_ALLOWLIST`, default `@lab,@yourorg`) return `package_not_allowlisted`.
 - [ ] All three actions emit dispatch events with `surface`, `service=setup`, `action`, `elapsed_ms`, plus `package_id` and `scope` for install/uninstall. **No env-var values, no token material in any log.**
 
 ### Wizard integration
@@ -101,7 +101,7 @@ The first acceptance criterion below is to reopen the three premature closures a
 
 ### Env-aware CLI
 - [ ] `lab help` shows only services whose required env vars are present. Always-visible operator commands (`init`, `setup`, `doctor`, `plugins`, `gateway`, `help`, `completions`, `scaffold`, `audit`, `marketplace`) are never filtered.
-- [ ] `LAB_SHOW_ALL=1` and `lab help --all` bypass the filter.
+- [ ] `LABBY_SHOW_ALL=1` and `lab help --all` bypass the filter.
 - [ ] The MCP `lab://catalog` resource uses the same filter (registry filter). `--services foo,bar` continues to override at `labby serve` / `labby mcp` level.
 - [ ] (Optional polish) `labby --help` (clap-derived, top-level) honors the same filter via `Cli::command_for_update()` + `mut_subcommand("<svc>", |c| c.hide(true))`.
 
@@ -135,7 +135,7 @@ bg3e.3 must land first with `setup.state`, `setup.schema.get`, `setup.draft.get`
   - `uninstall_plugin` (**destructive**) — same shape; shells `claude plugin uninstall`.
 - [ ] `params.rs` — `InstalledPluginsParams`, `InstallPluginParams`, `UninstallPluginParams` with serde-derived deserialization and validation hooks for the allowlist check.
 - [ ] `dispatch.rs` — three new match arms calling new client methods.
-- [ ] `client.rs` — add `installed_plugins`, `install_plugin`, `uninstall_plugin` methods using `tokio::process::Command`. Timeout via `LAB_PLUGIN_TIMEOUT_SECS` (default 300s). Output parsing returns `claude_cli_unavailable` if the binary is missing, `plugin_install_failed` with stderr summary on non-zero exit. **stderr is summarized to one line in the envelope; full stderr is logged at WARN, with secret-suffix redaction applied to defend against marketplace URLs that embed tokens.**
+- [ ] `client.rs` — add `installed_plugins`, `install_plugin`, `uninstall_plugin` methods using `tokio::process::Command`. Timeout via `LABBY_PLUGIN_TIMEOUT_SECS` (default 300s). Output parsing returns `claude_cli_unavailable` if the binary is missing, `plugin_install_failed` with stderr summary on non-zero exit. **stderr is summarized to one line in the envelope; full stderr is logged at WARN, with secret-suffix redaction applied to defend against marketplace URLs that embed tokens.**
 
 #### Surface enforcement
 
@@ -148,12 +148,12 @@ The "loopback-only over HTTP" rule lives at the API router, not in the dispatch 
 - [ ] `crates/lab/src/cli/help.rs` — env-aware filter:
   - Add `configured_services(registry: &ToolRegistry) -> Vec<&str>` walking each service's `PluginMeta.required_env`. A service is "configured" iff every `required: true` env var has a non-empty value in `std::env::vars()`. Optional vars don't count.
   - Default filter applied to `lab help`. Operator commands listed in the acceptance criteria are never filtered.
-  - `LAB_SHOW_ALL=1` and `--all` bypass.
-- [ ] `crates/lab/src/cli.rs` — optional polish: `Cli::command_for_update()` + `mut_subcommand` to hide unconfigured service subcommands from `labby --help`. Behind the same `LAB_SHOW_ALL` env / `--all` flag. Mark this as the last AC item; it can ship in a follow-up PR.
+  - `LABBY_SHOW_ALL=1` and `--all` bypass.
+- [ ] `crates/lab/src/cli.rs` — optional polish: `Cli::command_for_update()` + `mut_subcommand` to hide unconfigured service subcommands from `labby --help`. Behind the same `LABBY_SHOW_ALL` env / `--all` flag. Mark this as the last AC item; it can ship in a follow-up PR.
 - [ ] `crates/lab/src/cli/setup.rs` (already created in bg3e.3) — add three Tier-2 dispatch shims for the new actions: `labby setup installed_plugins`, `labby setup install_plugin`, `labby setup uninstall_plugin`. Standard destructive flag handling per `crates/lab/src/cli/CLAUDE.md`.
 - [ ] `crates/lab/src/cli/marketplace.rs` (existing) — add a new subcommand `labby marketplace generate --out <dir> [--org <prefix>] [--binary <path>]`:
   - Iterates `build_default_registry()` and emits the marketplace tree.
-  - `--org` defaults to the value baked in at build time (cargo env var `LAB_PLUGIN_ORG`, default `lab`).
+  - `--org` defaults to the value baked in at build time (cargo env var `LABBY_PLUGIN_ORG`, default `lab`).
   - `--binary` defaults to `target/release/labby` from the workspace root.
   - The generator copies the binary into `<out>/lab-core/bin/labby`, sets executable bits, and writes templated `plugin.json` / `.mcp.json` / `commands/*.md` files.
   - Tests assert that round-tripping `PluginMeta` → generator → re-parse yields the same env-var lists.
@@ -220,16 +220,16 @@ These extend the bg3e.4 wizard and bg3e.5 settings rail; they are not new pages.
 
 | Var | Required | Description |
 |-----|----------|-------------|
-| `LAB_SHOW_ALL` | no | When `1`/`true`, disables env-aware filtering of `lab help` and the MCP catalog. |
-| `LAB_PLUGIN_ALLOWLIST` | no | Comma-separated package-ID prefixes accepted by `setup.install_plugin` (e.g. `lab,yourorg`). Defaults to a hard-coded org prefix shipped with the binary at build time. |
-| `LAB_PLUGIN_TIMEOUT_SECS` | no | Hard ceiling on `claude plugin install/uninstall/list` calls. Default 300. |
-| `LAB_CLAUDE_BIN` | no | Path to the `claude` CLI; defaults to PATH lookup. |
-| `LAB_PLUGIN_ORG` (build-time) | no | Cargo env var consumed by the binary at compile time to set the default org prefix used by the marketplace generator and the install allowlist. |
+| `LABBY_SHOW_ALL` | no | When `1`/`true`, disables env-aware filtering of `lab help` and the MCP catalog. |
+| `LABBY_PLUGIN_ALLOWLIST` | no | Comma-separated package-ID prefixes accepted by `setup.install_plugin` (e.g. `lab,yourorg`). Defaults to a hard-coded org prefix shipped with the binary at build time. |
+| `LABBY_PLUGIN_TIMEOUT_SECS` | no | Hard ceiling on `claude plugin install/uninstall/list` calls. Default 300. |
+| `LABBY_CLAUDE_BIN` | no | Path to the `claude` CLI; defaults to PATH lookup. |
+| `LABBY_PLUGIN_ORG` (build-time) | no | Cargo env var consumed by the binary at compile time to set the default org prefix used by the marketplace generator and the install allowlist. |
 
 New `config.toml` keys (optional, all surfaced in `setup.schema.get` per bg3e.3):
 
 - `[plugins] default_scope` — `user` (default) or `project`. UI surfaces this in /setup as a single radio.
-- `[plugins] allowlist` — array, mirrors `LAB_PLUGIN_ALLOWLIST`.
+- `[plugins] allowlist` — array, mirrors `LABBY_PLUGIN_ALLOWLIST`.
 
 ### Other files
 
@@ -259,7 +259,7 @@ Per `docs/OBSERVABILITY.md`, plus bg3e.3's existing setup-service redaction rule
 ## Error Handling
 
 - [x] New stable `kind` values added to `docs/ERRORS.md`:
-  - `package_not_allowlisted` — install/uninstall package ID outside `LAB_PLUGIN_ALLOWLIST`.
+  - `package_not_allowlisted` — install/uninstall package ID outside `LABBY_PLUGIN_ALLOWLIST`.
   - `claude_cli_unavailable` — `claude` binary not found / not executable / version mismatch.
   - `plugin_install_failed` — `claude plugin install` returned non-zero; one-line stderr summary in `message`.
   - `plugin_uninstall_failed` — symmetric.
@@ -290,7 +290,7 @@ CLI shims honor `-y` / `--no-confirm` / `--dry-run` per `crates/lab/src/cli/CLAU
   - Unknown-service rejection before shell-out.
   - Stderr redaction on `plugin_install_failed`.
   - Param parsing (missing required, scope enum out-of-range).
-- [x] Integration test using a `LAB_CLAUDE_BIN`-overridable shim: a tiny shell script that emulates `claude plugin install/list/uninstall` with deterministic JSON output. Verifies happy path, exit-non-zero, missing-binary, and timeout.
+- [x] Integration test using a `LABBY_CLAUDE_BIN`-overridable shim: a tiny shell script that emulates `claude plugin install/list/uninstall` with deterministic JSON output. Verifies happy path, exit-non-zero, missing-binary, and timeout.
 - [x] Integration test for the loopback-mount gate: spin up the API on `0.0.0.0:0`, assert install/uninstall/list routes return 404; spin up on `127.0.0.1:0`, assert they exist.
 - [x] Snapshot test for the marketplace generator: run against the in-process registry, golden-compare the generated `plugin.json` / `.mcp.json` / `README.md` for `lab-core` + `lab-radarr`. Refresh on `cargo insta accept`.
 - [x] Snapshot test for `lab help` env-aware filter: empty env, only operator commands appear; `RADARR_URL` + `RADARR_API_KEY` set, radarr appears.
@@ -316,11 +316,11 @@ CLI shims honor `-y` / `--no-confirm` / `--dry-run` per `crates/lab/src/cli/CLAU
 
 ## Open Questions
 
-1. Default org prefix. `lab` is the obvious choice but is also the binary name and may collide with unrelated packages in a global namespace. Proposal: bake `LAB_PLUGIN_ORG` at build time; ship with `lab` for OSS but allow forks to set their own without recompiling the marketplace.
+1. Default org prefix. `lab` is the obvious choice but is also the binary name and may collide with unrelated packages in a global namespace. Proposal: bake `LABBY_PLUGIN_ORG` at build time; ship with `lab` for OSS but allow forks to set their own without recompiling the marketplace.
 2. Plugin scope default. The Setup wizard chose `user` historically (homelab tools shouldn't follow project directories). Confirm and surface as a single radio in /setup with `[plugins] default_scope` persisted.
 3. Whether `install_plugin` should also accept a `version` param. `claude plugin install foo@bar@1.2.3` style. Proposal: defer; ship without versioning, add later behind a `version?: string` param.
 4. `labby marketplace generate` ergonomics. Should it default to writing into a sibling repo (e.g. `../lab-marketplace/`) when run from the workspace? Proposal: no — explicit `--out` only. CI ergonomics live in the release workflow.
-5. Whether the env-aware `lab help` filter should also be the default for the MCP catalog when no `--services` is passed. Proposal: yes — same filter, same env vars, same `LAB_SHOW_ALL` escape hatch. Documented behavior change in `docs/CONVENTIONS.md`.
+5. Whether the env-aware `lab help` filter should also be the default for the MCP catalog when no `--services` is passed. Proposal: yes — same filter, same env vars, same `LABBY_SHOW_ALL` escape hatch. Documented behavior change in `docs/CONVENTIONS.md`.
 6. SessionStart hook in the core plugin. The earlier draft had one; we explicitly removed it because hook-driven webserver spawning is brittle. Confirm we ship core with **no** SessionStart hook — `/setup-core` is the only entry point.
 7. Plugin-mode service filtering. Step 4 in plugin mode shows only services with installed plugins. What if the user has Plex creds in `~/.labby/.env` but never installed `lab-plex`? Proposal: still show the service in plugin mode if it's already configured, with the toggle off, so the user can choose to install the plugin or clear the leftover env. Hide it only if it's neither installed nor configured.
 8. Mode for re-runs. If a user ran `/setup-core` (plugin mode) once, then later runs standalone `labby setup`, do they get plugin or full mode? Proposal: the CLI flag wins. `labby setup` with no flag picks up the persisted mode from `~/.labby/.setup-state.json`, defaulting to `full` if the state file says nothing. Users who want full from a plugin install always have `/setup-core-advanced`.

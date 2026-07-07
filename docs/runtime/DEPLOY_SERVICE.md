@@ -16,11 +16,6 @@ Deploy is feature-gated behind `deploy` and surfaced only on the **CLI** and
 ## Authorization
 
 Deploy actions require a dedicated token **above** the general MCP bearer.
-Set `LAB_DEPLOY_TOKEN` in `~/.labby/.env` (or the process environment):
-
-```
-LAB_DEPLOY_TOKEN=<opaque-secret>
-```
 
 Every deploy action — `config.list`, `plan`, `run`, `rollback` — checks
 this token first. Absent or empty values return `auth_failed`.

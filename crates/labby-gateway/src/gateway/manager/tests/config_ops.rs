@@ -20,15 +20,15 @@ use super::*;
 // Instead we exercise the actual redaction unit — `service_config_view`, the
 // projection that `set_service_config` returns verbatim — directly against the kept
 // `acp` service's real `PluginMeta`, which declares both a secret field
-// (`LAB_ACP_HMAC_SECRET`, `secret: true`) and a non-secret one (`LAB_ACP_DB`). This
+// (`LABBY_ACP_HMAC_SECRET`, `secret: true`) and a non-secret one (`LABBY_ACP_DB`). This
 // is the function that enforces the redaction contract; pinning it here keeps the
 // CWE-532 guard live in CI.
 #[test]
 fn service_config_get_redacts_secret_values() {
     let mut values = HashMap::new();
-    values.insert("LAB_ACP_DB".to_string(), "/tmp/acp.db".to_string());
+    values.insert("LABBY_ACP_DB".to_string(), "/tmp/acp.db".to_string());
     values.insert(
-        "LAB_ACP_HMAC_SECRET".to_string(),
+        "LABBY_ACP_HMAC_SECRET".to_string(),
         "super-secret".to_string(),
     );
 
@@ -37,7 +37,7 @@ fn service_config_get_redacts_secret_values() {
     let secret = config
         .fields
         .iter()
-        .find(|field| field.name == "LAB_ACP_HMAC_SECRET")
+        .find(|field| field.name == "LABBY_ACP_HMAC_SECRET")
         .expect("secret field");
     assert!(secret.present);
     assert!(secret.secret);
@@ -51,7 +51,7 @@ fn service_config_get_redacts_secret_values() {
     let non_secret = config
         .fields
         .iter()
-        .find(|field| field.name == "LAB_ACP_DB")
+        .find(|field| field.name == "LABBY_ACP_DB")
         .expect("non-secret field");
     assert!(non_secret.present);
     assert!(!non_secret.secret);
@@ -65,15 +65,15 @@ fn service_config_get_redacts_secret_values() {
 #[test]
 fn service_config_get_treats_empty_values_as_not_present() {
     let mut values = HashMap::new();
-    values.insert("LAB_ACP_HMAC_SECRET".to_string(), "token".to_string());
-    values.insert("LAB_ACP_DB".to_string(), String::new());
+    values.insert("LABBY_ACP_HMAC_SECRET".to_string(), "token".to_string());
+    values.insert("LABBY_ACP_DB".to_string(), String::new());
 
     let config = crate::gateway::projection::service_config_view(&labby_apis::acp::META, &values);
 
     let db = config
         .fields
         .iter()
-        .find(|field| field.name == "LAB_ACP_DB")
+        .find(|field| field.name == "LABBY_ACP_DB")
         .expect("db field");
     assert!(!db.present);
     assert_eq!(db.value_preview, None);
@@ -117,8 +117,8 @@ async fn service_config_get_marks_service_unconfigured_when_required_fields_are_
 #[test]
 fn service_config_get_marks_service_configured_when_required_fields_are_present() {
     let mut values = HashMap::new();
-    values.insert("LAB_ACP_DB".to_string(), "/tmp/acp.db".to_string());
-    values.insert("LAB_ACP_HMAC_SECRET".to_string(), "token".to_string());
+    values.insert("LABBY_ACP_DB".to_string(), "/tmp/acp.db".to_string());
+    values.insert("LABBY_ACP_HMAC_SECRET".to_string(), "token".to_string());
 
     let config = crate::gateway::projection::service_config_view(&labby_apis::acp::META, &values);
 
@@ -162,12 +162,12 @@ async fn add_with_bearer_token_value_writes_env_and_references_generated_env_var
 
     assert_eq!(
         gateway.config.bearer_token_env.as_deref(),
-        Some("LAB_GW_GITHUB_AUTH_HEADER")
+        Some("LABBY_GW_GITHUB_AUTH_HEADER")
     );
 
     let values = read_env_values(&dir.path().join(".env")).expect("read env");
     assert_eq!(
-        values.get("LAB_GW_GITHUB_AUTH_HEADER").map(String::as_str),
+        values.get("LABBY_GW_GITHUB_AUTH_HEADER").map(String::as_str),
         Some("Bearer ghp_secret")
     );
 }
@@ -309,7 +309,7 @@ async fn bearer_token_credential_write_persists_through_store_seam() {
 
     let values = read_env_values(&env_path).expect("read env values written via store seam");
     assert_eq!(
-        values.get("LAB_GW_PLEX_AUTH_HEADER").map(String::as_str),
+        values.get("LABBY_GW_PLEX_AUTH_HEADER").map(String::as_str),
         Some("Bearer plex-token"),
         "bearer credential must be persisted to the .env file through the store seam"
     );

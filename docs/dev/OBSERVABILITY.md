@@ -124,12 +124,12 @@ Operator-facing events that have an authenticated subject must use `actor_key`
 for activity scoping instead of persisting or exposing the raw subject. The
 actor key is:
 
-- `HMAC-SHA256(subject, LAB_ACTOR_KEY_SECRET)`
+- `HMAC-SHA256(subject, LABBY_ACTOR_KEY_SECRET)`
 - hex encoded as 64 lowercase characters
-- stable for one installation as long as `LAB_ACTOR_KEY_SECRET` is preserved
+- stable for one installation as long as `LABBY_ACTOR_KEY_SECRET` is preserved
 - intentionally not portable across installations with different secrets
 
-`LAB_ACTOR_KEY_SECRET` is a secret value stored in `~/.labby/.env`. If absent,
+`LABBY_ACTOR_KEY_SECRET` is a secret value stored in `~/.labby/.env`. If absent,
 `lab` generates it on first use. Empty or anonymous subjects have no
 `actor_key`; `mine_only` style activity queries must exclude those rows rather
 than inventing a sentinel actor.
@@ -386,7 +386,7 @@ The outbound upstream OAuth flow (see [UPSTREAM.md](../services/UPSTREAM.md)) ad
 - `token_blob` ciphertext and `token_blob_nonce`
 - `client_secret` (from the `*_CLIENT_SECRET` env var named by `client_secret_env`)
 - `Authorization` headers constructed from upstream OAuth tokens
-- `LAB_OAUTH_ENCRYPTION_KEY`
+- `LABBY_OAUTH_ENCRYPTION_KEY`
 
 Credential and state row types implement `Debug` manually to enforce this; never `#[derive(Debug)]` on them.
 

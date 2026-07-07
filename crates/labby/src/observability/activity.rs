@@ -14,7 +14,7 @@ use sha2::Sha256;
 use crate::config::{dotenv_path, write_env_pairs};
 use crate::dispatch::helpers::env_non_empty;
 
-pub const ACTOR_KEY_SECRET_ENV: &str = "LAB_ACTOR_KEY_SECRET";
+pub const ACTOR_KEY_SECRET_ENV: &str = "LABBY_ACTOR_KEY_SECRET";
 const GENERATED_SECRET_BYTES: usize = 32;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -54,7 +54,7 @@ impl ActorKeyDeriver {
         })
     }
 
-    /// Load `LAB_ACTOR_KEY_SECRET` from process env or `~/.labby/.env`.
+    /// Load `LABBY_ACTOR_KEY_SECRET` from process env or `~/.labby/.env`.
     ///
     /// If absent, a per-installation secret is generated and appended to
     /// `~/.labby/.env`. The returned deriver should be cached by the caller.

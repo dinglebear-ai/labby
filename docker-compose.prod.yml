@@ -10,7 +10,7 @@ name: lab
 services:
   labby-master:
     container_name: labby
-    image: ${LAB_IMAGE:-ghcr.io/jmagar/lab:latest}
+    image: ${LABBY_IMAGE:-ghcr.io/jmagar/lab:latest}
     restart: unless-stopped
     # Run Docker's tiny init as PID 1 so provider grandchildren orphaned by
     # launch wrappers such as npx are reaped after Lab terminates the process group.
@@ -28,8 +28,8 @@ services:
       - "host.docker.internal:host-gateway"
 
     ports:
-      # LAB_HOST_PORT lets you remap the host-side port without editing this file.
-      - "${LAB_HOST_PORT:-8765}:8765"
+      # LABBY_HOST_PORT lets you remap the host-side port without editing this file.
+      - "${LABBY_HOST_PORT:-8765}:8765"
 
     volumes:
       # Bind-mount the host ~/.labby directory so every file the binary writes
@@ -38,8 +38,9 @@ services:
       # image rebuilds without needing per-path env var overrides.
       - ${HOME}/.labby:/home/labby/.labby
       # Named volume for the log DB only — it is redirected to ~/.local via
-      # LAB_LOCAL_LOGS_STORE_PATH and is ephemeral (TTL-pruned), so keeping
-      # it off the host .lab directory avoids churn in host storage.
+      # the [local_logs].store_path config.toml setting and is ephemeral
+      # (TTL-pruned), so keeping it off the host .lab directory avoids churn
+      # in host storage.
       - labby-data:/home/labby/.local
       # Host config file — also visible via the .lab bind mount above, but
       # the explicit :ro mount here makes the intent clear.
@@ -107,34 +108,22 @@ services:
     environment:
       # Bind to all container interfaces so the port mapping works.
       # The host-side port mapping (above) controls external exposure.
-      LAB_MCP_HTTP_HOST: "0.0.0.0"
-      LAB_MCP_HTTP_PORT: "8765"
+      LABBY_MCP_HTTP_HOST: "0.0.0.0"
+      LABBY_MCP_HTTP_PORT: "8765"
       # Override host-only paths from ~/.labby/.env for the container filesystem.
-      LAB_WEB_ASSETS_DIR: ""
-      # Redirect the log DB into the named volume (ephemeral, TTL-pruned).
-      # All other DBs default to ~/.labby/ which is now bind-mounted from host.
-      LAB_LOCAL_LOGS_STORE_PATH: "/home/labby/.local/share/labby/logs.db"
+      LABBY_WEB_ASSETS_DIR: ""
       ACP_SESSION_CWD: "/workspace/lab"
-      # ACP prompt idle timeout — how long the runtime waits for any ACP event
-      # after the first assistant text chunk before declaring idle_completion.
-      # 5s (default) is too short for multi-step tool chains on a Docker-mounted
-      # volume; 30s gives tool executions room to complete before we cut off.
-      LAB_ACP_PROMPT_IDLE_TIMEOUT_MS: "30000"
-      # After an idle_completion-terminated turn, the drain window waits for
-      # codex-acp's late StopReason before accepting the next prompt.  Cap at 15s
-      # so a follow-up prompt doesn't stall for the 5-minute default.
-      LAB_ACP_TURN_DRAIN_TIMEOUT_MS: "15000"
-      # Structured log levels — RUST_LOG for tracing, LAB_LOG for app filter.
+      # Structured log levels — RUST_LOG for tracing, LABBY_LOG for app filter.
       RUST_LOG: "labby=info,warn"
-      LAB_LOG: "info"
+      LABBY_LOG: "info"
       # Docker pipes stderr as a non-TTY; force ANSI colors for docker compose logs -f.
-      # LAB_LOG_COLOR forces ColorPolicy::Color in tracing's with_ansi().
+      # LABBY_LOG_COLOR forces ColorPolicy::Color in tracing's with_ansi().
       # CLICOLOR_FORCE forces console::colors_enabled() which the custom log formatter uses.
-      LAB_LOG_COLOR: "force"
+      LABBY_LOG_COLOR: "force"
       CLICOLOR_FORCE: "1"
       # Parallel upstream MCP server discovery. Default is 3; bump so startup
       # warms ~20 upstreams in roughly one 15s window instead of seven.
-      LAB_UPSTREAM_DISCOVERY_CONCURRENCY: "16"
+      LABBY_UPSTREAM_DISCOVERY_CONCURRENCY: "16"
       # Beads gateway upstreams inherit these so the mounted bd binary can use
       # the same external Dolt server/auth context as the host CLI.
       BEADS_DOLT_SERVER_MODE: "${BEADS_DOLT_SERVER_MODE:-}"

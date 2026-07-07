@@ -116,8 +116,8 @@ fn run_install_script(version: &str, install_dir: &PathBuf) -> Result<()> {
     }
     let status = Command::new("sh")
         .arg(&script)
-        .env("LAB_INSTALL_VERSION", version)
-        .env("LAB_INSTALL_DIR", install_dir)
+        .env("LABBY_INSTALL_VERSION", version)
+        .env("LABBY_INSTALL_DIR", install_dir)
         .status()?;
     if status.success() {
         Ok(())
@@ -130,7 +130,7 @@ fn resolve_install_dir(explicit: Option<&PathBuf>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path.clone());
     }
-    if let Some(path) = std::env::var_os("LAB_INSTALL_DIR").filter(|value| !value.is_empty()) {
+    if let Some(path) = std::env::var_os("LABBY_INSTALL_DIR").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));
     }
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;

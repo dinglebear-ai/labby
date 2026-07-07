@@ -177,7 +177,7 @@ fn node_flag_matches(denied: &str, flag: &str) -> bool {
 /// Validate an environment variable name supplied with a stdio upstream.
 ///
 /// Must match `^[A-Z][A-Z0-9_]*$` and must not be a protected process or
-/// `LAB_*` variable.
+/// `LABBY_*` variable.
 pub fn validate_stdio_env_name(name: &str) -> Result<(), ToolError> {
     let valid = !name.is_empty()
         && name.starts_with(|c: char| c.is_ascii_uppercase())
@@ -185,7 +185,7 @@ pub fn validate_stdio_env_name(name: &str) -> Result<(), ToolError> {
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
 
-    let denied = DENIED_ENV_NAMES.contains(&name) || name.starts_with("LAB_");
+    let denied = DENIED_ENV_NAMES.contains(&name) || name.starts_with("LABBY_");
 
     if valid && !denied {
         Ok(())
@@ -193,7 +193,7 @@ pub fn validate_stdio_env_name(name: &str) -> Result<(), ToolError> {
         Err(ToolError::InvalidParam {
             param: "env".to_string(),
             message: format!(
-                "env var name '{name}' is invalid; must match ^[A-Z][A-Z0-9_]*$ and must not be a protected process or LAB_* variable"
+                "env var name '{name}' is invalid; must match ^[A-Z][A-Z0-9_]*$ and must not be a protected process or LABBY_* variable"
             ),
         })
     }
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn env_name_rejects_lab_prefix() {
-        let err = validate_stdio_env_name("LAB_TOKEN").unwrap_err();
+        let err = validate_stdio_env_name("LABBY_TOKEN").unwrap_err();
         assert_eq!(err.kind(), "invalid_param");
     }
 

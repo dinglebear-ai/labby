@@ -284,7 +284,7 @@ but leave an already-running daemon (and the WebUI/MCP clients it serves)
 unaware of the change until restarted or sent `SIGUSR1`.
 
 To avoid that divergence, `labby gateway <subcommand>` first probes for a
-live daemon (local bind address, then `LAB_MCP_GATEWAY_URL`/`LAB_PUBLIC_URL`
+live daemon (local bind address, then `LABBY_MCP_GATEWAY_URL`/`LABBY_PUBLIC_URL`
 in order) and, if one responds, dispatches through its real HTTP API
 (`POST /v1/gateway`, or the `codemode` MCP tool for `gateway code exec`) --
 the same path the WebUI itself uses, since the WebUI is served *by* the live
@@ -294,7 +294,7 @@ keeps bootstrap flows (`labby setup --provision`, the very first
 `gateway add` before `labby serve` exists) working standalone.
 
 Running the CLI from a different machine than the daemon requires
-`LAB_MCP_HTTP_TOKEN` and `LAB_PUBLIC_URL` (or `LAB_MCP_GATEWAY_URL`) in that
+`LABBY_MCP_HTTP_TOKEN` and `LABBY_PUBLIC_URL` (or `LABBY_MCP_GATEWAY_URL`) in that
 machine's `~/.labby/.env` -- see `docs/runtime/ENV.md` § "Remote Gateway CLI
 Usage" for the exact variables and fallback behavior.
 
@@ -511,7 +511,7 @@ the Lab app URL and the route's public host/path as the MCP URL.
 
 Operational timeout:
 
-- `LAB_PROTECTED_MCP_CONNECT_TIMEOUT_SECS` controls the connect timeout for
+- `LABBY_PROTECTED_MCP_CONNECT_TIMEOUT_SECS` controls the connect timeout for
   Lab's protected MCP upstream proxy HTTP client. The default is `10` seconds.
   Set this higher only when upstream TCP/TLS connection setup is expected to be
   slow; long-lived MCP streams are not bounded by this connect timeout.
@@ -566,7 +566,7 @@ the configured public resource:
 - do not rewrite the public path before Lab sees it
 
 Public route OAuth is not the same as Lab's static bearer compatibility path.
-`Authorization: Bearer $LAB_MCP_HTTP_TOKEN` remains an operator/admin shortcut
+`Authorization: Bearer $LABBY_MCP_HTTP_TOKEN` remains an operator/admin shortcut
 for Lab's admin/API routes, but public Gateway-managed MCP routes validate Lab
 OAuth JWTs for the route resource, for example
 `https://mcp.example.com/syslog`. Do not use the static bearer token as the

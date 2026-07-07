@@ -513,15 +513,15 @@ fn settings_state_json(
 }
 
 fn settings_surfaces_json(cfg: &crate::config::LabConfig) -> Value {
-    let mcp_transport = std::env::var("LAB_MCP_TRANSPORT")
+    let mcp_transport = std::env::var("LABBY_MCP_TRANSPORT")
         .ok()
         .or_else(|| cfg.mcp.transport.clone())
         .unwrap_or_else(|| "http".into());
-    let mcp_host = std::env::var("LAB_MCP_HTTP_HOST")
+    let mcp_host = std::env::var("LABBY_MCP_HTTP_HOST")
         .ok()
         .or_else(|| cfg.mcp.host.clone())
         .unwrap_or_else(|| "127.0.0.1".into());
-    let mcp_port = std::env::var("LAB_MCP_HTTP_PORT")
+    let mcp_port = std::env::var("LABBY_MCP_HTTP_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .or(cfg.mcp.port)
@@ -536,11 +536,11 @@ fn settings_surfaces_json(cfg: &crate::config::LabConfig) -> Value {
         })
         .or(cfg.web.disable_auth)
         .unwrap_or(false);
-    let auth_mode = std::env::var("LAB_AUTH_MODE")
+    let auth_mode = std::env::var("LABBY_AUTH_MODE")
         .ok()
         .or_else(|| cfg.auth.as_ref().and_then(|auth| auth.mode.clone()))
         .unwrap_or_else(|| "bearer".into());
-    let public_url = std::env::var("LAB_PUBLIC_URL")
+    let public_url = std::env::var("LABBY_PUBLIC_URL")
         .ok()
         .or_else(|| cfg.auth.as_ref().and_then(|auth| auth.public_url.clone()));
 
@@ -1204,7 +1204,7 @@ mod tests {
 
         let lab_dir = temp.path().join("lab-home");
         std::fs::create_dir_all(&lab_dir).expect("lab dir");
-        std::fs::write(lab_dir.join(".env"), "LAB_MCP_HTTP_PORT=9999\n").expect("write env");
+        std::fs::write(lab_dir.join(".env"), "LABBY_MCP_HTTP_PORT=9999\n").expect("write env");
         crate::dispatch::helpers::set_test_lab_home(Some(lab_dir));
 
         let err = dispatch(
@@ -1244,7 +1244,7 @@ mod tests {
         let lab_dir = temp.path().join("lab-home");
         std::fs::create_dir_all(&lab_dir).expect("lab dir");
         let env_file = lab_dir.join(".env");
-        std::fs::write(&env_file, "LAB_LOG=labby=info\n").expect("write env");
+        std::fs::write(&env_file, "LABBY_LOG=labby=info\n").expect("write env");
         crate::dispatch::helpers::set_test_lab_home(Some(lab_dir.clone()));
 
         let updated = dispatch(
@@ -1253,7 +1253,7 @@ mod tests {
                 "section": "core",
                 "confirm": true,
                 "entries": [{
-                    "key": "LAB_LOG",
+                    "key": "LABBY_LOG",
                     "value": "labby=debug",
                     "previous": "labby=info"
                 }]
@@ -1262,11 +1262,11 @@ mod tests {
         .await
         .expect("settings env update");
 
-        assert_eq!(updated["values"]["LAB_LOG"], "labby=debug");
+        assert_eq!(updated["values"]["LABBY_LOG"], "labby=debug");
         assert!(
             std::fs::read_to_string(&env_file)
                 .unwrap()
-                .contains("LAB_LOG=labby=debug")
+                .contains("LABBY_LOG=labby=debug")
         );
 
         crate::dispatch::helpers::set_test_lab_home(None);
@@ -1279,7 +1279,7 @@ mod tests {
         let lab_dir = temp.path().join("lab-home");
         std::fs::create_dir_all(&lab_dir).expect("lab dir");
         let env_file = lab_dir.join(".env");
-        std::fs::write(&env_file, "LAB_LOG=labby=warn\n").expect("write env");
+        std::fs::write(&env_file, "LABBY_LOG=labby=warn\n").expect("write env");
         crate::dispatch::helpers::set_test_lab_home(Some(lab_dir.clone()));
 
         let err = dispatch(
@@ -1288,7 +1288,7 @@ mod tests {
                 "section": "core",
                 "confirm": true,
                 "entries": [{
-                    "key": "LAB_LOG",
+                    "key": "LABBY_LOG",
                     "value": "labby=debug",
                     "previous": "labby=info"
                 }]
@@ -1301,7 +1301,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(&env_file)
                 .unwrap()
-                .contains("LAB_LOG=labby=warn")
+                .contains("LABBY_LOG=labby=warn")
         );
 
         crate::dispatch::helpers::set_test_lab_home(None);

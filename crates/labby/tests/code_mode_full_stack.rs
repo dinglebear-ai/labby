@@ -13,7 +13,7 @@
 //!         DESTRUCTIVE tool in the catalog.
 //!
 //! The enabling seam: the production runner pool resolves its executable via
-//! `labby-codemode/src/runner_exe.rs`, honoring `LAB_CODE_MODE_RUNNER_EXE`
+//! `labby-codemode/src/runner_exe.rs`, honoring `LABBY_CODE_MODE_RUNNER_EXE`
 //! (absolute, security-checked) BEFORE `current_exe()`. An integration test
 //! carries `CARGO_BIN_EXE_labby` (the built debug binary), which passes that
 //! check (absolute, executable, not group/world-writable, owned by the current
@@ -50,7 +50,7 @@ fn use_real_runner_binary() {
     let env_path = dir.path().join("runner.env");
     std::fs::write(
         &env_path,
-        format!("LAB_CODE_MODE_RUNNER_EXE={}\n", env!("CARGO_BIN_EXE_labby")),
+        format!("LABBY_CODE_MODE_RUNNER_EXE={}\n", env!("CARGO_BIN_EXE_labby")),
     )
     .expect("write runner env file");
     dotenvy::from_path_override(&env_path).expect("load runner env override");

@@ -34,16 +34,16 @@ labby serve --services gateway,marketplace
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LAB_MCP_TRANSPORT` | `http` | Transport selection. Set to `stdio` for child-process use. |
-| `LAB_MCP_HTTP_HOST` | `127.0.0.1` | Bind address. |
-| `LAB_MCP_HTTP_PORT` | `8765` | Bind port. |
-| `LAB_MCP_HTTP_TOKEN` | — | Static bearer token for authentication. |
-| `LAB_MCP_SESSION_TTL_SECS` | `300` | Session keep-alive TTL in seconds. |
-| `LAB_MCP_STATEFUL` | `true` | Whether to use stateful MCP sessions. |
-| `LAB_MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames for DNS rebinding protection. |
-| `LAB_PUBLIC_URL` | — | Public URL of this lab instance. Its host is added to the allowed-host list in OAuth mode. |
-| `LAB_CORS_ORIGINS` | — | Comma-separated CORS origin allowlist. |
-| `LAB_WEB_ASSETS_DIR` | auto-detect | Optional path to exported Labby assets served by `labby serve`. |
+| `LABBY_MCP_TRANSPORT` | `http` | Transport selection. Set to `stdio` for child-process use. |
+| `LABBY_MCP_HTTP_HOST` | `127.0.0.1` | Bind address. |
+| `LABBY_MCP_HTTP_PORT` | `8765` | Bind port. |
+| `LABBY_MCP_HTTP_TOKEN` | — | Static bearer token for authentication. |
+| `LABBY_MCP_SESSION_TTL_SECS` | `300` | Session keep-alive TTL in seconds. |
+| `LABBY_MCP_STATEFUL` | `true` | Whether to use stateful MCP sessions. |
+| `LABBY_MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames for DNS rebinding protection. |
+| `LABBY_PUBLIC_URL` | — | Public URL of this lab instance. Its host is added to the allowed-host list in OAuth mode. |
+| `LABBY_CORS_ORIGINS` | — | Comma-separated CORS origin allowlist. |
+| `LABBY_WEB_ASSETS_DIR` | auto-detect | Optional path to exported Labby assets served by `labby serve`. |
 
 Config TOML equivalents (env vars take precedence):
 
@@ -60,7 +60,7 @@ assets_dir = "/path/to/labby/out"
 CLI flags take precedence over env vars, which take precedence over config.toml:
 
 1. `--host`, `--port` (CLI)
-2. `LAB_MCP_HTTP_HOST`, `LAB_MCP_HTTP_PORT`, `LAB_MCP_TRANSPORT` (env)
+2. `LABBY_MCP_HTTP_HOST`, `LABBY_MCP_HTTP_PORT`, `LABBY_MCP_TRANSPORT` (env)
 3. `mcp.host`, `mcp.port`, `mcp.transport` (config.toml)
 4. Defaults: `127.0.0.1`, `8765`, `http`
 
@@ -68,8 +68,8 @@ CLI flags take precedence over env vars, which take precedence over config.toml:
 
 The HTTP transport uses RMCP's `StreamableHttpService` with a `LocalSessionManager`.
 
-- `LAB_MCP_SESSION_TTL_SECS` controls the session keep-alive duration (default: 300 seconds / 5 minutes).
-- `LAB_MCP_STATEFUL` controls whether stateful sessions are used (default: `true`). Set to `false` for stateless operation.
+- `LABBY_MCP_SESSION_TTL_SECS` controls the session keep-alive duration (default: 300 seconds / 5 minutes).
+- `LABBY_MCP_STATEFUL` controls whether stateful sessions are used (default: `true`). Set to `false` for stateless operation.
 
 ### DNS Rebinding Protection
 
@@ -78,8 +78,8 @@ The HTTP transport validates the `Host` header against an allowed hosts list. Th
 Allowed hosts are assembled from:
 
 1. **Always included:** `localhost`, `127.0.0.1`, `::1`.
-2. **`LAB_MCP_ALLOWED_HOSTS`** — comma-separated additional hostnames.
-3. **`LAB_PUBLIC_URL`** — when OAuth mode is enabled, the hostname is automatically extracted and added.
+2. **`LABBY_MCP_ALLOWED_HOSTS`** — comma-separated additional hostnames.
+3. **`LABBY_PUBLIC_URL`** — when OAuth mode is enabled, the hostname is automatically extracted and added.
 
 Wildcard (`*`) is rejected with a warning — it would disable Host header validation entirely.
 
@@ -92,8 +92,8 @@ API and MCP routes on the same port.
 
 Auth methods (see [OAUTH.md](../runtime/OAUTH.md) for details):
 
-- **Static bearer token** via `LAB_MCP_HTTP_TOKEN` — constant-time comparison.
-- **OAuth mode** via `LAB_AUTH_MODE=oauth`, `LAB_PUBLIC_URL`, and Google client credentials.
+- **Static bearer token** via `LABBY_MCP_HTTP_TOKEN` — constant-time comparison.
+- **OAuth mode** via `LABBY_AUTH_MODE=oauth`, `LABBY_PUBLIC_URL`, and Google client credentials.
 - Both can be active simultaneously. Static bearer is checked first.
 - If neither auth method is configured, the router permits local loopback requests only; non-loopback binds are rejected by the safety gate below.
 
@@ -111,7 +111,7 @@ credential — nothing else to install or configure:**
 
 - **Bearer mode**: the client's MCP config takes the server URL
   (`https://labby.example.com/mcp`) plus an `Authorization: Bearer
-  <LAB_MCP_HTTP_TOKEN>` header. That's the entire setup.
+  <LABBY_MCP_HTTP_TOKEN>` header. That's the entire setup.
 - **OAuth mode**: the client's MCP config takes just the URL; the client
   discovers the authorization/token endpoints via the standard
   `/.well-known/oauth-authorization-server` metadata and drives the user
@@ -127,8 +127,8 @@ stdio-bridge sections in `docs/services/GATEWAY.md`. Those cover running
 the actual `labby` binary itself somewhere other than the daemon's host —
 e.g. `labby gateway add` from a laptop, or `labby serve --transport stdio`
 bridging into the daemon for an editor that wants to spawn a local process
-rather than connect over HTTP directly. Those need `LAB_MCP_HTTP_TOKEN` and
-`LAB_PUBLIC_URL`/`LAB_MCP_GATEWAY_URL` in `~/.labby/.env` specifically
+rather than connect over HTTP directly. Those need `LABBY_MCP_HTTP_TOKEN` and
+`LABBY_PUBLIC_URL`/`LABBY_MCP_GATEWAY_URL` in `~/.labby/.env` specifically
 *because* they're a copy of the `labby` binary trying to locate and
 authenticate to a different one. A generic external HTTP MCP client never
 runs any `labby` code at all, so none of that applies to it.
@@ -170,7 +170,7 @@ Lab refuses to bind on a non-localhost address without auth:
 
 ```text
 refusing to bind HTTP on 0.0.0.0:8765 without authentication.
-Set LAB_MCP_HTTP_TOKEN or LAB_AUTH_MODE=oauth, or bind to 127.0.0.1 for local-only access.
+Set LABBY_MCP_HTTP_TOKEN or LABBY_AUTH_MODE=oauth, or bind to 127.0.0.1 for local-only access.
 ```
 
 Loopback addresses (`127.0.0.1`, `::1`, `[::1]`, `localhost`) are exempt.
@@ -199,10 +199,10 @@ Always allowed (loopback with common dev ports):
 - `http://127.0.0.1`, `http://127.0.0.1:3000`, `http://127.0.0.1:5173`, `http://127.0.0.1:8080`
 - `http://[::1]`
 
-Additional origins via `LAB_CORS_ORIGINS` (comma-separated):
+Additional origins via `LABBY_CORS_ORIGINS` (comma-separated):
 
 ```bash
-LAB_CORS_ORIGINS=https://lab.example.com,https://admin.example.com
+LABBY_CORS_ORIGINS=https://lab.example.com,https://admin.example.com
 ```
 
 Unparseable entries are logged as warnings and skipped.
@@ -242,17 +242,17 @@ open http://localhost:8765/
 
 ```bash
 # In ~/.labby/.env
-LAB_MCP_TRANSPORT=http
-LAB_MCP_HTTP_HOST=0.0.0.0
-LAB_MCP_HTTP_PORT=8765
-LAB_MCP_HTTP_TOKEN=$(openssl rand -hex 32)
-LAB_PUBLIC_URL=https://lab.example.com
+LABBY_MCP_TRANSPORT=http
+LABBY_MCP_HTTP_HOST=0.0.0.0
+LABBY_MCP_HTTP_PORT=8765
+LABBY_MCP_HTTP_TOKEN=$(openssl rand -hex 32)
+LABBY_PUBLIC_URL=https://lab.example.com
 
 labby serve
 ```
 
 ```bash
-curl -H "Authorization: Bearer $LAB_MCP_HTTP_TOKEN" \
+curl -H "Authorization: Bearer $LABBY_MCP_HTTP_TOKEN" \
      https://lab.example.com/v1/marketplace \
      -d '{"action":"help"}'
 ```
@@ -267,7 +267,7 @@ environment.**  The implications are non-negotiable:
 
 1. **`/v1/gateway` is never mounted when auth is not configured.**
    `api/router.rs` refuses to mount the gateway route group when neither a static bearer token
-   (`LAB_MCP_HTTP_TOKEN`) nor OAuth state (`LAB_AUTH_MODE=oauth`) is configured.  The startup
+   (`LABBY_MCP_HTTP_TOKEN`) nor OAuth state (`LABBY_AUTH_MODE=oauth`) is configured.  The startup
    warning emitted is:
    ```
    gateway service routes not mounted: HTTP API has no auth configured
@@ -304,7 +304,7 @@ via `gateway.add`.
 
 | Scenario | Required |
 |----------|----------|
-| `labby serve` on LAN / internet | `LAB_MCP_HTTP_TOKEN` or `LAB_AUTH_MODE=oauth` |
+| `labby serve` on LAN / internet | `LABBY_MCP_HTTP_TOKEN` or `LABBY_AUTH_MODE=oauth` |
 | `labby serve` on loopback only | Auth still recommended; loopback-bind is the fallback guard |
 | `labby mcp` over network proxy | Front-side auth on the proxy, not in lab |
 | `labby mcp` as child process | No extra config — process isolation is the boundary |

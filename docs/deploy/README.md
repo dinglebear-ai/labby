@@ -81,8 +81,8 @@ This checks:
 
 | Variable | Purpose |
 |---|---|
-| `LAB_PUBLIC_URL` | Public app (UI + OAuth issuer) base URL, e.g. `https://lab.example.com` |
-| `LAB_MCP_GATEWAY_URL` | Separate MCP gateway base URL when hosted on its own hostname, e.g. `https://mcp.example.com`. Falls back to `LAB_PUBLIC_URL` when not set. |
+| `LABBY_PUBLIC_URL` | Public app (UI + OAuth issuer) base URL, e.g. `https://lab.example.com` |
+| `LABBY_MCP_GATEWAY_URL` | Separate MCP gateway base URL when hosted on its own hostname, e.g. `https://mcp.example.com`. Falls back to `LABBY_PUBLIC_URL` when not set. |
 
 Both can also be set in `config.toml` under `[public_urls]`:
 

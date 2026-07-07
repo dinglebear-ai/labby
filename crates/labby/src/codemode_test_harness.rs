@@ -6,7 +6,7 @@
 //! real settle logic: begin-run → drive → read-durable-status-after-settle),
 //! the real [`GatewayManager`] / `CodeModeHost` decide→dispatch→record dance,
 //! the production `RunnerPool` (which spawns the real `labby internal
-//! code-mode-runner` subprocess, resolved via `LAB_CODE_MODE_RUNNER_EXE`), and
+//! code-mode-runner` subprocess, resolved via `LABBY_CODE_MODE_RUNNER_EXE`), and
 //! a real [`SqliteDecider`] / `CodeModePauseStore` on a temp-file DB — with NO
 //! inline host glue.
 //!
@@ -140,7 +140,7 @@ fn upstream_entry(upstream: &str, tools: HashMap<String, UpstreamTool>) -> Upstr
 ///   (`<upstream>::<destructive_tool>`) plus a non-destructive read tool.
 ///
 /// The manager's `RunnerPool` is the production one (built via
-/// `RunnerPool::from_env()` at construction); with `LAB_CODE_MODE_RUNNER_EXE`
+/// `RunnerPool::from_env()` at construction); with `LABBY_CODE_MODE_RUNNER_EXE`
 /// set it spawns the real `labby internal code-mode-runner` subprocess.
 async fn build_manager(decider: Arc<SqliteDecider>) -> (Arc<GatewayManager>, HarnessTools) {
     let tools = HarnessTools {

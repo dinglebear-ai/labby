@@ -328,10 +328,10 @@ impl GatewayManager {
             return;
         };
 
-        // P-M7: cap concurrency using the same LAB_UPSTREAM_DISCOVERY_CONCURRENCY
+        // P-M7: cap concurrency using the same LABBY_UPSTREAM_DISCOVERY_CONCURRENCY
         // setting the rest of the codebase uses (default 3) to avoid a stdio
         // spawn storm when many upstreams are warming simultaneously.
-        let concurrency = std::env::var("LAB_UPSTREAM_DISCOVERY_CONCURRENCY")
+        let concurrency = std::env::var("LABBY_UPSTREAM_DISCOVERY_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
@@ -465,7 +465,7 @@ impl GatewayManager {
 }
 
 fn mcp_runtime_warm_timeout() -> Duration {
-    std::env::var("LAB_GATEWAY_MCP_LIST_WARM_TIMEOUT_MS")
+    std::env::var("LABBY_GATEWAY_MCP_LIST_WARM_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_millis)

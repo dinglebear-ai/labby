@@ -11,7 +11,7 @@ use crate::dispatch::clients::ServiceClients;
 use crate::registry::{ToolRegistry, build_default_registry};
 
 const DEFAULT_PROTECTED_MCP_CONNECT_TIMEOUT_SECS: u64 = 10;
-const PROTECTED_MCP_CONNECT_TIMEOUT_ENV: &str = "LAB_PROTECTED_MCP_CONNECT_TIMEOUT_SECS";
+const PROTECTED_MCP_CONNECT_TIMEOUT_ENV: &str = "LABBY_PROTECTED_MCP_CONNECT_TIMEOUT_SECS";
 
 /// Application state passed to every axum handler via `State<AppState>`.
 #[derive(Clone)]
@@ -46,7 +46,7 @@ pub struct AppState {
     pub auth_config: Option<Arc<labby_auth::config::AuthConfig>>,
     /// Resolved lab configuration loaded at server startup.
     pub config: Arc<LabConfig>,
-    /// OAuth-mode auth server state, mounted only when LAB_AUTH_MODE=oauth.
+    /// OAuth-mode auth server state, mounted only when LABBY_AUTH_MODE=oauth.
     pub oauth_state: Option<Arc<labby_auth::state::AuthState>>,
     /// Cached actor-key deriver used at authenticated bind boundaries.
     pub actor_key_deriver: Option<Arc<crate::observability::activity::ActorKeyDeriver>>,
@@ -68,7 +68,7 @@ pub struct AppState {
     pub workspace_root: Option<Arc<PathBuf>>,
     /// When true, `/v1/*` skips auth middleware for hosted UI requests.
     pub web_ui_auth_disabled: bool,
-    /// Static bearer token (LAB_MCP_HTTP_TOKEN), if configured.
+    /// Static bearer token (LABBY_MCP_HTTP_TOKEN), if configured.
     ///
     /// Stored on AppState so handlers outside the auth middleware
     /// (e.g. `/auth/session`) can validate the same token. The middleware
@@ -212,7 +212,7 @@ impl AppState {
         self
     }
 
-    /// Attach the static bearer token (LAB_MCP_HTTP_TOKEN) so handlers
+    /// Attach the static bearer token (LABBY_MCP_HTTP_TOKEN) so handlers
     /// outside the auth middleware can validate it.
     #[must_use]
     pub fn with_bearer_token(mut self, token: Option<Arc<str>>) -> Self {

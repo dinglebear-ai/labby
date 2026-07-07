@@ -140,7 +140,7 @@ pub struct GatewayManager {
     /// runner OS process across executions (fresh `javy::Runtime` per run) to
     /// amortize fork/startup. Wrapped in `Arc` so the `Clone` manager shares one
     /// pool; configured from the environment at construction (kill switch:
-    /// `LAB_CODE_MODE_POOL_SIZE=0` → spawn-per-execution fallback).
+    /// `LABBY_CODE_MODE_POOL_SIZE=0` → spawn-per-execution fallback).
     pub(super) code_mode_runner_pool: Arc<crate::gateway::code_mode::RunnerPool>,
     /// Optional durable-execution decision layer for Code Mode pause/resume.
     /// Injected by the `labby` binary (`SqliteDecider` over the pause store).

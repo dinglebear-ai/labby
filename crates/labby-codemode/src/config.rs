@@ -35,7 +35,7 @@ const DEFAULT_CALLTOOL_RESULT_MAX_MIB: usize = 8;
 
 /// Resolve the per-run `callTool` fan-out budget from the environment.
 pub(crate) fn max_calltool_per_run() -> u64 {
-    let Some(raw) = crate::util::env_non_empty("LAB_CODE_MODE_MAX_CALLS_PER_RUN") else {
+    let Some(raw) = crate::util::env_non_empty("LABBY_CODE_MODE_MAX_CALLS_PER_RUN") else {
         return DEFAULT_MAX_CALLTOOL_PER_RUN;
     };
     match raw.trim().parse::<u64>() {
@@ -47,7 +47,7 @@ pub(crate) fn max_calltool_per_run() -> u64 {
                 action = "codemode",
                 value = %raw,
                 default = DEFAULT_MAX_CALLTOOL_PER_RUN,
-                "ignoring invalid LAB_CODE_MODE_MAX_CALLS_PER_RUN; using default"
+                "ignoring invalid LABBY_CODE_MODE_MAX_CALLS_PER_RUN; using default"
             );
             DEFAULT_MAX_CALLTOOL_PER_RUN
         }
@@ -57,7 +57,7 @@ pub(crate) fn max_calltool_per_run() -> u64 {
 /// Resolve the per-result byte ceiling from the environment.
 pub(crate) fn calltool_result_max_bytes() -> usize {
     let default_bytes = DEFAULT_CALLTOOL_RESULT_MAX_MIB * 1024 * 1024;
-    let Some(raw) = crate::util::env_non_empty("LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB") else {
+    let Some(raw) = crate::util::env_non_empty("LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB") else {
         return default_bytes;
     };
     match raw.trim().parse::<usize>() {
@@ -69,7 +69,7 @@ pub(crate) fn calltool_result_max_bytes() -> usize {
                 action = "codemode",
                 value = %raw,
                 default_mib = DEFAULT_CALLTOOL_RESULT_MAX_MIB,
-                "ignoring invalid LAB_CODE_MODE_CALLTOOL_RESULT_MAX_MIB; using default"
+                "ignoring invalid LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB; using default"
             );
             default_bytes
         }

@@ -475,7 +475,7 @@ mod tests {
             "reads [redacted]"
         );
         assert_eq!(
-            sanitize_metadata_text("uses LAB_FOO_TOKEN from .env", 200),
+            sanitize_metadata_text("uses LABBY_FOO_TOKEN from .env", 200),
             "[redacted]"
         );
     }

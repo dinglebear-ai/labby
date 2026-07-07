@@ -125,7 +125,7 @@ Key points:
 
 ### `allowed_hosts` configuration
 
-`LAB_MCP_ALLOWED_HOSTS` — comma-separated hostnames rmcp accepts in the `Host` header. Required when behind a reverse proxy (Caddy/Traefik) that forwards the public hostname.
+`LABBY_MCP_ALLOWED_HOSTS` — comma-separated hostnames rmcp accepts in the `Host` header. Required when behind a reverse proxy (Caddy/Traefik) that forwards the public hostname.
 
 ```rust
 fn allowed_hosts_from_env() -> Vec<String> {
@@ -134,11 +134,11 @@ fn allowed_hosts_from_env() -> Vec<String> {
         "127.0.0.1".to_string(),
         "::1".to_string(),
     ];
-    if let Ok(extra) = std::env::var("LAB_MCP_ALLOWED_HOSTS") {
+    if let Ok(extra) = std::env::var("LABBY_MCP_ALLOWED_HOSTS") {
         for h in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             // Reject wildcard — would disable Host header validation entirely
             if h == "*" {
-                tracing::warn!("ignoring wildcard '*' in LAB_MCP_ALLOWED_HOSTS — would disable DNS rebinding protection");
+                tracing::warn!("ignoring wildcard '*' in LABBY_MCP_ALLOWED_HOSTS — would disable DNS rebinding protection");
                 continue;
             }
             if !hosts.contains(&h.to_string()) {
@@ -146,8 +146,8 @@ fn allowed_hosts_from_env() -> Vec<String> {
             }
         }
     }
-    // If LAB_RESOURCE_URL is set (Phase 1), auto-extract and add its hostname
-    if let Ok(url) = std::env::var("LAB_RESOURCE_URL") {
+    // If LABBY_RESOURCE_URL is set (Phase 1), auto-extract and add its hostname
+    if let Ok(url) = std::env::var("LABBY_RESOURCE_URL") {
         if let Ok(parsed) = url::Url::parse(&url) {
             if let Some(host) = parsed.host_str() {
                 let h = host.to_string();
@@ -170,7 +170,7 @@ use rmcp::transport::streamable_http_server::session::{LocalSessionManager, Sess
 
 let session_config = SessionConfig {
     keep_alive: Some(Duration::from_secs(
-        std::env::var("LAB_MCP_SESSION_TTL_SECS")
+        std::env::var("LABBY_MCP_SESSION_TTL_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(300) // 5 min default (matches rmcp default)
@@ -183,7 +183,7 @@ let session_manager = Arc::new(LocalSessionManager {
 });
 ```
 
-**Warning:** `keep_alive: None` disables eviction entirely. Document that operators should never set this to `None` on long-running servers. The `LAB_MCP_SESSION_TTL_SECS` env var only accepts positive integers.
+**Warning:** `keep_alive: None` disables eviction entirely. Document that operators should never set this to `None` on long-running servers. The `LABBY_MCP_SESSION_TTL_SECS` env var only accepts positive integers.
 
 ### `LabMcpServer` relocation
 
@@ -206,13 +206,13 @@ Move from `serve.rs` to `mcp/server.rs`:
 
 ### No-auth safety gate
 
-When no auth is configured (neither `LAB_MCP_HTTP_TOKEN` nor `LAB_OAUTH_ISSUER`), lab currently warns and runs unprotected. This is dangerous if the bind address isn't localhost.
+When no auth is configured (neither `LABBY_MCP_HTTP_TOKEN` nor `LABBY_OAUTH_ISSUER`), lab currently warns and runs unprotected. This is dangerous if the bind address isn't localhost.
 
 **Rule:** If `host` is not `127.0.0.1`, `::1`, or `localhost` AND no auth mechanism is configured, **refuse to start** with a clear error:
 
 ```
 error: refusing to bind HTTP on 0.0.0.0:8765 without authentication.
-Set LAB_MCP_HTTP_TOKEN or LAB_OAUTH_ISSUER, or bind to 127.0.0.1 for local-only access.
+Set LABBY_MCP_HTTP_TOKEN or LABBY_OAUTH_ISSUER, or bind to 127.0.0.1 for local-only access.
 ```
 
 This prevents accidental unauthenticated deployment on a LAN-accessible address.
@@ -221,9 +221,9 @@ This prevents accidental unauthenticated deployment on a LAN-accessible address.
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `LAB_MCP_ALLOWED_HOSTS` | Comma-separated hostnames for Host header validation | `localhost,127.0.0.1,::1` |
-| `LAB_MCP_STATEFUL` | `true`/`false` — toggle stateful session mode | `true` |
-| `LAB_MCP_SESSION_TTL_SECS` | Idle session eviction TTL in seconds (rmcp native) | `300` (5 min) |
+| `LABBY_MCP_ALLOWED_HOSTS` | Comma-separated hostnames for Host header validation | `localhost,127.0.0.1,::1` |
+| `LABBY_MCP_STATEFUL` | `true`/`false` — toggle stateful session mode | `true` |
+| `LABBY_MCP_SESSION_TTL_SECS` | Idle session eviction TTL in seconds (rmcp native) | `300` (5 min) |
 
 ### Verification
 
@@ -234,7 +234,7 @@ This prevents accidental unauthenticated deployment on a LAN-accessible address.
 - `/health` and `/ready` remain auth-exempt
 - Session reaper evicts stale sessions (test with manual disconnect)
 - Non-localhost bind without auth refuses to start
-- Wildcard in `LAB_MCP_ALLOWED_HOSTS` is rejected with warning
+- Wildcard in `LABBY_MCP_ALLOWED_HOSTS` is rejected with warning
 
 ---
 
@@ -293,8 +293,8 @@ WWW-Authenticate: Bearer resource_metadata="https://lab.example.com/.well-known/
 
 The existing bearer token middleware does static string comparison. This phase replaces it with a layered auth stack:
 
-1. **Static bearer** — `LAB_MCP_HTTP_TOKEN` (existing, for backward compatibility and simple deployments)
-2. **OAuth JWT** — `LAB_OAUTH_ISSUER` (new, for production deployments)
+1. **Static bearer** — `LABBY_MCP_HTTP_TOKEN` (existing, for backward compatibility and simple deployments)
+2. **OAuth JWT** — `LABBY_OAUTH_ISSUER` (new, for production deployments)
 
 If both are configured, either is accepted (try static bearer first — it's cheaper). If neither is configured and binding to a non-localhost address, refuse to start (Phase 0 safety gate).
 
@@ -325,7 +325,7 @@ pub struct AuthContext {
 **Pipeline steps:**
 
 1. **JWKS discovery** — On startup, fetch `{issuer}/.well-known/openid-configuration`, extract `jwks_uri`, fetch the JWKS document. Use `reqwest` (already in `lab`'s Cargo.toml).
-   - **Security:** Validate `LAB_OAUTH_ISSUER` uses HTTPS. Reject HTTP issuers (log error, refuse to start). The JWKS URI is derived from the OIDC discovery document — do not follow redirects to arbitrary hosts (use `reqwest::redirect::Policy::none()` for the JWKS fetch).
+   - **Security:** Validate `LABBY_OAUTH_ISSUER` uses HTTPS. Reject HTTP issuers (log error, refuse to start). The JWKS URI is derived from the OIDC discovery document — do not follow redirects to arbitrary hosts (use `reqwest::redirect::Policy::none()` for the JWKS fetch).
 
 2. **JWKS cache with stale-while-revalidate** — `Arc<RwLock<JwksCache>>` with TTL-based refresh (default 1 hour). **Critical:** Never discard a working JWKS on TTL expiry if the refresh fetch fails. Keep the last-known-good keys and log at WARN. This prevents total auth outage when the issuer (Authelia, Authentik, Keycloak) reboots — common in homelab.
 
@@ -352,7 +352,7 @@ async fn ensure_kid(&self, kid: &str) -> Result<(), AuthError> {
 
 4. **Signature verification** — Match incoming JWT `kid` header to cached JWKS keys. Verify signature using `jsonwebtoken::decode()`.
 
-5. **Claims validation** — Check `exp` (not expired), `iss` (matches `LAB_OAUTH_ISSUER`), `aud` (matches `LAB_OAUTH_AUDIENCE` per RFC 8707).
+5. **Claims validation** — Check `exp` (not expired), `iss` (matches `LABBY_OAUTH_ISSUER`), `aud` (matches `LABBY_OAUTH_AUDIENCE` per RFC 8707).
 
 6. **Context injection** — Extract `sub` and `scope`/`scp` claims into `axum::Extension<AuthContext>` for downstream handlers.
 
@@ -375,10 +375,10 @@ New env vars:
 
 | Var | Purpose | Example |
 |-----|---------|---------|
-| `LAB_OAUTH_ISSUER` | OIDC issuer URL (must be HTTPS) | `https://accounts.google.com` |
-| `LAB_OAUTH_AUDIENCE` | Expected `aud` claim (RFC 8707) | `https://lab.example.com` |
-| `LAB_OAUTH_CLIENT_ID` | Optional — extra `azp` claim validation | |
-| `LAB_RESOURCE_URL` | Public URL of this lab instance (for metadata + allowed_hosts) | `https://lab.example.com` |
+| `LABBY_OAUTH_ISSUER` | OIDC issuer URL (must be HTTPS) | `https://accounts.google.com` |
+| `LABBY_OAUTH_AUDIENCE` | Expected `aud` claim (RFC 8707) | `https://lab.example.com` |
+| `LABBY_OAUTH_CLIENT_ID` | Optional — extra `azp` claim validation | |
+| `LABBY_RESOURCE_URL` | Public URL of this lab instance (for metadata + allowed_hosts) | `https://lab.example.com` |
 
 New `config.toml` section:
 
@@ -402,7 +402,7 @@ jsonwebtoken = "9"
 - Valid JWT from configured issuer grants access
 - Expired JWT returns 401
 - JWT with wrong `aud` returns 401
-- Static bearer token still works when `LAB_MCP_HTTP_TOKEN` is set
+- Static bearer token still works when `LABBY_MCP_HTTP_TOKEN` is set
 - Stale JWKS serves during issuer downtime (log warning, don't reject)
 - HTTP issuer URL is rejected at startup
 - Scope enforcement: `lab:read` token cannot call destructive actions
@@ -556,7 +556,7 @@ The `UpstreamCatalog` stores `(tool_name, description, input_schema)` tuples per
 
 Upstream tool lists can change. The pool re-discovers on a background task:
 
-- Default interval: 5 minutes (configurable via `LAB_UPSTREAM_DISCOVERY_INTERVAL_SECS`)
+- Default interval: 5 minutes (configurable via `LABBY_UPSTREAM_DISCOVERY_INTERVAL_SECS`)
 - **Parallel discovery:** poll all upstreams concurrently (`FuturesUnordered`), not sequentially. One hung upstream must not block others.
 - **Per-upstream timeout:** 15 seconds on `list_tools`. Exceeding this marks the upstream unhealthy.
 - **Atomic catalog swap:** Build the new `UpstreamCatalog` in a local variable, then swap it into the `Arc<RwLock<UpstreamCatalog>>`. Never block normal dispatch during discovery.
@@ -654,7 +654,7 @@ Upstream MCP servers could return arbitrarily large payloads. Lab reads the enti
 }
 ```
 
-Env var: `LAB_UPSTREAM_MAX_RESPONSE_BYTES` (default: `10485760`).
+Env var: `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` (default: `10485760`).
 
 ### Upstream response sanitization
 
@@ -697,7 +697,7 @@ Phase 0  ───────────────────────�
   0.3  Restructure auth middleware: protected sub-router for /v1 + /mcp
   0.4  Mount StreamableHttpService at /mcp in router.rs
   0.5  Configure SessionConfig.keep_alive (rmcp native TTL)
-  0.6  Add allowed_hosts config (LAB_MCP_ALLOWED_HOSTS)
+  0.6  Add allowed_hosts config (LABBY_MCP_ALLOWED_HOSTS)
   0.7  Add no-auth safety gate for non-localhost binds
   0.8  Verify: stdio + HTTP + /mcp all work, auth scoped correctly
 
@@ -709,7 +709,7 @@ Phase 1  ───────────────────────�
   1.5  Implement JWT validation middleware
   1.6  Layer auth: static bearer OR OAuth JWT (try bearer first)
   1.7  Implement scope extraction + enforcement (read/admin — 2 levels)
-  1.8  Config: LAB_OAUTH_ISSUER (HTTPS-only), LAB_OAUTH_AUDIENCE, LAB_RESOURCE_URL
+  1.8  Config: LABBY_OAUTH_ISSUER (HTTPS-only), LABBY_OAUTH_AUDIENCE, LABBY_RESOURCE_URL
   1.9  Verify: JWT flow, stale JWKS, scope enforcement, backward compat
 
 Phase 2  ──────────────────────────────────────────

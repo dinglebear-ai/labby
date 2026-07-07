@@ -25,9 +25,7 @@ If `[node].controller` is missing, the local host resolves itself as the control
 Container deployments must resolve the host machine identity, not Docker's
 ephemeral container hostname. The bundled Compose file mounts host
 `/etc/hostname` at `/run/host/hostname`; `labby serve` checks that file before
-falling back to the process `HOSTNAME`. Operators can also set
-`LAB_HOST_HOSTNAME` explicitly for runtimes that cannot mount the host hostname
-file.
+falling back to the process `HOSTNAME`.
 
 Example:
 
@@ -166,7 +164,7 @@ This starts the same local loopback forwarder used by `labby oauth relay-local`,
 
 ## Auth Expectations
 
-When `LAB_MCP_HTTP_TOKEN` is configured, the controller still protects operator `/v1/*` routes and controller-routed CLI traffic with that bearer token.
+When `LABBY_MCP_HTTP_TOKEN` is configured, the controller still protects operator `/v1/*` routes and controller-routed CLI traffic with that bearer token.
 
 Node-to-controller fleet delivery does not depend on bearer auth. It is authenticated inside websocket `initialize` using the node token (`device_token` wire field) pinned in the enrollment store.
 

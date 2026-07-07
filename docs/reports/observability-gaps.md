@@ -56,6 +56,6 @@ gateway health-check scheduling, log compaction triggers.
 
 ## References
 
-- ACP infinite recursion fix: `axon_rust/crates/services/acp.rs` (LAB_SPAWN_DEPTH)
-- Lab stdio guard: `crates/lab/src/cli/serve.rs` (LAB_SPAWN_DEPTH guard)
+- ACP infinite recursion fix: `axon_rust/crates/services/acp.rs` (LABBY_SPAWN_DEPTH)
+- Lab stdio guard: `crates/lab/src/cli/serve.rs` (LABBY_SPAWN_DEPTH guard)
 - Marketplace dispatch: `crates/lab/src/dispatch/marketplace/dispatch.rs`

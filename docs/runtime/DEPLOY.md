@@ -39,10 +39,10 @@ They do not expose the operator control plane.
 Example:
 
 ```bash
-LAB_MCP_TRANSPORT=http
-LAB_MCP_HTTP_HOST=0.0.0.0
-LAB_MCP_HTTP_PORT=8765
-LAB_MCP_HTTP_TOKEN=replace-me
+LABBY_MCP_TRANSPORT=http
+LABBY_MCP_HTTP_HOST=0.0.0.0
+LABBY_MCP_HTTP_PORT=8765
+LABBY_MCP_HTTP_TOKEN=replace-me
 labby serve
 ```
 
@@ -105,8 +105,8 @@ Useful checks after deployment:
 
 ```bash
 curl http://<node>:8765/health
-curl -H "Authorization: Bearer $LAB_MCP_HTTP_TOKEN" http://<controller>:8765/v1/nodes
-curl -H "Authorization: Bearer $LAB_MCP_HTTP_TOKEN" http://<controller>:8765/v1/nodes/enrollments
+curl -H "Authorization: Bearer $LABBY_MCP_HTTP_TOKEN" http://<controller>:8765/v1/nodes
+curl -H "Authorization: Bearer $LABBY_MCP_HTTP_TOKEN" http://<controller>:8765/v1/nodes/enrollments
 labby nodes list
 labby nodes enrollments list
 labby logs search <node_id> <query>
