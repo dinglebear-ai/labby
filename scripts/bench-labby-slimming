@@ -5,12 +5,16 @@ profile="${LABBY_BENCH_PROFILE:-release-fast}"
 features="${LABBY_BENCH_FEATURES:-gateway-host}"
 package="${LABBY_BENCH_PACKAGE:-labby}"
 target_dir="${LABBY_BENCH_TARGET_DIR:-target/labby-slim-bench}"
+touch_file="${LABBY_BENCH_TOUCH_FILE:-crates/labby/src/main.rs}"
 clean=0
 json=0
+timings=0
+warm_rebuild=0
+llvm_lines=0
 
 usage() {
   cat <<'USAGE'
-usage: scripts/bench-labby-slimming [--clean] [--json]
+usage: scripts/bench-labby-slimming [--clean] [--json] [--timings] [--warm-rebuild] [--llvm-lines]
 
 Benchmarks the selected labby feature slice and prints build time, binary size,
 and dependency counts. Defaults:
@@ -18,8 +22,30 @@ and dependency counts. Defaults:
   LABBY_BENCH_FEATURES=gateway-host
   LABBY_BENCH_PROFILE=release-fast
   LABBY_BENCH_TARGET_DIR=target/labby-slim-bench
+  LABBY_BENCH_TOUCH_FILE=crates/labby/src/main.rs   (--warm-rebuild only)
 
 Set those environment variables to compare slices/profiles.
+
+Flags:
+  --clean          Wipe LABBY_BENCH_TARGET_DIR before building (cold build).
+  --json           Emit a single JSON object instead of a human table.
+  --timings        Also pass --timings to the main build, so
+                    target-dir/cargo-timings/cargo-timing-*.html reports
+                    per-crate wall-clock + critical-path data instead of
+                    just one aggregate number.
+  --warm-rebuild   After the main build, touch LABBY_BENCH_TOUCH_FILE and
+                    time a second build -- this is the incremental/warm
+                    rebuild number that matters for day-to-day dev-loop
+                    friction, as distinct from a one-shot cold/CI build.
+  --llvm-lines     Best-effort: if the `cargo-llvm-lines` subcommand is
+                    installed, rank functions/generic instantiations by
+                    LLVM IR line count (codegen-bloat/monomorphization
+                    contributors). Skipped with a notice if not installed --
+                    this is optional tooling, not vendored.
+
+If `sccache` is on PATH, its --show-stats output is printed after the main
+build so a slow run can be attributed to cold-cache vs genuinely slow
+compilation, rather than assumed from dependency-tree topology alone.
 USAGE
 }
 
@@ -27,6 +53,9 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --clean) clean=1 ;;
     --json) json=1 ;;
+    --timings) timings=1 ;;
+    --warm-rebuild) warm_rebuild=1 ;;
+    --llvm-lines) llvm_lines=1 ;;
     -h|--help)
       usage
       exit 0
@@ -51,6 +80,9 @@ metadata_file="$target_dir/cargo-metadata.json"
 direct_tree_file="$target_dir/cargo-tree-direct.txt"
 build_log="$target_dir/build.log"
 timing_file="$target_dir/timing.txt"
+warm_build_log="$target_dir/build-warm.log"
+warm_timing_file="$target_dir/timing-warm.txt"
+llvm_lines_file="$target_dir/llvm-lines.txt"
 
 cargo tree \
   -p "$package" \
@@ -78,15 +110,21 @@ cargo metadata \
 dep_count="$(awk '{print $1}' "$tree_file" | sort -u | wc -l | tr -d ' ')"
 direct_dep_count="$(awk 'NR > 1 && $1 != "[dev-dependencies]" { print $1 }' "$direct_tree_file" | sort -u | wc -l | tr -d ' ')"
 
+build_args=(
+  -p "$package"
+  --no-default-features
+  --features "$features"
+  --profile "$profile"
+  --target-dir "$target_dir"
+  --bin labby
+)
+if [ "$timings" -eq 1 ]; then
+  build_args+=(--timings)
+fi
+
 if ! /usr/bin/time -f 'elapsed_real=%E
 elapsed_seconds=%e' -o "$timing_file" \
-  cargo build \
-    -p "$package" \
-    --no-default-features \
-    --features "$features" \
-    --profile "$profile" \
-    --target-dir "$target_dir" \
-    --bin labby \
+  cargo build "${build_args[@]}" \
     > "$build_log" 2>&1; then
   cat "$build_log" >&2
   exit 1
@@ -103,6 +141,63 @@ elapsed_seconds="$(awk -F= '/^elapsed_seconds=/{print $2}' "$timing_file")"
 binary_bytes="$(stat -c '%s' "$binary")"
 binary_human="$(du -h "$binary" | awk '{print $1}')"
 
+timings_report=""
+if [ "$timings" -eq 1 ]; then
+  # cargo writes one cargo-timing-<timestamp>.html per invocation under
+  # <target-dir>/cargo-timings/ -- take the most recently written one.
+  timings_report="$(find "$target_dir/cargo-timings" -maxdepth 1 -name 'cargo-timing-*.html' -newer "$timing_file" 2>/dev/null | head -1)"
+  if [ -z "$timings_report" ]; then
+    timings_report="$(find "$target_dir/cargo-timings" -maxdepth 1 -name 'cargo-timing-*.html' 2>/dev/null | sort | tail -1)"
+  fi
+fi
+
+warm_elapsed_real=""
+warm_elapsed_seconds=""
+if [ "$warm_rebuild" -eq 1 ]; then
+  if [ ! -f "$touch_file" ]; then
+    echo "warning: --warm-rebuild touch file not found: $touch_file (skipping warm rebuild)" >&2
+  else
+    touch "$touch_file"
+    if ! /usr/bin/time -f 'elapsed_real=%E
+elapsed_seconds=%e' -o "$warm_timing_file" \
+      cargo build \
+        -p "$package" \
+        --no-default-features \
+        --features "$features" \
+        --profile "$profile" \
+        --target-dir "$target_dir" \
+        --bin labby \
+        > "$warm_build_log" 2>&1; then
+      cat "$warm_build_log" >&2
+      exit 1
+    fi
+    warm_elapsed_real="$(awk -F= '/^elapsed_real=/{print $2}' "$warm_timing_file")"
+    warm_elapsed_seconds="$(awk -F= '/^elapsed_seconds=/{print $2}' "$warm_timing_file")"
+  fi
+fi
+
+llvm_lines_status="skipped"
+if [ "$llvm_lines" -eq 1 ]; then
+  if command -v cargo-llvm-lines >/dev/null 2>&1; then
+    if cargo llvm-lines \
+      -p "$package" \
+      --no-default-features \
+      --features "$features" \
+      > "$llvm_lines_file" 2>&1; then
+      llvm_lines_status="ok"
+    else
+      llvm_lines_status="failed"
+    fi
+  else
+    llvm_lines_status="not-installed (cargo install cargo-llvm-lines)"
+  fi
+fi
+
+sccache_stats=""
+if command -v sccache >/dev/null 2>&1; then
+  sccache_stats="$(sccache --show-stats 2>/dev/null || true)"
+fi
+
 if [ "$json" -eq 1 ]; then
   jq -n \
     --arg package "$package" \
@@ -116,6 +211,12 @@ if [ "$json" -eq 1 ]; then
     --argjson direct_dep_count "$direct_dep_count" \
     --argjson binary_bytes "$binary_bytes" \
     --arg binary_human "$binary_human" \
+    --arg timings_report "$timings_report" \
+    --arg warm_elapsed_real "$warm_elapsed_real" \
+    --arg warm_elapsed_seconds "$warm_elapsed_seconds" \
+    --arg llvm_lines_status "$llvm_lines_status" \
+    --arg llvm_lines_file "$llvm_lines_file" \
+    --arg sccache_stats "$sccache_stats" \
     '{
       package: $package,
       features: $features,
@@ -127,7 +228,15 @@ if [ "$json" -eq 1 ]; then
       dependency_count: $dep_count,
       direct_dependency_count: $direct_dep_count,
       binary_bytes: $binary_bytes,
-      binary_human: $binary_human
+      binary_human: $binary_human,
+      timings_report: (if $timings_report == "" then null else $timings_report end),
+      warm_rebuild: (
+        if $warm_elapsed_real != "" then
+          { elapsed_real: $warm_elapsed_real, elapsed_seconds: ($warm_elapsed_seconds | tonumber) }
+        else null end
+      ),
+      llvm_lines: { status: $llvm_lines_status, file: $llvm_lines_file },
+      sccache_stats: (if $sccache_stats == "" then null else $sccache_stats end)
     }'
 else
   cat <<EOF
@@ -135,10 +244,24 @@ labby slimming benchmark
 feature slice     $features
 profile           $profile
 target dir        $target_dir
-elapsed           $elapsed_real (${elapsed_seconds}s)
+elapsed (cold)    $elapsed_real (${elapsed_seconds}s)
 binary            $binary_human ($binary_bytes bytes)
 dependencies      $dep_count total, $direct_dep_count direct
 build log         $build_log
 cargo tree        $tree_file
 EOF
+  if [ -n "$timings_report" ]; then
+    echo "timings report    $timings_report"
+  fi
+  if [ -n "$warm_elapsed_real" ]; then
+    echo "elapsed (warm)    $warm_elapsed_real (${warm_elapsed_seconds}s) after touching $touch_file"
+  fi
+  if [ "$llvm_lines" -eq 1 ]; then
+    echo "llvm-lines        $llvm_lines_status${llvm_lines_status:+ }$([ "$llvm_lines_status" = "ok" ] && echo "-> $llvm_lines_file")"
+  fi
+  if [ -n "$sccache_stats" ]; then
+    echo ""
+    echo "sccache stats:"
+    echo "$sccache_stats"
+  fi
 fi
