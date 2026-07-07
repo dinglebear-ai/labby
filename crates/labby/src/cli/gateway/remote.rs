@@ -16,6 +16,15 @@
 //! dispatch when no daemon is reachable -- which keeps bootstrap workflows
 //! (`labby setup --provision`, `labby doctor`, the very first `gateway add`
 //! before `labby serve` has ever run) working standalone.
+//!
+//! Detection isn't loopback-only: it tries, in order, the local bind
+//! address (fast path when the CLI runs on the same host/container as the
+//! daemon), then the gateway's own configured public URLs
+//! (`LAB_MCP_GATEWAY_URL`, `LAB_PUBLIC_URL` -- resolved the same way
+//! `LabConfig::public_urls()` already does everywhere else). That means
+//! `labby gateway add` reaches the real daemon whether it's run inside the
+//! `labby` container or from any other machine that shares
+//! `~/.labby/.env` (for `LAB_MCP_HTTP_TOKEN`).
 
 use std::time::Duration;
 
@@ -40,27 +49,30 @@ pub(crate) struct LiveGateway {
     client: reqwest::Client,
 }
 
-/// Resolve the same host:port `labby serve` itself would bind to, using the
-/// identical env-var → config → default resolution order as `cli/serve.rs`
-/// (`LAB_MCP_HTTP_HOST`/`LAB_MCP_HTTP_PORT`, then `config.mcp.host`/`.port`,
-/// then `127.0.0.1:8765`). Deliberately loopback by default: this exists to
-/// reach *this host's* daemon, not to become a remote-gateway client.
-fn resolve_base_url(config: &LabConfig) -> String {
-    resolve_base_url_from(
+/// Candidate base URLs to try, in priority order: the local bind address
+/// `labby serve` itself would resolve (identical env-var → config → default
+/// order as `cli/serve.rs`: `LAB_MCP_HTTP_HOST`/`LAB_MCP_HTTP_PORT`, then
+/// `config.mcp.host`/`.port`, then `127.0.0.1:8765`), followed by the
+/// gateway's own configured public URLs. The local candidate is tried first
+/// because it's a fast same-host round trip when the CLI happens to be
+/// co-located with the daemon; the public URLs are what let the CLI reach
+/// the daemon from anywhere else.
+fn candidate_base_urls(config: &LabConfig) -> Vec<String> {
+    candidate_base_urls_from(
         std::env::var("LAB_MCP_HTTP_HOST").ok(),
         std::env::var("LAB_MCP_HTTP_PORT").ok(),
         config,
     )
 }
 
-/// Pure resolution logic, split out from `resolve_base_url` so it's testable
-/// without mutating process-global env vars (which would race with other
-/// tests in the same binary).
-fn resolve_base_url_from(
+/// Pure resolution logic, split out from `candidate_base_urls` so it's
+/// testable without mutating process-global env vars (which would race with
+/// other tests in the same binary).
+fn candidate_base_urls_from(
     host_env: Option<String>,
     port_env: Option<String>,
     config: &LabConfig,
-) -> String {
+) -> Vec<String> {
     let host = host_env
         .or_else(|| config.mcp.host.clone())
         .unwrap_or_else(|| "127.0.0.1".to_string());
@@ -68,35 +80,48 @@ fn resolve_base_url_from(
         .and_then(|value| value.parse::<u16>().ok())
         .or(config.mcp.port)
         .unwrap_or(8765);
-    format!("http://{host}:{port}")
+
+    let mut candidates = vec![format!("http://{host}:{port}")];
+    let public = config.public_urls();
+    for url in [public.mcp_gateway, public.app].into_iter().flatten() {
+        let trimmed = url.trim_end_matches('/').to_string();
+        if !trimmed.is_empty() && !candidates.contains(&trimmed) {
+            candidates.push(trimmed);
+        }
+    }
+    candidates
 }
 
-/// Probe for a live daemon and return a client for it if reachable.
+/// Probe candidate base URLs in order and return a client for the first
+/// reachable one.
 ///
-/// Returns `None` on any failure whatsoever (not running, wrong port,
-/// network error, non-2xx `/health`) -- callers must fall back to local
-/// dispatch. A live daemon is a nice-to-have consistency guarantee here, not
-/// a hard requirement, so standalone CLI use keeps working.
+/// Returns `None` if every candidate fails (daemon not running anywhere
+/// reachable, network error, non-2xx `/health` on all of them) -- callers
+/// must fall back to local dispatch. A live daemon is a nice-to-have
+/// consistency guarantee here, not a hard requirement, so standalone CLI use
+/// keeps working.
 pub(crate) async fn detect(config: &LabConfig) -> Option<LiveGateway> {
-    let base_url = resolve_base_url(config);
     let client = reqwest::Client::builder().build().ok()?;
-
-    let health = client
-        .get(format!("{base_url}/health"))
-        .timeout(PROBE_TIMEOUT)
-        .send()
-        .await
-        .ok()?;
-    if !health.status().is_success() {
-        return None;
-    }
-
     let token = std::env::var("LAB_MCP_HTTP_TOKEN").ok();
-    Some(LiveGateway {
-        base_url,
-        token,
-        client,
-    })
+
+    for base_url in candidate_base_urls(config) {
+        let Ok(health) = client
+            .get(format!("{base_url}/health"))
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if health.status().is_success() {
+            return Some(LiveGateway {
+                base_url,
+                token,
+                client,
+            });
+        }
+    }
+    None
 }
 
 impl LiveGateway {
@@ -205,26 +230,47 @@ mod tests {
     }
 
     #[test]
-    fn base_url_prefers_env_over_config_over_default() {
+    fn local_candidate_prefers_env_over_config_over_default() {
         let mut config = LabConfig::default();
         config.mcp.host = Some("configured.example".to_string());
         config.mcp.port = Some(1234);
 
         assert_eq!(
-            resolve_base_url_from(None, None, &LabConfig::default()),
-            "http://127.0.0.1:8765"
+            candidate_base_urls_from(None, None, &LabConfig::default()),
+            vec!["http://127.0.0.1:8765".to_string()]
         );
         assert_eq!(
-            resolve_base_url_from(None, None, &config),
-            "http://configured.example:1234"
+            candidate_base_urls_from(None, None, &config),
+            vec!["http://configured.example:1234".to_string()]
         );
         assert_eq!(
-            resolve_base_url_from(
+            candidate_base_urls_from(
                 Some("env.example".to_string()),
                 Some("9999".to_string()),
                 &config
             ),
-            "http://env.example:9999"
+            vec!["http://env.example:9999".to_string()]
+        );
+    }
+
+    #[test]
+    fn candidates_fall_through_to_configured_public_urls() {
+        let mut config = LabConfig::default();
+        config.public_urls = Some(crate::config::PublicUrlsConfig {
+            app: Some("https://labby.example.com/".to_string()),
+            mcp_gateway: Some("https://mcp.example.com".to_string()),
+        });
+
+        // Local bind address first (fast path), then the dedicated gateway
+        // URL, then the general app URL -- and a trailing slash is trimmed
+        // so it composes cleanly with `/health` and `/v1/gateway`.
+        assert_eq!(
+            candidate_base_urls_from(None, None, &config),
+            vec![
+                "http://127.0.0.1:8765".to_string(),
+                "https://mcp.example.com".to_string(),
+                "https://labby.example.com".to_string(),
+            ]
         );
     }
 
@@ -298,5 +344,33 @@ mod tests {
         config.mcp.port = url.port();
 
         assert!(detect(&config).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn detect_falls_through_to_a_public_url_when_local_is_unreachable() {
+        ensure_tls_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        // Local bind address (port 0) never accepts a connection; only the
+        // configured public URL (standing in for the wiremock server) is
+        // actually reachable, matching a CLI invocation on a different
+        // machine than the daemon.
+        let mut config = LabConfig::default();
+        config.mcp.host = Some("127.0.0.1".to_string());
+        config.mcp.port = Some(0);
+        config.public_urls = Some(crate::config::PublicUrlsConfig {
+            app: Some(server.uri()),
+            mcp_gateway: None,
+        });
+
+        let live = detect(&config)
+            .await
+            .expect("should fall through to public url");
+        assert_eq!(live.base_url, server.uri());
     }
 }
