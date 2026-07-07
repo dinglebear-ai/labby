@@ -17,17 +17,21 @@
 //! resources -- the bridge has no URI-scheme awareness of its own; it just
 //! forwards `read_resource` verbatim and the daemon does its normal `ui://`
 //! routing on the other end), prompts, `complete`, `set_level`,
-//! `subscribe`/`unsubscribe`. The one thing that genuinely can't be
-//! forwarded is task management (`enqueue_task`/`list_tasks`/`get_task_info`/
-//! `get_task_result`/`cancel_task`, the SEP-1319 async-task extension) --
-//! `rmcp` 2.1's `Peer<RoleClient>` has no client-side method for any of
-//! these, so there is nothing to call on the remote connection without
-//! hand-rolling raw JSON-RPC outside the typed API. They fall through to
-//! `ServerHandler`'s defaults (`method_not_found`).
+//! `subscribe`/`unsubscribe`, `ping`, and the full SEP-1319 async-task
+//! extension (`enqueue_task`/`list_tasks`/`get_task_info`/`get_task_result`/
+//! `cancel_task`) plus the generic `CustomRequest` escape hatch. None of
+//! these have a convenient typed method on `Peer<RoleClient>` (`ping` has no
+//! shortcut at all; the task methods reuse `tools/call` wire framing with a
+//! different expected response variant) -- they're forwarded via the
+//! generic `Peer::send_request` with a hand-built `ClientRequest` and a
+//! matching `ServerResult` variant, the same raw mechanism the typed
+//! shortcuts are themselves built on. There is nothing left in
+//! `ServerHandler`'s request surface that isn't forwarded.
 //!
 //! Downstream -> daemon (notifications): `cancelled`/`progress`/
-//! `roots_list_changed` are forwarded too, so cancelling a call through the
-//! bridge actually interrupts it on the real daemon.
+//! `roots_list_changed`/`task_status`/`CustomNotification` are forwarded
+//! too, so cancelling a call through the bridge actually interrupts it on
+//! the real daemon.
 //!
 //! Daemon -> downstream: `get_info()` mirrors the real daemon's actual
 //! `ServerInfo` (fetched from the connection's own `peer_info()`, populated
@@ -44,12 +48,16 @@
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, CancelledNotificationParam, ClientInfo,
-    CompleteRequestParams, CompleteResult, ElicitRequestParams, ElicitResult,
-    GetPromptRequestParams, GetPromptResult, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProgressNotificationParam,
-    ReadResourceRequestParams, ReadResourceResult, ServerInfo, SubscribeRequestParams,
-    UnsubscribeRequestParams,
+    CallToolRequest, CallToolRequestParams, CallToolResult, CancelTaskParams, CancelTaskRequest,
+    CancelTaskResult, CancelledNotificationParam, ClientInfo, ClientNotification, ClientRequest,
+    CompleteRequestParams, CompleteResult, CreateTaskResult, CustomNotification, CustomRequest,
+    CustomResult, ElicitRequestParams, ElicitResult, GetPromptRequestParams, GetPromptResult,
+    GetTaskParams, GetTaskPayloadParams, GetTaskPayloadRequest, GetTaskPayloadResult,
+    GetTaskRequest, GetTaskResult, ListPromptsResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListTasksRequest, ListTasksResult, ListToolsResult,
+    PaginatedRequestParams, PingRequest, ProgressNotificationParam, ReadResourceRequestParams,
+    ReadResourceResult, ServerInfo, ServerResult, SubscribeRequestParams,
+    TaskStatusNotificationParam, UnsubscribeRequestParams,
 };
 // rmcp 2.1 deprecates sampling/roots/logging under SEP-2577, but the bridge
 // still forwards these legacy server<->client requests for compatibility
@@ -216,6 +224,15 @@ fn bridge_error(action: &str, error: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(format!("live daemon request failed: {error}"), None)
 }
 
+/// The live daemon replied to a raw `send_request` with a `ServerResult`
+/// variant other than the one the wire method promises -- e.g. anything but
+/// `CreateTaskResult` for a task-mode `tools/call`. Not expected in
+/// practice; only reachable if the daemon itself violates the SEP-1319
+/// contract.
+fn unexpected_response(action: &str) -> ErrorData {
+    bridge_error(action, "live daemon returned an unexpected result type")
+}
+
 impl ServerHandler for BridgeServerHandler {
     /// Mirror the real daemon's actual advertised `ServerInfo` -- fetched
     /// from the connection's `peer_info()`, populated by the initialize
@@ -366,6 +383,180 @@ impl ServerHandler for BridgeServerHandler {
             .unsubscribe(request)
             .await
             .map_err(|e| bridge_error("unsubscribe", e))
+    }
+
+    /// `Peer<RoleClient>` has no typed `ping` shortcut, so build the
+    /// `PingRequest` and match the raw `ServerResult` by hand -- the same
+    /// thing the typed convenience methods do internally.
+    async fn ping(&self, _context: RequestContext<RoleServer>) -> Result<(), ErrorData> {
+        match self
+            .peer
+            .send_request(ClientRequest::PingRequest(PingRequest::default()))
+            .await
+            .map_err(|e| bridge_error("ping", e))?
+        {
+            ServerResult::EmptyResult(_) => Ok(()),
+            _ => Err(unexpected_response("ping")),
+        }
+    }
+
+    /// Task creation (SEP-1319) reuses `tools/call` wire framing -- there is
+    /// no distinct `ClientRequest` variant for it -- but expects
+    /// `ServerResult::CreateTaskResult` back instead of `CallToolResult`, so
+    /// it can't go through the typed `call_tool()` shortcut.
+    async fn enqueue_task(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CreateTaskResult, ErrorData> {
+        match self
+            .peer
+            .send_request(ClientRequest::CallToolRequest(CallToolRequest::new(
+                request,
+            )))
+            .await
+            .map_err(|e| bridge_error("enqueue_task", e))?
+        {
+            ServerResult::CreateTaskResult(result) => Ok(result),
+            _ => Err(unexpected_response("enqueue_task")),
+        }
+    }
+
+    async fn list_tasks(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListTasksResult, ErrorData> {
+        match self
+            .peer
+            .send_request(ClientRequest::ListTasksRequest(ListTasksRequest {
+                method: Default::default(),
+                params: request,
+                extensions: Default::default(),
+            }))
+            .await
+            .map_err(|e| bridge_error("list_tasks", e))?
+        {
+            ServerResult::ListTasksResult(result) => Ok(result),
+            _ => Err(unexpected_response("list_tasks")),
+        }
+    }
+
+    async fn get_task_info(
+        &self,
+        request: GetTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskResult, ErrorData> {
+        match self
+            .peer
+            .send_request(ClientRequest::GetTaskRequest(GetTaskRequest::new(
+                request,
+            )))
+            .await
+            .map_err(|e| bridge_error("get_task_info", e))?
+        {
+            ServerResult::GetTaskResult(result) => Ok(result),
+            _ => Err(unexpected_response("get_task_info")),
+        }
+    }
+
+    async fn get_task_result(
+        &self,
+        request: GetTaskPayloadParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskPayloadResult, ErrorData> {
+        match self
+            .peer
+            .send_request(ClientRequest::GetTaskPayloadRequest(
+                GetTaskPayloadRequest::new(request),
+            ))
+            .await
+            .map_err(|e| bridge_error("get_task_result", e))?
+        {
+            ServerResult::GetTaskPayloadResult(result) => Ok(result),
+            _ => Err(unexpected_response("get_task_result")),
+        }
+    }
+
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CancelTaskResult, ErrorData> {
+        match self
+            .peer
+            .send_request(ClientRequest::CancelTaskRequest(CancelTaskRequest::new(
+                request,
+            )))
+            .await
+            .map_err(|e| bridge_error("cancel_task", e))?
+        {
+            ServerResult::CancelTaskResult(result) => Ok(result),
+            _ => Err(unexpected_response("cancel_task")),
+        }
+    }
+
+    /// Generic escape hatch for any method neither side has typed support
+    /// for. Forwarded verbatim so a downstream client and the real daemon
+    /// can negotiate a custom method through the bridge transparently.
+    async fn on_custom_request(
+        &self,
+        request: CustomRequest,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CustomResult, ErrorData> {
+        match self
+            .peer
+            .send_request(ClientRequest::CustomRequest(request))
+            .await
+            .map_err(|e| bridge_error("custom_request", e))?
+        {
+            ServerResult::CustomResult(result) => Ok(result),
+            _ => Err(unexpected_response("custom_request")),
+        }
+    }
+
+    async fn on_task_status(
+        &self,
+        params: TaskStatusNotificationParam,
+        _context: NotificationContext<RoleServer>,
+    ) {
+        if let Err(error) = self
+            .peer
+            .send_notification(ClientNotification::TaskStatusNotification(
+                rmcp::model::TaskStatusNotification::new(params),
+            ))
+            .await
+        {
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "bridge.on_task_status",
+                subsystem = "mcp_bridge",
+                error = %error,
+                "failed to forward task-status notification to live daemon"
+            );
+        }
+    }
+
+    async fn on_custom_notification(
+        &self,
+        notification: CustomNotification,
+        _context: NotificationContext<RoleServer>,
+    ) {
+        if let Err(error) = self
+            .peer
+            .send_notification(ClientNotification::CustomNotification(notification))
+            .await
+        {
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "bridge.on_custom_notification",
+                subsystem = "mcp_bridge",
+                error = %error,
+                "failed to forward custom notification to live daemon"
+            );
+        }
     }
 
     /// Forward a downstream cancellation onto the real connection so an
