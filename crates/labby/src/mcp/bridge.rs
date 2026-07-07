@@ -460,6 +460,14 @@ impl ServerHandler for BridgeServerHandler {
         }
     }
 
+    /// `GetTaskPayloadResult` deliberately errors on `Deserialize` (rmcp's
+    /// own doc comment on the type: it's wire-identical to `CustomResult`,
+    /// a bare JSON value, so rmcp's untagged `ServerResult` enum always
+    /// resolves a real one to `CustomResult` instead). A genuine daemon
+    /// response therefore never actually arrives as
+    /// `ServerResult::GetTaskPayloadResult` -- only `CustomResult` is
+    /// reachable in practice; the former arm is kept only in case a future
+    /// rmcp version changes this.
     async fn get_task_result(
         &self,
         request: GetTaskPayloadParams,
@@ -474,10 +482,18 @@ impl ServerHandler for BridgeServerHandler {
             .map_err(|e| bridge_error("get_task_result", e))?
         {
             ServerResult::GetTaskPayloadResult(result) => Ok(result),
+            ServerResult::CustomResult(CustomResult(value)) => Ok(GetTaskPayloadResult::new(value)),
             _ => Err(unexpected_response("get_task_result")),
         }
     }
 
+    /// `CancelTaskResult` and `GetTaskResult` are wire-identical
+    /// (`allOf[Result, Task]`, same fields, same flattening) and
+    /// `GetTaskResult` is declared earlier in `ServerResult`'s untagged
+    /// enum, so a genuine `CancelTaskResult` response always resolves to
+    /// `ServerResult::GetTaskResult` on the wire, never
+    /// `ServerResult::CancelTaskResult` -- the latter arm is unreachable in
+    /// practice but kept for forward-compatibility.
     async fn cancel_task(
         &self,
         request: CancelTaskParams,
@@ -492,6 +508,7 @@ impl ServerHandler for BridgeServerHandler {
             .map_err(|e| bridge_error("cancel_task", e))?
         {
             ServerResult::CancelTaskResult(result) => Ok(result),
+            ServerResult::GetTaskResult(result) => Ok(CancelTaskResult::new(result.task)),
             _ => Err(unexpected_response("cancel_task")),
         }
     }
@@ -608,5 +625,345 @@ impl ServerHandler for BridgeServerHandler {
                 "failed to forward roots-list-changed notification to live daemon"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! End-to-end proof that `BridgeServerHandler`/`BridgeClientHandler`
+    //! actually forward across two independent in-memory connections, rather
+    //! than short-circuiting.
+    //!
+    //! Topology (mirrors `labby-gateway`'s `RelayClientHandler` tests in
+    //! `crates/labby-gateway/src/upstream/pool/relay.rs`, and the
+    //! `connect_service` wiring in `crate::live_gateway`):
+    //!
+    //! ```text
+    //! TestClient --(duplex #2)--> BridgeServerHandler --(duplex #1)--> FakeDaemonHandler
+    //! ```
+    //!
+    //! `duplex #1` is the bridge's outbound connection to the "live daemon",
+    //! served with `BridgeClientHandler` as the `ClientHandler`. `duplex #2`
+    //! is the bridge's own inbound transport, served with
+    //! `BridgeServerHandler`. A bare test-only `ClientHandler` drives that
+    //! second connection to exercise every forwarded request/response path.
+    use std::sync::Arc;
+
+    use rmcp::model::{
+        CancelTaskParams, CustomRequest, EmptyResult, ErrorData as McpError, GetTaskParams,
+        GetTaskPayloadParams, PaginatedRequestParams, ServerCapabilities, ServerInfo, Task,
+        TaskStatus,
+    };
+    use rmcp::service::{RequestContext, RunningService};
+    use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
+
+    use super::*;
+
+    const IN_PROCESS_PEER_BUFFER_BYTES: usize = 256 * 1024;
+
+    /// Canonical fake task id, asserted verbatim end-to-end to prove the
+    /// data actually crossed both hops rather than being stubbed locally.
+    const FAKE_TASK_ID: &str = "fake-task-42";
+
+    fn fake_task() -> Task {
+        Task::new(
+            FAKE_TASK_ID.to_string(),
+            TaskStatus::Working,
+            "2026-01-01T00:00:00Z".to_string(),
+            "2026-01-01T00:00:01Z".to_string(),
+        )
+        .with_status_message("doing the fake thing")
+    }
+
+    /// Minimal fake "live daemon" `ServerHandler`. Answers every forwarded
+    /// method deterministically so the tests can assert exact round-trip
+    /// fidelity through the bridge instead of a no-op stub.
+    #[derive(Clone)]
+    struct FakeDaemonHandler;
+
+    impl ServerHandler for FakeDaemonHandler {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn ping(&self, _context: RequestContext<RoleServer>) -> Result<(), McpError> {
+            Ok(())
+        }
+
+        async fn list_tasks(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListTasksResult, McpError> {
+            Ok(ListTasksResult::new(vec![fake_task()]))
+        }
+
+        async fn get_task_info(
+            &self,
+            request: GetTaskParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<GetTaskResult, McpError> {
+            // Prove the request itself made it through: echo the requested
+            // task id back in the status message instead of always
+            // returning the same canned task.
+            let mut task = fake_task();
+            task.status_message = Some(format!("info-for:{}", request.task_id));
+            Ok(GetTaskResult::new(task))
+        }
+
+        async fn get_task_result(
+            &self,
+            request: GetTaskPayloadParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<GetTaskPayloadResult, McpError> {
+            Ok(GetTaskPayloadResult::new(serde_json::json!({
+                "task_id": request.task_id,
+                "payload": "fake-result-payload",
+            })))
+        }
+
+        async fn cancel_task(
+            &self,
+            request: CancelTaskParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<CancelTaskResult, McpError> {
+            let mut task = fake_task();
+            task.status = TaskStatus::Cancelled;
+            task.status_message = Some(format!("cancelled:{}", request.task_id));
+            Ok(CancelTaskResult::new(task))
+        }
+
+        async fn on_custom_request(
+            &self,
+            request: CustomRequest,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<CustomResult, McpError> {
+            Ok(CustomResult::new(serde_json::json!({
+                "echoed_method": request.method,
+                "echoed_params": request.params,
+            })))
+        }
+    }
+
+    /// Bare test-only `ClientHandler` for the downstream (bridge-facing)
+    /// side. The tests only ever *call* methods on the bridge, never receive
+    /// server->client requests, so no elicitation/sampling/roots relay is
+    /// needed here -- that half is covered by `BridgeClientHandler`'s own
+    /// unit-level behavior and by `labby-gateway`'s `RelayClientHandler`
+    /// tests for the analogous relay path.
+    #[derive(Clone)]
+    struct TestDownstreamClient;
+
+    impl ClientHandler for TestDownstreamClient {}
+
+    /// A live bridge topology: the test client's peer for driving requests,
+    /// plus the two `RunningService`s that must stay alive for the duration
+    /// of the test. Dropping either tears down its transport (the bridge's
+    /// connection to the fake daemon is kept alive internally by
+    /// `BridgeServerHandler::_service`, so it doesn't need a separate
+    /// binding here).
+    struct BridgeHarness {
+        peer: Peer<RoleClient>,
+        _client_service: RunningService<RoleClient, TestDownstreamClient>,
+        _bridge_service: RunningService<RoleServer, BridgeServerHandler>,
+    }
+
+    /// Wires up the full two-hop bridge topology:
+    /// test client -> `BridgeServerHandler` -> `BridgeClientHandler` -> fake daemon.
+    async fn wire_bridge() -> BridgeHarness {
+        // Hop 1: bridge -> fake daemon, served with `BridgeClientHandler` so
+        // the daemon's server->client requests would be relayed (unused by
+        // these tests, but this is the real production wiring shape from
+        // `live_gateway::connect_service`).
+        let (daemon_transport, bridge_outbound_transport) =
+            tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        tokio::spawn(async move {
+            if let Ok(running) = FakeDaemonHandler.serve(daemon_transport).await {
+                running.waiting().await.ok();
+            }
+        });
+        let downstream_cell: DownstreamCell = Arc::new(OnceCell::new());
+        let bridge_client_service: RunningService<RoleClient, BridgeClientHandler> =
+            BridgeClientHandler::new(downstream_cell.clone())
+                .serve(bridge_outbound_transport)
+                .await
+                .expect("bridge connects to fake daemon");
+
+        let bridge_handler = BridgeServerHandler::new(bridge_client_service, downstream_cell);
+
+        // Hop 2: test client -> bridge, served with the bridge's own
+        // `ServerHandler` impl over its own independent in-memory transport.
+        // Both `serve()` calls perform the `initialize` handshake with each
+        // other over the same duplex pair, so they must run concurrently --
+        // awaiting one before starting the other deadlocks forever waiting
+        // for a response nobody has sent yet.
+        let (bridge_inbound_transport, client_transport) =
+            tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let (bridge_service, client_service) = tokio::join!(
+            bridge_handler.serve(bridge_inbound_transport),
+            TestDownstreamClient.serve(client_transport),
+        );
+        let bridge_service: RunningService<RoleServer, BridgeServerHandler> =
+            bridge_service.expect("test client connects to bridge");
+        let client_service: RunningService<RoleClient, TestDownstreamClient> =
+            client_service.expect("test client transport connects");
+        let peer = client_service.peer().clone();
+
+        BridgeHarness {
+            peer,
+            _client_service: client_service,
+            _bridge_service: bridge_service,
+        }
+    }
+
+    #[tokio::test]
+    async fn ping_forwards_through_bridge_to_daemon() {
+        let harness = wire_bridge().await;
+
+        match harness
+            .peer
+            .send_request(ClientRequest::PingRequest(PingRequest::default()))
+            .await
+            .expect("ping round-trips through the bridge")
+        {
+            ServerResult::EmptyResult(EmptyResult {}) => {}
+            other => panic!("expected EmptyResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_tasks_returns_the_fake_daemons_exact_task() {
+        let harness = wire_bridge().await;
+
+        let result = match harness
+            .peer
+            .send_request(ClientRequest::ListTasksRequest(ListTasksRequest {
+                method: Default::default(),
+                params: None,
+                extensions: Default::default(),
+            }))
+            .await
+            .expect("list_tasks round-trips through the bridge")
+        {
+            ServerResult::ListTasksResult(result) => result,
+            other => panic!("expected ListTasksResult, got {other:?}"),
+        };
+
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].task_id, FAKE_TASK_ID);
+        assert_eq!(result.tasks[0].status, TaskStatus::Working);
+        assert_eq!(
+            result.tasks[0].status_message.as_deref(),
+            Some("doing the fake thing")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_task_info_reaches_the_daemon_with_the_requested_id() {
+        let harness = wire_bridge().await;
+
+        let result = match harness
+            .peer
+            .send_request(ClientRequest::GetTaskRequest(GetTaskRequest::new(
+                GetTaskParams::new(FAKE_TASK_ID),
+            )))
+            .await
+            .expect("get_task_info round-trips through the bridge")
+        {
+            ServerResult::GetTaskResult(result) => result,
+            other => panic!("expected GetTaskResult, got {other:?}"),
+        };
+
+        assert_eq!(result.task.task_id, FAKE_TASK_ID);
+        // The daemon's fake handler stamps the requested task id into the
+        // status message, proving the request params -- not just the
+        // response -- crossed the bridge intact.
+        assert_eq!(
+            result.task.status_message.as_deref(),
+            Some(format!("info-for:{FAKE_TASK_ID}").as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_task_reaches_the_daemon_and_returns_cancelled_status() {
+        let harness = wire_bridge().await;
+
+        // `CancelTaskResult` and `GetTaskResult` are wire-identical
+        // (`allOf[Result, Task]`), and `GetTaskResult` is declared earlier
+        // in `ServerResult`'s untagged enum, so a genuine daemon response
+        // always resolves to `GetTaskResult` on the wire -- never the
+        // `CancelTaskResult` variant itself. Accept either shape (mirrors
+        // the same ambiguity `get_task_result` handles just above).
+        let task = match harness
+            .peer
+            .send_request(ClientRequest::CancelTaskRequest(CancelTaskRequest::new(
+                CancelTaskParams::new(FAKE_TASK_ID),
+            )))
+            .await
+            .expect("cancel_task round-trips through the bridge")
+        {
+            ServerResult::CancelTaskResult(result) => result.task,
+            ServerResult::GetTaskResult(result) => result.task,
+            other => panic!("expected CancelTaskResult/GetTaskResult, got {other:?}"),
+        };
+
+        assert_eq!(task.task_id, FAKE_TASK_ID);
+        assert_eq!(task.status, TaskStatus::Cancelled);
+        assert_eq!(
+            task.status_message.as_deref(),
+            Some(format!("cancelled:{FAKE_TASK_ID}").as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn get_task_result_reaches_the_daemon_and_returns_its_payload() {
+        let harness = wire_bridge().await;
+
+        let response = harness
+            .peer
+            .send_request(ClientRequest::GetTaskPayloadRequest(
+                GetTaskPayloadRequest::new(GetTaskPayloadParams::new(FAKE_TASK_ID)),
+            ))
+            .await
+            .expect("get_task_result round-trips through the bridge");
+
+        // `GetTaskPayloadResult` is wire-indistinguishable from `CustomResult`
+        // (both are a bare JSON value) and its `Deserialize` impl
+        // unconditionally errors so that rmcp's untagged `ServerResult` enum
+        // skips over it -- so a value built server-side as
+        // `ServerResult::GetTaskPayloadResult` is received here as
+        // `ServerResult::CustomResult`. Accept either shape and check the
+        // payload underneath, which is what actually proves the daemon's
+        // data made the round trip.
+        let payload = match response {
+            ServerResult::GetTaskPayloadResult(result) => result.0,
+            ServerResult::CustomResult(CustomResult(value)) => value,
+            other => panic!("expected GetTaskPayloadResult/CustomResult, got {other:?}"),
+        };
+
+        assert_eq!(payload["task_id"], FAKE_TASK_ID);
+        assert_eq!(payload["payload"], "fake-result-payload");
+    }
+
+    #[tokio::test]
+    async fn custom_request_round_trips_method_and_params_through_the_daemon() {
+        let harness = wire_bridge().await;
+
+        let response = harness
+            .peer
+            .send_request(ClientRequest::CustomRequest(CustomRequest::new(
+                "x-lab/probe",
+                Some(serde_json::json!({"hello": "world"})),
+            )))
+            .await
+            .expect("custom request round-trips through the bridge");
+
+        let CustomResult(value) = match response {
+            ServerResult::CustomResult(result) => result,
+            other => panic!("expected CustomResult, got {other:?}"),
+        };
+
+        assert_eq!(value["echoed_method"], "x-lab/probe");
+        assert_eq!(value["echoed_params"]["hello"], "world");
     }
 }
