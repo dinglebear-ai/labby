@@ -298,6 +298,30 @@ Running the CLI from a different machine than the daemon requires
 machine's `~/.labby/.env` -- see `docs/runtime/ENV.md` § "Remote Gateway CLI
 Usage" for the exact variables and fallback behavior.
 
+The local `GatewayManager` these CLI commands fall back to is built lazily --
+only if remote detection genuinely fails -- so a successful remote dispatch
+never touches `~/.labby/auth.db` or any other local state at all
+(`crate::cli::gateway::LazyGatewayManager`).
+
+### The stdio MCP surface follows the same principle
+
+`labby` is meant to have exactly one canonical, long-running gateway --
+`labby serve` (HTTP transport). Every other surface, including `labby serve
+--transport stdio` (a.k.a. `labby mcp`), should be a thin client to it
+whenever one is reachable, not a second independent instance with its own
+config view, upstream connections, and OAuth state.
+
+Concretely: before building any local `GatewayManager` or upstream pool,
+stdio startup calls `crate::live_gateway::detect()` -- the exact same
+detection logic the CLI uses above, shared via `crate::live_gateway` (moved
+there specifically so both surfaces could use it). If a live daemon answers,
+the stdio process runs as a pure `crate::mcp::bridge::BridgeServerHandler`:
+every `tools/`, `resources/`, and `prompts/` request received over stdio is
+forwarded to the live daemon's own MCP endpoint via a streamable-HTTP
+`Peer<RoleClient>`, and the response is piped straight back -- this process
+holds no gateway state of its own. Only when no daemon is reachable does it
+fall back to building a full standalone instance, same as today.
+
 ## Examples
 
 ### CLI
