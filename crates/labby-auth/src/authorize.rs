@@ -594,8 +594,24 @@ fn is_loopback_redirect(value: &str) -> bool {
     matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
 }
 
+/// Native-app private-use URI scheme redirects (RFC 8252 §7.1), e.g.
+/// `com.raycast:/oauth`. Only an app registered for that scheme with the
+/// OS can receive the redirect, so — like loopback — these don't need an
+/// explicit allowlist entry per client. Deliberately excludes `http(s)`
+/// (network-reachable, needs the allowlist) and script-executing pseudo
+/// schemes a browser might act on directly instead of merely redirecting.
+fn is_native_app_scheme_redirect(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    !matches!(
+        url.scheme(),
+        "http" | "https" | "javascript" | "data" | "vbscript" | "file"
+    )
+}
+
 fn is_allowed_redirect_uri(value: &str, patterns: &[String]) -> bool {
-    if is_loopback_redirect(value) {
+    if is_loopback_redirect(value) || is_native_app_scheme_redirect(value) {
         return true;
     }
 
@@ -647,16 +663,24 @@ fn wildcard_matches(pattern: &str, value: &str) -> bool {
 }
 
 fn redirect_pattern_matches(pattern: &str, candidate: &reqwest::Url) -> bool {
-    let Ok(pattern) = reqwest::Url::parse(pattern) else {
+    let Ok(pattern_url) = reqwest::Url::parse(pattern) else {
         return false;
     };
-    if pattern.scheme() != candidate.scheme() {
+    if pattern_url.scheme() != candidate.scheme() {
         return false;
     }
-    if pattern.port_or_known_default() != candidate.port_or_known_default() {
+
+    // Native-app custom URI schemes (e.g. `com.raycast:/oauth`) have no
+    // authority component, so `host_str()` is None and can never satisfy the
+    // host/port comparison below. Compare the whole URI instead.
+    if pattern_url.host_str().is_none() || candidate.host_str().is_none() {
+        return wildcard_matches(pattern, candidate.as_str());
+    }
+
+    if pattern_url.port_or_known_default() != candidate.port_or_known_default() {
         return false;
     }
-    let Some(pattern_host) = pattern.host_str() else {
+    let Some(pattern_host) = pattern_url.host_str() else {
         return false;
     };
     let Some(candidate_host) = candidate.host_str() else {
@@ -665,11 +689,11 @@ fn redirect_pattern_matches(pattern: &str, candidate: &reqwest::Url) -> bool {
     if !host_pattern_matches(pattern_host, candidate_host) {
         return false;
     }
-    if !wildcard_matches(pattern.path(), candidate.path()) {
+    if !wildcard_matches(pattern_url.path(), candidate.path()) {
         return false;
     }
 
-    match (pattern.query(), candidate.query()) {
+    match (pattern_url.query(), candidate.query()) {
         (Some(pattern_query), Some(candidate_query)) => {
             wildcard_matches(pattern_query, candidate_query)
         }
@@ -885,6 +909,39 @@ pub mod tests {
         assert!(!is_allowed_redirect_uri(
             "https://callback.example.com.evil.example/callback",
             &[String::from("https://callback.example.com*")]
+        ));
+    }
+
+    #[test]
+    fn native_app_scheme_redirect_uris_are_always_allowed() {
+        // Native-app redirects (RFC 8252 §7.1) like `com.raycast:/oauth` or
+        // `warp://mcp/oauth2callback` are scoped to whatever app the OS has
+        // registered for that private-use scheme, so — like loopback — they
+        // don't need a per-client allowlist entry.
+        assert!(is_allowed_redirect_uri("com.raycast:/oauth", &[]));
+        assert!(is_allowed_redirect_uri("warp://mcp/oauth2callback", &[]));
+        assert!(is_allowed_redirect_uri(
+            "com.raycast:/oauth",
+            &[String::from("https://callback.tootie.tv/callback/*")]
+        ));
+    }
+
+    #[test]
+    fn script_executing_pseudo_schemes_are_never_auto_allowed() {
+        assert!(!is_allowed_redirect_uri("javascript:alert(1)", &[]));
+        assert!(!is_allowed_redirect_uri("data:text/html,evil", &[]));
+        assert!(!is_allowed_redirect_uri("file:///etc/passwd", &[]));
+    }
+
+    #[test]
+    fn https_redirects_still_require_the_allowlist() {
+        assert!(!is_allowed_redirect_uri(
+            "https://evil.example/callback",
+            &[String::from("https://callback.tootie.tv/callback/*")]
+        ));
+        assert!(is_allowed_redirect_uri(
+            "https://callback.tootie.tv/callback/node-a",
+            &[String::from("https://callback.tootie.tv/callback/*")]
         ));
     }
 
