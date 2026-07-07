@@ -439,6 +439,25 @@ impl SqliteStore {
         .await
     }
 
+    /// Whether any unexpired `lab` refresh token has ever been issued, for
+    /// any client. This is a single-tenant, admin-only gateway, so "someone
+    /// already completed the Google consent screen once" is a reasonable
+    /// proxy for "we don't need to force full re-consent again" without
+    /// having to know which subject is about to authenticate.
+    pub async fn has_any_refresh_token(&self) -> Result<bool, AuthError> {
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM refresh_tokens WHERE expires_at > ?1)",
+                params![now],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count != 0)
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
     pub async fn upsert_browser_session(
         &self,
         session: BrowserSessionRow,
@@ -1512,6 +1531,45 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn has_any_refresh_token_reflects_unexpired_rows_only() {
+        let store = temp_store().await;
+        assert!(!store.has_any_refresh_token().await.unwrap());
+
+        store
+            .upsert_refresh_token(RefreshTokenRow {
+                refresh_token: "expired-refresh".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-user".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: now_unix() - 300,
+                expires_at: now_unix() - 1,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !store.has_any_refresh_token().await.unwrap(),
+            "an expired-only store should not count as having a refresh token"
+        );
+
+        store
+            .upsert_refresh_token(RefreshTokenRow {
+                refresh_token: "live-refresh".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-user".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: now_unix(),
+                expires_at: now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        assert!(store.has_any_refresh_token().await.unwrap());
     }
 
     #[tokio::test]
