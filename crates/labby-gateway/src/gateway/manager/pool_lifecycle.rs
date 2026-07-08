@@ -77,6 +77,19 @@ impl GatewayManager {
         let cfg = tokio::task::spawn_blocking(move || load_gateway_config(&path))
             .await
             .map_err(|e| ToolError::internal_message(format!("config read task failed: {e}")))??;
+        // Seed the config.toml fallbacks for the small set of pool-internal
+        // env-resolved caches (see `pool/helpers.rs` / `pool/stdio_stderr.rs`
+        // doc comments) — a no-op after the first successful reload, since
+        // those caches are themselves resolved once per process.
+        crate::upstream::pool::install_max_response_bytes_default(
+            cfg.gateway.upstream_max_response_bytes,
+        );
+        crate::upstream::pool::install_upstream_stderr_level_default(
+            cfg.gateway.upstream_stderr_level.clone(),
+        );
+        crate::upstream::pool::install_upstream_discovery_concurrency_default(
+            cfg.gateway.upstream_discovery_concurrency,
+        );
         let registry = self.builtin_service_registry();
         let (cfg, migration) = quarantine_unregistered_virtual_servers(cfg, registry.as_ref());
         if migration.changed() {
@@ -248,10 +261,9 @@ impl GatewayManager {
         // call). Bounded by LABBY_UPSTREAM_DISCOVERY_CONCURRENCY (default 3) to
         // match the refresh path in code_mode_runtime.rs.
         if let Some(ref pool) = fresh_pool {
-            let concurrency = std::env::var("LABBY_UPSTREAM_DISCOVERY_CONCURRENCY")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(3);
+            let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+                cfg.gateway.upstream_discovery_concurrency,
+            );
             let pool_arc = Arc::clone(pool);
             let enabled: Vec<_> = cfg.upstream.iter().filter(|u| u.enabled).cloned().collect();
             // Step 1: connect all upstreams and discover tools.

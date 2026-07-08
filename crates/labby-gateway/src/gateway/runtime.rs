@@ -199,7 +199,7 @@ impl GatewayManager {
     ) -> Result<Vec<super::types::GatewayMcpRuntimeView>, ToolError> {
         let cfg = self.config.read().await.clone();
         let pool = self.runtime.current_pool().await;
-        let warm_timeout = mcp_runtime_warm_timeout();
+        let warm_timeout = mcp_runtime_warm_timeout(&cfg);
         if tokio::time::timeout(
             warm_timeout,
             self.warm_mcp_runtime_catalog(&cfg, pool.as_deref()),
@@ -328,14 +328,12 @@ impl GatewayManager {
             return;
         };
 
-        // P-M7: cap concurrency using the same LABBY_UPSTREAM_DISCOVERY_CONCURRENCY
-        // setting the rest of the codebase uses (default 3) to avoid a stdio
-        // spawn storm when many upstreams are warming simultaneously.
-        let concurrency = std::env::var("LABBY_UPSTREAM_DISCOVERY_CONCURRENCY")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|&v| v > 0)
-            .unwrap_or(3);
+        // P-M7: cap concurrency using the same setting the rest of the
+        // codebase uses (default 3) to avoid a stdio spawn storm when many
+        // upstreams are warming simultaneously.
+        let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+            cfg.gateway.upstream_discovery_concurrency,
+        );
 
         // Collect owned values so the closure passed to buffer_unordered can
         // satisfy the HRTB (`for<'a> FnOnce(&'a UpstreamConfig)`) required by
@@ -464,10 +462,11 @@ impl GatewayManager {
     }
 }
 
-fn mcp_runtime_warm_timeout() -> Duration {
+fn mcp_runtime_warm_timeout(cfg: &GatewayConfig) -> Duration {
     std::env::var("LABBY_GATEWAY_MCP_LIST_WARM_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
+        .or(cfg.gateway.mcp_list_warm_timeout_ms)
         .map(Duration::from_millis)
         .filter(|duration| !duration.is_zero())
         .unwrap_or(Duration::from_secs(5))

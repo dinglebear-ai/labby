@@ -222,7 +222,7 @@ impl UpstreamPool {
             discovery_jobs.push((config, subject));
         }
 
-        let discovery_concurrency = upstream_discovery_concurrency();
+        let discovery_concurrency = upstream_discovery_concurrency(None);
         let mut futures = futures::stream::iter(discovery_jobs)
             .map(|(config, subject)| {
                 let oauth_client_cache = oauth_client_cache.clone();

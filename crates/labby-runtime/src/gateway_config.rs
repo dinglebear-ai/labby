@@ -949,6 +949,23 @@ pub struct GatewayPreferences {
     /// Only set this when you control all gateway write access.
     #[serde(default)]
     pub disable_spawn_guard: bool,
+    /// Max concurrent upstream discovery/reprobe connections.
+    /// Overridden by `LABBY_UPSTREAM_DISCOVERY_CONCURRENCY` env var. Default: 3.
+    #[serde(default)]
+    pub upstream_discovery_concurrency: Option<usize>,
+    /// Max accepted upstream response size in bytes.
+    /// Overridden by `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` env var.
+    #[serde(default)]
+    pub upstream_max_response_bytes: Option<usize>,
+    /// Timeout in milliseconds for the MCP runtime catalog warm-cache path.
+    /// Overridden by `LABBY_GATEWAY_MCP_LIST_WARM_TIMEOUT_MS` env var. Default: 5000.
+    #[serde(default)]
+    pub mcp_list_warm_timeout_ms: Option<u64>,
+    /// Log level for forwarded stdio upstream stderr output: `"trace"`,
+    /// `"debug"` (default), `"info"`, `"warn"`, `"error"`, or `"off"`/`"null"`
+    /// to discard. Overridden by `LABBY_GW_UPSTREAM_STDERR` env var.
+    #[serde(default)]
+    pub upstream_stderr_level: Option<String>,
 }
 
 // ─── Resolved public URLs ────────────────────────────────────────────────────

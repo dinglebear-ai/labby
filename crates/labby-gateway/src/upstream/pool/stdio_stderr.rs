@@ -74,10 +74,33 @@ impl StdioConnectError {
     }
 }
 
-/// Resolve the log level for forwarded upstream stderr from
-/// `LABBY_GW_UPSTREAM_STDERR`.
+/// `[gateway].upstream_stderr_level` from `config.toml`, seeded once by
+/// `install_upstream_stderr_level_default` at config load time (see
+/// `GatewayManager::reload_with_origin_unlocked`). Consulted as a fallback
+/// below the env var.
+static UPSTREAM_STDERR_LEVEL_CONFIG_DEFAULT: std::sync::OnceLock<Option<String>> =
+    std::sync::OnceLock::new();
+
+/// Seed the config.toml fallback for `upstream_stderr_log_level()`. Safe to
+/// call more than once (e.g. on every `gateway.reload`) — later calls are a
+/// no-op once the first value is set, since `LABBY_GW_UPSTREAM_STDERR` is
+/// itself resolved fresh on every call and takes precedence regardless.
+pub(crate) fn install_upstream_stderr_level_default(value: Option<String>) {
+    drop(UPSTREAM_STDERR_LEVEL_CONFIG_DEFAULT.set(value));
+}
+
+/// Resolve the log level for forwarded upstream stderr.
+///
+/// Priority: `LABBY_GW_UPSTREAM_STDERR` env var > `config.toml`
+/// `[gateway].upstream_stderr_level` > default (`debug`).
 pub(super) fn upstream_stderr_log_level() -> Option<tracing::Level> {
-    parse_stderr_level(std::env::var("LABBY_GW_UPSTREAM_STDERR").ok().as_deref())
+    let raw = std::env::var("LABBY_GW_UPSTREAM_STDERR").ok().or_else(|| {
+        UPSTREAM_STDERR_LEVEL_CONFIG_DEFAULT
+            .get()
+            .cloned()
+            .flatten()
+    });
+    parse_stderr_level(raw.as_deref())
 }
 
 fn parse_stderr_level(raw: Option<&str>) -> Option<tracing::Level> {
