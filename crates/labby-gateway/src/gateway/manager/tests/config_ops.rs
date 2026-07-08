@@ -167,7 +167,9 @@ async fn add_with_bearer_token_value_writes_env_and_references_generated_env_var
 
     let values = read_env_values(&dir.path().join(".env")).expect("read env");
     assert_eq!(
-        values.get("LABBY_GW_GITHUB_AUTH_HEADER").map(String::as_str),
+        values
+            .get("LABBY_GW_GITHUB_AUTH_HEADER")
+            .map(String::as_str),
         Some("Bearer ghp_secret")
     );
 }

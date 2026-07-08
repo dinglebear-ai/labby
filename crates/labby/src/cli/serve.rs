@@ -196,9 +196,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // full rationale; this mirrors what the `gateway` CLI subcommands
     // already do for their own dispatch.
     #[cfg(feature = "gateway")]
-    if stdio_mode
-        && let Some(live) = crate::live_gateway::detect(config).await
-    {
+    if stdio_mode && let Some(live) = crate::live_gateway::detect(config).await {
         tracing::info!(
             subsystem = "startup",
             phase = "bridge.detected",
@@ -1280,8 +1278,10 @@ fn build_mcp_service_with_scope(
     session_manager.session_config = session_config;
     let session_manager = Arc::new(session_manager);
 
-    let stateful =
-        resolve_stateful_mode(std::env::var("LABBY_MCP_STATEFUL").ok(), mcp_config.stateful)?;
+    let stateful = resolve_stateful_mode(
+        std::env::var("LABBY_MCP_STATEFUL").ok(),
+        mcp_config.stateful,
+    )?;
 
     let mut allowed_hosts = allowed_hosts(
         mcp_config.allowed_hosts.as_deref().unwrap_or(&[]),

@@ -72,8 +72,10 @@ impl RefreshFailureCache {
 
     /// Record that a refresh just failed for `(upstream_name, subject)`.
     pub fn record_failure(&self, upstream_name: &str, subject: &str) {
-        self.0
-            .insert((upstream_name.to_string(), subject.to_string()), Instant::now());
+        self.0.insert(
+            (upstream_name.to_string(), subject.to_string()),
+            Instant::now(),
+        );
     }
 
     /// Clear any recorded failure for `(upstream_name, subject)` — call this on

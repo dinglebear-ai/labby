@@ -126,5 +126,4 @@ mod tests {
         let scope = McpRouteScope::protected_subset("ops", ["unifi"], ["device"], false);
         assert!(!scope.exposes_code_mode());
     }
-
 }

@@ -20,9 +20,13 @@ pub(super) async fn run_gateway_code(
 ) -> Result<ExitCode> {
     match args.command {
         GatewayCodeCommand::Status => {
-            let value =
-                dispatch_gateway_action(manager, config, "gateway.code_mode.get".to_string(), json!({}))
-                    .await?;
+            let value = dispatch_gateway_action(
+                manager,
+                config,
+                "gateway.code_mode.get".to_string(),
+                json!({}),
+            )
+            .await?;
             crate::output::print(&value, format)?;
         }
         GatewayCodeCommand::Enable => {
