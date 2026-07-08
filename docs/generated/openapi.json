@@ -667,13 +667,7 @@
       },
       "GatewayGatewayCode_modeSetParams": {
         "type": "object",
-        "required": [
-          "confirm"
-        ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "enabled": {
             "type": "boolean"
           },
@@ -755,13 +749,9 @@
         "required": [
           "upstream",
           "hint",
-          "metadata_hash",
-          "confirm"
+          "metadata_hash"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "hint": {
             "type": "string"
           },
@@ -775,14 +765,8 @@
       },
       "GatewayGatewayEnrichPreviewParams": {
         "type": "object",
-        "required": [
-          "confirm"
-        ],
         "properties": {
           "all": {
-            "type": "boolean"
-          },
-          "confirm": {
             "type": "boolean"
           },
           "max_upstreams": {
@@ -815,9 +799,6 @@
       },
       "GatewayGatewayImportParams": {
         "type": "object",
-        "required": [
-          "confirm"
-        ],
         "properties": {
           "all": {
             "type": "boolean"
@@ -827,9 +808,6 @@
             "items": {
               "type": "string"
             }
-          },
-          "confirm": {
-            "type": "boolean"
           },
           "names": {
             "type": "array",
@@ -842,13 +820,9 @@
       "GatewayGatewayImport_pendingApproveParams": {
         "type": "object",
         "required": [
-          "name",
-          "confirm"
+          "name"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "name": {
             "type": "string"
           }
@@ -857,13 +831,9 @@
       "GatewayGatewayImport_pendingRejectParams": {
         "type": "object",
         "required": [
-          "name",
-          "confirm"
+          "name"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "name": {
             "type": "string"
           }
@@ -872,13 +842,9 @@
       "GatewayGatewayImport_tombstonesClearParams": {
         "type": "object",
         "required": [
-          "name",
-          "confirm"
+          "name"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "name": {
             "type": "string"
           },
@@ -899,13 +865,9 @@
       "GatewayGatewayImport_tombstonesRestoreParams": {
         "type": "object",
         "required": [
-          "name",
-          "confirm"
+          "name"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "name": {
             "type": "string"
           },
@@ -1382,13 +1344,7 @@
       },
       "SetupDraftCommitParams": {
         "type": "object",
-        "required": [
-          "confirm"
-        ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "force": {
             "type": "boolean"
           }
@@ -1410,13 +1366,7 @@
       },
       "SetupFinalizeParams": {
         "type": "object",
-        "required": [
-          "confirm"
-        ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "force": {
             "type": "boolean"
           }
@@ -1425,13 +1375,9 @@
       "SetupInstall_pluginParams": {
         "type": "object",
         "required": [
-          "service",
-          "confirm"
+          "service"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "service": {
             "type": "string"
           }
@@ -1448,13 +1394,9 @@
       "SetupPluginInstallParams": {
         "type": "object",
         "required": [
-          "service",
-          "confirm"
+          "service"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "service": {
             "type": "string"
           }
@@ -1463,13 +1405,9 @@
       "SetupPluginUninstallParams": {
         "type": "object",
         "required": [
-          "service",
-          "confirm"
+          "service"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "service": {
             "type": "string"
           }
@@ -1485,13 +1423,7 @@
       },
       "SetupPlugin_hookParams": {
         "type": "object",
-        "required": [
-          "confirm"
-        ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "repair": {
             "type": "boolean"
           }
@@ -1530,13 +1462,9 @@
       "SetupSettingsConfigUpdateParams": {
         "type": "object",
         "required": [
-          "entries",
-          "confirm"
+          "entries"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "entries": {
             "type": "array",
             "items": {
@@ -1611,13 +1539,9 @@
       "SetupSettingsEnvUpdateParams": {
         "type": "object",
         "required": [
-          "entries",
-          "confirm"
+          "entries"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "entries": {
             "type": "array",
             "items": {
@@ -1700,13 +1624,9 @@
       "SetupSettingsUpdateParams": {
         "type": "object",
         "required": [
-          "services.built_in_upstream_apis_enabled",
-          "confirm"
+          "services.built_in_upstream_apis_enabled"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "services.built_in_upstream_apis_enabled": {
             "type": "boolean"
           }
@@ -1715,13 +1635,9 @@
       "SetupUninstall_pluginParams": {
         "type": "object",
         "required": [
-          "service",
-          "confirm"
+          "service"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "service": {
             "type": "string"
           }
@@ -1814,13 +1730,9 @@
       "SnippetsSnippetsRemoveParams": {
         "type": "object",
         "required": [
-          "name",
-          "confirm"
+          "name"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "name": {
             "type": "string"
           }
