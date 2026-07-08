@@ -83,14 +83,42 @@ pub(crate) fn code_mode_artifact_root(run_id: &str) -> PathBuf {
     artifact_store_root().join(run_id)
 }
 
+/// Host-supplied `config.toml` fallbacks for the three artifact knobs below,
+/// seeded once by [`install_artifact_config_defaults`] (called by the gateway
+/// host adapter at config load time — this crate is host-neutral and never
+/// reads `config.toml` itself). Consulted only when the corresponding env var
+/// is absent.
+static ARTIFACT_RETENTION_RUNS_CONFIG_DEFAULT: OnceLock<Option<usize>> = OnceLock::new();
+static ARTIFACT_MAX_MIB_CONFIG_DEFAULT: OnceLock<Option<usize>> = OnceLock::new();
+static ARTIFACT_MAX_STORE_MIB_CONFIG_DEFAULT: OnceLock<Option<u64>> = OnceLock::new();
+
+/// Seed the `config.toml` fallbacks for artifact retention/size knobs. Safe to
+/// call more than once (e.g. on every host-side config reload); only the
+/// first call's values take effect, since each knob is itself resolved once
+/// per process on first use.
+pub fn install_artifact_config_defaults(
+    retention_runs: Option<usize>,
+    max_mib: Option<usize>,
+    max_store_mib: Option<u64>,
+) {
+    let _ = ARTIFACT_RETENTION_RUNS_CONFIG_DEFAULT.set(retention_runs);
+    let _ = ARTIFACT_MAX_MIB_CONFIG_DEFAULT.set(max_mib);
+    let _ = ARTIFACT_MAX_STORE_MIB_CONFIG_DEFAULT.set(max_store_mib);
+}
+
 /// Resolve the per-run artifact retention cap from the environment, falling back
-/// to [`DEFAULT_ARTIFACT_RETENTION_RUNS`]. `0` disables pruning.
+/// to `config.toml` then [`DEFAULT_ARTIFACT_RETENTION_RUNS`]. `0` disables pruning.
 #[must_use]
 pub(crate) fn artifact_retention_runs() -> usize {
-    // Absent/blank → default silently. Present-but-unparseable → warn and fall
-    // back, so a fat-fingered value (e.g. `5O`) isn't silently ignored.
+    // Absent/blank → config.toml, then default silently. Present-but-unparseable
+    // → warn and fall back, so a fat-fingered value (e.g. `5O`) isn't silently
+    // ignored.
     let Some(raw) = env_non_empty("LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS") else {
-        return DEFAULT_ARTIFACT_RETENTION_RUNS;
+        return ARTIFACT_RETENTION_RUNS_CONFIG_DEFAULT
+            .get()
+            .copied()
+            .flatten()
+            .unwrap_or(DEFAULT_ARTIFACT_RETENTION_RUNS);
     };
     match raw.trim().parse::<usize>() {
         Ok(value) => value,
@@ -113,9 +141,15 @@ pub(crate) fn artifact_retention_runs() -> usize {
 /// MiB for ergonomics (`LABBY_CODE_MODE_ARTIFACT_MAX_MIB=16`).
 #[must_use]
 pub(crate) fn artifact_max_bytes() -> usize {
-    let default_bytes = DEFAULT_ARTIFACT_MAX_MIB * 1024 * 1024;
-    // Absent/blank → default silently. Present-but-unparseable or `0` → warn and
-    // fall back (a 0 MiB cap would reject every write).
+    let config_default_bytes = ARTIFACT_MAX_MIB_CONFIG_DEFAULT
+        .get()
+        .copied()
+        .flatten()
+        .filter(|mib| *mib > 0)
+        .map(|mib| mib.saturating_mul(1024 * 1024));
+    let default_bytes = config_default_bytes.unwrap_or(DEFAULT_ARTIFACT_MAX_MIB * 1024 * 1024);
+    // Absent/blank → config.toml, then default silently. Present-but-unparseable
+    // or `0` → warn and fall back (a 0 MiB cap would reject every write).
     let Some(raw) = env_non_empty("LABBY_CODE_MODE_ARTIFACT_MAX_MIB") else {
         return default_bytes;
     };
@@ -140,7 +174,13 @@ pub(crate) fn artifact_max_bytes() -> usize {
 /// (`LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB=8192`); `0` disables byte pruning.
 #[must_use]
 pub(crate) fn artifact_max_store_bytes() -> u64 {
-    let default_bytes = DEFAULT_ARTIFACT_MAX_STORE_MIB * 1024 * 1024;
+    let config_default_bytes = ARTIFACT_MAX_STORE_MIB_CONFIG_DEFAULT
+        .get()
+        .copied()
+        .flatten()
+        .map(|mib| mib.saturating_mul(1024 * 1024));
+    let default_bytes =
+        config_default_bytes.unwrap_or(DEFAULT_ARTIFACT_MAX_STORE_MIB * 1024 * 1024);
     let Some(raw) = env_non_empty("LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB") else {
         return default_bytes;
     };

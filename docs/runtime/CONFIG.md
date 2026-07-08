@@ -299,6 +299,21 @@ synthetic `codemode` tool instead.
 | `max_log_entries` | — | `1000` | Maximum captured console log lines per execution. Valid range: 1-100000. |
 | `max_log_bytes` | — | `65536` | Maximum captured console log bytes per execution. Valid range: 1-104857600. |
 | `widget_callbacks` | `LABBY_CODE_MODE_WIDGET_CALLBACKS` (`=1`) | `false` | Legacy bypass: let a rendered mcp-ui widget's callback reach the upstream proxy by tool name even while the Code Mode synthetic surface hides raw tools from `list_tools`. |
+| `artifact_retention_runs` | `LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS` | `200` | Per-run artifact directory retention count. `0` disables count pruning. |
+| `artifact_max_mib` | `LABBY_CODE_MODE_ARTIFACT_MAX_MIB` | `8` | Per-artifact content cap in MiB. |
+| `artifact_max_store_mib` | `LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB` | `4096` | Total artifact store byte budget in MiB. `0` disables byte pruning. |
+| `max_calls_per_run` | `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` | `512` | Per-run `callTool` fan-out budget. Ceiling: 2048. |
+| `calltool_result_max_mib` | `LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB` | `8` | Max `callTool` result size in MiB before truncation. |
+
+These five, like `upstream_max_response_bytes`/`upstream_discovery_concurrency`/
+`upstream_stderr_level` under `[gateway]`, are resolved once per process
+(first successful config load or `gateway.reload`) and cached in the
+host-neutral `labby-codemode` crate — later edits require a process restart
+to take effect. `LABBY_CODE_MODE_POOL_SIZE`/`_POOL_RECYCLE_AFTER`/
+`_POOL_MAX_OVERFLOW` (the warm-runner pool sizing knobs) remain env-var-only:
+the runner pool is constructed before `config.toml` loads, so there is
+currently no config.toml path for those three without restructuring gateway
+manager startup order.
 
 #### `[code_mode.semantic_search]`
 
