@@ -981,6 +981,18 @@ pub struct AuthFileConfig {
     /// Bootstrap admin Google email — required in oauth mode.
     #[serde(default)]
     pub admin_email: Option<String>,
+    /// Per-IP rate limit for the dynamic-client-registration endpoint
+    /// (requests per minute). Overridden by `LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE`.
+    #[serde(default)]
+    pub register_requests_per_minute: Option<u32>,
+    /// Per-IP rate limit for the `/authorize` endpoint (requests per minute).
+    /// Overridden by `LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE`.
+    #[serde(default)]
+    pub authorize_requests_per_minute: Option<u32>,
+    /// Max in-flight OAuth state rows. Overridden by
+    /// `LABBY_AUTH_MAX_PENDING_OAUTH_STATES`.
+    #[serde(default)]
+    pub max_pending_oauth_states: Option<usize>,
 }
 
 /// Resolve auth configuration from a full `LabConfig`.
@@ -1085,6 +1097,27 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
             &mut merged,
             "LABBY_AUTH_ADMIN_EMAIL",
             config.admin_email.clone(),
+        );
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE",
+            config
+                .register_requests_per_minute
+                .map(|value| value.to_string()),
+        );
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE",
+            config
+                .authorize_requests_per_minute
+                .map(|value| value.to_string()),
+        );
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTH_MAX_PENDING_OAUTH_STATES",
+            config
+                .max_pending_oauth_states
+                .map(|value| value.to_string()),
         );
     }
 
@@ -2726,6 +2759,9 @@ future = "keep"
             refresh_token_ttl_secs: Some(3600),
             auth_code_ttl_secs: Some(45),
             admin_email: Some("admin@example.com".to_string()),
+            register_requests_per_minute: Some(5),
+            authorize_requests_per_minute: Some(15),
+            max_pending_oauth_states: Some(256),
         };
 
         let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
@@ -2736,6 +2772,9 @@ future = "keep"
             resolved.allowed_client_redirect_uris,
             vec!["https://callback.example.com/callback/*".to_string()]
         );
+        assert_eq!(resolved.register_requests_per_minute, 5);
+        assert_eq!(resolved.authorize_requests_per_minute, 15);
+        assert_eq!(resolved.max_pending_oauth_states, 256);
     }
 
     #[test]
