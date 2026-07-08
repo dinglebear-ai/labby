@@ -249,6 +249,17 @@ known-safe runtimes (`npx`, `uvx`, `docker`, `node`, `python`, `python3`,
 |-----|-------------|---------|-------------|
 | `extra_stdio_commands` | — | `[]` | Additional basenames allowed as stdio upstream commands, beyond the built-in runtime list. |
 | `disable_spawn_guard` | — | `false` | Skip the command allowlist entirely. Operator takes full responsibility for any command in the gateway config. |
+| `upstream_discovery_concurrency` | `LABBY_UPSTREAM_DISCOVERY_CONCURRENCY` | `3` | Max concurrent upstream discovery/reprobe connections. |
+| `upstream_max_response_bytes` | `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | `10485760` (10 MB) | Max accepted upstream response size in bytes. |
+| `mcp_list_warm_timeout_ms` | `LABBY_GATEWAY_MCP_LIST_WARM_TIMEOUT_MS` | `5000` | Timeout in milliseconds for the MCP runtime catalog warm-cache path. |
+| `upstream_stderr_level` | `LABBY_GW_UPSTREAM_STDERR` | `"debug"` | Log level for forwarded stdio upstream stderr: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"`, or `"off"`/`"null"` to discard. |
+
+`upstream_max_response_bytes`, `upstream_discovery_concurrency`, and
+`upstream_stderr_level` are resolved once per process (first successful
+config load or `gateway.reload`) and cached — later edits to these three
+specific keys require a full process restart to take effect, not just
+another `gateway.reload`. `mcp_list_warm_timeout_ms` and the spawn-guard
+fields above are read fresh from the live config on every use.
 
 Example — add a custom binary and a local MCP server:
 

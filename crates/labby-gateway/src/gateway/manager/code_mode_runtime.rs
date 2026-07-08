@@ -415,13 +415,9 @@ impl GatewayManager {
         };
 
         let pool = self.ensure_lazy_upstream_pool(&cfg, owner).await;
-        // Mirror `pool/helpers.rs::upstream_discovery_concurrency()` — the
-        // function is pub(crate) inside a private module so we read the env var
-        // directly rather than reaching through an inaccessible module path.
-        let concurrency = std::env::var("LABBY_UPSTREAM_DISCOVERY_CONCURRENCY")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(3);
+        let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+            cfg.gateway.upstream_discovery_concurrency,
+        );
 
         // Clone context for async move blocks.
         let owner_cloned = owner.cloned();

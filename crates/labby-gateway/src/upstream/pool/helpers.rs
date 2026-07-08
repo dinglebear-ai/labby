@@ -123,16 +123,32 @@ pub(super) fn estimate_resource_response_size(result: &ReadResourceResult) -> us
 /// (cfg(test) only) to replace the cached value before the first call.
 static MAX_RESPONSE_BYTES_CACHE: OnceLock<usize> = OnceLock::new();
 
+/// `[gateway].upstream_max_response_bytes` from `config.toml`, seeded once by
+/// `install_max_response_bytes_default` before the pool does any real work
+/// (see `GatewayManager::reload_with_origin_unlocked`). Consulted by
+/// `max_response_bytes()` as a fallback below the env var, above the
+/// hardcoded default.
+static MAX_RESPONSE_BYTES_CONFIG_DEFAULT: OnceLock<Option<usize>> = OnceLock::new();
+
+/// Seed the config.toml fallback for `max_response_bytes()`. Call once, early
+/// (config load time) — a no-op if already seeded, matching the "resolved
+/// once per process" contract this cache already has for the env var.
+pub(crate) fn install_max_response_bytes_default(value: Option<usize>) {
+    let _ = MAX_RESPONSE_BYTES_CONFIG_DEFAULT.set(value);
+}
+
 /// Return the max upstream response size.
 ///
-/// Reads `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` once and caches the result for the
-/// lifetime of the process.  Subsequent calls return the cached value with no
-/// syscall overhead.
+/// Priority: `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` env var > `config.toml`
+/// `[gateway].upstream_max_response_bytes` (via `install_max_response_bytes_default`)
+/// > hardcoded default. Resolved once and cached for the lifetime of the
+/// process; subsequent calls return the cached value with no syscall overhead.
 pub(super) fn max_response_bytes() -> usize {
     *MAX_RESPONSE_BYTES_CACHE.get_or_init(|| {
         std::env::var("LABBY_UPSTREAM_MAX_RESPONSE_BYTES")
             .ok()
             .and_then(|v| v.parse().ok())
+            .or_else(|| MAX_RESPONSE_BYTES_CONFIG_DEFAULT.get().copied().flatten())
             .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
     })
 }
@@ -188,10 +204,33 @@ pub(super) fn upstream_transport(config: &UpstreamConfig) -> &'static str {
     }
 }
 
-pub(crate) fn upstream_discovery_concurrency() -> usize {
+/// `[gateway].upstream_discovery_concurrency` from `config.toml`, seeded by
+/// `install_max_response_bytes_default`'s sibling call in
+/// `GatewayManager::reload_with_origin_unlocked`, consulted by call sites
+/// that don't have a live `GatewayConfig` handy (e.g. `pool/discover.rs`).
+static DISCOVERY_CONCURRENCY_CONFIG_DEFAULT: OnceLock<Option<usize>> = OnceLock::new();
+
+/// Seed the config.toml fallback consulted when `upstream_discovery_concurrency`
+/// is called with `config_value: None`. Safe to call on every reload.
+pub(crate) fn install_upstream_discovery_concurrency_default(value: Option<usize>) {
+    let _ = DISCOVERY_CONCURRENCY_CONFIG_DEFAULT.set(value);
+}
+
+/// `config_value` is the caller's own resolved `[gateway].upstream_discovery_concurrency`
+/// from `config.toml`, when it has one handy (preferred — reflects the latest
+/// reload immediately). Callers without one handy pass `None`, falling back to
+/// the seeded process-wide default from the last reload.
+pub(crate) fn upstream_discovery_concurrency(config_value: Option<usize>) -> usize {
     std::env::var("LABBY_UPSTREAM_DISCOVERY_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
+        .or(config_value)
+        .or_else(|| {
+            DISCOVERY_CONCURRENCY_CONFIG_DEFAULT
+                .get()
+                .copied()
+                .flatten()
+        })
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_UPSTREAM_DISCOVERY_CONCURRENCY)
 }
@@ -351,6 +390,25 @@ pub(super) fn cached_upstream_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `config_value` fallback is used when the env var isn't set. Doesn't
+    /// touch process env or the seeded static, so this is safe under both
+    /// nextest's per-process isolation and cargo test's threaded model.
+    #[test]
+    fn upstream_discovery_concurrency_uses_config_value_when_env_unset() {
+        assert_eq!(upstream_discovery_concurrency(Some(7)), 7);
+        // Zero is filtered out (not a meaningful concurrency), falls to default.
+        assert_eq!(
+            upstream_discovery_concurrency(Some(0)),
+            DEFAULT_UPSTREAM_DISCOVERY_CONCURRENCY
+        );
+        // No config value and no seeded default (test binaries never call
+        // install_upstream_discovery_concurrency_default) falls to default.
+        assert_eq!(
+            upstream_discovery_concurrency(None),
+            DEFAULT_UPSTREAM_DISCOVERY_CONCURRENCY
+        );
+    }
 
     fn test_upstream_config() -> UpstreamConfig {
         UpstreamConfig {

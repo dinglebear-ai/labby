@@ -52,6 +52,11 @@ use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
     UpstreamCachedSummary, in_process_upstream_name, redact_resource_uri_for_logging,
 };
+pub(crate) use helpers::{
+    install_max_response_bytes_default, install_upstream_discovery_concurrency_default,
+    upstream_discovery_concurrency,
+};
+pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use tools::tool_has_mcp_app_ui_resource;
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
 // No external consumer references them through this path, so no `pub use` needed.
