@@ -1722,6 +1722,7 @@ mod tests {
                 session_ttl_secs: Some(120),
                 stateful: Some(false),
                 allowed_hosts: Some(vec!["lab.internal".into()]),
+                show_all: None,
             },
             ..LabConfig::default()
         };
