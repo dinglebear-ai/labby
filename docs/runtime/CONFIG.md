@@ -111,6 +111,7 @@ to the wizard and CLI.
 | Key | Env override | Default | Description |
 |-----|-------------|---------|-------------|
 | `format` | `--json` flag | `"human"` | Default output format |
+| `symbols` | `LABBY_SYMBOLS` | unicode | CLI symbol set: `"unicode"` (default) or `"ascii"` |
 
 ### `[log]`
 
@@ -118,6 +119,14 @@ to the wizard and CLI.
 |-----|-------------|---------|-------------|
 | `filter` | `LABBY_LOG` | `"labby=info,lab_apis=warn"` | Tracing filter directive |
 | `format` | `LABBY_LOG_FORMAT` | `"text"` | Log format: `"text"` or `"json"` |
+| `color` | `LABBY_LOG_COLOR` | unset (auto) | Force/disable ANSI color: `"force"`/`"always"`/`"1"` or `"plain"`/`"never"`/`"0"` |
+| `dir` | `LABBY_LOG_DIR` | `~/.local/share/labby/logs` | Rolling log file directory |
+
+`color` and `dir` are read directly from `config.toml` at startup, before
+`.env` loads — unlike `filter`/`format`, setting them only in `~/.labby/.env`
+has no effect at cold boot, since tracing initializes before `.env` loads.
+Use `config.toml`, a real shell/systemd env var, or `--log-level`/`--color`
+CLI flags instead of `.env` for these two.
 
 ### `[local_logs]`
 
@@ -161,12 +170,15 @@ Rules:
 | `session_ttl_secs` | `LABBY_MCP_SESSION_TTL_SECS` | `300` | HTTP MCP session keep-alive TTL (seconds) |
 | `stateful` | `LABBY_MCP_STATEFUL` | `true` | Whether HTTP MCP uses stateful sessions |
 | `allowed_hosts` | `LABBY_MCP_ALLOWED_HOSTS` | `[]` | Additional allowed hosts for DNS rebinding protection |
+| `show_all` | `LABBY_SHOW_ALL` | `false` | Show the full service catalog regardless of env-var presence |
 
 ### `[api]`
 
 | Key | Env override | Default | Description |
 |-----|-------------|---------|-------------|
 | `cors_origins` | `LABBY_CORS_ORIGINS` | `[]` | Additional CORS origins (loopback always included) |
+| `dev_mode` | `LABBY_DEV_MODE` (`=1`) | `false` | Enable additional dev-only CORS origins (3000/5173/8080) |
+| `protected_mcp_connect_timeout_secs` | `LABBY_PROTECTED_MCP_CONNECT_TIMEOUT_SECS` | `10` | Connect timeout for protected MCP route backends |
 
 ### `[node]`
 
@@ -275,6 +287,7 @@ synthetic `codemode` tool instead.
 | `token_estimate_divisor` | — | `4` | Byte-to-token estimate divisor for response limiting. Valid range: 1-64. |
 | `max_log_entries` | — | `1000` | Maximum captured console log lines per execution. Valid range: 1-100000. |
 | `max_log_bytes` | — | `65536` | Maximum captured console log bytes per execution. Valid range: 1-104857600. |
+| `widget_callbacks` | `LABBY_CODE_MODE_WIDGET_CALLBACKS` (`=1`) | `false` | Legacy bypass: let a rendered mcp-ui widget's callback reach the upstream proxy by tool name even while the Code Mode synthetic surface hides raw tools from `list_tools`. |
 
 #### `[code_mode.semantic_search]`
 

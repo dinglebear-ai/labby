@@ -11,7 +11,6 @@ use crate::dispatch::clients::ServiceClients;
 use crate::registry::{ToolRegistry, build_default_registry};
 
 const DEFAULT_PROTECTED_MCP_CONNECT_TIMEOUT_SECS: u64 = 10;
-const PROTECTED_MCP_CONNECT_TIMEOUT_ENV: &str = "LABBY_PROTECTED_MCP_CONNECT_TIMEOUT_SECS";
 
 /// Application state passed to every axum handler via `State<AppState>`.
 #[derive(Clone)]
@@ -228,9 +227,7 @@ impl AppState {
 }
 
 fn protected_mcp_connect_timeout() -> Duration {
-    std::env::var(PROTECTED_MCP_CONNECT_TIMEOUT_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
+    crate::config::resolved_protected_mcp_connect_timeout_secs()
         .filter(|seconds| *seconds > 0)
         .map_or(
             Duration::from_secs(DEFAULT_PROTECTED_MCP_CONNECT_TIMEOUT_SECS),

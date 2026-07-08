@@ -293,7 +293,7 @@ const ALWAYS_VISIBLE_SERVICES: &[&str] = &[
 
 #[must_use]
 pub fn lab_show_all_enabled() -> bool {
-    crate::config::env_flag_enabled("LABBY_SHOW_ALL")
+    crate::config::resolved_show_all()
 }
 
 #[must_use]

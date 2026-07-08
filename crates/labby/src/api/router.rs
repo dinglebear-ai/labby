@@ -1610,7 +1610,7 @@ fn build_cors_layer(config_origins: &[String]) -> CorsLayer {
     // a malicious npm postinstall HTTP server (or rogue browser extension on
     // those origins) from reading Setup API responses on a v1 unauthed lab
     // (lab-bg3e.3 security hardening).
-    let dev_mode_enabled = std::env::var("LABBY_DEV_MODE").as_deref() == Ok("1");
+    let dev_mode_enabled = crate::config::resolved_dev_mode();
     if dev_mode_enabled {
         // One-shot WARN at startup so an operator who has LABBY_DEV_MODE=1 in
         // their shell rc can see the wider CORS surface in production logs.

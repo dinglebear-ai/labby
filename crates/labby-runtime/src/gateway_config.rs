@@ -164,6 +164,12 @@ pub struct CodeModeConfig {
     /// Optional embedding-based semantic search blend for `codemode.search()`.
     #[serde(default)]
     pub semantic_search: SemanticSearchConfig,
+    /// Legacy bypass: let a rendered mcp-ui widget's callback reach the
+    /// upstream proxy by tool name even while the Code Mode synthetic
+    /// surface hides raw tools from `list_tools`. Default: off.
+    /// Overridden by `LABBY_CODE_MODE_WIDGET_CALLBACKS=1` env var.
+    #[serde(default)]
+    pub widget_callbacks: Option<bool>,
 }
 
 impl Default for CodeModeConfig {
@@ -179,6 +185,7 @@ impl Default for CodeModeConfig {
             max_log_entries: default_max_log_entries(),
             max_log_bytes: default_max_log_bytes(),
             semantic_search: SemanticSearchConfig::default(),
+            widget_callbacks: None,
         }
     }
 }

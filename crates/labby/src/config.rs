@@ -16,9 +16,8 @@
 
 pub mod env_merge;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::{
     collections::BTreeMap,
     collections::HashMap,
@@ -71,7 +70,89 @@ pub(crate) fn env_flag_enabled(name: &str) -> bool {
 /// opt in knowingly because it also lets any caller on the session (including
 /// the model) invoke a known upstream tool by name.
 pub(crate) fn code_mode_widget_callbacks_enabled() -> bool {
-    env_flag_enabled("LABBY_CODE_MODE_WIDGET_CALLBACKS")
+    resolved_widget_callbacks_enabled()
+}
+
+// ─── Resolved config.toml/env preferences, process-wide ───────────────────
+//
+// These vars are read from deep call sites (tool dispatch, CLI theming, HTTP
+// state construction) that don't have a `&LabConfig` in scope. Rather than
+// thread a config reference through every caller, resolve config.toml +
+// env-var precedence once at startup and cache the result process-wide,
+// mirroring the existing `PROCESS_CODE_MODE_ENABLED` pattern above. Plain
+// atomics/mutexes (not `OnceLock`) so tests can freely re-resolve.
+
+static RESOLVED_SHOW_ALL: AtomicBool = AtomicBool::new(false);
+static RESOLVED_DEV_MODE: AtomicBool = AtomicBool::new(false);
+static RESOLVED_WIDGET_CALLBACKS: AtomicBool = AtomicBool::new(false);
+static RESOLVED_SYMBOLS: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static RESOLVED_PROTECTED_MCP_TIMEOUT_SECS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+
+fn resolved_symbols_cell() -> &'static Mutex<Option<String>> {
+    RESOLVED_SYMBOLS.get_or_init(|| Mutex::new(None))
+}
+
+fn resolved_protected_mcp_timeout_cell() -> &'static Mutex<Option<u64>> {
+    RESOLVED_PROTECTED_MCP_TIMEOUT_SECS.get_or_init(|| Mutex::new(None))
+}
+
+/// Resolve config.toml + env-var precedence for the small set of
+/// preferences read from call sites without direct config access, and cache
+/// the result process-wide. Call once, early, right after `config.toml`
+/// loads (before `.env` loads and before dispatch) — see `entrypoint.rs`.
+pub(crate) fn install_resolved_preferences(config: &LabConfig) {
+    RESOLVED_SHOW_ALL.store(
+        env_flag_enabled("LABBY_SHOW_ALL") || config.mcp.show_all.unwrap_or(false),
+        Ordering::Release,
+    );
+    RESOLVED_DEV_MODE.store(
+        std::env::var("LABBY_DEV_MODE").as_deref() == Ok("1")
+            || config.api.dev_mode.unwrap_or(false),
+        Ordering::Release,
+    );
+    RESOLVED_WIDGET_CALLBACKS.store(
+        env_flag_enabled("LABBY_CODE_MODE_WIDGET_CALLBACKS")
+            || config.code_mode.widget_callbacks.unwrap_or(false),
+        Ordering::Release,
+    );
+    let symbols = std::env::var("LABBY_SYMBOLS")
+        .ok()
+        .or_else(|| config.output.symbols.clone());
+    *resolved_symbols_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = symbols;
+    let protected_mcp_timeout_secs = std::env::var("LABBY_PROTECTED_MCP_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .or(config.api.protected_mcp_connect_timeout_secs);
+    *resolved_protected_mcp_timeout_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = protected_mcp_timeout_secs;
+}
+
+pub(crate) fn resolved_show_all() -> bool {
+    RESOLVED_SHOW_ALL.load(Ordering::Acquire)
+}
+
+pub(crate) fn resolved_dev_mode() -> bool {
+    RESOLVED_DEV_MODE.load(Ordering::Acquire)
+}
+
+pub(crate) fn resolved_widget_callbacks_enabled() -> bool {
+    RESOLVED_WIDGET_CALLBACKS.load(Ordering::Acquire)
+}
+
+pub(crate) fn resolved_symbols() -> Option<String> {
+    resolved_symbols_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+pub(crate) fn resolved_protected_mcp_connect_timeout_secs() -> Option<u64> {
+    *resolved_protected_mcp_timeout_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 use anyhow::{Context, Result};
@@ -797,6 +878,10 @@ pub struct OutputPreferences {
     /// Default format: `human` or `json`. Honored unless `--json` overrides.
     #[serde(default)]
     pub format: Option<String>,
+    /// Symbol set for CLI output: `"unicode"` (default) or `"ascii"`.
+    /// Overridden by `LABBY_SYMBOLS` env var.
+    #[serde(default)]
+    pub symbols: Option<String>,
 }
 
 /// MCP server defaults.
@@ -820,6 +905,10 @@ pub struct McpPreferences {
     /// Additional allowed hosts for DNS rebinding protection.
     #[serde(default)]
     pub allowed_hosts: Option<Vec<String>>,
+    /// Show the full service catalog regardless of env-var presence.
+    /// Overridden by `LABBY_SHOW_ALL` env var.
+    #[serde(default)]
+    pub show_all: Option<bool>,
 }
 
 /// Canonical public URL model.
@@ -1034,6 +1123,18 @@ pub struct LogPreferences {
     /// Overridden by `LABBY_LOG_FORMAT` env var.
     #[serde(default)]
     pub format: Option<String>,
+    /// Force or disable ANSI color: `"force"`/`"always"`/`"1"` or
+    /// `"plain"`/`"never"`/`"0"`. Overridden by `LABBY_LOG_COLOR` env var.
+    /// This field is read directly from `config.toml` at startup, before
+    /// `.env` loads, so it is the only reliable way to set log color from a
+    /// file rather than real process/shell env.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Directory for rolling log files. Defaults to `~/.local/share/labby/logs`.
+    /// Overridden by `LABBY_LOG_DIR` env var. Read directly from `config.toml`
+    /// at startup, before `.env` loads, for the same reason as `color`.
+    #[serde(default)]
+    pub dir: Option<PathBuf>,
 }
 
 /// Local-master log store and retention preferences.
@@ -1064,6 +1165,14 @@ pub struct ApiPreferences {
     /// Overridden by `LABBY_CORS_ORIGINS` env var.
     #[serde(default)]
     pub cors_origins: Vec<String>,
+    /// Enable additional dev-only CORS origins (3000/5173/8080). Default: off.
+    /// Overridden by `LABBY_DEV_MODE=1` env var.
+    #[serde(default)]
+    pub dev_mode: Option<bool>,
+    /// Connect timeout in seconds for protected MCP route backends.
+    /// Overridden by `LABBY_PROTECTED_MCP_CONNECT_TIMEOUT_SECS` env var.
+    #[serde(default)]
+    pub protected_mcp_connect_timeout_secs: Option<u64>,
 }
 
 // `WebPreferences` moved to `labby_runtime::gateway_config`; re-exported above.
@@ -2265,6 +2374,41 @@ fn quote_env_value(v: &str) -> String {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+
+    /// `install_resolved_preferences` must pick up config.toml values when no
+    /// overriding env var is set. This test does not touch process env, so
+    /// it's safe under both nextest's per-process isolation and cargo test's
+    /// threaded model, unlike a test that would need to mutate `std::env`.
+    #[test]
+    fn install_resolved_preferences_picks_up_config_toml_values() {
+        let mut config = LabConfig::default();
+        config.mcp.show_all = Some(true);
+        config.api.dev_mode = Some(true);
+        config.api.protected_mcp_connect_timeout_secs = Some(42);
+        config.code_mode.widget_callbacks = Some(true);
+        config.output.symbols = Some("ascii".to_string());
+
+        install_resolved_preferences(&config);
+
+        assert!(resolved_show_all(), "mcp.show_all should resolve true");
+        assert!(resolved_dev_mode(), "api.dev_mode should resolve true");
+        assert!(
+            resolved_widget_callbacks_enabled(),
+            "code_mode.widget_callbacks should resolve true"
+        );
+        assert_eq!(resolved_symbols().as_deref(), Some("ascii"));
+        assert_eq!(resolved_protected_mcp_connect_timeout_secs(), Some(42));
+
+        // Restore defaults so this test doesn't leak state into whichever
+        // test the process/thread runs next (matches the existing
+        // process_code_mode_enabled restore-after-test convention below).
+        install_resolved_preferences(&LabConfig::default());
+        assert!(!resolved_show_all());
+        assert!(!resolved_dev_mode());
+        assert!(!resolved_widget_callbacks_enabled());
+        assert_eq!(resolved_symbols(), None);
+        assert_eq!(resolved_protected_mcp_connect_timeout_secs(), None);
+    }
 
     fn parse_normalized_config(toml: &str) -> LabConfig {
         let mut cfg: LabConfig = toml::from_str(toml).expect("parse");

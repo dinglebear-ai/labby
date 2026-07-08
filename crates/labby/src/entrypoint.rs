@@ -63,10 +63,16 @@ fn init_tracing(
     };
 
     // ── Rolling file appender (survives OOM — guard must live as long as main) ──
-    let log_dir = std::env::var("LABBY_LOG_DIR").unwrap_or_else(|_| {
-        format!(
-            "{}/.local/share/labby/logs",
-            std::env::var("HOME").unwrap_or_default()
+    // Priority: LABBY_LOG_DIR env var > config.toml [log].dir > default.
+    let log_dir = std::env::var("LABBY_LOG_DIR").ok().unwrap_or_else(|| {
+        log.dir.as_ref().map_or_else(
+            || {
+                format!(
+                    "{}/.local/share/labby/logs",
+                    std::env::var("HOME").unwrap_or_default()
+                )
+            },
+            |dir| dir.display().to_string(),
         )
     });
     std::fs::create_dir_all(&log_dir).ok();
@@ -158,11 +164,14 @@ fn parse_color_value(value: &str) -> ColorPolicy {
 /// there is no TTY). This is the single source of truth shared by the catalog
 /// shim, the clap parser's `ColorChoice`, and `init_tracing` so help color and
 /// log color never drift.
-fn resolve_color_policy(cli_color: ColorPolicy) -> ColorPolicy {
+/// Priority: `--color` CLI flag (when not `Auto`) > `LABBY_LOG_COLOR` env var >
+/// `config.toml` `[log].color` > `Auto`.
+fn resolve_color_policy(cli_color: ColorPolicy, config_color: Option<&str>) -> ColorPolicy {
     if cli_color == ColorPolicy::Auto {
         match std::env::var("LABBY_LOG_COLOR")
             .ok()
             .as_deref()
+            .or(config_color)
             .map(str::to_lowercase)
             .as_deref()
         {
@@ -333,7 +342,10 @@ fn run_root_catalog(flags: &GlobalFlags) -> ExitCode {
     // The env-filtered catalog needs config + .env (unlike the metadata-only
     // Docs fast-path). Failures are non-fatal — fall back to defaults.
     config::load_dotenv().ok();
-    let policy = resolve_color_policy(flags.color.unwrap_or_default());
+    // This fast path intentionally skips config.toml, so only the env var can
+    // override here — the config.toml `[log].color` fallback only applies on
+    // the main dispatch path below, where config is already loaded.
+    let policy = resolve_color_policy(flags.color.unwrap_or_default(), None);
     let format = OutputFormat::from_json_flag(flags.json, policy, RenderEnv::stdout());
     let all = help_wants_all(std::env::args_os());
     match cli::help::run(cli::help::HelpArgs { all }, format) {
@@ -376,7 +388,9 @@ pub async fn run() -> ExitCode {
     // the moment it saw `--help`, before the real themed parse could run.
     let cli = {
         let pre = scan_color_flag(std::env::args_os()).unwrap_or_default();
-        let choice = color_choice_for(resolve_color_policy(pre));
+        // Same fast-path rationale as run_root_catalog: config.toml isn't
+        // loaded yet here, only the env var can override.
+        let choice = color_choice_for(resolve_color_policy(pre, None));
         let matches = Cli::command().color(choice).get_matches();
         Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit())
     };
@@ -445,7 +459,7 @@ pub async fn run() -> ExitCode {
     // but since clap cannot distinguish "user passed --color auto" from "defaulted
     // to auto", the env var only activates when the policy is Auto. Shared with
     // the catalog shim and clap's ColorChoice so help and log color stay in sync.
-    let color_policy = resolve_color_policy(cli.color);
+    let color_policy = resolve_color_policy(cli.color, config.log.color.as_deref());
 
     // _log_guard MUST live for the entire process — dropping it stops file logging.
     let _log_guard = init_tracing(&config.log, color_policy, log_filter_override.as_deref());
@@ -457,6 +471,10 @@ pub async fn run() -> ExitCode {
         tracing::error!("dotenv load error: {err:#}");
         return ExitCode::from(2);
     }
+
+    // Resolve config.toml + env precedence once, for the small set of
+    // preferences read by deep call sites without direct config access.
+    config::install_resolved_preferences(&config);
 
     match cli::dispatch(cli, config).await {
         Ok(code) => code,
