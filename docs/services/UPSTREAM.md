@@ -51,7 +51,7 @@ Upstream servers are configured in `config.toml` using `[[upstream]]` array entr
 [[upstream]]
 name = "remote-lab"
 url = "https://lab2.example.com/mcp"
-bearer_token_env = "LAB_UPSTREAM_TOKEN"
+bearer_token_env = "LABBY_UPSTREAM_TOKEN"
 proxy_resources = true
 expose_tools = ["search_repos", "github_*"]
 ```
@@ -122,7 +122,7 @@ proxy_resources = false
 
 ```bash
 REMOTE_LAB_TOKEN=replace-me
-LAB_MCP_HTTP_TOKEN=replace-this-too
+LABBY_MCP_HTTP_TOKEN=replace-this-too
 ```
 
 ### Config Validation
@@ -175,7 +175,7 @@ Operator browser flow lives in [GATEWAY.md](./GATEWAY.md).
    server returns a JSON `{ "authorization_url": "..." }` body.
 2. Browser navigates to that URL; the upstream AS authenticates the user.
 3. AS redirects to `/auth/upstream/callback?code=...&state=...&upstream=<name>`
-   on the same origin as `LAB_PUBLIC_URL`.
+   on the same origin as `LABBY_PUBLIC_URL`.
 4. `lab` validates the authenticated session, atomically takes the pending
    state row (`DELETE ... RETURNING`), exchanges the code for tokens, encrypts
    the token response with chacha20poly1305, and persists it keyed by
@@ -278,7 +278,7 @@ A caller sees `oauth_needs_reauth` in any of these situations:
 - no credential exists yet for `(upstream, subject)`
 - the refresh token was rejected with `invalid_grant`
 - decryption of the stored `token_blob` failed (operator rotated
-  `LAB_OAUTH_ENCRYPTION_KEY`)
+  `LABBY_OAUTH_ENCRYPTION_KEY`)
 - (future, once reactive 401 is wired) a 401 arrived on a non-idempotent
   request and retry is not safe
 
@@ -290,7 +290,7 @@ Recovery is identical in all cases: start a new authorization via
 Persisted token responses are sealed with chacha20poly1305 AEAD. A fresh 12-byte
 nonce is generated on every `seal()` call; the refresh upsert stores the new
 nonce and must never preserve the previous one. The key is loaded once at
-startup from `LAB_OAUTH_ENCRYPTION_KEY`; see [CONFIG.md](../runtime/CONFIG.md#environment-variables-2)
+startup from `LABBY_OAUTH_ENCRYPTION_KEY`; see [CONFIG.md](../runtime/CONFIG.md#environment-variables-2)
 for rotation.
 
 ### Prior Art
@@ -395,7 +395,7 @@ Upstream responses are subject to a size cap to prevent oversized payloads from 
 
 | Setting | Default |
 |---------|---------|
-| `LAB_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MB (10,485,760 bytes) |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MB (10,485,760 bytes) |
 
 The check is **post-hoc** — rmcp materializes the full response in memory before lab can inspect it. The cap prevents forwarding oversized payloads to callers but cannot prevent the memory allocation itself. A streaming limit would require rmcp transport-level support.
 
@@ -520,7 +520,7 @@ Then an MCP client connected to `lab` should see the upstream tools in `list_too
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LAB_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum response size from upstream servers. |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum response size from upstream servers. |
 | (per `bearer_token_env`) | — | Bearer token for each upstream, named in config. |
 
 ## Observability

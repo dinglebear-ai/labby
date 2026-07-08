@@ -9,7 +9,7 @@ pub(super) fn resolve_runner_exe() -> Result<PathBuf, ToolError> {
         sdk_kind: "internal_error".to_string(),
         message: format!("failed to locate current executable for Code Mode runner: {err}"),
     })?;
-    let override_exe = std::env::var_os("LAB_CODE_MODE_RUNNER_EXE").map(PathBuf::from);
+    let override_exe = std::env::var_os("LABBY_CODE_MODE_RUNNER_EXE").map(PathBuf::from);
     resolve_runner_exe_from(current, override_exe)
 }
 
@@ -21,7 +21,7 @@ pub(super) fn resolve_runner_exe_from(
         let path = validate_operator_override(path)?;
         tracing::warn!(
             runner_exe = %path.display(),
-            "using LAB_CODE_MODE_RUNNER_EXE override for Code Mode runner"
+            "using LABBY_CODE_MODE_RUNNER_EXE override for Code Mode runner"
         );
         return Ok(path);
     }
@@ -33,7 +33,7 @@ pub(super) fn resolve_runner_exe_from(
     Err(ToolError::Sdk {
         sdk_kind: "internal_error".to_string(),
         message: format!(
-            "Code Mode runner executable is stale or unavailable: `{}`; restart labby.service or set LAB_CODE_MODE_RUNNER_EXE to a validated labby binary",
+            "Code Mode runner executable is stale or unavailable: `{}`; restart labby.service or set LABBY_CODE_MODE_RUNNER_EXE to a validated labby binary",
             current_exe.display()
         ),
     })
@@ -43,13 +43,13 @@ fn validate_operator_override(path: PathBuf) -> Result<PathBuf, ToolError> {
     if !path.is_absolute() {
         return Err(ToolError::Sdk {
             sdk_kind: "invalid_param".to_string(),
-            message: "LAB_CODE_MODE_RUNNER_EXE must be an absolute path".to_string(),
+            message: "LABBY_CODE_MODE_RUNNER_EXE must be an absolute path".to_string(),
         });
     }
     let canonical = std::fs::canonicalize(&path).map_err(|err| ToolError::Sdk {
         sdk_kind: "internal_error".to_string(),
         message: format!(
-            "LAB_CODE_MODE_RUNNER_EXE points at `{}`, but it cannot be resolved: {err}",
+            "LABBY_CODE_MODE_RUNNER_EXE points at `{}`, but it cannot be resolved: {err}",
             path.display()
         ),
     })?;
@@ -57,7 +57,7 @@ fn validate_operator_override(path: PathBuf) -> Result<PathBuf, ToolError> {
         return Err(ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
             message: format!(
-                "LAB_CODE_MODE_RUNNER_EXE points at `{}`, but that file is not executable",
+                "LABBY_CODE_MODE_RUNNER_EXE points at `{}`, but that file is not executable",
                 canonical.display()
             ),
         });
@@ -103,7 +103,7 @@ fn reject_untrusted_permissions(path: &Path) -> Result<(), ToolError> {
             return Err(ToolError::Sdk {
                 sdk_kind: "internal_error".to_string(),
                 message: format!(
-                    "LAB_CODE_MODE_RUNNER_EXE points at `{}`, but the file is group/world writable",
+                    "LABBY_CODE_MODE_RUNNER_EXE points at `{}`, but the file is group/world writable",
                     path.display()
                 ),
             });
@@ -113,7 +113,7 @@ fn reject_untrusted_permissions(path: &Path) -> Result<(), ToolError> {
             return Err(ToolError::Sdk {
                 sdk_kind: "internal_error".to_string(),
                 message: format!(
-                    "LAB_CODE_MODE_RUNNER_EXE points at `{}`, but the file is not owned by the current user or root",
+                    "LABBY_CODE_MODE_RUNNER_EXE points at `{}`, but the file is not owned by the current user or root",
                     path.display()
                 ),
             });
@@ -181,7 +181,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.kind(), "internal_error");
-        assert!(err.to_string().contains("LAB_CODE_MODE_RUNNER_EXE"));
+        assert!(err.to_string().contains("LABBY_CODE_MODE_RUNNER_EXE"));
         assert!(err.to_string().contains("missing-labby"));
     }
 

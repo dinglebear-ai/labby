@@ -14,19 +14,19 @@
 
 .PARAMETER InstallDir
     Install directory. Default: $env:LOCALAPPDATA\labby\bin
-    (or set $env:LAB_INSTALL_DIR).
+    (or set $env:LABBY_INSTALL_DIR).
 
 .PARAMETER Version
-    Release tag, e.g. v0.23.0. Default: latest (or $env:LAB_INSTALL_VERSION).
+    Release tag, e.g. v0.23.0. Default: latest (or $env:LABBY_INSTALL_VERSION).
 
 .EXAMPLE
     irm https://raw.githubusercontent.com/jmagar/lab/main/scripts/install.ps1 | iex
 #>
 [CmdletBinding()]
 param(
-    [string]$InstallDir = $(if ($env:LAB_INSTALL_DIR) { $env:LAB_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'labby\bin' }),
-    [string]$Version    = $(if ($env:LAB_INSTALL_VERSION) { $env:LAB_INSTALL_VERSION } else { 'latest' }),
-    [string]$Repo       = $(if ($env:LAB_INSTALL_REPO) { $env:LAB_INSTALL_REPO } else { 'jmagar/lab' })
+    [string]$InstallDir = $(if ($env:LABBY_INSTALL_DIR) { $env:LABBY_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'labby\bin' }),
+    [string]$Version    = $(if ($env:LABBY_INSTALL_VERSION) { $env:LABBY_INSTALL_VERSION } else { 'latest' }),
+    [string]$Repo       = $(if ($env:LABBY_INSTALL_REPO) { $env:LABBY_INSTALL_REPO } else { 'jmagar/lab' })
 )
 
 $ErrorActionPreference = 'Stop'

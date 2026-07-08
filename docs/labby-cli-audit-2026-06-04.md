@@ -105,7 +105,7 @@ labby doctor proxy
 # error: missing --app-url, --mcp-url, --route
 ```
 
-`labby gateway public-urls` shows `LAB_PUBLIC_URL` and `LAB_MCP_GATEWAY_URL` are already configured. `doctor proxy` should default `--app-url` and `--mcp-url` from these env vars (same ones used by `gateway public-urls`), requiring only `--route` when those aren't overridden.
+`labby gateway public-urls` shows `LABBY_PUBLIC_URL` and `LABBY_MCP_GATEWAY_URL` are already configured. `doctor proxy` should default `--app-url` and `--mcp-url` from these env vars (same ones used by `gateway public-urls`), requiring only `--route` when those aren't overridden.
 
 File: `crates/lab/src/cli/doctor.rs` — make `--app-url` and `--mcp-url` optional with env-var fallback.
 

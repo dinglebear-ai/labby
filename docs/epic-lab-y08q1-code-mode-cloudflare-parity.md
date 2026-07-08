@@ -79,7 +79,7 @@ One `code` tool. Typed TypeScript catalog injected into every execution. Model r
 ### Error Taxonomy (complete)
 - All kinds from contract: unknown_tool, unknown_action, auth_failed, server_error, internal_error, decode_error, missing_param, invalid_param, validation_failed, confirmation_required, rate_limited, timeout, network_error, tool_call_limit_exceeded, code_mode_timeout, code_mode_fuel_exhausted
 - JSON error format: `{"kind":"...","message":"..."}` — not bare strings
-- `LAB_ACTION_UNKNOWN_TOOL_HINT` references canonical names (search/execute)
+- `LABBY_ACTION_UNKNOWN_TOOL_HINT` references canonical names (search/execute)
 - Structured errors surfaced to sandbox as catchable `CodeModeError` objects
 
 ### UI / Docs / Config
@@ -118,7 +118,7 @@ One `code` tool. Typed TypeScript catalog injected into every execution. Model r
 | `CodeModeExecutionResponse` missing `result` and `logs` fields | CRITICAL | Fixed in Bead 1 |
 | `codemode` namespace not registered in either sandbox — `ReferenceError` | CRITICAL | Fixed in Bead 3 |
 | `allow_destructive_actions` is dead code — gate never checked | SECURITY | Fixed in Bead 5 |
-| `/proc/environ` readable by subprocess — exposes LAB_MCP_HTTP_TOKEN | SECURITY | Fixed in Bead 5 |
+| `/proc/environ` readable by subprocess — exposes LABBY_MCP_HTTP_TOKEN | SECURITY | Fixed in Bead 5 |
 | Process group leak — grandchildren survive `terminate_code_mode_runner()` | BUG | Fixed in Bead 5 |
 | TS declarations and JS preamble are different artifacts — confusion risk | ARCHITECTURE | Clarified in Bead 2 |
 | Token estimation bytes/4 underestimates (real ≈ bytes/3 for JSON) | PERF | Made configurable in Bead 5 |
@@ -521,7 +521,7 @@ Three transforms only (mirrors Cloudflare's `normalize.ts`):
 - `CODE_MODE_SPEC_FOR_RETARD_AGENTS.md` and `CODE_NODE_CONTRACT_FOR_RETARD_AGENTS.md` — actual limits, tool names, preamble delivery confirmation
 
 ### Files Changed
-- `crates/lab/src/dispatch/gateway/code_mode.rs` — `normalize_user_code()`, catalog truncation warn, `LAB_ACTION_UNKNOWN_TOOL_HINT` fix
+- `crates/lab/src/dispatch/gateway/code_mode.rs` — `normalize_user_code()`, catalog truncation warn, `LABBY_ACTION_UNKNOWN_TOOL_HINT` fix
 - `crates/lab/src/dispatch/gateway/manager.rs` — mode-change tracing events
 - `apps/gateway-admin/components/gateway/code-mode-toggle.tsx` — handleToggle guard, SWR mutate
 - `docs/services/GATEWAY.md` — mutual exclusion docs, tool name updates

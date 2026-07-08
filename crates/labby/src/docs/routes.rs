@@ -207,7 +207,7 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
         );
         if service == "fs" {
             route.runtime_condition = Some(
-                "mounted only when fs is enabled and /v1 auth is configured if LAB_WEB_UI_AUTH_DISABLED=true"
+                "mounted only when fs is enabled and /v1 auth is configured if LABBY_WEB_UI_AUTH_DISABLED=true"
                     .to_string(),
             );
             route.feature = Some("fs".to_string());

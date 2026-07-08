@@ -147,7 +147,7 @@ async fn auth_protected_resource_metadata(
             .config
             .public_url
             .as_ref()
-            .ok_or_else(|| LabAuthError::Config("LAB_PUBLIC_URL is required".to_string()))?;
+            .ok_or_else(|| LabAuthError::Config("LABBY_PUBLIC_URL is required".to_string()))?;
         return Ok(Json(labby_auth::types::ProtectedResourceMetadata {
             resource: route.public_resource(),
             authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
@@ -201,7 +201,7 @@ async fn protected_route_metadata_response(
         tracing::error!(
             route = %route.name,
             resource = %route.public_resource(),
-            "oauth protected resource metadata failed: LAB_PUBLIC_URL missing"
+            "oauth protected resource metadata failed: LABBY_PUBLIC_URL missing"
         );
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -388,10 +388,10 @@ async fn authenticate_protected_route_request(
         tracing::error!(
             route = %route.name,
             resource = %resource,
-            "protected MCP route auth failed: LAB_PUBLIC_URL missing"
+            "protected MCP route auth failed: LABBY_PUBLIC_URL missing"
         );
         return Err(auth_error_response_with_challenge(
-            "server misconfigured: LAB_PUBLIC_URL required for JWT validation",
+            "server misconfigured: LABBY_PUBLIC_URL required for JWT validation",
             &route_resource_metadata_url(route),
             &route.scopes,
         ));
@@ -908,7 +908,7 @@ async fn authenticate_request(
                 .map(|url| url.as_str().trim_end_matches('/').to_string())
             else {
                 return Ok(auth_error_response(
-                    "server misconfigured: LAB_PUBLIC_URL required for JWT validation",
+                    "server misconfigured: LABBY_PUBLIC_URL required for JWT validation",
                     resource_url.as_deref(),
                 ));
             };
@@ -1072,7 +1072,7 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
                 phase = "gateway.mount.skipped",
                 reason = "no_auth_configured",
                 "gateway service routes not mounted: HTTP API has no auth configured. \
-                 Set LAB_MCP_HTTP_TOKEN or LAB_AUTH_MODE=oauth to enable /v1/gateway. \
+                 Set LABBY_MCP_HTTP_TOKEN or LABBY_AUTH_MODE=oauth to enable /v1/gateway. \
                  Gateway admin actions can spawn arbitrary processes — never expose them unauthenticated."
             );
             tracing::warn!(
@@ -1150,7 +1150,7 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
                 subsystem = "startup",
                 phase = "fs.mount.skipped",
                 reason = "web_ui_auth_disabled",
-                "fs service is configured but LAB_WEB_UI_AUTH_DISABLED=true would expose workspace files unauthenticated; refusing to mount /v1/fs"
+                "fs service is configured but LABBY_WEB_UI_AUTH_DISABLED=true would expose workspace files unauthenticated; refusing to mount /v1/fs"
             );
         }
     }
@@ -1267,7 +1267,7 @@ async fn dev_nodeinfo(State(_state): State<AppState>) -> axum::response::Respons
     const MASKED_SECRET: &str = "***";
     let secret_suffixes = [
         // Deny-list for secret detection. Add new suffixes here when new secret
-        // naming conventions are introduced (e.g. LAB_AUTH_SIGNING_KEY).
+        // naming conventions are introduced (e.g. LABBY_AUTH_SIGNING_KEY).
         // NOTE: `_KEY` intentionally covers `_API_KEY` and future signing-key vars.
         //       `_SECRET` covers `_CLIENT_SECRET` — the more-specific entry is omitted.
         "_KEY", // covers _API_KEY, _SIGNING_KEY, _HMAC_KEY, etc.
@@ -1296,11 +1296,11 @@ async fn dev_nodeinfo(State(_state): State<AppState>) -> axum::response::Respons
         "OPENAI_",
         "QDRANT_",
         "TEI_",
-        "LAB_MCP_HTTP_",
-        "LAB_LOG",
-        "LAB_AUTH_",
-        "LAB_PUBLIC_URL",
-        "LAB_GOOGLE_",
+        "LABBY_MCP_HTTP_",
+        "LABBY_LOG",
+        "LABBY_AUTH_",
+        "LABBY_PUBLIC_URL",
+        "LABBY_GOOGLE_",
     ];
     let mut env_values = serde_json::Map::new();
     for (key, val) in std::env::vars() {
@@ -1560,7 +1560,7 @@ pub fn build_router_with_bearer(
 /// Build a `CorsLayer` that allows only explicit trusted origins.
 ///
 /// Sources (env var overrides config.toml):
-/// - `LAB_CORS_ORIGINS` env var (comma-separated `scheme://host[:port]`)
+/// - `LABBY_CORS_ORIGINS` env var (comma-separated `scheme://host[:port]`)
 /// - `api.cors_origins` in config.toml (array of strings)
 ///
 /// Always includes `http://localhost`, `http://127.0.0.1`, and `http://[::1]`
@@ -1570,7 +1570,7 @@ fn build_cors_layer(config_origins: &[String]) -> CorsLayer {
     use axum::http::{HeaderValue, Method};
 
     // Env var overrides config.toml when present.
-    let raw_origins: Vec<String> = match std::env::var("LAB_CORS_ORIGINS") {
+    let raw_origins: Vec<String> = match std::env::var("LABBY_CORS_ORIGINS") {
         Ok(val) if !val.trim().is_empty() => val
             .split(',')
             .map(str::trim)
@@ -1606,18 +1606,18 @@ fn build_cors_layer(config_origins: &[String]) -> CorsLayer {
         HeaderValue::from_static("http://[::1]"),
         HeaderValue::from_static("http://[::1]:8765"),
     ];
-    // Dev ports (3000/5173/8080) are gated behind LAB_DEV_MODE=1 to prevent
+    // Dev ports (3000/5173/8080) are gated behind LABBY_DEV_MODE=1 to prevent
     // a malicious npm postinstall HTTP server (or rogue browser extension on
     // those origins) from reading Setup API responses on a v1 unauthed lab
     // (lab-bg3e.3 security hardening).
-    let dev_mode_enabled = std::env::var("LAB_DEV_MODE").as_deref() == Ok("1");
+    let dev_mode_enabled = std::env::var("LABBY_DEV_MODE").as_deref() == Ok("1");
     if dev_mode_enabled {
-        // One-shot WARN at startup so an operator who has LAB_DEV_MODE=1 in
+        // One-shot WARN at startup so an operator who has LABBY_DEV_MODE=1 in
         // their shell rc can see the wider CORS surface in production logs.
         tracing::warn!(
             subsystem = "api_server",
             phase = "cors.dev_mode_enabled",
-            "LAB_DEV_MODE=1 — additional CORS origins enabled (3000/5173/8080); unset for production"
+            "LABBY_DEV_MODE=1 — additional CORS origins enabled (3000/5173/8080); unset for production"
         );
         origins.extend([
             HeaderValue::from_static("http://localhost:3000"),

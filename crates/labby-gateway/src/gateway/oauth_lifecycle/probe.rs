@@ -156,11 +156,11 @@ fn require_oauth_runtime_with_prereq_check<'a>(
             manager
                 .oauth_key
                 .is_none()
-                .then_some("LAB_OAUTH_ENCRYPTION_KEY"),
+                .then_some("LABBY_OAUTH_ENCRYPTION_KEY"),
             manager
                 .oauth_redirect_uri
                 .is_none()
-                .then_some("LAB_PUBLIC_URL"),
+                .then_some("LABBY_PUBLIC_URL"),
         ]
         .into_iter()
         .flatten()

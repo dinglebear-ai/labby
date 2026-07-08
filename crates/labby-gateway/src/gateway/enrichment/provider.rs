@@ -601,6 +601,9 @@ fn invalid_provider_json(err: serde_json::Error) -> ToolError {
 
 #[cfg(test)]
 #[cfg(unix)]
+// panic! in match arms below is a normal test-assertion idiom, not production
+// code the lint is meant to guard.
+#[allow(clippy::panic)]
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -660,7 +663,7 @@ mod tests {
     async fn process_provider_env_is_cleared_and_home_is_isolated() {
         let (_dir, script) = write_script(
             r#"cat >/dev/null
-if env | grep '^LAB_' >/dev/null; then
+if env | grep '^LABBY_' >/dev/null; then
   exit 7
 fi
 case "$HOME" in
@@ -692,9 +695,9 @@ printf '{"proposals":[{"upstream":"github","hint":"capabilities: repository issu
     #[tokio::test]
     async fn process_provider_rejects_oversized_output() {
         let (_dir, script) = write_script(
-            r#"cat >/dev/null
+            r"cat >/dev/null
 head -c 256 /dev/zero | tr '\0' x
-"#,
+",
         );
 
         let kind = sdk_kind(
@@ -712,9 +715,9 @@ head -c 256 /dev/zero | tr '\0' x
     #[tokio::test]
     async fn process_provider_rejects_oversized_stderr() {
         let (_dir, script) = write_script(
-            r#"cat >/dev/null
+            r"cat >/dev/null
 head -c 256 /dev/zero | tr '\0' x >&2
-"#,
+",
         );
 
         let kind = sdk_kind(
@@ -753,10 +756,10 @@ exit 9
     #[tokio::test]
     async fn process_provider_nonzero_exit_includes_capped_stderr_context() {
         let (_dir, script) = write_script(
-            r#"cat >/dev/null
+            r"cat >/dev/null
 printf 'provider quota exhausted' >&2
 exit 9
-"#,
+",
         );
 
         let (kind, message) = sdk_error(
@@ -776,9 +779,9 @@ exit 9
     #[tokio::test]
     async fn process_provider_timeout_is_reported_without_fallback() {
         let (_dir, script) = write_script(
-            r#"cat >/dev/null
+            r"cat >/dev/null
 sleep 2
-"#,
+",
         );
 
         let kind = sdk_kind(
@@ -801,11 +804,11 @@ sleep 2
             .into_temp_path();
         let pid_path = pid_file.to_string_lossy().to_string();
         let (_dir, script) = write_script(&format!(
-            r#"(sleep 30) &
+            r"(sleep 30) &
 echo $! > '{}'
 cat >/dev/null
 sleep 30
-"#,
+",
             pid_path
         ));
 

@@ -9,7 +9,7 @@
 //! intentionally conservative: a missing `Host` header is rejected too (no
 //! browser-driven request omits it).
 //!
-//! Bypass for tests: set the `LAB_HOST_VALIDATION_DISABLED=1` env var.
+//! Bypass for tests: set the `LABBY_HOST_VALIDATION_DISABLED=1` env var.
 
 use axum::{
     body::Body,
@@ -94,15 +94,15 @@ pub async fn host_validation_layer(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response<Body>, StatusCode> {
-    if std::env::var("LAB_HOST_VALIDATION_DISABLED").as_deref() == Ok("1") {
+    if std::env::var("LABBY_HOST_VALIDATION_DISABLED").as_deref() == Ok("1") {
         // Loud per-request warn so accidental production use of the test
         // bypass cannot hide. If you see this in your logs and you're not
-        // running tests, unset LAB_HOST_VALIDATION_DISABLED immediately.
+        // running tests, unset LABBY_HOST_VALIDATION_DISABLED immediately.
         tracing::warn!(
             surface = "api",
             kind = "host_validation_bypassed",
             path = %req.uri().path(),
-            "LAB_HOST_VALIDATION_DISABLED=1 — DNS-rebinding mitigation skipped"
+            "LABBY_HOST_VALIDATION_DISABLED=1 — DNS-rebinding mitigation skipped"
         );
         return Ok(next.run(req).await);
     }
@@ -111,8 +111,8 @@ pub async fn host_validation_layer(
         .get(HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    let public_url = std::env::var("LAB_PUBLIC_URL").ok();
-    let extra_hosts = std::env::var("LAB_MCP_ALLOWED_HOSTS").ok();
+    let public_url = std::env::var("LABBY_PUBLIC_URL").ok();
+    let extra_hosts = std::env::var("LABBY_MCP_ALLOWED_HOSTS").ok();
     let allowed_hosts = configured_allowed_hosts(public_url.as_deref(), extra_hosts.as_deref());
     if !is_allowed_host_value(host, &allowed_hosts) {
         tracing::warn!(

@@ -7,7 +7,7 @@ changes rather than internal refactors.
 ## [Unreleased]
 
 ### Added
-- Added `LAB_AUTH_ADMIN_EMAIL` env var (required in oauth mode). The Google
+- Added `LABBY_AUTH_ADMIN_EMAIL` env var (required in oauth mode). The Google
   email of the bootstrap admin permitted to log in. The id_token's
   `email_verified` claim is enforced — unverified accounts are rejected even
   when the address matches. A SQLite-backed multi-user allowlist managed
@@ -27,11 +27,11 @@ changes rather than internal refactors.
   patterns for callback-relay style clients such as Codex.
 
 ### Changed
-- **Breaking (auth):** OAuth mode now requires `LAB_AUTH_ADMIN_EMAIL` to be set.
+- **Breaking (auth):** OAuth mode now requires `LABBY_AUTH_ADMIN_EMAIL` to be set.
   Startup fails closed if it is missing. The previous behavior of allowing every
   Google account when no allowlist was configured was a fail-open
   misconfiguration risk. Operators upgrading to this release must add
-  `LAB_AUTH_ADMIN_EMAIL` to their environment before `labby serve`
+  `LABBY_AUTH_ADMIN_EMAIL` to their environment before `labby serve`
   will start in oauth mode.
 - **Breaking (HTTP API):** `gateway.add`, `gateway.update`, `gateway.remove`, and
   `gateway.reload` are now marked destructive. HTTP and MCP callers must include
@@ -49,7 +49,7 @@ changes rather than internal refactors.
 - Changed config handling so non-secret auth and MCP runtime settings can live
   in `config.toml` instead of only in `.env`.
 - Changed the default generated gateway bearer-token env var name to
-  `LAB_GW_{NAME}_AUTH_HEADER`. Existing gateway configs keep using their stored
+  `LABBY_GW_{NAME}_AUTH_HEADER`. Existing gateway configs keep using their stored
   env var name; the new default applies when creating new gateway entries.
 
 ### Fixed

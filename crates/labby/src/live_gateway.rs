@@ -1,41 +1,34 @@
-//! Detect and dispatch to an already-running `labby serve` daemon's HTTP
-//! surface.
+//! Detect and connect to an already-running `labby serve` daemon.
 //!
-//! One-shot `labby gateway <subcommand>` invocations build their own
-//! throwaway `GatewayManager` from `config.toml` and exit -- they never talk
-//! to an already-running `labby serve` daemon. That's fine for read-only
-//! commands, but for mutations (`add`, `update`, `remove`, `reload`, ...) it
-//! means the change is durably written to disk but invisible to the live
-//! daemon (and therefore to the WebUI/MCP clients it's actually serving)
-//! until the service is restarted or sent `SIGUSR1`. The WebUI never hits
-//! this gap because it's served *by* the live daemon and shares its
-//! `GatewayManager` instance directly.
+//! `labby` has three surfaces that can each run as their own process: the CLI
+//! (one-shot commands), the MCP stdio transport, and the HTTP daemon. Only
+//! the HTTP daemon is meant to be the canonical, long-running gateway --
+//! everything else should be a thin client to it whenever one is reachable,
+//! rather than spinning up its own independent `GatewayManager` with its own
+//! config view, upstream connections, and OAuth state. The WebUI never hits
+//! this problem because it's served *by* the live daemon and shares its
+//! manager directly; every other surface has to detect the daemon for
+//! itself, which is what this module does.
 //!
-//! This module closes that gap: CLI commands try the live daemon's HTTP API
-//! first (matching what the WebUI does) and only fall back to local
-//! dispatch when no daemon is reachable -- which keeps bootstrap workflows
-//! (`labby setup --provision`, `labby doctor`, the very first `gateway add`
-//! before `labby serve` has ever run) working standalone.
-//!
-//! Detection isn't loopback-only: it tries, in order, the local bind
-//! address (fast path when the CLI runs on the same host/container as the
-//! daemon), then the gateway's own configured public URLs
-//! (`LAB_MCP_GATEWAY_URL`, `LAB_PUBLIC_URL` -- resolved the same way
-//! `LabConfig::public_urls()` already does everywhere else). That means
-//! `labby gateway add` reaches the real daemon whether it's run inside the
-//! `labby` container or from any other machine that shares
-//! `~/.labby/.env` (for `LAB_MCP_HTTP_TOKEN`).
+//! Detection isn't loopback-only: it tries, in order, the local bind address
+//! (fast path when co-located with the daemon), then the gateway's own
+//! configured public URLs (`LABBY_MCP_GATEWAY_URL`, `LABBY_PUBLIC_URL` --
+//! resolved the same way `LabConfig::public_urls()` already does everywhere
+//! else). That means a thin client reaches the real daemon whether it runs
+//! inside the same container/host as `labby serve` or from any other machine
+//! that shares `~/.labby/.env` (for `LABBY_MCP_HTTP_TOKEN`).
 
 use std::time::Duration;
 
+use rmcp::service::RunningService;
+use rmcp::{RoleClient, ServiceExt};
 use serde_json::Value;
 
 use crate::config::LabConfig;
 use crate::dispatch::error::ToolError;
 
-/// Timeout for the initial reachability probe. This runs on every CLI
-/// invocation, so an unreachable host must fail over to local dispatch
-/// quickly rather than hang the command.
+/// Timeout for the initial reachability probe. This runs on every thin-client
+/// startup, so an unreachable host must fail over quickly rather than hang.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 // Deliberately no blanket request timeout on the client: some actions block
 // server-side by design (e.g. `gateway.oauth.wait` with a caller-supplied
@@ -43,7 +36,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 // the reachability probe gets an explicit short timeout below.
 
 /// A reachable, already-running `labby serve` daemon.
-pub(crate) struct LiveGateway {
+pub struct LiveGateway {
     base_url: String,
     token: Option<String>,
     client: reqwest::Client,
@@ -51,16 +44,16 @@ pub(crate) struct LiveGateway {
 
 /// Candidate base URLs to try, in priority order: the local bind address
 /// `labby serve` itself would resolve (identical env-var → config → default
-/// order as `cli/serve.rs`: `LAB_MCP_HTTP_HOST`/`LAB_MCP_HTTP_PORT`, then
+/// order as `cli/serve.rs`: `LABBY_MCP_HTTP_HOST`/`LABBY_MCP_HTTP_PORT`, then
 /// `config.mcp.host`/`.port`, then `127.0.0.1:8765`), followed by the
 /// gateway's own configured public URLs. The local candidate is tried first
-/// because it's a fast same-host round trip when the CLI happens to be
-/// co-located with the daemon; the public URLs are what let the CLI reach
-/// the daemon from anywhere else.
+/// because it's a fast same-host round trip when co-located with the daemon;
+/// the public URLs are what let a thin client reach the daemon from anywhere
+/// else.
 fn candidate_base_urls(config: &LabConfig) -> Vec<String> {
     candidate_base_urls_from(
-        std::env::var("LAB_MCP_HTTP_HOST").ok(),
-        std::env::var("LAB_MCP_HTTP_PORT").ok(),
+        std::env::var("LABBY_MCP_HTTP_HOST").ok(),
+        std::env::var("LABBY_MCP_HTTP_PORT").ok(),
         config,
     )
 }
@@ -97,12 +90,12 @@ fn candidate_base_urls_from(
 ///
 /// Returns `None` if every candidate fails (daemon not running anywhere
 /// reachable, network error, non-2xx `/health` on all of them) -- callers
-/// must fall back to local dispatch. A live daemon is a nice-to-have
-/// consistency guarantee here, not a hard requirement, so standalone CLI use
-/// keeps working.
-pub(crate) async fn detect(config: &LabConfig) -> Option<LiveGateway> {
+/// must fall back to running standalone. A live daemon is a nice-to-have
+/// consistency guarantee here, not a hard requirement, so standalone use
+/// (bootstrap, `labby doctor`, the very first `gateway add`) keeps working.
+pub async fn detect(config: &LabConfig) -> Option<LiveGateway> {
     let client = reqwest::Client::builder().build().ok()?;
-    let token = std::env::var("LAB_MCP_HTTP_TOKEN").ok();
+    let token = std::env::var("LABBY_MCP_HTTP_TOKEN").ok();
 
     for base_url in candidate_base_urls(config) {
         let Ok(health) = client
@@ -129,11 +122,7 @@ impl LiveGateway {
     /// action route (`POST /v1/gateway`) -- the same `{action, params}`
     /// shape MCP and the CLI's own local dispatch already use, so this
     /// needs no per-action endpoint mapping.
-    pub(crate) async fn dispatch_action(
-        &self,
-        action: &str,
-        params: Value,
-    ) -> Result<Value, ToolError> {
+    pub async fn dispatch_action(&self, action: &str, params: Value) -> Result<Value, ToolError> {
         let mut request = self
             .client
             .post(format!("{}/v1/gateway", self.base_url))
@@ -167,26 +156,18 @@ impl LiveGateway {
     }
 
     /// Execute a Code Mode snippet against the live daemon's actual `codemode`
-    /// MCP tool over its already-warm upstream connection pool, instead of
-    /// the CLI's own throwaway (lazily-seeded, cold) connections.
+    /// MCP tool over its already-warm upstream connection pool, instead of a
+    /// throwaway caller's own cold connections.
     ///
-    /// `gateway.add`/`update`/etc. all had one generic `{action, params}`
-    /// route to reuse; Code Mode execution doesn't -- it's an MCP tool call,
-    /// not a gateway action -- so this speaks the MCP streamable-HTTP
-    /// protocol directly, the same way `labby-gateway`'s own upstream pool
-    /// connects to any other MCP server (see `pool/connect.rs`).
-    pub(crate) async fn call_codemode_tool(&self, code: &str) -> anyhow::Result<Value> {
-        use rmcp::ServiceExt;
+    /// The generic `{action, params}` route above doesn't apply here -- Code
+    /// Mode execution is an MCP tool call, not a gateway action -- so this
+    /// speaks the MCP streamable-HTTP protocol directly via a short-lived
+    /// connection, the same way `labby-gateway`'s own upstream pool connects
+    /// to any other MCP server (see `pool/connect.rs`).
+    pub async fn call_codemode_tool(&self, code: &str) -> anyhow::Result<Value> {
         use rmcp::model::CallToolRequestParams;
-        use rmcp::transport::streamable_http_client::{
-            StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
-        };
 
-        let mut transport_config =
-            StreamableHttpClientTransportConfig::with_uri(format!("{}/mcp", self.base_url));
-        transport_config.auth_header = self.token.clone();
-        let worker = StreamableHttpClientWorker::new(self.client.clone(), transport_config);
-        let service = ().serve(worker).await?;
+        let service = self.connect_service(()).await?;
         let peer = service.peer().clone();
 
         let mut arguments = serde_json::Map::new();
@@ -205,6 +186,32 @@ impl LiveGateway {
             .find_map(|block| block.as_text().map(|t| t.text.clone()))
             .unwrap_or_default();
         Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    }
+
+    /// Open a long-lived MCP streamable-HTTP connection to the daemon's
+    /// `/mcp` endpoint and return the running client service. Callers own the
+    /// resulting `Peer<RoleClient>` for as long as they need it (e.g. the
+    /// stdio bridge holds one for its entire process lifetime, versus
+    /// `call_codemode_tool` above which opens one per call).
+    ///
+    /// Generic over the `ClientHandler` so callers that need the daemon's
+    /// server->client requests (elicitation/sampling/roots) answered --
+    /// rather than declined, which is what the unit handler `()` does --
+    /// can pass one that forwards them somewhere (see
+    /// `crate::mcp::bridge::BridgeClientHandler`).
+    pub async fn connect_service<H: rmcp::ClientHandler>(
+        &self,
+        handler: H,
+    ) -> anyhow::Result<RunningService<RoleClient, H>> {
+        use rmcp::transport::streamable_http_client::{
+            StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
+        };
+
+        let mut transport_config =
+            StreamableHttpClientTransportConfig::with_uri(format!("{}/mcp", self.base_url));
+        transport_config.auth_header = self.token.clone();
+        let worker = StreamableHttpClientWorker::new(self.client.clone(), transport_config);
+        Ok(handler.serve(worker).await?)
     }
 }
 
@@ -358,7 +365,7 @@ mod tests {
 
         // Local bind address (port 0) never accepts a connection; only the
         // configured public URL (standing in for the wiremock server) is
-        // actually reachable, matching a CLI invocation on a different
+        // actually reachable, matching a caller running on a different
         // machine than the daemon.
         let mut config = LabConfig::default();
         config.mcp.host = Some("127.0.0.1".to_string());

@@ -89,7 +89,7 @@ back at the gateway during a proxied tool call — is bridged by the relay path.
 `UpstreamPool::call_tool_relayed` (a dedicated connection served with
 `RelayClientHandler`, see `dispatch/upstream/pool/relay.rs`) instead of the
 pooled `call_tool` / `subject_scoped_call_tool` when **both**: the
-`LAB_UPSTREAM_RELAY_ELICITATION` env flag is set, and the downstream agent
+`LABBY_UPSTREAM_RELAY_ELICITATION` env flag is set, and the downstream agent
 advertised elicitation (`context.peer.supported_elicitation_modes()` non-empty).
 Both proxy branches honor the gate — the raw branch passes `subject = None`, the
 OAuth/subject-scoped branch forwards the resolved `oauth_subject` so the
@@ -155,7 +155,7 @@ Resources are read-only. Do not use them for mutations.
 
 The `fs` service exposes workspace filesystem contents (`fs.list`,
 `fs.preview`). The HTTP surface refuses to mount `/v1/fs` when
-`LAB_WEB_UI_AUTH_DISABLED=true` — see `api/router.rs` and the
+`LABBY_WEB_UI_AUTH_DISABLED=true` — see `api/router.rs` and the
 corresponding gate in `cli/serve.rs`. The MCP surface has **no**
 equivalent env-driven refusal: `fs` is registered unconditionally in
 `registry.rs` whenever the `fs` feature is compiled in, regardless of
@@ -164,21 +164,21 @@ MCP transport auth posture.
 Existing hard checks (enforced in code):
 
 - Router: `/v1/fs` refuses to mount when
-  `LAB_WEB_UI_AUTH_DISABLED=true` (`api/router.rs`). This is the only
-  enforcement that fires in the LAB_WEB_UI_AUTH_DISABLED + LAN-bind
+  `LABBY_WEB_UI_AUTH_DISABLED=true` (`api/router.rs`). This is the only
+  enforcement that fires in the LABBY_WEB_UI_AUTH_DISABLED + LAN-bind
   scenario, because the bind guard below treats a configured bearer
   token as "auth configured" even though the `/v1` middleware has been
   bypassed.
 - Bind: `cli/serve.rs` refuses to bind on a non-loopback address when
   no auth is configured at all (no bearer token, no OAuth). Does NOT
-  fire when `LAB_WEB_UI_AUTH_DISABLED=true` is paired with a token —
+  fire when `LABBY_WEB_UI_AUTH_DISABLED=true` is paired with a token —
   that case relies on the router-level fs mount refusal above.
 
 Operator-side (not enforced in code) — must be ensured before exposing
 a server that has the `fs` feature enabled:
 
 - `labby serve` (HTTP transport, the default): require
-  `LAB_MCP_HTTP_TOKEN` or `LAB_AUTH_MODE=oauth`. Do not relax this
+  `LABBY_MCP_HTTP_TOKEN` or `LABBY_AUTH_MODE=oauth`. Do not relax this
   while `fs` is feature-enabled.
 - `labby mcp`: stdio has no transport-level auth. Ensure
   the process is not reachable by untrusted callers — do not expose it
@@ -186,7 +186,7 @@ a server that has the `fs` feature enabled:
 
 The asymmetry with `/v1/fs` is intentional: MCP registration is not
 structured to fail or skip a single service at runtime, and stdio has
-no single env var equivalent to `LAB_WEB_UI_AUTH_DISABLED`. Promoting
+no single env var equivalent to `LABBY_WEB_UI_AUTH_DISABLED`. Promoting
 this to a runtime invariant (e.g. a startup check that refuses to
 register `fs` when MCP auth posture is not verified) is tracked as
 follow-up work.

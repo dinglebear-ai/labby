@@ -6,11 +6,11 @@
 //! byte-identical behavior.
 
 /// Pool size env var. `0` disables pooling (kill switch → spawn-per-execution).
-pub(crate) const POOL_SIZE_ENV: &str = "LAB_CODE_MODE_POOL_SIZE";
+pub(crate) const POOL_SIZE_ENV: &str = "LABBY_CODE_MODE_POOL_SIZE";
 /// Recycle-after-K env var: kill+respawn a runner after K executions.
-pub(crate) const RECYCLE_AFTER_ENV: &str = "LAB_CODE_MODE_POOL_RECYCLE_AFTER";
+pub(crate) const RECYCLE_AFTER_ENV: &str = "LABBY_CODE_MODE_POOL_RECYCLE_AFTER";
 /// Max concurrent ephemeral (overflow) runners spawned when the pool is saturated.
-pub(crate) const MAX_OVERFLOW_ENV: &str = "LAB_CODE_MODE_POOL_MAX_OVERFLOW";
+pub(crate) const MAX_OVERFLOW_ENV: &str = "LABBY_CODE_MODE_POOL_MAX_OVERFLOW";
 
 /// Conservative default pool size. Small enough to keep idle RSS bounded while
 /// still absorbing typical search+execute bursts without serializing.

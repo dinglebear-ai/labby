@@ -71,7 +71,7 @@ impl UpstreamPool {
     /// Call a tool on an upstream server.
     ///
     /// Returns `None` if the upstream is not connected or the tool is not found.
-    /// Enforces a response size cap (`LAB_UPSTREAM_MAX_RESPONSE_BYTES`, default 10 MB).
+    /// Enforces a response size cap (`LABBY_UPSTREAM_MAX_RESPONSE_BYTES`, default 10 MB).
     ///
     /// Cap layering by transport:
     /// - **HTTP non-OAuth**: cap is enforced at the rmcp transport layer by

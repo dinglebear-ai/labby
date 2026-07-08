@@ -355,7 +355,7 @@ impl GatewayManager {
     ///   test). The TTL only suppresses *redundant concurrent* work, never the
     ///   single-caller freshness contract.
     /// - Parallel reprobe: all enabled upstreams are probed concurrently, bounded by
-    ///   `upstream_discovery_concurrency()` (default 3, env `LAB_UPSTREAM_DISCOVERY_CONCURRENCY`).
+    ///   `upstream_discovery_concurrency()` (default 3, env `LABBY_UPSTREAM_DISCOVERY_CONCURRENCY`).
     #[allow(dead_code)]
     pub async fn refresh_code_mode_catalog(
         &self,
@@ -410,7 +410,7 @@ impl GatewayManager {
         // Mirror `pool/helpers.rs::upstream_discovery_concurrency()` — the
         // function is pub(crate) inside a private module so we read the env var
         // directly rather than reaching through an inaccessible module path.
-        let concurrency = std::env::var("LAB_UPSTREAM_DISCOVERY_CONCURRENCY")
+        let concurrency = std::env::var("LABBY_UPSTREAM_DISCOVERY_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(3);

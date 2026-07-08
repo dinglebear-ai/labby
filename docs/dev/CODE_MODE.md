@@ -456,7 +456,7 @@ Code Mode execute permission; a caller with execute permission may call them
 directly with no separate confirmation step (see "Destructive tool calls"
 below).
 
-`LAB_CODE_MODE_WIDGET_CALLBACKS=1` remains as a broader legacy operator bypass.
+`LABBY_CODE_MODE_WIDGET_CALLBACKS=1` remains as a broader legacy operator bypass.
 With that variable set, any known exposed non-destructive upstream tool may pass
 the raw-tool gate while Code Mode is enabled. Leave it off unless a legacy widget
 depends on callbacks that cannot be represented by the same-upstream MCP App
@@ -555,12 +555,12 @@ run, so isolation holds by construction.
   (killed + respawned) after a fixed number of executions as cheap insurance
   against native-side leaks.
 - **Configuration / kill switch** (environment, read at startup):
-  - `LAB_CODE_MODE_POOL_SIZE` — number of pooled runners (default `2`, clamped to
-    `16`). **`LAB_CODE_MODE_POOL_SIZE=0` disables pooling entirely**, falling back
+  - `LABBY_CODE_MODE_POOL_SIZE` — number of pooled runners (default `2`, clamped to
+    `16`). **`LABBY_CODE_MODE_POOL_SIZE=0` disables pooling entirely**, falling back
     to spawn-per-execution with behavior identical to the pre-pool path.
-  - `LAB_CODE_MODE_POOL_RECYCLE_AFTER` — executions before a runner is recycled
+  - `LABBY_CODE_MODE_POOL_RECYCLE_AFTER` — executions before a runner is recycled
     (default `100`).
-  - `LAB_CODE_MODE_POOL_MAX_OVERFLOW` — cap on simultaneous ephemeral overflow
+  - `LABBY_CODE_MODE_POOL_MAX_OVERFLOW` — cap on simultaneous ephemeral overflow
     runners (default `8`).
 
   The conservative default (`size = 2`) keeps idle memory bounded while absorbing

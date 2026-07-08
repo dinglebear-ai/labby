@@ -35,7 +35,7 @@ Applied in `router.rs`, top-to-bottom:
 2. `TraceLayer` — tracing spans per request with method, path, status, latency.
 3. `TimeoutLayer` (30s default) — upstream service calls must honor their own shorter budgets.
 4. `CompressionLayer` — gzip.
-5. `CorsLayer` — explicit allowlist: loopback origins always allowed; additional origins via `LAB_CORS_ORIGINS` (comma-separated). Unparseable entries are logged as warnings and skipped. Not permissive by default.
+5. `CorsLayer` — explicit allowlist: loopback origins always allowed; additional origins via `LABBY_CORS_ORIGINS` (comma-separated). Unparseable entries are logged as warnings and skipped. Not permissive by default.
 6. `PropagateRequestId` — echoes `x-request-id` back in response.
 
 Never add business-logic middleware here. Auth/rate-limit belong in their own layers, not in router setup.
@@ -95,7 +95,7 @@ Never hard-link service handlers from the top-level router — always conditiona
 
 ## Auth
 
-`labby serve` enforces a bearer token from `LAB_MCP_HTTP_TOKEN` via router middleware when bearer auth is configured. Handlers stay auth-agnostic — do not bake auth checks into per-service handlers.
+`labby serve` enforces a bearer token from `LABBY_MCP_HTTP_TOKEN` via router middleware when bearer auth is configured. Handlers stay auth-agnostic — do not bake auth checks into per-service handlers.
 
 When constructing the router outside the standard serve path, auth remains opt-in via the router middleware entry point in `router.rs`.
 

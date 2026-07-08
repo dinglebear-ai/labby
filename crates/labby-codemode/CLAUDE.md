@@ -93,11 +93,11 @@ while guaranteeing JS-state isolation by construction.
   ephemeral (overflow) runner (`max_overflow` cap) — never unbounded growth, never
   an indefinite queue. Overflow is logged at `action = "pool.overflow"`.
 - **Config + kill switch** (env, read at manager construction):
-  - `LAB_CODE_MODE_POOL_SIZE` — pooled runners (default 2, clamped to 16).
+  - `LABBY_CODE_MODE_POOL_SIZE` — pooled runners (default 2, clamped to 16).
     **`0` disables pooling** → the drive layer falls back to spawn-per-execution
     (byte-identical to the pre-pool path).
-  - `LAB_CODE_MODE_POOL_RECYCLE_AFTER` — executions before recycle (default 100).
-  - `LAB_CODE_MODE_POOL_MAX_OVERFLOW` — max simultaneous ephemeral runners
+  - `LABBY_CODE_MODE_POOL_RECYCLE_AFTER` — executions before recycle (default 100).
+  - `LABBY_CODE_MODE_POOL_MAX_OVERFLOW` — max simultaneous ephemeral runners
     (default 8).
 - **Security invariants persist for the pooled process** because they are set
   once at spawn: `env_clear()`, `process_group(0)`/Job Object, `kill_on_drop`,
@@ -189,11 +189,11 @@ items.
 | No ambient network APIs | Enforced by QuickJS — no `fetch`, no `XMLHttpRequest`, no Node builtins |
 | No dynamic import of host modules | Enforced by QuickJS module resolver |
 | Process-group guard | Runner spawned with `process_group(0)` (Unix) / Job Object (Windows); `kill_on_drop(true)`; `killpg` reaches grandchildren |
-| Env isolation | **Implemented.** Runner spawned with `env_clear()` (`pool/runner_handle.rs`, in `PooledRunner::spawn`) — the child inherits NO labby env at all (not even an allowlist), so `LAB_*` secrets and every other ambient var are excluded. |
+| Env isolation | **Implemented.** Runner spawned with `env_clear()` (`pool/runner_handle.rs`, in `PooledRunner::spawn`) — the child inherits NO labby env at all (not even an allowlist), so `LABBY_*` secrets and every other ambient var are excluded. |
 | `PR_SET_DUMPABLE` | **Implemented.** `runner.rs:22` calls `prctl(PR_SET_DUMPABLE, 0)` as the runner's first act on Linux, blocking `/proc/<pid>/environ` readback. Failure is non-fatal and warns via stderr (drained into the parent's response logs). |
 | Per-run cwd isolation | Each runner has a long-lived spawn `TempDir`; the runner creates a FRESH per-execution jail subdir under it on every `Start` and removes the previous one (`runner.rs::reset_execution_jail`), so a pooled process never accumulates cwd state across runs. The `TempDir` is removed when the runner handle drops. |
 | Artifact path containment | Enforced: `artifacts.rs` rejects any traversal/absolute component up front (`reject_path_traversal`), normalizes `\`→`/`, joins lexically under the per-run jail root, then walks the destination's ancestors with `symlink_metadata` (`reject_existing_symlink_ancestors`) to reject any existing symlink in the path. (Lexical + lstat-walk containment — it deliberately does **not** call `std::fs::canonicalize`.) |
-| Artifact size cap | Enforced: 8 MiB default (`LAB_CODE_MODE_ARTIFACT_MAX_MIB`) |
+| Artifact size cap | Enforced: 8 MiB default (`LABBY_CODE_MODE_ARTIFACT_MAX_MIB`) |
 | Tool call budget | Not enforced. Code Mode is bounded by wall-clock timeout, sandbox memory/stack, output/log/artifact caps, and host-side tool policy. |
 
 **Writing tests that assert on env isolation:** `env_clear()` has landed, so a

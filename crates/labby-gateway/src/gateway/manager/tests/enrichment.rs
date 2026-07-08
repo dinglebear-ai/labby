@@ -141,14 +141,14 @@ async fn enrich_preview_rejects_route_hidden_explicit_upstream() {
 
 #[tokio::test]
 async fn enrich_preview_rejects_too_many_explicit_upstreams() {
-    let upstreams = (0..(MAX_MANUAL_UPSTREAMS + 1))
+    let upstreams = (0..=MAX_MANUAL_UPSTREAMS)
         .map(|idx| fixture_http_upstream(&format!("up-{idx:02}")))
         .collect::<Vec<_>>();
     let (manager, _pool) = code_mode_manager_with_upstreams(upstreams).await;
 
     let err = manager
         .preview_enrichment(GatewayEnrichPreviewParams {
-            upstreams: (0..(MAX_MANUAL_UPSTREAMS + 1))
+            upstreams: (0..=MAX_MANUAL_UPSTREAMS)
                 .map(|idx| format!("up-{idx:02}"))
                 .collect(),
             all: false,

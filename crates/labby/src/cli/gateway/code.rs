@@ -1,21 +1,19 @@
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use anyhow::Result;
 use labby_codemode::MAX_SOURCE_BYTES;
 use serde_json::json;
 
-use crate::cli::gateway::{GatewayCodeArgs, GatewayCodeCommand};
+use crate::cli::gateway::{GatewayCodeArgs, GatewayCodeCommand, LazyGatewayManager};
 use crate::config::LabConfig;
 use crate::dispatch::gateway::code_mode::{CodeModeBroker, CodeModeCaller, CodeModeSurface};
-use crate::dispatch::gateway::manager::GatewayManager;
 use crate::output::OutputFormat;
 
 use super::dispatch::dispatch_gateway_action;
-use super::remote;
+use crate::live_gateway as remote;
 
 pub(super) async fn run_gateway_code(
-    manager: Arc<GatewayManager>,
+    manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
     args: GatewayCodeArgs,
     format: OutputFormat,
@@ -23,13 +21,13 @@ pub(super) async fn run_gateway_code(
     match args.command {
         GatewayCodeCommand::Status => {
             let value =
-                dispatch_gateway_action(&manager, config, "gateway.code_mode.get".to_string(), json!({}))
+                dispatch_gateway_action(manager, config, "gateway.code_mode.get".to_string(), json!({}))
                     .await?;
             crate::output::print(&value, format)?;
         }
         GatewayCodeCommand::Enable => {
             let value = dispatch_gateway_action(
-                &manager,
+                manager,
                 config,
                 "gateway.code_mode.set".to_string(),
                 json!({ "enabled": true }),
@@ -39,7 +37,7 @@ pub(super) async fn run_gateway_code(
         }
         GatewayCodeCommand::Disable => {
             let value = dispatch_gateway_action(
-                &manager,
+                manager,
                 config,
                 "gateway.code_mode.set".to_string(),
                 json!({ "enabled": false }),
@@ -49,7 +47,7 @@ pub(super) async fn run_gateway_code(
         }
         GatewayCodeCommand::Exec { code, file } => {
             let code = read_code_mode_source(code, file, MAX_SOURCE_BYTES as u64)?;
-            let response = execute_code_mode(&manager, config, &code).await?;
+            let response = execute_code_mode(manager, config, &code).await?;
             crate::output::print(&response, format)?;
         }
     }
@@ -63,7 +61,7 @@ pub(super) async fn run_gateway_code(
 /// the snippet touches and never shares in-memory state (OAuth refresh
 /// circuit breaker included) with the process actually serving traffic.
 async fn execute_code_mode(
-    manager: &Arc<GatewayManager>,
+    manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
     code: &str,
 ) -> Result<serde_json::Value> {
@@ -82,6 +80,7 @@ async fn execute_code_mode(
         }
     }
 
+    let manager = manager.get().await?;
     let broker = CodeModeBroker::new(Some(manager.as_ref()));
     let response = broker
         .execute(

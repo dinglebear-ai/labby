@@ -460,11 +460,11 @@ impl GatewayManager {
                     service = "upstream_oauth",
                     action = "probe",
                     kind = "not_configured",
-                    "upstream oauth probe: oauth resources not configured (LAB_PUBLIC_URL + LAB_OAUTH_ENCRYPTION_KEY required)"
+                    "upstream oauth probe: oauth resources not configured (LABBY_PUBLIC_URL + LABBY_OAUTH_ENCRYPTION_KEY required)"
                 );
                 Err(ToolError::Sdk {
                     sdk_kind: "not_configured".to_string(),
-                    message: "upstream OAuth requires LAB_PUBLIC_URL (https) and LAB_OAUTH_ENCRYPTION_KEY to be set".to_string(),
+                    message: "upstream OAuth requires LABBY_PUBLIC_URL (https) and LABBY_OAUTH_ENCRYPTION_KEY to be set".to_string(),
                 })
             }
         }

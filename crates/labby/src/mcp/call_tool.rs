@@ -48,7 +48,7 @@ enum WidgetCallbackGate {
         resolved: Box<PreResolvedUpstreamTool>,
         /// True when the callback target is a tool that Code Mode keeps hidden
         /// from `list_tools` (an MCP App sibling, or any exposed tool surfaced
-        /// only through the legacy `LAB_CODE_MODE_WIDGET_CALLBACKS` bypass).
+        /// only through the legacy `LABBY_CODE_MODE_WIDGET_CALLBACKS` bypass).
         /// Calling such a hidden tool via the bypass requires the `lab`/
         /// `lab:admin` scope check below. It is `false` only for `DirectMcpApp`
         /// candidates, which are already advertised in `list_tools`.

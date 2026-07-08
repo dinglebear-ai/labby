@@ -2,9 +2,9 @@
 
 Lab supports two HTTP auth modes:
 
-- `LAB_AUTH_MODE=bearer`
-  Preserve the existing static bearer-token flow with `LAB_MCP_HTTP_TOKEN`.
-- `LAB_AUTH_MODE=oauth`
+- `LABBY_AUTH_MODE=bearer`
+  Preserve the existing static bearer-token flow with `LABBY_MCP_HTTP_TOKEN`.
+- `LABBY_AUTH_MODE=oauth`
   Run an internal Google-backed OAuth authorization server that issues `lab` JWT access tokens and exposes JWKS plus RFC 9728 metadata.
 
 This document covers mode selection, startup behavior, registration and token flow, JWT validation, and operator-facing constraints.
@@ -19,37 +19,37 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `LAB_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
-| `LAB_MCP_HTTP_TOKEN` | bearer mode | Static bearer token for protected HTTP routes. |
-| `LAB_PUBLIC_URL` | oauth mode | Public base URL for metadata, callback construction, and JWT issuer/audience. Path-prefixed deployments are supported. |
-| `LAB_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
-| `LAB_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
-| `LAB_AUTH_SQLITE_PATH` | no | Override path for the SQLite auth database. |
-| `LAB_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. |
-| `LAB_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration in addition to loopback callbacks. |
-| `LAB_AUTH_ADMIN_EMAIL` | oauth mode | Google email address of the bootstrap admin permitted to log in. Normalized to lowercase at startup. **Required** when `LAB_AUTH_MODE=oauth`: startup fails if unset so no Google account can authenticate unless explicitly permitted. The `email_verified` claim in Google's id_token is enforced — accounts with unverified email addresses are rejected even if the address matches. Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
-| `LAB_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LAB_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
-| `LAB_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
-| `LAB_AUTH_REGISTER_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `POST /register`. Defaults to `20`. |
-| `LAB_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `/authorize` and browser login initiation. Defaults to `60`. |
-| `LAB_AUTH_MAX_PENDING_OAUTH_STATES` | no | Maximum non-expired pending authorization + browser-login states stored at once. Defaults to `1024`. |
+| `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
+| `LABBY_MCP_HTTP_TOKEN` | bearer mode | Static bearer token for protected HTTP routes. |
+| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata, callback construction, and JWT issuer/audience. Path-prefixed deployments are supported. |
+| `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
+| `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
+| `LABBY_AUTH_SQLITE_PATH` | no | Override path for the SQLite auth database. |
+| `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. |
+| `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration in addition to loopback callbacks. |
+| `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Google email address of the bootstrap admin permitted to log in. Normalized to lowercase at startup. **Required** when `LABBY_AUTH_MODE=oauth`: startup fails if unset so no Google account can authenticate unless explicitly permitted. The `email_verified` claim in Google's id_token is enforced — accounts with unverified email addresses are rejected even if the address matches. Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
+| `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
+| `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
+| `LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `POST /register`. Defaults to `20`. |
+| `LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `/authorize` and browser login initiation. Defaults to `60`. |
+| `LABBY_AUTH_MAX_PENDING_OAUTH_STATES` | no | Maximum non-expired pending authorization + browser-login states stored at once. Defaults to `1024`. |
 
 ## Startup Behavior
 
 When OAuth mode is configured, `labby serve` performs these steps at startup:
 
-1. Validate that `LAB_PUBLIC_URL`, Google credentials, and `LAB_AUTH_ADMIN_EMAIL` are present.
+1. Validate that `LABBY_PUBLIC_URL`, Google credentials, and `LABBY_AUTH_ADMIN_EMAIL` are present.
 2. Open the SQLite auth store in WAL mode with a non-zero busy timeout.
 3. Load or generate the persisted RSA signing key.
-4. Build the concrete Google provider callback URL from `LAB_PUBLIC_URL` and `LAB_GOOGLE_CALLBACK_PATH`.
+4. Build the concrete Google provider callback URL from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`.
 
 Startup fails closed if any of those steps fail.
 
 Startup also fails if:
 
-- `LAB_AUTH_MODE=oauth` is set without `LAB_PUBLIC_URL`
+- `LABBY_AUTH_MODE=oauth` is set without `LABBY_PUBLIC_URL`
 - Google client credentials are missing
-- `LAB_AUTH_ADMIN_EMAIL` is missing — fail-closed default so no Google account can authenticate without explicit permission
+- `LABBY_AUTH_ADMIN_EMAIL` is missing — fail-closed default so no Google account can authenticate without explicit permission
 - the auth database or signing key has insecure file permissions
 
 ## Registration and Authorize Flow
@@ -64,7 +64,7 @@ OAuth mode exposes:
 Registration rules in the initial launch:
 
 - loopback redirect URIs are always accepted
-- optional non-loopback redirect URI patterns can be allowed with `LAB_AUTH_ALLOWED_REDIRECT_URIS` or `[auth].allowed_client_redirect_uris`
+- optional non-loopback redirect URI patterns can be allowed with `LABBY_AUTH_ALLOWED_REDIRECT_URIS` or `[auth].allowed_client_redirect_uris`
 - unlisted public HTTPS redirect URIs are rejected
 - `POST /register`, `/authorize`, and hosted browser-login initiation are process-locally rate limited
 - new login/authorization state is rejected once the pending non-expired state cap is reached
@@ -75,7 +75,7 @@ Flow summary:
 2. The client sends the user to `/authorize` with `response_type=code`.
 3. `lab` stores the request state, generates PKCE data, and redirects to Google.
 4. Google redirects back to `/auth/google/callback`.
-5. `lab` enforces the email allowlist (currently `LAB_AUTH_ADMIN_EMAIL`; expanding to a SQLite-backed user list managed via the web UI). The id_token's `email_verified` claim is required — unverified accounts are rejected even when the address matches. Browser-login callers receive a 401; OAuth-client callers receive an RFC 6749 §4.1.2.1 redirect with `error=access_denied`.
+5. `lab` enforces the email allowlist (currently `LABBY_AUTH_ADMIN_EMAIL`; expanding to a SQLite-backed user list managed via the web UI). The id_token's `email_verified` claim is required — unverified accounts are rejected even when the address matches. Browser-login callers receive a 401; OAuth-client callers receive an RFC 6749 §4.1.2.1 redirect with `error=access_denied`.
 6. `lab` exchanges the Google code server-side, stores a local authorization code, and redirects the client back to its registered redirect URI with the local code.
 7. The client exchanges that local code at `/token` for a `lab` access token and, when Google granted offline access, a `lab` refresh token.
 
@@ -145,13 +145,13 @@ rejected unless they match an allowlisted pattern.
 
 Configure extra allowed redirect URI patterns with either:
 
-- `LAB_AUTH_ALLOWED_REDIRECT_URIS`
+- `LABBY_AUTH_ALLOWED_REDIRECT_URIS`
 - `[auth].allowed_client_redirect_uris`
 
 Example:
 
 ```env
-LAB_AUTH_ALLOWED_REDIRECT_URIS=https://callback.example.com/callback/*
+LABBY_AUTH_ALLOWED_REDIRECT_URIS=https://callback.example.com/callback/*
 ```
 
 ```toml
@@ -238,7 +238,7 @@ Browser-session introspection semantics:
   logged-out outcome
 - the same payload includes `login_available` so browser clients can suppress
   the hosted-login CTA when OAuth browser login is not configured
-- a request that carries `Authorization: Bearer <LAB_MCP_HTTP_TOKEN>` is treated
+- a request that carries `Authorization: Bearer <LABBY_MCP_HTTP_TOKEN>` is treated
   as an authenticated admin caller and gets `authenticated: true` with
   `sub: "static-bearer"`, `is_admin: true`, and an empty `csrf_token` (CSRF is
   unnecessary for bearer-authenticated requests). This is the bridge that lets
@@ -305,7 +305,7 @@ When a request fails authentication (401), the response includes:
 WWW-Authenticate: Bearer resource_metadata="https://lab.example.com/.well-known/oauth-protected-resource"
 ```
 
-This header is only included when `LAB_PUBLIC_URL` is configured. If not, the header is omitted rather than advertising localhost.
+This header is only included when `LABBY_PUBLIC_URL` is configured. If not, the header is omitted rather than advertising localhost.
 
 ## Gateway-Managed Route Metadata
 
@@ -346,7 +346,7 @@ OAuth clients must request a token for the route resource
 not appear in public metadata, public challenges, or public error bodies.
 
 Static bearer compatibility does not make a public protected MCP route an OAuth
-resource credential. `LAB_MCP_HTTP_TOKEN` is an operator/admin shortcut for
+resource credential. `LABBY_MCP_HTTP_TOKEN` is an operator/admin shortcut for
 Lab admin/API surfaces; Gateway-managed public MCP routes validate Lab OAuth
 JWTs whose audience is the route resource.
 
@@ -362,13 +362,13 @@ Full route configuration and curl verification examples live in
 
 When both static bearer and OAuth are configured, auth is checked in this order:
 
-1. **Static bearer token** — constant-time comparison via `LAB_MCP_HTTP_TOKEN`. If it matches, the request is authenticated with implicit `lab:read` and `lab:admin` scopes.
+1. **Static bearer token** — constant-time comparison via `LABBY_MCP_HTTP_TOKEN`. If it matches, the request is authenticated with implicit `lab:read` and `lab:admin` scopes.
 2. **OAuth JWT** — if the static bearer check fails (or no static token is configured), the token is validated as a JWT against the cached JWKS. Tokens for Lab's own `/mcp` resource use the configured Lab scope; Gateway-managed protected MCP routes may advertise and enforce route-specific scopes such as `mcp:read mcp:write`.
 3. **401** — if both checks fail (or neither auth method is configured for the token presented).
 
 Static bearer tokens bypass all JWT validation. This allows operators to use a simple token for automation while also supporting OAuth for interactive or multi-tenant use.
 
-For node runtime background traffic, the supported auth path in this implementation is the shared static bearer token when `LAB_MCP_HTTP_TOKEN` is configured.
+For node runtime background traffic, the supported auth path in this implementation is the shared static bearer token when `LABBY_MCP_HTTP_TOKEN` is configured.
 
 ## Safety Gate
 
@@ -376,7 +376,7 @@ Lab refuses to bind on a non-localhost address without any auth configured:
 
 ```text
 refusing to bind HTTP on 0.0.0.0:8765 without authentication.
-Set LAB_MCP_HTTP_TOKEN or LAB_AUTH_MODE=oauth, or bind to 127.0.0.1 for local-only access.
+Set LABBY_MCP_HTTP_TOKEN or LABBY_AUTH_MODE=oauth, or bind to 127.0.0.1 for local-only access.
 ```
 
 Loopback hosts exempt from this check: `127.0.0.1`, `::1`, `[::1]`, `localhost`.
@@ -385,13 +385,13 @@ Loopback hosts exempt from this check: `127.0.0.1`, `::1`, `[::1]`, `localhost`.
 
 ```bash
 # In ~/.labby/.env
-LAB_MCP_TRANSPORT=http
-LAB_MCP_HTTP_HOST=0.0.0.0
-LAB_MCP_HTTP_PORT=8765
-LAB_AUTH_MODE=oauth
-LAB_PUBLIC_URL=https://lab.example.com
-LAB_GOOGLE_CLIENT_ID=google-client-id
-LAB_GOOGLE_CLIENT_SECRET=google-client-secret
+LABBY_MCP_TRANSPORT=http
+LABBY_MCP_HTTP_HOST=0.0.0.0
+LABBY_MCP_HTTP_PORT=8765
+LABBY_AUTH_MODE=oauth
+LABBY_PUBLIC_URL=https://lab.example.com
+LABBY_GOOGLE_CLIENT_ID=google-client-id
+LABBY_GOOGLE_CLIENT_SECRET=google-client-secret
 
 # Start
 labby serve
@@ -427,18 +427,18 @@ An operator shell script that tests a **running server** from outside, using onl
 ./scripts/check-oauth.sh https://lab.example.com
 
 # Or via env var
-LAB_BASE_URL=https://lab.example.com ./scripts/check-oauth.sh
+LABBY_BASE_URL=https://lab.example.com ./scripts/check-oauth.sh
 ```
 
 The script covers:
 
-- Config presence (`LAB_MCP_HTTP_TOKEN`, `LAB_PUBLIC_URL`, Google credentials, `LAB_WEB_UI_AUTH_DISABLED`)
+- Config presence (`LABBY_MCP_HTTP_TOKEN`, `LABBY_PUBLIC_URL`, Google credentials, `LABBY_WEB_UI_AUTH_DISABLED`)
 - Health probes reachable without auth (`/health`, `/ready`)
 - Protected endpoints return `401 {kind:auth_failed}` when unauthenticated (`/v1/*`, `/mcp`, `/v0.1/servers`)
 - Static bearer token accepted and wrong tokens rejected
 - MCP endpoint is bearer-only (session cookies rejected)
 - OAuth discovery endpoints are public and structurally valid (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`, `/jwks`)
-- Issuer in `/.well-known/oauth-authorization-server` matches `LAB_PUBLIC_URL`
+- Issuer in `/.well-known/oauth-authorization-server` matches `LABBY_PUBLIC_URL`
 - `WWW-Authenticate: Bearer resource_metadata=...` header present on 401 (RFC 9728)
 - Dev marketplace endpoint is unauthenticated for reads, blocked for mutations
 - Node self-registration endpoints are public
@@ -452,7 +452,7 @@ Exit codes: `0` = all pass, `1` = one or more failures.
 
 Auth-specific items `labby doctor` covers (or should cover):
 
-- `LAB_PUBLIC_URL` is set when OAuth mode is active
+- `LABBY_PUBLIC_URL` is set when OAuth mode is active
 - Google credentials present
 - `auth.db` and `auth-jwt.pem` exist and have restrictive permissions (`0600`)
 - SQLite store is openable (WAL mode, non-zero busy timeout)

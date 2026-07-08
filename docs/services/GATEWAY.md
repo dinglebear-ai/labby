@@ -274,6 +274,54 @@ Observability requirements for that reconcile:
 - redact credential-bearing URLs, commands, args, and token-derived values in
   both logs and returned management views
 
+## CLI Vs. Live Daemon
+
+The reconcile model above describes what happens *inside one process*. The
+CLI and the running `labby serve` daemon are separate processes, each with
+their own in-memory `GatewayManager` -- a `labby gateway add` invocation
+that builds its own throwaway manager would write `config.toml` correctly
+but leave an already-running daemon (and the WebUI/MCP clients it serves)
+unaware of the change until restarted or sent `SIGUSR1`.
+
+To avoid that divergence, `labby gateway <subcommand>` first probes for a
+live daemon (local bind address, then `LABBY_MCP_GATEWAY_URL`/`LABBY_PUBLIC_URL`
+in order) and, if one responds, dispatches through its real HTTP API
+(`POST /v1/gateway`, or the `codemode` MCP tool for `gateway code exec`) --
+the same path the WebUI itself uses, since the WebUI is served *by* the live
+daemon and shares its manager directly. Only when no daemon is reachable
+does the CLI fall back to mutating `config.toml` locally, which is what
+keeps bootstrap flows (`labby setup --provision`, the very first
+`gateway add` before `labby serve` exists) working standalone.
+
+Running the CLI from a different machine than the daemon requires
+`LABBY_MCP_HTTP_TOKEN` and `LABBY_PUBLIC_URL` (or `LABBY_MCP_GATEWAY_URL`) in that
+machine's `~/.labby/.env` -- see `docs/runtime/ENV.md` § "Remote Gateway CLI
+Usage" for the exact variables and fallback behavior.
+
+The local `GatewayManager` these CLI commands fall back to is built lazily --
+only if remote detection genuinely fails -- so a successful remote dispatch
+never touches `~/.labby/auth.db` or any other local state at all
+(`crate::cli::gateway::LazyGatewayManager`).
+
+### The stdio MCP surface follows the same principle
+
+`labby` is meant to have exactly one canonical, long-running gateway --
+`labby serve` (HTTP transport). Every other surface, including `labby serve
+--transport stdio` (a.k.a. `labby mcp`), should be a thin client to it
+whenever one is reachable, not a second independent instance with its own
+config view, upstream connections, and OAuth state.
+
+Concretely: before building any local `GatewayManager` or upstream pool,
+stdio startup calls `crate::live_gateway::detect()` -- the exact same
+detection logic the CLI uses above, shared via `crate::live_gateway` (moved
+there specifically so both surfaces could use it). If a live daemon answers,
+the stdio process runs as a pure `crate::mcp::bridge::BridgeServerHandler`:
+every `tools/`, `resources/`, and `prompts/` request received over stdio is
+forwarded to the live daemon's own MCP endpoint via a streamable-HTTP
+`Peer<RoleClient>`, and the response is piped straight back -- this process
+holds no gateway state of its own. Only when no daemon is reachable does it
+fall back to building a full standalone instance, same as today.
+
 ## Examples
 
 ### CLI
@@ -463,7 +511,7 @@ the Lab app URL and the route's public host/path as the MCP URL.
 
 Operational timeout:
 
-- `LAB_PROTECTED_MCP_CONNECT_TIMEOUT_SECS` controls the connect timeout for
+- `LABBY_PROTECTED_MCP_CONNECT_TIMEOUT_SECS` controls the connect timeout for
   Lab's protected MCP upstream proxy HTTP client. The default is `10` seconds.
   Set this higher only when upstream TCP/TLS connection setup is expected to be
   slow; long-lived MCP streams are not bounded by this connect timeout.
@@ -518,7 +566,7 @@ the configured public resource:
 - do not rewrite the public path before Lab sees it
 
 Public route OAuth is not the same as Lab's static bearer compatibility path.
-`Authorization: Bearer $LAB_MCP_HTTP_TOKEN` remains an operator/admin shortcut
+`Authorization: Bearer $LABBY_MCP_HTTP_TOKEN` remains an operator/admin shortcut
 for Lab's admin/API routes, but public Gateway-managed MCP routes validate Lab
 OAuth JWTs for the route resource, for example
 `https://mcp.example.com/syslog`. Do not use the static bearer token as the

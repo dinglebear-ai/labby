@@ -1141,7 +1141,7 @@ async fn call_tool_requires_execute_scope_for_hidden_mcp_app_sibling_callbacks()
     );
 }
 
-/// The legacy `LAB_CODE_MODE_WIDGET_CALLBACKS` bypass surfaces ANY exposed
+/// The legacy `LABBY_CODE_MODE_WIDGET_CALLBACKS` bypass surfaces ANY exposed
 /// non-destructive upstream tool — including one with no MCP App UI resource that
 /// is therefore NOT advertised in `list_tools`. Calling such a hidden tool via
 /// the bypass with an authenticated-but-insufficient scope must be rejected, not

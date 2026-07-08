@@ -75,9 +75,9 @@ impl StdioConnectError {
 }
 
 /// Resolve the log level for forwarded upstream stderr from
-/// `LAB_GW_UPSTREAM_STDERR`.
+/// `LABBY_GW_UPSTREAM_STDERR`.
 pub(super) fn upstream_stderr_log_level() -> Option<tracing::Level> {
-    parse_stderr_level(std::env::var("LAB_GW_UPSTREAM_STDERR").ok().as_deref())
+    parse_stderr_level(std::env::var("LABBY_GW_UPSTREAM_STDERR").ok().as_deref())
 }
 
 fn parse_stderr_level(raw: Option<&str>) -> Option<tracing::Level> {

@@ -20,7 +20,7 @@ The SDK-only registry modules own protocol clients and metadata:
 | --- | --- | --- | --- |
 | Claude/Codex plugins | `crates/lab/src/dispatch/marketplace/` | Claude/Codex marketplace files under `~/.claude/plugins/` | Reads installed/source state and shells out to `claude plugin ...` for plugin install/uninstall. |
 | MCP Registry | `marketplace` `mcp.*` actions | `lab-apis::mcpregistry` plus `[mcpregistry].url` | `mcpregistry` is not a first-class CLI/MCP/API service. |
-| ACP Agent Registry | `marketplace` `agent.*` actions | `lab-apis::acp_registry` plus `LAB_ACP_REGISTRY_URL` | `acp_registry` is not a first-class CLI/MCP/API service. |
+| ACP Agent Registry | `marketplace` `agent.*` actions | `lab-apis::acp_registry` plus `LABBY_ACP_REGISTRY_URL` | `acp_registry` is not a first-class CLI/MCP/API service. |
 
 Marketplace does not re-implement upstream registry semantics. Registry URL
 validation, schema validation, SDK decode errors, and upstream request failures
@@ -36,7 +36,7 @@ must flow through the shared dispatch error envelope.
 | `~/.claude/plugins/installed_plugins.json` | Installed Claude/Codex plugin state. |
 | `<installPath>/**` | Installed plugin artifacts returned by `plugin.artifacts`. |
 | `[mcpregistry].url` | Optional MCP Registry base URL, defaulting to `https://registry.modelcontextprotocol.io`. |
-| `LAB_ACP_REGISTRY_URL` | Optional ACP Agent Registry CDN base URL, defaulting to `https://cdn.agentclientprotocol.com`. |
+| `LABBY_ACP_REGISTRY_URL` | Optional ACP Agent Registry CDN base URL, defaulting to `https://cdn.agentclientprotocol.com`. |
 | `~/.labby/acp-providers.json` | Local ACP provider entries written by `agent.install` and removed by `agent.uninstall`. |
 
 Missing Claude/Codex marketplace files are treated as empty so a fresh machine
@@ -217,7 +217,7 @@ HTTP:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8765/v1/marketplace \
-  -H "Authorization: Bearer $LAB_MCP_HTTP_TOKEN" \
+  -H "Authorization: Bearer $LABBY_MCP_HTTP_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"action":"mcp.list","params":{"search":"postgres","limit":10}}'
 ```

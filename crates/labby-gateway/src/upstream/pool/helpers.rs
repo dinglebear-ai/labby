@@ -118,19 +118,19 @@ pub(super) fn estimate_resource_response_size(result: &ReadResourceResult) -> us
 
 /// Cached max response size (resolved once from env on first call).
 ///
-/// `LAB_UPSTREAM_MAX_RESPONSE_BYTES` is read at most once per process.
+/// `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` is read at most once per process.
 /// Tests that need a different cap should use `max_response_bytes_override`
 /// (cfg(test) only) to replace the cached value before the first call.
 static MAX_RESPONSE_BYTES_CACHE: OnceLock<usize> = OnceLock::new();
 
 /// Return the max upstream response size.
 ///
-/// Reads `LAB_UPSTREAM_MAX_RESPONSE_BYTES` once and caches the result for the
+/// Reads `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` once and caches the result for the
 /// lifetime of the process.  Subsequent calls return the cached value with no
 /// syscall overhead.
 pub(super) fn max_response_bytes() -> usize {
     *MAX_RESPONSE_BYTES_CACHE.get_or_init(|| {
-        std::env::var("LAB_UPSTREAM_MAX_RESPONSE_BYTES")
+        std::env::var("LABBY_UPSTREAM_MAX_RESPONSE_BYTES")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
@@ -189,7 +189,7 @@ pub(super) fn upstream_transport(config: &UpstreamConfig) -> &'static str {
 }
 
 pub(crate) fn upstream_discovery_concurrency() -> usize {
-    std::env::var("LAB_UPSTREAM_DISCOVERY_CONCURRENCY")
+    std::env::var("LABBY_UPSTREAM_DISCOVERY_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)

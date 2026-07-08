@@ -1,5 +1,4 @@
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::{Map, Value, json};
@@ -7,30 +6,30 @@ use serde_json::{Map, Value, json};
 use crate::cli::gateway::{
     GatewayArgs, GatewayCommand, GatewayEnrichCommand, GatewayMcpAuthCommand, GatewayMcpCommand,
     GatewayPendingCommand, GatewayProtectedRouteCommand, GatewayProtectedRouteUpdateArgs,
-    GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand, GatewayUpdateArgs,
+    GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand, GatewayUpdateArgs, LazyGatewayManager,
 };
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
 use crate::config::{LabConfig, ProtectedMcpRouteConfig};
 use crate::dispatch::error::ToolError;
-use crate::dispatch::gateway::manager::GatewayManager;
 use crate::output::OutputFormat;
 
 use super::code::run_gateway_code;
 use super::list::run_gateway_list;
 use super::oauth::run_gateway_oauth_start;
-use super::remote;
+use crate::live_gateway as remote;
 
 /// Dispatch `action`/`params` against the live `labby serve` daemon if one is
-/// reachable, falling back to the CLI's own local `GatewayManager` otherwise.
+/// reachable, falling back to the CLI's own local `GatewayManager` otherwise
+/// (built lazily, on first actual use -- see `LazyGatewayManager`).
 ///
 /// This is what keeps CLI mutations (`add`, `update`, `remove`, `reload`, ...)
 /// from silently diverging from what the WebUI/MCP surfaces see: the WebUI is
 /// served *by* the live daemon and shares its manager directly, while a CLI
 /// invocation is a separate process with its own throwaway manager built
-/// fresh from `config.toml`. See `super::remote` module docs for the full
+/// fresh from `config.toml`. See `crate::live_gateway` module docs for the full
 /// rationale.
 pub(super) async fn dispatch_gateway_action(
-    manager: &Arc<GatewayManager>,
+    manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
     action: String,
     params: Value,
@@ -38,7 +37,11 @@ pub(super) async fn dispatch_gateway_action(
     if let Some(live) = remote::detect(config).await {
         return live.dispatch_action(&action, params).await;
     }
-    crate::dispatch::gateway::dispatch_with_manager(manager, &action, params).await
+    let manager = manager.get().await.map_err(|e| ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: format!("failed to build local gateway manager: {e}"),
+    })?;
+    crate::dispatch::gateway::dispatch_with_manager(&manager, &action, params).await
 }
 
 fn protected_route_target_from_args(
@@ -164,7 +167,7 @@ fn insert_if_some<T: serde::Serialize>(
 }
 
 pub(super) async fn dispatch_command(
-    manager: Arc<GatewayManager>,
+    manager: &LazyGatewayManager<'_>,
     config: &LabConfig,
     args: GatewayArgs,
     format: OutputFormat,
@@ -192,7 +195,7 @@ pub(super) async fn dispatch_command(
                         json!({ "upstream": args.name, "subject": args.subject }),
                         format,
                         |action, params| async move {
-                            dispatch_gateway_action(&manager, config, action, params).await
+                            dispatch_gateway_action(manager, config, action, params).await
                         },
                     )
                     .await;
@@ -204,7 +207,7 @@ pub(super) async fn dispatch_command(
                         json!({ "upstream": args.name, "subject": args.subject }),
                         format,
                         |action, params| async move {
-                            dispatch_gateway_action(&manager, config, action, params).await
+                            dispatch_gateway_action(manager, config, action, params).await
                         },
                     )
                     .await;
@@ -217,7 +220,7 @@ pub(super) async fn dispatch_command(
                     json!({}),
                     format,
                     |action, params| async move {
-                        dispatch_gateway_action(&manager, config, action, params).await
+                        dispatch_gateway_action(manager, config, action, params).await
                     },
                 )
                 .await;
@@ -233,7 +236,7 @@ pub(super) async fn dispatch_command(
                     }),
                     format,
                     |action, params| async move {
-                        dispatch_gateway_action(&manager, config, action, params).await
+                        dispatch_gateway_action(manager, config, action, params).await
                     },
                 )
                 .await;
@@ -251,7 +254,7 @@ pub(super) async fn dispatch_command(
                     }),
                     format,
                     |action, params| async move {
-                        dispatch_gateway_action(&manager, config, action, params).await
+                        dispatch_gateway_action(manager, config, action, params).await
                     },
                 )
                 .await;
@@ -267,7 +270,7 @@ pub(super) async fn dispatch_command(
                     }),
                     format,
                     |action, params| async move {
-                        dispatch_gateway_action(&manager, config, action, params).await
+                        dispatch_gateway_action(manager, config, action, params).await
                     },
                 )
                 .await;
@@ -446,7 +449,7 @@ pub(super) async fn dispatch_command(
                 confirmed,
                 format,
                 |action, params| async move {
-                    dispatch_gateway_action(&manager, config, action, params).await
+                    dispatch_gateway_action(manager, config, action, params).await
                 },
             )
             .await;
@@ -458,10 +461,53 @@ pub(super) async fn dispatch_command(
 mod tests {
     use clap::Parser;
     use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use crate::cli::gateway::LazyGatewayManager;
     use crate::cli::{Cli, Command};
+    use crate::config::LabConfig;
 
     use super::*;
+
+    #[tokio::test]
+    async fn dispatch_gateway_action_never_builds_local_manager_when_remote_succeeds() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/gateway"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!([{"name": "example"}])),
+            )
+            .mount(&server)
+            .await;
+
+        let url = url::Url::parse(&server.uri()).expect("wiremock uri parses");
+        let mut config = LabConfig::default();
+        config.mcp.host = Some(url.host_str().expect("wiremock host").to_string());
+        config.mcp.port = url.port();
+
+        let manager = LazyGatewayManager::new(&config, false);
+        let result = dispatch_gateway_action(
+            &manager,
+            &config,
+            "gateway.list".to_string(),
+            json!({}),
+        )
+        .await
+        .expect("remote dispatch should succeed");
+
+        assert_eq!(result, json!([{"name": "example"}]));
+        assert!(
+            manager.built().is_none(),
+            "local GatewayManager (and its auth.db) must not be constructed when the remote path succeeds"
+        );
+    }
 
     fn parsed_update(args: &[&str]) -> GatewayUpdateArgs {
         let cli = Cli::try_parse_from(args).expect("parse gateway update args");

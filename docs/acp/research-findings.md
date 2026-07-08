@@ -86,7 +86,7 @@ all of them via `process.env`.
 
 ### C5 — Permission Auto-Selection Bypasses User Consent
 
-> **RESOLVED** (2026-06) — A pending-permission state machine is now implemented. Permission decisions are explicit with no auto-approval path. Each request emits an event and waits for an authenticated decision bounded by `LAB_ACP_PERMISSION_TIMEOUT_MS` (default 60 s). `session.permission.approve` and `session.permission.reject` are Phase 1 dispatch actions. HMAC-signed `permission_outcome` payloads detect tampering. See `docs/acp/README.md` security section.
+> **RESOLVED** (2026-06) — A pending-permission state machine is now implemented. Permission decisions are explicit with no auto-approval path. Each request emits an event and waits for an authenticated decision bounded by `LABBY_ACP_PERMISSION_TIMEOUT_MS` (default 60 s). `session.permission.approve` and `session.permission.reject` are Phase 1 dispatch actions. HMAC-signed `permission_outcome` payloads detect tampering. See `docs/acp/README.md` security section.
 
 **Source:** security-sentinel, agent-native-reviewer  
 **File:** `crates/lab/src/acp/runtime.rs:196–257`  
@@ -109,7 +109,7 @@ Expose `session.permissions.respond` as a Phase 1 dispatch action. Add timeout d
 **Source:** pattern-recognition-specialist, architecture-strategist  
 
 **C6a — Direct env reads in `persistence.rs` and `registry.rs`:**  
-`persistence.rs:15,18` reads `LAB_ACP_SESSION_DIR` and `HOME`. `registry.rs:35–39` reads
+`persistence.rs:15,18` reads `LABBY_ACP_SESSION_DIR` and `HOME`. `registry.rs:35–39` reads
 `ACP_SESSION_CWD`. `lab-apis` must never read env vars — that rule is explicit in CLAUDE.md.
 Fix: `JsonFileAcpPersistence::new(base_dir: PathBuf)`. Env reads move to `lab/src/config.rs`.
 

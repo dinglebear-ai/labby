@@ -6,7 +6,7 @@
 //! process (runner-side contract), so no JS state leaks between callers.
 //!
 //! Security invariants preserved at spawn (set once, persist for the process):
-//! - `env_clear()` — the child inherits no `LAB_*`/ambient env.
+//! - `env_clear()` — the child inherits no `LABBY_*`/ambient env.
 //! - `process_group(0)` (Unix) / Job Object (Windows) — `killpg`/job close
 //!   reaps grandchildren on shutdown/eviction/drop.
 //! - `kill_on_drop(true)` — dropping the handle kills the process.
@@ -30,7 +30,7 @@ use crate::error::ToolError;
 ///
 /// Note this is a per-runner transient ceiling: the parent may buffer up to this
 /// much for a single oversized stdout line, multiplied by the number of live
-/// runners (`LAB_CODE_MODE_POOL_SIZE` + `LAB_CODE_MODE_POOL_MAX_OVERFLOW`, ~24 at
+/// runners (`LABBY_CODE_MODE_POOL_SIZE` + `LABBY_CODE_MODE_POOL_MAX_OVERFLOW`, ~24 at
 /// defaults). It is a hard bound that errors rather than growing unbounded, not a
 /// steady-state allocation; raising the pool/overflow knobs raises this worst
 /// case proportionally.
