@@ -63,7 +63,7 @@ impl CodeModeHost for GatewayManager {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         _scope: &ToolScope,
-        _ctx: labby_codemode::ExecCtx<'_>,
+        _ctx: labby_codemode::ExecCtx,
     ) -> Result<ToolCallOutcome, ToolError> {
         let (upstream, tool) =
             labby_codemode::split_namespaced_id(id).ok_or_else(|| ToolError::Sdk {

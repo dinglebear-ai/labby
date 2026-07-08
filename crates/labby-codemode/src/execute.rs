@@ -297,7 +297,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         caller: CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
     ) -> Result<Value, ToolError> {
         match tokio::time::timeout_at(
             deadline,
@@ -320,7 +320,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         caller: CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
     ) -> Result<Value, ToolError> {
         let parsed = CodeModeToolId::parse(id)?;
         let Some(host) = self.host else {

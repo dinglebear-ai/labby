@@ -57,19 +57,15 @@ pub struct ToolCallOutcome {
 /// Per-call execution context threaded from the runner drive layer into
 /// [`CodeModeHost::call_tool`]. Carries the protocol `seq` for this call.
 #[derive(Debug, Clone, Copy)]
-pub struct ExecCtx<'a> {
-    pub execution_id: Option<&'a str>,
+pub struct ExecCtx {
     pub seq: u64,
 }
 
-impl ExecCtx<'_> {
+impl ExecCtx {
     /// The write-free context used when no durable run is active.
     #[must_use]
     pub const fn none() -> Self {
-        Self {
-            execution_id: None,
-            seq: 0,
-        }
+        Self { seq: 0 }
     }
 }
 
@@ -123,7 +119,7 @@ pub trait CodeModeHost: Send + Sync {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
     ) -> impl Future<Output = Result<ToolCallOutcome, ToolError>> + Send;
 
     /// Decide replay-vs-execute for a `codemode.step(name, fn)` boundary at
@@ -133,11 +129,7 @@ pub trait CodeModeHost: Send + Sync {
     ///
     /// The default impl always returns [`StepDecision::Execute`], so `fn` runs
     /// normally; no host currently overrides this hook.
-    fn decide_step(
-        &self,
-        ctx: ExecCtx<'_>,
-        name: &str,
-    ) -> impl Future<Output = StepDecision> + Send {
+    fn decide_step(&self, ctx: ExecCtx, name: &str) -> impl Future<Output = StepDecision> + Send {
         let _ = (ctx, name);
         async { StepDecision::Execute }
     }
@@ -149,7 +141,7 @@ pub trait CodeModeHost: Send + Sync {
     /// hook, so `fn` is simply re-run on any re-execution.
     fn record_step(
         &self,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
         value: &Value,
     ) -> impl Future<Output = Result<(), ToolError>> + Send {
         let _ = (ctx, value);
@@ -169,7 +161,7 @@ pub trait CodeModeHost: Send + Sync {
     /// so local calls dispatch unchanged; no host currently overrides this hook.
     fn decide_local(
         &self,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
         id: &str,
         params: &Value,
     ) -> impl Future<Output = StepDecision> + Send {
@@ -183,7 +175,7 @@ pub trait CodeModeHost: Send + Sync {
     /// default impl is a no-op `Ok(())` for the write-free path.
     fn record_local(
         &self,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
         value: &Value,
     ) -> impl Future<Output = Result<(), ToolError>> + Send {
         let _ = (ctx, value);
@@ -282,7 +274,7 @@ impl CodeModeHost for NoopHost {
         _caller: &CodeModeCaller,
         _surface: CodeModeSurface,
         _scope: &ToolScope,
-        _ctx: ExecCtx<'_>,
+        _ctx: ExecCtx,
     ) -> Result<ToolCallOutcome, ToolError> {
         Err(ToolError::Sdk {
             sdk_kind: "unknown_tool".to_string(),

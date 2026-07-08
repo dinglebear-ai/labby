@@ -657,10 +657,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let surface = cfg.surface;
     pending_tool_calls.push(Box::pin(async move {
         let call_start = std::time::Instant::now();
-        let ctx = ExecCtx {
-            execution_id: None,
-            seq,
-        };
+        let ctx = ExecCtx { seq };
         let result = broker
             .call_tool_id_before_deadline(
                 &id,
@@ -718,10 +715,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 call_start.elapsed().as_millis(),
             );
         }
-        let ctx = ExecCtx {
-            execution_id: None,
-            seq,
-        };
+        let ctx = ExecCtx { seq };
         // Journal (ephemeral) BEFORE dispatch so a resume divergence at this seq
         // is caught before the local side effect runs. The default `decide_local`
         // returns Execute (no host currently overrides this hook).
@@ -1108,10 +1102,7 @@ async fn handle_step_begin_event<H: CodeModeHost>(
     deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
-    let ctx = ExecCtx {
-        execution_id: None,
-        seq,
-    };
+    let ctx = ExecCtx { seq };
     let decision = match broker.host {
         Some(host) => host.decide_step(ctx, &name).await,
         None => StepDecision::Execute,
@@ -1148,10 +1139,7 @@ async fn handle_step_result_event<H: CodeModeHost>(
     deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
-    let ctx = ExecCtx {
-        execution_id: None,
-        seq,
-    };
+    let ctx = ExecCtx { seq };
     let record = match broker.host {
         Some(host) => host.record_step(ctx, &value).await,
         None => Ok(()),
@@ -1606,7 +1594,7 @@ sleep 3600
                 _caller: &CodeModeCaller,
                 _surface: CodeModeSurface,
                 _scope: &ToolScope,
-                _ctx: ExecCtx<'_>,
+                _ctx: ExecCtx,
             ) -> Result<ToolCallOutcome, ToolError> {
                 Err(ToolError::Sdk {
                     sdk_kind: "unknown_tool".to_string(),

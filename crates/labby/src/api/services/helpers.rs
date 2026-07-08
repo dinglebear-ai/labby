@@ -173,7 +173,7 @@ where
     );
 
     // Intent log: emit before dispatch so there is audit evidence even if the downstream
-    // service errors mid-way. Only fires for destructive actions after confirmation succeeds.
+    // service errors mid-way. Only fires for destructive actions.
     if is_destructive {
         tracing::info!(
             surface = surface,
