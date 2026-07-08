@@ -56,7 +56,9 @@ async fn fetch_servers(
     config: &LabConfig,
 ) -> Result<Vec<ServerView>, crate::dispatch::error::ToolError> {
     if let Some(live) = remote::detect(config).await {
-        let value = live.dispatch_action("gateway.list", serde_json::json!({})).await?;
+        let value = live
+            .dispatch_action("gateway.list", serde_json::json!({}))
+            .await?;
         if let Ok(servers) = serde_json::from_value::<Vec<ServerView>>(value) {
             return Ok(servers);
         }
@@ -64,12 +66,13 @@ async fn fetch_servers(
         // didn't parse as expected -- better to answer from local state than
         // to fail the whole command over a shape mismatch.
     }
-    let manager = manager.get().await.map_err(|e| {
-        crate::dispatch::error::ToolError::Sdk {
+    let manager = manager
+        .get()
+        .await
+        .map_err(|e| crate::dispatch::error::ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
             message: format!("failed to build local gateway manager: {e}"),
-        }
-    })?;
+        })?;
     manager.list().await
 }
 

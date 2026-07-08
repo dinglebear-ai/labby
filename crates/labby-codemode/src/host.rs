@@ -55,123 +55,18 @@ pub struct ToolCallOutcome {
 }
 
 /// Per-call execution context threaded from the runner drive layer into
-/// [`CodeModeHost::call_tool`]. Carries the durable-run `execution_id` (when the
-/// run is on the pause-capable path) and the protocol `seq` for this call.
-///
-/// `execution_id` is `None` for the no-decider / standalone / write-free path
-/// (CLI runs, pre-confirmed runs, tests) — the host then dispatches directly
-/// without journaling.
+/// [`CodeModeHost::call_tool`]. Carries the protocol `seq` for this call.
 #[derive(Debug, Clone, Copy)]
-pub struct ExecCtx<'a> {
-    pub execution_id: Option<&'a str>,
+pub struct ExecCtx {
     pub seq: u64,
 }
 
-impl ExecCtx<'_> {
+impl ExecCtx {
     /// The write-free context used when no durable run is active.
     #[must_use]
     pub const fn none() -> Self {
-        Self {
-            execution_id: None,
-            seq: 0,
-        }
+        Self { seq: 0 }
     }
-}
-
-/// Why a [`DecideOutcome::Fail`] terminated the run. Preserved across the decide
-/// boundary so the host can map each cause onto the correct `sdk_kind` instead of
-/// collapsing every failure into `internal_error`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FailReason {
-    /// No durable run exists for this execution id.
-    UnknownExecution,
-    /// The run row failed HMAC integrity verification (tampered) — fail closed.
-    IntegrityFailure,
-    /// A journaled value exceeded the durable size cap. Caller-shaped
-    /// (`invalid_param`), not an internal fault — the args/result are too big to
-    /// record and must be reduced.
-    ValueTooLarge,
-    /// A genuine internal fault (SQLite/serialization/status-write failure).
-    Internal,
-}
-
-impl FailReason {
-    /// The host `sdk_kind` this failure maps onto. `ValueTooLarge` is
-    /// caller-shaped (`invalid_param`); every other cause is `internal_error`.
-    #[must_use]
-    pub fn sdk_kind(self) -> &'static str {
-        match self {
-            FailReason::ValueTooLarge => "invalid_param",
-            FailReason::UnknownExecution | FailReason::IntegrityFailure | FailReason::Internal => {
-                "internal_error"
-            }
-        }
-    }
-}
-
-/// Whether a call needs per-call human approval before it may dispatch. A named
-/// two-variant enum replacing a bare `bool` at the [`CodeModeDecider::decide`]
-/// boundary, so it cannot be transposed with [`Journaling`] (both were adjacent
-/// `bool`s). A fresh `Required` call journals `pending` and pauses the run; a
-/// `NotNeeded` call executes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Approval {
-    /// The call is destructive/unconfirmed — journal pending and pause.
-    Required,
-    /// The call may execute without per-call approval.
-    NotNeeded,
-}
-
-impl Approval {
-    /// `true` iff approval is required (the wire/store bool).
-    #[must_use]
-    pub fn is_required(self) -> bool {
-        matches!(self, Approval::Required)
-    }
-}
-
-/// Whether a journaled entry replays its recorded result or re-executes on
-/// resume. A named two-variant enum replacing a bare `bool` at the
-/// [`CodeModeDecider::decide`] boundary (adjacent to [`Approval`], hence the
-/// transposition risk this removes). `Ephemeral` entries (local `state`/`git`
-/// providers) RE-EXECUTE on replay so the side effect re-runs; `Durable` entries
-/// replay their stored result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Journaling {
-    /// Re-execute on replay (never serve a stored result). Local FS/git calls.
-    Ephemeral,
-    /// Replay the stored result on resume (journal-once). Normal tool calls/steps.
-    Durable,
-}
-
-impl Journaling {
-    /// `true` iff the entry is ephemeral (the wire/store bool).
-    #[must_use]
-    pub fn is_ephemeral(self) -> bool {
-        matches!(self, Journaling::Ephemeral)
-    }
-}
-
-/// The durable-execution decision for a single tool call or step.
-///
-/// Port of Cloudflare's `ToolDecision` (`runtime.ts:127-134`), plus explicit
-/// `Diverge`/`Fail` terminal variants (Cloudflare routes both through a `pause`
-/// decision whose reason lives on the execution record; Labby's host returns a
-/// typed outcome so the driver can map it onto a `ToolError` directly).
-#[derive(Debug, Clone)]
-pub enum DecideOutcome {
-    /// Return the cached result, do NOT dispatch (`runtime.ts:464`).
-    Replay(Value),
-    /// Dispatch for real, then call `record_result` (`runtime.ts:527`).
-    Execute,
-    /// Run flipped to `paused`; return the pause sentinel (`runtime.ts:524`).
-    /// Best-effort sandbox halt only — the durable status is the source of truth.
-    Pause,
-    /// Hard, model-actionable replay divergence (`runtime.ts:437/448`).
-    Diverge(String),
-    /// Terminal run failure. `reason` distinguishes the cause (so the host can
-    /// pick the right `sdk_kind`); `message` is the human-facing detail.
-    Fail { reason: FailReason, message: String },
 }
 
 /// The durable decision for one `codemode.step(name, fn)` boundary, returned by
@@ -192,203 +87,6 @@ pub enum StepDecision {
     /// Divergence / pause / fail — reject the step in the sandbox with this
     /// `(kind, message)` (mirrors a rejected `callTool`).
     Error { kind: String, message: String },
-}
-
-/// Neutral lifecycle status of a durable Code Mode run, read by the host after a
-/// pass settles to decide the paused/completed/error envelope. Mirrors the
-/// binary-side `RunStatus`; `Unknown` also covers a tampered (HMAC-failed) row
-/// so callers fail closed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunLifecycle {
-    Running,
-    Paused,
-    Completed,
-    Error,
-    Rejected,
-    Expired,
-    /// Missing run OR failed integrity verification — treat as fail-closed.
-    Unknown,
-}
-
-/// Fields to begin a fresh durable run (`store.begin`). Neutral mirror of the
-/// binary-side `NewRun` so the MCP surface can start a run through the decider
-/// trait without depending on the SQLite store.
-#[derive(Debug, Clone)]
-pub struct BeginRun {
-    pub execution_id: String,
-    pub code_hash: String,
-    pub actor_key: Option<String>,
-    pub is_admin: bool,
-    pub route_scope: String,
-    pub capability_filter_fingerprint: String,
-    pub expires_at_ms: i64,
-}
-
-/// A pending (awaiting-approval) call surfaced in a paused run's summary.
-#[derive(Debug, Clone)]
-pub struct PendingCall {
-    pub seq: u64,
-    pub tool_id: String,
-}
-
-/// Authorization fields recorded on a run, re-read at resume time to recompute
-/// live authorization (V1/V3).
-///
-/// A `VerifiedAuth` can ONLY be produced from a row that passed HMAC integrity
-/// verification — it carries no `verified` flag because its mere existence is
-/// the proof. It is reachable exclusively through [`AuthLoad::Ok`], so a caller
-/// can never read `is_admin`/`route_scope`/`actor_key` off a tampered row: the
-/// tampered case is a distinct [`AuthLoad::Tampered`] variant with no fields.
-#[derive(Debug, Clone)]
-pub struct VerifiedAuth {
-    pub code_hash: String,
-    pub actor_key: Option<String>,
-    pub is_admin: bool,
-    pub capability_filter_fingerprint: String,
-    /// The route scope label the run was started under. Re-checked at resume
-    /// time (F2) so a run paused under route A cannot be resumed under route B
-    /// even when the caller shares the same capability fingerprint/actor.
-    pub route_scope: String,
-    pub status: RunLifecycle,
-}
-
-/// The outcome of loading a run's authorization fields via
-/// [`CodeModeDecider::run_auth_fields`].
-///
-/// This models the three states a security gate MUST handle explicitly, so that
-/// tampered auth fields can never be read as usable. There is no `verified: bool`
-/// to forget: only [`AuthLoad::Ok`] yields a [`VerifiedAuth`], and it is
-/// unreachable for a missing or HMAC-failed row.
-#[derive(Debug, Clone)]
-pub enum AuthLoad {
-    /// No run exists for this execution id.
-    Missing,
-    /// A run row exists but failed HMAC integrity verification — fail closed.
-    Tampered,
-    /// A run row exists and passed integrity verification.
-    Ok(VerifiedAuth),
-}
-
-/// A boxed, `Send` future — the object-safe return type the `CodeModeDecider`
-/// trait uses so it can be held as `Arc<dyn CodeModeDecider>`.
-///
-/// Native `async fn in trait` (RPITIT) is NOT `dyn`-compatible, and the repo
-/// forbids the `async-trait` crate; boxing the future by hand keeps the trait
-/// object-safe without pulling in `async_trait`. Implementations still write
-/// `async` bodies internally and wrap them in `Box::pin(async move { … })`.
-pub type BoxDecideFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-/// The durable-execution decision layer the Code Mode host consults around each
-/// upstream tool call. Storage-neutral: the concrete SQLite-backed
-/// implementation (`SqliteDecider`) lives in the `labby` binary crate, injected
-/// into the gateway host as `Arc<dyn CodeModeDecider>`.
-///
-/// Port of the `decide()`/`recordResult()` half of Cloudflare's
-/// `CodemodeRuntime` (`runtime.ts:411-572`). Methods return boxed futures so the
-/// trait is `dyn`-compatible (see [`BoxDecideFuture`]).
-///
-/// # Fail-closed contract
-///
-/// Every method fails closed — an ambiguous, missing, or tampered run must never
-/// be readable as a usable/authorized state:
-///
-/// - [`run_status`](Self::run_status) returns [`RunLifecycle::Unknown`] for a
-///   missing OR HMAC-tampered run; `Unknown` is never `Running`, so no work
-///   proceeds.
-/// - [`run_auth_fields`](Self::run_auth_fields) returns [`AuthLoad::Ok`] ONLY
-///   for a row that passed integrity verification; a missing row is
-///   [`AuthLoad::Missing`] and a tampered row is [`AuthLoad::Tampered`], neither
-///   of which exposes a [`VerifiedAuth`].
-/// - CAS transitions ([`resume_to_running`](Self::resume_to_running),
-///   [`reject_paused`](Self::reject_paused)) return `false` when no eligible row
-///   transitioned (already resumed/terminal, missing, or tampered) — the loser
-///   of a race or a tampered row is refused, never force-applied.
-/// - [`decide`](Self::decide) returns [`DecideOutcome::Fail`] with a
-///   [`FailReason`] of `UnknownExecution`/`IntegrityFailure` for a
-///   missing/tampered run and never treats a tampered row's recorded fields as
-///   trustworthy.
-///
-/// Uniformly: `None`/`Unknown`/`false`/`Tampered` mean "refuse", never "allow".
-pub trait CodeModeDecider: Send + Sync {
-    /// Decide what to do with the call at `(execution_id, seq)`. Ports
-    /// `runtime.ts:411 decide`: monotonic pause gate first, then
-    /// replay/divergence/journal-and-pause/execute.
-    ///
-    /// `approval` and `journaling` are named enums (not adjacent `bool`s) so the
-    /// two cannot be transposed at a call site.
-    fn decide<'a>(
-        &'a self,
-        execution_id: &'a str,
-        seq: u64,
-        tool_id: &'a str,
-        args: &'a Value,
-        approval: Approval,
-        journaling: Journaling,
-    ) -> BoxDecideFuture<'a, DecideOutcome>;
-
-    /// Record the real result of an executed call and mark it applied. Ports
-    /// `runtime.ts:543 recordResult`.
-    fn record_result<'a>(
-        &'a self,
-        execution_id: &'a str,
-        seq: u64,
-        result: &'a Value,
-    ) -> BoxDecideFuture<'a, Result<(), ToolError>>;
-
-    // ── Run lifecycle (driven by the MCP surface) ────────────────────────────
-
-    /// Insert a fresh `running` run (port of `runtime.ts:355 begin`). Called on
-    /// the pause-capable path before driving the snippet.
-    fn begin(&self, run: BeginRun) -> BoxDecideFuture<'_, Result<(), ToolError>>;
-
-    /// The durable status of a run after a pass settles (the C1 payoff): the
-    /// host reads this — NOT the sandbox's own result — to decide the envelope.
-    /// Returns `Unknown` for a missing/tampered run.
-    fn run_status<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, RunLifecycle>;
-
-    /// The recorded error message for an `Error` run (audit / envelope).
-    fn run_error<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, Option<String>>;
-
-    /// Pending (awaiting-approval) calls of a paused run (port of
-    /// `runtime.ts:640 listPending`).
-    fn list_pending<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, Vec<PendingCall>>;
-
-    /// Mark a run terminal with the given lifecycle status + optional error.
-    /// Used for `Completed` after settle and `Rejected` from the reject action.
-    fn set_status<'a>(
-        &'a self,
-        execution_id: &'a str,
-        to: RunLifecycle,
-        error: Option<&'a str>,
-    ) -> BoxDecideFuture<'a, Result<bool, ToolError>>;
-
-    /// CAS a paused run `paused → running` (port of `runtime.ts:383 resume`).
-    /// Returns `true` iff a paused row transitioned (loser gets `false`).
-    fn resume_to_running<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, bool>;
-
-    /// Reject a run, guarded so it only fires on a still-`paused` run (port of
-    /// `runtime.ts:668 reject`). Unlike `set_status`, this cannot force-terminate
-    /// a live `running` run: the transition is conditional on the run observing
-    /// `status='paused'`. Returns `true` iff a paused row transitioned.
-    fn reject_paused<'a>(
-        &'a self,
-        execution_id: &'a str,
-        error: Option<&'a str>,
-    ) -> BoxDecideFuture<'a, Result<bool, ToolError>>;
-
-    /// The recorded authorization fields for a run, for live re-authorization at
-    /// resume time (V1/V3).
-    ///
-    /// Returns [`AuthLoad::Ok`] ONLY for a row that passed HMAC integrity
-    /// verification; a missing row is [`AuthLoad::Missing`] and a tampered
-    /// (HMAC-failed) row is [`AuthLoad::Tampered`]. A [`VerifiedAuth`] is thus
-    /// reachable exclusively down the `Ok` path, so no caller can trust the
-    /// auth-bearing fields of an unverified row.
-    fn run_auth_fields<'a>(&'a self, execution_id: &'a str) -> BoxDecideFuture<'a, AuthLoad>;
-
-    /// Lazy, throttled TTL expiry sweep (Wave 4 Task 4.2). Best-effort;
-    /// no-op if the throttle interval has not elapsed.
-    fn maybe_expire(&self) -> BoxDecideFuture<'_, ()>;
 }
 
 /// Injects the tool source into the Code Mode kernel.
@@ -413,10 +111,7 @@ pub trait CodeModeHost: Send + Sync {
     /// unwrapped result (plus any captured widget link). The kernel has already
     /// checked the id against `scope`.
     ///
-    /// `ctx` carries the durable-run `execution_id` + protocol `seq`; when the
-    /// host has an injected decider AND `ctx.execution_id` is `Some`, the call
-    /// runs through the decide→dispatch→record durable dance (pause/replay/
-    /// diverge/fail), otherwise it dispatches directly (write-free path).
+    /// `ctx` carries the protocol `seq` for this call.
     fn call_tool(
         &self,
         id: &str,
@@ -424,7 +119,7 @@ pub trait CodeModeHost: Send + Sync {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
     ) -> impl Future<Output = Result<ToolCallOutcome, ToolError>> + Send;
 
     /// Decide replay-vs-execute for a `codemode.step(name, fn)` boundary at
@@ -432,14 +127,9 @@ pub trait CodeModeHost: Send + Sync {
     /// `seq` from the same monotonic spine as `call_tool`, so it participates in
     /// the durable replay cursor.
     ///
-    /// The default impl always returns [`StepDecision::Execute`] — the
-    /// no-decider / standalone / write-free path (CLI, pre-confirmed, tests)
-    /// simply runs `fn` normally, exactly as before this primitive existed.
-    fn decide_step(
-        &self,
-        ctx: ExecCtx<'_>,
-        name: &str,
-    ) -> impl Future<Output = StepDecision> + Send {
+    /// The default impl always returns [`StepDecision::Execute`], so `fn` runs
+    /// normally; no host currently overrides this hook.
+    fn decide_step(&self, ctx: ExecCtx, name: &str) -> impl Future<Output = StepDecision> + Send {
         let _ = (ctx, name);
         async { StepDecision::Execute }
     }
@@ -447,11 +137,11 @@ pub trait CodeModeHost: Send + Sync {
     /// Record the value a step's `fn` produced (decision was execute) so a later
     /// resume replays it without re-running `fn`.
     ///
-    /// The default impl is a no-op `Ok(())` — the write-free path records
-    /// nothing, so `fn` is simply re-run on any (non-durable) re-execution.
+    /// The default impl is a no-op `Ok(())`; no host currently overrides this
+    /// hook, so `fn` is simply re-run on any re-execution.
     fn record_step(
         &self,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
         value: &Value,
     ) -> impl Future<Output = Result<(), ToolError>> + Send {
         let _ = (ctx, value);
@@ -463,21 +153,15 @@ pub trait CodeModeHost: Send + Sync {
     /// **ephemeral** durable entry.
     ///
     /// Local providers dispatch inside the runner crate (not via `call_tool`),
-    /// so before this hook they were invisible to the durable log: on the
-    /// pause-capable path a resumed run would silently re-apply them out of the
-    /// `seq` spine (the fail-closed exclusion that used to make such runs
-    /// non-pausable). Journaling them ephemerally keeps the `seq` spine aligned
-    /// and enforces the tool_id/args divergence check, while `ephemeral = true`
-    /// means a recorded entry RE-EXECUTES on replay (the local FS/git side
-    /// effect is re-run deterministically-enough, never replayed from a stale
-    /// stored result).
+    /// so this hook is where a future durable-journaling host would keep them
+    /// aligned with the `seq` spine and divergence-check their tool_id/args.
     ///
     /// `id` is the reserved `<namespace>::<method>` id; `params` are the call
     /// args (the divergence key). The default impl returns [`StepDecision::Execute`]
-    /// (no-decider / write-free path) so local calls dispatch unchanged.
+    /// so local calls dispatch unchanged; no host currently overrides this hook.
     fn decide_local(
         &self,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
         id: &str,
         params: &Value,
     ) -> impl Future<Output = StepDecision> + Send {
@@ -491,7 +175,7 @@ pub trait CodeModeHost: Send + Sync {
     /// default impl is a no-op `Ok(())` for the write-free path.
     fn record_local(
         &self,
-        ctx: ExecCtx<'_>,
+        ctx: ExecCtx,
         value: &Value,
     ) -> impl Future<Output = Result<(), ToolError>> + Send {
         let _ = (ctx, value);
@@ -590,7 +274,7 @@ impl CodeModeHost for NoopHost {
         _caller: &CodeModeCaller,
         _surface: CodeModeSurface,
         _scope: &ToolScope,
-        _ctx: ExecCtx<'_>,
+        _ctx: ExecCtx,
     ) -> Result<ToolCallOutcome, ToolError> {
         Err(ToolError::Sdk {
             sdk_kind: "unknown_tool".to_string(),
@@ -641,12 +325,10 @@ impl CodeModeHost for NoopHost {
 mod tests {
     use super::*;
 
-    /// A host with NO decider (NoopHost does not override the journaling hooks)
-    /// uses the trait DEFAULT impls: `decide_step`/`decide_local` return
-    /// `Execute` and `record_step`/`record_local` are no-op `Ok(())`. This is
-    /// the write-free / standalone path — `codemode.step`'s `fn` and local
-    /// provider calls run normally without any durable journaling, exactly as
-    /// before the primitive existed.
+    /// A host that does not override the journaling hooks (`NoopHost`) uses the
+    /// trait DEFAULT impls: `decide_step`/`decide_local` return `Execute` and
+    /// `record_step`/`record_local` are no-op `Ok(())`, so `codemode.step`'s `fn`
+    /// and local provider calls run normally without any durable journaling.
     #[tokio::test]
     async fn default_step_and_local_hooks_execute_and_noop() {
         let host = NoopHost::default();

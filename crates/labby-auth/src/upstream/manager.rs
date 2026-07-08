@@ -429,7 +429,11 @@ impl UpstreamOauthManager {
             self.log_refresh_attempt(subject, state, started.elapsed().as_millis());
         }
 
-        if refresh_due && self.refresh_failures.recently_failed(&self.upstream.name, subject) {
+        if refresh_due
+            && self
+                .refresh_failures
+                .recently_failed(&self.upstream.name, subject)
+        {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
@@ -449,7 +453,8 @@ impl UpstreamOauthManager {
         manager.get_access_token().await.map_err(|e| {
             let mapped = map_auth_error(e);
             if refresh_due {
-                self.refresh_failures.record_failure(&self.upstream.name, subject);
+                self.refresh_failures
+                    .record_failure(&self.upstream.name, subject);
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),
@@ -562,7 +567,11 @@ impl UpstreamOauthManager {
             self.log_refresh_attempt(subject, state, started.elapsed().as_millis());
         }
 
-        if refresh_due && self.refresh_failures.recently_failed(&self.upstream.name, subject) {
+        if refresh_due
+            && self
+                .refresh_failures
+                .recently_failed(&self.upstream.name, subject)
+        {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
@@ -582,7 +591,8 @@ impl UpstreamOauthManager {
         manager.get_access_token().await.map_err(|e| {
             let mapped = map_auth_error(e);
             if refresh_due {
-                self.refresh_failures.record_failure(&self.upstream.name, subject);
+                self.refresh_failures
+                    .record_failure(&self.upstream.name, subject);
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),

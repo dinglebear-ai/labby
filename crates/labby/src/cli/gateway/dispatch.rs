@@ -6,7 +6,8 @@ use serde_json::{Map, Value, json};
 use crate::cli::gateway::{
     GatewayArgs, GatewayCommand, GatewayEnrichCommand, GatewayMcpAuthCommand, GatewayMcpCommand,
     GatewayPendingCommand, GatewayProtectedRouteCommand, GatewayProtectedRouteUpdateArgs,
-    GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand, GatewayUpdateArgs, LazyGatewayManager,
+    GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand, GatewayUpdateArgs,
+    LazyGatewayManager,
 };
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
 use crate::config::{LabConfig, ProtectedMcpRouteConfig};
@@ -481,9 +482,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/gateway"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!([{"name": "example"}])),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"name": "example"}])))
             .mount(&server)
             .await;
 
@@ -493,14 +492,10 @@ mod tests {
         config.mcp.port = url.port();
 
         let manager = LazyGatewayManager::new(&config, false);
-        let result = dispatch_gateway_action(
-            &manager,
-            &config,
-            "gateway.list".to_string(),
-            json!({}),
-        )
-        .await
-        .expect("remote dispatch should succeed");
+        let result =
+            dispatch_gateway_action(&manager, &config, "gateway.list".to_string(), json!({}))
+                .await
+                .expect("remote dispatch should succeed");
 
         assert_eq!(result, json!([{"name": "example"}]));
         assert!(

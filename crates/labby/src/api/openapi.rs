@@ -254,23 +254,11 @@ pub fn build_action_schemas(services: &[RegisteredService]) -> Vec<(String, RefO
             let name = format!("{svc_pascal}{action_pascal}Params");
 
             let mut builder = ObjectBuilder::new();
-            let mut has_confirm_param = false;
             for p in action.params {
-                if p.name == "confirm" {
-                    has_confirm_param = true;
-                }
                 builder = builder.property(p.name, param_type_to_schema(p.ty));
                 if p.required {
                     builder = builder.required(p.name);
                 }
-            }
-            if action.destructive && !has_confirm_param {
-                builder = builder
-                    .property(
-                        "confirm",
-                        ObjectBuilder::new().schema_type(SchemaType::Type(Type::Boolean)),
-                    )
-                    .required("confirm");
             }
             schemas.push((name, RefOr::T(builder.build().into())));
         }
@@ -842,13 +830,9 @@ mod tests {
             setup_update["properties"]["entries"]["items"]["type"],
             "object"
         );
-        assert_eq!(setup_update["properties"]["confirm"]["type"], "boolean");
-        assert!(
-            setup_update["required"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::json!("confirm"))
-        );
+        // Destructive actions no longer get an injected `confirm` schema param —
+        // HTTP dispatch no longer requires or generates one.
+        assert!(setup_update["properties"].get("confirm").is_none());
 
         for (schema_name, schema) in schemas {
             let Some(required) = schema.get("required").and_then(|value| value.as_array()) else {

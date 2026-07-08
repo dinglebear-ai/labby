@@ -74,16 +74,22 @@ Dispatch layers may add the following kinds on top of SDK errors:
 > Code Mode execution disabled → `internal_error`. Sandbox/runner JS evaluation failure
 > → `server_error`. These map into the canonical kind set so agents switch-casing on
 > `err.kind` don't fall into the default branch.
+>
+> Note: Code Mode has **no destructive-call pause/resume gate**. There is no
+> durable execution log, no `resume_token`, and no `confirmation_required`
+> "paused" envelope for Code Mode — that entire mechanism (formerly
+> `code_mode_paused`, `already_resumed`, `unknown_execution`, `resume_divergence`,
+> and the Code Mode-specific reuse of `confirmation_required` for a paused run)
+> has been removed. A destructive upstream tool call from a caller who lacks
+> Code Mode execute permission is refused immediately with `forbidden` (see
+> `destructive_permitted` in `labby-codemode`'s `types.rs`); a caller who does
+> have execute permission may call any destructive tool with no per-call
+> approval step. This is a deliberate, permanent design decision — do not
+> reintroduce a pause/confirm gate on top of Code Mode dispatch.
 - `code_mode_fuel_exhausted` — **reserved, not currently emitted.** Belongs to the dead Wasmtime reference engine (`wasm_runner.rs`), which is never run on the live path. Would map to HTTP 408 if the Wasmtime path were ever revived.
 - `code_mode_timeout` — **reserved, not currently emitted.** Same dead-Wasmtime origin as above. On the live Javy/QuickJS runner, a wall-clock backstop interruption surfaces as the canonical `timeout` kind, not `code_mode_timeout`. Would map to HTTP 408 if the Wasmtime path were ever revived. See [CODE_MODE.md](./CODE_MODE.md) "Runner Architecture".
 - `call_budget_exceeded` — Code Mode rejected a `callTool` invocation after the per-run fan-out budget was reached. The in-sandbox promise rejects with this recoverable kind; reduce fan-out or split work across multiple `codemode` calls.
 - `result_too_large` — Code Mode rejected a single upstream `callTool` result before sending it into the runner because the serialized result exceeded the host-side result cap. Use `writeArtifact` for large payloads or reduce the upstream result.
-- `resume_divergence` — a Code Mode resume re-ran the snippet but a journaled call at a given `seq` no longer matched the recorded `(tool_id, canonical args)`, OR a resume resubmitted code whose `sha256` did not match the paused run's `code_hash`. Replay is aborted and the run is marked `error` rather than applying a stale result — code must be deterministic up to tool calls and `codemode.step`. This is a hard, model-actionable terminal error (the model must resubmit identical, deterministic code, wrapping nondeterministic work in `codemode.step`). MCP tool result error envelope.
-- `invalid_param` (durable value too large) — a single value the durable pause store was asked to journal (a call's args, or a recorded result) exceeded `MAX_DURABLE_VALUE_BYTES` (1 MB). Truncation is never an option (it would feed resumed code corrupted data), so the run is marked `error` and the decide/record boundary surfaces `invalid_param` — this is a caller-shaped fault (reduce the payload; write large data to a file/workspace and pass a small reference), **not** an `internal_error`. Distinct from the genuine-internal-fault (`internal_error`) and integrity-failure (`internal_error`) decide failures, which the decider now tags with a separate `FailReason` so the host maps each to the correct kind.
-- `code_mode_paused` — the best-effort sandbox-halt sentinel thrown inside the runner when a durable Code Mode run pauses awaiting approval. It is **not** the deciding signal: the durable run status (read after the pass settles) is authoritative, and model code that swallows this sentinel (`Promise.allSettled`/`try-catch`) still yields a paused envelope. Callers see the paused state as a `confirmation_required` envelope (below), not as `code_mode_paused` directly.
-- `already_resumed` — a Code Mode resume or reject targeted a run that is no longer `paused` (already resumed, rejected, expired, or terminal), or lost the resume CAS race to a concurrent resume. Only a paused run can be resumed/rejected; exactly one concurrent resume wins and the rest get `already_resumed`. MCP tool result error envelope.
-- `unknown_execution` — a Code Mode `resume_token` referenced no known durable run (on resume OR reject). MCP tool result error envelope. (A resume/reject with a valid token but tampered integrity signature fails closed as `internal_error`; a resume whose resubmitted code hash mismatches the paused run fails as `resume_divergence`; a resume or reject by a different actor, or a resume with narrowed/revoked live scope, or a resume under a different protected-route scope than the run paused in, fails as `forbidden`.)
-- `confirmation_required` (Code Mode pause reuse) — a durable Code Mode run paused awaiting human approval of a destructive upstream call. The envelope carries `status: "paused"`, `execution_id`, `resume_token` (equal to the execution id), and a `pending` array of `{ seq, tool_id }`. The caller resumes by resubmitting the **identical** code with `resume_token` + `confirm: true`, or cancels with `confirm: false`. This reuses the existing `confirmation_required` kind (see below); no new pause-specific kind is introduced.
 - `queue_saturated` — bounded runtime queue is full; caller should retry after the current work drains. HTTP 429.
 - `session_limit_exceeded` — ACP registry has reached `MAX_CONCURRENT_SESSIONS` (20); no new provider processes will be launched until existing sessions are closed. HTTP 429.
 - `too_many_subscribers` — a single ACP session has reached `MAX_SUBSCRIBERS_PER_SESSION` (32) concurrent SSE subscribers; the caller must reconnect later. HTTP 429.
@@ -221,27 +227,23 @@ This kind does not replace the canonical shared SDK taxonomy for service
 dispatch. It exists because OAuth token endpoints have a protocol-level error
 vocabulary that callers expect.
 
-### HTTP-Only Dispatcher Kinds
+### HTTP dispatch has no destructive-confirmation gate
 
-The following kinds are emitted exclusively by the HTTP surface. MCP handles the same guard differently (via elicitation), and CLI handles it via `--yes` / `-y`.
+HTTP dispatch does **not** emit a `confirmation_required` gate for destructive
+actions. `handle_action` in `crates/lab/src/api/services/helpers.rs` used to
+require `params["confirm"] == true` before dispatching a destructive action
+(`ActionSpec.destructive == true`); that gate has been removed entirely.
+Destructive actions dispatch over HTTP exactly like non-destructive ones. The
+OpenAPI generator (`crates/lab/src/api/openapi.rs`) no longer injects a
+`confirm` schema property for destructive actions either.
 
-#### `confirmation_required`
-
-**When:** A destructive action (`ActionSpec.destructive == true`) is dispatched over HTTP without `params["confirm"] == true`.
-
-**Surface:** HTTP only. MCP uses elicitation; CLI requires `--yes`.
-
-**Resolution:** Set `"confirm": true` inside the request body's `params` object and re-submit.
-
-**Status code:** `422 Unprocessable Entity`
-
-**Envelope:**
-
-```json
-{ "kind": "confirmation_required", "message": "action `snippets.delete` is destructive — set `confirm: true` in params to proceed" }
-```
-
-**Implementation note:** Emitted as `ToolError::Sdk { sdk_kind: "confirmation_required" }` from `handle_action` in `crates/lab/src/api/services/helpers.rs`.
+Confirmation remains a surface-specific concept elsewhere: MCP uses
+elicitation (`crates/lab/src/mcp/call_tool.rs` / `elicitation.rs`, including
+its own `confirm: true` non-elicitation fallback), and CLI requires
+`--yes`/`-y`. `ActionSpec.destructive` still drives both of those. The
+`confirmation_required` kind itself is still valid and still emitted by
+unrelated flows (e.g. `setup.draft.commit` provisioning confirmation) — it is
+simply no longer part of the generic HTTP dispatch gate.
 
 ### MCP-Only Dispatcher Kinds
 

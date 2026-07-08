@@ -87,8 +87,6 @@ rmcp.workspace = true
 bytes = "1"
 sse-stream = "0.2"
 rusqlite.workspace = true
-r2d2 = { version = "0.8", optional = true }
-r2d2_sqlite = { version = "0.33", optional = true }
 uuid.workspace = true
 
 axum.workspace = true
@@ -132,13 +130,11 @@ path = "src/lib.rs"
 #   deleted from this crate rather than left as sleeping feature gates.
 # - Helper/internal features are not standalone product slices unless this comment is updated.
 [features]
-all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd", "test-harness"]
+all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd"]
 gateway = [
   "dep:labby-codemode",
   "dep:labby-gateway",
   "dep:labby-openapi",
-  "dep:r2d2",
-  "dep:r2d2_sqlite",
   "web-ui",
 ]
 gateway-host = ["gateway"]
@@ -148,10 +144,5 @@ default = ["gateway-host"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
 lab-admin = []
 systemd = ["dep:sd-notify"]
-# Non-default. Exposes the crate-private Code Mode test harness
-# (`codemode_test_harness`) to integration tests in `tests/`. Requires
-# `gateway` for the Code Mode surface. Enabled by CI's `--all-features`.
-# Production behaviour is unchanged when this feature is off.
-test-harness = ["gateway"]
 [lints]
 workspace = true

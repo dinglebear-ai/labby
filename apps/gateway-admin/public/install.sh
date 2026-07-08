@@ -5,26 +5,26 @@
 #
 # Downloads the latest GitHub release archive for this platform, verifies its
 # SHA-256, and installs the binary to ~/.local/bin/labby. When explicitly
-# enabled with LAB_ALLOW_SOURCE_FALLBACK=1, a release failure falls back to
+# enabled with LABBY_ALLOW_SOURCE_FALLBACK=1, a release failure falls back to
 # `cargo install --git` if a Rust toolchain is available.
 #
 # This script's ONLY job is bootstrap: getting `labby` onto PATH. Everything
 # after that is owned by the binary — run `labby setup` for the first-run flow.
 #
 # Environment overrides:
-#   LAB_INSTALL_DIR     install directory       (default: ~/.local/bin)
-#   LAB_INSTALL_REPO    owner/repo to fetch     (default: jmagar/labby)
-#   LAB_INSTALL_VERSION release tag, e.g. v0.22.2 (default: latest)
-#   LAB_REQUIRE_CHECKSUM fail if the .sha256 asset is absent (default: 1)
-#   LAB_ALLOW_SOURCE_FALLBACK allow cargo fallback after release failure (default: 0)
+#   LABBY_INSTALL_DIR     install directory       (default: ~/.local/bin)
+#   LABBY_INSTALL_REPO    owner/repo to fetch     (default: jmagar/labby)
+#   LABBY_INSTALL_VERSION release tag, e.g. v0.22.2 (default: latest)
+#   LABBY_REQUIRE_CHECKSUM fail if the .sha256 asset is absent (default: 1)
+#   LABBY_ALLOW_SOURCE_FALLBACK allow cargo fallback after release failure (default: 0)
 
 set -eu
 
-REPO="${LAB_INSTALL_REPO:-jmagar/labby}"
-INSTALL_DIR="${LAB_INSTALL_DIR:-$HOME/.local/bin}"
-VERSION="${LAB_INSTALL_VERSION:-latest}"
-REQUIRE_CHECKSUM="${LAB_REQUIRE_CHECKSUM:-1}"
-ALLOW_SOURCE_FALLBACK="${LAB_ALLOW_SOURCE_FALLBACK:-0}"
+REPO="${LABBY_INSTALL_REPO:-jmagar/labby}"
+INSTALL_DIR="${LABBY_INSTALL_DIR:-$HOME/.local/bin}"
+VERSION="${LABBY_INSTALL_VERSION:-latest}"
+REQUIRE_CHECKSUM="${LABBY_REQUIRE_CHECKSUM:-1}"
+ALLOW_SOURCE_FALLBACK="${LABBY_ALLOW_SOURCE_FALLBACK:-0}"
 TMP_DIRS=""
 
 cleanup() {
@@ -164,7 +164,7 @@ install_from_release() {
             || fail "checksum verification FAILED for $asset — aborting"
         say "sha256 verified"
     else
-        [ "$REQUIRE_CHECKSUM" = "1" ] && fail "no .sha256 asset published for $asset and LAB_REQUIRE_CHECKSUM=1"
+        [ "$REQUIRE_CHECKSUM" = "1" ] && fail "no .sha256 asset published for $asset and LABBY_REQUIRE_CHECKSUM=1"
         say "warning: no .sha256 asset published — skipping checksum verification"
     fi
 
@@ -192,8 +192,8 @@ main() {
     if install_from_release; then
         :
     elif [ "$ALLOW_SOURCE_FALLBACK" != "1" ]; then
-        fail "could not install: release install failed and LAB_ALLOW_SOURCE_FALLBACK=$ALLOW_SOURCE_FALLBACK disables source fallback.
-Choose a supported prebuilt release or re-run with LAB_ALLOW_SOURCE_FALLBACK=1 to build from source."
+        fail "could not install: release install failed and LABBY_ALLOW_SOURCE_FALLBACK=$ALLOW_SOURCE_FALLBACK disables source fallback.
+Choose a supported prebuilt release or re-run with LABBY_ALLOW_SOURCE_FALLBACK=1 to build from source."
     elif install_from_source; then
         :
     else

@@ -24,11 +24,6 @@ pub struct CodeModeBroker<'a, H: CodeModeHost> {
     /// this execution. Recorded by the host at the `call_tool` boundary
     /// (last-wins), then surfaced in the Code Mode result.
     pub(crate) ui_capture: std::sync::Arc<std::sync::Mutex<Option<UiLink>>>,
-    /// Durable-run execution id for the pause-capable path. `Some` only when the
-    /// binary started a durable run (`store.begin`) before driving; threaded
-    /// into `ExecCtx` at each `call_tool` so the host's decider can journal.
-    /// `None` ⇒ the write-free path (CLI, pre-confirmed, no-decider, tests).
-    pub(crate) execution_id: Option<String>,
 }
 
 impl<'a, H: CodeModeHost> CodeModeBroker<'a, H> {
@@ -37,14 +32,6 @@ impl<'a, H: CodeModeHost> CodeModeBroker<'a, H> {
         Self {
             host,
             ui_capture: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            execution_id: None,
         }
-    }
-
-    /// Attach a durable-run execution id (pause-capable path). Builder-style.
-    #[must_use]
-    pub fn with_execution_id(mut self, execution_id: Option<String>) -> Self {
-        self.execution_id = execution_id;
-        self
     }
 }

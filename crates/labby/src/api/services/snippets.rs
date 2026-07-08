@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remove_requires_confirmation_after_admin_scope_passes() {
+    async fn remove_dispatches_immediately_after_admin_scope_passes() {
         let app = app_with_auth(admin_auth_context());
         let response = post_snippets(
             app,
@@ -248,6 +248,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // HTTP no longer gates destructive actions on `confirm` — the request
+        // dispatches straight through and fails on the missing snippet, not on
+        // a confirmation requirement.
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
