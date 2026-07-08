@@ -170,6 +170,26 @@ pub struct CodeModeConfig {
     /// Overridden by `LABBY_CODE_MODE_WIDGET_CALLBACKS=1` env var.
     #[serde(default)]
     pub widget_callbacks: Option<bool>,
+    /// Per-run artifact directory retention count. `0` disables count pruning.
+    /// Overridden by `LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS` env var. Default: 200.
+    #[serde(default)]
+    pub artifact_retention_runs: Option<usize>,
+    /// Per-artifact content cap in MiB. Overridden by
+    /// `LABBY_CODE_MODE_ARTIFACT_MAX_MIB` env var. Default: 8.
+    #[serde(default)]
+    pub artifact_max_mib: Option<usize>,
+    /// Total artifact store byte budget in MiB. `0` disables byte pruning.
+    /// Overridden by `LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB` env var. Default: 4096.
+    #[serde(default)]
+    pub artifact_max_store_mib: Option<u64>,
+    /// Per-run `callTool` budget. Overridden by
+    /// `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` env var.
+    #[serde(default)]
+    pub max_calls_per_run: Option<u64>,
+    /// Max `callTool` result size in MiB before truncation. Overridden by
+    /// `LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB` env var.
+    #[serde(default)]
+    pub calltool_result_max_mib: Option<usize>,
 }
 
 impl Default for CodeModeConfig {
@@ -186,6 +206,11 @@ impl Default for CodeModeConfig {
             max_log_bytes: default_max_log_bytes(),
             semantic_search: SemanticSearchConfig::default(),
             widget_callbacks: None,
+            artifact_retention_runs: None,
+            artifact_max_mib: None,
+            artifact_max_store_mib: None,
+            max_calls_per_run: None,
+            calltool_result_max_mib: None,
         }
     }
 }

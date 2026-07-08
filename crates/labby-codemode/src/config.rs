@@ -33,10 +33,39 @@ const MAX_CALLTOOL_PER_RUN_CEILING: u64 = 2048;
 /// Default host-side byte ceiling on a single `callTool` result, in MiB.
 const DEFAULT_CALLTOOL_RESULT_MAX_MIB: usize = 8;
 
-/// Resolve the per-run `callTool` fan-out budget from the environment.
+/// Host-supplied `config.toml` fallbacks, seeded once by
+/// [`install_call_budget_config_defaults`] (called by the gateway host
+/// adapter at config load time — this crate is host-neutral and never reads
+/// `config.toml` itself). Consulted only when the corresponding env var is
+/// absent.
+static MAX_CALLS_PER_RUN_CONFIG_DEFAULT: std::sync::OnceLock<Option<u64>> =
+    std::sync::OnceLock::new();
+static CALLTOOL_RESULT_MAX_MIB_CONFIG_DEFAULT: std::sync::OnceLock<Option<usize>> =
+    std::sync::OnceLock::new();
+
+/// Seed the `config.toml` fallbacks for the per-run call budget knobs. Safe
+/// to call more than once; only the first call's values take effect, since
+/// each knob is itself resolved once per process on first use.
+pub fn install_call_budget_config_defaults(
+    max_calls_per_run: Option<u64>,
+    calltool_result_max_mib: Option<usize>,
+) {
+    let _ = MAX_CALLS_PER_RUN_CONFIG_DEFAULT.set(max_calls_per_run);
+    let _ = CALLTOOL_RESULT_MAX_MIB_CONFIG_DEFAULT.set(calltool_result_max_mib);
+}
+
+/// Resolve the per-run `callTool` fan-out budget from the environment, then
+/// `config.toml`, then the default.
 pub(crate) fn max_calltool_per_run() -> u64 {
     let Some(raw) = crate::util::env_non_empty("LABBY_CODE_MODE_MAX_CALLS_PER_RUN") else {
-        return DEFAULT_MAX_CALLTOOL_PER_RUN;
+        return MAX_CALLS_PER_RUN_CONFIG_DEFAULT
+            .get()
+            .copied()
+            .flatten()
+            .filter(|value| *value > 0)
+            .map_or(DEFAULT_MAX_CALLTOOL_PER_RUN, |value| {
+                value.min(MAX_CALLTOOL_PER_RUN_CEILING)
+            });
     };
     match raw.trim().parse::<u64>() {
         Ok(value) if value > 0 => value.min(MAX_CALLTOOL_PER_RUN_CEILING),
@@ -54,9 +83,17 @@ pub(crate) fn max_calltool_per_run() -> u64 {
     }
 }
 
-/// Resolve the per-result byte ceiling from the environment.
+/// Resolve the per-result byte ceiling from the environment, then
+/// `config.toml`, then the default.
 pub(crate) fn calltool_result_max_bytes() -> usize {
-    let default_bytes = DEFAULT_CALLTOOL_RESULT_MAX_MIB * 1024 * 1024;
+    let config_default_bytes = CALLTOOL_RESULT_MAX_MIB_CONFIG_DEFAULT
+        .get()
+        .copied()
+        .flatten()
+        .filter(|mib| *mib > 0)
+        .map(|mib| mib.saturating_mul(1024 * 1024));
+    let default_bytes =
+        config_default_bytes.unwrap_or(DEFAULT_CALLTOOL_RESULT_MAX_MIB * 1024 * 1024);
     let Some(raw) = crate::util::env_non_empty("LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB") else {
         return default_bytes;
     };

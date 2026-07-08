@@ -90,6 +90,15 @@ impl GatewayManager {
         crate::upstream::pool::install_upstream_discovery_concurrency_default(
             cfg.gateway.upstream_discovery_concurrency,
         );
+        labby_codemode::install_artifact_config_defaults(
+            cfg.code_mode.artifact_retention_runs,
+            cfg.code_mode.artifact_max_mib,
+            cfg.code_mode.artifact_max_store_mib,
+        );
+        labby_codemode::install_call_budget_config_defaults(
+            cfg.code_mode.max_calls_per_run,
+            cfg.code_mode.calltool_result_max_mib,
+        );
         let registry = self.builtin_service_registry();
         let (cfg, migration) = quarantine_unregistered_virtual_servers(cfg, registry.as_ref());
         if migration.changed() {
