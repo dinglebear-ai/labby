@@ -226,7 +226,7 @@ async fn authorization_code_grant(
                 expires_at: expires_at(
                     created_at,
                     state.config.refresh_token_ttl,
-                    "LAB_AUTH_REFRESH_TOKEN_TTL_SECS",
+                    &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
                 )?,
             })
             .await?;
@@ -350,7 +350,7 @@ async fn refresh_token_grant(
     let refreshed_expires_at = expires_at(
         now_unix(),
         state.config.refresh_token_ttl,
-        "LAB_AUTH_REFRESH_TOKEN_TTL_SECS",
+        &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
     )?;
     let next_provider_refresh_token = google
         .refresh_token
@@ -411,7 +411,7 @@ fn build_token_response(
     let now = timestamp_usize(now_unix(), "current unix timestamp")?;
     let access_token_ttl = duration_secs_usize(
         state.config.access_token_ttl,
-        "LAB_AUTH_ACCESS_TOKEN_TTL_SECS",
+        &format!("{}_AUTH_ACCESS_TOKEN_TTL_SECS", state.config.env_prefix),
     )?;
     let subject_id = fingerprint(&subject);
     let access_token = state.signing_keys.issue_access_token(&AccessClaims {
@@ -419,7 +419,10 @@ fn build_token_response(
         sub: subject.clone(),
         aud: resource.clone(),
         exp: now.checked_add(access_token_ttl).ok_or_else(|| {
-            AuthError::Config("LAB_AUTH_ACCESS_TOKEN_TTL_SECS exceeds supported range".to_string())
+            AuthError::Config(format!(
+                "{}_AUTH_ACCESS_TOKEN_TTL_SECS exceeds supported range",
+                state.config.env_prefix
+            ))
         })?,
         iat: now,
         jti: random_token(18)?,
