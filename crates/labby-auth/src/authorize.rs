@@ -399,7 +399,7 @@ pub async fn callback(
             expires_at: expires_at(
                 now_unix(),
                 state.config.auth_code_ttl,
-                "LAB_AUTH_CODE_TTL_SECS",
+                &format!("{}_AUTH_CODE_TTL_SECS", state.config.env_prefix),
             )?,
         })
         .await?;

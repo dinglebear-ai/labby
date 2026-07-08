@@ -107,7 +107,7 @@ port = 8765
 [[upstream]]
 name = "remote-lab"
 url = "https://lab2.example.com/mcp"
-bearer_token_env = "REMOTE_LAB_TOKEN"
+bearer_token_env = "LABBY_UPSTREAM_TOKEN"
 proxy_resources = true
 expose_tools = ["gateway", "search_*"]
 
@@ -121,7 +121,7 @@ proxy_resources = false
 `~/.labby/.env`
 
 ```bash
-REMOTE_LAB_TOKEN=replace-me
+LABBY_UPSTREAM_TOKEN=replace-me
 LABBY_MCP_HTTP_TOKEN=replace-this-too
 ```
 
