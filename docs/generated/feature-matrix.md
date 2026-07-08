@@ -6,15 +6,14 @@ Feature invariant status: clean.
 
 | Crate | Feature | Class | In Default | In All | Maps To | Dependencies |
 | --- | --- | --- | --- | --- | --- | --- |
-| labby | `all` | AggregateDefault | false | false | - | `lab-admin`<br>`api-docs`<br>`gateway-host`<br>`fs`<br>`systemd`<br>`test-harness` |
+| labby | `all` | AggregateDefault | false | false | - | `lab-admin`<br>`api-docs`<br>`gateway-host`<br>`fs`<br>`systemd` |
 | labby | `api-docs` | HelperInternal | false | true | - | `dep:utoipa` |
 | labby | `default` | AggregateDefault | false | false | - | `gateway-host` |
 | labby | `fs` | ProductSlice | false | true | - | `dep:walkdir`<br>`dep:globset`<br>`dep:unicode-normalization`<br>`dep:rustix` |
-| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`dep:r2d2`<br>`dep:r2d2_sqlite`<br>`web-ui` |
+| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`web-ui` |
 | labby | `gateway-host` | IntentionalException | true | true | - | `gateway` |
 | labby | `lab-admin` | ProductSlice | false | true | - |  |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |
-| labby | `test-harness` | IntentionalException | false | true | - | `gateway` |
 | labby | `web-ui` | HelperInternal | true | true | - | `dep:labby-web` |
 | labby-apis | `acp_registry` | SdkOnly | false | true | - |  |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all | `deploy`<br>`mcpregistry`<br>`acp_registry` |

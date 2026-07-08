@@ -24,19 +24,14 @@ pub(super) async fn run_gateway_oauth_start(
 ) -> Result<ExitCode> {
     let params = json!({ "upstream": args.name, "subject": args.subject });
     let start = std::time::Instant::now();
-    let value = dispatch_gateway_action(
-        manager,
-        config,
-        "gateway.oauth.start".to_string(),
-        params,
-    )
-    .await
-    .map_err(|error| {
-        anyhow::anyhow!(
-            "{}",
-            serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
-        )
-    })?;
+    let value = dispatch_gateway_action(manager, config, "gateway.oauth.start".to_string(), params)
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{}",
+                serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
+            )
+        })?;
     tracing::info!(
         surface = "cli",
         service = "gateway",

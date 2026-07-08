@@ -63,9 +63,9 @@ use rmcp::model::{
 // still forwards these legacy server<->client requests for compatibility
 // with whatever the daemon and downstream client actually negotiate.
 #[allow(deprecated)]
-use rmcp::model::{CreateMessageRequestParams, CreateMessageResult, ListRootsResult};
-#[allow(deprecated)]
 use rmcp::model::SetLevelRequestParams;
+#[allow(deprecated)]
+use rmcp::model::{CreateMessageRequestParams, CreateMessageResult, ListRootsResult};
 use rmcp::service::{NotificationContext, Peer, RequestContext, RunningService};
 use rmcp::{ClientHandler, ErrorData, RoleClient, RoleServer, ServerHandler};
 use tokio::sync::OnceCell;
@@ -449,9 +449,7 @@ impl ServerHandler for BridgeServerHandler {
     ) -> Result<GetTaskResult, ErrorData> {
         match self
             .peer
-            .send_request(ClientRequest::GetTaskRequest(GetTaskRequest::new(
-                request,
-            )))
+            .send_request(ClientRequest::GetTaskRequest(GetTaskRequest::new(request)))
             .await
             .map_err(|e| bridge_error("get_task_info", e))?
         {

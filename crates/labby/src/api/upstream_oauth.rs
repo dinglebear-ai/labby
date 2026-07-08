@@ -207,7 +207,9 @@ fn public_url(state: &AppState) -> Result<&url::Url, ToolError> {
         .auth_config
         .as_ref()
         .and_then(|config| config.public_url.as_ref())
-        .ok_or_else(|| ToolError::internal_message("LABBY_PUBLIC_URL is required for upstream oauth"))
+        .ok_or_else(|| {
+            ToolError::internal_message("LABBY_PUBLIC_URL is required for upstream oauth")
+        })
 }
 
 fn append_public_path(base: &url::Url, path: &str) -> Result<url::Url, ToolError> {

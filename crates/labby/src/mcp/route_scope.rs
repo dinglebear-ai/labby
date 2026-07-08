@@ -14,41 +14,6 @@ pub(crate) enum McpRouteScope {
     },
 }
 
-/// The identity a route-scope label encodes: exactly `root` vs
-/// `protected:<route_name>`, and nothing else (the allowed upstream/service sets
-/// are runtime policy, not part of the stored durable-run scope label).
-///
-/// This is the parsed counterpart of [`McpRouteScope::label`]: the durable pause
-/// store persists the scope as a `String`, and the cross-route resume/reject
-/// guard compares the stored label against the live route by parsing BOTH into a
-/// `RouteScopeIdentity`. An unparseable stored label yields `None`, so the guard
-/// fails closed (refuses the resume) rather than string-matching a scope it can
-/// no longer interpret.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RouteScopeIdentity {
-    Root,
-    Protected { route_name: String },
-}
-
-impl RouteScopeIdentity {
-    /// Parse a stored route-scope label (`"root"` or `"protected:<name>"`).
-    /// Returns `None` for any other shape (fail closed). Paired with
-    /// [`McpRouteScope::label`] so `from_label(scope.label())` round-trips a
-    /// scope's identity.
-    pub(crate) fn from_label(label: &str) -> Option<Self> {
-        if label == "root" {
-            return Some(Self::Root);
-        }
-        let route_name = label.strip_prefix("protected:")?;
-        if route_name.is_empty() {
-            return None;
-        }
-        Some(Self::Protected {
-            route_name: route_name.to_string(),
-        })
-    }
-}
-
 impl McpRouteScope {
     pub(crate) fn protected_subset<I, J, S, T>(
         route_name: impl Into<String>,
@@ -90,19 +55,6 @@ impl McpRouteScope {
         match self {
             Self::Root => "root".to_string(),
             Self::ProtectedSubset { route_name, .. } => format!("protected:{route_name}"),
-        }
-    }
-
-    /// The scope identity this route carries, for comparing against a stored
-    /// durable-run route-scope label. This is the parsed counterpart of
-    /// [`Self::label`]: `RouteScopeIdentity::from_label(scope.label())` equals
-    /// `scope.identity()`.
-    pub(crate) fn identity(&self) -> RouteScopeIdentity {
-        match self {
-            Self::Root => RouteScopeIdentity::Root,
-            Self::ProtectedSubset { route_name, .. } => RouteScopeIdentity::Protected {
-                route_name: route_name.clone(),
-            },
         }
     }
 
@@ -173,38 +125,5 @@ mod tests {
     fn protected_subset_can_hide_code_mode() {
         let scope = McpRouteScope::protected_subset("ops", ["unifi"], ["device"], false);
         assert!(!scope.exposes_code_mode());
-    }
-
-    #[test]
-    fn identity_label_round_trips_for_each_variant() {
-        // The cross-route resume/reject guard relies on
-        // `RouteScopeIdentity::from_label(scope.label()) == scope.identity()`
-        // for every variant, so a run's stored label parses back to the same
-        // identity it was written under.
-        for scope in [
-            McpRouteScope::Root,
-            McpRouteScope::protected_subset("media", ["sonarr"], ["gateway"], true),
-            McpRouteScope::protected_subset("ops", ["unifi"], ["device"], false),
-        ] {
-            assert_eq!(
-                RouteScopeIdentity::from_label(&scope.label()),
-                Some(scope.identity()),
-                "label {:?} must parse back to the same identity",
-                scope.label()
-            );
-        }
-    }
-
-    #[test]
-    fn from_label_rejects_unparseable_scopes_fail_closed() {
-        // An unparseable stored label yields None so the guard fails closed.
-        assert_eq!(RouteScopeIdentity::from_label("bogus"), None);
-        assert_eq!(RouteScopeIdentity::from_label("protected:"), None);
-        assert_eq!(RouteScopeIdentity::from_label(""), None);
-        // A distinct protected route does not compare equal to another.
-        assert_ne!(
-            RouteScopeIdentity::from_label("protected:a"),
-            RouteScopeIdentity::from_label("protected:b"),
-        );
     }
 }
