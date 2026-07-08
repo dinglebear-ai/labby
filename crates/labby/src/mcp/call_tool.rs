@@ -631,7 +631,7 @@ impl LabMcpServer {
     }
 
     fn code_mode_widget_callbacks_enabled(&self) -> bool {
-        #[cfg(any(test, feature = "test-harness"))]
+        #[cfg(test)]
         if self.code_mode_widget_callbacks_enabled_for_test {
             return true;
         }

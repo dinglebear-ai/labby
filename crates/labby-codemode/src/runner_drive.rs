@@ -655,13 +655,10 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
     let surface = cfg.surface;
-    // Durable-run context (pause-capable path). Owned so it can move into the
-    // spawned future; `ExecCtx` borrows it back at the call boundary.
-    let execution_id = broker.execution_id.clone();
     pending_tool_calls.push(Box::pin(async move {
         let call_start = std::time::Instant::now();
         let ctx = ExecCtx {
-            execution_id: execution_id.as_deref(),
+            execution_id: None,
             seq,
         };
         let result = broker
@@ -682,12 +679,12 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
 
 /// Enqueue a runner-reserved LOCAL provider call (`state::*` / `git::*`).
 ///
-/// On the pause-capable path the call is journaled as an **ephemeral** durable
-/// entry (via `host.decide_local` / `host.record_local`) so it participates in
-/// the `seq` spine and its tool_id/args are divergence-checked on resume,
-/// without its FS/git side effect being replayed-as-cached (ephemeral entries
-/// RE-EXECUTE on replay). On the write-free path the default host hooks make
-/// this a no-op and the call dispatches exactly as before.
+/// The call is routed through `host.decide_local` / `host.record_local` so a
+/// future durable-journaling host implementation could journal it as an
+/// **ephemeral** entry (participating in the `seq` spine, divergence-checked
+/// on resume, RE-EXECUTING rather than replaying-as-cached). No host currently
+/// overrides these hooks, so the default impls make this a no-op and the call
+/// dispatches directly.
 ///
 /// Free function taking `broker` (not `&self`) so the future captures the
 /// broker with the enclosing loop's lifetime rather than being forced to
@@ -705,7 +702,6 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
-    let execution_id = broker.execution_id.clone();
     let openapi_registry = cfg.openapi_registry.clone();
     let openapi_http_client = cfg.openapi_http_client.clone();
     pending_tool_calls.push(Box::pin(async move {
@@ -723,12 +719,12 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             );
         }
         let ctx = ExecCtx {
-            execution_id: execution_id.as_deref(),
+            execution_id: None,
             seq,
         };
         // Journal (ephemeral) BEFORE dispatch so a resume divergence at this seq
-        // is caught before the local side effect runs. On the write-free path
-        // the default `decide_local` returns Execute.
+        // is caught before the local side effect runs. The default `decide_local`
+        // returns Execute (no host currently overrides this hook).
         if let Some(host) = broker.host {
             match host.decide_local(ctx, &id, &params).await {
                 StepDecision::Replay(value) => {
@@ -1113,7 +1109,7 @@ async fn handle_step_begin_event<H: CodeModeHost>(
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
     let ctx = ExecCtx {
-        execution_id: broker.execution_id.as_deref(),
+        execution_id: None,
         seq,
     };
     let decision = match broker.host {
@@ -1153,7 +1149,7 @@ async fn handle_step_result_event<H: CodeModeHost>(
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
     let ctx = ExecCtx {
-        execution_id: broker.execution_id.as_deref(),
+        execution_id: None,
         seq,
     };
     let record = match broker.host {

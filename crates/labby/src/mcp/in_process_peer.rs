@@ -57,7 +57,7 @@ async fn connect_in_process_service_peer(
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: crate::mcp::server::next_relay_session_id(),
-        #[cfg(any(test, feature = "test-harness"))]
+        #[cfg(test)]
         code_mode_widget_callbacks_enabled_for_test: false,
     };
     let service_name = service.name;
