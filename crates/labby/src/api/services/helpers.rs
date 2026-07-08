@@ -2,7 +2,6 @@
 //!
 //! `handle_action` is the single enforcement point for:
 //! - Unknown-action rejection gate (fail-closed — dispatch is never reached for unknown actions)
-//! - Destructive-action confirmation gate (security requirement)
 //! - Dispatch timing + structured logging
 //! - JSON response wrapping
 //!
@@ -45,15 +44,11 @@ pub fn dispatch_meta_from_headers<'a>(
     }
 }
 
-/// Dispatch a service action request with unknown-action gate, confirmation gate, and logging.
+/// Dispatch a service action request with unknown-action gate and logging.
 ///
 /// Owns:
 /// - Unknown-action gate: if `action` is not present in `actions`, returns `ToolError` with
 ///   `kind = "unknown_action"` immediately — dispatch closure is never called.
-/// - Destructive confirmation gate: `ActionSpec.destructive == true` requires
-///   `params["confirm"] == true` (boolean, not string), else returns `ToolError` with
-///   `kind = "confirmation_required"`.
-/// - `confirm` key stripping: removed from params before forwarding to dispatch.
 /// - Timer wrapping the full dispatch call.
 /// - Structured dispatch logging (service, action, `elapsed_ms`, kind on error).
 ///   **Never logs params** — params may contain credentials.
@@ -65,7 +60,6 @@ pub fn dispatch_meta_from_headers<'a>(
 ///
 /// Returns `ToolError` when:
 /// - The action is not found in `actions` (`unknown_action`)
-/// - The matched action is destructive and `params["confirm"] != true` (`confirmation_required`)
 /// - The dispatch closure itself returns an error
 #[allow(clippy::too_many_lines)]
 pub async fn handle_action<F, Fut>(
@@ -108,7 +102,7 @@ where
     Fut: Future<Output = Result<Value, ToolError>>,
 {
     let action = req.action;
-    let mut params = req.params;
+    let params = req.params;
     let request_id = meta.request_id;
 
     #[cfg(feature = "gateway")]
@@ -164,35 +158,6 @@ where
         .map(ToOwned::to_owned);
     let param_key_count = params.as_object().map_or(0, serde_json::Map::len);
 
-    // Gate: destructive confirmation.
-    // Confirmation requires params["confirm"] == true (body-only — header-based confirmation
-    // was removed to prevent proxy injection; see doc-comment above).
-    if is_destructive {
-        let confirmed_by_params = params
-            .get("confirm")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if !confirmed_by_params {
-            tracing::warn!(
-                surface = surface,
-                service,
-                action,
-                request_id,
-                "confirmation_required for destructive action"
-            );
-            return Err(ApiError(ToolError::ConfirmationRequired {
-                message: format!(
-                    "action `{action}` is destructive — set `confirm: true` in params to proceed"
-                ),
-            }));
-        }
-    }
-
-    // Strip `confirm` from params before forwarding — it's a gate-level key, not a service param.
-    if let Value::Object(ref mut m) = params {
-        m.remove("confirm");
-    }
-
     // Clone action before the move into dispatch — needed for post-dispatch logging.
     let action_log = action.clone();
 
@@ -208,7 +173,7 @@ where
     );
 
     // Intent log: emit before dispatch so there is audit evidence even if the downstream
-    // service errors mid-way. Only fires for destructive actions after confirmation succeeds.
+    // service errors mid-way. Only fires for destructive actions.
     if is_destructive {
         tracing::info!(
             surface = surface,
@@ -430,49 +395,33 @@ mod tests {
         assert_eq!(err.kind(), "missing_param");
     }
 
-    // ── Destructive gate: missing confirm ────────────────────────────────────
+    // ── Destructive actions dispatch immediately over HTTP (no confirm gate) ──
 
     #[tokio::test]
-    async fn destructive_without_confirm_returns_confirmation_required() {
+    async fn destructive_action_without_confirm_param_dispatches_immediately() {
         let req = make_req("danger.delete", json!({"id": "abc"}));
-        let result = handle_action("testsvc", test_surface(), None, req, ACTIONS, |a, p| {
-            ok_dispatch(a, p)
-        })
-        .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().0;
-        assert_eq!(
-            err.kind(),
-            "confirmation_required",
-            "expected confirmation_required, got {}",
-            err.kind()
-        );
-    }
-
-    #[tokio::test]
-    async fn destructive_with_confirm_false_returns_confirmation_required() {
-        let req = make_req("danger.delete", json!({"id": "abc", "confirm": false}));
-        let result = handle_action("testsvc", test_surface(), None, req, ACTIONS, |a, p| {
-            ok_dispatch(a, p)
-        })
-        .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().0;
-        assert_eq!(err.kind(), "confirmation_required");
-    }
-
-    // ── Destructive gate: confirm present ────────────────────────────────────
-
-    #[tokio::test]
-    async fn destructive_with_confirm_true_proceeds_to_dispatch() {
-        let req = make_req("danger.delete", json!({"id": "abc", "confirm": true}));
         let result = handle_action("testsvc", test_surface(), None, req, ACTIONS, |a, p| {
             ok_dispatch(a, p)
         })
         .await;
         assert!(
             result.is_ok(),
-            "expected dispatch to proceed with confirm=true, got {result:?}"
+            "destructive action must dispatch without a confirm param, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn destructive_action_with_confirm_param_still_dispatches() {
+        // A caller may still pass `confirm` (e.g. shared client code targeting
+        // both MCP and HTTP) — it is inert over HTTP and must not block dispatch.
+        let req = make_req("danger.delete", json!({"id": "abc", "confirm": false}));
+        let result = handle_action("testsvc", test_surface(), None, req, ACTIONS, |a, p| {
+            ok_dispatch(a, p)
+        })
+        .await;
+        assert!(
+            result.is_ok(),
+            "a `confirm` param must not gate HTTP dispatch, got {result:?}"
         );
     }
 
@@ -552,36 +501,11 @@ mod tests {
         );
     }
 
-    // ── confirm is stripped from params before dispatch ───────────────────────
-
-    #[tokio::test]
-    async fn confirm_key_stripped_from_params_before_dispatch() {
-        let req = make_req("danger.delete", json!({"id": "abc", "confirm": true}));
-        let result = handle_action(
-            "testsvc",
-            test_surface(),
-            None,
-            req,
-            ACTIONS,
-            |_action, params| async move {
-                // `confirm` must not be present in forwarded params
-                assert!(
-                    params.get("confirm").is_none(),
-                    "`confirm` key must be stripped before dispatch, but found: {:?}",
-                    params.get("confirm")
-                );
-                Ok(json!({"result": "ok"}))
-            },
-        )
-        .await;
-        assert!(result.is_ok(), "expected Ok, got {result:?}");
-    }
-
     // ── Destructive error preserves dispatch error kind ──────────────────────
 
     #[tokio::test]
-    async fn destructive_with_confirm_dispatch_error_preserves_kind() {
-        let req = make_req("danger.delete", json!({"confirm": true}));
+    async fn destructive_action_dispatch_error_preserves_kind() {
+        let req = make_req("danger.delete", json!({}));
         // dispatch returns missing_param (id not given)
         let result = handle_action("testsvc", test_surface(), None, req, ACTIONS, |a, p| {
             err_dispatch(a, p)
@@ -590,25 +514,6 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().0;
         assert_eq!(err.kind(), "missing_param");
-    }
-
-    // ── confirm as string "true" must NOT pass the gate ─────────────────────
-
-    #[tokio::test]
-    async fn destructive_with_confirm_string_true_does_not_pass() {
-        // confirm: "true" (string) — Value::as_bool returns None for strings.
-        let req = make_req("danger.delete", json!({"id": "abc", "confirm": "true"}));
-        let result = handle_action("testsvc", test_surface(), None, req, ACTIONS, |a, p| {
-            ok_dispatch(a, p)
-        })
-        .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().0;
-        assert_eq!(
-            err.kind(),
-            "confirmation_required",
-            "string 'true' must not pass the boolean confirm gate"
-        );
     }
 
     // ── Empty ACTIONS slice: any action is unknown ──────────────────────────
@@ -622,20 +527,6 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().0.kind(), "unknown_action");
-    }
-
-    // ── Destructive action requires confirm:true in params (headers are never checked) ──
-
-    #[tokio::test]
-    async fn destructive_without_body_confirm_is_rejected() {
-        // Confirmation is body-only. Headers play no role.
-        let req = make_req("danger.delete", json!({"id": "abc"}));
-        let result = handle_action("testsvc", test_surface(), None, req, ACTIONS, |a, p| {
-            ok_dispatch(a, p)
-        })
-        .await;
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().0.kind(), "confirmation_required");
     }
 
     #[test]

@@ -58,15 +58,28 @@ Do not return raw `StatusCode` from handlers. Always go through `ApiError`.
 
 ## Destructive actions
 
-Actions marked `ActionSpec.destructive == true` require confirmation via:
+HTTP dispatch does **not** gate destructive actions on a `confirm` param.
+Actions marked `ActionSpec.destructive == true` dispatch immediately over
+HTTP, exactly like non-destructive actions — there is no HTTP-side
+confirmation step. This is a deliberate removal (the body-based `confirm`
+gate that used to live in `services/helpers.rs::handle_action()` was found to
+be unwanted friction and was dropped entirely). Confirmation for destructive
+actions is now transport-specific to the surfaces that still want it: MCP
+uses elicitation (`crates/lab/src/mcp/call_tool.rs` /
+`crates/lab/src/mcp/elicitation.rs`, including its own `confirm: true`
+fallback for clients without elicitation support), and the CLI requires
+`-y`/`--yes`. `ActionSpec.destructive` is still populated and still drives
+those two surfaces — only the HTTP-specific gate on top of it was removed.
 
-- `"confirm": true` in the JSON request `params` object (boolean, not string).
+`confirmation_required` remains a valid `ToolError` kind for other,
+unrelated flows (e.g. `setup.draft.commit` / provisioning confirmation) — it
+is simply no longer emitted by the generic `handle_action()` destructive gate.
 
-Without this, the gate returns `422` with `kind: "confirmation_required"`. This is the HTTP equivalent of the MCP elicitation flow and the CLI `-y` flag.
-
-The gate is enforced in `services/helpers.rs::handle_action()`.
-
-**Security decision — `X-Lab-Confirm` header removed:** A header-based bypass (`X-Lab-Confirm: yes`) was removed because the API sits behind a reverse proxy that may forward arbitrary request headers by default (common Caddy/Traefik behavior). A misconfigured or compromised upstream can inject headers but cannot inject the JSON request body, making body params (`"confirm": true`) the only injection-safe confirmation signal. Do not re-add header-based confirmation without also requiring the reverse proxy to explicitly strip it.
+Historical note: an earlier header-based bypass (`X-Lab-Confirm: yes`) was
+removed before this change because the API sits behind a reverse proxy that
+may forward arbitrary request headers by default (common Caddy/Traefik
+behavior) — a misconfigured or compromised upstream could inject headers but
+not the JSON request body. That header must not be reintroduced.
 
 ## Feature gating
 

@@ -1296,7 +1296,7 @@
   {
     "service": "gateway",
     "action": "gateway.public_urls.get",
-    "description": "Read the resolved canonical public URL pair (app and MCP gateway). Merges LAB_PUBLIC_URL / LAB_MCP_GATEWAY_URL env vars over config.toml [public_urls] section and the legacy [auth].public_url field.",
+    "description": "Read the resolved canonical public URL pair (app and MCP gateway). Merges LABBY_PUBLIC_URL / LABBY_MCP_GATEWAY_URL env vars over config.toml [public_urls] section and the legacy [auth].public_url field.",
     "destructive": false,
     "params": [],
     "returns": "{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}",
@@ -2278,7 +2278,7 @@
   {
     "service": "setup",
     "action": "plugin_sync",
-    "description": "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LAB_* vars",
+    "description": "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars",
     "destructive": true,
     "params": [],
     "returns": "PluginSyncOutcome",
@@ -2468,7 +2468,7 @@
   {
     "service": "setup",
     "action": "settings.env.update",
-    "description": "Admin-only targeted .env settings update for known low-risk LAB_* keys",
+    "description": "Admin-only targeted .env settings update for known low-risk LABBY_* keys",
     "destructive": true,
     "params": [
       {

@@ -136,8 +136,11 @@ mod tests {
     fn bootstrap_never_clobbers_an_existing_operator_env() {
         let dir = tempfile::tempdir().expect("tempdir");
         let env_file = dir.path().join(".env");
-        std::fs::write(&env_file, "LABBY_MCP_HTTP_TOKEN=preexisting-operator-token\n")
-            .expect("seed operator .env");
+        std::fs::write(
+            &env_file,
+            "LABBY_MCP_HTTP_TOKEN=preexisting-operator-token\n",
+        )
+        .expect("seed operator .env");
 
         let outcome = bootstrap_at(&env_file).expect("bootstrap over existing file");
         assert!(

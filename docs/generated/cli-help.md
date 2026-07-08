@@ -72,7 +72,7 @@ Options:
           Bind port for the HTTP transport
 
       --log-level <LOG_LEVEL>
-          Override the log filter level for this process. Sets `LAB_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
+          Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
 
   -h, --help
           Print help
@@ -135,7 +135,7 @@ Options:
           [possible values: auto, plain, color]
 
       --log-level <LOG_LEVEL>
-          Override the log filter level for this process. Sets `LAB_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
+          Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
 
   -h, --help
           Print help
@@ -200,7 +200,7 @@ Usage: proxy [OPTIONS] --route <ROUTE>
 
 Options:
       --app-url <APP_URL>
-          Public Lab app URL, e.g. https://lab.example.com (default: LAB_PUBLIC_URL)
+          Public Lab app URL, e.g. https://lab.example.com (default: LABBY_PUBLIC_URL)
 
       --json
           Emit JSON instead of human-readable tables
@@ -212,7 +212,7 @@ Options:
           [possible values: auto, plain, color]
 
       --mcp-url <MCP_URL>
-          Public MCP gateway URL, e.g. https://mcp.example.com (default: LAB_MCP_GATEWAY_URL)
+          Public MCP gateway URL, e.g. https://mcp.example.com (default: LABBY_MCP_GATEWAY_URL)
 
       --route <ROUTE>
           Protected MCP public route path, e.g. /telemetry
@@ -418,7 +418,7 @@ Commands:
   installed-plugins    List installed Claude Code lab plugins
   services-status      Join service configuration, draft, and Claude plugin state
   plugin-hook          Run binary-owned local setup checks for Claude plugin hooks
-  plugin-sync          Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LAB_* vars
+  plugin-sync          Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars
   plugin-export        Read ~/.labby/.env and print current values keyed by userConfig field name
   plugin-connectivity  Validate connectivity to the lab MCP server
   check                Check local setup prerequisites without mutating the filesystem
@@ -479,7 +479,7 @@ Options:
           [possible values: auto, plain, color]
 
       --no-setup
-          Skip the wizard and exit cleanly. Equivalent to LAB_SKIP_SETUP=1
+          Skip the wizard and exit cleanly. Equivalent to LABBY_SKIP_SETUP=1
 
       --no-browser
           Do not attempt to open the browser
@@ -788,7 +788,7 @@ Options:
 ## `labby setup plugin-sync`
 
 ```text
-Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LAB_* vars
+Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars
 
 Usage: plugin-sync [OPTIONS]
 

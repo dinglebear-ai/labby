@@ -517,7 +517,7 @@
     "surface": "api",
     "handler_group": "services",
     "feature": "fs",
-    "runtime_condition": "mounted only when fs is enabled and /v1 auth is configured if LAB_WEB_UI_AUTH_DISABLED=true",
+    "runtime_condition": "mounted only when fs is enabled and /v1 auth is configured if LABBY_WEB_UI_AUTH_DISABLED=true",
     "auth_required": true,
     "bearer_only": false,
     "session_cookie_allowed": true,

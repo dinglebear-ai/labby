@@ -135,23 +135,9 @@ impl GatewayManager {
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),
             code_mode_runner_pool: Arc::new(crate::gateway::code_mode::RunnerPool::from_env()?),
-            code_mode_decider: None,
             openapi_registry: labby_openapi::OpenApiRegistry::default(),
             openapi_http_client: labby_openapi::http::build_dispatch_client()?,
         })
-    }
-
-    /// Inject the durable-execution decision layer for Code Mode pause/resume.
-    ///
-    /// The `labby` binary passes an `Arc<SqliteDecider>` (over the pause store).
-    /// Without this, the gateway takes today's write-free, no-pause path.
-    #[must_use]
-    pub fn with_code_mode_decider(
-        mut self,
-        decider: Arc<dyn labby_codemode::CodeModeDecider>,
-    ) -> Self {
-        self.code_mode_decider = Some(decider);
-        self
     }
 
     /// Inject the Code Mode `openapi` provider registry + hardened dispatch

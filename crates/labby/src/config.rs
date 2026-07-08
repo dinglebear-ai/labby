@@ -1089,7 +1089,9 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
     }
 
     for (key, value) in std::env::vars() {
-        if key.starts_with("LABBY_AUTH_") || key == "LABBY_PUBLIC_URL" || key.starts_with("LABBY_GOOGLE_")
+        if key.starts_with("LABBY_AUTH_")
+            || key == "LABBY_PUBLIC_URL"
+            || key.starts_with("LABBY_GOOGLE_")
         {
             merged.insert(key, value);
         }
