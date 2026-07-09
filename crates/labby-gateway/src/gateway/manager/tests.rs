@@ -185,7 +185,7 @@ async fn new_base_pool_carries_the_manager_usage_store() {
     let pool = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
 
     assert!(
-        pool.usage_store.is_some(),
+        pool.usage_store_is_wired(),
         "pools built by a manager with a usage store must inherit it"
     );
 }

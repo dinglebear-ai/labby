@@ -151,7 +151,7 @@ pub struct UpstreamPool {
     /// Optional call-usage recorder. `None` (the default) disables telemetry
     /// capture entirely — most tests and any pool built without an explicit
     /// `.with_usage_store(...)` call never touch SQLite.
-    pub(crate) usage_store: Option<Arc<crate::usage::UsageStore>>,
+    pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
 }
 
 /// A live connection to an upstream MCP server.
@@ -327,6 +327,16 @@ impl UpstreamPool {
     #[cfg(any(test, feature = "testkit"))]
     pub fn request_timeout(&self) -> Duration {
         self.request_timeout
+    }
+
+    /// Whether a call-usage recorder is wired for this pool. `usage_store`
+    /// itself is `pub(super)` (only visible to `pool/` descendant modules,
+    /// e.g. `pool/usage_record.rs`); this accessor is the sanctioned way for
+    /// code outside the `upstream` module tree (e.g. gateway manager tests)
+    /// to observe whether telemetry capture is enabled.
+    #[must_use]
+    pub fn usage_store_is_wired(&self) -> bool {
+        self.usage_store.is_some()
     }
 }
 
