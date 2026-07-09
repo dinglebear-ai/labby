@@ -49,6 +49,13 @@ impl UpstreamPool {
                     None,
                     None,
                 );
+                super::usage_record::record_usage_call(
+                    self,
+                    event,
+                    Some(subject),
+                    "upstream_connect_error",
+                    elapsed_ms,
+                );
                 return Err(error.to_string());
             }
         };
@@ -372,5 +379,255 @@ mod tests {
             "expected at most 1 new initialize; got {} (before={before}, after={after})",
             after - before
         );
+    }
+
+    /// Usage telemetry: a successful `call_tool` through the pool writes one
+    /// row to the wired `UsageStore`, with capability/tool/upstream/outcome set.
+    #[tokio::test]
+    async fn call_tool_records_usage_when_store_is_wired() {
+        use crate::usage::UsageStore;
+
+        struct EchoServer;
+        impl ServerHandler for EchoServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, ErrorData> {
+                Ok(ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new("echo", "echo tool", Arc::new(serde_json::Map::new())),
+                ]))
+            }
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResult, ErrorData> {
+                Ok(CallToolResult::success(vec![]))
+            }
+        }
+
+        let upstream_name = "usage-upstream";
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = EchoServer
+                .serve(server_transport)
+                .await
+                .expect("server starts");
+            running.waiting().await.ok();
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> =
+            ().serve(client_transport).await.expect("client starts");
+        let peer = client_service.peer().clone();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(UsageStore::open(dir.path().join("usage.db")).await.unwrap());
+        let pool = Arc::new(UpstreamPool::new().with_usage_store(Some(Arc::clone(&store))));
+        let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service,
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+            },
+        );
+
+        pool.call_tool(upstream_name, CallToolRequestParams::new("echo"))
+            .await
+            .expect("upstream is connected")
+            .expect("echo call succeeds");
+
+        // The write is fire-and-forget (`tokio::spawn`); give it a beat to land.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let count: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM upstream_calls WHERE upstream_name = ?1 AND tool_name = ?2 AND outcome = 'ok'",
+                    rusqlite::params!["usage-upstream", "echo"],
+                    |row| row.get(0),
+                )
+                .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    /// End-to-end proof that the write semaphore actually bounds writes: with
+    /// every permit held, `call_tool` still succeeds (telemetry is
+    /// best-effort and must never affect the call path) but no row lands in
+    /// `upstream_calls`, proving the drop path in
+    /// `upstream/pool/usage_record.rs` is reached rather than the write
+    /// silently succeeding anyway.
+    #[tokio::test]
+    async fn call_tool_drops_usage_write_when_semaphore_is_saturated() {
+        use crate::usage::UsageStore;
+
+        struct EchoServer;
+        impl ServerHandler for EchoServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, ErrorData> {
+                Ok(ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new("echo", "echo tool", Arc::new(serde_json::Map::new())),
+                ]))
+            }
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResult, ErrorData> {
+                Ok(CallToolResult::success(vec![]))
+            }
+        }
+
+        let upstream_name = "saturated-usage-upstream";
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = EchoServer
+                .serve(server_transport)
+                .await
+                .expect("server starts");
+            running.waiting().await.ok();
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> =
+            ().serve(client_transport).await.expect("client starts");
+        let peer = client_service.peer().clone();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(UsageStore::open(dir.path().join("usage.db")).await.unwrap());
+        let pool = Arc::new(UpstreamPool::new().with_usage_store(Some(Arc::clone(&store))));
+        let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service,
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+            },
+        );
+
+        // Exhaust every write-semaphore permit before making the call.
+        let semaphore = store.write_semaphore();
+        let mut held_permits = Vec::new();
+        while let Ok(permit) = semaphore.clone().try_acquire_owned() {
+            held_permits.push(permit);
+        }
+
+        pool.call_tool(upstream_name, CallToolRequestParams::new("echo"))
+            .await
+            .expect("upstream is connected")
+            .expect("echo call succeeds even when usage-write is dropped");
+
+        // Give any (unexpected) fire-and-forget write a beat to land.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        drop(held_permits);
+
+        let count: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM upstream_calls WHERE upstream_name = ?1",
+                    rusqlite::params!["saturated-usage-upstream"],
+                    |row| row.get(0),
+                )
+                .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "usage write must be dropped, not queued, when the semaphore is saturated"
+        );
+    }
+
+    /// Usage telemetry: a non-success outcome (upstream timeout) also lands
+    /// in the usage store, with `outcome = 'timeout'` — covers the failure
+    /// path, not just the `call_tool_records_usage_when_store_is_wired`
+    /// success case above. Builds on the same `SlowResponseServer` fixture
+    /// used by `call_tool_times_out_slow_upstream_response`.
+    #[tokio::test]
+    async fn call_tool_records_timeout_outcome_when_store_is_wired() {
+        use super::super::testsupport::SlowResponseServer;
+        use crate::usage::UsageStore;
+
+        let upstream_name = "timeout-usage-upstream";
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = SlowResponseServer
+                .serve(server_transport)
+                .await
+                .expect("slow response server starts");
+            running.waiting().await.ok();
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("slow response client starts");
+        let peer = client_service.peer().clone();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(UsageStore::open(dir.path().join("usage.db")).await.unwrap());
+        let pool = Arc::new(
+            UpstreamPool::new()
+                .with_request_timeout(std::time::Duration::from_millis(25))
+                .with_usage_store(Some(Arc::clone(&store))),
+        );
+        let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service,
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+            },
+        );
+
+        let result = pool
+            .call_tool(upstream_name, CallToolRequestParams::new("slow.tool"))
+            .await
+            .expect("upstream is connected")
+            .expect_err("slow tool call should time out");
+        assert!(result.contains("timed out"));
+
+        // The write is fire-and-forget (`tokio::spawn`); give it a beat to land.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let count: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM upstream_calls WHERE upstream_name = ?1 AND tool_name = ?2 AND outcome = 'timeout'",
+                    rusqlite::params!["timeout-usage-upstream", "slow.tool"],
+                    |row| row.get(0),
+                )
+                .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

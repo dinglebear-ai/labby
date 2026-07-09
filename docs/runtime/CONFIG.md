@@ -121,6 +121,7 @@ to the wizard and CLI.
 | `format` | `LABBY_LOG_FORMAT` | `"text"` | Log format: `"text"` or `"json"` |
 | `color` | `LABBY_LOG_COLOR` | unset (auto) | Force/disable ANSI color: `"force"`/`"always"`/`"1"` or `"plain"`/`"never"`/`"0"` |
 | `dir` | `LABBY_LOG_DIR` | `~/.local/share/labby/logs` | Rolling log file directory |
+| — | `LABBY_GATEWAY_USAGE_DISABLED` | unset | Set to `1` to disable gateway call-usage telemetry capture (`labby serve`, `labby gateway *`). When unset, calls proxied through the gateway to upstreams are recorded to `~/.labby/usage.db`. |
 
 `color` and `dir` are read directly from `config.toml` at startup, before
 `.env` loads — unlike `filter`/`format`, setting them only in `~/.labby/.env`

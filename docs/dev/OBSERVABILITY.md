@@ -209,6 +209,18 @@ For negotiated RMCP logging notifications sent back to MCP clients:
 - preserve the caller-derived failure severity (`warning` for caller/user errors,
   `error` for internal or upstream failures)
 
+### Gateway usage telemetry (`UsageStore`)
+
+Every upstream tool/resource/prompt call outcome recorded by `upstream.request.finish`/`upstream.request.error` (above) is also durably persisted to a small SQLite store at `~/.labby/usage.db`, via `UpstreamPool`'s `timed_capability_call` choke point (`crates/labby-gateway/src/upstream/pool/capability_call.rs`). This is a fire-and-forget write (`tokio::spawn`) — it never adds latency or failure risk to the call it's observing, and a write failure is logged (`usage store record_call failed`) and dropped, never surfaced to the caller.
+
+Query it via the `gateway.usage.metrics` (aggregated totals/top-tools/top-actors) and `gateway.usage.calls` (raw paginated records) actions — both admin-gated, same as `gateway.enrich.*`. CLI: `labby gateway usage metrics` / `labby gateway usage calls`. Both actions enforce the same route-scope restriction as `gateway.enrich.*` — a route-scoped caller only sees usage data for the upstreams visible on their route.
+
+Set `LABBY_GATEWAY_USAGE_DISABLED=1` to disable capture entirely (no store is opened at startup). Retained rows are pruned on a 6-hour cycle to a 30-day retention window; `labby serve` starts the loop but the batched deletion logic (`UsageStore::spawn_prune_loop`/`prune_older_than`, deleting up to 5,000 rows per statement so a large backlog never holds SQLite's writer lock for long) lives entirely in `UsageStore`.
+
+In-flight fire-and-forget writes are capped by a semaphore (`WRITE_SEMAPHORE_PERMITS`, 64 permits) — a saturated burst drops the write and logs a warning rather than queuing unboundedly or spawning an unbounded number of tasks. `~/.labby/usage.db` is created with owner-only (`0600`) permissions since `actor` is a stable per-user identifier, even though nothing in the store is a credential.
+
+This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for the `gateway` service's own actions (e.g. `gateway.add`, `gateway.enrich.preview`) — only calls proxied through to upstreams. The recorded schema is intentionally minimal: `ts_unix`, `upstream_name`, `tool_name`, `actor`, `outcome`, `elapsed_ms` (see `crates/labby-gateway/src/usage/types.rs`). See `docs/superpowers/plans/2026-07-09-gateway-usage-telemetry.md` for the original design rationale — note the shipped schema diverges from that plan (the `capability`/`operation`/`subject_scoped`/`error_kind`/`response_bytes` fields proposed there were dropped during review as unused).
+
 ### Health Probes
 
 Health probes are not normal business actions and must be distinguishable in logs.

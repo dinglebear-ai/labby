@@ -133,16 +133,7 @@ pub(crate) fn select_upstreams_for_preview(
                 message: format!("unknown gateway upstream `{name}`"),
             });
         }
-        if scope
-            .route_visible_upstreams
-            .as_ref()
-            .is_some_and(|visible| !visible.contains(name))
-        {
-            return Err(ToolError::Sdk {
-                sdk_kind: "unknown_upstream".to_string(),
-                message: format!("unknown gateway upstream `{name}`"),
-            });
-        }
+        scope.ensure_visible(name)?;
         if seen.insert(name.to_string()) {
             selected.push(SelectedUpstream {
                 name: name.to_string(),
