@@ -123,6 +123,8 @@ pub enum SetupCommand {
     /// Validate or apply local Incus backup policy.
     #[command(alias = "incus-backup")]
     Incusbackup(IncusBackupArgs),
+    /// Bootstrap container SSH trust from the host ~/.ssh/config.
+    IncusSsh(IncusSshArgs),
     /// Copy the labby binary into ~/.local/bin so it is callable in your own terminal.
     Install,
     /// Install the Claude Code plugin for a configured service.
@@ -233,6 +235,94 @@ pub struct PluginMutationArgs {
 pub struct IncusBackupArgs {
     #[command(subcommand)]
     pub command: IncusBackupCommand,
+}
+
+#[derive(Debug, Args)]
+pub struct IncusSshArgs {
+    #[command(subcommand)]
+    pub command: IncusSshCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IncusSshCommand {
+    /// Generate an id_ed25519 key in the container and authorize it on configured hosts.
+    Bootstrap {
+        /// Incus container name.
+        #[arg(long, default_value = "labby")]
+        container: String,
+        /// User inside the Incus container.
+        #[arg(long, default_value = "labby")]
+        user: String,
+        /// Host SSH config to read.
+        #[arg(long)]
+        ssh_config: Option<PathBuf>,
+        /// Private key path inside the container.
+        #[arg(long, default_value = "/home/labby/.ssh/id_ed25519")]
+        key_path: String,
+        /// Print the plan without mutating the container or remote hosts.
+        #[arg(long)]
+        dry_run: bool,
+        /// Only process hosts whose alias or HostName matches this filter. Repeatable.
+        #[arg(long)]
+        include: Vec<String>,
+        /// Skip hosts whose alias or HostName matches this filter. Repeatable.
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Abort on the first failed host instead of continuing and reporting failures.
+        #[arg(long, conflicts_with = "continue_on_error")]
+        fail_fast: bool,
+        /// Continue past failed hosts and report them at the end (default).
+        #[arg(long)]
+        continue_on_error: bool,
+        /// Install a sanitized SSH config into the container. Default for unfiltered runs.
+        #[arg(long, conflicts_with = "no_install_config")]
+        install_config: bool,
+        /// Do not install a sanitized SSH config into the container. Default for filtered runs.
+        #[arg(long, conflicts_with = "install_config")]
+        no_install_config: bool,
+        /// SSH connection timeout in seconds.
+        #[arg(long, default_value_t = 10)]
+        timeout_seconds: u64,
+        /// Confirm remote authorized_keys updates.
+        #[arg(short = 'y', long, alias = "no-confirm")]
+        yes: bool,
+    },
+    /// Verify container-side SSH access to configured hosts.
+    Verify {
+        /// Incus container name.
+        #[arg(long, default_value = "labby")]
+        container: String,
+        /// User inside the Incus container.
+        #[arg(long, default_value = "labby")]
+        user: String,
+        /// Host SSH config to read.
+        #[arg(long)]
+        ssh_config: Option<PathBuf>,
+        /// Private key path inside the container.
+        #[arg(long, default_value = "/home/labby/.ssh/id_ed25519")]
+        key_path: String,
+        /// Only process hosts whose alias or HostName matches this filter. Repeatable.
+        #[arg(long)]
+        include: Vec<String>,
+        /// Skip hosts whose alias or HostName matches this filter. Repeatable.
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Abort on the first failed host instead of continuing and reporting failures.
+        #[arg(long, conflicts_with = "continue_on_error")]
+        fail_fast: bool,
+        /// Continue past failed hosts and report them at the end (default).
+        #[arg(long)]
+        continue_on_error: bool,
+        /// Refresh the sanitized SSH config before verifying. Default for unfiltered runs.
+        #[arg(long, conflicts_with = "no_install_config")]
+        install_config: bool,
+        /// Do not refresh the sanitized SSH config before verifying. Default for filtered runs.
+        #[arg(long, conflicts_with = "install_config")]
+        no_install_config: bool,
+        /// SSH connection timeout in seconds.
+        #[arg(long, default_value_t = 10)]
+        timeout_seconds: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -527,6 +617,9 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         SetupCommand::Incusbackup(args) => {
             run_incus_backup_command(args, format).await?;
         }
+        SetupCommand::IncusSsh(args) => {
+            run_incus_ssh_command(args, format).await?;
+        }
         SetupCommand::Install => {
             let dest = install_self()?;
             println!("installed -> {}", dest.display());
@@ -539,6 +632,130 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Result<()> {
+    match args.command {
+        IncusSshCommand::Bootstrap {
+            container,
+            user,
+            ssh_config,
+            key_path,
+            dry_run,
+            include,
+            exclude,
+            fail_fast,
+            continue_on_error: _,
+            install_config,
+            no_install_config,
+            timeout_seconds,
+            yes,
+        } => {
+            let ssh_config = ssh_config.unwrap_or_else(default_ssh_config_path);
+            let install_config = should_install_incus_ssh_config(
+                install_config,
+                no_install_config,
+                &include,
+                &exclude,
+            );
+            let options = crate::dispatch::setup::incus::IncusSshBootstrapOptions {
+                container,
+                user,
+                ssh_config,
+                key_path,
+                dry_run,
+                fail_fast,
+                include,
+                exclude,
+                install_config,
+                timeout_seconds,
+            };
+            let plan = crate::dispatch::setup::incus::incus_ssh_bootstrap_plan(&options)?;
+            if format.is_json() {
+                if dry_run {
+                    print(&serde_json::to_value(plan)?, format)?;
+                    return Ok(());
+                }
+            } else {
+                println!(
+                    "will bootstrap SSH key for container `{}` user `{}`:",
+                    plan.container, plan.user
+                );
+                for step in &plan.steps {
+                    println!("  - {step}");
+                }
+            }
+            if dry_run {
+                return Ok(());
+            }
+            require_incus_ssh_confirmation(&plan.container, plan.targets.len(), yes)?;
+            let outcome = crate::dispatch::setup::incus::incus_ssh_bootstrap(&options)?;
+            if format.is_json() {
+                print(&serde_json::to_value(outcome)?, format)?;
+            } else {
+                println!(
+                    "bootstrapped {} SSH targets for container `{}` ({} failed)",
+                    outcome.authorized.len(),
+                    outcome.container,
+                    outcome.failed.len()
+                );
+                if outcome.config_installed {
+                    println!("installed sanitized SSH config in container");
+                }
+                for failure in &outcome.failed {
+                    println!("  failed: {} - {}", failure.target, failure.error);
+                }
+            }
+        }
+        IncusSshCommand::Verify {
+            container,
+            user,
+            ssh_config,
+            key_path,
+            include,
+            exclude,
+            fail_fast,
+            continue_on_error: _,
+            install_config,
+            no_install_config,
+            timeout_seconds,
+        } => {
+            let ssh_config = ssh_config.unwrap_or_else(default_ssh_config_path);
+            let install_config = should_install_incus_ssh_config(
+                install_config,
+                no_install_config,
+                &include,
+                &exclude,
+            );
+            let options = crate::dispatch::setup::incus::IncusSshBootstrapOptions {
+                container,
+                user,
+                ssh_config,
+                key_path,
+                dry_run: false,
+                fail_fast,
+                include,
+                exclude,
+                install_config,
+                timeout_seconds,
+            };
+            let outcome = crate::dispatch::setup::incus::incus_ssh_verify(&options)?;
+            if format.is_json() {
+                print(&serde_json::to_value(outcome)?, format)?;
+            } else {
+                println!(
+                    "verified {} SSH targets for container `{}` ({} failed)",
+                    outcome.verified.len(),
+                    outcome.container,
+                    outcome.failed.len()
+                );
+                for failure in &outcome.failed {
+                    println!("  failed: {} - {}", failure.target, failure.error);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn run_incus_backup_command(args: IncusBackupArgs, format: OutputFormat) -> Result<()> {
@@ -582,8 +799,52 @@ async fn run_incus_backup_command(args: IncusBackupArgs, format: OutputFormat) -
     Ok(())
 }
 
+fn default_ssh_config_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".ssh")
+        .join("config")
+}
+
+fn should_install_incus_ssh_config(
+    install_config: bool,
+    no_install_config: bool,
+    include: &[String],
+    exclude: &[String],
+) -> bool {
+    if install_config {
+        return true;
+    }
+    if no_install_config {
+        return false;
+    }
+    include.is_empty() && exclude.is_empty()
+}
+
 fn setup_skip_requested() -> bool {
     std::env::var("LABBY_SKIP_SETUP").as_deref() == Ok("1")
+}
+
+fn require_incus_ssh_confirmation(container: &str, target_count: usize, yes: bool) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+    if !io::stdin().is_terminal() {
+        anyhow::bail!("setup incus-ssh bootstrap requires --yes when stdin is not a TTY");
+    }
+    eprintln!(
+        "This will generate an SSH key in container `{container}` and update authorized_keys on {target_count} host(s)."
+    );
+    eprint!("Proceed? [y/N] ");
+    io::stderr().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    if matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+        Ok(())
+    } else {
+        anyhow::bail!("setup incus-ssh bootstrap cancelled");
+    }
 }
 
 fn require_incus_backup_confirmation(container: &str, yes: bool) -> Result<()> {

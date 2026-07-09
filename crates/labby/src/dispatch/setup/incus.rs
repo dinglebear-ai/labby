@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::thread;
@@ -115,6 +115,309 @@ pub(crate) struct IncusSyncOutcome {
     pub check_url: Option<String>,
     pub check_url_ok: Option<bool>,
     pub steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IncusSshBootstrapOptions {
+    pub container: String,
+    pub user: String,
+    pub ssh_config: PathBuf,
+    pub key_path: String,
+    pub dry_run: bool,
+    pub fail_fast: bool,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    pub install_config: bool,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub(crate) struct IncusSshTarget {
+    pub alias: String,
+    pub host: String,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub(crate) struct IncusSshBootstrapOutcome {
+    pub container: String,
+    pub user: String,
+    pub key_path: String,
+    pub dry_run: bool,
+    pub targets: Vec<IncusSshTarget>,
+    pub authorized: Vec<String>,
+    pub failed: Vec<IncusSshFailure>,
+    pub skipped_github: Vec<String>,
+    pub skipped_wildcard: Vec<String>,
+    pub skipped_excluded: Vec<String>,
+    pub skipped_not_included: Vec<String>,
+    pub config_installed: bool,
+    pub steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub(crate) struct IncusSshFailure {
+    pub target: String,
+    pub error: String,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize, PartialEq, Eq)]
+pub(crate) struct IncusSshVerifyOutcome {
+    pub container: String,
+    pub user: String,
+    pub key_path: String,
+    pub targets: Vec<IncusSshTarget>,
+    pub verified: Vec<String>,
+    pub failed: Vec<IncusSshFailure>,
+    pub skipped_github: Vec<String>,
+    pub skipped_wildcard: Vec<String>,
+    pub skipped_excluded: Vec<String>,
+    pub skipped_not_included: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ParsedSshConfig {
+    targets: Vec<IncusSshTarget>,
+    skipped_github: Vec<String>,
+    skipped_wildcard: Vec<String>,
+}
+
+fn parse_ssh_config(raw: &str) -> ParsedSshConfig {
+    let mut parsed = ParsedSshConfig::default();
+    let mut current: Vec<String> = Vec::new();
+    let mut host_name: Option<String> = None;
+    let mut user: Option<String> = None;
+    let mut port: Option<u16> = None;
+
+    fn flush(
+        parsed: &mut ParsedSshConfig,
+        current: &mut Vec<String>,
+        host_name: &mut Option<String>,
+        user: &mut Option<String>,
+        port: &mut Option<u16>,
+    ) {
+        for alias in current.drain(..) {
+            let host = host_name.clone().unwrap_or_else(|| alias.clone());
+            if is_wildcard_ssh_config_host(&alias) {
+                parsed.skipped_wildcard.push(alias);
+                continue;
+            }
+            if is_github_ssh_config_host(&alias, &host) {
+                parsed.skipped_github.push(alias);
+                continue;
+            }
+            parsed.targets.push(IncusSshTarget {
+                host,
+                alias,
+                user: user.clone(),
+                port: *port,
+            });
+        }
+        *host_name = None;
+        *user = None;
+        *port = None;
+    }
+
+    for line in raw.lines() {
+        let line = line.split_once('#').map_or(line, |(head, _)| head).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = split_ssh_config_line(line) else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("host") {
+            flush(
+                &mut parsed,
+                &mut current,
+                &mut host_name,
+                &mut user,
+                &mut port,
+            );
+            current = value.split_whitespace().map(str::to_string).collect();
+        } else if !current.is_empty() && key.eq_ignore_ascii_case("hostname") {
+            host_name = Some(value.to_string());
+        } else if !current.is_empty() && key.eq_ignore_ascii_case("user") {
+            user = Some(value.to_string());
+        } else if !current.is_empty() && key.eq_ignore_ascii_case("port") {
+            port = value.parse().ok();
+        }
+    }
+    flush(
+        &mut parsed,
+        &mut current,
+        &mut host_name,
+        &mut user,
+        &mut port,
+    );
+    parsed
+}
+
+pub(crate) fn incus_ssh_bootstrap_plan(
+    options: &IncusSshBootstrapOptions,
+) -> Result<IncusSshBootstrapOutcome, ToolError> {
+    let raw = std::fs::read_to_string(&options.ssh_config).map_err(|e| ToolError::Sdk {
+        message: format!(
+            "failed to read SSH config {}: {e}",
+            options.ssh_config.display()
+        ),
+        sdk_kind: "incus_ssh_config_read_failed".into(),
+    })?;
+    let parsed = parse_ssh_config(&raw);
+    let filtered = filter_ssh_targets(parsed.targets, &options.include, &options.exclude);
+    let targets = filtered.targets;
+    if targets.is_empty() {
+        return Err(ToolError::Sdk {
+            message: format!(
+                "no concrete Host entries found in {}",
+                options.ssh_config.display()
+            ),
+            sdk_kind: "incus_ssh_config_empty".into(),
+        });
+    }
+    let mut steps = vec![format!(
+        "incus exec {} --user {} -- ssh-keygen -t ed25519 -f {} -N '' -C labby-incus-{}",
+        options.container, options.user, options.key_path, options.container
+    )];
+    steps.extend(targets.iter().map(|target| {
+        format!(
+            "authorize container public key on {}",
+            target_ssh_destination(target)
+        )
+    }));
+    if options.install_config {
+        steps.push(format!(
+            "install sanitized SSH config in container {} for {} hosts",
+            options.container,
+            targets.len()
+        ));
+    }
+    Ok(IncusSshBootstrapOutcome {
+        container: options.container.clone(),
+        user: options.user.clone(),
+        key_path: options.key_path.clone(),
+        dry_run: options.dry_run,
+        targets,
+        authorized: Vec::new(),
+        failed: Vec::new(),
+        skipped_github: parsed.skipped_github,
+        skipped_wildcard: parsed.skipped_wildcard,
+        skipped_excluded: filtered.skipped_excluded,
+        skipped_not_included: filtered.skipped_not_included,
+        config_installed: false,
+        steps,
+    })
+}
+
+pub(crate) fn incus_ssh_bootstrap(
+    options: &IncusSshBootstrapOptions,
+) -> Result<IncusSshBootstrapOutcome, ToolError> {
+    let mut outcome = incus_ssh_bootstrap_plan(options)?;
+    if options.dry_run {
+        return Ok(outcome);
+    }
+
+    run_status(
+        Command::new("incus")
+            .arg("exec")
+            .arg(&options.container)
+            .arg("--")
+            .arg("sh")
+            .arg("-lc")
+            .arg(format!(
+                "su - {} -c {}",
+                shell_quote(&options.user),
+                shell_quote(&format!(
+                    "mkdir -p \"$(dirname {0})\" && (test -f {0} || ssh-keygen -t ed25519 -f {0} -N '' -C labby-incus-{1})",
+                    shell_quote(&options.key_path),
+                    shell_quote(&options.container)
+                ))
+            )),
+        "incus_ssh_keygen_failed",
+    )?;
+
+    let public_key_output = Command::new("incus")
+        .arg("exec")
+        .arg(&options.container)
+        .arg("--")
+        .arg("su")
+        .arg("-")
+        .arg(&options.user)
+        .arg("-c")
+        .arg(format!(
+            "cat {}",
+            shell_quote(&format!("{}.pub", options.key_path))
+        ))
+        .output()
+        .map_err(|e| ToolError::Sdk {
+            message: format!("failed to read container SSH public key: {e}"),
+            sdk_kind: "incus_ssh_public_key_read_failed".into(),
+        })?;
+    if !public_key_output.status.success() {
+        return Err(ToolError::Sdk {
+            message: "failed to read container SSH public key".into(),
+            sdk_kind: "incus_ssh_public_key_read_failed".into(),
+        });
+    }
+    let public_key = String::from_utf8_lossy(&public_key_output.stdout)
+        .trim()
+        .to_string();
+    if public_key.is_empty() {
+        return Err(ToolError::Sdk {
+            message: "container SSH public key was empty".into(),
+            sdk_kind: "incus_ssh_public_key_read_failed".into(),
+        });
+    }
+    for target in &outcome.targets {
+        match authorize_target(target, &public_key, options.timeout_seconds) {
+            Ok(()) => outcome.authorized.push(target_ssh_destination(target)),
+            Err(err) if options.fail_fast => return Err(err),
+            Err(err) => {
+                outcome.failed.push(IncusSshFailure {
+                    target: target_ssh_destination(target),
+                    error: err.to_string(),
+                });
+            }
+        }
+    }
+    if options.install_config {
+        install_container_ssh_config(options, &outcome.targets)?;
+        outcome.config_installed = true;
+    }
+    Ok(outcome)
+}
+
+pub(crate) fn incus_ssh_verify(
+    options: &IncusSshBootstrapOptions,
+) -> Result<IncusSshVerifyOutcome, ToolError> {
+    let plan = incus_ssh_bootstrap_plan(options)?;
+    if options.install_config {
+        install_container_ssh_config(options, &plan.targets)?;
+    }
+    let mut outcome = IncusSshVerifyOutcome {
+        container: plan.container,
+        user: plan.user,
+        key_path: plan.key_path,
+        targets: plan.targets,
+        verified: Vec::new(),
+        failed: Vec::new(),
+        skipped_github: plan.skipped_github,
+        skipped_wildcard: plan.skipped_wildcard,
+        skipped_excluded: plan.skipped_excluded,
+        skipped_not_included: plan.skipped_not_included,
+    };
+    for target in &outcome.targets {
+        match verify_container_target(options, target) {
+            Ok(()) => outcome.verified.push(target_ssh_destination(target)),
+            Err(err) if options.fail_fast => return Err(err),
+            Err(err) => outcome.failed.push(IncusSshFailure {
+                target: target_ssh_destination(target),
+                error: err.to_string(),
+            }),
+        }
+    }
+    Ok(outcome)
 }
 
 pub(crate) fn parse_backup_config(path: &Path) -> Result<Vec<BackupConfigEntry>, ToolError> {
@@ -954,6 +1257,246 @@ fn scalar_to_string(value: Value) -> Result<String, ToolError> {
     }
 }
 
+fn split_ssh_config_line(line: &str) -> Option<(&str, &str)> {
+    if let Some((key, value)) = line.split_once(char::is_whitespace) {
+        return Some((key.trim(), value.trim()));
+    }
+    line.split_once('=')
+        .map(|(key, value)| (key.trim(), value.trim()))
+}
+
+fn is_wildcard_ssh_config_host(alias: &str) -> bool {
+    let alias_lower = alias.to_ascii_lowercase();
+    alias.contains('*') || alias.contains('?') || alias_lower == "all"
+}
+
+fn is_github_ssh_config_host(alias: &str, host: &str) -> bool {
+    let alias_lower = alias.to_ascii_lowercase();
+    let host_lower = host.to_ascii_lowercase();
+    alias_lower.contains("github") || host_lower.contains("github")
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct FilteredSshTargets {
+    targets: Vec<IncusSshTarget>,
+    skipped_excluded: Vec<String>,
+    skipped_not_included: Vec<String>,
+}
+
+fn filter_ssh_targets(
+    targets: Vec<IncusSshTarget>,
+    include: &[String],
+    exclude: &[String],
+) -> FilteredSshTargets {
+    let mut filtered = FilteredSshTargets::default();
+    for target in targets {
+        if !include.is_empty()
+            && !include
+                .iter()
+                .any(|filter| ssh_target_matches(&target, filter))
+        {
+            filtered.skipped_not_included.push(target.alias);
+            continue;
+        }
+        if exclude
+            .iter()
+            .any(|filter| ssh_target_matches(&target, filter))
+        {
+            filtered.skipped_excluded.push(target.alias);
+            continue;
+        }
+        filtered.targets.push(target);
+    }
+    filtered
+}
+
+fn ssh_target_matches(target: &IncusSshTarget, filter: &str) -> bool {
+    let filter = filter.to_ascii_lowercase();
+    let alias = target.alias.to_ascii_lowercase();
+    let host = target.host.to_ascii_lowercase();
+    alias == filter || host == filter || alias.contains(&filter) || host.contains(&filter)
+}
+
+fn target_ssh_destination(target: &IncusSshTarget) -> String {
+    let mut dest = String::new();
+    if let Some(user) = &target.user {
+        dest.push_str(user);
+        dest.push('@');
+    }
+    dest.push_str(&target.host);
+    if let Some(port) = target.port {
+        dest.push(':');
+        dest.push_str(&port.to_string());
+    }
+    dest
+}
+
+fn render_sanitized_ssh_config(targets: &[IncusSshTarget]) -> String {
+    let mut out = String::from("# Generated by labby setup incus-ssh. Safe to overwrite.\n");
+    for target in targets {
+        out.push_str("\nHost ");
+        out.push_str(&target.alias);
+        out.push('\n');
+        out.push_str("  HostName ");
+        out.push_str(&target.host);
+        out.push('\n');
+        if let Some(user) = &target.user {
+            out.push_str("  User ");
+            out.push_str(user);
+            out.push('\n');
+        }
+        if let Some(port) = target.port {
+            out.push_str("  Port ");
+            out.push_str(&port.to_string());
+            out.push('\n');
+        }
+        out.push_str("  IdentityFile ~/.ssh/id_ed25519\n");
+        out.push_str("  IdentitiesOnly yes\n");
+        out.push_str("  BatchMode yes\n");
+        out.push_str("  StrictHostKeyChecking accept-new\n");
+    }
+    out
+}
+
+fn install_container_ssh_config(
+    options: &IncusSshBootstrapOptions,
+    targets: &[IncusSshTarget],
+) -> Result<(), ToolError> {
+    let config = render_sanitized_ssh_config(targets);
+    let mut child = Command::new("incus")
+        .arg("exec")
+        .arg(&options.container)
+        .arg("--")
+        .arg("su")
+        .arg("-")
+        .arg(&options.user)
+        .arg("-c")
+        .arg("umask 077; mkdir -p ~/.ssh; cat > ~/.ssh/config")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| ToolError::Sdk {
+            message: format!("failed to start container SSH config install: {e}"),
+            sdk_kind: "incus_ssh_config_install_failed".into(),
+        })?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(config.as_bytes())
+            .map_err(|e| ToolError::Sdk {
+                message: format!("failed to write container SSH config: {e}"),
+                sdk_kind: "incus_ssh_config_install_failed".into(),
+            })?;
+    }
+    let status = child.wait().map_err(|e| ToolError::Sdk {
+        message: format!("failed to wait for container SSH config install: {e}"),
+        sdk_kind: "incus_ssh_config_install_failed".into(),
+    })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ToolError::Sdk {
+            message: format!("container SSH config install exited with status {status}"),
+            sdk_kind: "incus_ssh_config_install_failed".into(),
+        })
+    }
+}
+
+fn authorize_target(
+    target: &IncusSshTarget,
+    public_key: &str,
+    timeout_seconds: u64,
+) -> Result<(), ToolError> {
+    let mut command = Command::new("ssh");
+    command
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg(format!("ConnectTimeout={timeout_seconds}"))
+        .arg(&target.alias)
+        .arg("sh -c 'umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; read key; grep -qxF \"$key\" ~/.ssh/authorized_keys || printf \"%s\\n\" \"$key\" >> ~/.ssh/authorized_keys'");
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| ToolError::Sdk {
+            message: format!(
+                "failed to start ssh for {}: {e}",
+                target_ssh_destination(target)
+            ),
+            sdk_kind: "incus_ssh_authorize_failed".into(),
+        })?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(public_key.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .map_err(|e| ToolError::Sdk {
+                message: format!(
+                    "failed to send public key to {}: {e}",
+                    target_ssh_destination(target)
+                ),
+                sdk_kind: "incus_ssh_authorize_failed".into(),
+            })?;
+    }
+    let status = child.wait().map_err(|e| ToolError::Sdk {
+        message: format!(
+            "failed to wait for ssh authorization on {}: {e}",
+            target_ssh_destination(target)
+        ),
+        sdk_kind: "incus_ssh_authorize_failed".into(),
+    })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ToolError::Sdk {
+            message: format!(
+                "ssh authorization failed on {}",
+                target_ssh_destination(target)
+            ),
+            sdk_kind: "incus_ssh_authorize_failed".into(),
+        })
+    }
+}
+
+fn verify_container_target(
+    options: &IncusSshBootstrapOptions,
+    target: &IncusSshTarget,
+) -> Result<(), ToolError> {
+    run_status(
+        Command::new("incus")
+            .arg("exec")
+            .arg(&options.container)
+            .arg("--")
+            .arg("su")
+            .arg("-")
+            .arg(&options.user)
+            .arg("-c")
+            .arg(format!(
+                "ssh -i {} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout={} {} true",
+                shell_quote(&options.key_path),
+                options.timeout_seconds,
+                shell_quote(&target.alias)
+            )),
+        "incus_ssh_verify_failed",
+    )
+}
+
+fn run_status(command: &mut Command, kind: &str) -> Result<(), ToolError> {
+    let status = command.status().map_err(|e| ToolError::Sdk {
+        message: format!("failed to run command: {e}"),
+        sdk_kind: kind.into(),
+    })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ToolError::Sdk {
+            message: format!("command exited with status {status}"),
+            sdk_kind: kind.into(),
+        })
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1111,6 +1654,165 @@ config:
             "--tailscale-hostname",
             OsStr::new("labby")
         ));
+    }
+
+    #[test]
+    fn parses_concrete_ssh_config_hosts() {
+        let targets = parse_ssh_config(
+            r#"
+Host *
+  User ignored
+
+Host alpha alpha-short
+  HostName 192.0.2.10
+  User operator
+  Port 2222
+
+Host beta
+  HostName beta.example.test
+
+Host github.com
+  User git
+
+Host GitHubEnterprise
+  HostName github.internal
+
+Include ~/.ssh/extra
+"#,
+        )
+        .targets;
+
+        assert_eq!(
+            targets,
+            vec![
+                IncusSshTarget {
+                    alias: "alpha".into(),
+                    host: "192.0.2.10".into(),
+                    user: Some("operator".into()),
+                    port: Some(2222),
+                },
+                IncusSshTarget {
+                    alias: "alpha-short".into(),
+                    host: "192.0.2.10".into(),
+                    user: Some("operator".into()),
+                    port: Some(2222),
+                },
+                IncusSshTarget {
+                    alias: "beta".into(),
+                    host: "beta.example.test".into(),
+                    user: None,
+                    port: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn filters_ssh_targets_and_reports_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        std::fs::write(
+            &config,
+            r#"
+Host *
+  User ignored
+
+Host alpha
+  HostName alpha.example.test
+
+Host beta
+  HostName beta.example.test
+
+Host github.com
+  User git
+"#,
+        )
+        .unwrap();
+
+        let outcome = incus_ssh_bootstrap_plan(&IncusSshBootstrapOptions {
+            container: "labby".into(),
+            user: "labby".into(),
+            ssh_config: config,
+            key_path: "/home/labby/.ssh/id_ed25519".into(),
+            dry_run: true,
+            fail_fast: false,
+            include: vec!["alpha".into()],
+            exclude: vec!["beta".into()],
+            install_config: true,
+            timeout_seconds: 10,
+        })
+        .unwrap();
+
+        assert_eq!(
+            outcome
+                .targets
+                .iter()
+                .map(|target| target.alias.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha"]
+        );
+        assert_eq!(outcome.skipped_wildcard, vec!["*"]);
+        assert_eq!(outcome.skipped_github, vec!["github.com"]);
+        assert_eq!(outcome.skipped_not_included, vec!["beta"]);
+        assert!(outcome.steps.iter().any(|step| step.contains("sanitized")));
+    }
+
+    #[test]
+    fn renders_sanitized_container_ssh_config() {
+        let config = render_sanitized_ssh_config(&[IncusSshTarget {
+            alias: "alpha".into(),
+            host: "192.0.2.10".into(),
+            user: Some("root".into()),
+            port: Some(29229),
+        }]);
+
+        assert!(config.contains("Host alpha"));
+        assert!(config.contains("  HostName 192.0.2.10"));
+        assert!(config.contains("  User root"));
+        assert!(config.contains("  Port 29229"));
+        assert!(config.contains("  IdentityFile ~/.ssh/id_ed25519"));
+        assert!(!config.contains("github"));
+        assert!(!config.contains("ProxyJump"));
+    }
+
+    #[test]
+    fn plans_incus_ssh_bootstrap_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        std::fs::write(
+            &config,
+            r#"
+Host alpha
+  HostName 192.0.2.10
+  User operator
+"#,
+        )
+        .unwrap();
+
+        let outcome = incus_ssh_bootstrap_plan(&IncusSshBootstrapOptions {
+            container: "labby".into(),
+            user: "labby".into(),
+            ssh_config: config,
+            key_path: "/home/labby/.ssh/id_ed25519".into(),
+            dry_run: true,
+            fail_fast: false,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            install_config: true,
+            timeout_seconds: 10,
+        })
+        .unwrap();
+
+        assert!(outcome.dry_run);
+        assert_eq!(outcome.targets.len(), 1);
+        assert_eq!(
+            outcome.steps[0],
+            "incus exec labby --user labby -- ssh-keygen -t ed25519 -f /home/labby/.ssh/id_ed25519 -N '' -C labby-incus-labby"
+        );
+        assert_eq!(
+            outcome.steps[1],
+            "authorize container public key on operator@192.0.2.10"
+        );
     }
 
     fn has_arg_pair(args: &[OsString], flag: &str, value: &OsStr) -> bool {
