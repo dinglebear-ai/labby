@@ -6,15 +6,9 @@ import { LabbyIcon } from '@/components/labby-icon'
 import { usePathname } from 'next/navigation'
 import {
   Cable,
-  MessageSquareText,
   LayoutDashboard,
-  ShoppingBag,
   Settings,
-  Activity,
-  ScrollText,
   HelpCircle,
-  WandSparkles,
-  Server,
   FileCode2,
 } from 'lucide-react'
 
@@ -38,23 +32,6 @@ import {
   sessionPrimaryEmail,
 } from '@/lib/auth/session-presenter'
 import { logoutBrowserSession, useBrowserSession } from '@/lib/auth/session'
-import { useCapabilities } from '@/lib/hooks/use-capabilities'
-import type { Capabilities, CapabilityKey } from '@/lib/capabilities'
-
-/**
- * Nav routes backed by a feature-gated service. Entries not listed here are
- * always shown (they're served by the always-on gateway/base surfaces).
- */
-const NAV_ROUTE_CAPABILITY: Record<string, CapabilityKey> = {
-  '/chat': 'acp',
-  '/nodes': 'nodes',
-  '/marketplace': 'marketplace',
-}
-
-function navItemVisible(url: string, capabilities: Capabilities): boolean {
-  const need = NAV_ROUTE_CAPABILITY[url]
-  return need == null || capabilities[need]
-}
 
 export const primarySidebarNavigation = [
   {
@@ -68,39 +45,9 @@ export const primarySidebarNavigation = [
     icon: Cable,
   },
   {
-    title: 'Nodes',
-    url: '/nodes',
-    icon: Server,
-  },
-  {
-    title: 'Marketplace',
-    url: '/marketplace',
-    icon: ShoppingBag,
-  },
-  {
-    title: 'Chat',
-    url: '/chat',
-    icon: MessageSquareText,
-  },
-  {
     title: 'Snippets',
     url: '/snippets',
     icon: FileCode2,
-  },
-  {
-    title: 'Setup',
-    url: '/setup',
-    icon: WandSparkles,
-  },
-  {
-    title: 'Activity',
-    url: '/activity',
-    icon: Activity,
-  },
-  {
-    title: 'Logs',
-    url: '/logs',
-    icon: ScrollText,
   },
 ]
 
@@ -120,11 +67,6 @@ export const secondarySidebarNavigation = [
 export function AppSidebar() {
   const pathname = usePathname()
   const session = useBrowserSession()
-  const capabilities = useCapabilities()
-
-  const visiblePrimaryNavigation = primarySidebarNavigation.filter((item) =>
-    navItemVisible(item.url, capabilities),
-  )
 
   const isActive = (url: string) => {
     if (url === '/') return pathname === '/'
@@ -154,7 +96,7 @@ export function AppSidebar() {
           <SidebarGroupLabel>Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {visiblePrimaryNavigation.map((item) => (
+              {primarySidebarNavigation.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
                     <Link href={item.url}>

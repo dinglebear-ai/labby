@@ -1,5 +1,4 @@
 import type { Gateway } from '@/lib/types/gateway'
-import type { FleetDevice } from '@/lib/api/device-client'
 import type { MetricsWindow } from '@/lib/types/metrics'
 
 /** Human label for each rolling window. */
@@ -9,22 +8,17 @@ export const WINDOW_LABELS: Record<MetricsWindow, string> = {
   '7d': 'Last 7 days',
 }
 
-/** Live (point-in-time) fleet counts derived from gateways + devices. */
+/** Live (point-in-time) fleet counts derived from gateways. */
 export interface LiveFleetStats {
   totalServers: number
   connectedServers: number
   offlineServers: number
   discoveredTools: number
   exposedTools: number
-  totalDevices: number
-  connectedDevices: number
   warnings: number
 }
 
-export function buildLiveFleetStats(
-  gateways: Gateway[],
-  devices: FleetDevice[],
-): LiveFleetStats {
+export function buildLiveFleetStats(gateways: Gateway[]): LiveFleetStats {
   const connectedServers = gateways.filter(
     (g) => g.status.connected && g.status.healthy,
   ).length
@@ -41,8 +35,6 @@ export function buildLiveFleetStats(
       (sum, g) => sum + g.status.exposed_tool_count,
       0,
     ),
-    totalDevices: devices.length,
-    connectedDevices: devices.filter((d) => d.connected).length,
     warnings: gateways.reduce((sum, g) => sum + g.warnings.length, 0),
   }
 }

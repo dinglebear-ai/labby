@@ -30,9 +30,10 @@ Product-local surfaces are split into two categories:
 `gateway` is the reference control-plane surface and is allowed to live
 entirely in `lab`.
 
-The ACP/chat work should follow the capability-module pattern for ACP itself:
-- `acp` becomes the first-class capability/service
-- `chat` remains the UI route and presentation layer over that service
+Any future ACP work should follow the capability-module pattern for ACP
+itself: `acp` becomes the first-class capability/service. There is currently
+no `chat` UI route over it — see [Chat / ACP Surface](#chat--acp-surface)
+below.
 
 ## Feature Gates
 
@@ -205,13 +206,9 @@ its adapters and registration live in `lab`.
 
 ## Chat / ACP Surface
 
-The `/chat` experience is currently a product-local UI surface over the
-first-class `acp` capability:
+The `apps/gateway-admin` `/chat` UI surface over the `acp` capability has been
+removed. `acp` capability/service behavior, where it still exists, is owned by
+`lab-apis` and `lab`, independent of any frontend.
 
-- it is wired to ACP provider/session endpoints
-- its behavior lives in `apps/gateway-admin` plus supporting Rust API routes
-- `acp` owns the service/capability behavior; `chat` is the UI over it
-
-If chat ever becomes an independent service rather than an ACP UI, it should
-follow `SERVICE_ONBOARDING.md` and `DISPATCH.md` like any other first-class
-integration.
+If a chat UI is reintroduced, it should follow `SERVICE_ONBOARDING.md` and
+`DISPATCH.md` like any other first-class integration.

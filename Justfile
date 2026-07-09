@@ -286,7 +286,7 @@ web-watch:
 run *ARGS:
     cargo run --all-features -- {{ARGS}}
 
-# Run the binary-served static chat UI in local ACP mode
+# Run the binary-served static admin UI locally with browser auth disabled
 chat-local:
     #!/usr/bin/env bash
     set -euo pipefail

@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Window } from 'happy-dom'
 
-export function installChatTestDom() {
+export function installTestDom() {
   const window = new Window()
   Object.defineProperty(globalThis, 'window', { value: window, configurable: true })
   Object.defineProperty(globalThis, 'document', { value: window.document, configurable: true })

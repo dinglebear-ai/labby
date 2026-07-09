@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import React from 'react'
 import { act } from 'react'
 
-import { installChatTestDom, renderClient } from '@/components/chat/test-utils'
+import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { SnippetsPageContent } from './snippets-page-content'
 
@@ -23,7 +23,7 @@ async function waitFor(assertion: () => void) {
 }
 
 test('snippets page renders fetched snippets and typed inputs', async () => {
-  installChatTestDom()
+  installTestDom()
   const requests: Array<{ action?: string; params?: Record<string, unknown> }> = []
   globalThis.fetch = (async (_input, init) => {
     const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string; params?: Record<string, unknown> }

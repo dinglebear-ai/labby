@@ -92,19 +92,19 @@ export default function ServicesIndex(): React.ReactElement {
             <div className="mb-4 rounded-md border p-3">
               <div className="space-y-1">
                 <p className="text-sm font-medium">Built-in upstream API services</p>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-sm text-aurora-text-muted">
                   {builtInsEnabled === true
                     ? 'Enabled from Features settings.'
                     : 'Disabled from Features settings; saved credentials are preserved.'}
                 </p>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-aurora-text-muted">
                   Service credentials remain managed on individual service pages; the full env inventory is available in Advanced.
                 </p>
               </div>
             </div>
           ) : null}
           {loading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
               <Loader2 className="h-4 w-4 animate-spin" /> loading catalog
             </div>
           ) : null}
@@ -118,7 +118,7 @@ export default function ServicesIndex(): React.ReactElement {
                     <div>
                       <p className="font-medium">{schema.display_name}</p>
                       {schema.description ? (
-                        <p className="text-xs text-muted-foreground">
+                        <p className="text-xs text-aurora-text-muted">
                           {schema.description}
                         </p>
                       ) : null}
@@ -135,7 +135,7 @@ export default function ServicesIndex(): React.ReactElement {
                         <CircleAlert className="h-3 w-3" /> incomplete
                       </span>
                     )}
-                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    <ChevronRight className="h-4 w-4 text-aurora-text-muted" />
                   </div>
                 </div>
               </li>

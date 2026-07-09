@@ -4,47 +4,50 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #f4f7f8;
-  --foreground: #162126;
-  --card: #ffffff;
-  --card-foreground: #162126;
-  --popover: #ffffff;
-  --popover-foreground: #162126;
-  --primary: #155e75;
-  --primary-foreground: #ffffff;
-  --secondary: #dbecef;
-  --secondary-foreground: #123746;
-  --muted: #eaf2f3;
-  --muted-foreground: #56707a;
-  --accent: #ffb703;
-  --accent-foreground: #5b3a00;
-  --destructive: #ff1744;
-  --destructive-foreground: #ffffff;
-  --border: #d7e3e7;
-  --input: #d7e3e7;
-  --ring: #155e75;
-  --chart-1: #155e75;
-  --chart-2: #00e676;
-  --chart-3: #ffea00;
-  --chart-4: #fb7185;
-  --chart-5: #00b0ff;
+  /* Semantic tokens default to Aurora dark — this app is dark-first per
+     the Aurora design system. `.dark` below mirrors these 1:1 (kept for
+     explicitness / next-themes' class toggle); `.light` remaps the raw
+     --aurora-* vars, which these semantic tokens read through automatically. */
+  --background: var(--aurora-page-bg);
+  --foreground: var(--aurora-text-primary);
+  --card: var(--aurora-panel-medium);
+  --card-foreground: var(--aurora-text-primary);
+  --popover: var(--aurora-panel-strong);
+  --popover-foreground: var(--aurora-text-primary);
+  --primary: var(--aurora-accent-primary);
+  --primary-foreground: #07131c; /* verified ≥4.5:1 on accent-primary #29b6f6 */
+  --secondary: var(--aurora-panel-strong);
+  --secondary-foreground: var(--aurora-text-primary);
+  --muted: var(--aurora-control-surface);
+  --muted-foreground: var(--aurora-text-muted);
+  --accent: var(--aurora-accent-deep);
+  --accent-foreground: var(--aurora-text-primary);
+  --destructive: var(--aurora-error);
+  --destructive-foreground: #1a0a0d; /* verified ≥4.5:1 on error #c78490 */
+  --border: var(--aurora-border-default);
+  --input: var(--aurora-control-surface);
+  --ring: var(--aurora-accent-primary);
+  --chart-1: var(--aurora-accent-primary);
+  --chart-2: var(--aurora-accent-strong);
+  --chart-3: var(--aurora-warn);
+  --chart-4: var(--aurora-error);
+  --chart-5: var(--aurora-accent-deep);
   --radius: 0.625rem;
-  --sidebar: #0f172a;
-  --sidebar-foreground: #d9e7ec;
-  --sidebar-primary: #5eead4;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #133041;
-  --sidebar-accent-foreground: #f3fbfd;
-  --sidebar-border: #1d4053;
-  --sidebar-ring: #5eead4;
-  
-  /* MUI Vibrant Status Colors */
-  --success: #00e676;
-  --success-foreground: #1b5e20;
-  --warning: #ff9100;
-  --warning-foreground: #e65100;
-  --info: #00b0ff;
-  --info-foreground: #01579b;
+  --sidebar: var(--aurora-nav-bg);
+  --sidebar-foreground: var(--aurora-text-primary);
+  --sidebar-primary: var(--aurora-accent-primary);
+  --sidebar-primary-foreground: #07131c;
+  --sidebar-accent: var(--aurora-panel-medium);
+  --sidebar-accent-foreground: var(--aurora-text-primary);
+  --sidebar-border: var(--aurora-border-default);
+  --sidebar-ring: var(--aurora-accent-primary);
+
+  --success: var(--aurora-accent-strong);
+  --success-foreground: #07131c;
+  --warning: var(--aurora-warn);
+  --warning-foreground: var(--aurora-text-primary);
+  --info: var(--aurora-accent-primary);
+  --info-foreground: #07131c;
 
   /* Aurora token system */
   --aurora-page-bg: #07131c;

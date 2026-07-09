@@ -7,7 +7,6 @@
 // order so diffs read cleanly.
 
 export const SERVICE_SLUGS = [
-  'acp',
   'adguard',
   'apprise',
   'arcane',
@@ -23,7 +22,6 @@ export const SERVICE_SLUGS = [
   'jellyfin',
   'linkding',
   'loggifly',
-  'marketplace',
   'memos',
   'navidrome',
   'neo4j',
@@ -40,7 +38,6 @@ export const SERVICE_SLUGS = [
   'sabnzbd',
   'scrutiny',
   'sonarr',
-  'stash',
   'tailscale',
   'tautulli',
   'tei',

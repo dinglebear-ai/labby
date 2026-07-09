@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import useSWR from 'swr'
 import {
   Activity,
   AlertTriangle,
@@ -11,7 +10,6 @@ import {
   Clock3,
   Coins,
   Gauge,
-  HardDrive,
   PlugZap,
   Wrench,
 } from 'lucide-react'
@@ -39,9 +37,6 @@ import type { DrillTarget } from '@/components/dashboard/drill'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
 import { useGateways } from '@/lib/hooks/use-gateways'
 import { useDashboardMetrics } from '@/lib/hooks/use-dashboard-metrics'
-import { useCapabilities } from '@/lib/hooks/use-capabilities'
-import { capabilityAvailable } from '@/lib/capabilities'
-import { fetchFleetDevices } from '@/lib/api/device-client'
 import {
   WINDOW_LABELS,
   buildLiveFleetStats,
@@ -71,22 +66,11 @@ function PanelHeading({ title, hint }: { title: string; hint?: string }) {
 
 export default function OverviewPage() {
   const { data: gateways, isLoading: gatewaysLoading } = useGateways()
-  const capabilities = useCapabilities()
-  // Only fetch fleet devices when the catalog confirms the `nodes` service is
-  // present. A null SWR key tells SWR not to fetch, so a gateway-only build
-  // never hits `/v1/nodes`. `nodesUnavailable` = catalog resolved and `nodes`
-  // is confidently absent → render the Devices tile as "n/a".
-  const nodesAvailable = capabilityAvailable(capabilities, 'nodes')
-  const nodesUnavailable = capabilities.ready && !capabilities.nodes
-  const { data: devices, error: devicesError } = useSWR(
-    nodesAvailable ? '/fleet-devices' : null,
-    () => fetchFleetDevices(),
-  )
   const [activeWindow, setActiveWindow] = useState<MetricsWindow>('24h')
   const [drill, setDrill] = useState<DrillTarget | null>(null)
   const { data: metrics, error: metricsError, mutate: reloadMetrics } = useDashboardMetrics(activeWindow)
 
-  const live = buildLiveFleetStats(gateways ?? [], devices ?? [])
+  const live = buildLiveFleetStats(gateways ?? [])
   const warningsSig = warningsSignature(gateways ?? [])
   const metricsLoading = !metrics
   const recentGateways = gateways?.slice(0, 5) ?? []
@@ -106,13 +90,10 @@ export default function OverviewPage() {
               </h1>
               <p className="text-sm text-aurora-text-muted sm:text-base">
                 Reachability, exposure, and usage across your connected MCP
-                servers, agents, and devices.
+                servers.
               </p>
             </div>
             <div className="flex flex-wrap gap-3">
-              <Button variant="outline" asChild>
-                <Link href="/activity">Review activity</Link>
-              </Button>
               <Button asChild>
                 <Link href="/gateways">Manage servers</Link>
               </Button>
@@ -167,15 +148,6 @@ export default function OverviewPage() {
             icon={Wrench}
             tone="info"
             loading={gatewaysLoading}
-          />
-          <StatTile
-            label="Devices"
-            value={nodesUnavailable ? 'n/a' : live.connectedDevices}
-            icon={HardDrive}
-            // Skeleton until the catalog resolves (`!ready`) so the tile does
-            // not flash `0` before we know whether `nodes` exists; then only
-            // while the confirmed fetch is in flight.
-            loading={!capabilities.ready || (nodesAvailable && !devices && !devicesError)}
           />
           <StatTile
             label="Tool calls"
