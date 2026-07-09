@@ -8,7 +8,9 @@ use labby_runtime::error::ToolError;
 use crate::usage::query::{UsageCallsQuery, UsageMetricsQuery};
 
 use super::GatewayManager;
-use crate::gateway::params::{GatewayUsageCallsParams, GatewayUsageMetricsParams};
+use crate::gateway::params::{
+    GatewayEnrichmentScope, GatewayUsageCallsParams, GatewayUsageMetricsParams,
+};
 use crate::gateway::types::{
     GatewayUsageActorCount, GatewayUsageCallView, GatewayUsageCallsView, GatewayUsageMetricsView,
     GatewayUsageToolCount,
@@ -22,17 +24,28 @@ impl GatewayManager {
         &self,
         params: GatewayUsageMetricsParams,
     ) -> Result<GatewayUsageMetricsView, ToolError> {
+        self.usage_metrics_scoped(params, GatewayEnrichmentScope::default())
+            .await
+    }
+
+    pub(crate) async fn usage_metrics_scoped(
+        &self,
+        params: GatewayUsageMetricsParams,
+        scope: GatewayEnrichmentScope,
+    ) -> Result<GatewayUsageMetricsView, ToolError> {
         let Some(store) = &self.usage_store else {
             return Err(ToolError::Sdk {
                 sdk_kind: "usage_store_unavailable".to_string(),
                 message: "gateway usage telemetry is disabled for this instance".to_string(),
             });
         };
+        let allowed_upstreams = scoped_allowed_upstreams(&scope, params.upstream.as_deref())?;
         let metrics = store
             .metrics(UsageMetricsQuery {
                 since_unix: params.since_unix,
                 until_unix: params.until_unix,
                 upstream: params.upstream,
+                allowed_upstreams,
             })
             .await?;
         Ok(GatewayUsageMetricsView {
@@ -63,12 +76,22 @@ impl GatewayManager {
         &self,
         params: GatewayUsageCallsParams,
     ) -> Result<GatewayUsageCallsView, ToolError> {
+        self.usage_calls_scoped(params, GatewayEnrichmentScope::default())
+            .await
+    }
+
+    pub(crate) async fn usage_calls_scoped(
+        &self,
+        params: GatewayUsageCallsParams,
+        scope: GatewayEnrichmentScope,
+    ) -> Result<GatewayUsageCallsView, ToolError> {
         let Some(store) = &self.usage_store else {
             return Err(ToolError::Sdk {
                 sdk_kind: "usage_store_unavailable".to_string(),
                 message: "gateway usage telemetry is disabled for this instance".to_string(),
             });
         };
+        let allowed_upstreams = scoped_allowed_upstreams(&scope, params.upstream.as_deref())?;
         let limit = params
             .limit
             .unwrap_or(DEFAULT_CALLS_LIMIT)
@@ -78,6 +101,7 @@ impl GatewayManager {
                 since_unix: params.since_unix,
                 until_unix: params.until_unix,
                 upstream: params.upstream,
+                allowed_upstreams,
                 limit,
                 offset: params.offset.unwrap_or(0),
             })
@@ -97,4 +121,31 @@ impl GatewayManager {
             total_matching,
         })
     }
+}
+
+/// Enforce route scope for a usage query. Mirrors the enrichment scope check
+/// in `manager/enrichment.rs::apply_enrichment_scoped`:
+///
+/// - If the caller explicitly requested a single `upstream` that is not in
+///   the route-visible set, fail with `unknown_upstream` (matching the
+///   enrichment out-of-scope-upstream error shape).
+/// - Otherwise (aggregate query, no explicit upstream), return the
+///   route-visible set so the store can restrict its `WHERE` clause to it.
+/// - `None` scope (root/unscoped caller) always returns `None` (no filter).
+fn scoped_allowed_upstreams(
+    scope: &GatewayEnrichmentScope,
+    requested_upstream: Option<&str>,
+) -> Result<Option<Vec<String>>, ToolError> {
+    let Some(visible) = &scope.route_visible_upstreams else {
+        return Ok(None);
+    };
+    if let Some(upstream) = requested_upstream
+        && !visible.contains(upstream)
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "unknown_upstream".to_string(),
+            message: format!("unknown gateway upstream `{upstream}`"),
+        });
+    }
+    Ok(Some(visible.iter().cloned().collect()))
 }

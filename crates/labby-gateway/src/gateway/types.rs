@@ -290,7 +290,7 @@ pub struct GatewayUsageCallView {
     pub ts_unix: i64,
     pub upstream: String,
     pub tool: String,
-    pub actor: Option<String>,
+    pub actor: String,
     pub outcome: String,
     pub elapsed_ms: i64,
 }

@@ -79,11 +79,15 @@ pub async fn dispatch_with_manager_scoped(
         }
         "gateway.usage.metrics" => {
             let params: GatewayUsageMetricsParams = parse_params(params_value)?;
-            to_json(manager.usage_metrics(params).await?)
+            to_json(
+                manager
+                    .usage_metrics_scoped(params, enrichment_scope)
+                    .await?,
+            )
         }
         "gateway.usage.calls" => {
             let params: GatewayUsageCallsParams = parse_params(params_value)?;
-            to_json(manager.usage_calls(params).await?)
+            to_json(manager.usage_calls_scoped(params, enrichment_scope).await?)
         }
         "gateway.import" => handle_import(manager, params_value, enrichment_scope).await,
         "gateway.import_pending.list" => to_json(manager.list_pending_imports().await),

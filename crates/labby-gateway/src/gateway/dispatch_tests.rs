@@ -6,7 +6,7 @@ use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, UpstreamConfig};
 
 use super::super::discovery::DiscoveredServer;
 use super::super::manager::GatewayRuntimeHandle;
-use super::super::params::GatewayDiscoverParams;
+use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
 
@@ -219,6 +219,135 @@ async fn gateway_usage_metrics_fails_closed_when_store_not_wired() {
         .await
         .expect_err("no usage store wired must fail, not silently return empty data");
     assert_eq!(error.kind(), "usage_store_unavailable");
+}
+
+#[tokio::test]
+async fn gateway_usage_metrics_rejects_route_hidden_explicit_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+    let usage_store = std::sync::Arc::new(
+        crate::usage::UsageStore::open(tempfile::tempdir().unwrap().path().join("usage.db"))
+            .await
+            .unwrap(),
+    );
+    let manager = manager.with_usage_store(usage_store);
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.usage.metrics",
+        json!({"upstream": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(
+                ["rustarr".to_string()],
+            )),
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn gateway_usage_calls_rejects_route_hidden_explicit_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+    let usage_store = std::sync::Arc::new(
+        crate::usage::UsageStore::open(tempfile::tempdir().unwrap().path().join("usage.db"))
+            .await
+            .unwrap(),
+    );
+    let manager = manager.with_usage_store(usage_store);
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.usage.calls",
+        json!({"upstream": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(
+                ["rustarr".to_string()],
+            )),
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "rustarr",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+    let usage_store = std::sync::Arc::new(
+        crate::usage::UsageStore::open(tempfile::tempdir().unwrap().path().join("usage.db"))
+            .await
+            .unwrap(),
+    );
+    usage_store
+        .record_call(crate::usage::UpstreamCallRecord {
+            ts_unix: 1_000,
+            upstream_name: "github".to_string(),
+            tool_name: "search_repos".to_string(),
+            actor: "unattributed".to_string(),
+            outcome: "ok".to_string(),
+            elapsed_ms: 10,
+        })
+        .await
+        .unwrap();
+    usage_store
+        .record_call(crate::usage::UpstreamCallRecord {
+            ts_unix: 1_001,
+            upstream_name: "rustarr".to_string(),
+            tool_name: "movie_search".to_string(),
+            actor: "unattributed".to_string(),
+            outcome: "ok".to_string(),
+            elapsed_ms: 10,
+        })
+        .await
+        .unwrap();
+    let manager = manager.with_usage_store(usage_store);
+
+    // No explicit `upstream` filter: aggregate query must still be scoped to
+    // the route-visible set, not the whole store.
+    let result = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.usage.metrics",
+        json!({}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+        },
+    )
+    .await
+    .expect("scoped aggregate dispatch succeeds");
+
+    assert_eq!(result["total_calls"], 1);
+    assert_eq!(result["top_tools"][0]["upstream"], json!("github"));
 }
 
 #[test]
