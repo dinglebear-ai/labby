@@ -9,12 +9,8 @@ import {
   FileCode2,
   LayoutDashboard,
   Loader2,
-  Logs,
-  MessageSquareText,
   Search,
   Settings,
-  ShoppingBag,
-  WandSparkles,
   type LucideIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -63,16 +59,12 @@ import type { Gateway } from '@/lib/types/gateway'
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const ICONS: Record<AppCommandIconKey, LucideIcon> = {
-  activity: Activity,
-  chat: MessageSquareText,
   docs: BookOpen,
   gateway: Cable,
-  logs: Logs,
-  marketplace: ShoppingBag,
   overview: LayoutDashboard,
   settings: Settings,
-  setup: WandSparkles,
   snippets: FileCode2,
+  usage: Activity,
 }
 
 const KIND_LABELS: Record<AppCommandItem['kind'], string> = {
@@ -620,7 +612,7 @@ export function AppCommandPalette() {
                           No matching commands
                         </p>
                         <p className="mt-2 text-sm text-aurora-text-muted">
-                          Try gateway, logs, setup, registry, marketplace, or settings.
+                          Try gateway, snippets, usage, or settings.
                         </p>
                       </CommandEmpty>
                     )

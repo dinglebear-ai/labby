@@ -339,8 +339,8 @@ export default function DocsPage() {
                   {snapshot.warningCount} warning
                   {snapshot.warningCount === 1 ? '' : 's'} still open across
                   tracked servers. Review them in{' '}
-                  <Link href="/activity" className={LINK_CLASS}>
-                    Activity
+                  <Link href="/gateways" className={LINK_CLASS}>
+                    Gateway
                   </Link>{' '}
                   before extending exposure.
                 </AlertDescription>

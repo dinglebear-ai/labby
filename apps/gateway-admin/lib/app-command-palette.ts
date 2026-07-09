@@ -3,16 +3,12 @@ export type AppCommandKind = 'destination' | 'action'
 export type AppCommandGroupKey = 'best-match' | 'actions' | 'destinations'
 
 export type AppCommandIconKey =
-  | 'activity'
-  | 'chat'
   | 'docs'
   | 'gateway'
-  | 'logs'
-  | 'marketplace'
   | 'overview'
   | 'settings'
-  | 'setup'
   | 'snippets'
+  | 'usage'
 
 export type AppCommandItem = {
   id: string
@@ -71,30 +67,6 @@ export const appCommandItems: AppCommandItem[] = [
     priority: 98,
   },
   {
-    id: 'destination-marketplace',
-    kind: 'destination',
-    title: 'Marketplace',
-    description: 'Browse available plugins, MCP servers, ACP agents, and registry-backed catalog entries.',
-    keywords: ['marketplace', 'plugin', 'plugins', 'install', 'agents', 'mcp', 'registry', 'servers', 'catalog', 'packages', 'acp'],
-    group: 'destinations',
-    icon: 'marketplace',
-    href: '/marketplace',
-    actionHint: 'Open',
-    priority: 92,
-  },
-  {
-    id: 'destination-chat',
-    kind: 'destination',
-    title: 'Chat',
-    description: 'Open the ACP chat workspace for agent sessions and tool activity.',
-    keywords: ['chat', 'agent', 'assistant', 'acp', 'session'],
-    group: 'destinations',
-    icon: 'chat',
-    href: '/chat',
-    actionHint: 'Open',
-    priority: 88,
-  },
-  {
     id: 'destination-snippets',
     kind: 'destination',
     title: 'Snippets',
@@ -107,40 +79,16 @@ export const appCommandItems: AppCommandItem[] = [
     priority: 87,
   },
   {
-    id: 'destination-setup',
+    id: 'destination-usage',
     kind: 'destination',
-    title: 'Setup',
-    description: 'Run environment discovery, scan local services, and review setup results.',
-    keywords: ['setup', 'onboarding', 'doctor', 'extract', 'environment', 'env'],
+    title: 'Usage',
+    description: 'Open the gateway usage explorer with tool-call volume, tokens, and per-tool detail.',
+    keywords: ['usage', 'telemetry', 'metrics', 'tool calls', 'tokens', 'analytics'],
     group: 'destinations',
-    icon: 'setup',
-    href: '/setup',
+    icon: 'usage',
+    href: '/usage',
     actionHint: 'Open',
     priority: 86,
-  },
-  {
-    id: 'destination-activity',
-    kind: 'destination',
-    title: 'Activity',
-    description: 'Review recent server events, jobs, and operator activity.',
-    keywords: ['activity', 'events', 'jobs', 'review', 'history'],
-    group: 'destinations',
-    icon: 'activity',
-    href: '/activity',
-    actionHint: 'Open',
-    priority: 84,
-  },
-  {
-    id: 'destination-logs',
-    kind: 'destination',
-    title: 'Logs',
-    description: 'Open the operational log stream with filtering and event inspection.',
-    keywords: ['logs', 'log', 'tail', 'events', 'observability', 'errors'],
-    group: 'destinations',
-    icon: 'logs',
-    href: '/logs',
-    actionHint: 'Open',
-    priority: 82,
   },
   {
     id: 'destination-settings',
@@ -167,18 +115,6 @@ export const appCommandItems: AppCommandItem[] = [
     priority: 78,
   },
   {
-    id: 'action-tail-logs',
-    kind: 'action',
-    title: 'Tail logs',
-    description: 'Jump directly to the log console to continue watching runtime events.',
-    keywords: ['tail', 'logs', 'stream', 'follow', 'errors'],
-    group: 'actions',
-    icon: 'logs',
-    href: '/logs',
-    actionHint: 'Run',
-    priority: 89,
-  },
-  {
     id: 'action-review-gateways',
     kind: 'action',
     title: 'Review gateway',
@@ -189,18 +125,6 @@ export const appCommandItems: AppCommandItem[] = [
     href: '/gateways',
     actionHint: 'Run',
     priority: 87,
-  },
-  {
-    id: 'action-check-setup',
-    kind: 'action',
-    title: 'Check setup',
-    description: 'Open setup validation and environment discovery results.',
-    keywords: ['check', 'setup', 'doctor', 'validate', 'env'],
-    group: 'actions',
-    icon: 'setup',
-    href: '/setup',
-    actionHint: 'Run',
-    priority: 85,
   },
 ]
 
