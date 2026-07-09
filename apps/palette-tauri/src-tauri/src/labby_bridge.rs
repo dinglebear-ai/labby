@@ -63,7 +63,11 @@ pub(crate) async fn fetch_catalog(
     let base_url = validate_saved_server_url(&settings.server_url)?;
     let url = format!("{}/v1/catalog", base_url.trim_end_matches('/'));
     let client = (*bridge).client();
-    let static_token = settings.static_token.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    let static_token = settings
+        .static_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
 
     let make = |token: Option<&str>| {
         let mut b = client
@@ -118,13 +122,13 @@ pub(crate) async fn dispatch_action(
     validate_service_name(&request.service)?;
     let settings = merged_settings(&app)?;
     let base_url = validate_saved_server_url(&settings.server_url)?;
-    let url = format!(
-        "{}/v1/{}",
-        base_url.trim_end_matches('/'),
-        request.service
-    );
+    let url = format!("{}/v1/{}", base_url.trim_end_matches('/'), request.service);
     let client = (*bridge).client();
-    let static_token = settings.static_token.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    let static_token = settings
+        .static_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
     let body = serde_json::json!({ "action": request.action, "params": request.params });
 
     let make = |token: Option<&str>| {

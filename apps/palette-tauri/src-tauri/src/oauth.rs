@@ -259,7 +259,9 @@ async fn refresh_locked(
         RefreshOutcome::Cleared => {
             with_credentials_path(app, "clear dead session", |path| {
                 if let Err(err) = store::clear(path) {
-                    crate::warn(format!("failed to clear dead OAuth session from disk: {err}"));
+                    crate::warn(format!(
+                        "failed to clear dead OAuth session from disk: {err}"
+                    ));
                 }
             });
             *slot = None;

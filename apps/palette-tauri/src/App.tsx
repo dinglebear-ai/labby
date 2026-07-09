@@ -82,6 +82,17 @@ export default function App() {
   const active = mode === "argument" ? activeAction : filtered[selected];
   const modeAction = mode === "argument" ? activeAction : null;
 
+  // A destructive action's confirmation arms on the first Enter and must
+  // require a second, deliberate Enter — but `pendingConfirm` alone can't
+  // tell "user pressed Enter again on the same row" apart from "user arrowed
+  // away and back (or just hovered another row) and this row happens to be
+  // selected again." Clearing it on every active-action change means the arm
+  // never survives a navigation away, so it can only fire on two consecutive
+  // Enters with no selection change in between.
+  useEffect(() => {
+    setPendingConfirm((current) => (current && active?.subcommand !== current ? null : current));
+  }, [active?.subcommand]);
+
   const hasQuery = query.trim().length > 0;
   const showResultsLayout = run.kind !== "idle";
   const showContent = settingsOpen || showResultsLayout || mode === "argument" || hasQuery || browseOpen;
