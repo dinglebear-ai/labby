@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.1](https://github.com/jmagar/labby/compare/v1.0.0...v1.0.1) (2026-07-09)
+
+
+### Fixed
+
+* **ci:** drop invalid --generate-notes flag from gh release edit ([45c2079](https://github.com/jmagar/labby/commit/45c2079f5dd7ab60b9642964af7938ad9885c6d9))
+
 ## [1.0.0](https://github.com/jmagar/labby/compare/v0.29.0...v1.0.0) (2026-07-09)
 
 
