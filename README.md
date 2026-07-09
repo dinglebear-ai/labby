@@ -36,8 +36,8 @@ Labby is centered on the current gateway/operator surface:
   and version component snapshots, preview deployment diffs, and deploy saved
   artifacts back to configured targets.
 - **ACP chat** - run provider-backed Agent Client Protocol sessions, stream and
-  persist events, expose the `/chat` web UI, and keep the backend service named
-  `acp`.
+  persist events, and keep the backend service named `acp`. The Labby web UI no
+  longer ships a `/chat` surface for this.
 - **Fleet, setup, logs, and deployment** - run `labby serve` as a controller or
   node, enroll devices, search local/fleet logs, audit setup health, and deploy
   the local release binary to SSH targets.
@@ -130,7 +130,7 @@ labby setup
 labby serve --host 127.0.0.1 --port 8765
 ```
 
-Open `http://127.0.0.1:8765/setup` or `http://127.0.0.1:8765/`.
+Open `http://127.0.0.1:8765/`.
 Build static Labby assets with `just web-build` first when running from a source
 checkout.
 
@@ -279,7 +279,7 @@ routes. See [generated API routes](./docs/generated/api-routes.md) and
 | MCP stdio | `labby mcp` | Local editor/desktop MCP clients. |
 | MCP HTTP | `labby serve` plus `/mcp` | Streamable HTTP MCP with bearer or OAuth JWT auth. |
 | HTTP API | `labby serve` plus `/v1/*` | Generic `POST /v1/{service}` action dispatch plus dedicated product routes. |
-| Web UI | `labby serve` plus exported assets | Main routes include `/setup`, `/marketplace`, `/gateways`, `/logs`, `/activity`, `/chat`, `/settings`, `/docs`, and `/design-system`; `/registry` redirects to marketplace. |
+| Web UI | `labby serve` plus exported assets | Main routes are `/` (overview), `/gateways`, `/snippets`, `/usage`, `/settings`, `/docs`, and `/design-system`. |
 
 MCP service tools use the shared action shape:
 
@@ -344,7 +344,7 @@ synthetic admin session:
 
 ```bash
 TOKEN=$(awk -F= '/^LABBY_MCP_HTTP_TOKEN=/{print $2}' ~/.labby/.env)
-agent-browser open http://127.0.0.1:8765/chat \
+agent-browser open http://127.0.0.1:8765/gateways \
   --headers "{\"Authorization\":\"Bearer $TOKEN\"}"
 ```
 
@@ -423,7 +423,7 @@ just dev-container-debug # explicit Docker debug binary path
 just web-build        # cd apps/gateway-admin && pnpm build
 just web-watch        # rebuild web assets when frontend files change
 just run -- help      # cargo run --all-features -- <args>
-just chat-local       # local Labby chat workflow with browser auth disabled
+just chat-local       # local Labby admin UI workflow with browser auth disabled
 just dev-up           # start the explicit Docker compatibility stack
 just dev              # alias for just dev-container
 just dev-debug        # alias for just dev-container-debug

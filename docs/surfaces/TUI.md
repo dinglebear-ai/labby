@@ -11,8 +11,8 @@ Current operator surfaces are:
   `labby deploy`
 - MCP: `labby mcp` and hosted `/mcp`
 - HTTP/Web: `labby serve`
-- Labby web UI for marketplace, gateway, logs, setup, activity, settings, docs,
-  filesystem preview, and ACP chat workflows
+- Labby web UI for gateway, settings, docs, snippets, usage, and design-system
+  workflows
 
 If a TUI is restored later, it should consume the generated service catalog and
 feature matrix instead of hardcoding service categories or assuming removed

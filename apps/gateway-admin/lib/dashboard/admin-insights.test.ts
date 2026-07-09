@@ -3,43 +3,9 @@ import assert from 'node:assert/strict'
 
 import { mockGateways } from '../api/mock-data.ts'
 import {
-  buildGatewayActivityFeed,
   buildGatewayDocsSnapshot,
   buildGatewaySettingsSnapshot,
 } from './admin-insights.ts'
-
-test('buildGatewayActivityFeed sorts the newest gateway events first', () => {
-  const events = buildGatewayActivityFeed(mockGateways)
-
-  assert.ok(events.length > 0)
-  assert.equal(events[0]?.gatewayName, 'database-server')
-  assert.equal(events[0]?.kind, 'status')
-  assert.match(events[0]?.detail ?? '', /Connection refused/i)
-  assert.equal(events[1]?.kind, 'warning')
-  assert.match(events[1]?.title ?? '', /CONNECTION_FAILED|DISCOVERY_FAILED/)
-})
-
-test('buildGatewayActivityFeed pushes invalid timestamps behind valid events deterministically', () => {
-  const [firstGateway, secondGateway] = mockGateways
-  assert.ok(firstGateway)
-  assert.ok(secondGateway)
-
-  const events = buildGatewayActivityFeed([
-    {
-      ...firstGateway,
-      updated_at: 'not-a-timestamp',
-      warnings: [],
-    },
-    {
-      ...secondGateway,
-      updated_at: '2026-04-15T16:42:00Z',
-      warnings: [],
-    },
-  ])
-
-  assert.equal(events[0]?.gatewayId, secondGateway.id)
-  assert.equal(events.at(-1)?.gatewayId, firstGateway.id)
-})
 
 test('buildGatewaySettingsSnapshot summarizes gateway fleet posture and auth mode', () => {
   const snapshot = buildGatewaySettingsSnapshot(mockGateways, {
