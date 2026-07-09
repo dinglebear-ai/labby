@@ -2,7 +2,6 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { Gateway } from '../types/gateway.ts'
-import type { FleetDevice } from '../api/device-client.ts'
 import {
   buildLiveFleetStats,
   formatCompactNumber,
@@ -43,32 +42,23 @@ function gateway(overrides: {
   } as Gateway
 }
 
-function device(connected: boolean): FleetDevice {
-  return { node_id: connected ? 'on' : 'off', connected, role: 'worker' }
-}
-
 test('buildLiveFleetStats counts connected vs offline servers', () => {
-  const stats = buildLiveFleetStats(
-    [
-      gateway({ connected: true, healthy: true, discovered: 10, exposed: 6, warnings: 1 }),
-      gateway({ connected: true, healthy: false, discovered: 4, exposed: 0 }),
-      gateway({ connected: false, healthy: false, discovered: 0, exposed: 0, warnings: 2 }),
-    ],
-    [device(true), device(true), device(false)],
-  )
+  const stats = buildLiveFleetStats([
+    gateway({ connected: true, healthy: true, discovered: 10, exposed: 6, warnings: 1 }),
+    gateway({ connected: true, healthy: false, discovered: 4, exposed: 0 }),
+    gateway({ connected: false, healthy: false, discovered: 0, exposed: 0, warnings: 2 }),
+  ])
 
   assert.equal(stats.totalServers, 3)
   assert.equal(stats.connectedServers, 1) // only connected AND healthy
   assert.equal(stats.offlineServers, 2)
   assert.equal(stats.discoveredTools, 14)
   assert.equal(stats.exposedTools, 6)
-  assert.equal(stats.totalDevices, 3)
-  assert.equal(stats.connectedDevices, 2)
   assert.equal(stats.warnings, 3)
 })
 
 test('buildLiveFleetStats handles empty fleet', () => {
-  const stats = buildLiveFleetStats([], [])
+  const stats = buildLiveFleetStats([])
   assert.equal(stats.totalServers, 0)
   assert.equal(stats.connectedServers, 0)
   assert.equal(stats.offlineServers, 0)

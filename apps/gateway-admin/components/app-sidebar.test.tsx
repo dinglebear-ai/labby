@@ -14,7 +14,7 @@ test('app sidebar navigation excludes design system route', () => {
 
   assert.equal(labels.includes('Gateway'), true)
   assert.equal(labels.includes('Servers'), false)
-  assert.equal(labels.includes('Chat'), true)
+  assert.equal(labels.includes('Chat'), false)
   assert.equal(labels.includes('Snippets'), true)
   assert.equal(labels.includes('Design System'), false)
 })
@@ -24,5 +24,5 @@ test('snippets is a high-level primary navigation item', () => {
 
   assert.ok(snippets)
   assert.equal(snippets.url, '/snippets')
-  assert.equal(primarySidebarNavigation.indexOf(snippets), 5)
+  assert.equal(primarySidebarNavigation.indexOf(snippets), 2)
 })

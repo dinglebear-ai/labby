@@ -1,4 +1,3 @@
-import type { LogEvent } from '@/lib/types/logs'
 
 export const auroraColorTokens = [
   {
@@ -214,87 +213,6 @@ export const keyValueBlocks = [
   { label: 'Auth mode', value: 'Session auth' },
 ] as const
 
-export const fakeLogEvents: LogEvent[] = [
-  {
-    event_id: 'evt_01',
-    ts: 1776483600000,
-    level: 'info',
-    subsystem: 'gateway',
-    surface: 'web',
-    action: 'gateway.reload',
-    message: 'Gateway toolbar preview refreshed from local demo data.',
-    request_id: 'req_local_01',
-    session_id: 'session_design_system',
-    correlation_id: 'corr_local_01',
-    trace_id: null,
-    span_id: null,
-    instance: 'preview',
-    auth_flow: 'session',
-    outcome_kind: 'ok',
-    fields_json: {
-      route: '/design-system',
-      mode: 'local-demo',
-      visibleGateways: 18,
-    },
-    source_kind: 'preview',
-    source_node_id: null,
-    source_device_id: null,
-    ingest_path: null,
-    upstream_event_id: null,
-  },
-  {
-    event_id: 'evt_02',
-    ts: 1776483660000,
-    level: 'warn',
-    subsystem: 'api',
-    surface: 'web',
-    action: 'gateway.publish',
-    message: 'One gateway remains disconnected in the sample fleet snapshot.',
-    request_id: 'req_local_02',
-    session_id: 'session_design_system',
-    correlation_id: 'corr_local_02',
-    trace_id: null,
-    span_id: null,
-    instance: 'preview',
-    auth_flow: 'session',
-    outcome_kind: 'warning',
-    fields_json: {
-      disconnected: ['edge-lab'],
-      recommendedAction: 'Review transport settings',
-    },
-    source_kind: 'preview',
-    source_node_id: null,
-    source_device_id: null,
-    ingest_path: null,
-    upstream_event_id: null,
-  },
-  {
-    event_id: 'evt_03',
-    ts: 1776483720000,
-    level: 'error',
-    subsystem: 'auth_webui',
-    surface: 'web',
-    action: 'session.refresh',
-    message: 'Auth fallback card demonstrates an expired local session state.',
-    request_id: 'req_local_03',
-    session_id: null,
-    correlation_id: 'corr_local_03',
-    trace_id: null,
-    span_id: null,
-    instance: 'preview',
-    auth_flow: 'bearer',
-    outcome_kind: 'error',
-    fields_json: {
-      reason: 'Preview token missing',
-      recovery: 'Sign in again',
-    },
-    source_kind: 'preview',
-    source_node_id: null,
-    source_device_id: null,
-    ingest_path: null,
-    upstream_event_id: null,
-  },
-]
 
 export const toolbarSummaryChips = [
   { label: '18 configured', tone: 'default' },

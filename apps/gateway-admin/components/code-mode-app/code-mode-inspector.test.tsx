@@ -5,10 +5,10 @@ import { act } from 'react'
 import React from 'react'
 
 import { CodeModeInspector } from './code-mode-inspector'
-import { installChatTestDom, renderClient } from '@/components/chat/test-utils'
+import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
 
 test('renders execute call rows with redacted params', async () => {
-  installChatTestDom()
+  installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
       initialTrace={{
@@ -40,7 +40,7 @@ test('renders execute call rows with redacted params', async () => {
 })
 
 test('renders search match rows', async () => {
-  installChatTestDom()
+  installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
       initialTrace={{
@@ -68,7 +68,7 @@ test('renders search match rows', async () => {
 })
 
 test('renders search truncation count metadata', async () => {
-  installChatTestDom()
+  installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
       initialTrace={{
@@ -97,7 +97,7 @@ test('renders search truncation count metadata', async () => {
 })
 
 test('renders reduced search result shape and value when no tool rows match', async () => {
-  installChatTestDom()
+  installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
       initialTrace={{
@@ -119,7 +119,7 @@ test('renders reduced search result shape and value when no tool rows match', as
 })
 
 test('renders history rows and flattened nested calls', async () => {
-  installChatTestDom()
+  installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
       initialTrace={{
@@ -156,7 +156,7 @@ test('renders history rows and flattened nested calls', async () => {
 })
 
 test('renders parser warnings for dropped history rows', async () => {
-  installChatTestDom()
+  installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
       initialTrace={{
@@ -174,7 +174,7 @@ test('renders parser warnings for dropped history rows', async () => {
 })
 
 test('updates from bridge tool results using both structured content field names', async () => {
-  installChatTestDom()
+  installTestDom()
   let instance:
     | {
         ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
@@ -239,7 +239,7 @@ test('updates from bridge tool results using both structured content field names
 })
 
 test('renders a warning for malformed bridge payloads', async () => {
-  installChatTestDom()
+  installTestDom()
   let instance:
     | {
         ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
@@ -268,7 +268,7 @@ test('renders a warning for malformed bridge payloads', async () => {
 })
 
 test('renders empty state without bridge data', async () => {
-  installChatTestDom()
+  installTestDom()
   const { container, unmount } = await renderClient(<CodeModeInspector />)
 
   assert.match(container.textContent ?? '', /Waiting for an MCP Apps tool result/)
@@ -276,7 +276,7 @@ test('renders empty state without bridge data', async () => {
 })
 
 test('hydrates from window.openai.toolOutput on first paint', async () => {
-  installChatTestDom()
+  installTestDom()
   globalThis.window.openai = {
     toolOutput: {
       kind: 'code_mode_search_trace',
@@ -304,7 +304,7 @@ test('hydrates from window.openai.toolOutput on first paint', async () => {
 })
 
 test('updates from the openai:set_globals event detail.globals', async () => {
-  installChatTestDom()
+  installTestDom()
   globalThis.window.openai = { toolOutput: undefined }
   try {
     const { container, unmount } = await renderClient(<CodeModeInspector />)
@@ -343,7 +343,7 @@ test('updates from the openai:set_globals event detail.globals', async () => {
 })
 
 test('surfaces a warning for malformed window.openai payloads', async () => {
-  installChatTestDom()
+  installTestDom()
   globalThis.window.openai = { toolOutput: { kind: 'tool_explorer' } }
   try {
     const { container, unmount } = await renderClient(<CodeModeInspector />)
@@ -355,7 +355,7 @@ test('surfaces a warning for malformed window.openai payloads', async () => {
 })
 
 test('clears the trace when openai:set_globals carries a null toolOutput', async () => {
-  installChatTestDom()
+  installTestDom()
   globalThis.window.openai = {
     toolOutput: {
       kind: 'code_mode_search_trace',
