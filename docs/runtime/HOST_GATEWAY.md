@@ -120,6 +120,37 @@ When Tailscale is enabled:
 incus exec labby -- tailscale ip -4
 ```
 
+## Container SSH Trust
+
+If the Incus host already has passwordless SSH access to the machines listed in
+the operator's `~/.ssh/config`, Labby can bootstrap the gateway container with a
+separate Ed25519 key and authorize that key on the same reachable hosts:
+
+```bash
+labby setup incus-ssh bootstrap --dry-run
+labby setup incus-ssh bootstrap --yes
+labby setup incus-ssh verify
+```
+
+The bootstrap command:
+
+- generates `/home/labby/.ssh/id_ed25519` inside the container if it is absent
+- ignores wildcard hosts and any host whose alias or `HostName` contains
+  `github`
+- supports repeatable `--include` and `--exclude` filters
+- continues past failed hosts by default and reports them at the end
+- accepts `--fail-fast` when debugging one host
+- accepts `--timeout-seconds N` for slow networks
+- installs a sanitized `/home/labby/.ssh/config` for full, unfiltered runs
+
+Filtered runs such as `--include host-a` do not overwrite the container SSH
+config unless `--install-config` is provided. Pass `--no-install-config` on a
+full run when only `authorized_keys` updates are desired.
+
+Use `--json` with either `bootstrap` or `verify` for automation-friendly fields
+including `authorized`, `verified`, `failed`, `skipped_github`,
+`skipped_wildcard`, `skipped_excluded`, and `skipped_not_included`.
+
 ## Local Development Shortcut
 
 For source checkouts, a local host service can still be useful while iterating,
