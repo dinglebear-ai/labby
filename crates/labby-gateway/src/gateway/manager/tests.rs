@@ -168,6 +168,28 @@ async fn persist_config_offloads_blocking_store_write() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn new_base_pool_carries_the_manager_usage_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let usage_store = Arc::new(
+        crate::usage::UsageStore::open(dir.path().join("usage.db"))
+            .await
+            .unwrap(),
+    );
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_usage_store(Arc::clone(&usage_store));
+
+    let pool = manager.new_base_pool(Duration::from_secs(5), Duration::from_secs(5));
+
+    assert!(
+        pool.usage_store.is_some(),
+        "pools built by a manager with a usage store must inherit it"
+    );
+}
+
 async fn dummy_auth_client() -> Arc<AuthClient<reqwest::Client>> {
     // See upstream/pool.rs::UpstreamPool::new for why this call is needed
     // under "rustls-no-provider" -- idempotent, safe to ignore Err.

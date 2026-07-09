@@ -925,10 +925,25 @@ async fn build_gateway_runtime(
         "preparing lazy upstream gateway catalog"
     );
     crate::config::set_process_code_mode_enabled(config.code_mode.enabled);
+    let usage_store = if crate::config::usage_telemetry_enabled() {
+        match labby_gateway::usage::UsageStore::open(crate::config::usage_db_path()).await {
+            Ok(store) => Some(Arc::new(store)),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to open gateway usage store; usage telemetry disabled for this run"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut pool_builder = crate::dispatch::upstream::pool::UpstreamPool::new()
         .with_request_timeout(config.upstream_request_timeout())
         .with_relay_timeout(config.upstream_relay_timeout())
-        .with_in_process_connector(crate::mcp::in_process_peer::connector());
+        .with_in_process_connector(crate::mcp::in_process_peer::connector())
+        .with_usage_store(usage_store.clone());
     if let Some(rt) = &upstream_oauth_runtime {
         pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());
     }
@@ -974,6 +989,7 @@ async fn build_gateway_runtime(
                 key: rt.key,
                 redirect_uri: rt.redirect_uri,
             }),
+            usage_store: usage_store.clone(),
         },
         gateway_runtime,
     )?;

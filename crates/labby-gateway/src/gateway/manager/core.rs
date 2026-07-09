@@ -45,6 +45,9 @@ pub struct GatewayManagerConfig {
     pub in_process_connector: Option<InProcessConnector>,
     /// Optional upstream OAuth runtime.  `None` when OAuth is not configured.
     pub oauth: Option<GatewayOauthConfig>,
+    /// Optional call-usage recorder, shared with every `UpstreamPool` the
+    /// manager builds. `None` disables telemetry capture.
+    pub usage_store: Option<Arc<crate::usage::UsageStore>>,
 }
 
 /// OAuth components needed by the manager, bundled to avoid partial-move issues.
@@ -76,6 +79,9 @@ impl GatewayManager {
                 .with_upstream_oauth_managers(oauth.managers)
                 .with_oauth_client_cache(oauth.cache)
                 .with_oauth_resources(oauth.sqlite, oauth.key, oauth.redirect_uri);
+        }
+        if let Some(store) = cfg.usage_store {
+            manager = manager.with_usage_store(store);
         }
         Ok(manager)
     }
@@ -124,6 +130,7 @@ impl GatewayManager {
             oauth_sqlite: None,
             oauth_key: None,
             oauth_redirect_uri: None,
+            usage_store: None,
             protected_route_index: Arc::new(RwLock::new(ProtectedRouteIndex::default())),
             code_mode_history: Arc::new(Mutex::new(CodeModeHistory::default())),
             code_mode_source_store: Arc::new(Mutex::new(CodeModeSourceStore::default())),
@@ -151,6 +158,14 @@ impl GatewayManager {
     ) -> Self {
         self.openapi_registry = registry;
         self.openapi_http_client = client;
+        self
+    }
+
+    /// Attach a call-usage recorder, shared with every `UpstreamPool` this
+    /// manager builds via `new_base_pool`.
+    #[must_use]
+    pub fn with_usage_store(mut self, store: Arc<crate::usage::UsageStore>) -> Self {
+        self.usage_store = Some(store);
         self
     }
 
@@ -289,6 +304,7 @@ impl GatewayManager {
         }
         .with_request_timeout(request_timeout)
         .with_relay_timeout(relay_timeout)
+        .with_usage_store(self.usage_store.clone())
     }
 
     #[doc(hidden)]

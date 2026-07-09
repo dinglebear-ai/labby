@@ -46,6 +46,14 @@ async fn build_manager_with_upstream_oauth_runtime(
     upstream_oauth_runtime: Option<crate::oauth::upstream::runtime::UpstreamOauthRuntime>,
 ) -> Result<Arc<GatewayManager>> {
     let runtime = GatewayRuntimeHandle::default();
+    let usage_store = if crate::config::usage_telemetry_enabled() {
+        labby_gateway::usage::UsageStore::open(crate::config::usage_db_path())
+            .await
+            .ok()
+            .map(Arc::new)
+    } else {
+        None
+    };
     if discover_upstreams {
         // Seed lazily (mirroring `serve`): catalog entries come from config
         // without spawning any upstream processes. Connections are made on
@@ -54,7 +62,8 @@ async fn build_manager_with_upstream_oauth_runtime(
         let mut pool_builder = UpstreamPool::new()
             .with_request_timeout(config.upstream_request_timeout())
             .with_relay_timeout(config.upstream_relay_timeout())
-            .with_in_process_connector(crate::mcp::in_process_peer::connector());
+            .with_in_process_connector(crate::mcp::in_process_peer::connector())
+            .with_usage_store(usage_store.clone());
         if let Some(rt) = &upstream_oauth_runtime {
             pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());
         }
@@ -85,6 +94,7 @@ async fn build_manager_with_upstream_oauth_runtime(
                 key: rt.key,
                 redirect_uri: rt.redirect_uri,
             }),
+            usage_store: usage_store.clone(),
         },
         runtime,
     )?;

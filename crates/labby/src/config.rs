@@ -2015,6 +2015,27 @@ pub fn registry_db_path() -> PathBuf {
         .join("registry.db")
 }
 
+/// Path to the SQLite gateway usage-telemetry database: `~/.labby/usage.db`.
+///
+/// Creates no files — callers are responsible for opening/creating the store.
+pub fn usage_db_path() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".labby")
+        .join("usage.db")
+}
+
+/// Whether gateway call-usage telemetry capture is enabled.
+///
+/// Set `LABBY_GATEWAY_USAGE_DISABLED=1` to opt out — e.g. for a throwaway
+/// dev instance where nobody looks at the usage dashboard.
+pub fn usage_telemetry_enabled() -> bool {
+    std::env::var("LABBY_GATEWAY_USAGE_DISABLED")
+        .ok()
+        .as_deref()
+        != Some("1")
+}
+
 /// A string value that redacts itself in `Debug` and `Display` output.
 ///
 /// Use for secret env values (`API_KEY`, `TOKEN`, `PASSWORD`) so they

@@ -151,7 +151,7 @@ pub struct UpstreamPool {
     /// Optional call-usage recorder. `None` (the default) disables telemetry
     /// capture entirely — most tests and any pool built without an explicit
     /// `.with_usage_store(...)` call never touch SQLite.
-    pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
+    pub(crate) usage_store: Option<Arc<crate::usage::UsageStore>>,
 }
 
 /// A live connection to an upstream MCP server.
