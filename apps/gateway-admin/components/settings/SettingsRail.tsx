@@ -5,7 +5,6 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
 import {
   Activity,
   Box,
@@ -38,17 +37,8 @@ const ENTRIES: RailEntry[] = [
 export function SettingsRail(): React.ReactElement {
   const pathname = usePathname() ?? ''
   const router = useRouter()
-  const [pluginMode, setPluginMode] = useState(false)
-  useEffect(() => {
-    try {
-      setPluginMode(window.localStorage.getItem('lab.wizard.mode') === 'plugin')
-    } catch {
-      setPluginMode(false)
-    }
-  }, [])
-  const entries = pluginMode ? ENTRIES.filter((entry) => entry.href === '/settings/services/') : ENTRIES
-  const activeEntry = entries.find((entry) => pathname.startsWith(entry.href)) ?? entries[0]
-  const activeHref = activeEntry?.href ?? entries[0]?.href ?? ''
+  const activeEntry = ENTRIES.find((entry) => pathname.startsWith(entry.href)) ?? ENTRIES[0]
+  const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''
   return (
     <nav aria-label="Settings sections" className="p-3">
       <label htmlFor="settings-section" className="sr-only">
@@ -60,7 +50,7 @@ export function SettingsRail(): React.ReactElement {
         onChange={(event) => router.push(event.target.value)}
         className="h-10 w-full rounded-md border border-aurora-border-strong bg-aurora-control-surface px-3 text-sm font-medium text-aurora-text-primary md:hidden"
       >
-        {entries.map((entry) => (
+        {ENTRIES.map((entry) => (
           <option key={entry.href} value={entry.href}>
             {entry.label}
           </option>
@@ -70,7 +60,7 @@ export function SettingsRail(): React.ReactElement {
         <h2 className="mb-2 hidden items-center gap-2 text-sm font-semibold uppercase text-aurora-text-muted lg:flex">
           <Box className="h-4 w-4" /> Settings
         </h2>
-        {entries.map((entry) => {
+        {ENTRIES.map((entry) => {
           const active = pathname.startsWith(entry.href)
           const Icon = entry.icon
           return (
@@ -90,14 +80,6 @@ export function SettingsRail(): React.ReactElement {
             </Link>
           )
         })}
-        {pluginMode ? (
-          <Link
-            href="/setup/welcome/?mode=full"
-            className="flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm text-aurora-text-muted hover:bg-accent/50 hover:text-aurora-text-primary lg:shrink"
-          >
-            Show advanced setup
-          </Link>
-        ) : null}
       </div>
     </nav>
   )

@@ -22,16 +22,17 @@ test('app command palette includes core admin destinations', () => {
   for (const href of [
     '/',
     '/gateways',
-    '/marketplace',
-    '/chat',
     '/snippets',
-    '/setup',
-    '/activity',
-    '/logs',
+    '/usage',
     '/settings',
     '/docs',
   ]) {
     assert.equal(hrefs.has(href), true, `${href} should be searchable`)
+  }
+
+  // Removed surfaces (no backing service): must not be advertised as destinations.
+  for (const href of ['/marketplace', '/chat', '/setup', '/activity', '/logs', '/registry']) {
+    assert.equal(hrefs.has(href), false, `${href} should not be searchable — surface was removed`)
   }
 })
 
@@ -44,8 +45,8 @@ test('app command palette reports empty state for unmatched queries', () => {
 })
 
 test('findAppCommandItemById returns matching command item', () => {
-  const item = findAppCommandItemById('destination-logs', appCommandItems)
+  const item = findAppCommandItemById('destination-usage', appCommandItems)
 
-  assert.equal(item?.title, 'Logs')
-  assert.equal(item?.href, '/logs')
+  assert.equal(item?.title, 'Usage')
+  assert.equal(item?.href, '/usage')
 })
