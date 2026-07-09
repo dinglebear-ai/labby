@@ -31,7 +31,7 @@ async fn catalog(
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
     let mut catalog = manager.palette_catalog(&caller).await?;
-    append_labby_actions(&mut catalog, &state);
+    append_labby_actions(&mut catalog, &state, auth.as_ref().map(|auth| &auth.0));
     catalog.entries.sort_by(|a, b| entry_id(a).cmp(entry_id(b)));
     catalog.fingerprint = catalog_fingerprint(&catalog.entries);
     Ok(Json(catalog))
@@ -92,7 +92,11 @@ fn missing_manager() -> ToolError {
     }
 }
 
-fn append_labby_actions(catalog: &mut LauncherCatalogView, state: &AppState) {
+fn append_labby_actions(
+    catalog: &mut LauncherCatalogView,
+    state: &AppState,
+    auth: Option<&AuthContext>,
+) {
     for service in state
         .registry
         .services()
@@ -101,6 +105,9 @@ fn append_labby_actions(catalog: &mut LauncherCatalogView, state: &AppState) {
         .filter(|service| state.enabled_services.contains(service.name))
     {
         for action in service.actions {
+            if !labby_action_visible(state, service.name, action, auth) {
+                continue;
+            }
             let input_schema = labby_action_schema(action);
             let schema_fingerprint = input_schema.as_ref().map(stable_json_fingerprint);
             catalog
@@ -147,7 +154,24 @@ async fn execute_labby_action(
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{}` was not found", request.id),
         })?;
-    if action.requires_admin && !auth.scopes.iter().any(|scope| scope == "lab:admin") {
+    if !labby_action_visible(&state, service_name, action, Some(auth)) {
+        return Err(ApiError(ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!("launcher entry `{}` was not found", request.id),
+        }));
+    }
+    if let Some(manager) = &state.gateway_manager {
+        if !manager
+            .surface_enabled_for_service(service_name, "api")
+            .await
+        {
+            return Err(ApiError(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("service `{service_name}` is not enabled on the api surface"),
+            }));
+        }
+    }
+    if action_requires_admin(action) && !has_admin_scope(auth) {
         return Err(ApiError(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
             message: format!("action `{service_name}.{action_name}` requires admin scope"),
@@ -159,6 +183,7 @@ async fn execute_labby_action(
             message: format!("action `{service_name}.{action_name}` is destructive"),
         }));
     }
+    validate_labby_action_params(action, &request.params)?;
     let result = (service.dispatch)(action_name.to_string(), request.params).await?;
     Ok(Json(PaletteExecuteResponse {
         id: request.id,
@@ -185,6 +210,94 @@ fn parse_labby_launcher_id(id: &str) -> Result<(&str, &str), ToolError> {
         });
     }
     Ok((service, action))
+}
+
+fn labby_action_visible(
+    state: &AppState,
+    service: &str,
+    action: &ActionSpec,
+    auth: Option<&AuthContext>,
+) -> bool {
+    if action_requires_admin(action) && !auth.is_some_and(has_admin_scope) {
+        return false;
+    }
+    if service == "setup"
+        && setup_plugin_lifecycle_action(action.name)
+        && !http_bind_is_loopback(state)
+    {
+        return false;
+    }
+    true
+}
+
+fn action_requires_admin(action: &ActionSpec) -> bool {
+    action.requires_admin
+}
+
+fn has_admin_scope(auth: &AuthContext) -> bool {
+    auth.scopes.iter().any(|scope| scope == "lab:admin")
+}
+
+fn setup_plugin_lifecycle_action(action: &str) -> bool {
+    crate::dispatch::setup::PLUGIN_LIFECYCLE_ACTIONS.contains(&action)
+}
+
+fn http_bind_is_loopback(state: &AppState) -> bool {
+    let host = state.http_bind_host.as_deref().map(String::as_str);
+    let host = host.unwrap_or("127.0.0.1");
+    let normalized = host.trim().trim_start_matches('[').trim_end_matches(']');
+    matches!(normalized, "127.0.0.1" | "::1" | "localhost")
+}
+
+fn validate_labby_action_params(action: &ActionSpec, params: &Value) -> Result<(), ToolError> {
+    let Some(map) = params.as_object() else {
+        return Err(ToolError::Sdk {
+            sdk_kind: "invalid_params".to_string(),
+            message: "params must be a JSON object".to_string(),
+        });
+    };
+    for param in action.params {
+        let value = map.get(param.name);
+        if param.required && value.is_none() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "missing_param".to_string(),
+                message: format!("missing required param `{}`", param.name),
+            });
+        }
+        let Some(value) = value else {
+            continue;
+        };
+        if !param_value_matches(param.ty, value) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "invalid_params".to_string(),
+                message: format!("param `{}` must be {}", param.name, param.ty),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn param_value_matches(ty: &str, value: &Value) -> bool {
+    match ty {
+        "string" => value.is_string(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string[]" => value
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string)),
+        "integer[]" => value.as_array().is_some_and(|items| {
+            items
+                .iter()
+                .all(|item| item.as_i64().is_some() || item.as_u64().is_some())
+        }),
+        ty if ty.contains('|') => value
+            .as_str()
+            .is_some_and(|text| ty.split('|').any(|allowed| allowed == text)),
+        _ => true,
+    }
 }
 
 fn labby_action_schema(action: &ActionSpec) -> Option<Value> {
@@ -284,6 +397,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{append_labby_actions, entry_id};
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -292,10 +406,12 @@ mod tests {
         body::Body,
         http::{Request, StatusCode, header},
     };
+    use labby_gateway::gateway::palette::LauncherCatalogView;
     use labby_primitives::action::{ActionSpec, ParamSpec};
     use serde_json::Value;
     use tower::ServiceExt;
 
+    use crate::api::oauth::AuthContext;
     use crate::api::router::build_router_with_bearer;
     use crate::api::state::AppState;
     use crate::dispatch::error::ToolError;
@@ -310,14 +426,24 @@ mod tests {
         description: "Name to echo",
     }];
 
-    const TEST_ACTIONS: &[ActionSpec] = &[ActionSpec {
-        name: "echo.run",
-        description: "Echo params",
-        destructive: false,
-        requires_admin: false,
-        params: TEST_ACTION_PARAMS,
-        returns: "object",
-    }];
+    const TEST_ACTIONS: &[ActionSpec] = &[
+        ActionSpec {
+            name: "echo.run",
+            description: "Echo params",
+            destructive: false,
+            requires_admin: false,
+            params: TEST_ACTION_PARAMS,
+            returns: "object",
+        },
+        ActionSpec {
+            name: "admin.run",
+            description: "Admin echo",
+            destructive: false,
+            requires_admin: true,
+            params: &[],
+            returns: "object",
+        },
+    ];
 
     fn echo_dispatch(
         _action: String,
@@ -495,5 +621,100 @@ mod tests {
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["id"], "labby:demo::echo.run");
         assert_eq!(value["result"]["name"], "labby");
+    }
+
+    #[tokio::test]
+    async fn palette_execute_validates_labby_action_params() {
+        let manager = Arc::new(test_gateway_manager(
+            std::env::temp_dir().join("palette-labby-validate.toml"),
+            GatewayRuntimeHandle::default(),
+        ));
+        let state = AppState::from_registry(test_registry()).with_gateway_manager(manager);
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/palette/execute")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"id":"labby:demo::echo.run","params":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["kind"], "missing_param");
+    }
+
+    #[tokio::test]
+    async fn palette_catalog_hides_admin_labby_actions_from_non_admin_callers() {
+        let state = AppState::from_registry(test_registry());
+        let auth = AuthContext {
+            sub: "user".to_string(),
+            actor_key: None,
+            scopes: vec!["lab:read".to_string()],
+            issuer: "test".to_string(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        };
+        let mut catalog = LauncherCatalogView {
+            fingerprint: String::new(),
+            entries: Vec::new(),
+        };
+        append_labby_actions(&mut catalog, &state, Some(&auth));
+
+        assert!(
+            catalog
+                .entries
+                .iter()
+                .any(|entry| entry_id(entry) == "labby:demo::echo.run")
+        );
+        assert!(
+            !catalog
+                .entries
+                .iter()
+                .any(|entry| entry_id(entry) == "labby:demo::admin.run")
+        );
+    }
+
+    #[tokio::test]
+    async fn palette_catalog_hides_setup_plugin_lifecycle_actions_on_non_loopback_bind() {
+        let mut state = AppState::from_registry(build_default_registry());
+        state.http_bind_host = Some(Arc::new("0.0.0.0".to_string()));
+        let auth = AuthContext {
+            sub: "admin".to_string(),
+            actor_key: None,
+            scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
+            issuer: "test".to_string(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        };
+        let mut catalog = LauncherCatalogView {
+            fingerprint: String::new(),
+            entries: Vec::new(),
+        };
+        append_labby_actions(&mut catalog, &state, Some(&auth));
+
+        assert!(
+            catalog
+                .entries
+                .iter()
+                .any(|entry| entry_id(entry) == "labby:setup::state")
+        );
+        assert!(
+            !catalog
+                .entries
+                .iter()
+                .any(|entry| entry_id(entry) == "labby:setup::plugin.install")
+        );
     }
 }

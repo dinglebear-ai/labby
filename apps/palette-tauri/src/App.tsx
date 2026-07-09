@@ -4,7 +4,7 @@ import { actionOptionId } from "@/components/palette/ActionList";
 import { PaletteShell } from "@/components/palette/PaletteShell";
 import { launcherEntryMatches, type LauncherEntry, useLauncherCatalog } from "@/lib/launcherCatalog";
 import { executeLauncherEntry, resultErrorMessage } from "@/lib/labbyClient";
-import { exampleLauncherParams, redactLauncherParams, validateLauncherParams } from "@/lib/launcherValidation";
+import { exampleLauncherParams, validateLauncherParams } from "@/lib/launcherValidation";
 import { hostLabel } from "@/lib/url";
 import { invoke, isTauriRuntime } from "@/lib/invoke";
 import type { RunState } from "@/lib/runState";
@@ -108,7 +108,7 @@ export default function App() {
   const runAction = useCallback(async (action: LauncherEntry, params: unknown) => {
     const requestId = runRequestIdRef.current + 1;
     runRequestIdRef.current = requestId;
-    lastParamsRef.current = redactLauncherParams(params);
+    lastParamsRef.current = params;
     setRun({ kind: "running", title: action.label });
     try {
       const result = await executeLauncherEntry(action.id, params, { confirmDestructive: action.destructive });
