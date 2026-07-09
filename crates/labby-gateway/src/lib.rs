@@ -22,6 +22,7 @@ pub mod process;
 pub mod registry;
 pub mod security;
 pub mod upstream;
+pub mod usage;
 
 #[cfg(test)]
 mod test_support;

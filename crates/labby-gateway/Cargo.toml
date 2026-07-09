@@ -32,6 +32,7 @@ sha2 = "0.11"
 jiff = { workspace = true }
 hex = "0.4"
 regex = "1"
+rusqlite = { workspace = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 tokio = { workspace = true, features = ["process"] }
 tokio-util = { version = "0.7", features = ["rt", "compat", "codec"] }
