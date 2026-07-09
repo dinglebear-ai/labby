@@ -423,6 +423,9 @@ mod tests {
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            #[cfg(feature = "gateway")]
+            client_registry: Default::default(),
+            transport_label: "test",
             logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
             route_scope,
             relay_session_id: 0,

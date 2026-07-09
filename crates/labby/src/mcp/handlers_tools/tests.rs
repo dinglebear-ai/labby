@@ -101,6 +101,8 @@ fn test_server(
         registry: Arc::new(registry),
         gateway_manager,
         peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+        client_registry: Default::default(),
+        transport_label: "test",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(logging_level))),
         route_scope,
         relay_session_id: 0,
@@ -2233,6 +2235,8 @@ async fn server_reads_current_pool_from_gateway_manager() {
         registry: Arc::new(ToolRegistry::new()),
         gateway_manager: Some(Arc::clone(&manager)),
         peers: Arc::clone(&notifier.peers),
+        client_registry: notifier.client_registry.clone(),
+        transport_label: "test",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(
             crate::mcp::logging::LoggingLevel::Info,
         ))),

@@ -327,6 +327,24 @@
   },
   {
     "service": "gateway",
+    "action": "gateway.clients.list",
+    "description": "List inbound MCP clients/sessions currently connected to this gateway. Best-effort — reflects the most recently observed connect events, not a strict live liveness view",
+    "destructive": false,
+    "params": [],
+    "returns": "GatewayClientView[]",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
     "action": "gateway.code_mode.get",
     "description": "Read gateway-wide Code Mode exposure and execution settings",
     "destructive": false,
