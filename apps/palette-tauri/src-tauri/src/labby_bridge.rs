@@ -157,3 +157,194 @@ pub(crate) async fn dispatch_action(
         payload,
     })
 }
+
+#[tauri::command]
+pub(crate) async fn fetch_launcher_catalog(
+    app: AppHandle,
+    bridge: tauri::State<'_, BridgeClient>,
+    oauth_state: tauri::State<'_, crate::oauth::OauthState>,
+    etag: Option<String>,
+) -> Result<LabbyHttpResult, String> {
+    let settings = merged_settings(&app)?;
+    let base_url = validate_saved_server_url(&settings.server_url)?;
+    let url = format!("{}/v1/palette/catalog", base_url.trim_end_matches('/'));
+    let client = (*bridge).client();
+    let static_token = settings
+        .static_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+
+    let make = |token: Option<&str>| {
+        let mut b = client
+            .get(&url)
+            .header(reqwest::header::ACCEPT, "application/json");
+        if let Some(t) = token {
+            b = b.bearer_auth(t);
+        }
+        if let Some(etag) = &etag {
+            b = b.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        b
+    };
+    let response =
+        crate::oauth::send_with_reauth(&app, client, &base_url, static_token, &oauth_state, make)
+            .await?;
+    response_to_result(response).await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LauncherExecuteRequest {
+    id: String,
+    params: serde_json::Value,
+    confirm_destructive: Option<bool>,
+}
+
+#[tauri::command]
+pub(crate) async fn execute_launcher_entry(
+    app: AppHandle,
+    bridge: tauri::State<'_, BridgeClient>,
+    oauth_state: tauri::State<'_, crate::oauth::OauthState>,
+    request: LauncherExecuteRequest,
+) -> Result<LabbyHttpResult, String> {
+    validate_launcher_request(&request)?;
+    let settings = merged_settings(&app)?;
+    let base_url = validate_saved_server_url(&settings.server_url)?;
+    let url = format!("{}/v1/palette/execute", base_url.trim_end_matches('/'));
+    let client = (*bridge).client();
+    let static_token = settings
+        .static_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let body = serde_json::json!({
+        "id": request.id,
+        "params": request.params,
+        "confirmDestructive": request.confirm_destructive.unwrap_or(false),
+    });
+
+    let make = |token: Option<&str>| {
+        let mut b = client
+            .post(&url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(&body);
+        if let Some(t) = token {
+            b = b.bearer_auth(t);
+        }
+        b
+    };
+    let response =
+        crate::oauth::send_with_reauth(&app, client, &base_url, static_token, &oauth_state, make)
+            .await?;
+    response_to_result(response).await
+}
+
+async fn response_to_result(response: reqwest::Response) -> Result<LabbyHttpResult, String> {
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(LabbyHttpResult {
+            ok: true,
+            status: status.as_u16(),
+            payload: serde_json::Value::Null,
+        });
+    }
+    let text = response.text().await.map_err(|err| err.to_string())?;
+    let payload = if text.trim().is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
+    };
+    Ok(LabbyHttpResult {
+        ok: status.is_success(),
+        status: status.as_u16(),
+        payload,
+    })
+}
+
+fn validate_launcher_request(request: &LauncherExecuteRequest) -> Result<(), String> {
+    if request.id.len() > 512 {
+        return Err("launcher id must be <= 512 bytes".to_string());
+    }
+    if !valid_launcher_id(&request.id) {
+        return Err("launcher id must be mcp:<upstream>::<tool> or labby:<service>::<action>".to_string());
+    }
+    if !request.params.is_object() {
+        return Err("launcher params must be a JSON object".to_string());
+    }
+    let serialized = serde_json::to_vec(&request.params).map_err(|err| err.to_string())?;
+    if serialized.len() > 256 * 1024 {
+        return Err("launcher params must be <= 256 KiB".to_string());
+    }
+    if json_depth(&request.params) > 32 {
+        return Err("launcher params nesting depth must be <= 32".to_string());
+    }
+    Ok(())
+}
+
+fn valid_launcher_id(id: &str) -> bool {
+    fn segment(value: &str) -> bool {
+        !value.is_empty()
+            && value
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    }
+    if let Some(rest) = id.strip_prefix("mcp:") {
+        let Some((upstream, tool)) = rest.split_once("::") else {
+            return false;
+        };
+        return segment(upstream) && segment(tool) && !tool.contains("::");
+    }
+    if let Some(rest) = id.strip_prefix("labby:") {
+        let Some((service, action)) = rest.split_once("::") else {
+            return false;
+        };
+        return segment(service) && segment(action) && !action.contains("::");
+    }
+    false
+}
+
+fn json_depth(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(values) => 1 + values.iter().map(json_depth).max().unwrap_or(0),
+        serde_json::Value::Object(map) => 1 + map.values().map(json_depth).max().unwrap_or(0),
+        _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{LauncherExecuteRequest, validate_launcher_request};
+
+    #[test]
+    fn validates_launcher_execute_request_shape() {
+        validate_launcher_request(&LauncherExecuteRequest {
+            id: "mcp:alpha::ping".to_string(),
+            params: json!({ "q": "hello" }),
+            confirm_destructive: Some(false),
+        })
+        .expect("valid request");
+    }
+
+    #[test]
+    fn rejects_invalid_launcher_id_and_non_object_params() {
+        assert!(
+            validate_launcher_request(&LauncherExecuteRequest {
+                id: "../escape".to_string(),
+                params: json!({}),
+                confirm_destructive: None,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_launcher_request(&LauncherExecuteRequest {
+                id: "mcp:alpha::ping".to_string(),
+                params: json!("not-object"),
+                confirm_destructive: None,
+            })
+            .is_err()
+        );
+    }
+}

@@ -101,8 +101,7 @@ impl CodeModeHost for GatewayManager {
             });
         }
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
-        self.dispatch_code_mode_upstream(upstream, tool, params)
-            .await
+        self.execute_upstream_tool(upstream, tool, params).await
     }
 
     async fn resolve_snippet(
@@ -247,7 +246,7 @@ impl GatewayManager {
     /// Dispatch a resolved Code Mode call to the upstream MCP pool and unwrap
     /// the result. Shared by the durable and write-free `call_tool` paths
     /// (mcp-ui capture, error classification, success/failure recording).
-    async fn dispatch_code_mode_upstream(
+    pub(crate) async fn execute_upstream_tool(
         &self,
         upstream: &str,
         tool: &str,

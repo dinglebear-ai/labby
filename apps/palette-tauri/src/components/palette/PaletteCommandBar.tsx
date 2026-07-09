@@ -3,19 +3,19 @@ import { ArrowLeft, CircleHelp, Search, Send, Settings } from "lucide-react";
 import { actionIcon } from "@/components/palette/ActionIcon";
 import { Button } from "@/components/ui/aurora/button";
 import { Input } from "@/components/ui/aurora/input";
-import type { PaletteAction } from "@/lib/actions";
 import type { PaletteConfig } from "@/lib/labbyClient";
+import type { LauncherEntry } from "@/lib/launcherCatalog";
 import { argumentPlaceholder, focusInput } from "@/lib/paletteView";
 
 interface PaletteCommandBarProps {
-  active?: PaletteAction;
+  active?: LauncherEntry;
   activeDescendantId?: string;
   config: PaletteConfig | null;
   endpointLabel: string;
   endpointTone: string;
   hasQuery: boolean;
   listboxOpen: boolean;
-  modeAction: PaletteAction | null;
+  modeAction: LauncherEntry | null;
   query: string;
   running: boolean;
   settingsOpen: boolean;
@@ -26,7 +26,7 @@ interface PaletteCommandBarProps {
   onInputKeyDown: React.KeyboardEventHandler<HTMLInputElement>;
   onQueryChange: (value: string) => void;
   onReset: () => void;
-  onSubmit: (action: PaletteAction) => void;
+  onSubmit: (action: LauncherEntry) => void;
   onToggleMaximize: () => void;
   onToggleSettings: () => void;
 }

@@ -4,20 +4,20 @@ import { ActionIcon } from "@/components/palette/ActionIcon";
 import { Button } from "@/components/ui/aurora/button";
 import { Kbd } from "@/components/ui/aurora/kbd";
 import { ScrollArea } from "@/components/ui/aurora/scroll-area";
-import type { PaletteAction } from "@/lib/actions";
+import type { LauncherEntry } from "@/lib/launcherCatalog";
 
 interface ActionListProps {
-  filtered: PaletteAction[];
+  filtered: LauncherEntry[];
   selected: number;
   setSelected: Dispatch<SetStateAction<number>>;
-  onSubmit: (action: PaletteAction) => void;
-  onEnterMode: (action: PaletteAction) => void;
+  onSubmit: (action: LauncherEntry) => void;
+  onEnterMode: (action: LauncherEntry) => void;
 }
 
 // Stable per-option id shared with the command-bar input's aria-activedescendant
 // so AT announces the highlighted option as the listbox's active descendant.
-export function actionOptionId(action: PaletteAction): string {
-  return `action-${action.subcommand}`;
+export function actionOptionId(action: LauncherEntry): string {
+  return `action-${action.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
 
 // The searchable, keyboard-navigable list of palette actions. A row click runs a
@@ -30,7 +30,7 @@ export function ActionList({ filtered, selected, setSelected, onSubmit, onEnterM
 
   // Group consecutive actions by category (they arrive category-sorted) while
   // preserving each action's absolute index for selection/keys.
-  const groups: { category: string; items: { action: PaletteAction; index: number }[] }[] = [];
+  const groups: { category: string; items: { action: LauncherEntry; index: number }[] }[] = [];
   filtered.forEach((action, index) => {
     const last = groups[groups.length - 1];
     if (last && last.category === action.category) {
@@ -63,7 +63,7 @@ export function ActionList({ filtered, selected, setSelected, onSubmit, onEnterM
               {group.items.map(({ action, index }) => {
                 const selectedRow = index === selected;
                 return (
-                  <div className="action-group-item" role="presentation" key={action.subcommand}>
+                  <div className="action-group-item" role="presentation" key={action.id}>
                     <div
                       role="presentation"
                       className={selectedRow ? "action-row action-row-selected" : "action-row"}
@@ -90,6 +90,7 @@ export function ActionList({ filtered, selected, setSelected, onSubmit, onEnterM
                         <span className="action-main">
                           <span className="action-title-line">
                             <span className="action-label">{action.label}</span>
+                            {action.kind === "mcp_tool" ? <span className="action-async">{action.source}</span> : null}
                             {action.destructive ? (
                               <span className="action-async">DESTRUCTIVE</span>
                             ) : null}
@@ -98,7 +99,7 @@ export function ActionList({ filtered, selected, setSelected, onSubmit, onEnterM
                         </span>
                       </Button>
                       <span className="action-meta" aria-hidden="true">
-                        <Kbd unstyled>{action.action}</Kbd>
+                        <Kbd unstyled>{action.kind === "mcp_tool" ? action.upstream : action.action}</Kbd>
                       </span>
                     </div>
                   </div>

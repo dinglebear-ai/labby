@@ -1079,6 +1079,16 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
         if api_auth_configured {
             v1 = v1.nest("/gateway", services::gateway::routes(state.clone()));
             v1 = v1.nest("/snippets", services::snippets::routes(state.clone()));
+            if state.gateway_manager.is_some() {
+                v1 = v1.nest("/palette", services::palette::routes(state.clone()));
+            } else {
+                tracing::warn!(
+                    subsystem = "startup",
+                    phase = "palette.mount.skipped",
+                    reason = "gateway_manager_missing",
+                    "palette service routes not mounted: gateway manager is not wired"
+                );
+            }
         } else {
             tracing::warn!(
                 subsystem = "startup",
@@ -1093,6 +1103,12 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
                 phase = "snippets.mount.skipped",
                 reason = "no_auth_configured",
                 "snippets service routes not mounted: executable snippets require API auth"
+            );
+            tracing::warn!(
+                subsystem = "startup",
+                phase = "palette.mount.skipped",
+                reason = "no_auth_configured",
+                "palette service routes not mounted: launcher execution requires API auth"
             );
         }
     }
