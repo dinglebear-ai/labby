@@ -48,12 +48,38 @@ cargo test --manifest-path apps/palette-tauri/src-tauri/Cargo.toml
 `pnpm build` runs a full Tauri release build and bundles platform packages.
 `pnpm vite:build` is the faster frontend-only production build.
 
+## Desktop Smoke
+
+`scripts/desktop-smoke.ps1` drives a built Windows palette from environment
+configuration. It fetches `/v1/palette/catalog`, asserts the configured query
+matches at least one launcher row, launches the app, types the query, captures a
+screenshot, and writes `result.json`.
+
+Copy `scripts/desktop-smoke.env.example` outside the repo and fill in local
+values:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File scripts/desktop-smoke.ps1 `
+  -EnvFile C:\path\palette-smoke.env
+```
+
+For a remote Windows desktop session, invoke it through an interactive scheduled
+task (`schtasks /IT`) so keyboard input and screenshots target the visible
+desktop.
+
 ## Configuration
 
 The app reads Labby connection settings from environment defaults first:
 
+- `LABBY_API_URL` (preferred; API origin that serves `/v1/palette/*`)
 - `LABBY_PUBLIC_URL`
 - `LABBY_MCP_HTTP_TOKEN`
+
+`LABBY_PUBLIC_URL` remains a compatibility fallback, but deployments with
+separate web UI and API origins should set `LABBY_API_URL`. If the configured
+origin returns HTML for `/v1/palette/catalog`, the bridge reports a wrong-host
+configuration error instead of treating the web UI page as catalog data.
 
 Runtime palette preferences are stored in the platform app config directory as
 `settings.json`. The settings panel can override the server URL, static bearer

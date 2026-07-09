@@ -152,6 +152,12 @@ impl GatewayManager {
         let mut schema_bytes = 0usize;
 
         let cfg = self.config.read().await.clone();
+        self.refresh_code_mode_catalog_allowed(
+            Some(&caller.owner),
+            Some(&caller.oauth_subject),
+            caller.allowed_upstreams(),
+        )
+        .await?;
         if let Some(pool) = self.current_pool().await {
             for upstream in cfg.upstream.iter().filter(|upstream| {
                 upstream.enabled

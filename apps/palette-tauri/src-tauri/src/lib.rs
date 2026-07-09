@@ -175,10 +175,10 @@ fn merge_settings(persisted: PartialPaletteSettings, defaults: LabbySettings) ->
 }
 
 fn default_settings() -> LabbySettings {
-    let server_url = value_for("LABBY_PUBLIC_URL")
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
+    let server_url = default_server_url(
+        value_for("LABBY_API_URL").as_deref(),
+        value_for("LABBY_PUBLIC_URL").as_deref(),
+    );
     let static_token = value_for("LABBY_MCP_HTTP_TOKEN")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -192,6 +192,14 @@ fn default_settings() -> LabbySettings {
         open_results_inline: true,
         show_footer_hints: false,
     }
+}
+
+fn default_server_url(api_url: Option<&str>, public_url: Option<&str>) -> String {
+    api_url
+        .or(public_url)
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -481,4 +489,28 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .on_window_event(window_events::handle_window_event)
         .run(tauri::generate_context!())
         .map_err(|err| format!("error while running Labby Palette: {err}").into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_server_url;
+
+    #[test]
+    fn default_server_url_prefers_dedicated_api_url() {
+        assert_eq!(
+            default_server_url(
+                Some(" http://127.0.0.1:8765/ "),
+                Some("https://labby.example.com")
+            ),
+            "http://127.0.0.1:8765"
+        );
+    }
+
+    #[test]
+    fn default_server_url_falls_back_to_public_url_for_compatibility() {
+        assert_eq!(
+            default_server_url(None, Some("https://labby.example.com/")),
+            "https://labby.example.com"
+        );
+    }
 }

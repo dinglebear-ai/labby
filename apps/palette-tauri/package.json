@@ -33,6 +33,7 @@
     "vitest": "^4.1.9"
   },
   "name": "labby-palette-tauri",
+  "packageManager": "pnpm@9.15.9",
   "private": true,
   "scripts": {
     "build": "tauri build",
@@ -41,6 +42,7 @@
     "format": "biome format --write . && biome check --write .",
     "lint": "biome lint .",
     "preview": "vite preview",
+    "smoke:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop-smoke.ps1",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm install --frozen-lockfile && pnpm lint && pnpm test && pnpm typecheck && pnpm vite:build",
