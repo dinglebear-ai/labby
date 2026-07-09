@@ -1,0 +1,26 @@
+/* Aurora token override layer — palette-tauri
+   ----------------------------------------------------------------------------
+   This file is a THIN OVERRIDE on top of the verbatim Aurora registry token
+   set (./aurora-registry.css, synced from
+   aurora-design-system/registry/aurora/styles/aurora.css). Do NOT fork the
+   full token set here: re-sync aurora-registry.css from the registry instead,
+   so new upstream tokens flow through automatically rather than silently
+   missing (a missing var() resolves to unset/inherit with no typecheck error).
+
+   Only declare palette-specific deltas below. Keep this list short and
+   documented — each override is an intentional divergence from the registry.
+   ---------------------------------------------------------------------------- */
+
+@import "./aurora-registry.css";
+
+/* ── Intentional palette-local overrides ──────────────────────────────────
+   --aurora-focus-ring (light): the registry only softens
+   --aurora-focus-ring-strong in light mode and leaves --aurora-focus-ring at
+   its dark :root value (30% of the cyan accent). The palette deliberately
+   softens the base focus ring to 40% of the *light* accent so focus
+   affordances read correctly on the light theme. This is the single
+   palette-local token divergence in this file.
+   ------------------------------------------------------------------------- */
+.light {
+  --aurora-focus-ring: color-mix(in srgb, var(--aurora-accent-primary) 40%, transparent);
+}

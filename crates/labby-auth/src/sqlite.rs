@@ -12,8 +12,8 @@ use crate::at_rest::{TokenEncryptionKey, maybe_decrypt, maybe_encrypt};
 use crate::error::AuthError;
 use crate::types::{
     AllowedUserRow, AuthorizationCodeRow, AuthorizationRequestRow, BrowserLoginStateRow,
-    BrowserSessionRow, RefreshTokenRow, RegisteredClient, UpstreamOauthCredentialRow,
-    UpstreamOauthStateRow,
+    BrowserSessionRow, NativeAuthorizationResultRow, RefreshTokenRow, RegisteredClient,
+    UpstreamOauthCredentialRow, UpstreamOauthStateRow,
 };
 
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
@@ -568,7 +568,17 @@ impl SqliteStore {
                     |row| row.get(0),
                 )
                 .map_err(sqlite_error)?;
-            Ok((authorization_requests + browser_login_states) as usize)
+            let native_authorization_results: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM native_authorization_results WHERE expires_at > ?1",
+                    params![now],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_error)?;
+            Ok(
+                (authorization_requests + browser_login_states + native_authorization_results)
+                    as usize,
+            )
         })
         .await
     }
@@ -594,6 +604,62 @@ impl SqliteStore {
         .await
     }
 
+    /// Store a native-flow authorization code keyed by `state`, for the
+    /// polling desktop client to retrieve via `take_native_authorization_result`.
+    ///
+    /// Last-write-wins on a `state` collision (e.g. a client retrying
+    /// `/authorize` with the same `state` after a timeout): each row is
+    /// single-use (deleted on first successful poll), so overwriting with the
+    /// newest code is correct — silently dropping the newest code instead
+    /// (`DO NOTHING`) would leave the polling client hung until the row's TTL
+    /// expires, with no error surfaced anywhere.
+    pub async fn insert_native_authorization_result(
+        &self,
+        result: NativeAuthorizationResultRow,
+    ) -> Result<(), AuthError> {
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO native_authorization_results (state, code, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(state) DO UPDATE SET
+                    code = excluded.code,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at",
+                params![
+                    result.state,
+                    result.code,
+                    result.created_at,
+                    result.expires_at,
+                ],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// One-shot read-and-delete of a pending native-flow authorization code.
+    pub async fn take_native_authorization_result(
+        &self,
+        state: &str,
+    ) -> Result<Option<NativeAuthorizationResultRow>, AuthError> {
+        let state = state.to_string();
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "DELETE FROM native_authorization_results
+                 WHERE state = ?1
+                   AND expires_at > ?2
+                 RETURNING state, code, created_at, expires_at",
+                params![state, now],
+                row_to_native_authorization_result,
+            )
+            .optional()
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
     /// Delete expired rows from all short-lived tables. Also drops upstream OAuth
     /// credential rows whose access token has expired AND have no refresh token
     /// available for re-use (SEC-9). Returns the total number of deleted rows.
@@ -607,6 +673,7 @@ impl SqliteStore {
                 "refresh_tokens",
                 "browser_sessions",
                 "browser_login_states",
+                "native_authorization_results",
             ] {
                 let deleted = conn
                     .execute(
@@ -1145,6 +1212,12 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS native_authorization_results (
+            state TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS upstream_oauth_credentials (
             upstream_name             TEXT NOT NULL,
             subject                   TEXT NOT NULL,
@@ -1418,6 +1491,17 @@ fn row_to_browser_login_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<Brows
         provider_code_verifier: row.get(2)?,
         created_at: row.get(3)?,
         expires_at: row.get(4)?,
+    })
+}
+
+fn row_to_native_authorization_result(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<NativeAuthorizationResultRow> {
+    Ok(NativeAuthorizationResultRow {
+        state: row.get(0)?,
+        code: row.get(1)?,
+        created_at: row.get(2)?,
+        expires_at: row.get(3)?,
     })
 }
 

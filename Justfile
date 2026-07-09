@@ -423,3 +423,11 @@ sccache-restart:
 # Compile check for the lean gateway-only slice (base services excluded).
 check-gateway-slice:
     RUSTFLAGS="" cargo check -p labby --no-default-features --features gateway --all-targets
+
+# Launch the Labby desktop palette (apps/palette-tauri) in dev mode.
+palette-dev:
+    cd apps/palette-tauri && pnpm tauri dev
+
+# Build the Labby desktop palette (apps/palette-tauri) release bundle.
+palette-build:
+    cd apps/palette-tauri && pnpm tauri build
