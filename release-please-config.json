@@ -14,6 +14,10 @@
       "section": "Fixed"
     },
     {
+      "type": "deps",
+      "section": "Dependencies"
+    },
+    {
       "type": "perf",
       "section": "Changed"
     },
@@ -57,5 +61,6 @@
       "package-name": "labby",
       "changelog-path": "CHANGELOG.md"
     }
-  }
+  },
+  "always-update": true
 }
