@@ -2030,10 +2030,19 @@ pub fn usage_db_path() -> PathBuf {
 /// Set `LABBY_GATEWAY_USAGE_DISABLED=1` to opt out — e.g. for a throwaway
 /// dev instance where nobody looks at the usage dashboard.
 pub fn usage_telemetry_enabled() -> bool {
-    std::env::var("LABBY_GATEWAY_USAGE_DISABLED")
-        .ok()
-        .as_deref()
-        != Some("1")
+    resolve_usage_telemetry_enabled(
+        std::env::var("LABBY_GATEWAY_USAGE_DISABLED")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Pure decision function behind `usage_telemetry_enabled()`, split out so
+/// tests can exercise every branch without mutating process env (this crate
+/// forbids `unsafe`, so `std::env::set_var`/`remove_var` — `unsafe fn` as of
+/// Rust 2024 — are not available even in tests).
+fn resolve_usage_telemetry_enabled(raw: Option<&str>) -> bool {
+    raw != Some("1")
 }
 
 /// A string value that redacts itself in `Debug` and `Display` output.
@@ -3821,5 +3830,50 @@ service_scope = "user"
 
         assert_eq!(file_mode(&env_path), 0o600, ".env must be healed");
         assert_eq!(file_mode(&bak_path), 0o600, ".env.bak.* must be healed");
+    }
+
+    // usage_telemetry_enabled() delegates to the pure resolve_usage_telemetry_enabled()
+    // so these tests never need to mutate process env (this crate forbids
+    // `unsafe`, and `std::env::set_var`/`remove_var` are `unsafe fn` as of
+    // Rust 2024) — same shape as the resolve_web_ui_auth_disabled_values
+    // tests above.
+    #[test]
+    fn usage_telemetry_enabled_defaults_true_when_unset() {
+        assert!(
+            resolve_usage_telemetry_enabled(None),
+            "usage telemetry must default to enabled when the env var is unset"
+        );
+    }
+
+    #[test]
+    fn usage_telemetry_enabled_false_when_set_to_1() {
+        assert!(
+            !resolve_usage_telemetry_enabled(Some("1")),
+            "usage telemetry must be disabled when the env var is \"1\""
+        );
+    }
+
+    #[test]
+    fn usage_telemetry_enabled_true_for_other_values() {
+        assert!(
+            resolve_usage_telemetry_enabled(Some("true")),
+            "only the exact value \"1\" should disable usage telemetry"
+        );
+        assert!(
+            resolve_usage_telemetry_enabled(Some("0")),
+            "\"0\" is not the disable sentinel; telemetry stays enabled"
+        );
+    }
+
+    #[test]
+    fn usage_db_path_is_under_dot_labby_home_dir() {
+        let path = usage_db_path();
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("usage.db"));
+        assert_eq!(
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str()),
+            Some(".labby")
+        );
     }
 }
