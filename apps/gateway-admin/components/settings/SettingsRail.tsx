@@ -67,7 +67,7 @@ export function SettingsRail(): React.ReactElement {
         ))}
       </select>
       <div className="hidden gap-1 md:flex md:overflow-x-auto lg:flex-col lg:overflow-visible">
-        <h2 className="mb-2 hidden items-center gap-2 text-sm font-semibold uppercase text-muted-foreground lg:flex">
+        <h2 className="mb-2 hidden items-center gap-2 text-sm font-semibold uppercase text-aurora-text-muted lg:flex">
           <Box className="h-4 w-4" /> Settings
         </h2>
         {entries.map((entry) => {
@@ -82,7 +82,7 @@ export function SettingsRail(): React.ReactElement {
                 'flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors lg:shrink',
                 active
                   ? 'bg-accent text-accent-foreground font-medium'
-                  : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+                  : 'text-aurora-text-muted hover:bg-accent/50 hover:text-aurora-text-primary',
               )}
             >
               <Icon className="h-4 w-4" />
@@ -93,7 +93,7 @@ export function SettingsRail(): React.ReactElement {
         {pluginMode ? (
           <Link
             href="/setup/welcome/?mode=full"
-            className="flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent/50 hover:text-foreground lg:shrink"
+            className="flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm text-aurora-text-muted hover:bg-accent/50 hover:text-aurora-text-primary lg:shrink"
           >
             Show advanced setup
           </Link>

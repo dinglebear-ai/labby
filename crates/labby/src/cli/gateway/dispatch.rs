@@ -7,7 +7,7 @@ use crate::cli::gateway::{
     GatewayArgs, GatewayClientsCommand, GatewayCommand, GatewayEnrichCommand,
     GatewayMcpAuthCommand, GatewayMcpCommand, GatewayPendingCommand, GatewayProtectedRouteCommand,
     GatewayProtectedRouteUpdateArgs, GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand,
-    GatewayUpdateArgs, LazyGatewayManager,
+    GatewayUpdateArgs, GatewayUsageCommand, LazyGatewayManager,
 };
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
 use crate::config::{LabConfig, ProtectedMcpRouteConfig};
@@ -436,6 +436,26 @@ pub(super) async fn dispatch_command(
                         )
                     }
                 },
+                GatewayCommand::Usage(args) => match args.command {
+                    GatewayUsageCommand::Metrics(m) => (
+                        "gateway.usage.metrics".to_string(),
+                        json!({
+                            "since_unix": m.since_unix,
+                            "until_unix": m.until_unix,
+                            "upstream": m.upstream,
+                        }),
+                    ),
+                    GatewayUsageCommand::Calls(c) => (
+                        "gateway.usage.calls".to_string(),
+                        json!({
+                            "since_unix": c.since_unix,
+                            "until_unix": c.until_unix,
+                            "upstream": c.upstream,
+                            "limit": c.limit,
+                            "offset": c.offset,
+                        }),
+                    ),
+                },
                 GatewayCommand::Mcp(_) => unreachable!("handled above"),
                 GatewayCommand::Code(_) => unreachable!("handled above"),
             };
@@ -598,6 +618,107 @@ mod tests {
             update_patch_from_args(update),
             json!({
                 "proxy_resources": false,
+            })
+        );
+    }
+
+    fn parsed_usage(args: &[&str]) -> GatewayUsageCommand {
+        let cli = Cli::try_parse_from(args).expect("parse gateway usage args");
+        let Command::Gateway(gateway) = cli.command else {
+            panic!("expected gateway command");
+        };
+        let GatewayCommand::Usage(usage) = gateway.command else {
+            panic!("expected gateway usage command");
+        };
+        usage.command
+    }
+
+    fn usage_params(command: GatewayUsageCommand) -> Value {
+        match command {
+            GatewayUsageCommand::Metrics(m) => json!({
+                "since_unix": m.since_unix,
+                "until_unix": m.until_unix,
+                "upstream": m.upstream,
+            }),
+            GatewayUsageCommand::Calls(c) => json!({
+                "since_unix": c.since_unix,
+                "until_unix": c.until_unix,
+                "upstream": c.upstream,
+                "limit": c.limit,
+                "offset": c.offset,
+            }),
+        }
+    }
+
+    #[test]
+    fn gateway_usage_metrics_parses_flags_into_params() {
+        let usage = parsed_usage(&[
+            "lab",
+            "gateway",
+            "usage",
+            "metrics",
+            "--since-unix",
+            "1000",
+            "--until-unix",
+            "2000",
+            "--upstream",
+            "github",
+        ]);
+
+        assert_eq!(
+            usage_params(usage),
+            json!({
+                "since_unix": 1000,
+                "until_unix": 2000,
+                "upstream": "github",
+            })
+        );
+    }
+
+    #[test]
+    fn gateway_usage_metrics_defaults_are_null() {
+        let usage = parsed_usage(&["lab", "gateway", "usage", "metrics"]);
+
+        assert_eq!(
+            usage_params(usage),
+            json!({
+                "since_unix": null,
+                "until_unix": null,
+                "upstream": null,
+            })
+        );
+    }
+
+    #[test]
+    fn gateway_usage_calls_parses_flags_into_params() {
+        let usage = parsed_usage(&[
+            "lab", "gateway", "usage", "calls", "--limit", "50", "--offset", "10",
+        ]);
+
+        assert_eq!(
+            usage_params(usage),
+            json!({
+                "since_unix": null,
+                "until_unix": null,
+                "upstream": null,
+                "limit": 50,
+                "offset": 10,
+            })
+        );
+    }
+
+    #[test]
+    fn gateway_usage_calls_defaults_are_null() {
+        let usage = parsed_usage(&["lab", "gateway", "usage", "calls"]);
+
+        assert_eq!(
+            usage_params(usage),
+            json!({
+                "since_unix": null,
+                "until_unix": null,
+                "upstream": null,
+                "limit": null,
+                "offset": null,
             })
         );
     }

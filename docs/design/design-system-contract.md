@@ -604,27 +604,6 @@ A route-level `<h1>` without a Display token is a contract violation. A metric n
 
 ## Page-Level Patterns
 
-### Chat And Agent Sessions
-
-The chat surface is a transcript-first product surface.
-
-Rules:
-
-- the primary interaction is a single conversation column, not a split transcript/activity workspace
-- reasoning appears inline as a collapsible assistant-owned block
-- tool and agent actions appear inline as a compact connected flow that reads as part of the assistant turn
-- raw tool-call payloads are secondary detail revealed on expansion, not the primary visual treatment
-- on narrow screens, session lists and other secondary navigation collapse into drawers or sheets rather than permanently consuming horizontal space
-
-### Logs
-
-The logs page establishes the first Aurora reference implementation for:
-
-- dense tail-style data presentation
-- lifted toolbar plus stronger stream/inspector surfaces
-- structured operator panels
-- restrained control states
-
 ### Gateways
 
 The Gateways page should align with the same Aurora principles while preserving its dense table workflow:
@@ -635,18 +614,6 @@ The Gateways page should align with the same Aurora principles while preserving 
 - calmer status accents
 - the mobile `GatewayFilters` search-with-embedded-filter-action pattern is the reference implementation for search-driven operator lists and should be reused by similar catalog pages before introducing new mobile filter shells
 - toggle-heavy mutable controls do not belong in the route header status cluster; they should live in a dedicated settings surface or tab so headers remain status-first
-
-### Marketplace And Catalog Lists
-
-Marketplace-style catalog pages should inherit the gateways interaction model when they face the same density constraints:
-
-- on mobile, use the gateways search field pattern with embedded filter access
-- prefer dense single-column list or row surfaces over shrinking desktop card grids until they become cramped
-- summary counts should compress into compact chips above the list instead of a long horizontal stats strip
-- sort belongs inside the filter affordance on narrow screens unless it is the primary action of the page
-- when a route uses distinct desktop and mobile control shells, hide the desktop shell on mobile instead of stacking both versions and forcing duplicate navigation or duplicated filter controls
-- desktop catalog pages may use Gateway-style checkbox-row filter rails instead of pill filters when the filter set is large enough that pill groups become noisy
-- future dropdowns or selects on catalog pages must use Aurora control surfaces, semantic borders, stable accessible names, and shared focus-ring tokens
 
 ### Authentication Surfaces
 

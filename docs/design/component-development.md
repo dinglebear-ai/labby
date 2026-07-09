@@ -70,10 +70,9 @@ All mockups and in-development components must live under:
 Examples:
 
 ```text
-/dev/marketplace
-/dev/setup
-/dev/settings
 /dev/gateway-policy
+/dev/settings
+/dev/snippets
 ```
 
 Do not add new ad hoc preview routes outside `/dev/*`. The `/dev` index should link to active previews when useful.
@@ -156,7 +155,7 @@ In `/dev/*` mode it must:
 - return or throw a clear `dev_preview_read_only` error for blocked actions
 - route live read requests to a dedicated dev-safe backend endpoint when required
 
-Marketplace currently uses this pattern in `apps/gateway-admin/lib/dev/preview-mode.ts` and `performServiceAction`.
+`apps/gateway-admin/lib/dev/preview-mode.ts` and `performServiceAction` implement this pattern generically for any `/dev/*` route.
 
 ### Backend Guard
 

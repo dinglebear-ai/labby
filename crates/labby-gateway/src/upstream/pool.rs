@@ -46,6 +46,7 @@ mod stdio_stderr;
 mod testsupport;
 mod tools;
 mod tools_call;
+mod usage_record;
 mod validate;
 
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
@@ -147,6 +148,10 @@ pub struct UpstreamPool {
     /// sharing it means TLS sessions and keep-alive connections are reused across
     /// upstreams rather than rebuilt on every `connect_http_upstream` call (P-M10).
     pub(super) shared_http_client: Arc<reqwest::Client>,
+    /// Optional call-usage recorder. `None` (the default) disables telemetry
+    /// capture entirely — most tests and any pool built without an explicit
+    /// `.with_usage_store(...)` call never touch SQLite.
+    pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
 }
 
 /// A live connection to an upstream MCP server.
@@ -259,6 +264,7 @@ impl UpstreamPool {
             relay_timeout: DEFAULT_RELAY_TIMEOUT,
             in_process_connector: None,
             shared_http_client,
+            usage_store: None,
         }
     }
 
@@ -309,9 +315,28 @@ impl UpstreamPool {
         self
     }
 
+    /// Attach a call-usage recorder. `None` explicitly disables capture even
+    /// if the caller previously wired one — used by tests that want a clean
+    /// pool without reconstructing it.
+    #[must_use]
+    pub fn with_usage_store(mut self, store: Option<Arc<crate::usage::UsageStore>>) -> Self {
+        self.usage_store = store;
+        self
+    }
+
     #[cfg(any(test, feature = "testkit"))]
     pub fn request_timeout(&self) -> Duration {
         self.request_timeout
+    }
+
+    /// Whether a call-usage recorder is wired for this pool. `usage_store`
+    /// itself is `pub(super)` (only visible to `pool/` descendant modules,
+    /// e.g. `pool/usage_record.rs`); this accessor is the sanctioned way for
+    /// code outside the `upstream` module tree (e.g. gateway manager tests)
+    /// to observe whether telemetry capture is enabled.
+    #[must_use]
+    pub fn usage_store_is_wired(&self) -> bool {
+        self.usage_store.is_some()
     }
 }
 

@@ -18,8 +18,8 @@ export function AdvancedReadOnlyBlock({
         {fields.map((field) => (
           <div key={field.key} className="rounded-md border p-3">
             <p className="text-sm font-medium">{field.label}</p>
-            <p className="text-xs text-muted-foreground">{field.description}</p>
-            <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-muted p-3 text-xs">
+            <p className="text-xs text-aurora-text-muted">{field.description}</p>
+            <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-aurora-control-surface p-3 text-xs">
               {JSON.stringify(state.values[field.key] ?? null, null, 2)}
             </pre>
           </div>

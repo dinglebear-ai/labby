@@ -105,7 +105,7 @@ export function SettingsScalarSection({
         ))}
         {errors._form ? <p className="text-sm text-destructive">{errors._form}</p> : null}
         {changedKeys.size > 0 ? (
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <label className="flex items-center gap-2 text-sm text-aurora-text-muted">
             <Checkbox checked={confirmed} onCheckedChange={(checked) => setConfirmed(checked === true)} />
             Confirm settings write
           </label>

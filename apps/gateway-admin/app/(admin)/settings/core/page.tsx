@@ -39,7 +39,7 @@ export default function CorePage(): React.ReactElement {
     <>
       <h1 className="sr-only">Core settings</h1>
       {loading ? (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> loading core settings
         </div>
       ) : null}

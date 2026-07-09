@@ -1,5 +1,3 @@
-import type { LogLevel } from '@/lib/types/logs'
-
 /**
  * Shared Aurora design-system class-string constants.
  *
@@ -126,25 +124,3 @@ export function controlTone(variant: 'default' | 'accent' = 'default'): string {
     : 'border-aurora-border-strong bg-[linear-gradient(180deg,rgba(18,40,56,0.96),rgba(14,31,44,0.98))] text-aurora-text-primary shadow-[0_8px_16px_rgba(0,0,0,0.16),var(--aurora-highlight-medium)]'
 }
 
-// ---------------------------------------------------------------------------
-// Log-specific tokens (used by log-timeline and log-theme)
-// ---------------------------------------------------------------------------
-
-/**
- * Log-level text color classes.
- * Logs-specific: stays in this module.
- */
-export const AURORA_LEVEL_TEXT: Record<LogLevel, string> = {
-  trace: 'text-aurora-text-muted',
-  debug: 'text-aurora-accent-strong',
-  info: 'text-aurora-accent-primary',
-  warn: 'text-aurora-warn',
-  error: 'text-aurora-error',
-}
-
-/**
- * Log tail row grid layout.
- * Logs-specific: stays in this module.
- */
-export const AURORA_TAIL_ROW =
-  'grid grid-cols-1 gap-1 sm:grid-cols-[170px_84px_130px_minmax(0,1fr)] sm:gap-3'

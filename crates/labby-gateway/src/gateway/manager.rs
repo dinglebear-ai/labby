@@ -54,6 +54,7 @@ mod pool_lifecycle;
 mod protected_routes;
 #[cfg(test)]
 mod tests;
+mod usage;
 mod views;
 mod virtual_servers;
 
@@ -91,6 +92,7 @@ pub struct GatewayManager {
     pub(super) oauth_sqlite: Option<labby_auth::sqlite::SqliteStore>,
     pub(super) oauth_key: Option<EncryptionKey>,
     pub(super) oauth_redirect_uri: Option<Arc<String>>,
+    pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
     protected_route_index: Arc<RwLock<ProtectedRouteIndex>>,
     code_mode_history: Arc<Mutex<CodeModeHistory>>,
     code_mode_source_store: Arc<Mutex<CodeModeSourceStore>>,

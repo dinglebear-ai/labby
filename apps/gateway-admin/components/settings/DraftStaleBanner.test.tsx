@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import React from 'react'
 import { act } from 'react'
 
-import { installChatTestDom, renderClient } from '@/components/chat/test-utils'
+import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
 import { DraftStaleBanner } from './DraftStaleBanner'
 
 async function waitFor(assertion: () => void) {
@@ -22,7 +22,7 @@ async function waitFor(assertion: () => void) {
 }
 
 test('DraftStaleBanner explains old drafts and can discard them', async () => {
-  installChatTestDom()
+  installTestDom()
   const actions: string[] = []
   globalThis.fetch = (async (_input, init) => {
     const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string }

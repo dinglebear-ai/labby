@@ -119,7 +119,7 @@ export default function ServicePage({
       <CardHeader className="flex flex-row items-start gap-2 space-y-0">
         <Link
           href="/settings/services/"
-          className="text-muted-foreground hover:text-foreground"
+          className="text-aurora-text-muted hover:text-aurora-text-primary"
           aria-label="Back to services"
         >
           <ArrowLeft className="h-4 w-4 mt-1" />
@@ -145,7 +145,7 @@ export default function ServicePage({
       </CardHeader>
       <CardContent>
         {loading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
             <Loader2 className="h-4 w-4 animate-spin" /> loading
           </div>
         ) : null}

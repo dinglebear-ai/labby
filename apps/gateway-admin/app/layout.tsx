@@ -52,7 +52,7 @@ export default function RootLayout({
       <body className={`${inter.variable} ${manrope.variable} font-sans antialiased overflow-x-clip`}>
         <ThemeProvider
           attribute="class"
-          defaultTheme="system"
+          defaultTheme="dark"
           enableSystem
           disableTransitionOnChange
         >

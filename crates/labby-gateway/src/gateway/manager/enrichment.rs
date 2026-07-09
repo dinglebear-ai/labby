@@ -81,16 +81,7 @@ impl GatewayManager {
         params: GatewayEnrichApplyParams,
         scope: GatewayEnrichmentScope,
     ) -> Result<GatewayHintApplyView, ToolError> {
-        if scope
-            .route_visible_upstreams
-            .as_ref()
-            .is_some_and(|visible| !visible.contains(&params.upstream))
-        {
-            return Err(ToolError::Sdk {
-                sdk_kind: "unknown_upstream".to_string(),
-                message: format!("unknown gateway upstream `{}`", params.upstream),
-            });
-        }
+        scope.ensure_visible(&params.upstream)?;
         let hint = validate_hint(&params.hint)?;
         let _mutation_guard = self.config_mutation.lock().await;
         let mut cfg = self.config.read().await.clone();

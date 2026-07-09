@@ -61,7 +61,7 @@ export function SettingsScalarField({
       case 'string_list':
         return <Textarea {...controlProps} value={inputValue} className="min-h-24 font-mono text-xs" onChange={(event) => onChange(field.key, parseFieldInput(field, event.target.value))} />
       case 'read_only':
-        return <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 text-xs">{JSON.stringify(value ?? null, null, 2)}</pre>
+        return <pre className="max-h-64 overflow-auto rounded-md bg-aurora-control-surface p-3 text-xs">{JSON.stringify(value ?? null, null, 2)}</pre>
       default:
         return <Input {...controlProps} type={field.control === 'number' ? 'number' : 'text'} value={inputValue} onChange={(event) => onChange(field.key, parseFieldInput(field, event.target.value))} />
     }
@@ -72,10 +72,10 @@ export function SettingsScalarField({
       <div className="flex items-start justify-between gap-3">
         <div>
           <Label htmlFor={id}>{field.label}</Label>
-          <p className="mt-1 text-xs text-muted-foreground">{field.description}</p>
-          <p className="mt-1 font-mono text-[11px] text-muted-foreground">{field.key}</p>
+          <p className="mt-1 text-xs text-aurora-text-muted">{field.description}</p>
+          <p className="mt-1 font-mono text-[11px] text-aurora-text-muted">{field.key}</p>
         </div>
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+        <span className="rounded bg-aurora-control-surface px-1.5 py-0.5 text-[10px] uppercase text-aurora-text-muted">
           {field.apply_mode}
         </span>
       </div>

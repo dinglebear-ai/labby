@@ -47,7 +47,7 @@ export default function AdvancedPage(): React.ReactElement {
     <>
       <h1 className="sr-only">Advanced settings</h1>
       {loading ? (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> loading advanced settings
         </div>
       ) : null}
@@ -87,8 +87,8 @@ function EnvInventoryTable({ entries }: { entries: EnvSettingSpec[] }): React.Re
           {filtered.map((entry) => (
             <li key={entry.key} className="grid gap-1 p-3 text-sm md:grid-cols-[240px_1fr_auto]">
               <p className="font-mono text-xs">{entry.key}</p>
-              <p className="text-muted-foreground">{entry.description}</p>
-              <p className="text-xs text-muted-foreground">{entry.service}{entry.secret ? ' secret' : ''}{entry.editable ? ' editable' : ''}</p>
+              <p className="text-aurora-text-muted">{entry.description}</p>
+              <p className="text-xs text-aurora-text-muted">{entry.service}{entry.secret ? ' secret' : ''}{entry.editable ? ' editable' : ''}</p>
             </li>
           ))}
         </ul>

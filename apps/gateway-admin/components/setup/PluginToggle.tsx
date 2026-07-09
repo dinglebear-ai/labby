@@ -48,8 +48,8 @@ export function PluginToggle({
   return (
     <div className="flex min-w-[10rem] flex-col items-end gap-1 text-xs">
       <label className="flex items-center gap-2">
-        {busy ? <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" /> : null}
-        <span className="text-muted-foreground">Claude Code</span>
+        {busy ? <Loader2 className="h-3 w-3 animate-spin text-aurora-text-muted" /> : null}
+        <span className="text-aurora-text-muted">Claude Code</span>
         <Switch
           checked={checked}
           disabled={disabled || busy}
