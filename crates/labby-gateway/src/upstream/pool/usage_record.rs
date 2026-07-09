@@ -36,12 +36,19 @@ pub(super) fn record_usage_call(
         outcome: outcome.to_string(),
         elapsed_ms: i64::try_from(elapsed_ms).unwrap_or(i64::MAX),
     };
-    let semaphore = store.write_semaphore();
+    // Acquire an owned permit *before* spawning so a saturated semaphore
+    // actually bounds the number of spawned tasks, not just the number of
+    // concurrent DB-write attempts inside already-spawned tasks.
+    let Ok(permit) = store.write_semaphore().try_acquire_owned() else {
+        tracing::warn!(
+            upstream = %record.upstream_name,
+            tool = %record.tool_name,
+            "usage store write dropped: too many in-flight writes"
+        );
+        return;
+    };
     tokio::spawn(async move {
-        let Ok(_permit) = semaphore.try_acquire() else {
-            tracing::warn!("usage store write dropped: too many in-flight writes");
-            return;
-        };
+        let _permit = permit;
         if let Err(error) = store.record_call(record).await {
             tracing::warn!(error = %error, "usage store record_call failed");
         }

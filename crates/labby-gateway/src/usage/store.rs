@@ -70,6 +70,10 @@ impl UsageStore {
     }
 
     pub async fn record_call(&self, record: UpstreamCallRecord) -> Result<(), ToolError> {
+        debug_assert!(
+            !record.actor.is_empty(),
+            "UpstreamCallRecord.actor must not be empty — use \"unattributed\" for missing subjects"
+        );
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO upstream_calls (
@@ -128,6 +132,10 @@ impl UsageStore {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Tracks consecutive prune failures so a sustained failure (disk
+            // full, permissions) escalates to `error` instead of looking
+            // identical to a single transient blip in the logs.
+            let mut consecutive_failures: u32 = 0;
             loop {
                 ticker.tick().await;
                 let now_unix = std::time::SystemTime::now()
@@ -136,12 +144,27 @@ impl UsageStore {
                     .unwrap_or(0);
                 let cutoff = now_unix.saturating_sub(retention_secs);
                 match self.prune_older_than(cutoff).await {
-                    Ok(deleted) if deleted > 0 => {
-                        tracing::info!(deleted, "pruned stale gateway usage records");
+                    Ok(deleted) => {
+                        consecutive_failures = 0;
+                        if deleted > 0 {
+                            tracing::info!(deleted, "pruned stale gateway usage records");
+                        }
                     }
-                    Ok(_) => {}
                     Err(error) => {
-                        tracing::warn!(error = %error, "gateway usage prune failed");
+                        consecutive_failures += 1;
+                        if consecutive_failures >= 3 {
+                            tracing::error!(
+                                error = %error,
+                                consecutive_failures,
+                                "gateway usage prune failed repeatedly"
+                            );
+                        } else {
+                            tracing::warn!(
+                                error = %error,
+                                consecutive_failures,
+                                "gateway usage prune failed"
+                            );
+                        }
                     }
                 }
             }
@@ -319,7 +342,10 @@ impl UsageStore {
                 )
                 .map_err(sqlite_error)?;
 
-            bind.push(rusqlite::types::Value::Integer(query.limit as i64));
+            // Defense-in-depth: clamp here too, regardless of whether the
+            // caller (`gateway/manager/usage.rs`) already clamped.
+            let limit = query.limit.min(super::query::MAX_CALLS_LIMIT);
+            bind.push(rusqlite::types::Value::Integer(limit as i64));
             bind.push(rusqlite::types::Value::Integer(query.offset as i64));
             let mut stmt = conn
                 .prepare(&format!(

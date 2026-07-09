@@ -182,6 +182,33 @@ pub struct GatewayEnrichmentScope {
     pub route_visible_upstreams: Option<BTreeSet<String>>,
 }
 
+impl GatewayEnrichmentScope {
+    /// Enforce route scope for a single named upstream: `Err(unknown_upstream)`
+    /// if `name` is outside the route-visible set. A `None` scope (root/unscoped
+    /// caller) never errors. Shared by `gateway.enrich.*` and `gateway.usage.*`
+    /// so both surfaces produce byte-identical out-of-scope errors.
+    pub(crate) fn ensure_visible(&self, name: &str) -> Result<(), labby_runtime::error::ToolError> {
+        if self
+            .route_visible_upstreams
+            .as_ref()
+            .is_some_and(|visible| !visible.contains(name))
+        {
+            return Err(labby_runtime::error::ToolError::Sdk {
+                sdk_kind: "unknown_upstream".to_string(),
+                message: format!("unknown gateway upstream `{name}`"),
+            });
+        }
+        Ok(())
+    }
+
+    /// The route-visible allowlist as an owned `Vec`, or `None` when unscoped.
+    pub(crate) fn allowlist(&self) -> Option<Vec<String>> {
+        self.route_visible_upstreams
+            .as_ref()
+            .map(|visible| visible.iter().cloned().collect())
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct GatewayUpdatePatch {
     #[serde(default)]

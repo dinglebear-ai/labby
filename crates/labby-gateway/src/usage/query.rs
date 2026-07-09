@@ -1,5 +1,15 @@
 //! Aggregation query parameters and result shapes for `gateway.usage.*`.
 
+/// Default page size for `gateway.usage.calls` when the caller omits `limit`.
+/// Applied at the params→query mapping layer (`gateway/manager/usage.rs`)
+/// since `UsageCallsQuery.limit` is non-optional `usize`.
+pub const DEFAULT_CALLS_LIMIT: usize = 100;
+/// Hard cap on `UsageCallsQuery.limit`. Enforced both where the query is
+/// constructed (`gateway/manager/usage.rs`) and, defense-in-depth, directly in
+/// `UsageStore::list_calls` so the store never trusts an unbounded limit
+/// regardless of what constructs the query.
+pub const MAX_CALLS_LIMIT: usize = 1000;
+
 #[derive(Debug, Clone, Default)]
 pub struct UsageMetricsQuery {
     pub since_unix: Option<i64>,

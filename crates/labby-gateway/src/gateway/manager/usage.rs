@@ -5,7 +5,9 @@
 
 use labby_runtime::error::ToolError;
 
-use crate::usage::query::{UsageCallsQuery, UsageMetricsQuery};
+use crate::usage::query::{
+    DEFAULT_CALLS_LIMIT, MAX_CALLS_LIMIT, UsageCallsQuery, UsageMetricsQuery,
+};
 
 use super::GatewayManager;
 use crate::gateway::params::{
@@ -15,9 +17,6 @@ use crate::gateway::types::{
     GatewayUsageActorCount, GatewayUsageCallView, GatewayUsageCallsView, GatewayUsageMetricsView,
     GatewayUsageToolCount,
 };
-
-const DEFAULT_CALLS_LIMIT: usize = 100;
-const MAX_CALLS_LIMIT: usize = 1000;
 
 impl GatewayManager {
     pub async fn usage_metrics(
@@ -123,12 +122,12 @@ impl GatewayManager {
     }
 }
 
-/// Enforce route scope for a usage query. Mirrors the enrichment scope check
-/// in `manager/enrichment.rs::apply_enrichment_scoped`:
+/// Enforce route scope for a usage query, delegating to the shared
+/// `GatewayEnrichmentScope::ensure_visible`/`allowlist` helpers also used by
+/// `manager/enrichment.rs`:
 ///
 /// - If the caller explicitly requested a single `upstream` that is not in
-///   the route-visible set, fail with `unknown_upstream` (matching the
-///   enrichment out-of-scope-upstream error shape).
+///   the route-visible set, fail with `unknown_upstream`.
 /// - Otherwise (aggregate query, no explicit upstream), return the
 ///   route-visible set so the store can restrict its `WHERE` clause to it.
 /// - `None` scope (root/unscoped caller) always returns `None` (no filter).
@@ -136,16 +135,8 @@ fn scoped_allowed_upstreams(
     scope: &GatewayEnrichmentScope,
     requested_upstream: Option<&str>,
 ) -> Result<Option<Vec<String>>, ToolError> {
-    let Some(visible) = &scope.route_visible_upstreams else {
-        return Ok(None);
-    };
-    if let Some(upstream) = requested_upstream
-        && !visible.contains(upstream)
-    {
-        return Err(ToolError::Sdk {
-            sdk_kind: "unknown_upstream".to_string(),
-            message: format!("unknown gateway upstream `{upstream}`"),
-        });
+    if let Some(upstream) = requested_upstream {
+        scope.ensure_visible(upstream)?;
     }
-    Ok(Some(visible.iter().cloned().collect()))
+    Ok(scope.allowlist())
 }

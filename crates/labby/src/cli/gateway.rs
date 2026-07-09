@@ -47,10 +47,16 @@ async fn build_manager_with_upstream_oauth_runtime(
 ) -> Result<Arc<GatewayManager>> {
     let runtime = GatewayRuntimeHandle::default();
     let usage_store = if crate::config::usage_telemetry_enabled() {
-        labby_gateway::usage::UsageStore::open(crate::config::usage_db_path())
-            .await
-            .ok()
-            .map(Arc::new)
+        match labby_gateway::usage::UsageStore::open(crate::config::usage_db_path()).await {
+            Ok(store) => Some(Arc::new(store)),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to open gateway usage store; usage telemetry disabled for this run"
+                );
+                None
+            }
+        }
     } else {
         None
     };
