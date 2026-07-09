@@ -183,7 +183,6 @@ impl GatewayManager {
         self
     }
 
-
     /// Override the `.env` path used by config persistence helpers (test only).
     ///
     /// Rebuilds the default filesystem store so writes land beside the temp
