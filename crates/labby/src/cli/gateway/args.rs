@@ -40,6 +40,46 @@ pub enum GatewayCommand {
     Code(GatewayCodeArgs),
     /// Generate and approve Code Mode upstream hint proposals.
     Enrich(GatewayEnrichArgs),
+    /// Query gateway upstream call-usage telemetry.
+    Usage(GatewayUsageArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayUsageArgs {
+    #[command(subcommand)]
+    pub command: GatewayUsageCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GatewayUsageCommand {
+    /// Aggregated totals, error rate, top tools, top actors.
+    Metrics(GatewayUsageMetricsArgs),
+    /// Raw call records, newest first.
+    Calls(GatewayUsageCallsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayUsageMetricsArgs {
+    #[arg(long)]
+    pub since_unix: Option<i64>,
+    #[arg(long)]
+    pub until_unix: Option<i64>,
+    #[arg(long)]
+    pub upstream: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayUsageCallsArgs {
+    #[arg(long)]
+    pub since_unix: Option<i64>,
+    #[arg(long)]
+    pub until_unix: Option<i64>,
+    #[arg(long)]
+    pub upstream: Option<String>,
+    #[arg(long)]
+    pub limit: Option<usize>,
+    #[arg(long)]
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Args)]

@@ -231,7 +231,10 @@ mod tests {
     use crate::oauth::upstream::encryption::load_key;
     use crate::oauth::upstream::runtime::build_upstream_oauth_runtime_from_parts;
 
-    use super::{GatewayCommand, GatewayEnrichCommand, build_manager_with_upstream_oauth_runtime};
+    use super::{
+        GatewayCommand, GatewayEnrichCommand, GatewayUsageCommand,
+        build_manager_with_upstream_oauth_runtime,
+    };
 
     #[test]
     fn gateway_cli_parser_accepts_expected_commands() {
@@ -388,6 +391,10 @@ mod tests {
             ])
             .is_ok()
         );
+        assert!(Cli::try_parse_from(["lab", "gateway", "usage", "metrics"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["lab", "gateway", "usage", "calls", "--limit", "10"]).is_ok()
+        );
     }
 
     #[test]
@@ -448,6 +455,47 @@ mod tests {
         assert_eq!(args.upstreams, vec!["github"]);
         assert_eq!(args.provider, "codex");
         assert!(args.yes);
+    }
+
+    #[test]
+    fn gateway_usage_metrics_parses_with_upstream_filter() {
+        let cli = Cli::try_parse_from([
+            "lab", "gateway", "usage", "metrics", "--upstream", "github",
+        ])
+        .expect("gateway usage metrics parses");
+
+        let Command::Gateway(args) = cli.command else {
+            panic!("expected gateway command");
+        };
+        let GatewayCommand::Usage(usage) = args.command else {
+            panic!("expected gateway usage command");
+        };
+        let GatewayUsageCommand::Metrics(metrics) = usage.command else {
+            panic!("expected gateway usage metrics command");
+        };
+
+        assert_eq!(metrics.upstream.as_deref(), Some("github"));
+    }
+
+    #[test]
+    fn gateway_usage_calls_parses_limit_and_offset() {
+        let cli = Cli::try_parse_from([
+            "lab", "gateway", "usage", "calls", "--limit", "50", "--offset", "10",
+        ])
+        .expect("gateway usage calls parses");
+
+        let Command::Gateway(args) = cli.command else {
+            panic!("expected gateway command");
+        };
+        let GatewayCommand::Usage(usage) = args.command else {
+            panic!("expected gateway usage command");
+        };
+        let GatewayUsageCommand::Calls(calls) = usage.command else {
+            panic!("expected gateway usage calls command");
+        };
+
+        assert_eq!(calls.limit, Some(50));
+        assert_eq!(calls.offset, Some(10));
     }
 
     #[test]

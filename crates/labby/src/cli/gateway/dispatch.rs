@@ -7,7 +7,7 @@ use crate::cli::gateway::{
     GatewayArgs, GatewayCommand, GatewayEnrichCommand, GatewayMcpAuthCommand, GatewayMcpCommand,
     GatewayPendingCommand, GatewayProtectedRouteCommand, GatewayProtectedRouteUpdateArgs,
     GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand, GatewayUpdateArgs,
-    LazyGatewayManager,
+    GatewayUsageCommand, LazyGatewayManager,
 };
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
 use crate::config::{LabConfig, ProtectedMcpRouteConfig};
@@ -432,6 +432,26 @@ pub(super) async fn dispatch_command(
                             }),
                         )
                     }
+                },
+                GatewayCommand::Usage(args) => match args.command {
+                    GatewayUsageCommand::Metrics(m) => (
+                        "gateway.usage.metrics".to_string(),
+                        json!({
+                            "since_unix": m.since_unix,
+                            "until_unix": m.until_unix,
+                            "upstream": m.upstream,
+                        }),
+                    ),
+                    GatewayUsageCommand::Calls(c) => (
+                        "gateway.usage.calls".to_string(),
+                        json!({
+                            "since_unix": c.since_unix,
+                            "until_unix": c.until_unix,
+                            "upstream": c.upstream,
+                            "limit": c.limit,
+                            "offset": c.offset,
+                        }),
+                    ),
                 },
                 GatewayCommand::Mcp(_) => unreachable!("handled above"),
                 GatewayCommand::Code(_) => unreachable!("handled above"),
