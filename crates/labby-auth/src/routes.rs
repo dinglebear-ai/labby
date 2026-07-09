@@ -6,7 +6,9 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use std::time::Instant;
 
-use crate::authorize::{authorize, browser_login, callback, native_callback, native_poll, register_client};
+use crate::authorize::{
+    authorize, browser_login, callback, native_callback, native_poll, register_client,
+};
 use crate::error::AuthErrorKind;
 use crate::metadata::{authorization_server_metadata, jwks, protected_resource_metadata};
 use crate::state::AuthState;
@@ -92,9 +94,15 @@ pub const BEARER_ONLY_ROUTER_PATHS: &[(&str, &str)] = &[
 ];
 
 /// Paths that must NOT be mounted by [`bearer_only_router`] — verified
-/// by the snapshot test.
-pub const BEARER_ONLY_ROUTER_FORBIDDEN_PATHS: &[(&str, &str)] =
-    &[("GET", "/auth/login"), ("POST", "/register")];
+/// by the snapshot test. Headless MCP clients have no browser to complete a
+/// native-app OAuth flow with, so `/native/callback`/`/native/poll` belong
+/// here alongside the browser-only/DCR-only endpoints.
+pub const BEARER_ONLY_ROUTER_FORBIDDEN_PATHS: &[(&str, &str)] = &[
+    ("GET", "/auth/login"),
+    ("POST", "/register"),
+    ("GET", "/native/callback"),
+    ("GET", "/native/poll"),
+];
 
 async fn auth_dispatch_observability(request: Request, next: Next) -> Response {
     let action = auth_dispatch_action(request.uri().path());

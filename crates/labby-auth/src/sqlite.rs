@@ -606,6 +606,13 @@ impl SqliteStore {
 
     /// Store a native-flow authorization code keyed by `state`, for the
     /// polling desktop client to retrieve via `take_native_authorization_result`.
+    ///
+    /// Last-write-wins on a `state` collision (e.g. a client retrying
+    /// `/authorize` with the same `state` after a timeout): each row is
+    /// single-use (deleted on first successful poll), so overwriting with the
+    /// newest code is correct — silently dropping the newest code instead
+    /// (`DO NOTHING`) would leave the polling client hung until the row's TTL
+    /// expires, with no error surfaced anywhere.
     pub async fn insert_native_authorization_result(
         &self,
         result: NativeAuthorizationResultRow,
@@ -614,7 +621,10 @@ impl SqliteStore {
             conn.execute(
                 "INSERT INTO native_authorization_results (state, code, created_at, expires_at)
                  VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(state) DO NOTHING",
+                 ON CONFLICT(state) DO UPDATE SET
+                    code = excluded.code,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at",
                 params![
                     result.state,
                     result.code,

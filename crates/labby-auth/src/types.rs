@@ -24,8 +24,6 @@ pub struct AuthorizationServerMetadata {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativePollQuery {
     pub state: String,
-    #[serde(default)]
-    pub code: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
