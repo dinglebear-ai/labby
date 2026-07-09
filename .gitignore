@@ -5,6 +5,7 @@
 *.env.*
 !.env.example
 !**/.env.example
+!apps/palette-tauri/scripts/desktop-smoke.env.example
 # Use /config.toml (root-anchored) so .cargo/config.toml is NOT excluded.
 /config.toml
 .broadcastr

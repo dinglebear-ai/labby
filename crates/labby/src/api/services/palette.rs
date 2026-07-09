@@ -407,7 +407,12 @@ mod tests {
         http::{Request, StatusCode, header},
     };
     use labby_gateway::gateway::palette::LauncherCatalogView;
+    use labby_gateway::upstream::pool::UpstreamPool;
+    use labby_gateway::upstream::types::{
+        ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
+    };
     use labby_primitives::action::{ActionSpec, ParamSpec};
+    use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
     use serde_json::Value;
     use tower::ServiceExt;
 
@@ -462,6 +467,64 @@ mod tests {
             echo_dispatch,
         ));
         registry
+    }
+
+    fn test_upstream_config(name: &str) -> UpstreamConfig {
+        UpstreamConfig {
+            enabled: true,
+            name: name.to_string(),
+            url: None,
+            bearer_token_env: None,
+            command: Some("true".to_string()),
+            args: Vec::new(),
+            env: Default::default(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }
+    }
+
+    fn healthy_upstream_entry(upstream: &str, tool_name: &str) -> UpstreamEntry {
+        let upstream_name: Arc<str> = Arc::from(upstream);
+        let tool = rmcp::model::Tool::new(
+            tool_name.to_string(),
+            format!("{tool_name} description"),
+            Arc::new(serde_json::Map::new()),
+        );
+        UpstreamEntry {
+            name: Arc::clone(&upstream_name),
+            tools: std::collections::HashMap::from([(
+                tool_name.to_string(),
+                UpstreamTool {
+                    tool,
+                    input_schema: None,
+                    output_schema: None,
+                    upstream_name,
+                    destructive: false,
+                },
+            )]),
+            exposure_policy: ToolExposurePolicy::All,
+            proxy_resources: false,
+            prompt_count: 0,
+            resource_count: 0,
+            prompt_names: Vec::new(),
+            resource_uris: Vec::new(),
+            tool_health: UpstreamHealth::Healthy,
+            prompt_health: UpstreamHealth::Healthy,
+            resource_health: UpstreamHealth::Healthy,
+            tool_unhealthy_since: None,
+            prompt_unhealthy_since: None,
+            resource_unhealthy_since: None,
+            tool_last_error: None,
+            prompt_last_error: None,
+            resource_last_error: None,
+        }
     }
 
     #[tokio::test]
@@ -588,6 +651,63 @@ mod tests {
             .expect("labby action should be present");
         assert_eq!(entry["kind"], "labbyAction");
         assert_eq!(entry["inputSchema"]["required"][0], "name");
+    }
+
+    #[tokio::test]
+    async fn palette_catalog_includes_configured_upstream_mcp_tools() {
+        let runtime = GatewayRuntimeHandle::default();
+        let pool = Arc::new(UpstreamPool::new());
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager = test_gateway_manager(
+            std::env::temp_dir().join("palette-upstream-catalog.toml"),
+            runtime,
+        );
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                code_mode: CodeModeConfig {
+                    enabled: true,
+                    ..CodeModeConfig::default()
+                },
+                upstream: vec![test_upstream_config("github")],
+                ..GatewayConfig::default()
+            })
+            .await;
+        pool.insert_entry_for_test("github", healthy_upstream_entry("github", "search_repos"))
+            .await;
+
+        let state =
+            AppState::from_registry(test_registry()).with_gateway_manager(Arc::new(manager));
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/catalog")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        let entries = value["entries"].as_array().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["id"] == "labby:demo::echo.run"),
+            "first-party Labby actions should remain in the launcher catalog"
+        );
+        let upstream = entries
+            .iter()
+            .find(|entry| entry["id"] == "mcp:github::search_repos")
+            .expect("configured upstream MCP tool should be present");
+        assert_eq!(upstream["kind"], "mcpTool");
+        assert_eq!(upstream["source"], "github");
     }
 
     #[tokio::test]

@@ -256,8 +256,12 @@ pub enum IncusSshCommand {
         /// Host SSH config to read.
         #[arg(long)]
         ssh_config: Option<PathBuf>,
-        /// Private key path inside the container.
-        #[arg(long, default_value = "/home/labby/.ssh/id_ed25519")]
+        /// Private key path inside the container. Defaults to the labby user's Ed25519 key.
+        #[arg(
+            long,
+            default_value = "/home/labby/.ssh/id_ed25519",
+            hide_default_value = true
+        )]
         key_path: String,
         /// Print the plan without mutating the container or remote hosts.
         #[arg(long)]
@@ -298,8 +302,12 @@ pub enum IncusSshCommand {
         /// Host SSH config to read.
         #[arg(long)]
         ssh_config: Option<PathBuf>,
-        /// Private key path inside the container.
-        #[arg(long, default_value = "/home/labby/.ssh/id_ed25519")]
+        /// Private key path inside the container. Defaults to the labby user's Ed25519 key.
+        #[arg(
+            long,
+            default_value = "/home/labby/.ssh/id_ed25519",
+            hide_default_value = true
+        )]
         key_path: String,
         /// Only process hosts whose alias or HostName matches this filter. Repeatable.
         #[arg(long)]
