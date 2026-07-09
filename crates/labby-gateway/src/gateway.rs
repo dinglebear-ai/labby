@@ -21,6 +21,7 @@ mod enrichment;
 pub mod manager;
 pub mod oauth;
 mod oauth_lifecycle;
+pub mod palette;
 mod params;
 mod projection;
 pub mod protected_routes;

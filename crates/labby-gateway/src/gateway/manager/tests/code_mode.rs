@@ -417,6 +417,228 @@ async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
     }
 }
 
+#[tokio::test]
+async fn palette_catalog_projects_cached_mcp_tools_without_cold_connect() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hanging upstream fixture");
+    let addr = listener.local_addr().expect("listener addr");
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            });
+        }
+    });
+
+    let mut cold = fixture_http_upstream("cold");
+    cold.url = Some(format!("http://{addr}/mcp"));
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![cold, fixture_http_upstream("alpha")]).await;
+    let upstream_name: Arc<str> = Arc::from("alpha");
+    let tool = rmcp::model::Tool::new(
+        "ping".to_string(),
+        "Ping <system> safely",
+        Arc::new(serde_json::Map::new()),
+    );
+    let entry = fixture_upstream_entry(
+        "alpha",
+        HashMap::from([(
+            "ping".to_string(),
+            UpstreamTool {
+                tool,
+                input_schema: Some(json!({
+                    "type": "object",
+                    "default": { "token": "sk-secretsecretsecretsecret" },
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "examples": ["hello"]
+                        }
+                    },
+                    "required": ["query"]
+                })),
+                output_schema: None,
+                upstream_name,
+                destructive: false,
+            },
+        )]),
+    );
+    pool.insert_entry_for_tests("alpha", entry).await;
+
+    let catalog = tokio::time::timeout(
+        Duration::from_millis(100),
+        manager.palette_catalog(&crate::gateway::palette::PaletteCaller::admin(
+            Some("admin"),
+            Some("req-1"),
+        )),
+    )
+    .await
+    .expect("palette catalog must not cold-connect idle upstream")
+    .expect("catalog builds");
+
+    assert_eq!(catalog.entries.len(), 1);
+    let crate::gateway::palette::LauncherEntryView::McpTool(entry) = &catalog.entries[0] else {
+        panic!("expected mcp tool entry");
+    };
+    assert_eq!(entry.id, "mcp:alpha::ping");
+    assert_eq!(entry.source, "alpha");
+    assert!(entry.description.contains("Ping"));
+    assert!(!entry.description.contains("<system>"));
+    let schema = entry.input_schema.as_ref().expect("redacted schema");
+    assert!(schema.get("default").is_none());
+    assert!(schema.pointer("/properties/query/examples").is_none());
+    assert!(entry.schema_fingerprint.is_some());
+}
+
+#[tokio::test]
+async fn palette_catalog_scope_and_fingerprint_follow_visible_schema() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
+        .await;
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "pong"))
+        .await;
+
+    let admin = crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1"));
+    let scoped = crate::gateway::palette::PaletteCaller::scoped_read_only(
+        Some("user"),
+        Some("req-2"),
+        vec!["alpha".to_string()],
+    );
+
+    let admin_catalog = manager
+        .palette_catalog(&admin)
+        .await
+        .expect("admin catalog");
+    let scoped_catalog = manager
+        .palette_catalog(&scoped)
+        .await
+        .expect("scoped catalog");
+    assert_eq!(admin_catalog.entries.len(), 2);
+    assert_eq!(scoped_catalog.entries.len(), 1);
+    assert_ne!(admin_catalog.fingerprint, scoped_catalog.fingerprint);
+
+    let upstream_name: Arc<str> = Arc::from("alpha");
+    let tool = rmcp::model::Tool::new(
+        "ping".to_string(),
+        "changed schema",
+        Arc::new(serde_json::Map::new()),
+    );
+    pool.insert_entry_for_tests(
+        "alpha",
+        fixture_upstream_entry(
+            "alpha",
+            HashMap::from([(
+                "ping".to_string(),
+                UpstreamTool {
+                    tool,
+                    input_schema: Some(json!({"type": "object", "required": ["q"]})),
+                    output_schema: None,
+                    upstream_name,
+                    destructive: false,
+                },
+            )]),
+        ),
+    )
+    .await;
+
+    let changed = manager
+        .palette_catalog(&scoped)
+        .await
+        .expect("changed catalog");
+    assert_ne!(scoped_catalog.fingerprint, changed.fingerprint);
+}
+
+#[tokio::test]
+async fn palette_execute_rejects_unknown_hidden_destructive_and_read_only_calls() {
+    let mut suppressed = fixture_http_upstream("suppressed");
+    suppressed.priority = 0.0;
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha"), suppressed]).await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "delete"))
+        .await;
+    pool.insert_entry_for_tests(
+        "suppressed",
+        healthy_entry_with_tool("suppressed", "secret"),
+    )
+    .await;
+
+    let mut destructive = pool.healthy_tools_for_upstream("alpha").await;
+    destructive[0].destructive = true;
+    pool.insert_entry_for_tests(
+        "alpha",
+        fixture_upstream_entry(
+            "alpha",
+            HashMap::from([("delete".to_string(), destructive.remove(0))]),
+        ),
+    )
+    .await;
+
+    let admin = crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1"));
+    let read_only = crate::gateway::palette::PaletteCaller::scoped_read_only(
+        Some("user"),
+        Some("req-2"),
+        vec!["alpha".to_string()],
+    );
+
+    let err = manager
+        .palette_execute(
+            &admin,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: "mcp:missing::tool".to_string(),
+                params: json!({}),
+                confirm_destructive: false,
+            },
+        )
+        .await
+        .expect_err("unknown id rejected");
+    assert_eq!(err.kind(), "not_found");
+
+    let err = manager
+        .palette_execute(
+            &admin,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: "mcp:suppressed::secret".to_string(),
+                params: json!({}),
+                confirm_destructive: false,
+            },
+        )
+        .await
+        .expect_err("priority zero hidden");
+    assert_eq!(err.kind(), "not_found");
+
+    let err = manager
+        .palette_execute(
+            &read_only,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: "mcp:alpha::delete".to_string(),
+                params: json!({}),
+                confirm_destructive: true,
+            },
+        )
+        .await
+        .expect_err("read-only rejected");
+    assert_eq!(err.kind(), "forbidden");
+
+    let err = manager
+        .palette_execute(
+            &admin,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: "mcp:alpha::delete".to_string(),
+                params: json!({}),
+                confirm_destructive: false,
+            },
+        )
+        .await
+        .expect_err("destructive confirmation required");
+    assert_eq!(err.kind(), "confirmation_required");
+}
+
 // ── Semantic search (fail-open embedding blend) ──────────────────────────────
 
 #[tokio::test]

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { actionOptionId } from "@/components/palette/ActionList";
 import { PaletteShell } from "@/components/palette/PaletteShell";
-import type { PaletteAction } from "@/lib/actions";
-import { useActionCatalog } from "@/lib/actionCatalog";
-import { dispatchAction, resultErrorMessage } from "@/lib/labbyClient";
+import { launcherEntryMatches, type LauncherEntry, useLauncherCatalog } from "@/lib/launcherCatalog";
+import { executeLauncherEntry, resultErrorMessage } from "@/lib/labbyClient";
+import { exampleLauncherParams, validateLauncherParams } from "@/lib/launcherValidation";
 import { hostLabel } from "@/lib/url";
 import { invoke, isTauriRuntime } from "@/lib/invoke";
 import type { RunState } from "@/lib/runState";
@@ -20,29 +20,11 @@ function focusInput() {
   document.querySelector<HTMLInputElement>(".command-input")?.focus();
 }
 
-function exampleParams(action: PaletteAction): string {
-  if (action.params.length === 0) return "{}";
-  const obj: Record<string, unknown> = {};
-  for (const param of action.params) {
-    const ty = param.ty.toLowerCase();
-    obj[param.name] = ty.includes("bool")
-      ? false
-      : ty.includes("int") || ty.includes("number")
-        ? 0
-        : ty.includes("array") || ty.includes("[")
-          ? []
-          : ty.includes("object") || ty.includes("map")
-            ? {}
-            : "";
-  }
-  return JSON.stringify(obj, null, 2);
-}
-
 export default function App() {
   const [mode, setMode] = useState<"browse" | "argument">("browse");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
-  const [activeAction, setActiveAction] = useState<PaletteAction | null>(null);
+  const [activeAction, setActiveAction] = useState<LauncherEntry | null>(null);
   const [browseOpen, setBrowseOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [run, setRun] = useState<RunState>({ kind: "idle" });
@@ -50,9 +32,10 @@ export default function App() {
   const [shownTick, setShownTick] = useState(0);
   const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
   const lastParamsRef = useRef<unknown>({});
+  const runRequestIdRef = useRef(0);
   const settingsFocusRef = useRef<HTMLDivElement | null>(null);
 
-  const { actions: catalogActions, error: catalogError } = useActionCatalog();
+  const { actions: catalogActions, error: catalogError } = useLauncherCatalog();
   const { config, draftConfig, setDraftConfig, configError, saveSettings } = usePaletteConfig();
 
   usePaletteLifecycle(
@@ -62,16 +45,7 @@ export default function App() {
 
   const filtered = useMemo(() => {
     if (mode !== "browse") return [];
-    const q = query.trim().toLowerCase();
-    const matches = q
-      ? catalogActions.filter(
-          (action) =>
-            action.subcommand.toLowerCase().includes(q) ||
-            action.label.toLowerCase().includes(q) ||
-            action.description.toLowerCase().includes(q) ||
-            action.category.toLowerCase().includes(q),
-        )
-      : catalogActions;
+    const matches = catalogActions.filter((action) => launcherEntryMatches(action, query));
     return matches.slice(0, 30);
   }, [catalogActions, query, mode]);
 
@@ -90,8 +64,8 @@ export default function App() {
   // never survives a navigation away, so it can only fire on two consecutive
   // Enters with no selection change in between.
   useEffect(() => {
-    setPendingConfirm((current) => (current && active?.subcommand !== current ? null : current));
-  }, [active?.subcommand]);
+    setPendingConfirm((current) => (current && active?.id !== current ? null : current));
+  }, [active?.id]);
 
   const hasQuery = query.trim().length > 0;
   const showResultsLayout = run.kind !== "idle";
@@ -123,23 +97,29 @@ export default function App() {
   const validation =
     mode === "argument" && !argumentJson.ok
       ? "Invalid JSON — fix and press Enter"
+      : mode === "argument" && active && !validateLauncherParams(active, argumentJson.value).valid
+        ? (validateLauncherParams(active, argumentJson.value).message ?? "Params do not match schema")
       : !active
         ? "No matching action"
-        : pendingConfirm === active.subcommand
+        : pendingConfirm === active.id
           ? "Press Enter again to confirm this destructive action"
           : "";
 
-  const runAction = useCallback(async (action: PaletteAction, params: unknown) => {
+  const runAction = useCallback(async (action: LauncherEntry, params: unknown) => {
+    const requestId = runRequestIdRef.current + 1;
+    runRequestIdRef.current = requestId;
     lastParamsRef.current = params;
     setRun({ kind: "running", title: action.label });
     try {
-      const result = await dispatchAction(action.service, action.action, params);
+      const result = await executeLauncherEntry(action.id, params, { confirmDestructive: action.destructive });
+      if (runRequestIdRef.current !== requestId) return;
       setRun(
         result.ok
           ? { kind: "success", title: action.label, result }
           : { kind: "error", title: action.label, result, message: resultErrorMessage(result) },
       );
     } catch (err) {
+      if (runRequestIdRef.current !== requestId) return;
       const message = err instanceof Error ? err.message : String(err);
       setRun({
         kind: "error",
@@ -147,7 +127,7 @@ export default function App() {
         result: {
           ok: false,
           status: 0,
-          path: `/v1/${action.service}`,
+          path: "/v1/palette/execute",
           method: "POST",
           payload: { error: message },
         },
@@ -157,13 +137,13 @@ export default function App() {
   }, []);
 
   const enterArgumentMode = useCallback(
-    (action: PaletteAction) => {
-      if (action.params.length === 0) {
+    (action: LauncherEntry) => {
+      if (action.argMode === "none") {
         void runAction(action, {});
         return;
       }
       setActiveAction(action);
-      setQuery(exampleParams(action));
+      setQuery(exampleLauncherParams(action));
       setMode("argument");
       setPendingConfirm(null);
       focusInput();
@@ -172,15 +152,17 @@ export default function App() {
   );
 
   const submitActive = useCallback(
-    (action: PaletteAction) => {
-      if (mode === "browse" && action.params.length > 0) {
+    (action: LauncherEntry) => {
+      if (mode === "browse" && action.argMode !== "none") {
         enterArgumentMode(action);
         return;
       }
       const params = mode === "argument" ? (argumentJson.ok ? argumentJson.value : undefined) : {};
       if (params === undefined) return;
-      if (action.destructive && pendingConfirm !== action.subcommand) {
-        setPendingConfirm(action.subcommand);
+      const paramValidation = validateLauncherParams(action, params);
+      if (!paramValidation.valid) return;
+      if (action.destructive && pendingConfirm !== action.id) {
+        setPendingConfirm(action.id);
         return;
       }
       setPendingConfirm(null);

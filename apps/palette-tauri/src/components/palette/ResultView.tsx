@@ -3,11 +3,11 @@ import { Check, Copy, RotateCw, X } from "lucide-react";
 import { ErrorResultView } from "@/components/palette/ErrorResultView";
 import { Button } from "@/components/ui/aurora/button";
 import { Spinner } from "@/components/ui/aurora/spinner";
-import type { PaletteAction } from "@/lib/actions";
 import type { PaletteResult } from "@/lib/labbyClient";
+import type { LauncherEntry } from "@/lib/launcherCatalog";
 
 interface ResultViewProps {
-  action: PaletteAction | undefined;
+  action: LauncherEntry | undefined;
   result: PaletteResult | null;
   running: boolean;
   copied: boolean;
