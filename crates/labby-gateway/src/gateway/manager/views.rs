@@ -27,6 +27,27 @@ fn find_virtual_server_for_service<'a>(
 }
 
 impl GatewayManager {
+    /// Live inbound MCP client/session list — see
+    /// `labby_runtime::client_registry` for the best-effort/pruning caveat.
+    /// Empty when no transport has wired `with_client_registry`.
+    pub async fn clients(
+        &self,
+    ) -> Result<Vec<crate::gateway::types::GatewayClientView>, ToolError> {
+        Ok(self
+            .client_registry
+            .list()
+            .await
+            .into_iter()
+            .map(|client| crate::gateway::types::GatewayClientView {
+                subject: client.subject_tag,
+                client_name: client.client_name,
+                client_version: client.client_version,
+                transport: client.transport,
+                connected_at: client.connected_at,
+            })
+            .collect())
+    }
+
     pub async fn list(&self) -> Result<Vec<ServerView>, ToolError> {
         let (cfg_guard, pool) = tokio::join!(self.config.read(), self.runtime.current_pool(),);
         let cfg = cfg_guard.clone();

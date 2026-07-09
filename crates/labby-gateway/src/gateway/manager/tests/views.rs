@@ -5,6 +5,42 @@ use crate::gateway::projection::{runtime_view, server_view_from_upstream};
 use super::*;
 
 #[tokio::test]
+async fn clients_is_empty_without_a_wired_client_registry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+
+    assert!(manager.clients().await.expect("clients").is_empty());
+}
+
+#[tokio::test]
+async fn clients_reflects_entries_pushed_to_the_wired_registry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let client_registry = labby_runtime::client_registry::ClientRegistryHandle::default();
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default())
+        .with_client_registry(client_registry.clone());
+
+    client_registry
+        .push(labby_runtime::client_registry::ConnectedClient {
+            subject_tag: Some("sub:deadbeef".to_string()),
+            client_name: Some("claude-code".to_string()),
+            client_version: Some("1.2.3".to_string()),
+            transport: "mcp".to_string(),
+            connected_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .await;
+
+    let clients = manager.clients().await.expect("clients");
+    assert_eq!(clients.len(), 1);
+    assert_eq!(clients[0].client_name.as_deref(), Some("claude-code"));
+    // The redacted subject tag must survive the view projection unchanged —
+    // this is the ONLY subject-shaped value that should ever reach this
+    // dispatch-layer type; a raw subject must never appear here.
+    assert_eq!(clients[0].subject.as_deref(), Some("sub:deadbeef"));
+}
+
+#[tokio::test]
 async fn protected_route_add_updates_live_resolver_index() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
