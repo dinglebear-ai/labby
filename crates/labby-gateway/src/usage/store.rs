@@ -607,4 +607,39 @@ mod tests {
         // Newest first.
         assert_eq!(page[0].ts_unix, 4);
     }
+
+    /// Regression guard for the write-semaphore backpressure mechanism
+    /// (`upstream/pool/usage_record.rs`): locks in the permit count and
+    /// proves that once all permits are held, a further `try_acquire`
+    /// fails rather than succeeding unboundedly. This is the store-level
+    /// half of the backpressure proof; `call_tool` exercises the same
+    /// semaphore end-to-end in `upstream/pool/tools_call.rs`.
+    #[tokio::test]
+    async fn write_semaphore_rejects_acquire_once_permits_are_exhausted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+
+        let semaphore = store.write_semaphore();
+        let mut held_permits = Vec::with_capacity(super::WRITE_SEMAPHORE_PERMITS);
+        for _ in 0..super::WRITE_SEMAPHORE_PERMITS {
+            held_permits.push(
+                semaphore
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("permit available until exhausted"),
+            );
+        }
+
+        assert!(
+            semaphore.try_acquire().is_err(),
+            "acquiring beyond WRITE_SEMAPHORE_PERMITS should fail"
+        );
+
+        // Releasing one permit frees up capacity again.
+        drop(held_permits.pop());
+        assert!(
+            semaphore.try_acquire().is_ok(),
+            "a released permit should be acquirable again"
+        );
+    }
 }
