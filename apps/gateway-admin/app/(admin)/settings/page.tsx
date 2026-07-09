@@ -15,7 +15,7 @@ export default function SettingsIndex(): React.ReactElement {
     router.replace('/settings/core/')
   }, [router])
   return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+    <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
       <Loader2 className="h-4 w-4 animate-spin" />
       Loading settings…
     </div>

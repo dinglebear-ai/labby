@@ -13,7 +13,7 @@ export default function SettingsLayout({
     <div className="flex flex-col">
       <AppHeader breadcrumbs={[{ label: 'Settings' }]} />
       <div className="grid min-w-0 gap-4 p-4 sm:p-6 lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-6">
-        <aside className="min-w-0 rounded-md border bg-card">
+        <aside className="min-w-0 rounded-md border bg-aurora-panel-medium">
           <SettingsRail />
         </aside>
         <main className="flex min-w-0 flex-col gap-4">

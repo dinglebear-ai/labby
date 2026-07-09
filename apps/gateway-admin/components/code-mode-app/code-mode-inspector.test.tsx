@@ -187,6 +187,7 @@ test('updates from bridge tool results using both structured content field names
       ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
       connect = async () => ({})
       constructor() {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias -- capturing the mock instance for later test assertions
         instance = this
       }
     },
@@ -252,6 +253,7 @@ test('renders a warning for malformed bridge payloads', async () => {
       ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
       connect = async () => ({})
       constructor() {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias -- capturing the mock instance for later test assertions
         instance = this
       }
     },

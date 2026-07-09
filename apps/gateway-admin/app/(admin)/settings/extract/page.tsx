@@ -100,14 +100,14 @@ export default function ExtractPanel(): React.ReactElement {
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {loading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2 text-sm text-aurora-text-muted">
               <Loader2 className="h-4 w-4 animate-spin" /> running extract.scan
             </div>
           ) : null}
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
         {report && report.creds.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-aurora-text-muted">
             No credentials discovered.
           </p>
         ) : null}
@@ -125,9 +125,9 @@ export default function ExtractPanel(): React.ReactElement {
                   <div className="flex-1">
                     <p className="font-medium">{cred.service}</p>
                     {cred.url ? (
-                      <p className="text-xs text-muted-foreground">URL: {cred.url}</p>
+                      <p className="text-xs text-aurora-text-muted">URL: {cred.url}</p>
                     ) : null}
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-aurora-text-muted">
                       {cred.secret_present ? 'Secret present (redacted)' : 'No secret'}
                       {cred.source_host ? ` — host: ${cred.source_host}` : ''}
                     </p>
@@ -138,7 +138,7 @@ export default function ExtractPanel(): React.ReactElement {
             <div className="rounded-md border p-3">
               <p className="text-sm font-medium">Draft preview</p>
               {previewEntries.length > 0 ? (
-                <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                <ul className="mt-2 space-y-1 text-xs text-aurora-text-muted">
                   {previewEntries.map((entry) => (
                     <li key={entry.key} className="font-mono">
                       {entry.key} = {entry.value}
@@ -146,11 +146,11 @@ export default function ExtractPanel(): React.ReactElement {
                   ))}
                 </ul>
               ) : (
-                <p className="mt-2 text-xs text-muted-foreground">
+                <p className="mt-2 text-xs text-aurora-text-muted">
                   Selected credentials do not include writable URL values.
                 </p>
               )}
-              <p className="mt-2 text-xs text-muted-foreground">
+              <p className="mt-2 text-xs text-aurora-text-muted">
                 Redacted secrets are not written by extract; enter them on each service page.
               </p>
             </div>

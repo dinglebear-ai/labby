@@ -182,7 +182,7 @@ export function ServiceForm({
           <button
             type="button"
             onClick={() => setShowAdvanced((v) => !v)}
-            className="flex items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground"
+            className="flex items-center gap-1 text-sm font-medium text-aurora-text-muted hover:text-aurora-text-primary"
           >
             {showAdvanced ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
             Advanced
@@ -265,7 +265,7 @@ function FieldRow({
             {field.name}
           </Label>
           {field.description ? (
-            <p className="text-sm text-muted-foreground">{field.description}</p>
+            <p className="text-sm text-aurora-text-muted">{field.description}</p>
           ) : null}
         </div>
         {/* Controller scopes the subscription to this field — `form.watch`
@@ -297,7 +297,7 @@ function FieldRow({
           {...form.register(field.name, { onBlur: onBlurProbe })}
           disabled={disabled}
           className={cn(
-            'border rounded-md p-2 text-sm bg-background',
+            'border rounded-md p-2 text-sm bg-aurora-page-bg',
             errorMessage ? 'border-destructive' : 'border-input',
           )}
         >
@@ -347,7 +347,7 @@ function FieldRow({
             type="button"
             aria-label={secretShown ? 'Hide secret' : 'Show secret'}
             onClick={() => onToggleSecret(field.name)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-aurora-text-muted hover:text-aurora-text-primary"
           >
             {secretShown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
@@ -379,14 +379,14 @@ function FieldLabel({
           href={field.ui.help_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-muted-foreground hover:text-foreground"
+          className="text-aurora-text-muted hover:text-aurora-text-primary"
           aria-label={`Help for ${field.name}`}
         >
           <ExternalLink className="h-3 w-3" />
         </a>
       ) : null}
       {field.description ? (
-        <span className="ml-2 font-sans text-muted-foreground normal-case">
+        <span className="ml-2 font-sans text-aurora-text-muted normal-case">
           — {field.description}
         </span>
       ) : null}
@@ -404,7 +404,7 @@ function ProbeStatusBadge({
   if (status === 'idle') return null
   if (status === 'pending') {
     return (
-      <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+      <span className="text-xs text-aurora-text-muted inline-flex items-center gap-1">
         <Loader2 className="h-3 w-3 animate-spin" /> probing
       </span>
     )
