@@ -2,6 +2,75 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0](https://github.com/jmagar/labby/compare/v0.29.0...v1.0.0) (2026-07-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* rename all LAB_* env vars to LABBY_* (hard break, no aliases)
+
+### Added
+
+* **codemode:** add batch helper ([0cdc7af](https://github.com/jmagar/labby/commit/0cdc7afb3511a0906969c255fa1552c01846fd0a))
+* **codemode:** semantic search blend for codemode.search() ([#172](https://github.com/jmagar/labby/issues/172)) ([0ba290d](https://github.com/jmagar/labby/commit/0ba290dc2fc0b59768d80db5f95a0979be7b98dd))
+* **config:** add [code_mode] fields for 5 previously env-only artifact/call-budget prefs ([4066c21](https://github.com/jmagar/labby/commit/4066c217543bc893affb7e570e0d4fd2c18b72ad))
+* **config:** add [gateway] fields for 4 previously env-only upstream/discovery prefs ([2a849f2](https://github.com/jmagar/labby/commit/2a849f27f624e49952be7ca88176c50e24ee065f))
+* **config:** add config.toml fields for 7 previously env-only preferences ([496b65b](https://github.com/jmagar/labby/commit/496b65b82d8de1ce44d747f50628c9920dd3d341))
+* **config:** wire [auth] rate-limit fields through resolve_auth() ([95aa488](https://github.com/jmagar/labby/commit/95aa48844a4f3d38174678c70700cb032a8bd5ca))
+* gate base services (stash, acp, nodes) for gateway-only builds ([#171](https://github.com/jmagar/labby/issues/171)) ([30132cc](https://github.com/jmagar/labby/commit/30132cc8a2eff161ffc333e3c6fbe4c645aea4dd))
+* **lab-jwbkn.5:** add real build-timing measurement to bench-labby-slimming ([39d574e](https://github.com/jmagar/labby/commit/39d574ef71258df919cec6a380df377d9ce104e1))
+* **lab-jwbkn.6:** swap reqwest's TLS crypto backend from aws-lc-rs to ring ([0182a3b](https://github.com/jmagar/labby/commit/0182a3b7af2c4e8f8197a190d70212486c215ddc))
+* **labby-auth:** auto-allow native-app OAuth redirect URI schemes ([8c6b9fa](https://github.com/jmagar/labby/commit/8c6b9fac48745649d63e6b3ad059f695078332f6))
+* **openapi:** build registry + hardened client at startup and inject via required host accessors ([2478d8b](https://github.com/jmagar/labby/commit/2478d8b08a994ce35739cee7b82202788e56a67a))
+* **openapi:** config types (secret-redacted) + loader with mandatory base_url and label validation ([1e766e4](https://github.com/jmagar/labby/commit/1e766e41951b0fbfa2a42887da220c422e356cbe))
+* **openapi:** const globalThis.openapi.call shim emitted on the host path only ([f08a51c](https://github.com/jmagar/labby/commit/f08a51cba4a4ac48790b5e88ee27cb04d4891330))
+* **openapi:** hardened own HTTP client (redirect-off, peer-IP recheck) + dispatch with credential injection + canary leak test ([b6c694d](https://github.com/jmagar/labby/commit/b6c694d7c0dd7fc76f7a510a8abb9de7281db82c))
+* **openapi:** load-time base-URL SSRF validation via canonical labby_primitives::ssrf ([5f29d16](https://github.com/jmagar/labby/commit/5f29d1679155d0a6af8a999cd365531228abb273))
+* **openapi:** LocalProviderName::Openapi + dotted-op ID parsing; wire dispatch via pre-lock branch + required host accessors ([0cd5ca4](https://github.com/jmagar/labby/commit/0cd5ca4074d74d0dd41984b9b5dcf66becfc3652))
+* **openapi:** real ToolError mapping + parse-only spec-to-descriptor conversion with raw-id allowlist ([0ee2f57](https://github.com/jmagar/labby/commit/0ee2f571f98b062110872d3a2f368a50e83aac41))
+* **openapi:** registry with concurrent timeout-bounded degraded-boot load + spec body-size cap + truncation warnings ([574d780](https://github.com/jmagar/labby/commit/574d78075eca2c248cf904174b9bbd6eb62e0466))
+* **openapi:** scaffold isolated labby-openapi crate (parse-only rmcp-openapi + own HTTP) ([58e2bb5](https://github.com/jmagar/labby/commit/58e2bb59a6374a36ac34b0c57c2825d3be55f3d8))
+* rename all LAB_* env vars to LABBY_* (hard break, no aliases) ([f3bb785](https://github.com/jmagar/labby/commit/f3bb7855e19f0a499e96ca1c9f601fae8246a7a1))
+* **ui:** hide feature-gated services absent from this build (lab-x4mw2) ([#180](https://github.com/jmagar/labby/issues/180)) ([97244c0](https://github.com/jmagar/labby/commit/97244c06a1e8a7510114a838f962a72ab73bfaa1))
+
+
+### Fixed
+
+* canonical example env var name + accurate labby-auth error prefixes ([ae45de3](https://github.com/jmagar/labby/commit/ae45de36de9301a3d39d8e25d5c3d973b4432c5f))
+* CI failures and review findings from PR [#170](https://github.com/jmagar/labby/issues/170) ([35a42eb](https://github.com/jmagar/labby/commit/35a42eb38ece52d531bfdddcb3026864ffa080b6))
+* CI matrix drift, fs-slice compile error, and normalize prologue bug ([f42004b](https://github.com/jmagar/labby/commit/f42004b041bbb19fa8983c88de69c89852ed5189))
+* **ci:** repair release-please manifest and switch OpenWiki to local proxy ([9bef3f0](https://github.com/jmagar/labby/commit/9bef3f0f628a747837f581fb96fcbf2610cf6d37))
+* **deps:** address Dependabot advisories ([9a05409](https://github.com/jmagar/labby/commit/9a0540984c17db17b0263391c405ed06049558f1))
+* **fmt:** reorder use statement in config.rs ([1471646](https://github.com/jmagar/labby/commit/1471646882987cc7ff642a04995343a2ae569e19))
+* **incus:** su - lab → su - labby in bootstrap hint and smoke test ([#179](https://github.com/jmagar/labby/issues/179)) ([def7235](https://github.com/jmagar/labby/commit/def723541ac39ee91a9adc093d276f517046c705))
+* **lab-jwbkn.2:** stop find -empty from deleting the just-created SCCACHE_DIR ([57f58fe](https://github.com/jmagar/labby/commit/57f58fe65e633e917235969e32e2e62e153f14f5))
+* **labby-auth:** circuit-break upstream OAuth refresh after a failure ([8209188](https://github.com/jmagar/labby/commit/8209188ccf92d05f3eb48090017723498ea6a0e5))
+* **labby-auth:** log refresh outcome on the live upstream OAuth pool path ([cf40fea](https://github.com/jmagar/labby/commit/cf40fea271a84ccdbc3bbd72755121891929aba8))
+* **labby-auth:** skip forced re-consent once a refresh token exists ([ee00416](https://github.com/jmagar/labby/commit/ee004161ab08397656e0c8fd9f0dc38a6b3271ed))
+* **labby:** forward everything the bridge's Peer&lt;RoleClient&gt; can forward ([6996d4a](https://github.com/jmagar/labby/commit/6996d4a50c8b8992577abbcf8affd4a6cbd6768c))
+* **labby:** forward ping, task management, and custom requests through the MCP bridge ([7611351](https://github.com/jmagar/labby/commit/7611351f6dfc15a51aebceec0581da74eeefcb06))
+* **labby:** lazy CLI manager construction + full stdio MCP bridge to the live daemon ([a30ed49](https://github.com/jmagar/labby/commit/a30ed49343fd51a330e057392bcf8dfc9aee111a))
+* **labby:** mirror the daemon's real capabilities and relay elicitation/sampling/roots ([af8c20f](https://github.com/jmagar/labby/commit/af8c20f97a05f0b55699fb761f1d89dbf0944263))
+* **labby:** remove Code Mode pause gate and HTTP confirm gate ([50f4dae](https://github.com/jmagar/labby/commit/50f4dae282fcbd5dc72208bde69c5fd6e1bbf09f))
+* **labby:** remove Code Mode pause gate and HTTP confirm gate ([e357519](https://github.com/jmagar/labby/commit/e357519385e131c2651b3c46f8390506525ca769))
+* **labby:** route gateway CLI commands through the live daemon when one is running ([502418d](https://github.com/jmagar/labby/commit/502418d03739acbf99d7f185f583e089aafab4db))
+* **labby:** widen live-daemon detection to the gateway's own public URLs ([413a104](https://github.com/jmagar/labby/commit/413a1046612e0825dad595c5b4246f0b1a1a0765))
+* **openapi:** address CodeRabbit review (label charset + spec-url SSRF) ([1f983ca](https://github.com/jmagar/labby/commit/1f983cae1b1ee28287e6405a7a7804d6e403155a))
+* **openapi:** address final lavra-review findings (P3 robustness) ([f96ddc2](https://github.com/jmagar/labby/commit/f96ddc2ac5c9ccf511e30b3129e8447eb4c30652))
+* **openapi:** address lavra-review findings ([334d657](https://github.com/jmagar/labby/commit/334d65721e15b8d51f88d4121cf63384f3612bfa))
+* **openapi:** CI green + second-review-pass cleanups ([1399aa1](https://github.com/jmagar/labby/commit/1399aa15fa01384fb6a4b06a05a7982cf52b33ba))
+* **release:** switch release-type to simple; add Cargo.toml/lock sync job ([8a3f580](https://github.com/jmagar/labby/commit/8a3f580903211c575bfe9be48bee13bfc4104287))
+* restore missing lab_admin_enabled import in registry tests ([d65183e](https://github.com/jmagar/labby/commit/d65183e93bdbfd414bd1dca08e8c55628d5408d4))
+* **setup:** pin uv provision CWD to labby home + UV_NO_CONFIG ([#177](https://github.com/jmagar/labby/issues/177)) ([52a2e89](https://github.com/jmagar/labby/commit/52a2e891905f8dda182190ff827a866621e8c736))
+* sync Cargo.lock labby-primitives to 0.30.0 (unblock --locked CI after [#175](https://github.com/jmagar/labby/issues/175)) ([#176](https://github.com/jmagar/labby/issues/176)) ([c633a5e](https://github.com/jmagar/labby/commit/c633a5e5e013776b32e0c5f8973e93c8ef563c02))
+* **xtask:** send Code Mode runner timeout ([201e368](https://github.com/jmagar/labby/commit/201e3687ec65294548f15b82031f6c922204ebf6))
+
+
+### Changed
+
+* **lab-jwbkn.3:** migrate config_store.rs off legacy .env write path ([b5329ba](https://github.com/jmagar/labby/commit/b5329baee29b481c465bbc86dc3a6314da9f9a28))
+* **labby:** drop unused ExecCtx.execution_id, fix stale comment ([9a15c6c](https://github.com/jmagar/labby/commit/9a15c6cf41271ff4474300231105585ecf262dad))
+
 ## [Unreleased]
 
 ---
