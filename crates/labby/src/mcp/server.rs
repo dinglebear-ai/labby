@@ -54,6 +54,14 @@ pub struct LabMcpServer {
     pub gateway_manager: Option<Arc<GatewayManager>>,
     /// Connected peers for list-changed notifications.
     pub peers: Arc<RwLock<Vec<Peer<RoleServer>>>>,
+    /// Live inbound MCP client/session registry — shared with `GatewayManager`
+    /// via `with_client_registry` so `gateway.clients.list` can read it.
+    #[cfg(feature = "gateway")]
+    pub client_registry: labby_runtime::client_registry::ClientRegistryHandle,
+    /// This session's transport, recorded verbatim into
+    /// `ConnectedClient::transport` on `on_initialized`. One of `"stdio"`,
+    /// `"http"`, `"in-process"` (built-in service peers), or `"test"`.
+    pub(crate) transport_label: &'static str,
     /// Negotiated RMCP logging threshold for this server/session.
     pub logging_level: Arc<AtomicU8>,
     /// Visibility and dispatch constraints for this MCP route/session.
@@ -112,6 +120,35 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
     extensions
 }
 
+/// Build the `ConnectedClient` record for `on_initialized` — pulled out of
+/// the `ServerHandler` impl so redaction can be unit tested directly against
+/// a fabricated `Extensions`/`AuthContext` without standing up a full
+/// `NotificationContext<RoleServer>`.
+///
+/// The redaction step is the whole point of this function existing
+/// separately: `subject_from_extensions` returns the raw authenticated
+/// subject, and it must never reach `labby_runtime::client_registry`
+/// unredacted. `connected_at` is threaded in rather than read here so this
+/// stays pure and testable (`jiff::Timestamp::now()` at the one real call
+/// site in `on_initialized`).
+#[cfg(feature = "gateway")]
+fn connected_client_from_handshake(
+    client_info: Option<rmcp::model::Implementation>,
+    extensions: &rmcp::model::Extensions,
+    transport_label: &str,
+    connected_at: String,
+) -> labby_runtime::client_registry::ConnectedClient {
+    let subject_tag =
+        subject_from_extensions(extensions).map(crate::mcp::context::redact_subject_for_logging);
+    labby_runtime::client_registry::ConnectedClient {
+        subject_tag,
+        client_name: client_info.as_ref().map(|info| info.name.clone()),
+        client_version: client_info.as_ref().map(|info| info.version.clone()),
+        transport: transport_label.to_string(),
+        connected_at,
+    }
+}
+
 impl ServerHandler for LabMcpServer {
     #[allow(deprecated)]
     fn get_info(&self) -> ServerInfo {
@@ -164,6 +201,20 @@ impl ServerHandler for LabMcpServer {
     }
 
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        #[cfg(feature = "gateway")]
+        {
+            let client_info = context
+                .peer
+                .peer_info()
+                .map(|info| info.client_info.clone());
+            let connected_client = connected_client_from_handshake(
+                client_info,
+                &context.extensions,
+                self.transport_label,
+                jiff::Timestamp::now().to_string(),
+            );
+            self.client_registry.push(connected_client).await;
+        }
         let mut peers = self.peers.write().await;
         peers.push(context.peer);
         tracing::info!(
@@ -389,6 +440,9 @@ mod tests {
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            #[cfg(feature = "gateway")]
+            client_registry: Default::default(),
+            transport_label: "test",
             logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
             )),
@@ -447,5 +501,115 @@ mod tests {
     #[test]
     fn upstream_subject_resolution_self_test_passes_for_plan_a() {
         verify_upstream_subject_resolution_support().expect("self-test");
+    }
+
+    #[cfg(feature = "gateway")]
+    mod connected_client_from_handshake_tests {
+        use axum::http;
+        use rmcp::model::Implementation;
+
+        use super::super::connected_client_from_handshake;
+
+        // Same `Extensions` fabrication as `verify_upstream_subject_resolution_support`
+        // above — an `http::request::Parts` carrying an `AuthContext`, wrapped in
+        // `rmcp::model::Extensions`.
+        fn extensions_with_subject(subject: &str) -> rmcp::model::Extensions {
+            let (mut parts, _) = http::Request::new(()).into_parts();
+            parts.extensions.insert(crate::api::oauth::AuthContext {
+                sub: subject.to_string(),
+                actor_key: None,
+                scopes: Vec::new(),
+                issuer: "https://lab.example.com".to_string(),
+                via_session: false,
+                csrf_token: None,
+                email: None,
+            });
+            let mut extensions = rmcp::model::Extensions::new();
+            extensions.insert(parts);
+            extensions
+        }
+
+        #[test]
+        fn never_stores_the_raw_authenticated_subject() {
+            let extensions = extensions_with_subject("jacob@example.com");
+            let client = connected_client_from_handshake(
+                Some(Implementation::new("claude-code", "2.4.1")),
+                &extensions,
+                "stdio",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+
+            let tag = client.subject_tag.expect("subject_tag must be set");
+            assert_ne!(tag, "jacob@example.com", "raw subject must never be stored");
+            assert!(
+                tag.starts_with("sub:"),
+                "expected a redacted `sub:` tag, got {tag:?}"
+            );
+        }
+
+        #[test]
+        fn redaction_is_deterministic_for_the_same_subject() {
+            let a = connected_client_from_handshake(
+                None,
+                &extensions_with_subject("same-subject"),
+                "http",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+            let b = connected_client_from_handshake(
+                None,
+                &extensions_with_subject("same-subject"),
+                "http",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+
+            assert_eq!(a.subject_tag, b.subject_tag);
+        }
+
+        #[test]
+        fn distinct_subjects_redact_to_distinct_tags() {
+            let a = connected_client_from_handshake(
+                None,
+                &extensions_with_subject("alice"),
+                "http",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+            let b = connected_client_from_handshake(
+                None,
+                &extensions_with_subject("bob"),
+                "http",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+
+            assert_ne!(a.subject_tag, b.subject_tag);
+        }
+
+        #[test]
+        fn no_auth_context_yields_no_subject_tag() {
+            let extensions = rmcp::model::Extensions::new();
+            let client = connected_client_from_handshake(
+                None,
+                &extensions,
+                "in-process",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+
+            assert_eq!(client.subject_tag, None);
+        }
+
+        #[test]
+        fn client_info_and_transport_pass_through_unmodified() {
+            let extensions = rmcp::model::Extensions::new();
+            let client = connected_client_from_handshake(
+                Some(Implementation::new("codex-cli", "0.9.2")),
+                &extensions,
+                "stdio",
+                "2026-01-01T00:00:00Z".to_string(),
+            );
+
+            assert_eq!(client.client_name.as_deref(), Some("codex-cli"));
+            assert_eq!(client.client_version.as_deref(), Some("0.9.2"));
+            assert_eq!(client.transport, "stdio");
+            assert_eq!(client.connected_at, "2026-01-01T00:00:00Z");
+        }
     }
 }

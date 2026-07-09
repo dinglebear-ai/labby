@@ -54,6 +54,8 @@ async fn connect_in_process_service_peer(
         registry: Arc::new(registry),
         gateway_manager: None,
         peers: Arc::new(RwLock::new(Vec::new())),
+        client_registry: Default::default(),
+        transport_label: "in-process",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: crate::mcp::server::next_relay_session_id(),

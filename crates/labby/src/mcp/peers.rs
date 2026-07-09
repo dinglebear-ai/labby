@@ -28,6 +28,18 @@ const PEER_NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone, Default)]
 pub struct PeerNotifier {
     pub peers: Arc<RwLock<Vec<Peer<RoleServer>>>>,
+    /// Live inbound MCP client/session metadata (redacted subject, declared
+    /// client name/version, transport, connect time), one entry pushed per
+    /// `on_initialized` call. Read by `gateway.clients.list` via
+    /// `GatewayManager::with_client_registry`. Not index-paired with `peers`
+    /// and not pruned on disconnect — see
+    /// `labby_runtime::client_registry` module docs for the best-effort
+    /// caveat; this deliberately does not reuse `peers`' pruning dance
+    /// (would require keeping two Vecs in lockstep under concurrent
+    /// connects, which is real complexity for a first pass — see bead
+    /// lab-av018 follow-up).
+    #[cfg(feature = "gateway")]
+    pub client_registry: labby_runtime::client_registry::ClientRegistryHandle,
 }
 
 impl PeerNotifier {

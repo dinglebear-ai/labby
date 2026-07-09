@@ -674,6 +674,8 @@ mod tests {
             registry: std::sync::Arc::new(crate::registry::ToolRegistry::new()),
             gateway_manager: Some(manager),
             peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            client_registry: Default::default(),
+            transport_label: "test",
             logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                 crate::mcp::logging::logging_level_rank(LoggingLevel::Emergency),
             )),

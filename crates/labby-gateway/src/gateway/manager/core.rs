@@ -137,6 +137,7 @@ impl GatewayManager {
             code_mode_runner_pool: Arc::new(crate::gateway::code_mode::RunnerPool::from_env()?),
             openapi_registry: labby_openapi::OpenApiRegistry::default(),
             openapi_http_client: labby_openapi::http::build_dispatch_client()?,
+            client_registry: labby_runtime::client_registry::ClientRegistryHandle::default(),
         })
     }
 
@@ -151,6 +152,19 @@ impl GatewayManager {
     ) -> Self {
         self.openapi_registry = registry;
         self.openapi_http_client = client;
+        self
+    }
+
+    /// Inject the live inbound MCP client/session registry, built at `labby
+    /// serve` startup by cloning the same handle the MCP transport layer
+    /// (`LabMcpServer`/`PeerNotifier`) writes to. Without this,
+    /// `gateway.clients.list` always returns an empty list.
+    #[must_use]
+    pub fn with_client_registry(
+        mut self,
+        client_registry: labby_runtime::client_registry::ClientRegistryHandle,
+    ) -> Self {
+        self.client_registry = client_registry;
         self
     }
 

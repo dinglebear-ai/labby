@@ -1336,6 +1336,7 @@ Commands:
   protected-route  Manage public MCP routes protected by Lab OAuth
   reload           Reload gateways from config and reconcile runtime state
   mcp              Manage upstream MCP server lifecycle and OAuth
+  clients          Inspect inbound MCP clients/sessions connected to this gateway
   discover         Scan the machine for MCP server configs from known editors and tools (read-only)
   import           Import discovered MCP servers into the gateway (disabled by default)
   pending          Manage pending discovered servers waiting for approval
@@ -2270,6 +2271,64 @@ Options:
 ```
 
 ## `labby gateway mcp help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
+```
+
+## `labby gateway clients`
+
+```text
+Inspect inbound MCP clients/sessions connected to this gateway
+
+Usage: clients [OPTIONS] <COMMAND>
+
+Commands:
+  list  List inbound MCP clients/sessions currently connected to this gateway. Best-effort — reflects the most recently observed connect events, not a strict live liveness view
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway clients list`
+
+```text
+List inbound MCP clients/sessions currently connected to this gateway. Best-effort — reflects the most recently observed connect events, not a strict live liveness view
+
+Usage: list [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway clients help`
 
 ```text
 Print this message or the help of the given subcommand(s)
