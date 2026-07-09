@@ -183,6 +183,70 @@
           "returns": "GatewayHintApplyView"
         },
         {
+          "name": "gateway.usage.metrics",
+          "description": "Aggregate gateway upstream call telemetry: totals, error rate, top tools, top actors",
+          "destructive": false,
+          "params": [
+            {
+              "name": "since_unix",
+              "ty": "integer",
+              "required": false,
+              "description": "Only include calls at or after this Unix timestamp"
+            },
+            {
+              "name": "until_unix",
+              "ty": "integer",
+              "required": false,
+              "description": "Only include calls at or before this Unix timestamp"
+            },
+            {
+              "name": "upstream",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one upstream name"
+            }
+          ],
+          "returns": "GatewayUsageMetricsView"
+        },
+        {
+          "name": "gateway.usage.calls",
+          "description": "List raw gateway upstream call records, newest first",
+          "destructive": false,
+          "params": [
+            {
+              "name": "since_unix",
+              "ty": "integer",
+              "required": false,
+              "description": "Only include calls at or after this Unix timestamp"
+            },
+            {
+              "name": "until_unix",
+              "ty": "integer",
+              "required": false,
+              "description": "Only include calls at or before this Unix timestamp"
+            },
+            {
+              "name": "upstream",
+              "ty": "string",
+              "required": false,
+              "description": "Restrict to one upstream name"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Max rows to return, capped at 1000 (default 100)"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Row offset for pagination"
+            }
+          ],
+          "returns": "GatewayUsageCallsView"
+        },
+        {
           "name": "gateway.supported_services",
           "description": "List metadata-backed Lab services that can be added as virtual servers",
           "destructive": false,

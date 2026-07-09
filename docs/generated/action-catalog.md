@@ -64,6 +64,8 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.supported_services` | false | false |  | `SupportedServiceView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.test` | false | false | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.update` | false | false | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.calls` | false | false | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`limit: integer`<br>`offset: integer` | `GatewayUsageCallsView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.metrics` | false | false | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string` | `GatewayUsageMetricsView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.disable` | false | false | `id*: string` | `ServerView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.enable` | false | false | `id*: string` | `ServerView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.get_mcp_policy` | false | false | `id*: string` | `VirtualServerMcpPolicyView` | cli, mcp, api, web |

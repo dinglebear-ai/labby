@@ -1166,6 +1166,40 @@
           }
         }
       },
+      "GatewayGatewayUsageCallsParams": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "since_unix": {
+            "type": "integer"
+          },
+          "until_unix": {
+            "type": "integer"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayUsageMetricsParams": {
+        "type": "object",
+        "properties": {
+          "since_unix": {
+            "type": "integer"
+          },
+          "until_unix": {
+            "type": "integer"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        }
+      },
       "GatewayGatewayVirtual_serverDisableParams": {
         "type": "object",
         "required": [

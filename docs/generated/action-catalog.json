@@ -1616,6 +1616,92 @@
   },
   {
     "service": "gateway",
+    "action": "gateway.usage.calls",
+    "description": "List raw gateway upstream call records, newest first",
+    "destructive": false,
+    "params": [
+      {
+        "name": "since_unix",
+        "ty": "integer",
+        "required": false,
+        "description": "Only include calls at or after this Unix timestamp"
+      },
+      {
+        "name": "until_unix",
+        "ty": "integer",
+        "required": false,
+        "description": "Only include calls at or before this Unix timestamp"
+      },
+      {
+        "name": "upstream",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one upstream name"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Max rows to return, capped at 1000 (default 100)"
+      },
+      {
+        "name": "offset",
+        "ty": "integer",
+        "required": false,
+        "description": "Row offset for pagination"
+      }
+    ],
+    "returns": "GatewayUsageCallsView",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.usage.metrics",
+    "description": "Aggregate gateway upstream call telemetry: totals, error rate, top tools, top actors",
+    "destructive": false,
+    "params": [
+      {
+        "name": "since_unix",
+        "ty": "integer",
+        "required": false,
+        "description": "Only include calls at or after this Unix timestamp"
+      },
+      {
+        "name": "until_unix",
+        "ty": "integer",
+        "required": false,
+        "description": "Only include calls at or before this Unix timestamp"
+      },
+      {
+        "name": "upstream",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one upstream name"
+      }
+    ],
+    "returns": "GatewayUsageMetricsView",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
     "action": "gateway.virtual_server.disable",
     "description": "Disable a Lab-backed virtual server without removing its config",
     "destructive": false,

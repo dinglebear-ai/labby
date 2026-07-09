@@ -1342,6 +1342,7 @@ Commands:
   public-urls      Show resolved public URL configuration (app and MCP gateway)
   code             Search, inspect, and execute Code Mode snippets through dispatch
   enrich           Generate and approve Code Mode upstream hint proposals
+  usage            Query gateway upstream call-usage telemetry
   help             Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2690,6 +2691,110 @@ Options:
 ```
 
 ## `labby gateway enrich help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
+```
+
+## `labby gateway usage`
+
+```text
+Query gateway upstream call-usage telemetry
+
+Usage: usage [OPTIONS] <COMMAND>
+
+Commands:
+  metrics  Aggregated totals, error rate, top tools, top actors
+  calls    Raw call records, newest first
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway usage metrics`
+
+```text
+Aggregated totals, error rate, top tools, top actors
+
+Usage: metrics [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --since-unix <SINCE_UNIX>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --until-unix <UNTIL_UNIX>
+
+
+      --upstream <UPSTREAM>
+
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway usage calls`
+
+```text
+Raw call records, newest first
+
+Usage: calls [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --since-unix <SINCE_UNIX>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --until-unix <UNTIL_UNIX>
+
+
+      --upstream <UPSTREAM>
+
+
+      --limit <LIMIT>
+
+
+      --offset <OFFSET>
+
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway usage help`
 
 ```text
 Print this message or the help of the given subcommand(s)
