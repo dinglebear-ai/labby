@@ -17,6 +17,9 @@ importers:
       '@tauri-apps/api':
         specifier: ^2.10.0
         version: 2.11.0
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1

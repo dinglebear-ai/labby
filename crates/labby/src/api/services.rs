@@ -18,6 +18,8 @@ pub mod catalog;
 pub mod doctor;
 #[cfg(feature = "gateway")]
 pub mod gateway;
+#[cfg(feature = "gateway")]
+pub mod palette;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;

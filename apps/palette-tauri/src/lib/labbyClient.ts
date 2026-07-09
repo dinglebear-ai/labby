@@ -43,6 +43,35 @@ export interface LabbyCatalog {
   services: LabbyServiceCatalog[];
 }
 
+export interface LauncherCatalog {
+  fingerprint: string;
+  entries: LauncherEntry[];
+}
+
+export type LauncherEntry = LabbyLauncherEntry | McpToolLauncherEntry;
+
+export interface BaseLauncherEntry {
+  id: string;
+  label: string;
+  description: string;
+  source: string;
+  destructive: boolean;
+  inputSchema?: unknown;
+  schemaFingerprint?: string | null;
+}
+
+export interface LabbyLauncherEntry extends BaseLauncherEntry {
+  kind: "labbyAction";
+  service: string;
+  action: string;
+}
+
+export interface McpToolLauncherEntry extends BaseLauncherEntry {
+  kind: "mcpTool";
+  upstream: string;
+  tool: string;
+}
+
 // The Rust `fetch_catalog` command returns `{ ok, status, payload }`. A 304
 // answer carries `status: 304` with a null payload; a 200 carries the parsed
 // catalog as its payload.
@@ -55,6 +84,10 @@ interface BridgeResult {
 export type CatalogResult =
   | { notModified: true }
   | { notModified: false; catalog: LabbyCatalog };
+
+export type LauncherCatalogResult =
+  | { notModified: true }
+  | { notModified: false; catalog: LauncherCatalog };
 
 /**
  * Fetch the Labby action catalog. Passes `etag` as `If-None-Match`; a `304`
@@ -87,6 +120,49 @@ export async function dispatchAction(
     ok: result.ok,
     status: result.status,
     path: `/v1/${service}`,
+    method: "POST",
+    payload: result.payload,
+  };
+}
+
+/**
+ * Fetch the unified launcher catalog. HTTP-level failures resolve to the stable
+ * payload from the bridge so callers can show Labby error envelopes directly.
+ */
+export async function fetchLauncherCatalog(etag?: string | null): Promise<LauncherCatalogResult | PaletteResult> {
+  const result = await invoke<BridgeResult>("fetch_launcher_catalog", { etag: etag ?? null });
+  if (result.status === 304) return { notModified: true };
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status,
+      path: "/v1/palette/catalog",
+      method: "GET",
+      payload: result.payload,
+    };
+  }
+  return {
+    notModified: false,
+    catalog: (result.payload ?? { fingerprint: "", entries: [] }) as LauncherCatalog,
+  };
+}
+
+export async function executeLauncherEntry(
+  id: string,
+  params: unknown,
+  options?: { confirmDestructive?: boolean },
+): Promise<PaletteResult> {
+  const result = await invoke<BridgeResult>("execute_launcher_entry", {
+    request: {
+      id,
+      params,
+      confirmDestructive: options?.confirmDestructive ?? false,
+    },
+  });
+  return {
+    ok: result.ok,
+    status: result.status,
+    path: "/v1/palette/execute",
     method: "POST",
     payload: result.payload,
   };

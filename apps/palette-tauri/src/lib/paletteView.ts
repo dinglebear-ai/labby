@@ -1,7 +1,8 @@
 // Small view helpers shared by the command bar, action list, and lifecycle
 // hooks. Generic (catalog-driven) — no per-action Axon knowledge.
 
-import { actionMatches, type PaletteAction } from "@/lib/actions";
+import type { PaletteAction } from "@/lib/actions";
+import type { LauncherEntry } from "@/lib/launcherCatalog";
 
 export const COMMAND_INPUT_SELECTOR = ".command-input";
 
@@ -42,7 +43,7 @@ export function sortActionsForDisplay(actions: PaletteAction[]): PaletteAction[]
 }
 
 /** Placeholder text for the argument input of an action in mode. */
-export function argumentPlaceholder(action: PaletteAction): string {
+export function argumentPlaceholder(action: PaletteAction | LauncherEntry): string {
   if (action.argMode === "none") return "Press Enter to run";
   if (action.argMode === "json") {
     const required = action.params.filter((param) => param.required).map((param) => param.name);
@@ -53,5 +54,3 @@ export function argumentPlaceholder(action: PaletteAction): string {
   const first = action.params[0];
   return first ? `${first.name}${first.required ? "" : " (optional)"}` : "Argument";
 }
-
-export { actionMatches };

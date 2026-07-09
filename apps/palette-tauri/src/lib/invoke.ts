@@ -27,8 +27,19 @@ export async function invoke<T = unknown>(
   switch (command) {
     case "fetch_catalog":
       return { ok: true, status: 200, payload: { services: [] } } as T;
+    case "fetch_launcher_catalog":
+      return { ok: true, status: 200, payload: { fingerprint: "browser-fallback", entries: [] } } as T;
     case "dispatch_action":
       return { ok: true, status: 200, payload: null } as T;
+    case "execute_launcher_entry":
+      return {
+        ok: false,
+        status: 501,
+        payload: {
+          kind: "unsupported_surface",
+          message: "Launcher execution is only available in the desktop app",
+        },
+      } as T;
     case "load_palette_config":
     case "load_palette_default_config":
       return {
