@@ -188,6 +188,72 @@ pub const ACTIONS: &[ActionSpec] = &[
         ],
     },
     ActionSpec {
+        name: "gateway.usage.metrics",
+        description: "Aggregate gateway upstream call telemetry: totals, error rate, top tools, top actors",
+        destructive: false,
+        requires_admin: true,
+        returns: "GatewayUsageMetricsView",
+        params: &[
+            ParamSpec {
+                name: "since_unix",
+                ty: "integer",
+                required: false,
+                description: "Only include calls at or after this Unix timestamp",
+            },
+            ParamSpec {
+                name: "until_unix",
+                ty: "integer",
+                required: false,
+                description: "Only include calls at or before this Unix timestamp",
+            },
+            ParamSpec {
+                name: "upstream",
+                ty: "string",
+                required: false,
+                description: "Restrict to one upstream name",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "gateway.usage.calls",
+        description: "List raw gateway upstream call records, newest first",
+        destructive: false,
+        requires_admin: true,
+        returns: "GatewayUsageCallsView",
+        params: &[
+            ParamSpec {
+                name: "since_unix",
+                ty: "integer",
+                required: false,
+                description: "Only include calls at or after this Unix timestamp",
+            },
+            ParamSpec {
+                name: "until_unix",
+                ty: "integer",
+                required: false,
+                description: "Only include calls at or before this Unix timestamp",
+            },
+            ParamSpec {
+                name: "upstream",
+                ty: "string",
+                required: false,
+                description: "Restrict to one upstream name",
+            },
+            ParamSpec {
+                name: "limit",
+                ty: "integer",
+                required: false,
+                description: "Max rows to return, capped at 1000 (default 100)",
+            },
+            ParamSpec {
+                name: "offset",
+                ty: "integer",
+                required: false,
+                description: "Row offset for pagination",
+            },
+        ],
+    },
+    ActionSpec {
         name: "gateway.supported_services",
         description: "List metadata-backed Lab services that can be added as virtual servers",
         destructive: false,

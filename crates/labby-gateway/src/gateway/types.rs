@@ -263,6 +263,44 @@ pub struct GatewayHintApplyView {
     pub previous_hint: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayUsageToolCount {
+    pub upstream: String,
+    pub tool: String,
+    pub calls: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayUsageActorCount {
+    pub actor: String,
+    pub calls: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayUsageMetricsView {
+    pub total_calls: i64,
+    pub error_calls: i64,
+    pub avg_elapsed_ms: f64,
+    pub top_tools: Vec<GatewayUsageToolCount>,
+    pub top_actors: Vec<GatewayUsageActorCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayUsageCallView {
+    pub ts_unix: i64,
+    pub upstream: String,
+    pub tool: String,
+    pub actor: Option<String>,
+    pub outcome: String,
+    pub elapsed_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayUsageCallsView {
+    pub calls: Vec<GatewayUsageCallView>,
+    pub total_matching: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum McpClientTransportType {

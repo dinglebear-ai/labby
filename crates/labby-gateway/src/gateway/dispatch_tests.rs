@@ -180,6 +180,47 @@ async fn enrich_apply_dispatch_persists_hint() {
     );
 }
 
+#[tokio::test]
+async fn gateway_usage_metrics_returns_zeroed_view_with_no_calls() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+    let usage_store = std::sync::Arc::new(
+        crate::usage::UsageStore::open(tempfile::tempdir().unwrap().path().join("usage.db"))
+            .await
+            .unwrap(),
+    );
+    let manager = manager.with_usage_store(usage_store);
+
+    let result = dispatch_with_manager(&manager, "gateway.usage.metrics", json!({}))
+        .await
+        .expect("dispatch succeeds");
+    assert_eq!(result["total_calls"], 0);
+    assert_eq!(result["error_calls"], 0);
+}
+
+#[tokio::test]
+async fn gateway_usage_metrics_fails_closed_when_store_not_wired() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager(&manager, "gateway.usage.metrics", json!({}))
+        .await
+        .expect_err("no usage store wired must fail, not silently return empty data");
+    assert_eq!(error.kind(), "usage_store_unavailable");
+}
+
 #[test]
 fn gateway_actions_include_servers_and_schema() {
     let names: Vec<&str> = ACTIONS.iter().map(|a| a.name).collect();

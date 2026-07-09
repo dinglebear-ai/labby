@@ -14,9 +14,10 @@ use super::params::{
     GatewayImportParams, GatewayImportTombstoneParams, GatewayMcpCleanupParams,
     GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams, GatewayReloadParams,
     GatewayStatusParams, GatewayTestParams, GatewayUpdateParams, GatewayUpdatePatch,
-    ProtectedRouteNameParams, ProtectedRouteSpecParams, ProtectedRouteUpdateParams,
-    ServiceConfigGetParams, ServiceConfigSetParams, VirtualServerMcpPolicyParams,
-    VirtualServerNameParams, VirtualServerSurfaceParams,
+    GatewayUsageCallsParams, GatewayUsageMetricsParams, ProtectedRouteNameParams,
+    ProtectedRouteSpecParams, ProtectedRouteUpdateParams, ServiceConfigGetParams,
+    ServiceConfigSetParams, VirtualServerMcpPolicyParams, VirtualServerNameParams,
+    VirtualServerSurfaceParams,
 };
 use super::types::{
     DiscoveredServerView, ImportErrorView, ImportSkipReason, ImportSkipView,
@@ -75,6 +76,14 @@ pub async fn dispatch_with_manager_scoped(
                     .apply_enrichment_scoped(params, enrichment_scope)
                     .await?,
             )
+        }
+        "gateway.usage.metrics" => {
+            let params: GatewayUsageMetricsParams = parse_params(params_value)?;
+            to_json(manager.usage_metrics(params).await?)
+        }
+        "gateway.usage.calls" => {
+            let params: GatewayUsageCallsParams = parse_params(params_value)?;
+            to_json(manager.usage_calls(params).await?)
         }
         "gateway.import" => handle_import(manager, params_value, enrichment_scope).await,
         "gateway.import_pending.list" => to_json(manager.list_pending_imports().await),

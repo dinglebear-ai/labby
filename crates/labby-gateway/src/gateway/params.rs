@@ -153,6 +153,30 @@ pub struct GatewayEnrichApplyParams {
     pub metadata_hash: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GatewayUsageMetricsParams {
+    #[serde(default)]
+    pub since_unix: Option<i64>,
+    #[serde(default)]
+    pub until_unix: Option<i64>,
+    #[serde(default)]
+    pub upstream: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GatewayUsageCallsParams {
+    #[serde(default)]
+    pub since_unix: Option<i64>,
+    #[serde(default)]
+    pub until_unix: Option<i64>,
+    #[serde(default)]
+    pub upstream: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub offset: Option<usize>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GatewayEnrichmentScope {
     pub route_visible_upstreams: Option<BTreeSet<String>>,
