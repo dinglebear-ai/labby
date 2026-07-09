@@ -111,9 +111,7 @@ where
                     event,
                     subject,
                     "response_too_large",
-                    Some("response_too_large"),
                     start.elapsed().as_millis(),
-                    Some(response_size),
                 );
                 return Err(format!(
                     "upstream response too large ({response_size} bytes, max {max_bytes})"
@@ -121,15 +119,7 @@ where
             }
             pool.record_success_for(upstream_name, capability).await;
             log_upstream_request_finish(event, start.elapsed().as_millis(), Some(response_size));
-            record_usage_call(
-                pool,
-                event,
-                subject,
-                "ok",
-                None,
-                start.elapsed().as_millis(),
-                Some(response_size),
-            );
+            record_usage_call(pool, event, subject, "ok", start.elapsed().as_millis());
             Ok(result)
         }
         RawCallOutcome::UpstreamError(error) => {
@@ -151,9 +141,7 @@ where
                 event,
                 subject,
                 "upstream_error",
-                Some("upstream_error"),
                 start.elapsed().as_millis(),
-                None,
             );
             Err(error_message_fn(&error))
         }
@@ -171,15 +159,7 @@ where
                 None,
                 None,
             );
-            record_usage_call(
-                pool,
-                event,
-                subject,
-                "timeout",
-                Some("timeout"),
-                start.elapsed().as_millis(),
-                None,
-            );
+            record_usage_call(pool, event, subject, "timeout", start.elapsed().as_millis());
             Err(timeout_message)
         }
     }

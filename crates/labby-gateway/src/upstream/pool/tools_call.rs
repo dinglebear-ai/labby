@@ -54,9 +54,7 @@ impl UpstreamPool {
                     event,
                     Some(subject),
                     "upstream_connect_error",
-                    Some("upstream_connect_error"),
                     elapsed_ms,
-                    None,
                 );
                 return Err(error.to_string());
             }

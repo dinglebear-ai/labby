@@ -2,6 +2,11 @@
 //! every tool/resource/prompt call outcome. Never blocks or fails the call
 //! path: if `pool.usage_store` is `None`, this is a no-op; if the write
 //! itself fails, it is logged and dropped.
+//!
+//! Backpressure: in-flight write tasks are bounded by `UsageStore`'s internal
+//! semaphore (`WRITE_SEMAPHORE_PERMITS`). A burst of calls that saturates the
+//! semaphore drops the write and logs a warning rather than spawning an
+//! unbounded number of concurrent writer tasks — telemetry is best-effort.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,15 +15,12 @@ use crate::usage::UpstreamCallRecord;
 use super::UpstreamPool;
 use super::logging::UpstreamRequestLog;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn record_usage_call(
     pool: &UpstreamPool,
     event: UpstreamRequestLog<'_>,
     subject: Option<&str>,
     outcome: &'static str,
-    error_kind: Option<&'static str>,
     elapsed_ms: u128,
-    response_bytes: Option<usize>,
 ) {
     let Some(store) = pool.usage_store.clone() else {
         return;
@@ -30,16 +32,16 @@ pub(super) fn record_usage_call(
             .unwrap_or(0),
         upstream_name: event.upstream.to_string(),
         tool_name: event.item.unwrap_or_default().to_string(),
-        capability: event.capability.to_string(),
-        operation: event.operation.to_string(),
-        subject_scoped: event.subject_scoped,
-        actor: subject.map(str::to_string),
+        actor: subject.map_or_else(|| "unattributed".to_string(), str::to_string),
         outcome: outcome.to_string(),
-        error_kind: error_kind.map(str::to_string),
         elapsed_ms: i64::try_from(elapsed_ms).unwrap_or(i64::MAX),
-        response_bytes: response_bytes.map(|b| i64::try_from(b).unwrap_or(i64::MAX)),
     };
+    let semaphore = store.write_semaphore();
     tokio::spawn(async move {
+        let Ok(_permit) = semaphore.try_acquire() else {
+            tracing::warn!("usage store write dropped: too many in-flight writes");
+            return;
+        };
         if let Err(error) = store.record_call(record).await {
             tracing::warn!(error = %error, "usage store record_call failed");
         }

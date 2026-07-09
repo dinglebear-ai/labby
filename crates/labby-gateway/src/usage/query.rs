@@ -5,6 +5,10 @@ pub struct UsageMetricsQuery {
     pub since_unix: Option<i64>,
     pub until_unix: Option<i64>,
     pub upstream: Option<String>,
+    /// Route-scope enforcement: when `Some`, results are restricted to these
+    /// upstream names regardless of `upstream`. `None` means unscoped (root
+    /// caller). See `gateway/manager/usage.rs`.
+    pub allowed_upstreams: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -12,6 +16,8 @@ pub struct UsageCallsQuery {
     pub since_unix: Option<i64>,
     pub until_unix: Option<i64>,
     pub upstream: Option<String>,
+    /// See `UsageMetricsQuery::allowed_upstreams`.
+    pub allowed_upstreams: Option<Vec<String>>,
     pub limit: usize,
     pub offset: usize,
 }
@@ -44,7 +50,7 @@ pub struct UpstreamCallRecordView {
     pub ts_unix: i64,
     pub upstream: String,
     pub tool: String,
-    pub actor: Option<String>,
+    pub actor: String,
     pub outcome: String,
     pub elapsed_ms: i64,
 }

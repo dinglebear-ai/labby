@@ -1,7 +1,9 @@
 //! `UsageStore`: a small connection-pooled SQLite store for gateway call
-//! telemetry. Mirrors `labby-auth`'s `SqliteStore` (`crates/labby-auth/src/sqlite.rs`)
-//! but carries no secrets, so there is no at-rest encryption or restrictive
-//! file-permission enforcement here.
+//! telemetry. Mirrors `labby-auth`'s `SqliteStore` (`crates/labby-auth/src/sqlite.rs`).
+//! No at-rest encryption is needed here (the store holds no credentials), but
+//! file permissions ARE restricted to owner-only: `actor` is a stable
+//! per-user OAuth subject identifier, which is privacy-sensitive even though
+//! it is not a secret.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,14 +16,26 @@ use labby_runtime::error::ToolError;
 use super::types::UpstreamCallRecord;
 
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
+// Bounds read/write interleaving under WAL mode — SQLite still serializes
+// actual writers regardless of connection count, so this does not buy write
+// parallelism, only concurrent readers alongside a writer.
 const SQLITE_POOL_SIZE: usize = 4;
 const SCHEMA_VERSION: i64 = 1;
+/// Max rows deleted per `DELETE` statement in `prune_older_than`'s batching
+/// loop, so a large prune backlog doesn't hold the writer lock in one shot.
+const PRUNE_BATCH_SIZE: i64 = 5_000;
+/// Caps in-flight fire-and-forget usage-write tasks (see
+/// `upstream/pool/usage_record.rs`). Telemetry writes are best-effort: when
+/// saturated, a write is dropped and logged rather than the caller blocking
+/// or an unbounded number of tasks/connections piling up under a burst.
+const WRITE_SEMAPHORE_PERMITS: usize = 64;
 
 #[derive(Clone)]
 pub struct UsageStore {
     conns: Arc<Vec<Mutex<Connection>>>,
     next_conn: Arc<AtomicUsize>,
     path: Arc<PathBuf>,
+    write_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl std::fmt::Debug for UsageStore {
@@ -44,28 +58,30 @@ impl UsageStore {
             conns: Arc::new(conns.into_iter().map(Mutex::new).collect()),
             next_conn: Arc::new(AtomicUsize::new(0)),
             path: Arc::new(path),
+            write_semaphore: Arc::new(tokio::sync::Semaphore::new(WRITE_SEMAPHORE_PERMITS)),
         })
+    }
+
+    /// `pub(crate)` accessor so `upstream/pool/usage_record.rs` (a sibling
+    /// module tree in this crate) can acquire a permit before spawning a
+    /// fire-and-forget write, without exposing the field itself.
+    pub(crate) fn write_semaphore(&self) -> Arc<tokio::sync::Semaphore> {
+        Arc::clone(&self.write_semaphore)
     }
 
     pub async fn record_call(&self, record: UpstreamCallRecord) -> Result<(), ToolError> {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO upstream_calls (
-                    ts_unix, upstream_name, tool_name, capability, operation,
-                    subject_scoped, actor, outcome, error_kind, elapsed_ms, response_bytes
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     record.ts_unix,
                     record.upstream_name,
                     record.tool_name,
-                    record.capability,
-                    record.operation,
-                    i64::from(record.subject_scoped),
                     record.actor,
                     record.outcome,
-                    record.error_kind,
                     record.elapsed_ms,
-                    record.response_bytes,
                 ],
             )
             .map_err(sqlite_error)?;
@@ -74,18 +90,62 @@ impl UsageStore {
         .await
     }
 
-    /// Delete rows older than `cutoff_unix`. Returns the number of deleted rows.
+    /// Delete rows older than `cutoff_unix`. Returns the total number of
+    /// deleted rows.
+    ///
+    /// Deletes in bounded batches (`PRUNE_BATCH_SIZE` rows per statement)
+    /// rather than one unbounded `DELETE`, so a large backlog doesn't hold
+    /// SQLite's single writer lock for an extended stretch. Loops until a
+    /// batch deletes zero rows.
     pub async fn prune_older_than(&self, cutoff_unix: i64) -> Result<u64, ToolError> {
-        self.with_conn(move |conn| {
-            let deleted = conn
-                .execute(
-                    "DELETE FROM upstream_calls WHERE ts_unix < ?1",
-                    params![cutoff_unix],
-                )
-                .map_err(sqlite_error)?;
-            Ok(deleted as u64)
-        })
-        .await
+        let mut total_deleted: u64 = 0;
+        loop {
+            let deleted = self
+                .with_conn(move |conn| {
+                    let deleted = conn
+                        .execute(
+                            "DELETE FROM upstream_calls WHERE id IN (
+                                SELECT id FROM upstream_calls WHERE ts_unix < ?1 LIMIT ?2
+                             )",
+                            params![cutoff_unix, PRUNE_BATCH_SIZE],
+                        )
+                        .map_err(sqlite_error)?;
+                    Ok(deleted as u64)
+                })
+                .await?;
+            total_deleted += deleted;
+            if deleted == 0 {
+                break;
+            }
+        }
+        Ok(total_deleted)
+    }
+
+    /// Spawn a background loop that periodically prunes rows older than
+    /// `retention_secs`. Ticks every `interval`; missed ticks are skipped
+    /// (not backlogged) so a slow prune never causes a burst of catch-up runs.
+    pub fn spawn_prune_loop(self: Arc<Self>, retention_secs: i64, interval: std::time::Duration) {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let now_unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let cutoff = now_unix.saturating_sub(retention_secs);
+                match self.prune_older_than(cutoff).await {
+                    Ok(deleted) if deleted > 0 => {
+                        tracing::info!(deleted, "pruned stale gateway usage records");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(error = %error, "gateway usage prune failed");
+                    }
+                }
+            }
+        });
     }
 
     pub(crate) async fn with_conn<T, F>(&self, op: F) -> Result<T, ToolError>
@@ -111,6 +171,19 @@ fn open_connections(path: &Path, count: usize) -> Result<Vec<Connection>, ToolEr
     (0..count).map(|_| open_connection(path)).collect()
 }
 
+#[cfg(unix)]
+fn ensure_restrictive_permissions(path: &Path) -> Result<(), ToolError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| storage_error(format!("chmod 0600 `{}`: {error}", path.display())))
+}
+
+#[cfg(not(unix))]
+fn ensure_restrictive_permissions(_path: &Path) -> Result<(), ToolError> {
+    Ok(())
+}
+
 fn open_connection(path: &Path) -> Result<Connection, ToolError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -121,9 +194,15 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
         })?;
     }
     let conn = Connection::open(path).map_err(sqlite_error)?;
+    ensure_restrictive_permissions(path)?;
     conn.busy_timeout(std::time::Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
         .map_err(sqlite_error)?;
     conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(sqlite_error)?;
+    // Safe alongside WAL: reduces per-insert fsync cost. This is a write-heavy
+    // best-effort telemetry table, not a durability-critical one — losing the
+    // last few writes on a hard crash is an acceptable tradeoff.
+    conn.pragma_update(None, "synchronous", "NORMAL")
         .map_err(sqlite_error)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS upstream_calls (
@@ -131,17 +210,14 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
             ts_unix INTEGER NOT NULL,
             upstream_name TEXT NOT NULL,
             tool_name TEXT NOT NULL,
-            capability TEXT NOT NULL,
-            operation TEXT NOT NULL,
-            subject_scoped INTEGER NOT NULL,
-            actor TEXT,
+            actor TEXT NOT NULL DEFAULT 'unattributed',
             outcome TEXT NOT NULL,
-            error_kind TEXT,
-            elapsed_ms INTEGER NOT NULL,
-            response_bytes INTEGER
+            elapsed_ms INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_ts ON upstream_calls(ts_unix);
-        CREATE INDEX IF NOT EXISTS idx_upstream_calls_upstream ON upstream_calls(upstream_name, ts_unix);",
+        CREATE INDEX IF NOT EXISTS idx_upstream_calls_upstream ON upstream_calls(upstream_name, ts_unix);
+        CREATE INDEX IF NOT EXISTS idx_upstream_calls_tool ON upstream_calls(upstream_name, tool_name);
+        CREATE INDEX IF NOT EXISTS idx_upstream_calls_actor ON upstream_calls(actor);",
     )
     .map_err(sqlite_error)?;
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
@@ -155,7 +231,12 @@ impl UsageStore {
         query: super::query::UsageMetricsQuery,
     ) -> Result<super::query::UsageMetrics, ToolError> {
         self.with_conn(move |conn| {
-            let (where_clause, bind) = usage_where_clause(&query.since_unix, &query.until_unix, &query.upstream);
+            let (where_clause, bind) = usage_where_clause(
+                &query.since_unix,
+                &query.until_unix,
+                &query.upstream,
+                &query.allowed_upstreams,
+            );
 
             let (total_calls, error_calls, avg_elapsed_ms): (i64, i64, f64) = conn
                 .query_row(
@@ -189,8 +270,8 @@ impl UsageStore {
 
             let mut top_actors_stmt = conn
                 .prepare(&format!(
-                    "SELECT COALESCE(actor, 'unattributed'), COUNT(*) as calls FROM upstream_calls {where_clause} \
-                     GROUP BY COALESCE(actor, 'unattributed') ORDER BY calls DESC LIMIT {}",
+                    "SELECT actor, COUNT(*) as calls FROM upstream_calls {where_clause} \
+                     GROUP BY actor ORDER BY calls DESC LIMIT {}",
                     super::query::TOP_N
                 ))
                 .map_err(sqlite_error)?;
@@ -223,8 +304,12 @@ impl UsageStore {
         query: super::query::UsageCallsQuery,
     ) -> Result<(Vec<super::query::UpstreamCallRecordView>, i64), ToolError> {
         self.with_conn(move |conn| {
-            let (where_clause, mut bind) =
-                usage_where_clause(&query.since_unix, &query.until_unix, &query.upstream);
+            let (where_clause, mut bind) = usage_where_clause(
+                &query.since_unix,
+                &query.until_unix,
+                &query.upstream,
+                &query.allowed_upstreams,
+            );
 
             let total: i64 = conn
                 .query_row(
@@ -268,11 +353,13 @@ impl UsageStore {
 
 /// Build a `WHERE ...` clause (or empty string) plus its positional bind
 /// values for the optional since/until/upstream filters shared by `metrics`
-/// and `list_calls`.
+/// and `list_calls`, plus an optional `allowed_upstreams` allowlist (used to
+/// enforce route scope for scoped callers — see `gateway/manager/usage.rs`).
 fn usage_where_clause(
     since_unix: &Option<i64>,
     until_unix: &Option<i64>,
     upstream: &Option<String>,
+    allowed_upstreams: &Option<Vec<String>>,
 ) -> (String, Vec<rusqlite::types::Value>) {
     let mut clauses = Vec::new();
     let mut bind = Vec::new();
@@ -287,6 +374,21 @@ fn usage_where_clause(
     if let Some(upstream) = upstream {
         clauses.push(format!("upstream_name = ?{}", bind.len() + 1));
         bind.push(rusqlite::types::Value::Text(upstream.clone()));
+    }
+    if let Some(allowed) = allowed_upstreams {
+        if allowed.is_empty() {
+            // No visible upstreams at all: match nothing.
+            clauses.push("1 = 0".to_string());
+        } else {
+            let placeholders: Vec<String> = allowed
+                .iter()
+                .map(|name| {
+                    bind.push(rusqlite::types::Value::Text(name.clone()));
+                    format!("?{}", bind.len())
+                })
+                .collect();
+            clauses.push(format!("upstream_name IN ({})", placeholders.join(", ")));
+        }
     }
     if clauses.is_empty() {
         (String::new(), bind)
@@ -316,14 +418,9 @@ mod tests {
             ts_unix,
             upstream_name: "github".to_string(),
             tool_name: "search_repos".to_string(),
-            capability: "tools".to_string(),
-            operation: "tool.call".to_string(),
-            subject_scoped: false,
-            actor: None,
+            actor: "unattributed".to_string(),
             outcome: "ok".to_string(),
-            error_kind: None,
             elapsed_ms: 42,
-            response_bytes: Some(128),
         }
     }
 
@@ -366,6 +463,32 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    /// Exercises the loop-until-zero batching logic in `prune_older_than` with
+    /// several successive stale rows (well under one batch), proving the loop
+    /// terminates and deletes everything below cutoff, not just one batch.
+    #[tokio::test]
+    async fn prune_older_than_loops_until_all_stale_rows_are_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+
+        for ts in 0..10 {
+            store.record_call(sample_record(ts)).await.unwrap();
+        }
+        store.record_call(sample_record(1_000)).await.unwrap();
+
+        let deleted = store.prune_older_than(500).await.unwrap();
+        assert_eq!(deleted, 10);
+
+        let count: i64 = store
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM upstream_calls", [], |row| row.get(0))
+                    .map_err(super::sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
     #[tokio::test]
     async fn metrics_aggregates_totals_and_top_tools() {
         use super::super::query::UsageMetricsQuery;
@@ -388,6 +511,7 @@ mod tests {
                 since_unix: None,
                 until_unix: None,
                 upstream: None,
+                allowed_upstreams: None,
             })
             .await
             .unwrap();
@@ -397,6 +521,36 @@ mod tests {
         assert_eq!(metrics.top_tools.len(), 1);
         assert_eq!(metrics.top_tools[0].tool, "search_repos");
         assert_eq!(metrics.top_tools[0].calls, 3);
+    }
+
+    #[tokio::test]
+    async fn metrics_respects_allowed_upstreams_scope() {
+        use super::super::query::UsageMetricsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+
+        let mut github = sample_record(1_000);
+        github.upstream_name = "github".to_string();
+        store.record_call(github).await.unwrap();
+
+        let mut rustarr = sample_record(1_001);
+        rustarr.upstream_name = "rustarr".to_string();
+        store.record_call(rustarr).await.unwrap();
+
+        let metrics = store
+            .metrics(UsageMetricsQuery {
+                since_unix: None,
+                until_unix: None,
+                upstream: None,
+                allowed_upstreams: Some(vec!["github".to_string()]),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(metrics.total_calls, 1);
+        assert_eq!(metrics.top_tools.len(), 1);
+        assert_eq!(metrics.top_tools[0].upstream, "github");
     }
 
     #[tokio::test]
@@ -415,6 +569,7 @@ mod tests {
                 since_unix: None,
                 until_unix: None,
                 upstream: None,
+                allowed_upstreams: None,
                 limit: 2,
                 offset: 0,
             })
