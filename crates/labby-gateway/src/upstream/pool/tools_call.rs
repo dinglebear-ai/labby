@@ -399,11 +399,9 @@ mod tests {
                 _: Option<PaginatedRequestParams>,
                 _: rmcp::service::RequestContext<RoleServer>,
             ) -> Result<ListToolsResult, ErrorData> {
-                Ok(ListToolsResult::with_all_items(vec![rmcp::model::Tool::new(
-                    "echo",
-                    "echo tool",
-                    Arc::new(serde_json::Map::new()),
-                )]))
+                Ok(ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new("echo", "echo tool", Arc::new(serde_json::Map::new())),
+                ]))
             }
             async fn call_tool(
                 &self,
@@ -417,7 +415,10 @@ mod tests {
         let upstream_name = "usage-upstream";
         let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
         let server_task = tokio::spawn(async move {
-            let running = EchoServer.serve(server_transport).await.expect("server starts");
+            let running = EchoServer
+                .serve(server_transport)
+                .await
+                .expect("server starts");
             running.waiting().await.ok();
         });
         let client_service: rmcp::service::RunningService<RoleClient, ()> =

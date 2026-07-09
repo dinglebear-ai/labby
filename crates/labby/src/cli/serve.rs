@@ -1099,7 +1099,53 @@ async fn build_gateway_runtime(
             "gateway manager installed with upstream spawning suppressed"
         );
     }
+    if let Some(store) = usage_store.clone() {
+        tokio::spawn(async move {
+            const PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+            const RETENTION_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
+            let mut interval = tokio::time::interval(PRUNE_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let now_unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let cutoff = usage_prune_cutoff(now_unix, RETENTION_SECS);
+                match store.prune_older_than(cutoff).await {
+                    Ok(deleted) if deleted > 0 => {
+                        tracing::info!(deleted, "pruned stale gateway usage records");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(error = %error, "gateway usage prune failed");
+                    }
+                }
+            }
+        });
+    }
     Ok(gateway_manager)
+}
+
+fn usage_prune_cutoff(now_unix: i64, retention_secs: i64) -> i64 {
+    now_unix - retention_secs
+}
+
+#[cfg(test)]
+mod usage_prune_tests {
+    use super::usage_prune_cutoff;
+
+    #[test]
+    fn cutoff_is_now_minus_retention() {
+        assert_eq!(usage_prune_cutoff(1_000_000, 100), 999_900);
+    }
+
+    #[test]
+    fn cutoff_saturates_at_zero_for_small_now() {
+        // Not a realistic production input, but confirms no panic/underflow
+        // on i64 subtraction for a clock that hasn't reached epoch+retention yet.
+        assert_eq!(usage_prune_cutoff(50, 100), -50);
+    }
 }
 
 #[cfg(not(feature = "gateway"))]

@@ -209,6 +209,16 @@ For negotiated RMCP logging notifications sent back to MCP clients:
 - preserve the caller-derived failure severity (`warning` for caller/user errors,
   `error` for internal or upstream failures)
 
+### Gateway usage telemetry (`UsageStore`)
+
+Every upstream tool/resource/prompt call outcome recorded by `upstream.request.finish`/`upstream.request.error` (above) is also durably persisted to a small SQLite store at `~/.labby/usage.db`, via `UpstreamPool`'s `timed_capability_call` choke point (`crates/labby-gateway/src/upstream/pool/capability_call.rs`). This is a fire-and-forget write (`tokio::spawn`) — it never adds latency or failure risk to the call it's observing, and a write failure is logged (`usage store record_call failed`) and dropped, never surfaced to the caller.
+
+Query it via the `gateway.usage.metrics` (aggregated totals/top-tools/top-actors) and `gateway.usage.calls` (raw paginated records) actions — both admin-gated, same as `gateway.enrich.*`. CLI: `labby gateway usage metrics` / `labby gateway usage calls`.
+
+Set `LABBY_GATEWAY_USAGE_DISABLED=1` to disable capture entirely (no store is opened at startup). Retained rows are pruned on a 6-hour cycle to a 30-day retention window by a background task started in `labby serve`.
+
+This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for the `gateway` service's own actions (e.g. `gateway.add`, `gateway.enrich.preview`) — only calls proxied through to upstreams. See `docs/superpowers/plans/2026-07-09-gateway-usage-telemetry.md` for the full design rationale, including why the schema's `capability`/`operation` fields are not hardcoded to "external upstream only".
+
 ### Health Probes
 
 Health probes are not normal business actions and must be distinguishable in logs.

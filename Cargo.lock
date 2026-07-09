@@ -2015,6 +2015,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rmcp",
+ "rusqlite",
  "rustls",
  "serde",
  "serde_json",

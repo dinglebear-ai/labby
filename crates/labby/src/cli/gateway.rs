@@ -392,9 +392,7 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["lab", "gateway", "usage", "metrics"]).is_ok());
-        assert!(
-            Cli::try_parse_from(["lab", "gateway", "usage", "calls", "--limit", "10"]).is_ok()
-        );
+        assert!(Cli::try_parse_from(["lab", "gateway", "usage", "calls", "--limit", "10"]).is_ok());
     }
 
     #[test]
@@ -459,10 +457,9 @@ mod tests {
 
     #[test]
     fn gateway_usage_metrics_parses_with_upstream_filter() {
-        let cli = Cli::try_parse_from([
-            "lab", "gateway", "usage", "metrics", "--upstream", "github",
-        ])
-        .expect("gateway usage metrics parses");
+        let cli =
+            Cli::try_parse_from(["lab", "gateway", "usage", "metrics", "--upstream", "github"])
+                .expect("gateway usage metrics parses");
 
         let Command::Gateway(args) = cli.command else {
             panic!("expected gateway command");
