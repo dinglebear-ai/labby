@@ -23,6 +23,7 @@ use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::helpers::max_response_bytes;
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish};
+use super::usage_record::record_usage_call;
 
 /// Outcome of a timed capability call before size-cap enforcement.
 pub(super) enum RawCallOutcome<R> {
@@ -105,12 +106,30 @@ where
                     Some(response_size),
                     Some(max_bytes),
                 );
+                record_usage_call(
+                    pool,
+                    event,
+                    subject,
+                    "response_too_large",
+                    Some("response_too_large"),
+                    start.elapsed().as_millis(),
+                    Some(response_size),
+                );
                 return Err(format!(
                     "upstream response too large ({response_size} bytes, max {max_bytes})"
                 ));
             }
             pool.record_success_for(upstream_name, capability).await;
             log_upstream_request_finish(event, start.elapsed().as_millis(), Some(response_size));
+            record_usage_call(
+                pool,
+                event,
+                subject,
+                "ok",
+                None,
+                start.elapsed().as_millis(),
+                Some(response_size),
+            );
             Ok(result)
         }
         RawCallOutcome::UpstreamError(error) => {
@@ -127,6 +146,15 @@ where
                 None,
                 None,
             );
+            record_usage_call(
+                pool,
+                event,
+                subject,
+                "upstream_error",
+                Some("upstream_error"),
+                start.elapsed().as_millis(),
+                None,
+            );
             Err(error_message_fn(&error))
         }
         RawCallOutcome::Timeout => {
@@ -141,6 +169,15 @@ where
                 "timeout",
                 None,
                 None,
+                None,
+            );
+            record_usage_call(
+                pool,
+                event,
+                subject,
+                "timeout",
+                Some("timeout"),
+                start.elapsed().as_millis(),
                 None,
             );
             Err(timeout_message)

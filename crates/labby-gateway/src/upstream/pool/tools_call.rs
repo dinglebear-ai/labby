@@ -49,6 +49,15 @@ impl UpstreamPool {
                     None,
                     None,
                 );
+                super::usage_record::record_usage_call(
+                    self,
+                    event,
+                    Some(subject),
+                    "upstream_connect_error",
+                    Some("upstream_connect_error"),
+                    elapsed_ms,
+                    None,
+                );
                 return Err(error.to_string());
             }
         };
@@ -372,5 +381,86 @@ mod tests {
             "expected at most 1 new initialize; got {} (before={before}, after={after})",
             after - before
         );
+    }
+
+    /// Usage telemetry: a successful `call_tool` through the pool writes one
+    /// row to the wired `UsageStore`, with capability/tool/upstream/outcome set.
+    #[tokio::test]
+    async fn call_tool_records_usage_when_store_is_wired() {
+        use crate::usage::UsageStore;
+
+        struct EchoServer;
+        impl ServerHandler for EchoServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            }
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, ErrorData> {
+                Ok(ListToolsResult::with_all_items(vec![rmcp::model::Tool::new(
+                    "echo",
+                    "echo tool",
+                    Arc::new(serde_json::Map::new()),
+                )]))
+            }
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResult, ErrorData> {
+                Ok(CallToolResult::success(vec![]))
+            }
+        }
+
+        let upstream_name = "usage-upstream";
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = EchoServer.serve(server_transport).await.expect("server starts");
+            running.waiting().await.ok();
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> =
+            ().serve(client_transport).await.expect("client starts");
+        let peer = client_service.peer().clone();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(UsageStore::open(dir.path().join("usage.db")).await.unwrap());
+        let pool = Arc::new(UpstreamPool::new().with_usage_store(Some(Arc::clone(&store))));
+        let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+        pool.catalog.write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service,
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+            },
+        );
+
+        pool.call_tool(upstream_name, CallToolRequestParams::new("echo"))
+            .await
+            .expect("upstream is connected")
+            .expect("echo call succeeds");
+
+        // The write is fire-and-forget (`tokio::spawn`); give it a beat to land.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let count: i64 = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM upstream_calls WHERE upstream_name = ?1 AND tool_name = ?2 AND outcome = 'ok'",
+                    rusqlite::params!["usage-upstream", "echo"],
+                    |row| row.get(0),
+                )
+                .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

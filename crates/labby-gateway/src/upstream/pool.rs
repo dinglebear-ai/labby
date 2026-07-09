@@ -46,6 +46,7 @@ mod stdio_stderr;
 mod testsupport;
 mod tools;
 mod tools_call;
+mod usage_record;
 mod validate;
 
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
@@ -147,6 +148,10 @@ pub struct UpstreamPool {
     /// sharing it means TLS sessions and keep-alive connections are reused across
     /// upstreams rather than rebuilt on every `connect_http_upstream` call (P-M10).
     pub(super) shared_http_client: Arc<reqwest::Client>,
+    /// Optional call-usage recorder. `None` (the default) disables telemetry
+    /// capture entirely — most tests and any pool built without an explicit
+    /// `.with_usage_store(...)` call never touch SQLite.
+    pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
 }
 
 /// A live connection to an upstream MCP server.
@@ -259,6 +264,7 @@ impl UpstreamPool {
             relay_timeout: DEFAULT_RELAY_TIMEOUT,
             in_process_connector: None,
             shared_http_client,
+            usage_store: None,
         }
     }
 
@@ -306,6 +312,15 @@ impl UpstreamPool {
     #[must_use]
     pub fn with_relay_timeout(mut self, timeout: Duration) -> Self {
         self.relay_timeout = timeout;
+        self
+    }
+
+    /// Attach a call-usage recorder. `None` explicitly disables capture even
+    /// if the caller previously wired one — used by tests that want a clean
+    /// pool without reconstructing it.
+    #[must_use]
+    pub fn with_usage_store(mut self, store: Option<Arc<crate::usage::UsageStore>>) -> Self {
+        self.usage_store = store;
         self
     }
 
