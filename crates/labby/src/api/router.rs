@@ -280,6 +280,19 @@ async fn auth_token(
     .await)
 }
 
+async fn auth_native_callback(
+    query: Query<labby_auth::types::NativePollQuery>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(labby_auth::authorize::native_callback(query).await?)
+}
+
+async fn auth_native_poll(
+    State(state): State<AppState>,
+    query: Query<labby_auth::types::NativePollQuery>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(labby_auth::authorize::native_poll(State(app_auth_state(&state)?), query).await?)
+}
+
 fn auth_error_response(message: &str, resource_url: Option<&str>) -> axum::response::Response {
     let err = ToolError::Sdk {
         sdk_kind: "auth_failed".into(),
@@ -1468,6 +1481,8 @@ pub fn build_router(
                 post(crate::api::browser_session::auth_logout),
             )
             .route("/auth/google/callback", get(auth_callback))
+            .route("/native/callback", get(auth_native_callback))
+            .route("/native/poll", get(auth_native_poll))
             .route("/token", post(auth_token));
         #[cfg(feature = "gateway")]
         {

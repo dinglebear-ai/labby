@@ -1,7 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect};
 use axum::{Json, response::Response};
 use base64::Engine;
@@ -16,11 +16,13 @@ use crate::state::AuthState;
 use crate::types::{
     AuthorizationCodeRow, AuthorizationRequestRow, AuthorizeQuery, BrowserLoginQuery,
     BrowserLoginStateRow, CallbackQuery, ClientRegistrationRequest, ClientRegistrationResponse,
-    RegisteredClient,
+    NativeAuthorizationResultRow, NativePollQuery, NativePollResponse, RegisteredClient,
 };
 use crate::util::{expires_at, fingerprint, now_unix, random_token};
 
 const AUTH_REQUEST_TTL_SECS: i64 = 300;
+const NATIVE_SUCCESS_PAGE: &str = r#"<!doctype html><html><body style="font-family:sans-serif;background:#07131c;color:#e6f4fb;text-align:center;padding-top:4rem"><h2>Signed in to Labby</h2><p>You can close this tab and return to the app.</p></body></html>"#;
+const NATIVE_CALLBACK_EXPIRED_PAGE: &str = r#"<!doctype html><html><body style="font-family:sans-serif;background:#07131c;color:#e6f4fb;text-align:center;padding-top:4rem"><h2>Sign-in link expired</h2><p>Return to the app and start sign-in again.</p></body></html>"#;
 
 /// Extract the `IpAddr` from a `SocketAddr`, normalizing IPv4-mapped IPv6
 /// addresses (`::ffff:a.b.c.d`) back to plain IPv4 so per-IP rate-limiting
@@ -133,15 +135,19 @@ pub async fn register_client(
             "at least one redirect URI is required".to_string(),
         ));
     }
+    let native_callback_endpoint = crate::metadata::native_callback_endpoint(&state);
     for redirect_uri in &request.redirect_uris {
-        if !is_allowed_redirect_uri(redirect_uri, &state.config.allowed_client_redirect_uris) {
+        if redirect_uri != &native_callback_endpoint
+            && !is_allowed_redirect_uri(redirect_uri, &state.config.allowed_client_redirect_uris)
+        {
             warn!(
                 redirect_uri = %redirect_uri,
+                native_callback_endpoint = %native_callback_endpoint,
                 allowed_patterns = ?state.config.allowed_client_redirect_uris,
-                "oauth register rejected: redirect URI is not in the allowlist or loopback set"
+                "oauth register rejected: redirect URI is not in the allowlist, native callback, or loopback set"
             );
             return Err(AuthError::Validation(format!(
-                "redirect URI `{redirect_uri}` must target a loopback host or match an allowed redirect pattern"
+                "redirect URI `{redirect_uri}` must target a loopback host, match the native callback endpoint, or match an allowed redirect pattern"
             )));
         }
     }
@@ -413,6 +419,40 @@ pub async fn callback(
         "oauth callback issued local authorization code"
     );
 
+    // Native-flow clients (desktop/mobile apps with no loopback listener or
+    // custom URI scheme) register `redirect_uri = native_callback_endpoint` —
+    // our own HTTPS route — instead of a client-hosted URL. In that case there
+    // is no redirect target to send the browser back to: stash the code keyed
+    // by `state` for the client to retrieve via `/native/poll`, and show a
+    // plain "signed in" page directly.
+    let native_callback_endpoint = crate::metadata::native_callback_endpoint(&state);
+    if request.redirect_uri == native_callback_endpoint {
+        let now = now_unix();
+        state
+            .store
+            .insert_native_authorization_result(NativeAuthorizationResultRow {
+                state: request.client_state,
+                code: auth_code,
+                created_at: now,
+                expires_at: expires_at(
+                    now,
+                    state.config.auth_code_ttl,
+                    &format!("{}_AUTH_CODE_TTL_SECS", state.config.env_prefix),
+                )?,
+            })
+            .await?;
+        let mut response = axum::response::Html(NATIVE_SUCCESS_PAGE).into_response();
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        debug!(
+            auth_code_id = %auth_code_id,
+            native_callback_endpoint = %native_callback_endpoint,
+            "oauth callback stored native authorization code for polling"
+        );
+        return Ok(response);
+    }
+
     let redirect_uri = reqwest::Url::parse(&request.redirect_uri).map_err(|error| {
         AuthError::Storage(format!(
             "registered redirect_uri is not a valid URL: {error}"
@@ -430,6 +470,56 @@ pub async fn callback(
     );
 
     Ok(Redirect::to(redirect_uri.as_str()).into_response())
+}
+
+pub async fn native_callback(Query(query): Query<NativePollQuery>) -> Result<Response, AuthError> {
+    let state_param = query.state.trim();
+    if state_param.is_empty() {
+        return Err(AuthError::Validation(
+            "missing `state` parameter".to_string(),
+        ));
+    }
+    let mut response = (
+        StatusCode::GONE,
+        axum::response::Html(NATIVE_CALLBACK_EXPIRED_PAGE),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+pub async fn native_poll(
+    State(state): State<AuthState>,
+    Query(query): Query<NativePollQuery>,
+) -> Result<Response, AuthError> {
+    let state_param = query.state.trim();
+    if state_param.is_empty() {
+        return Err(AuthError::Validation(
+            "missing `state` parameter".to_string(),
+        ));
+    }
+    let mut response = if let Some(row) = state
+        .store
+        .take_native_authorization_result(state_param)
+        .await?
+    {
+        Json(NativePollResponse {
+            code: Some(row.code),
+        })
+        .into_response()
+    } else {
+        (
+            StatusCode::ACCEPTED,
+            Json(NativePollResponse { code: None }),
+        )
+            .into_response()
+    };
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 fn sanitize_return_to(state: &AuthState, requested: Option<&str>) -> String {

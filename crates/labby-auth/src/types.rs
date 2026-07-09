@@ -6,11 +6,43 @@ pub struct AuthorizationServerMetadata {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub registration_endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_callback_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_poll_endpoint: Option<String>,
     pub jwks_uri: String,
     pub response_types_supported: Vec<String>,
     pub grant_types_supported: Vec<String>,
     pub code_challenge_methods_supported: Vec<String>,
     pub token_endpoint_auth_methods_supported: Vec<String>,
+}
+
+/// Query params for `GET /native/callback` and `GET /native/poll` — the
+/// RFC 8252 §7.1-style native-app flow where the *server* hosts the OAuth
+/// redirect_uri (a real HTTPS URL, not a client-run loopback listener) and
+/// the desktop client polls for the resulting code by `state`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativePollQuery {
+    pub state: String,
+    #[serde(default)]
+    pub code: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativePollResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// A native-flow authorization code, stored server-side keyed by `state`
+/// until the polling client retrieves it (`take_native_authorization_result`
+/// is a one-shot read-and-delete).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeAuthorizationResultRow {
+    pub state: String,
+    pub code: String,
+    pub created_at: i64,
+    pub expires_at: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

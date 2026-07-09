@@ -6,7 +6,7 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use std::time::Instant;
 
-use crate::authorize::{authorize, browser_login, callback, register_client};
+use crate::authorize::{authorize, browser_login, callback, native_callback, native_poll, register_client};
 use crate::error::AuthErrorKind;
 use crate::metadata::{authorization_server_metadata, jwks, protected_resource_metadata};
 use crate::state::AuthState;
@@ -31,6 +31,8 @@ pub fn router(state: AuthState) -> Router {
         .route("/authorize", get(authorize))
         .route("/auth/login", get(browser_login))
         .route("/auth/google/callback", get(callback))
+        .route("/native/callback", get(native_callback))
+        .route("/native/poll", get(native_poll))
         .route("/token", post(token));
     if enable_registration {
         app = app.route("/register", post(register_client));
@@ -158,6 +160,8 @@ fn auth_dispatch_action(path: &str) -> &'static str {
         "/authorize" => "oauth.authorize",
         "/auth/login" => "oauth.browser_login",
         "/auth/google/callback" => "oauth.callback",
+        "/native/callback" => "oauth.native_callback",
+        "/native/poll" => "oauth.native_poll",
         "/token" => "oauth.token",
         _ if path.starts_with("/.well-known/oauth-authorization-server/") => {
             "oauth.metadata.authorization_server"
