@@ -28,6 +28,8 @@ pub enum GatewayCommand {
     Reload,
     /// Manage upstream MCP server lifecycle and OAuth.
     Mcp(GatewayMcpArgs),
+    /// Inspect inbound MCP clients/sessions connected to this gateway.
+    Clients(GatewayClientsArgs),
     /// Scan the machine for MCP server configs from known editors and tools (read-only)
     Discover(GatewayDiscoverArgs),
     /// Import discovered MCP servers into the gateway (disabled by default)
@@ -384,6 +386,20 @@ pub struct GatewayProtectedRouteUpsertArgs {
 pub struct GatewayMcpArgs {
     #[command(subcommand)]
     pub command: GatewayMcpCommand,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayClientsArgs {
+    #[command(subcommand)]
+    pub command: GatewayClientsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GatewayClientsCommand {
+    /// List inbound MCP clients/sessions currently connected to this gateway.
+    /// Best-effort — reflects the most recently observed connect events, not
+    /// a strict live liveness view.
+    List,
 }
 
 #[derive(Debug, Subcommand)]

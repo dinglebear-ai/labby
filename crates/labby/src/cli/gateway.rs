@@ -311,6 +311,7 @@ mod tests {
                 .is_ok()
         );
         assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "list",]).is_ok());
+        assert!(Cli::try_parse_from(["lab", "gateway", "clients", "list",]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "enable", "fixture-http",]).is_ok());
         assert!(
             Cli::try_parse_from([

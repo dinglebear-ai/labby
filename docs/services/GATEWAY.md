@@ -834,6 +834,40 @@ Callback security invariants (enforced in code, spec-required):
 - Expired access-only credential rows (no refresh token) are pruned by the
   60-second `cleanup_expired` background task, alongside expired PKCE state.
 
+## Inbound Clients
+
+`gateway.clients.list` reports MCP clients/agents currently connected to this
+gateway's own `/mcp` endpoint — the inbound side, distinct from everything
+else in this document, which covers the outbound upstream proxy.
+
+Each entry (`GatewayClientView`) carries a redacted actor display tag (never
+the raw authenticated subject — see [OBSERVABILITY.md](../dev/OBSERVABILITY.md)
+for the `actor_key` redaction convention this reuses), the client's
+self-declared MCP `clientInfo.name`/`version` from the initialize handshake,
+the transport (`stdio`, `http`, `in-process`, or `test`), and a connect
+timestamp.
+
+```json
+{ "action": "gateway.clients.list", "params": {} }
+```
+
+Two things this is explicitly **not**:
+
+- **Not a live liveness view.** Entries are appended on `initialize` and never
+  proactively removed on disconnect — an entry can outlive its actual
+  connection. This mirrors the existing MCP peer-notification list's
+  behavior (reactive/best-effort pruning only), not a new limitation
+  introduced here.
+- **Not authenticated identity.** `client_name`/`client_version` are
+  self-declared by the peer during the MCP handshake and are not verified —
+  treat them as a display label, not an identity claim. The redacted subject
+  tag is the only field backed by actual auth state.
+
+The registry is bounded (drop-oldest past a fixed entry cap) and truncates
+every peer-controlled string field before storage, since a client is
+untrusted input from the gateway's perspective — a reconnecting or hostile
+peer must not be able to grow this list, or any one field in it, unbounded.
+
 ## Limitations
 
 - `gateway.reload` is the only action that promises to pick up changed bearer-token env vars.

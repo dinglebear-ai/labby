@@ -4,10 +4,10 @@ use anyhow::Result;
 use serde_json::{Map, Value, json};
 
 use crate::cli::gateway::{
-    GatewayArgs, GatewayCommand, GatewayEnrichCommand, GatewayMcpAuthCommand, GatewayMcpCommand,
-    GatewayPendingCommand, GatewayProtectedRouteCommand, GatewayProtectedRouteUpdateArgs,
-    GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand, GatewayUpdateArgs,
-    GatewayUsageCommand, LazyGatewayManager,
+    GatewayArgs, GatewayClientsCommand, GatewayCommand, GatewayEnrichCommand,
+    GatewayMcpAuthCommand, GatewayMcpCommand, GatewayPendingCommand, GatewayProtectedRouteCommand,
+    GatewayProtectedRouteUpdateArgs, GatewayProtectedRouteUpsertArgs, GatewayQuarantineCommand,
+    GatewayUpdateArgs, GatewayUsageCommand, LazyGatewayManager,
 };
 use crate::cli::helpers::{run_action_command, run_confirmable_action_command};
 use crate::config::{LabConfig, ProtectedMcpRouteConfig};
@@ -407,6 +407,9 @@ pub(super) async fn dispatch_command(
                     }
                 },
                 GatewayCommand::PublicUrls => ("gateway.public_urls.get".to_string(), json!({})),
+                GatewayCommand::Clients(args) => match args.command {
+                    GatewayClientsCommand::List => ("gateway.clients.list".to_string(), json!({})),
+                },
                 GatewayCommand::Enrich(args) => match args.command {
                     None => {
                         confirmed = args.yes;

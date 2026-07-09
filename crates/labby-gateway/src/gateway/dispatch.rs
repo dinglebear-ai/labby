@@ -774,6 +774,7 @@ async fn handle_mcp_actions(
             )
         }
         "gateway.mcp.list" => to_json(manager.mcp_runtime_list().await?),
+        "gateway.clients.list" => to_json(manager.clients().await?),
         "gateway.mcp.disable" => {
             let params: GatewayMcpToggleParams = parse_params(params_value)?;
             let gateway = manager

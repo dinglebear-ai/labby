@@ -426,6 +426,26 @@ pub struct GatewayRuntimeOwnerView {
     pub raw: Option<String>,
 }
 
+/// One live inbound MCP client/session connected to this gateway's `/mcp`
+/// endpoint. See `labby_runtime::client_registry::ConnectedClient` — this is
+/// its dispatch-layer view projection (same field shape today; kept as a
+/// distinct type so the dispatch layer's serialization contract doesn't
+/// couple directly to the shared runtime crate's internal type).
+///
+/// Best-effort, not a strict liveness guarantee — see
+/// `labby_runtime::client_registry` module docs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayClientView {
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
+    pub client_name: Option<String>,
+    #[serde(default)]
+    pub client_version: Option<String>,
+    pub transport: String,
+    pub connected_at: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayMcpRuntimeView {
     pub name: String,

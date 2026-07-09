@@ -967,6 +967,7 @@ async fn build_gateway_runtime(
         );
     }
     let (notify_tx, notify_rx) = mpsc::unbounded_channel();
+    let client_registry = notifier.client_registry.clone();
     let _catalog_notifier_task = tokio::spawn(notifier.run(notify_rx));
     let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
     let live_config = Arc::new(std::sync::RwLock::new(config.clone()));
@@ -1015,7 +1016,9 @@ async fn build_gateway_runtime(
             "openapi code-mode provider ready"
         );
     }
-    let mut gateway_manager = gateway_manager.with_openapi(openapi_registry, openapi_http_client);
+    let mut gateway_manager = gateway_manager
+        .with_openapi(openapi_registry, openapi_http_client)
+        .with_client_registry(client_registry);
 
     gateway_manager.set_notifier(CatalogChangeNotifier::new(notify_tx));
     let gateway_manager = Arc::new(gateway_manager);
@@ -1217,6 +1220,9 @@ async fn run_stdio(
         #[cfg(feature = "gateway")]
         gateway_manager: Some(Arc::clone(&gateway_manager)),
         peers: Arc::clone(&notifier.peers),
+        #[cfg(feature = "gateway")]
+        client_registry: notifier.client_registry.clone(),
+        transport_label: "stdio",
         logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
             crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
         )),
@@ -1339,6 +1345,8 @@ fn build_mcp_service_with_scope(
     // All HTTP sessions share the same PeerNotifier (and thus the same peers
     // vec) so that gateway reload notifications reach every connected session.
     let shared_peers = Arc::clone(&notifier.peers);
+    #[cfg(feature = "gateway")]
+    let shared_client_registry = notifier.client_registry.clone();
     let route_scope_label = route_scope.label();
 
     Ok(StreamableHttpService::new(
@@ -1351,6 +1359,8 @@ fn build_mcp_service_with_scope(
             #[cfg(not(feature = "gateway"))]
             let gateway_manager_configured = false;
             let peers = Arc::clone(&shared_peers);
+            #[cfg(feature = "gateway")]
+            let client_registry = shared_client_registry.clone();
             let route_scope = route_scope.clone();
             tracing::info!(
                 surface = "mcp",
@@ -1369,6 +1379,9 @@ fn build_mcp_service_with_scope(
                 #[cfg(feature = "gateway")]
                 gateway_manager: manager,
                 peers,
+                #[cfg(feature = "gateway")]
+                client_registry,
+                transport_label: "http",
                 logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
                     crate::mcp::logging::logging_level_rank(
                         crate::mcp::logging::LoggingLevel::Info,

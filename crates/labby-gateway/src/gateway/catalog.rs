@@ -944,6 +944,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         params: &[],
     },
     ActionSpec {
+        name: "gateway.clients.list",
+        description: "List inbound MCP clients/sessions currently connected to this gateway. Best-effort — reflects the most recently observed connect events, not a strict live liveness view",
+        destructive: false,
+        requires_admin: true,
+        returns: "GatewayClientView[]",
+        params: &[],
+    },
+    ActionSpec {
         name: "gateway.mcp.disable",
         description: "Disable an upstream MCP server and optionally clean up running processes",
         destructive: false,
