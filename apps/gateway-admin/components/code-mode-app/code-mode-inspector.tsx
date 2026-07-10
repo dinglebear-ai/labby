@@ -278,7 +278,9 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
           ok={runOk}
           errorKind={errorKind}
           elapsedMs={elapsedMs}
-          bridgeState={bridgeState}
+          // A rendered trace proves the bridge works — the state label only
+          // earns its place while the card is empty, explaining why.
+          bridgeLabel={run ? null : bridgeState}
         />
 
         {warnings.map((warning, index) => (
@@ -348,13 +350,13 @@ function WidgetHead({
   ok,
   errorKind,
   elapsedMs,
-  bridgeState,
+  bridgeLabel,
 }: {
   subLabel: string | null
   ok: boolean
   errorKind: string | undefined
   elapsedMs: number | undefined
-  bridgeState: 'connecting' | 'connected' | 'fallback'
+  bridgeLabel: string | null
 }) {
   return (
     <div
@@ -379,8 +381,8 @@ function WidgetHead({
           {formatMs(elapsedMs)}
         </span>
       ) : null}
-      {bridgeState !== 'connected' ? (
-        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>{bridgeState}</span>
+      {bridgeLabel !== null && bridgeLabel !== 'connected' ? (
+        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>{bridgeLabel}</span>
       ) : null}
     </div>
   )
@@ -723,6 +725,9 @@ function WidgetFoot({
   if (live && liveEntrySeq === undefined) {
     chips.push({ key: 'live', label: 'live', ok: live.calls.every((call) => call.ok), target: 'live' })
   }
+  // A single run has nothing to switch between — the chip strip only earns
+  // its place once history gives it a second entry.
+  const showChips = chips.length > 1
 
   const meta: string[] = []
   if (inputTokens !== undefined || outputTokens !== undefined) {
@@ -730,15 +735,17 @@ function WidgetFoot({
   }
   if (logsCount) meta.push(`${logsCount} log${logsCount === 1 ? '' : 's'}`)
 
-  if (chips.length === 0 && meta.length === 0) return null
+  if (!showChips && meta.length === 0) return null
 
   return (
     <div
       className="flex items-center gap-1.5 border-t px-3 py-1.5"
       style={{ borderColor: HEAD_FOOT_BORDER, background: HEAD_FOOT_BG }}
     >
-      <span className={cn(AURORA_BADGE_LABEL, 'mr-0.5 text-aurora-text-muted')}>Session</span>
-      {chips.map((chip) => {
+      {showChips ? (
+        <span className={cn(AURORA_BADGE_LABEL, 'mr-0.5 text-aurora-text-muted')}>Session</span>
+      ) : null}
+      {(showChips ? chips : []).map((chip) => {
         const isSelected =
           chip.target === selected || (chip.target === 'live' && selected === 'live')
         return (

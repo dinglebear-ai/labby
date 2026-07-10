@@ -7,6 +7,7 @@
 <style>
 :root{color-scheme:dark;--aurora-page-bg:#07131c;--aurora-panel-strong:#13293a;--aurora-panel-strong-top:#173245;--aurora-control-surface:#0c1a24;--aurora-border-default:#1d3d4e;--aurora-border-strong:#24536c;--aurora-text-primary:#e6f4fb;--aurora-text-muted:#a7bcc9;--aurora-accent-primary:#29b6f6;--aurora-accent-strong:#67cbfa;--aurora-accent-deep:#1c7fac;--aurora-success:#7dd3c7;--aurora-warn:#c6a36b;--aurora-error:#c78490;--aurora-hover-bg:#17364b;--aurora-shadow-medium:0 12px 24px rgba(0,0,0,.18);--aurora-highlight-strong:inset 0 1px 0 rgba(255,255,255,.05);background:var(--aurora-page-bg);color:var(--aurora-text-primary);font-family:Inter,"Segoe UI",system-ui,sans-serif}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;padding:8px;background:radial-gradient(900px 420px at 12% -10%,rgba(41,182,246,.08),transparent 60%),var(--aurora-page-bg);color:var(--aurora-text-primary)}
 .widget{width:100%;max-width:680px;margin:0 auto;overflow:hidden;border-radius:18px;background:linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong));border:1px solid color-mix(in srgb,var(--aurora-border-default) 45%,var(--aurora-page-bg));box-shadow:var(--aurora-shadow-medium),var(--aurora-highlight-strong)}
 .head,.foot{display:flex;align-items:center;gap:8px;padding:8px 12px;background:color-mix(in srgb,var(--aurora-page-bg) 25%,transparent)}
@@ -78,7 +79,7 @@ details[open]>.mrow .chev{transform:rotate(90deg)}
 </div>
 <div id="content"><p class="empty">Run codemode to populate the inspector.</p></div>
 <div class="foot" id="foot" hidden>
-<span class="foot-label">Session</span>
+<span class="foot-label" id="footlabel">Session</span>
 <span class="chips" id="chips"></span>
 <span class="spacer"></span>
 <span class="foot-meta" id="footmeta"></span>
@@ -184,6 +185,9 @@ let selected="live";
 // ui/notifications/tool-input, or window.openai.toolInput). For codemode that
 // is { code: "async () => { … }" } — the snippet that drove the run.
 let toolInput=null;
+// A rendered trace proves the bridge works — the state badge only earns its
+// place while the card is empty, explaining why (connecting/waiting/etc).
+let recognizedOnce=false;
 function toolInputSnippet(){
   const input=toolInput;
   if(!input||typeof input!=="object"||Array.isArray(input))return null;
@@ -305,9 +309,13 @@ function paintFoot(current){
   if(selected==="live"&&live&&num(live.logs_count)>0){
     meta.push(`${num(live.logs_count)} log${num(live.logs_count)===1?"":"s"}`);
   }
-  chips.innerHTML=parts.join("");
+  // A single run has nothing to switch between — the chip strip only earns
+  // its place once history gives it a second entry.
+  const showChips=parts.length>1;
+  chips.innerHTML=showChips?parts.join(""):"";
+  document.getElementById("footlabel").hidden=!showChips;
   footMeta.textContent=meta.join(" · ");
-  foot.hidden=parts.length===0&&meta.length===0;
+  foot.hidden=!showChips&&meta.length===0;
 }
 function paint(){
   const entry=selected==="live"?null:history.find(e=>e.seq===selected);
@@ -356,10 +364,11 @@ chips.addEventListener("click",(event)=>{
 function render(trace){
   const t=trace&&trace.structuredContent?trace.structuredContent:trace;
   if(!t||!t.kind){live=null;history=[];selected="live";paint();return false;}
-  if(t.kind==="code_mode_execute_trace"){live=t;selected="live";paint();return true;}
+  if(t.kind==="code_mode_execute_trace"){live=t;selected="live";recognizedOnce=true;paint();return true;}
   if(t.kind==="code_mode_history"){
     history=Array.isArray(t.entries)?t.entries:[];
     if(!live){selected=history.length?history[history.length-1].seq:"live";}
+    recognizedOnce=true;
     paint();
     return true;
   }
@@ -381,7 +390,11 @@ if (window.openai) {
   // without that key do we fall back to the live snapshot.
   let hydrated = false;
   const setState = (label, connected) => {
-    try { state.textContent = label; state.classList.toggle("connected", connected); } catch (_) {}
+    try {
+      state.textContent = label;
+      state.classList.toggle("connected", connected);
+      state.hidden = connected || recognizedOnce;
+    } catch (_) {}
   };
   const syncOpenai = (event) => {
     const globals = event && event.detail && event.detail.globals;
@@ -419,7 +432,11 @@ if (window.openai) {
   app.onhostcontextchanged = (ctx) => { if (ctx && ctx.theme) { document.documentElement.classList.toggle("dark", ctx.theme === "dark"); } };
   let hydrated = false;
   const setState = (label, connected) => {
-    try { state.textContent = label; state.classList.toggle("connected", connected); } catch (_) {}
+    try {
+      state.textContent = label;
+      state.classList.toggle("connected", connected);
+      state.hidden = connected || recognizedOnce;
+    } catch (_) {}
   };
   // The host streams the tool-call arguments (the snippet the LLM sent)
   // alongside the result — surface them as the run's Input row.

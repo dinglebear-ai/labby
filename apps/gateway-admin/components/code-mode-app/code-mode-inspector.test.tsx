@@ -325,6 +325,13 @@ test('joins a live trace to its history entry for elapsed and chip labeling', as
         kind: 'code_mode_history',
         entries: [
           {
+            seq: 8,
+            kind: 'execute',
+            ok: true,
+            elapsed_ms: 921,
+            calls: [{ id: 'gotify::message.create', ok: true, elapsed_ms: 903 }],
+          },
+          {
             seq: 9,
             kind: 'execute',
             ok: true,
@@ -356,6 +363,30 @@ test('joins a live trace to its history entry for elapsed and chip labeling', as
   assert.match(container.textContent ?? '', /348 ms/)
   assert.match(container.textContent ?? '', /#9 live/)
   assert.match(container.textContent ?? '', /Result/)
+  // A rendered trace proves the bridge works — no status badge.
+  assert.doesNotMatch(container.textContent ?? '', /connected/i)
+  await unmount()
+})
+
+test('hides the session strip when there is only a single run', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        calls: [{ id: 'arcane::containers', namespace: 'arcane', tool: 'containers', ok: true, elapsed_ms: 96 }],
+        input_tokens: 42,
+        output_tokens: 68,
+      }}
+    />,
+  )
+
+  // One run has nothing to switch between — no Session label, no lone chip.
+  assert.doesNotMatch(container.textContent ?? '', /Session/)
+  assert.doesNotMatch(container.textContent ?? '', /\blive\b/)
+  // Token meta still earns the footer.
+  assert.match(container.textContent ?? '', /42 in · 68 out/)
   await unmount()
 })
 
