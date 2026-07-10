@@ -47,8 +47,12 @@ details[open]>.row .chev{transform:rotate(90deg)}
 pre{margin:0;padding:8px 10px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11px;line-height:1.55;color:var(--aurora-text-primary);white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:150px;border-radius:8px;background:color-mix(in srgb,var(--aurora-page-bg) 55%,var(--aurora-control-surface));border:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg))}
 .empty{margin:0;padding:14px 12px;font-size:12px;color:var(--aurora-text-muted);text-align:center}
 .histnote{display:flex;align-items:center;gap:7px;padding:7px 12px;font-size:11px;color:var(--aurora-text-muted);border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 30%,transparent)}
-.mrow{display:grid;grid-template-columns:14px minmax(0,1fr);align-items:center;gap:8px;padding:5px 12px;border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 30%,transparent)}
-.mrow:first-child{border-top:none}
+.mrow{display:grid;grid-template-columns:14px minmax(0,1fr) 13px;align-items:center;gap:8px;padding:5px 12px;cursor:pointer;list-style:none}
+.mrow::-webkit-details-marker{display:none}
+.mrow:hover{background:color-mix(in srgb,var(--aurora-accent-primary) 5%,transparent)}
+details[open]>.mrow .chev{transform:rotate(90deg)}
+.m-detail{font-size:11px;line-height:1.5;color:var(--aurora-text-muted)}
+.m-meta{font-size:10.5px;color:var(--aurora-text-muted)}
 .m-main{display:flex;align-items:baseline;gap:6px;min-width:0}
 .m-name{font-size:12px;font-weight:600;flex:none;color:var(--aurora-text-primary)}
 .m-desc{font-size:11px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
@@ -176,6 +180,17 @@ const footMeta=document.getElementById("footmeta");
 let live=null;
 let history=[];
 let selected="live";
+// The LLM's tool-call arguments, delivered by the host (MCP Apps
+// ui/notifications/tool-input, or window.openai.toolInput). For codemode that
+// is { code: "async () => { … }" } — the snippet that drove the run.
+let toolInput=null;
+function toolInputSnippet(){
+  const input=toolInput;
+  if(!input||typeof input!=="object"||Array.isArray(input))return null;
+  if(typeof input.code==="string"&&input.code.length)return input.code;
+  if(!Object.keys(input).length)return null;
+  return json(input);
+}
 const CHECK='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 const XMARK='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
 const CHEV='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
@@ -211,7 +226,16 @@ function discoveryResult(t){
     if(!item||typeof item!=="object")return null;
     const id=typeof item.id==="string"?item.id:(typeof item.path==="string"?item.path:null);
     if(id===null)return null;
-    hits.push({id:id,namespace:typeof item.namespace==="string"?item.namespace:"",name:typeof item.name==="string"?item.name:id,description:typeof item.description==="string"?item.description:""});
+    hits.push({
+      id:id,
+      namespace:typeof item.namespace==="string"?item.namespace:"",
+      name:typeof item.name==="string"?item.name:id,
+      description:typeof item.description==="string"?item.description:"",
+      path:typeof item.path==="string"?item.path:"",
+      kind:typeof item.kind==="string"?item.kind:"",
+      signature:typeof item.signature==="string"?item.signature:"",
+      score:typeof item.score==="number"&&Number.isFinite(item.score)?item.score:null
+    });
   }
   return{hits:hits,total:r.total,truncated:r.truncated===true,hint:typeof r.hint==="string"?r.hint:""};
 }
@@ -223,7 +247,13 @@ function describeMarkdown(t){
 }
 function discoveryRows(d){
   if(!d.hits.length)return `<p class="empty">${esc(d.hint||"No matches.")}</p>`;
-  return d.hits.map(h=>`<div class="mrow"><span class="st info">${WRENCH}</span><span class="m-main">${h.namespace?`<span class="up">${esc(h.namespace)}</span>`:""}<span class="m-name">${esc(h.name)}</span>${h.description?`<span class="m-desc">${esc(h.description)}</span>`:""}</span></div>`).join("");
+  return d.hits.map(h=>{
+    const summary=`<span class="st info">${WRENCH}</span><span class="m-main">${h.namespace?`<span class="up">${esc(h.namespace)}</span>`:""}<span class="m-name">${esc(h.name)}</span>${h.description?`<span class="m-desc">${esc(h.description)}</span>`:""}</span>`;
+    const meta=[h.path,h.kind,h.score!==null?`score ${h.score.toFixed(2)}`:""].filter(Boolean).join(" · ");
+    const detail=`${h.description?`<div class="m-detail">${esc(h.description)}</div>`:""}${meta?`<div class="m-meta">${esc(meta)}</div>`:""}${h.signature?`<pre>${esc(h.signature)}</pre>`:""}`;
+    if(!detail)return `<div class="call"><div class="mrow">${summary}</div></div>`;
+    return `<details class="call"><summary class="mrow">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${detail}</div></details>`;
+  }).join("");
 }
 function callRow(call,maxMs){
   const f=callFields(call);
@@ -237,6 +267,13 @@ function callRow(call,maxMs){
   const params=call.params!==undefined&&call.params!==null?`<div class="kv-label">Redacted params</div><pre>${esc(json(call.params))}</pre>`:"";
   if(!err&&!params)return `<div class="call"><div class="row">${summary}<span class="chev"></span></div></div>`;
   return `<details class="call"><summary class="row">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${params}</div></details>`;
+}
+const TERMINAL_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>';
+function inputRow(){
+  const snippet=toolInputSnippet();
+  if(snippet===null)return "";
+  const lines=snippet.split("\n").length;
+  return `<details class="call"><summary class="row wide"><span class="st info">${TERMINAL_ICON}</span><span class="meta-label">Input</span><span class="meta-val">${esc(lines)} line${lines===1?"":"s"}</span><span class="chev">${CHEV}</span></summary><div class="sub"><pre>${esc(snippet)}</pre></div></details>`;
 }
 function resultRow(t){
   if(t.result===undefined)return "";
@@ -302,6 +339,7 @@ function paint(){
   let html=calls.map(c=>callRow(c,maxMs)).join("");
   if(!html&&(!t||t.result===undefined))html='<p class="empty">No calls were made.</p>';
   if(discovery)html+=discoveryRows(discovery);
+  if(t)html+=inputRow();
   if(t)html+=resultRow(t);
   if(entry)html+=`<div class="histnote">${HISTORY_ICON}<span>Result not retained in history — params and call outcomes only.</span></div>`;
   content.innerHTML=html;
@@ -347,6 +385,9 @@ if (window.openai) {
   };
   const syncOpenai = (event) => {
     const globals = event && event.detail && event.detail.globals;
+    const hasInputKey = globals && Object.prototype.hasOwnProperty.call(globals, "toolInput");
+    const rawInput = hasInputKey ? globals.toolInput : (window.openai && window.openai.toolInput);
+    if (rawInput !== undefined) { toolInput = rawInput; }
     const hasKey = globals && Object.prototype.hasOwnProperty.call(globals, "toolOutput");
     const out = hasKey ? globals.toolOutput : (window.openai && window.openai.toolOutput);
     if (out != null) {
@@ -379,6 +420,12 @@ if (window.openai) {
   let hydrated = false;
   const setState = (label, connected) => {
     try { state.textContent = label; state.classList.toggle("connected", connected); } catch (_) {}
+  };
+  // The host streams the tool-call arguments (the snippet the LLM sent)
+  // alongside the result — surface them as the run's Input row.
+  app.ontoolinput = (params) => {
+    toolInput = params && params.arguments ? params.arguments : null;
+    paint();
   };
   app.ontoolresult = (result) => {
     // Recognized trace -> connected; non-null-but-unrecognized -> "malformed"

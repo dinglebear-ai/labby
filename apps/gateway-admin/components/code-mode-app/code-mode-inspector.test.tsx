@@ -98,9 +98,13 @@ test('renders in-sandbox search results as discovery match rows', async () => {
           results: [
             {
               id: 'unifi::device.list',
+              path: 'codemode.unifi.device_list',
+              kind: 'tool',
               namespace: 'unifi',
               name: 'device_list',
               description: 'List UniFi devices.',
+              signature: 'device_list(params: { site?: string }): Promise<Device[]>',
+              score: 0.91,
             },
           ],
           total: 42,
@@ -118,6 +122,12 @@ test('renders in-sandbox search results as discovery match rows', async () => {
   assert.match(container.textContent ?? '', /unifi/)
   assert.match(container.textContent ?? '', /device_list/)
   assert.match(container.textContent ?? '', /List UniFi devices/)
+  // Tool detail is collapsed until the row is clicked — like the Result row.
+  assert.doesNotMatch(container.textContent ?? '', /Promise<Device\[\]>/)
+  await clickButton(container, (text) => text.includes('device_list'))
+  assert.match(container.textContent ?? '', /Promise<Device\[\]>/)
+  assert.match(container.textContent ?? '', /codemode.unifi.device_list/)
+  assert.match(container.textContent ?? '', /score 0.91/)
   await unmount()
 })
 
@@ -138,6 +148,79 @@ test('renders the zero-match discovery hint', async () => {
   assert.match(container.textContent ?? '', /0 of 0 matches/)
   assert.match(container.textContent ?? '', /Broaden or try synonyms/)
   await unmount()
+})
+
+test('renders the host-delivered tool input behind an Input row', async () => {
+  installTestDom()
+  let instance:
+    | {
+        ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
+        ontoolinput?: (params: { arguments?: Record<string, unknown> }) => void
+        connect: () => Promise<unknown>
+      }
+    | undefined
+
+  globalThis.window.ExtApps = {
+    App: class {
+      ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
+      ontoolinput?: (params: { arguments?: Record<string, unknown> }) => void
+      connect = async () => ({})
+      constructor() {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias -- capturing the mock instance for later test assertions
+        instance = this
+      }
+    },
+  }
+
+  const { container, unmount } = await renderClient(<CodeModeInspector />)
+
+  await act(async () => {
+    instance?.ontoolinput?.({
+      arguments: { code: 'async () => {\n  return await codemode.unifi.device_list({})\n}' },
+    })
+    instance?.ontoolresult?.({
+      structuredContent: {
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        calls: [
+          { id: 'unifi::device.list', namespace: 'unifi', tool: 'device.list', ok: true, elapsed_ms: 88 },
+        ],
+        result: { devices: 12 },
+        result_shape: { type: 'object', key_count: 1 },
+      },
+    })
+  })
+
+  assert.match(container.textContent ?? '', /Input/)
+  assert.match(container.textContent ?? '', /3 lines/)
+  // The snippet is collapsed until the Input row is expanded.
+  assert.doesNotMatch(container.textContent ?? '', /device_list\(\{\}\)/)
+  await clickButton(container, (text) => text.startsWith('Input'))
+  assert.match(container.textContent ?? '', /await codemode.unifi.device_list\(\{\}\)/)
+  await unmount()
+})
+
+test('hydrates the Input row from window.openai.toolInput', async () => {
+  installTestDom()
+  globalThis.window.openai = {
+    toolInput: { code: 'async () => 1' },
+    toolOutput: {
+      kind: 'code_mode_execute_trace',
+      call_count: 0,
+      calls: [],
+      result: 1,
+      result_shape: { type: 'number', size_bytes: 1 },
+    },
+  }
+  try {
+    const { container, unmount } = await renderClient(<CodeModeInspector />)
+    assert.match(container.textContent ?? '', /Input/)
+    await clickButton(container, (text) => text.startsWith('Input'))
+    assert.match(container.textContent ?? '', /async \(\) => 1/)
+    await unmount()
+  } finally {
+    globalThis.window.openai = undefined
+  }
 })
 
 test('renders describe results as markdown behind the result row', async () => {

@@ -1,7 +1,16 @@
 'use client'
 
 import { type CSSProperties, useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, Check, ChevronRight, CornerDownLeft, History, Wrench, X } from 'lucide-react'
+import {
+  AlertTriangle,
+  Check,
+  ChevronRight,
+  CornerDownLeft,
+  History,
+  Terminal,
+  Wrench,
+  X,
+} from 'lucide-react'
 
 import { AURORA_BADGE_LABEL } from '@/components/aurora/tokens'
 import {
@@ -55,7 +64,7 @@ declare global {
   interface Window {
     __LAB_CODE_MODE_INITIAL_TRACE__?: unknown
     // OpenAI Apps runtime (ChatGPT / Codex) injects this; MCP Apps hosts do not.
-    openai?: { toolOutput?: unknown }
+    openai?: { toolOutput?: unknown; toolInput?: unknown }
     ExtApps?: {
       App?: new (
         appInfo: { name: string; version: string },
@@ -63,11 +72,25 @@ declare global {
         options?: Record<string, unknown>,
       ) => {
         ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
+        ontoolinput?: (params: { arguments?: Record<string, unknown> }) => void
         connect: () => Promise<unknown>
         close?: () => Promise<unknown> | void
       }
     }
   }
+}
+
+/**
+ * The LLM's tool-call arguments, delivered by the host (MCP Apps
+ * `ui/notifications/tool-input`, or `window.openai.toolInput`). For codemode
+ * that is `{ code: "async () => { … }" }` — the snippet that drove the run.
+ */
+function toolInputSnippet(input: unknown): string | null {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return null
+  const record = input as Record<string, unknown>
+  if (typeof record.code === 'string' && record.code.length > 0) return record.code
+  if (Object.keys(record).length === 0) return null
+  return stringifyRedactedParams(record)
 }
 
 interface CodeModeInspectorProps {
@@ -110,6 +133,7 @@ function stateFromInitialTrace(initialTrace: unknown): InspectorState {
 export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   const [state, setState] = useState<InspectorState>(() => stateFromInitialTrace(initialTrace))
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [toolInput, setToolInput] = useState<unknown>(null)
   const [bridgeWarning, setBridgeWarning] = useState<string | null>(null)
   const [bridgeState, setBridgeState] = useState<'connecting' | 'connected' | 'fallback'>('fallback')
 
@@ -142,6 +166,11 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
         setBridgeWarning('Ignored malformed bridge payload.')
       }
     }
+    // The host streams the tool-call arguments (the snippet the LLM sent)
+    // alongside the result — surface them as the run's Input.
+    app.ontoolinput = (params) => {
+      setToolInput(params?.arguments ?? null)
+    }
     setBridgeState('connecting')
     app
       .connect()
@@ -166,6 +195,10 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
         ?.globals
       // The event's globals are authoritative for the changed key (including an
       // explicit null clear); only without it do we read the live snapshot.
+      const hasInputKey =
+        globals != null && Object.prototype.hasOwnProperty.call(globals, 'toolInput')
+      const rawInput = hasInputKey ? globals.toolInput : window.openai?.toolInput
+      if (rawInput !== undefined) setToolInput(rawInput)
       const hasKey = globals != null && Object.prototype.hasOwnProperty.call(globals, 'toolOutput')
       const raw = hasKey ? globals.toolOutput : window.openai?.toolOutput
       if (acceptTrace(raw)) {
@@ -207,6 +240,8 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   const tokens = live ?? selectedEntry
   const discovery = live ? parseDiscoveryResult(live.result) : null
   const describeDoc = live ? describeMarkdown(live.result) : null
+  // Host-delivered tool-call arguments apply to the live run only.
+  const inputSnippet = live ? toolInputSnippet(toolInput) : null
   const warnings = [
     ...(bridgeWarning ? [bridgeWarning] : []),
     ...(state.live?.warnings?.map((warning) => warning.message) ?? []),
@@ -261,7 +296,16 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
             ) : live && live.result !== undefined ? null : (
               <p className="px-3 py-3 text-xs text-aurora-text-muted">No calls were made.</p>
             )}
-            {discovery ? <DiscoveryRows discovery={discovery} /> : null}
+            {discovery ? (
+              <DiscoveryRows discovery={discovery} expanded={expanded} onToggle={toggle} />
+            ) : null}
+            {inputSnippet ? (
+              <InputRow
+                snippet={inputSnippet}
+                open={Boolean(expanded.input)}
+                onToggle={() => toggle('input')}
+              />
+            ) : null}
             {live && live.result !== undefined ? (
               <ResultRow
                 trace={live}
@@ -478,7 +522,15 @@ function CallRows({
   )
 }
 
-function DiscoveryRows({ discovery }: { discovery: DiscoveryResult }) {
+function DiscoveryRows({
+  discovery,
+  expanded,
+  onToggle,
+}: {
+  discovery: DiscoveryResult
+  expanded: Record<string, boolean>
+  onToggle: (key: string) => void
+}) {
   if (discovery.hits.length === 0) {
     return (
       <p className="px-3 py-3 text-xs text-aurora-text-muted">
@@ -488,26 +540,90 @@ function DiscoveryRows({ discovery }: { discovery: DiscoveryResult }) {
   }
   return (
     <div>
-      {discovery.hits.map((hit, index) => (
-        <div
-          key={`${hit.id}-${index}`}
-          className="grid grid-cols-[14px_minmax(0,1fr)] items-center gap-2 border-t px-3 py-1.5 first:border-t-0"
-          style={{ borderColor: index === 0 ? 'transparent' : HAIRLINE }}
-        >
-          <Wrench className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
-          <span className="flex min-w-0 items-baseline gap-1.5">
-            {hit.namespace ? (
-              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.04em] text-aurora-text-muted">
-                {hit.namespace}
+      {discovery.hits.map((hit, index) => {
+        const key = `hit:${hit.id}-${index}`
+        const open = Boolean(expanded[key])
+        const meta = [
+          hit.path,
+          hit.kind,
+          hit.score !== undefined ? `score ${hit.score.toFixed(2)}` : undefined,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+        return (
+          <div key={key}>
+            <button
+              type="button"
+              onClick={() => onToggle(key)}
+              className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,1fr)_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors first:border-t-0 hover:bg-aurora-hover-bg/40"
+              style={{ borderColor: index === 0 ? 'transparent' : HAIRLINE }}
+            >
+              <Wrench className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                {hit.namespace ? (
+                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.04em] text-aurora-text-muted">
+                    {hit.namespace}
+                  </span>
+                ) : null}
+                <span className="shrink-0 text-xs font-semibold">{hit.name ?? hit.id}</span>
+                {hit.description ? (
+                  <span className="truncate text-[11px] text-aurora-text-muted">{hit.description}</span>
+                ) : null}
               </span>
+              <ChevronRight
+                className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+                strokeWidth={1.75}
+              />
+            </button>
+            {open ? (
+              <div className="flex flex-col gap-1.5 px-3 pb-2 pl-[34px]">
+                {hit.description ? (
+                  <p className="text-[11px] leading-relaxed text-aurora-text-muted">{hit.description}</p>
+                ) : null}
+                {meta ? <p className="text-[10.5px] text-aurora-text-muted">{meta}</p> : null}
+                {hit.signature ? <CodeBlock value={hit.signature} /> : null}
+              </div>
             ) : null}
-            <span className="shrink-0 text-xs font-semibold">{hit.name ?? hit.id}</span>
-            {hit.description ? (
-              <span className="truncate text-[11px] text-aurora-text-muted">{hit.description}</span>
-            ) : null}
-          </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function InputRow({
+  snippet,
+  open,
+  onToggle,
+}: {
+  snippet: string
+  open: boolean
+  onToggle: () => void
+}) {
+  const lines = snippet.split('\n').length
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,auto)_minmax(30px,1fr)_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors hover:bg-aurora-hover-bg/40"
+        style={{ borderColor: HAIRLINE }}
+      >
+        <Terminal className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
+        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Input</span>
+        <span className="truncate text-[11px] text-aurora-text-muted">
+          {lines} line{lines === 1 ? '' : 's'}
+        </span>
+        <ChevronRight
+          className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+          strokeWidth={1.75}
+        />
+      </button>
+      {open ? (
+        <div className="px-3 pb-2 pl-[34px]">
+          <CodeBlock value={snippet} />
         </div>
-      ))}
+      ) : null}
     </div>
   )
 }

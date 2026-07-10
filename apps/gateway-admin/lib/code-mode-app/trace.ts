@@ -70,6 +70,10 @@ export interface DiscoveryHit {
   namespace?: string
   name?: string
   description?: string
+  path?: string
+  kind?: string
+  signature?: string
+  score?: number
 }
 
 export interface DiscoveryResult {
@@ -99,6 +103,10 @@ export function parseDiscoveryResult(result: unknown): DiscoveryResult | null {
       namespace: optionalString(item.namespace),
       name: optionalString(item.name),
       description: optionalString(item.description),
+      path: optionalString(item.path),
+      kind: optionalString(item.kind),
+      signature: optionalString(item.signature),
+      score: optionalNumber(item.score),
     })
   }
   return {
