@@ -1,12 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import {
-  describeResultShape,
-  flattenTraceRows,
-  parseCodeModeTrace,
-  stringifyRedactedParams,
-} from './trace'
+import { describeResultShape, parseCodeModeTrace, stringifyRedactedParams } from './trace'
 
 test('parses execute traces with redacted params', () => {
   const trace = parseCodeModeTrace({
@@ -15,7 +10,7 @@ test('parses execute traces with redacted params', () => {
     calls: [
       {
         id: 'github::search_issues',
-        upstream: 'github',
+        namespace: 'github',
         tool: 'search_issues',
         ok: true,
         elapsed_ms: 12,
@@ -26,51 +21,55 @@ test('parses execute traces with redacted params', () => {
   })
 
   assert.equal(trace?.kind, 'code_mode_execute_trace')
-  const rows = flattenTraceRows(trace)
-  assert.equal(rows.calls.length, 1)
-  assert.equal(stringifyRedactedParams(rows.calls[0].params).includes('[redacted]'), true)
+  const calls = trace?.kind === 'code_mode_execute_trace' ? trace.calls : []
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].upstream, 'github')
+  assert.equal(stringifyRedactedParams(calls[0].params).includes('[redacted]'), true)
 })
 
-test('parses search traces with matched tools', () => {
+test('derives upstream and tool from the call id when fields are absent', () => {
+  // History entries (CodeModeExecutedCall) carry only `id`, never
+  // namespace/tool — the parser must split `upstream::tool` itself.
   const trace = parseCodeModeTrace({
-    kind: 'code_mode_search_trace',
-    query_kind: 'catalog_filter',
-    match_count: 1,
-    matches: [
+    kind: 'code_mode_history',
+    entries: [
       {
-        id: 'axon::ask',
-        upstream: 'axon',
-        tool: 'ask',
-        description: 'Ask indexed docs',
-        has_schema: true,
-        has_output_schema: false,
+        seq: 3,
+        kind: 'execute',
+        ok: true,
+        elapsed_ms: 24,
+        calls: [{ id: 'github::search_issues', ok: true, elapsed_ms: 12 }],
       },
     ],
   })
 
-  assert.equal(trace?.kind, 'code_mode_search_trace')
-  assert.equal(flattenTraceRows(trace).matches[0].tool, 'ask')
+  assert.equal(trace?.kind, 'code_mode_history')
+  const call = trace?.kind === 'code_mode_history' ? trace.entries[0].calls?.[0] : undefined
+  assert.equal(call?.upstream, 'github')
+  assert.equal(call?.tool, 'search_issues')
 })
 
-test('parses search traces that carry a reduced result value', () => {
+test('parses execute trace token and log metadata', () => {
   const trace = parseCodeModeTrace({
-    kind: 'code_mode_search_trace',
-    query_kind: 'catalog_filter',
-    match_count: 0,
-    matches: [],
-    result_shape: { type: 'object', key_count: 2, keys: ['total', 'upstreams'] },
-    result: { total: 398, upstreams: 42 },
+    kind: 'code_mode_execute_trace',
+    call_count: 0,
+    calls: [],
+    execution_id: 'exec-1',
+    input_tokens: 412,
+    output_tokens: 96,
+    logs_count: 2,
   })
 
-  assert.equal(trace?.kind, 'code_mode_search_trace')
-  assert.equal(flattenTraceRows(trace).matches.length, 0)
-  assert.deepEqual(
-    trace?.kind === 'code_mode_search_trace' ? trace.result : undefined,
-    { total: 398, upstreams: 42 },
-  )
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.execution_id, 'exec-1')
+    assert.equal(trace.input_tokens, 412)
+    assert.equal(trace.output_tokens, 96)
+    assert.equal(trace.logs_count, 2)
+  }
 })
 
-test('describes result shapes for the no-match search view', () => {
+test('describes result shapes', () => {
   assert.equal(
     describeResultShape({ type: 'object', key_count: 2, keys: ['total', 'upstreams'] }),
     'object · 2 keys — keys: total, upstreams',
@@ -82,7 +81,7 @@ test('describes result shapes for the no-match search view', () => {
   assert.equal(describeResultShape(undefined), '')
 })
 
-test('parses history traces and flattens nested execute calls', () => {
+test('parses history traces with nested execute calls', () => {
   const trace = parseCodeModeTrace({
     kind: 'code_mode_history',
     entries: [
@@ -91,11 +90,11 @@ test('parses history traces and flattens nested execute calls', () => {
         kind: 'execute',
         ok: true,
         elapsed_ms: 24,
+        input_tokens: 388,
+        output_tokens: 44,
         calls: [
           {
             id: 'github::search_issues',
-            upstream: 'github',
-            tool: 'search_issues',
             ok: true,
             elapsed_ms: 12,
           },
@@ -113,10 +112,12 @@ test('parses history traces and flattens nested execute calls', () => {
   })
 
   assert.equal(trace?.kind, 'code_mode_history')
-  const rows = flattenTraceRows(trace)
-  assert.equal(rows.history.length, 2)
-  assert.equal(rows.calls.length, 1)
-  assert.equal(rows.calls[0].tool, 'search_issues')
+  if (trace?.kind === 'code_mode_history') {
+    assert.equal(trace.entries.length, 2)
+    assert.equal(trace.entries[0].calls?.[0].tool, 'search_issues')
+    assert.equal(trace.entries[0].input_tokens, 388)
+    assert.equal(trace.entries[1].error_kind, 'invalid_query')
+  }
 })
 
 test('reports dropped malformed history rows', () => {
@@ -142,7 +143,7 @@ test('accepts only literal booleans for status fields', () => {
     calls: [
       {
         id: 'github::search_issues',
-        upstream: 'github',
+        namespace: 'github',
         tool: 'search_issues',
         ok: 'false',
         elapsed_ms: 12,
@@ -151,7 +152,8 @@ test('accepts only literal booleans for status fields', () => {
   })
 
   assert.equal(trace?.kind, 'code_mode_execute_trace')
-  assert.equal(flattenTraceRows(trace).calls[0].ok, false)
+  const calls = trace?.kind === 'code_mode_execute_trace' ? trace.calls : []
+  assert.equal(calls[0].ok, false)
 })
 
 test('stringifies unsupported params without throwing', () => {
@@ -164,22 +166,12 @@ test('stringifies unsupported params without throwing', () => {
   assert.ok(params.length < 160)
 })
 
-test('parses search truncation metadata', () => {
-  const trace = parseCodeModeTrace({
-    kind: 'code_mode_search_trace',
-    query_kind: 'catalog_filter',
-    displayed_count: 50,
-    truncated: true,
-    match_count: 200,
-    matches: [],
-  })
-
-  assert.equal(trace?.kind, 'code_mode_search_trace')
-  assert.equal(trace?.displayed_count, 50)
-  assert.equal(trace?.truncated, true)
-  assert.equal(trace?.match_count, 200)
-})
-
 test('rejects unknown trace shapes', () => {
+  // Includes the never-emitted `code_mode_search_trace`: nothing server-side
+  // produces it, so it falls through to the malformed-payload path.
   assert.equal(parseCodeModeTrace({ kind: 'tool_explorer' }), null)
+  assert.equal(
+    parseCodeModeTrace({ kind: 'code_mode_search_trace', match_count: 0, matches: [] }),
+    null,
+  )
 })
