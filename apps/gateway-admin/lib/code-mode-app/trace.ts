@@ -65,6 +65,61 @@ export function parseCodeModeTrace(value: unknown): CodeModeTrace | null {
   return null
 }
 
+export interface DiscoveryHit {
+  id: string
+  namespace?: string
+  name?: string
+  description?: string
+}
+
+export interface DiscoveryResult {
+  hits: DiscoveryHit[]
+  total: number
+  truncated: boolean
+  hint?: string
+}
+
+/**
+ * Detect the in-sandbox `codemode.search()` closure's return shape
+ * (`{ results, total, truncated, hint? }` — see labby-codemode preamble.rs).
+ * Discovery runs make zero broker calls, so the hits arrive only as the
+ * execute trace's `result`; this lets the inspector render them as match rows
+ * instead of a bare "no calls" line.
+ */
+export function parseDiscoveryResult(result: unknown): DiscoveryResult | null {
+  if (!isRecord(result)) return null
+  if (!Array.isArray(result.results) || typeof result.total !== 'number') return null
+  const hits: DiscoveryHit[] = []
+  for (const item of result.results) {
+    if (!isRecord(item)) return null
+    const id = typeof item.id === 'string' ? item.id : typeof item.path === 'string' ? item.path : null
+    if (id === null) return null
+    hits.push({
+      id,
+      namespace: optionalString(item.namespace),
+      name: optionalString(item.name),
+      description: optionalString(item.description),
+    })
+  }
+  return {
+    hits,
+    total: result.total,
+    truncated: result.truncated === true,
+    hint: optionalString(result.hint),
+  }
+}
+
+/**
+ * Detect the `codemode.describe()` closure's return shape
+ * (`{ path, id, kind, markdown }`) so the inspector can show the markdown doc
+ * instead of a JSON-escaped blob.
+ */
+export function describeMarkdown(result: unknown): string | null {
+  if (!isRecord(result)) return null
+  if (typeof result.markdown !== 'string' || typeof result.id !== 'string') return null
+  return result.markdown
+}
+
 export function stringifyRedactedParams(value: unknown): string {
   if (value === undefined || value === null) return ''
   try {

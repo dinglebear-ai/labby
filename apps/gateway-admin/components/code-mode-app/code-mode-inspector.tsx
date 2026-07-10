@@ -1,7 +1,7 @@
 'use client'
 
 import { type CSSProperties, useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, Check, ChevronRight, CornerDownLeft, History, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronRight, CornerDownLeft, History, Wrench, X } from 'lucide-react'
 
 import { AURORA_BADGE_LABEL } from '@/components/aurora/tokens'
 import {
@@ -9,8 +9,11 @@ import {
   type CodeModeExecuteTrace,
   type CodeModeHistoryEntry,
   type CodeModeTrace,
+  type DiscoveryResult,
+  describeMarkdown,
   describeResultShape,
   parseCodeModeTrace,
+  parseDiscoveryResult,
   stringifyRedactedParams,
 } from '@/lib/code-mode-app/trace'
 import { cn } from '@/lib/utils'
@@ -202,6 +205,8 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
       )?.elapsed_ms
     : selectedEntry?.elapsed_ms
   const tokens = live ?? selectedEntry
+  const discovery = live ? parseDiscoveryResult(live.result) : null
+  const describeDoc = live ? describeMarkdown(live.result) : null
   const warnings = [
     ...(bridgeWarning ? [bridgeWarning] : []),
     ...(state.live?.warnings?.map((warning) => warning.message) ?? []),
@@ -226,7 +231,15 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
         }}
       >
         <WidgetHead
-          callCount={run ? calls.length : null}
+          subLabel={
+            !run
+              ? null
+              : discovery
+                ? `${discovery.hits.length} of ${discovery.total} match${discovery.total === 1 ? '' : 'es'}`
+                : describeDoc
+                  ? 'describe'
+                  : `${calls.length} call${calls.length === 1 ? '' : 's'}`
+          }
           ok={runOk}
           errorKind={errorKind}
           elapsedMs={elapsedMs}
@@ -243,9 +256,19 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
           </p>
         ) : (
           <div>
-            <CallRows calls={calls} expanded={expanded} onToggle={toggle} />
+            {calls.length > 0 ? (
+              <CallRows calls={calls} expanded={expanded} onToggle={toggle} />
+            ) : live && live.result !== undefined ? null : (
+              <p className="px-3 py-3 text-xs text-aurora-text-muted">No calls were made.</p>
+            )}
+            {discovery ? <DiscoveryRows discovery={discovery} /> : null}
             {live && live.result !== undefined ? (
-              <ResultRow trace={live} open={Boolean(expanded.result)} onToggle={() => toggle('result')} />
+              <ResultRow
+                trace={live}
+                markdown={describeDoc}
+                open={Boolean(expanded.result)}
+                onToggle={() => toggle('result')}
+              />
             ) : null}
             {selectedEntry ? <HistoryNote /> : null}
           </div>
@@ -277,13 +300,13 @@ const HEAD_FOOT_BG = 'color-mix(in srgb, var(--aurora-page-bg) 25%, transparent)
 const HEAD_FOOT_BORDER = 'color-mix(in srgb, var(--aurora-border-default) 50%, var(--aurora-page-bg))'
 
 function WidgetHead({
-  callCount,
+  subLabel,
   ok,
   errorKind,
   elapsedMs,
   bridgeState,
 }: {
-  callCount: number | null
+  subLabel: string | null
   ok: boolean
   errorKind: string | undefined
   elapsedMs: number | undefined
@@ -296,13 +319,11 @@ function WidgetHead({
     >
       <LabbyMark />
       <span className="text-[12.5px] font-bold">Execute</span>
-      {callCount !== null ? (
-        <span className="truncate text-[11.5px] text-aurora-text-muted">
-          · {callCount} call{callCount === 1 ? '' : 's'}
-        </span>
+      {subLabel !== null ? (
+        <span className="truncate text-[11.5px] text-aurora-text-muted">· {subLabel}</span>
       ) : null}
       <span className="flex-1" />
-      {callCount !== null ? (
+      {subLabel !== null ? (
         ok ? (
           <StatusDot tone="success" label="success" />
         ) : (
@@ -375,9 +396,6 @@ function CallRows({
   expanded: Record<string, boolean>
   onToggle: (key: string) => void
 }) {
-  if (calls.length === 0) {
-    return <p className="px-3 py-3 text-xs text-aurora-text-muted">No calls were made.</p>
-  }
   const maxElapsed = Math.max(...calls.map((call) => call.elapsed_ms), 1)
   return (
     <div>
@@ -460,12 +478,48 @@ function CallRows({
   )
 }
 
+function DiscoveryRows({ discovery }: { discovery: DiscoveryResult }) {
+  if (discovery.hits.length === 0) {
+    return (
+      <p className="px-3 py-3 text-xs text-aurora-text-muted">
+        {discovery.hint ?? 'No matches.'}
+      </p>
+    )
+  }
+  return (
+    <div>
+      {discovery.hits.map((hit, index) => (
+        <div
+          key={`${hit.id}-${index}`}
+          className="grid grid-cols-[14px_minmax(0,1fr)] items-center gap-2 border-t px-3 py-1.5 first:border-t-0"
+          style={{ borderColor: index === 0 ? 'transparent' : HAIRLINE }}
+        >
+          <Wrench className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            {hit.namespace ? (
+              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.04em] text-aurora-text-muted">
+                {hit.namespace}
+              </span>
+            ) : null}
+            <span className="shrink-0 text-xs font-semibold">{hit.name ?? hit.id}</span>
+            {hit.description ? (
+              <span className="truncate text-[11px] text-aurora-text-muted">{hit.description}</span>
+            ) : null}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ResultRow({
   trace,
+  markdown,
   open,
   onToggle,
 }: {
   trace: CodeModeExecuteTrace
+  markdown: string | null
   open: boolean
   onToggle: () => void
 }) {
@@ -488,7 +542,7 @@ function ResultRow({
       </button>
       {open ? (
         <div className="px-3 pb-2 pl-[34px]">
-          <CodeBlock value={stringifyRedactedParams(trace.result)} />
+          <CodeBlock value={markdown ?? stringifyRedactedParams(trace.result)} />
         </div>
       ) : null}
     </div>

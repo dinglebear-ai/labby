@@ -47,6 +47,11 @@ details[open]>.row .chev{transform:rotate(90deg)}
 pre{margin:0;padding:8px 10px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11px;line-height:1.55;color:var(--aurora-text-primary);white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:150px;border-radius:8px;background:color-mix(in srgb,var(--aurora-page-bg) 55%,var(--aurora-control-surface));border:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg))}
 .empty{margin:0;padding:14px 12px;font-size:12px;color:var(--aurora-text-muted);text-align:center}
 .histnote{display:flex;align-items:center;gap:7px;padding:7px 12px;font-size:11px;color:var(--aurora-text-muted);border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 30%,transparent)}
+.mrow{display:grid;grid-template-columns:14px minmax(0,1fr);align-items:center;gap:8px;padding:5px 12px;border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 30%,transparent)}
+.mrow:first-child{border-top:none}
+.m-main{display:flex;align-items:baseline;gap:6px;min-width:0}
+.m-name{font-size:12px;font-weight:600;flex:none;color:var(--aurora-text-primary)}
+.m-desc{font-size:11px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .dump{border-radius:0;border:none;max-height:260px}
 .foot-label{font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--aurora-text-muted)}
 .chips{display:flex;align-items:center;gap:6px;min-width:0;overflow-x:auto;scrollbar-width:none}
@@ -192,6 +197,34 @@ function callFields(call){
   };
 }
 function shapeDetail(s){if(!s||!s.type)return"";const parts=[s.type];if(s.type==="object"&&s.key_count!=null)parts.push(`${s.key_count} key${s.key_count===1?"":"s"}`);if(s.type==="array"&&s.length!=null)parts.push(`${s.length} item${s.length===1?"":"s"}`);if(s.type==="string"&&s.length!=null)parts.push(`${s.length} chars`);if(s.size_bytes!=null)parts.push(`${s.size_bytes} B`);let label=parts.join(" · ");if(s.type==="object"&&Array.isArray(s.keys)&&s.keys.length)label+=` — keys: ${s.keys.join(", ")}`;if(s.type==="array"&&Array.isArray(s.item_types)&&s.item_types.length)label+=` — items: ${s.item_types.join(", ")}`;return label;}
+const WRENCH='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>';
+// Detect the in-sandbox codemode.search() closure result
+// ({ results, total, truncated, hint? } — labby-codemode preamble.rs).
+// Discovery runs make zero broker calls, so the hits arrive only as the
+// execute trace's result.
+function discoveryResult(t){
+  const r=t&&t.result;
+  if(!r||typeof r!=="object"||Array.isArray(r))return null;
+  if(!Array.isArray(r.results)||typeof r.total!=="number")return null;
+  const hits=[];
+  for(const item of r.results){
+    if(!item||typeof item!=="object")return null;
+    const id=typeof item.id==="string"?item.id:(typeof item.path==="string"?item.path:null);
+    if(id===null)return null;
+    hits.push({id:id,namespace:typeof item.namespace==="string"?item.namespace:"",name:typeof item.name==="string"?item.name:id,description:typeof item.description==="string"?item.description:""});
+  }
+  return{hits:hits,total:r.total,truncated:r.truncated===true,hint:typeof r.hint==="string"?r.hint:""};
+}
+// Detect codemode.describe() output ({ path, id, kind, markdown }).
+function describeMarkdown(t){
+  const r=t&&t.result;
+  if(!r||typeof r!=="object"||Array.isArray(r))return null;
+  return typeof r.markdown==="string"&&typeof r.id==="string"?r.markdown:null;
+}
+function discoveryRows(d){
+  if(!d.hits.length)return `<p class="empty">${esc(d.hint||"No matches.")}</p>`;
+  return d.hits.map(h=>`<div class="mrow"><span class="st info">${WRENCH}</span><span class="m-main">${h.namespace?`<span class="up">${esc(h.namespace)}</span>`:""}<span class="m-name">${esc(h.name)}</span>${h.description?`<span class="m-desc">${esc(h.description)}</span>`:""}</span></div>`).join("");
+}
 function callRow(call,maxMs){
   const f=callFields(call);
   const ok=call.ok===true;
@@ -208,7 +241,8 @@ function callRow(call,maxMs){
 function resultRow(t){
   if(t.result===undefined)return "";
   const detail=shapeDetail(t.result_shape);
-  return `<details class="call"><summary class="row wide"><span class="st info">${RETURN_ICON}</span><span class="meta-label">Result</span><span class="meta-val">${esc(detail)}</span><span class="chev">${CHEV}</span></summary><div class="sub"><pre>${esc(json(t.result))}</pre></div></details>`;
+  const doc=describeMarkdown(t);
+  return `<details class="call"><summary class="row wide"><span class="st info">${RETURN_ICON}</span><span class="meta-label">Result</span><span class="meta-val">${esc(detail)}</span><span class="chev">${CHEV}</span></summary><div class="sub"><pre>${esc(doc!==null?doc:json(t.result))}</pre></div></details>`;
 }
 function liveHistoryEntry(){
   if(!live||typeof live.execution_id!=="string")return undefined;
@@ -251,7 +285,11 @@ function paint(){
     return;
   }
   const calls=Array.isArray(run.calls)?run.calls:[];
-  headSub.textContent=`· ${calls.length} call${calls.length===1?"":"s"}`;
+  const discovery=t?discoveryResult(t):null;
+  const doc=t?describeMarkdown(t):null;
+  headSub.textContent=discovery
+    ?`· ${discovery.hits.length} of ${discovery.total} match${discovery.total===1?"":"es"}`
+    :(doc!==null?"· describe":`· ${calls.length} call${calls.length===1?"":"s"}`);
   const ok=t?calls.every(c=>c.ok===true):entry.ok===true;
   const errKind=t?(calls.find(c=>c.ok!==true)||{}).error_kind:entry.error_kind;
   headStatus.innerHTML=ok
@@ -261,7 +299,9 @@ function paint(){
   if(typeof elapsed==="number"&&Number.isFinite(elapsed)){headElapsed.textContent=fmtMs(elapsed);headElapsed.hidden=false}
   else{headElapsed.hidden=true}
   const maxMs=Math.max(1,...calls.map(c=>num(c.elapsed_ms)));
-  let html=calls.map(c=>callRow(c,maxMs)).join("")||'<p class="empty">No calls were made.</p>';
+  let html=calls.map(c=>callRow(c,maxMs)).join("");
+  if(!html&&(!t||t.result===undefined))html='<p class="empty">No calls were made.</p>';
+  if(discovery)html+=discoveryRows(discovery);
   if(t)html+=resultRow(t);
   if(entry)html+=`<div class="histnote">${HISTORY_ICON}<span>Result not retained in history — params and call outcomes only.</span></div>`;
   content.innerHTML=html;

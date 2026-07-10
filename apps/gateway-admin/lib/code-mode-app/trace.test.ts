@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { describeResultShape, parseCodeModeTrace, stringifyRedactedParams } from './trace'
+import {
+  describeMarkdown,
+  describeResultShape,
+  parseCodeModeTrace,
+  parseDiscoveryResult,
+  stringifyRedactedParams,
+} from './trace'
 
 test('parses execute traces with redacted params', () => {
   const trace = parseCodeModeTrace({
@@ -164,6 +170,54 @@ test('stringifies unsupported params without throwing', () => {
 
   assert.match(params, /^\[unsupported params:/)
   assert.ok(params.length < 160)
+})
+
+test('detects in-sandbox codemode.search results', () => {
+  const discovery = parseDiscoveryResult({
+    results: [
+      {
+        id: 'unifi::device.list',
+        path: 'codemode.unifi.device_list',
+        kind: 'tool',
+        namespace: 'unifi',
+        name: 'device_list',
+        description: 'List UniFi devices.',
+        score: 0.9,
+      },
+    ],
+    total: 42,
+    truncated: true,
+  })
+
+  assert.ok(discovery)
+  assert.equal(discovery.hits.length, 1)
+  assert.equal(discovery.hits[0].namespace, 'unifi')
+  assert.equal(discovery.total, 42)
+  assert.equal(discovery.truncated, true)
+
+  const empty = parseDiscoveryResult({
+    results: [],
+    total: 0,
+    truncated: false,
+    hint: 'No matches. Broaden or try synonyms.',
+  })
+  assert.ok(empty)
+  assert.equal(empty.hits.length, 0)
+  assert.equal(empty.hint, 'No matches. Broaden or try synonyms.')
+
+  // Non-search shapes stay null so ordinary results render as plain values.
+  assert.equal(parseDiscoveryResult({ containers: 24 }), null)
+  assert.equal(parseDiscoveryResult({ results: [{ score: 1 }], total: 1 }), null)
+  assert.equal(parseDiscoveryResult([1, 2, 3]), null)
+})
+
+test('detects codemode.describe markdown docs', () => {
+  assert.equal(
+    describeMarkdown({ id: 'unifi::device.list', kind: 'tool', path: 'x', markdown: '# device_list' }),
+    '# device_list',
+  )
+  assert.equal(describeMarkdown({ markdown: '# no id' }), null)
+  assert.equal(describeMarkdown({ containers: 24 }), null)
 })
 
 test('rejects unknown trace shapes', () => {

@@ -86,6 +86,85 @@ test('renders the result disclosure with shape summary and expandable value', as
   await unmount()
 })
 
+test('renders in-sandbox search results as discovery match rows', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 0,
+        calls: [],
+        result: {
+          results: [
+            {
+              id: 'unifi::device.list',
+              namespace: 'unifi',
+              name: 'device_list',
+              description: 'List UniFi devices.',
+            },
+          ],
+          total: 42,
+          truncated: true,
+        },
+        result_shape: { type: 'object', key_count: 3 },
+      }}
+    />,
+  )
+
+  // Discovery runs make zero broker calls — the hits render instead of a
+  // bare "No calls were made." line.
+  assert.doesNotMatch(container.textContent ?? '', /No calls were made/)
+  assert.match(container.textContent ?? '', /1 of 42 matches/)
+  assert.match(container.textContent ?? '', /unifi/)
+  assert.match(container.textContent ?? '', /device_list/)
+  assert.match(container.textContent ?? '', /List UniFi devices/)
+  await unmount()
+})
+
+test('renders the zero-match discovery hint', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 0,
+        calls: [],
+        result: { results: [], total: 0, truncated: false, hint: 'No matches. Broaden or try synonyms.' },
+        result_shape: { type: 'object', key_count: 4 },
+      }}
+    />,
+  )
+
+  assert.match(container.textContent ?? '', /0 of 0 matches/)
+  assert.match(container.textContent ?? '', /Broaden or try synonyms/)
+  await unmount()
+})
+
+test('renders describe results as markdown behind the result row', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 0,
+        calls: [],
+        result: {
+          id: 'unifi::device.list',
+          kind: 'tool',
+          path: 'codemode.unifi.device_list',
+          markdown: '# device_list\n\nList UniFi devices.',
+        },
+        result_shape: { type: 'object', key_count: 4 },
+      }}
+    />,
+  )
+
+  assert.match(container.textContent ?? '', /describe/)
+  await clickButton(container, (text) => text.startsWith('Result'))
+  assert.match(container.textContent ?? '', /# device_list/)
+  await unmount()
+})
+
 test('selects the latest history entry and shows failure metadata', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(
