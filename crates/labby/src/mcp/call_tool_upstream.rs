@@ -24,7 +24,9 @@ use rmcp::RoleServer;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, JsonObject};
 use rmcp::service::{Peer, RequestContext};
 
-use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_for_request};
+use crate::mcp::context::{
+    auth_context_from_extensions, oauth_upstream_subject_for_request, redacted_oauth_subject_label,
+};
 use crate::mcp::envelope::build_error;
 use crate::mcp::error::canonical_kind;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
@@ -49,6 +51,10 @@ fn downstream_supports_relay(peer: &Peer<RoleServer>) -> bool {
         || peer.peer_info().is_some_and(|info| {
             info.capabilities.sampling.is_some() || info.capabilities.roots.is_some()
         })
+}
+
+fn upstream_call_failed_message(upstream_name: &str) -> String {
+    format!("upstream `{upstream_name}` call failed")
 }
 
 impl LabMcpServer {
@@ -142,7 +148,7 @@ impl LabMcpServer {
             && let Some(Ok((upstream_name, _tool, route))) = raw_resolved
             && pre_resolved_oauth_config.is_none()
         {
-            let before = self.snapshot_catalog().await;
+            let before = self.snapshot_tool_catalog().await;
             tracing::info!(
                 surface = "mcp",
                 service,
@@ -173,8 +179,8 @@ impl LabMcpServer {
             // server→client requests (elicitation/sampling/roots) down to the
             // agent. Falls back to the pooled multiplexed call when the gate is
             // off, the agent can't elicit, or the config can't be resolved.
-            let relay_enabled = crate::config::env_flag_enabled("LABBY_UPSTREAM_RELAY_ELICITATION")
-                && downstream_supports_relay(&context.peer);
+            let relay_enabled =
+                crate::config::upstream_relay_enabled() && downstream_supports_relay(&context.peer);
             let relay_config = if relay_enabled {
                 match &self.gateway_manager {
                     Some(manager) => manager.upstream_config(&upstream_name).await,
@@ -272,14 +278,16 @@ impl LabMcpServer {
                         outcome,
                     )
                     .await;
-                    let after = self.snapshot_catalog().await;
-                    self.notify_catalog_changes(&before, &after).await;
+                    let after = self.snapshot_tool_catalog().await;
+                    self.notify_catalog_changes(after.changes_since(&before))
+                        .await;
                     return Ok(result);
                 }
                 Some(Err(e)) => {
                     pool.record_failure(&upstream_name, e.clone()).await;
-                    let after = self.snapshot_catalog().await;
-                    self.notify_catalog_changes(&before, &after).await;
+                    let after = self.snapshot_tool_catalog().await;
+                    self.notify_catalog_changes(after.changes_since(&before))
+                        .await;
                     let elapsed_ms = start.elapsed().as_millis();
                     tracing::warn!(
                         surface = "mcp",
@@ -292,14 +300,14 @@ impl LabMcpServer {
                         subject_scoped = false,
                         elapsed_ms,
                         kind = "upstream_error",
-                        error = %e,
+                        error_kind = "upstream_call_failed",
                         "upstream proxy failed"
                     );
                     let envelope = build_error(
                         service,
                         upstream_action,
                         "upstream_error",
-                        &format!("upstream `{upstream_name}` call failed: {e}"),
+                        &upstream_call_failed_message(&upstream_name),
                     );
                     self.emit_dispatch_notification(
                         context,
@@ -330,8 +338,9 @@ impl LabMcpServer {
                         )
                         .await;
                     }
-                    let after = self.snapshot_catalog().await;
-                    self.notify_catalog_changes(&before, &after).await;
+                    let after = self.snapshot_tool_catalog().await;
+                    self.notify_catalog_changes(after.changes_since(&before))
+                        .await;
                     let elapsed_ms = start.elapsed().as_millis();
                     tracing::warn!(
                         surface = "mcp",
@@ -406,7 +415,7 @@ impl LabMcpServer {
                     tool = %service,
                     upstream = %upstream_name,
                     route = "subject_scoped",
-                    oauth_subject = %oauth_subject,
+                    oauth_subject = redacted_oauth_subject_label(),
                     "dispatch route selected"
                 );
                 let input_tokens = raw_arguments.as_ref().map_or(0, estimate_tokens_args);
@@ -417,9 +426,8 @@ impl LabMcpServer {
                 // server→client requests (elicitation/sampling/roots) reach the
                 // downstream agent. The relay connect forwards `oauth_subject`
                 // so the dedicated connection authenticates as this caller.
-                let relay_enabled =
-                    crate::config::env_flag_enabled("LABBY_UPSTREAM_RELAY_ELICITATION")
-                        && downstream_supports_relay(&context.peer);
+                let relay_enabled = crate::config::upstream_relay_enabled()
+                    && downstream_supports_relay(&context.peer);
                 let call_result: Result<CallToolResult, String> = if relay_enabled {
                     tracing::debug!(
                         surface = "mcp",
@@ -469,7 +477,7 @@ impl LabMcpServer {
                                 actor_key,
                                 actor_label = subject,
                                 agent_kind = "agent",
-                                oauth_subject = %oauth_subject,
+                                oauth_subject = redacted_oauth_subject_label(),
                                 elapsed_ms,
                                 input_tokens,
                                 output_tokens,
@@ -498,7 +506,7 @@ impl LabMcpServer {
                                 actor_key,
                                 actor_label = subject,
                                 agent_kind = "agent",
-                                oauth_subject = %oauth_subject,
+                                oauth_subject = redacted_oauth_subject_label(),
                                 elapsed_ms,
                                 input_tokens,
                                 output_tokens,
@@ -516,7 +524,7 @@ impl LabMcpServer {
                         .await;
                         return Ok(result);
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         let elapsed_ms = start.elapsed().as_millis();
                         tracing::warn!(
                             surface = "mcp",
@@ -535,14 +543,14 @@ impl LabMcpServer {
                             input_tokens,
                             output_tokens = 0,
                             kind = "upstream_error",
-                            error = %e,
+                            error_kind = "upstream_call_failed",
                             "upstream dispatch error"
                         );
                         let envelope = build_error(
                             service,
                             upstream_action,
                             "upstream_error",
-                            &format!("upstream `{upstream_name}` call failed: {e}"),
+                            &upstream_call_failed_message(&upstream_name),
                         );
                         self.emit_dispatch_notification(
                             context,
@@ -579,5 +587,32 @@ impl LabMcpServer {
         self.emit_dispatch_notification(context, service, action, elapsed_ms, outcome)
             .await;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{redacted_oauth_subject_label, upstream_call_failed_message};
+
+    #[test]
+    fn upstream_error_message_omits_raw_upstream_detail() {
+        let raw = "oauth subject user@example.com failed with bearer token abc123";
+
+        let message = upstream_call_failed_message("github");
+
+        assert_eq!(message, "upstream `github` call failed");
+        assert!(!message.contains(raw));
+        assert!(!message.contains("user@example.com"));
+        assert!(!message.contains("abc123"));
+    }
+
+    #[test]
+    fn oauth_subject_log_label_is_redacted() {
+        let raw_subject = "user@example.com";
+
+        let label = redacted_oauth_subject_label();
+
+        assert_ne!(label, raw_subject);
+        assert!(!label.contains("user@example.com"));
     }
 }

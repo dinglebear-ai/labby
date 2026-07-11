@@ -24,12 +24,13 @@ use crate::mcp::context::auth_context_from_extensions;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
+use crate::mcp::pagination::{error_kind as pagination_error_kind, paginate_items};
 use crate::mcp::server::LabMcpServer;
 
 impl LabMcpServer {
     pub(crate) async fn list_prompts_impl(
         &self,
-        _request: Option<PaginatedRequestParams>,
+        request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
         let start = Instant::now();
@@ -74,6 +75,35 @@ impl LabMcpServer {
             }
         }
 
+        let (prompts, next_cursor) = match paginate_items(prompts, request) {
+            Ok(page) => page,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_prompts",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "prompt list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_prompts",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
+
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
             surface = "mcp",
@@ -92,7 +122,9 @@ impl LabMcpServer {
         )
         .await;
 
-        Ok(ListPromptsResult::with_all_items(prompts))
+        let mut result = ListPromptsResult::with_all_items(prompts);
+        result.next_cursor = next_cursor;
+        Ok(result)
     }
 
     pub(crate) async fn get_prompt_impl(
@@ -409,7 +441,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU8;
 
-    use rmcp::model::{GetPromptRequestParams, NumberOrString};
+    use rmcp::model::{GetPromptRequestParams, NumberOrString, PaginatedRequestParams};
     use rmcp::service::RequestContext;
 
     use super::*;
@@ -463,6 +495,27 @@ mod tests {
         assert_eq!(
             err.data.as_ref().expect("error data")["kind"],
             serde_json::json!("route_scope_denied")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_prompts_rejects_invalid_cursor() {
+        let server = prompt_test_server(McpRouteScope::Root);
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let request = PaginatedRequestParams::default().with_cursor(Some("bad".to_string()));
+
+        let err = running
+            .service()
+            .list_prompts_impl(Some(request), request_context(running.peer().clone()))
+            .await
+            .expect_err("invalid cursor");
+
+        assert_eq!(
+            err.data.as_ref().expect("error data")["kind"],
+            serde_json::json!("invalid_cursor")
         );
     }
 

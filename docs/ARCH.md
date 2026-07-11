@@ -255,10 +255,11 @@ The binary resolves those inputs, then constructs clients explicitly.
 
 ## Service Model
 
-Feature-gated product slices currently are `gateway`, `marketplace`, `fs`,
-`deploy`, and `acp_registry`. Base control-plane services such as `doctor`,
-`setup`, `logs`, `device`, `stash`, and `acp` compile without an individual
-feature flag.
+Feature-gated product slices currently are `gateway` and `fs`. Bootstrap
+services such as `doctor`, `setup`, and snippets are always-on or
+gateway-gated as described in `crates/labby/Cargo.toml`. Retired product
+surfaces such as marketplace, deploy, ACP/fleet nodes, stash, and ACP registry
+are deleted from the `labby` crate rather than left as sleeping feature gates.
 
 For a first-class service or capability, add only the surfaces it actually
 supports:
@@ -270,10 +271,8 @@ supports:
 - one `PluginMeta` when it participates in generated env/service metadata
 - one health-check implementation when it models a remotely configured service
 
-Product-local surfaces are explicit. `crates/labby-apis::marketplace` exports pure
-types while all dispatch and filesystem behavior lives under
-`crates/labby/src/dispatch/marketplace/`; [`GATEWAY.md`](./services/GATEWAY.md)
+Product-local surfaces are explicit. [`GATEWAY.md`](./services/GATEWAY.md)
 documents the product-local management surface for runtime upstream
-configuration; and [`DEVICE_RUNTIME.md`](./runtime/DEVICE_RUNTIME.md) describes
-the device runtime that turns every `labby serve` process into either the fleet
-controller or a reporting non-controller node.
+configuration. SDK-only or extracted service modules must not be documented as
+current Labby CLI/MCP/API services unless they are registered by the current
+`labby` crate feature table.

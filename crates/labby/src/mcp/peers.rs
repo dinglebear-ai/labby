@@ -1,24 +1,13 @@
-use std::sync::Arc;
-use std::time::Duration;
-
 use futures::future::join_all;
 use rmcp::RoleServer;
 use rmcp::service::Peer;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 #[cfg(feature = "gateway")]
 use tokio::sync::mpsc;
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::types::GatewayCatalogDiff;
-
-/// Per-peer notification timeout (P-L2 fix).
-///
-/// A slow or hung peer must not stall the entire fanout: one unresponsive
-/// client would block every other connected session if notifications were sent
-/// serially.  Notifications are now sent concurrently via `join_all`, and each
-/// peer's future is individually bounded by this timeout so a single stalled
-/// peer drops out without affecting the rest.
-const PEER_NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// MCP-specific peer fanout that forwards catalog-change notifications to all
 /// connected `rmcp::Peer<RoleServer>` instances.
@@ -82,14 +71,15 @@ impl PeerNotifier {
             "broadcasting catalog change to connected peers"
         );
 
-        // P-L2 fix: notify all peers concurrently so one slow peer cannot
-        // stall the fanout.  Each peer future is bounded by PEER_NOTIFY_TIMEOUT
-        // so a hung session times out independently.
+        // Notify all peers concurrently so one slow peer cannot stall the
+        // fanout. Each peer future is bounded by the configured notification
+        // timeout so a hung session times out independently.
+        let notification_timeout = crate::config::resolved_catalog_notification_timeout();
         let notify_futures = peers.iter().enumerate().map(|(index, peer)| {
             let peer = peer.clone();
             let diff = diff.clone();
             async move {
-                let result = tokio::time::timeout(PEER_NOTIFY_TIMEOUT, async {
+                let result = tokio::time::timeout(notification_timeout, async {
                     if diff.tools_changed && peer.notify_tool_list_changed().await.is_err() {
                         tracing::warn!(
                             surface = "mcp",
@@ -144,7 +134,7 @@ impl PeerNotifier {
                             service = "peers",
                             action = "peer.disconnect",
                             peer_index = index,
-                            timeout_ms = PEER_NOTIFY_TIMEOUT.as_millis(),
+                            timeout_ms = notification_timeout.as_millis(),
                             tools_changed = diff.tools_changed,
                             resources_changed = diff.resources_changed,
                             prompts_changed = diff.prompts_changed,

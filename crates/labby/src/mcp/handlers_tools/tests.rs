@@ -16,7 +16,7 @@ use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
 use crate::registry::{RegisteredService, ToolRegistry};
 use labby_primitives::action::ActionSpec;
-use rmcp::model::{CallToolRequestParams, Meta, Tool};
+use rmcp::model::{CallToolRequestParams, Meta, PaginatedRequestParams, Tool};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -88,6 +88,23 @@ fn completion_test_registry() -> ToolRegistry {
         actions: TEST_ACTIONS_TWO,
         dispatch: noop_dispatch,
     });
+    registry
+}
+
+fn large_test_registry(service_count: usize) -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    for index in 0..service_count {
+        let name = Box::leak(format!("service_{index:03}").into_boxed_str());
+        registry.register(RegisteredService {
+            name,
+            description: "Synthetic service",
+            category: "test",
+            kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+            status: "available",
+            actions: TEST_ACTIONS_ONE,
+            dispatch: noop_dispatch,
+        });
+    }
     registry
 }
 
@@ -653,6 +670,46 @@ async fn protected_code_mode_list_tools_hides_raw_siblings_and_disallowed_builti
     assert!(names.contains(&CODE_MODE_TOOL_NAME));
     assert!(names.contains(&"youtube_search_ui"));
     assert!(!names.contains(&"youtube_probe"));
+}
+
+#[tokio::test]
+async fn protected_list_tools_hides_code_mode_when_route_disables_it() {
+    let server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "media",
+            ["apps"],
+            ["radarr"],
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = rmcp::service::RequestContext::new(
+        rmcp::model::NumberOrString::Number(1),
+        running.peer().clone(),
+    );
+
+    let result = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("list tools");
+    let names = result
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"radarr"));
+    assert!(
+        !names.contains(&CODE_MODE_TOOL_NAME),
+        "codemode must not be advertised when expose_code_mode=false: {names:?}"
+    );
 }
 
 #[tokio::test]
@@ -1475,6 +1532,86 @@ async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks
     assert!(
         !text.contains("upstream `oauth_apps` is not connected"),
         "OAuth callback must not use shared raw-pool routing, got {text}"
+    );
+}
+
+#[tokio::test]
+async fn list_tools_paginates_large_builtin_catalog() {
+    let manager = code_mode_manager(false).await;
+    let server = test_server(
+        large_test_registry(250),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let first = running
+        .service()
+        .list_tools_impl(None, request_context_with_peer(running.peer().clone()))
+        .await
+        .expect("first page");
+
+    assert_eq!(
+        first.tools.len(),
+        crate::mcp::pagination::MCP_LIST_PAGE_SIZE
+    );
+    assert_eq!(first.tools[0].name.as_ref(), "service_000");
+    assert_eq!(first.tools[99].name.as_ref(), "service_099");
+    assert_eq!(first.next_cursor.as_deref(), Some("100"));
+
+    let second_request = PaginatedRequestParams::default().with_cursor(first.next_cursor.clone());
+    let second = running
+        .service()
+        .list_tools_impl(
+            Some(second_request),
+            request_context_with_peer(running.peer().clone()),
+        )
+        .await
+        .expect("second page");
+
+    assert_eq!(
+        second.tools.len(),
+        crate::mcp::pagination::MCP_LIST_PAGE_SIZE
+    );
+    assert_eq!(second.tools[0].name.as_ref(), "service_100");
+    assert_eq!(second.tools[99].name.as_ref(), "service_199");
+    assert_eq!(second.next_cursor.as_deref(), Some("200"));
+    assert!(
+        Arc::ptr_eq(&first.tools[0].input_schema, &second.tools[0].input_schema),
+        "built-in tools should reuse the cached stable action schema across list pages"
+    );
+}
+
+#[tokio::test]
+async fn list_tools_rejects_invalid_cursor() {
+    let server = test_server(
+        completion_test_registry(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let request = PaginatedRequestParams::default().with_cursor(Some("bad".to_string()));
+
+    let err = running
+        .service()
+        .list_tools_impl(
+            Some(request),
+            request_context_with_peer(running.peer().clone()),
+        )
+        .await
+        .expect_err("invalid cursor");
+
+    assert_eq!(
+        err.data.as_ref().expect("error data")["kind"],
+        serde_json::json!("invalid_cursor")
     );
 }
 

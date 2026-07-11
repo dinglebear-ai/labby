@@ -1,15 +1,25 @@
 # Marketplace
 
-`marketplace` is the unified Lab surface for installable agent tooling:
+Status: retired from the `labby` product binary.
+
+This document is a historical contract for the marketplace surface that used to
+live in `labby`. The current slim Labby gateway host deleted the marketplace,
+ACP registry, stash, deploy, fleet/nodes, and ACP product surfaces from the
+`labby` crate instead of leaving dormant feature gates. Only reusable SDK/data
+types remain where they are still needed by extracted crates or future
+standalone services.
+
+Historically, `marketplace` was the unified Lab surface for installable agent
+tooling:
 
 - Claude Code and Codex plugin marketplaces (`sources.*`, `plugins.*`, `plugin.*`, `artifact.*`)
 - the official MCP Registry (`mcp.*`)
 - the ACP Agent Registry (`agent.*`)
 
-It is compiled by the `marketplace` feature and exposed through the normal Lab
-dispatch paths: CLI, MCP, HTTP API, and the web UI. The generated service
-catalog must show `marketplace` as feature-gated/available when compiled, while
-`mcpregistry` and `acp_registry` remain SDK-only entries.
+It is not compiled by the current `labby` crate and is not exposed through
+current Labby CLI, MCP, HTTP API, or web UI dispatch paths. The generated
+service catalog must not advertise `marketplace`, `mcpregistry`, or
+`acp_registry` as current Labby services.
 
 ## Ownership
 
@@ -18,9 +28,9 @@ The SDK-only registry modules own protocol clients and metadata:
 
 | Surface | Runtime owner | SDK/source owner | Notes |
 | --- | --- | --- | --- |
-| Claude/Codex plugins | `crates/lab/src/dispatch/marketplace/` | Claude/Codex marketplace files under `~/.claude/plugins/` | Reads installed/source state and shells out to `claude plugin ...` for plugin install/uninstall. |
-| MCP Registry | `marketplace` `mcp.*` actions | `lab-apis::mcpregistry` plus `[mcpregistry].url` | `mcpregistry` is not a first-class CLI/MCP/API service. |
-| ACP Agent Registry | `marketplace` `agent.*` actions | `lab-apis::acp_registry` plus `LABBY_ACP_REGISTRY_URL` | `acp_registry` is not a first-class CLI/MCP/API service. |
+| Claude/Codex plugins | retired from `labby`; extracted/standalone ownership only | Claude/Codex marketplace files under `~/.claude/plugins/` | Historical Labby code read installed/source state and shelled out to `claude plugin ...`. |
+| MCP Registry | SDK-only in this repo | `labby-apis::mcpregistry` plus `[mcpregistry].url` where a host consumes it | `mcpregistry` is not a first-class Labby CLI/MCP/API service. |
+| ACP Agent Registry | SDK/extracted ownership only | ACP registry client/data crates where present | `acp_registry` is not a first-class Labby CLI/MCP/API service. |
 
 Marketplace does not re-implement upstream registry semantics. Registry URL
 validation, schema validation, SDK decode errors, and upstream request failures
@@ -195,32 +205,14 @@ HTTP responses.
 
 ## Surfaces
 
-CLI:
+The former Labby surfaces were:
 
-```bash
-labby marketplace sources.list --json
-labby marketplace plugins.list --params '{"marketplace":"jmagar-lab"}'
-labby marketplace mcp.list --params '{"search":"postgres","limit":10}'
-labby marketplace agent.list
-labby marketplace mcp.install --params '{"name":"io.github.user/server","gateway_ids":["default"],"confirm":true}' -y
-```
+- CLI: `labby marketplace ...`
+- MCP: `marketplace({ "action": "...", "params": { ... } })`
+- HTTP: `POST /v1/marketplace`
+- Web UI: `/marketplace`
 
-MCP:
-
-```jsonc
-marketplace({ "action": "mcp.list", "params": { "owner": "modelcontextprotocol", "limit": 10 } })
-marketplace({ "action": "agent.get", "params": { "id": "openai/codex-cli" } })
-marketplace({ "action": "plugin.install", "params": { "id": "aurora-design@jmagar-lab", "confirm": true } })
-```
-
-HTTP:
-
-```bash
-curl -s -X POST http://127.0.0.1:8765/v1/marketplace \
-  -H "Authorization: Bearer $LABBY_MCP_HTTP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"action":"mcp.list","params":{"search":"postgres","limit":10}}'
-```
-
-The web UI consumes `/v1/marketplace`; it must not read or write `~/.claude/`,
-`~/.labby/bin/`, or `~/.labby/acp-providers.json` directly.
+These routes and commands are not current `labby` behavior. Extracted or
+standalone marketplace services may reuse the historical action names, but they
+must document their own binary, API routes, auth, and state directories instead
+of pointing users at Labby product surfaces.

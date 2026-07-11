@@ -172,6 +172,13 @@ Rules:
 | `stateful` | `LABBY_MCP_STATEFUL` | `true` | Whether HTTP MCP uses stateful sessions |
 | `allowed_hosts` | `LABBY_MCP_ALLOWED_HOSTS` | `[]` | Additional allowed hosts for DNS rebinding protection |
 | `show_all` | `LABBY_SHOW_ALL` | `false` | Show the full service catalog regardless of env-var presence |
+| `destructive_elicitation_timeout_ms` | `LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS` | `120000` | Deadline for destructive-action MCP confirmation prompts; valid range `1..=600000` milliseconds |
+| `catalog_notification_timeout_ms` | `LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS` | `5000` | Per-peer deadline for MCP catalog-change notifications; valid range `1..=60000` milliseconds |
+
+`LABBY_UPSTREAM_RELAY_ENABLED=1` opts proxied upstream tool calls into the
+dedicated server-to-client relay path for upstream elicitation, sampling, and
+roots requests. The legacy `LABBY_UPSTREAM_RELAY_ELICITATION=1` name remains
+accepted for existing deployments.
 
 ### `[api]`
 

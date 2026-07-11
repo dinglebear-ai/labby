@@ -6,6 +6,7 @@ use serde_json::Value;
 use super::server::LabMcpServer;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::UpstreamPool;
+#[cfg(test)]
 use crate::mcp::prompts::list_all as list_builtin_prompts;
 
 /// Primary Cloudflare-style Code Mode tool name.
@@ -40,11 +41,40 @@ impl CodeModeVisibility {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CatalogSnapshot {
     pub(crate) tools: BTreeSet<String>,
     pub(crate) resources: BTreeSet<String>,
     pub(crate) prompts: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolCatalogSnapshot {
+    pub(crate) tools: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CatalogChangeSet {
+    pub(crate) tools_changed: bool,
+    pub(crate) resources_changed: bool,
+    pub(crate) prompts_changed: bool,
+}
+
+impl CatalogChangeSet {
+    pub(crate) const fn any(self) -> bool {
+        self.tools_changed || self.resources_changed || self.prompts_changed
+    }
+}
+
+impl ToolCatalogSnapshot {
+    pub(crate) fn changes_since(&self, before: &Self) -> CatalogChangeSet {
+        CatalogChangeSet {
+            tools_changed: before.tools != self.tools,
+            resources_changed: false,
+            prompts_changed: false,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -137,6 +167,7 @@ impl LabMcpServer {
             || gateway_available
     }
 
+    #[cfg(test)]
     pub(crate) fn builtin_prompt_names(&self) -> Vec<String> {
         list_builtin_prompts()
             .prompts
@@ -145,6 +176,7 @@ impl LabMcpServer {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) async fn builtin_resource_identifiers(&self) -> BTreeSet<String> {
         let mut resources = BTreeSet::from(["lab://catalog".to_string()]);
         for svc in self.registry.services() {
@@ -216,6 +248,7 @@ impl LabMcpServer {
         Ok(serde_json::to_value(entry.actions)?)
     }
 
+    #[cfg(test)]
     pub(crate) async fn snapshot_catalog(&self) -> CatalogSnapshot {
         let visibility = self.code_mode_visibility().await;
         let mut tools = BTreeSet::new();
@@ -280,6 +313,37 @@ impl LabMcpServer {
             prompts,
         }
     }
+
+    /// Lightweight tool-list projection for call paths that can only mutate
+    /// upstream tool health. This intentionally omits resources/prompts and
+    /// avoids cloning upstream schemas.
+    pub(crate) async fn snapshot_tool_catalog(&self) -> ToolCatalogSnapshot {
+        let visibility = self.code_mode_visibility().await;
+        let mut tools = BTreeSet::new();
+        if visibility.exposes_synthetic_tools() {
+            tools.insert(CODE_MODE_TOOL_NAME.to_string());
+        } else {
+            for svc in self.registry.services() {
+                if !visibility.hides_raw_tools() && self.service_visible_on_mcp(svc.name).await {
+                    tools.insert(svc.name.to_string());
+                }
+            }
+        }
+
+        #[cfg(feature = "gateway")]
+        if !visibility.hides_raw_tools()
+            && let Some(pool) = self.current_upstream_pool().await
+        {
+            for tool_name in pool
+                .healthy_tool_names_allowed(self.route_scope.allowed_upstreams())
+                .await
+            {
+                tools.insert(tool_name);
+            }
+        }
+
+        ToolCatalogSnapshot { tools }
+    }
 }
 
 #[cfg(test)]
@@ -308,5 +372,24 @@ mod tests {
         // Raw exposes neither and does not hide raw tools.
         assert!(!CodeModeVisibility::Raw.exposes_synthetic_tools());
         assert!(!CodeModeVisibility::Raw.hides_raw_tools());
+    }
+
+    #[test]
+    fn tool_catalog_snapshot_only_reports_tool_changes() {
+        let before = ToolCatalogSnapshot {
+            tools: BTreeSet::from(["a".to_string()]),
+        };
+        let after = ToolCatalogSnapshot {
+            tools: BTreeSet::from(["a".to_string(), "b".to_string()]),
+        };
+
+        assert_eq!(
+            after.changes_since(&before),
+            CatalogChangeSet {
+                tools_changed: true,
+                resources_changed: false,
+                prompts_changed: false,
+            }
+        );
     }
 }

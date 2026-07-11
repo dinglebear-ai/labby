@@ -30,6 +30,11 @@ pub(crate) fn redact_subject_for_logging(subject: &str) -> String {
     format!("sub:{}", hex::encode(digest))[..16].to_string()
 }
 
+#[cfg(feature = "gateway")]
+pub(crate) fn redacted_oauth_subject_label() -> &'static str {
+    "[redacted]"
+}
+
 impl LabMcpServer {
     #[cfg(feature = "gateway")]
     pub(crate) fn code_mode_surface(&self) -> CodeModeSurface {
