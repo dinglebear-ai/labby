@@ -27,14 +27,18 @@ describe("palette audit trail", () => {
     window.localStorage.clear();
   });
 
-  it("records recent launches without persisting params", () => {
-    recordPaletteLaunch(action, {
-      ok: true,
-      status: 200,
-      path: "/v1/palette/execute",
-      method: "POST",
-      payload: { ok: true },
-    });
+  it("records recent launches with redacted params", () => {
+    recordPaletteLaunch(
+      action,
+      { query: "labby", token: "secret-token" },
+      {
+        ok: true,
+        status: 200,
+        path: "/v1/palette/execute",
+        method: "POST",
+        payload: { ok: true },
+      },
+    );
 
     expect(readPaletteLaunches()).toMatchObject([
       {
@@ -43,6 +47,7 @@ describe("palette audit trail", () => {
         source: "github",
         ok: true,
         status: 200,
+        params: { query: "labby", token: "[REDACTED]" },
       },
     ]);
   });
@@ -53,13 +58,17 @@ describe("palette audit trail", () => {
     });
 
     expect(() =>
-      recordPaletteLaunch(action, {
-        ok: true,
-        status: 200,
-        path: "/v1/palette/execute",
-        method: "POST",
-        payload: { ok: true },
-      }),
+      recordPaletteLaunch(
+        action,
+        { query: "labby" },
+        {
+          ok: true,
+          status: 200,
+          path: "/v1/palette/execute",
+          method: "POST",
+          payload: { ok: true },
+        },
+      ),
     ).not.toThrow();
 
     setItem.mockRestore();
