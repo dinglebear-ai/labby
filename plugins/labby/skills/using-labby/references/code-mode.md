@@ -257,12 +257,16 @@ Common error kinds:
 | `missing_param` | Read `codemode.search()` / `codemode.describe()` output and include the required field. |
 | `invalid_param` | Fix type/shape against the schema. |
 | `validation_failed` | Fix nested schema validation errors. |
-| `confirmation_required` | Inspect the upstream schema and provide confirmation where that upstream expects it. |
-| `unknown_tool` | Rerun `codemode.search()`; use `<upstream>::<tool>` IDs only. |
-| `call_budget_exceeded` | Reduce fan-out or split the work. |
-| `result_too_large` | Reduce the upstream payload or write large data to an artifact. |
+| `unknown_tool` | Rerun `codemode.search()`; use `<namespace>::<tool>` IDs only. |
+| `route_scope_denied` | The protected route scope does not allow that upstream/tool. |
+| `forbidden` / `permission_denied` | Caller lacks permission; destructive tools require execute-capable Code Mode callers. |
+| `path_traversal` | Fix the workspace/artifact path. |
+| `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Reduce fan-out, workspace writes, or split the work. |
+| `result_too_large` / `artifact_too_large` | Reduce the upstream payload or write large data to a smaller artifact. |
 | `timeout` | Split work into smaller executions. |
+| `network_error` / `server_error` / `decode_error` / `upstream_error` | Retry or operate the upstream service; unknown structured upstream-local kinds are returned as `upstream_error` without poisoning upstream health. |
 | `oauth_needs_reauth` | Check `labby gateway mcp auth status <upstream> --json`. |
+| `snippet_not_found` | Check the snippet name with `codemode.search()`. |
 
 ## Runtime And Limits
 
@@ -274,11 +278,14 @@ Implementation facts that affect operation:
 - Host-side env knobs also bound runner pool overflow, artifact size/retention,
   per-run `callTool` fan-out, and per-call result size.
 - The runner process starts with a cleared environment and temp cwd.
-- The parent host brokers all tool calls, validates schemas, applies
-  confirmations, and terminates runaway executions.
+- The parent host brokers all tool calls, validates schemas, enforces
+  scope/tool policy, and terminates runaway executions.
 - CLI `labby gateway code exec` is operator-driven and has its own policy for
   destructive upstream tools; MCP `codemode` exposes only `code`, `upstreams`,
   and `tools` as top-level arguments.
+- Code Mode does not add a generic destructive-call confirmation gate. An
+  execute-capable caller may call destructive upstream tools directly; other
+  callers receive `forbidden`.
 
 Current config defaults:
 

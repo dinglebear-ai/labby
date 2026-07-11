@@ -183,6 +183,28 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo check --workspace --all-features --locked
 
+  codemode-runner-smoke:
+    name: Code Mode runner smoke
+    runs-on: ubuntu-latest
+    needs: [changes, frontend-assets]
+    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gateway-admin-out
+          path: apps/gateway-admin/out
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - name: Execute sandbox through the CLI-hosted runner
+        run: |
+          set -euo pipefail
+          cargo run -p labby --all-features --locked -- --json gateway code exec \
+            --code 'async () => ({ ok: true, sum: 1 + 1 })' \
+            | grep -q '"sum":2'
+
   feature-slices:
     name: Feature slice (${{ matrix.slice }})
     runs-on: ubuntu-latest

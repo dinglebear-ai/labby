@@ -1719,8 +1719,8 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
     use std::time::Duration;
 
     let manager = test_manager();
-    let upstream_name = "github-chat-cleanup-dispatch";
-    let runtime_arg = "github-chat-cleanup-dispatch-mcp";
+    let upstream_name = "cleanup-dispatch";
+    let runtime_arg = "cleanup-dispatch-mcp";
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
             enabled: true,
@@ -1755,6 +1755,7 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
     let mut child = command.spawn().expect("spawn github chat stand-in");
 
     tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_cleanup_match(&manager, upstream_name).await;
 
     let value = dispatch_with_manager(
         &manager,
@@ -1796,8 +1797,8 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
     use std::time::Duration;
 
     let manager = test_manager();
-    let upstream_name = "github-chat-disable-dispatch";
-    let runtime_arg = "github-chat-disable-dispatch-mcp";
+    let upstream_name = "disable-dispatch";
+    let runtime_arg = "disable-dispatch-mcp";
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
             enabled: true,
@@ -1831,6 +1832,7 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
     let mut child = command.spawn().expect("spawn github chat stand-in");
 
     tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_cleanup_match(&manager, upstream_name).await;
 
     let value = dispatch_with_manager(
         &manager,
@@ -1857,6 +1859,35 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
 
     drop(child.kill());
     panic!("github-chat stand-in process was not terminated by disable cleanup");
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_cleanup_match(manager: &GatewayManager, upstream_name: &str) {
+    use std::time::Duration;
+
+    for _ in 0..40 {
+        let value = dispatch_with_manager(
+            manager,
+            "gateway.mcp.cleanup",
+            json!({
+                "name": upstream_name,
+                "aggressive": false,
+                "dry_run": true
+            }),
+        )
+        .await
+        .expect("cleanup dry-run dispatch");
+        if value["gateway_matched"]
+            .as_u64()
+            .expect("gateway_matched as u64")
+            >= 1
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    panic!("stand-in process was not visible to cleanup matcher");
 }
 
 #[test]

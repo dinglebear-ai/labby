@@ -135,11 +135,17 @@ Binary size is tracked but not hard-gated in CI unless repo tooling enforces a m
 
 ## Frontend Tests
 
-Gateway-admin tests are local/developer verification today. They are not part
-of `ci.yml`.
+The shared `build-gateway-admin` action installs dependencies, verifies the
+synced installer, runs `pnpm run test:unit`, runs `pnpm exec tsc --noEmit`, and
+then runs `pnpm build`. This is the CI gate for the embedded gateway-admin
+assets that are compiled into the `lab` binary. Keep TypeScript explicit here:
+`next.config.mjs` intentionally ignores build-time TypeScript errors so asset
+builds are not the type-safety boundary.
 
 ```bash
 cd apps/gateway-admin
+pnpm run test:unit
+pnpm exec tsc --noEmit
 pnpm test
 pnpm test:acp
 pnpm test:browser

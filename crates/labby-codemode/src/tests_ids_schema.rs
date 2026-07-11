@@ -371,6 +371,61 @@ fn validates_code_mode_params_through_local_refs_and_constraints() {
 }
 
 #[test]
+fn code_mode_schema_validator_ignores_annotations_but_enforces_supported_assertions() {
+    let schema = json!({
+        "title": "Search params",
+        "description": "Common MCP schema annotations are documentation only.",
+        "default": { "query": "rust" },
+        "examples": [{ "query": "rust" }],
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search text",
+                "default": "rust",
+                "examples": ["rust"]
+            }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    });
+
+    validate_code_mode_params_against_schema(&json!({"query": "rust"}), Some(&schema))
+        .expect("annotations must not affect validation");
+
+    let err = validate_code_mode_params_against_schema(
+        &json!({"query": "rust", "extra": true}),
+        Some(&schema),
+    )
+    .expect_err("supported assertions are still enforced");
+    assert_eq!(err.kind(), "invalid_param");
+}
+
+#[test]
+fn code_mode_schema_validator_does_not_enforce_unsupported_assertion_keywords() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "mode": { "type": "string" },
+            "advanced": { "type": "boolean" }
+        },
+        "if": {
+            "properties": { "mode": { "const": "advanced" } },
+            "required": ["mode"]
+        },
+        "then": {
+            "required": ["advanced"]
+        },
+        "dependentRequired": {
+            "mode": ["advanced"]
+        }
+    });
+
+    validate_code_mode_params_against_schema(&json!({"mode": "advanced"}), Some(&schema))
+        .expect("unsupported assertions are intentionally outside the enforced subset");
+}
+
+#[test]
 fn builds_catalog_entry_for_tool() {
     let candidate = ToolDescriptor::tool(
         "github",

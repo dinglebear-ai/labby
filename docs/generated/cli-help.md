@@ -1056,7 +1056,7 @@ Options:
           Host SSH config to read
 
       --key-path <KEY_PATH>
-          Private key path inside the container. Defaults to the labby user's Ed25519 key
+          Private key path inside the container
 
       --dry-run
           Print the plan without mutating the container or remote hosts
@@ -1122,7 +1122,7 @@ Options:
           Host SSH config to read
 
       --key-path <KEY_PATH>
-          Private key path inside the container. Defaults to the labby user's Ed25519 key
+          Private key path inside the container
 
       --include <INCLUDE>
           Only process hosts whose alias or HostName matches this filter. Repeatable
