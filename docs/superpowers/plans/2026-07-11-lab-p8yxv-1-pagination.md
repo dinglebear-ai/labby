@@ -194,45 +194,27 @@ git commit -m "refactor(mcp): add bounded pagination collector"
 - Consumes: `PageCollector<Tool>` from Task 1.
 - Produces: `list_tools_impl` that builds at most page plus lookahead for accepted tools while still running de-duplication over skipped accepted items.
 
-- [ ] **Step 1: Write failing bounded local catalog test**
+- [ ] **Step 1: Keep the existing large-catalog traversal test**
 
-In `crates/labby/src/mcp/handlers_tools/tests.rs`, update `list_tools_paginates_large_builtin_catalog` to assert only the first page and lookahead are constructed. Add a static counter near the test helper area:
-
-```rust
-static TOOL_DESCRIPTION_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-```
-
-Update the `large_test_registry` helper so each synthetic service description calls a helper:
-
-```rust
-fn counted_description(index: usize) -> String {
-    TOOL_DESCRIPTION_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    format!("Synthetic service {index:03}")
-}
-```
-
-Before calling `list_tools_impl(None, ...)`, reset the counter:
-
-```rust
-TOOL_DESCRIPTION_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
-```
-
-After first page assertions, add:
+Keep `list_tools_paginates_large_builtin_catalog` focused on integration behavior:
 
 ```rust
 assert_eq!(
-    TOOL_DESCRIPTION_COUNT.load(std::sync::atomic::Ordering::SeqCst),
-    crate::mcp::pagination::MCP_LIST_PAGE_SIZE + 1,
-    "first-page collection should stop after page plus next-cursor lookahead"
+    first.tools.len(),
+    crate::mcp::pagination::MCP_LIST_PAGE_SIZE
 );
+assert_eq!(first.tools[0].name.as_ref(), "service_000");
+assert_eq!(first.tools[99].name.as_ref(), "service_099");
+assert_eq!(first.next_cursor.as_deref(), Some("100"));
 ```
+
+The bounded-collection regression belongs in `pagination.rs` because registry setup builds synthetic service metadata before `list_tools_impl` runs; a handler-local description counter would measure fixture construction, not page collection.
 
 - [ ] **Step 2: Run focused test and verify it fails**
 
 Run: `cargo test -p labby list_tools_paginates_large_builtin_catalog -- --nocapture`
 
-Expected: FAIL because the current handler constructs all 250 synthetic tool descriptions.
+Expected: PASS after Task 1 and fail only if the handler no longer preserves large-catalog page boundaries.
 
 - [ ] **Step 3: Refactor handler imports**
 
