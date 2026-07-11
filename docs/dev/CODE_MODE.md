@@ -351,9 +351,17 @@ Successful upstream tool calls resolve to the payload, never the raw MCP
 `codemode` returns a capped envelope with:
 
 - `result` — the JavaScript function return value.
-- `calls[]` — lightweight per-call metadata: `id`, `ok`, `elapsed_ms`, and
-  `error_kind` on failure.
+- `calls[]` — lightweight per-call metadata: `id`, canonical `namespace`,
+  `tool`, `ok`, `elapsed_ms`, redacted/capped `params` when tracing is enabled,
+  and `error_kind` on failure. Older UI parsers may still accept `upstream` as a
+  compatibility alias, but new producers and tests use `namespace`.
 - `logs[]` — sandbox console output when available.
+
+The Code Mode inspector accepts execute/search/history traces from the initial
+global, ExtApps bridge, or OpenAI Apps `window.openai.toolOutput`. It drops
+malformed rows with a warning, displays at most 50 calls/matches/history rows per
+section, and stringifies params/results only after the user opens that details
+panel.
 
 Binary-like JavaScript values crossing the runner boundary use a tagged base64
 codec. JavaScript return values (`ArrayBuffer` and typed-array views) are encoded
@@ -475,17 +483,30 @@ try {
 }
 ```
 
-Canonical recovery buckets:
+Canonical error kinds:
 
-- Retry-safe: `rate_limited`, `timeout`, `network_error`
-  - The live budget kind is `timeout`: the Javy/QuickJS runner's wall-clock
-    backstop interrupts an over-running snippet and the host normalizes the
-    trap to `timeout`. (`code_mode_fuel_exhausted` is **not** emitted on the
-    live path — it belongs to the dead Wasmtime reference engine; see
-    [Runner Architecture](#runner-architecture).)
-- Fix-and-retry: `missing_param`, `invalid_param`, `validation_failed`
-- Terminal: `unknown_tool`, `unknown_action`, `auth_failed`, `server_error`,
-  `internal_error`
+| Kind | Bucket | Meaning |
+| --- | --- | --- |
+| `missing_param` | Fix and retry | Required input was absent. |
+| `invalid_param` | Fix and retry | Input shape or type is invalid, including non-object upstream params. |
+| `invalid_code_mode_id` | Fix and retry | Code Mode tool id parsing failed; valid ids are `<upstream-name>::<tool-name>` only. |
+| `validation_failed` | Fix and retry | Nested schema validation failed. |
+| `unknown_tool` | Fix and retry | Tool id is unknown or outside this run's route scope. |
+| `unknown_action` / `unknown_subaction` | Fix and retry | Action id is not exposed by the upstream dispatcher. |
+| `route_scope_denied` | Terminal | Protected-route policy denied the upstream/tool. |
+| `forbidden` / `permission_denied` | Terminal | Caller lacks permission, including destructive tool execution permission. |
+| `path_traversal` | Terminal | Path-safety checks rejected a workspace or artifact path. |
+| `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Retry with smaller work | Workspace, response, or call fan-out budget was exceeded. |
+| `result_too_large` / `artifact_too_large` | Retry with smaller output | Returned value or artifact exceeded configured caps. |
+| `timeout` | Retry with smaller work | The live QuickJS/Javy runner wall-clock backstop interrupted execution. |
+| `rate_limited` | Retry later | Upstream or host-side rate limit was hit. |
+| `network_error` / `server_error` / `decode_error` / `upstream_error` | Retry or operate upstream | Upstream transport, protocol, server failure, or unknown structured upstream-local kind. Unknown structured upstream kinds are returned as `upstream_error` without poisoning upstream health. |
+| `auth_failed` / `oauth_needs_reauth` | Reauthenticate | Upstream credentials are absent or rejected. |
+| `snippet_not_found` | Fix and retry | Requested snippet name does not exist. |
+| `internal_error` | Bug or unsupported state | Unexpected host/runner failure. |
+
+`code_mode_fuel_exhausted` is **not** emitted on the live path; it belongs to
+the dead Wasmtime reference engine and is normalized away by the host.
 
 ## Destructive tool calls
 

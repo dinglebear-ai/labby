@@ -192,6 +192,30 @@ third into `write_failed`; the fourth is unnecessary because
 `setup.draft.commit` returns the doctor.audit.full body inline on failure
 instead of double-wrapping.
 
+### Setup / Incus SSH kinds
+
+Stable kinds emitted by the local-only `labby setup incus-ssh` helper. These
+surface through `ToolError::Sdk { sdk_kind }` envelopes and are CLI-owned; the
+Incus SSH helper is intentionally not exposed over MCP, HTTP, or Code Mode.
+
+- `incus_ssh_config_read_failed` — the selected SSH config could not be read.
+  HTTP 500 if ever surfaced through a transport adapter.
+- `incus_ssh_config_empty` — no concrete, supported `Host` entries remained
+  after filtering wildcard, GitHub, unsafe, excluded, and non-included entries.
+  HTTP 422.
+- `incus_ssh_keygen_failed` — generating or locating the container SSH key
+  failed or timed out. HTTP 500.
+- `incus_ssh_public_key_read_failed` — reading the container public key failed,
+  returned a non-zero status, timed out, or produced an empty key. HTTP 500.
+- `incus_ssh_config_install_failed` — writing the sanitized container-side SSH
+  config failed, returned a non-zero status, or timed out. HTTP 500.
+- `incus_ssh_authorize_failed` — adding the container public key to a target
+  host failed, returned a non-zero status, or exceeded the per-target timeout.
+  HTTP 502.
+- `incus_ssh_verify_failed` — container-side verification of a target host
+  failed, returned a non-zero status, or exceeded the per-target timeout. HTTP
+  502.
+
 ### Marketplace artifact update kinds
 
 - `git_not_available` — `artifact.update.check`, `artifact.fork`, and the other `artifact.update.*` actions could not spawn `git`. Install git on the controller host to use the fork/update workflows. HTTP 500.

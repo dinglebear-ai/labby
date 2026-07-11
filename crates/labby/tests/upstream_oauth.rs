@@ -496,7 +496,7 @@ async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets() 
     let _tracing_lock = TRACING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let buf = SharedBuf::default();
     let subscriber = tracing_subscriber::registry()
-        .with(EnvFilter::new("labby=info"))
+        .with(EnvFilter::new("labby=info,labby_auth=info"))
         .with(
             fmt::layer()
                 .json()

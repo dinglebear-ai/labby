@@ -156,6 +156,7 @@ pub(crate) struct IncusSshBootstrapOutcome {
     pub skipped_github: Vec<String>,
     pub skipped_wildcard: Vec<String>,
     pub skipped_unsafe: Vec<String>,
+    pub unsupported_include: Vec<String>,
     pub skipped_excluded: Vec<String>,
     pub skipped_not_included: Vec<String>,
     pub config_installed: bool,
@@ -179,6 +180,7 @@ pub(crate) struct IncusSshVerifyOutcome {
     pub skipped_github: Vec<String>,
     pub skipped_wildcard: Vec<String>,
     pub skipped_unsafe: Vec<String>,
+    pub unsupported_include: Vec<String>,
     pub skipped_excluded: Vec<String>,
     pub skipped_not_included: Vec<String>,
 }
@@ -189,6 +191,7 @@ struct ParsedSshConfig {
     skipped_github: Vec<String>,
     skipped_wildcard: Vec<String>,
     skipped_unsafe: Vec<String>,
+    unsupported_include: Vec<String>,
 }
 
 fn parse_ssh_config(raw: &str) -> ParsedSshConfig {
@@ -211,17 +214,12 @@ fn parse_ssh_config(raw: &str) -> ParsedSshConfig {
                 parsed.skipped_wildcard.push(alias);
                 continue;
             }
-            if is_github_ssh_config_host(&alias, &host) {
-                parsed.skipped_github.push(alias);
+            if !is_safe_ssh_alias(&alias) || !is_safe_ssh_config_value(&host) {
+                parsed.skipped_unsafe.push(alias);
                 continue;
             }
-            if !is_safe_ssh_config_token(&alias)
-                || !is_safe_ssh_config_token(&host)
-                || user
-                    .as_deref()
-                    .is_some_and(|user| !is_safe_ssh_config_token(user))
-            {
-                parsed.skipped_unsafe.push(alias);
+            if is_github_ssh_config_host(&alias, &host) {
+                parsed.skipped_github.push(alias);
                 continue;
             }
             parsed.targets.push(IncusSshTarget {
@@ -259,6 +257,8 @@ fn parse_ssh_config(raw: &str) -> ParsedSshConfig {
             user = Some(value.to_string());
         } else if !current.is_empty() && key.eq_ignore_ascii_case("port") {
             port = value.parse().ok();
+        } else if key.eq_ignore_ascii_case("include") {
+            parsed.unsupported_include.push(value.to_string());
         }
     }
     flush(
@@ -269,6 +269,21 @@ fn parse_ssh_config(raw: &str) -> ParsedSshConfig {
         &mut port,
     );
     parsed
+}
+
+fn is_safe_ssh_alias(alias: &str) -> bool {
+    !alias.is_empty()
+        && !alias.starts_with('-')
+        && alias
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn is_safe_ssh_config_value(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':'))
 }
 
 pub(crate) fn incus_ssh_bootstrap_plan(
@@ -321,6 +336,7 @@ pub(crate) fn incus_ssh_bootstrap_plan(
         skipped_github: parsed.skipped_github,
         skipped_wildcard: parsed.skipped_wildcard,
         skipped_unsafe: parsed.skipped_unsafe,
+        unsupported_include: parsed.unsupported_include,
         skipped_excluded: filtered.skipped_excluded,
         skipped_not_included: filtered.skipped_not_included,
         config_installed: false,
@@ -353,25 +369,25 @@ pub(crate) fn incus_ssh_bootstrap(
                 ))
             )),
         "incus_ssh_keygen_failed",
+        Duration::from_secs(options.timeout_seconds),
     )?;
 
-    let public_key_output = Command::new("incus")
-        .arg("exec")
-        .arg(&options.container)
-        .arg("--")
-        .arg("su")
-        .arg("-")
-        .arg(&options.user)
-        .arg("-c")
-        .arg(format!(
-            "cat {}",
-            shell_quote(&format!("{}.pub", options.key_path))
-        ))
-        .output()
-        .map_err(|e| ToolError::Sdk {
-            message: format!("failed to read container SSH public key: {e}"),
-            sdk_kind: "incus_ssh_public_key_read_failed".into(),
-        })?;
+    let public_key_output = command_output_with_timeout(
+        Command::new("incus")
+            .arg("exec")
+            .arg(&options.container)
+            .arg("--")
+            .arg("su")
+            .arg("-")
+            .arg(&options.user)
+            .arg("-c")
+            .arg(format!(
+                "cat {}",
+                shell_quote(&format!("{}.pub", options.key_path))
+            )),
+        "incus_ssh_public_key_read_failed",
+        Duration::from_secs(options.timeout_seconds),
+    )?;
     if !public_key_output.status.success() {
         return Err(ToolError::Sdk {
             message: "failed to read container SSH public key".into(),
@@ -388,7 +404,12 @@ pub(crate) fn incus_ssh_bootstrap(
         });
     }
     for target in &outcome.targets {
-        match authorize_target(target, &public_key, options.timeout_seconds) {
+        match authorize_target(
+            target,
+            &public_key,
+            &options.ssh_config,
+            options.timeout_seconds,
+        ) {
             Ok(()) => outcome.authorized.push(target_ssh_destination(target)),
             Err(err) if options.fail_fast => return Err(err),
             Err(err) => {
@@ -423,6 +444,7 @@ pub(crate) fn incus_ssh_verify(
         skipped_github: plan.skipped_github,
         skipped_wildcard: plan.skipped_wildcard,
         skipped_unsafe: plan.skipped_unsafe,
+        unsupported_include: plan.unsupported_include,
         skipped_excluded: plan.skipped_excluded,
         skipped_not_included: plan.skipped_not_included,
     };
@@ -438,6 +460,7 @@ pub(crate) fn incus_ssh_verify(
     }
     Ok(outcome)
 }
+
 pub(crate) fn parse_backup_config(path: &Path) -> Result<Vec<BackupConfigEntry>, ToolError> {
     let raw = std::fs::read_to_string(path).map_err(|e| ToolError::Sdk {
         message: format!("failed to read Incus backup config {}: {e}", path.display()),
@@ -949,47 +972,6 @@ fn resolve_sync_container(explicit: Option<&str>) -> Result<String, ToolError> {
     })
 }
 
-fn resolve_sync_web_assets_dir(explicit: Option<&Path>) -> Result<Option<PathBuf>, ToolError> {
-    let candidate = if let Some(path) = explicit {
-        Some(path.to_path_buf())
-    } else if let Some(path) = std::env::var_os("LABBY_INCUS_WEB_ASSETS_DIR")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        Some(path)
-    } else {
-        Some(PathBuf::from("apps/gateway-admin/out"))
-    };
-
-    let Some(path) = candidate else {
-        return Ok(None);
-    };
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|e| ToolError::Sdk {
-                message: format!("failed to resolve current directory: {e}"),
-                sdk_kind: "incus_sync_web_assets_resolve_failed".into(),
-            })?
-            .join(path)
-    };
-
-    if path.join("index.html").is_file() {
-        Ok(Some(path))
-    } else if explicit.is_some() {
-        Err(ToolError::Sdk {
-            message: format!(
-                "web assets directory {} does not contain index.html",
-                path.display()
-            ),
-            sdk_kind: "incus_sync_web_assets_missing".into(),
-        })
-    } else {
-        Ok(None)
-    }
-}
-
 fn resolve_sync_binary(explicit: Option<&Path>) -> Result<PathBuf, ToolError> {
     if let Some(path) = explicit {
         return require_binary(path);
@@ -1025,6 +1007,41 @@ fn require_binary(path: &Path) -> Result<PathBuf, ToolError> {
     }
 }
 
+fn resolve_sync_web_assets_dir(explicit: Option<&Path>) -> Result<Option<PathBuf>, ToolError> {
+    let candidate = if let Some(path) = explicit {
+        Some(path.to_path_buf())
+    } else {
+        std::env::var_os("LABBY_INCUS_WEB_ASSETS_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    let Some(path) = candidate else {
+        return Ok(None);
+    };
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map_err(|e| ToolError::Sdk {
+                message: format!("failed to resolve current directory: {e}"),
+                sdk_kind: "incus_sync_web_assets_resolve_failed".into(),
+            })?
+            .join(path)
+    };
+    let index = path.join("index.html");
+    if index.is_file() {
+        Ok(Some(path))
+    } else {
+        Err(ToolError::Sdk {
+            message: format!(
+                "web assets directory {} does not contain index.html",
+                path.display()
+            ),
+            sdk_kind: "incus_sync_web_assets_missing".into(),
+        })
+    }
+}
+
 fn ensure_container_running(container: &str) -> Result<(), ToolError> {
     let state = command_stdout(
         Command::new("incus")
@@ -1052,10 +1069,9 @@ fn sync_web_assets_to_container(container: &str, assets_dir: &Path) -> Result<()
     let archive = std::env::temp_dir().join(format!(
         "labby-web-assets-{}-{}.tar",
         std::process::id(),
-        unix_timestamp_millis()
+        Instant::now().elapsed().as_nanos()
     ));
     let remote_archive = format!("/tmp/.labby-web-assets-{}.tar", std::process::id());
-
     let result = (|| {
         command_ok(
             Command::new("tar")
@@ -1080,11 +1096,9 @@ fn sync_web_assets_to_container(container: &str, assets_dir: &Path) -> Result<()
         )?;
         let script = format!(
             "set -eu; \
-             rm -rf {remote}.new; \
+             rm -rf {remote}.new {remote}.prev; \
              mkdir -p {remote}.new; \
              tar -C {remote}.new -xf {archive}; \
-             chown -R labby:labby {remote}.new; \
-             rm -rf {remote}.prev; \
              if [ -d {remote} ]; then mv {remote} {remote}.prev; fi; \
              mv {remote}.new {remote}; \
              rm -f {archive}",
@@ -1093,7 +1107,6 @@ fn sync_web_assets_to_container(container: &str, assets_dir: &Path) -> Result<()
         );
         incus_exec(container, &["sh", "-lc", &script])
     })();
-
     drop(std::fs::remove_file(&archive));
     result
 }
@@ -1106,13 +1119,6 @@ fn clear_remote_web_assets(container: &str) -> Result<(), ToolError> {
         remote = shell_quote(REMOTE_WEB_ASSETS_DIR),
     );
     incus_exec(container, &["sh", "-lc", &script])
-}
-
-fn unix_timestamp_millis() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0)
 }
 
 fn service_main_pid(container: &str) -> Result<Option<u32>, ToolError> {
@@ -1438,15 +1444,6 @@ fn is_github_ssh_config_host(alias: &str, host: &str) -> bool {
     alias_lower.contains("github") || host_lower.contains("github")
 }
 
-fn is_safe_ssh_config_token(value: &str) -> bool {
-    !value.is_empty()
-        && !value.starts_with('-')
-        && value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric()
-                || matches!(ch, '.' | '_' | '-' | ':' | '%' | '+' | '=' | '@')
-        })
-}
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct FilteredSshTargets {
     targets: Vec<IncusSshTarget>,
@@ -1505,15 +1502,6 @@ fn target_ssh_destination(target: &IncusSshTarget) -> String {
 fn render_sanitized_ssh_config(targets: &[IncusSshTarget]) -> String {
     let mut out = String::from("# Generated by labby setup incus-ssh. Safe to overwrite.\n");
     for target in targets {
-        if !is_safe_ssh_config_token(&target.alias)
-            || !is_safe_ssh_config_token(&target.host)
-            || target
-                .user
-                .as_deref()
-                .is_some_and(|user| !is_safe_ssh_config_token(user))
-        {
-            continue;
-        }
         out.push_str("\nHost ");
         out.push_str(&target.alias);
         out.push('\n');
@@ -1566,10 +1554,12 @@ fn install_container_ssh_config(
                 sdk_kind: "incus_ssh_config_install_failed".into(),
             })?;
     }
-    let status = child.wait().map_err(|e| ToolError::Sdk {
-        message: format!("failed to wait for container SSH config install: {e}"),
-        sdk_kind: "incus_ssh_config_install_failed".into(),
-    })?;
+    let status = wait_child_with_timeout(
+        &mut child,
+        Duration::from_secs(options.timeout_seconds),
+        "container SSH config install",
+        "incus_ssh_config_install_failed",
+    )?;
     if status.success() {
         Ok(())
     } else {
@@ -1583,17 +1573,10 @@ fn install_container_ssh_config(
 fn authorize_target(
     target: &IncusSshTarget,
     public_key: &str,
+    ssh_config: &Path,
     timeout_seconds: u64,
 ) -> Result<(), ToolError> {
-    let mut command = Command::new("ssh");
-    command
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-o")
-        .arg(format!("ConnectTimeout={timeout_seconds}"))
-        .arg("--")
-        .arg(&target.alias)
-        .arg("sh -c 'umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; read key; grep -qxF \"$key\" ~/.ssh/authorized_keys || printf \"%s\\n\" \"$key\" >> ~/.ssh/authorized_keys'");
+    let mut command = authorize_target_command(target, ssh_config, timeout_seconds);
     let mut child = command
         .stdin(std::process::Stdio::piped())
         .spawn()
@@ -1616,13 +1599,12 @@ fn authorize_target(
                 sdk_kind: "incus_ssh_authorize_failed".into(),
             })?;
     }
-    let status = child.wait().map_err(|e| ToolError::Sdk {
-        message: format!(
-            "failed to wait for ssh authorization on {}: {e}",
-            target_ssh_destination(target)
-        ),
-        sdk_kind: "incus_ssh_authorize_failed".into(),
-    })?;
+    let status = wait_child_with_timeout(
+        &mut child,
+        Duration::from_secs(timeout_seconds),
+        &format!("ssh authorization on {}", target_ssh_destination(target)),
+        "incus_ssh_authorize_failed",
+    )?;
     if status.success() {
         Ok(())
     } else {
@@ -1634,6 +1616,25 @@ fn authorize_target(
             sdk_kind: "incus_ssh_authorize_failed".into(),
         })
     }
+}
+
+fn authorize_target_command(
+    target: &IncusSshTarget,
+    ssh_config: &Path,
+    timeout_seconds: u64,
+) -> Command {
+    let mut command = Command::new("ssh");
+    command
+        .arg("-F")
+        .arg(ssh_config)
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg(format!("ConnectTimeout={timeout_seconds}"))
+        .arg("--")
+        .arg(&target.alias)
+        .arg("sh -c 'umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; read key; grep -qxF \"$key\" ~/.ssh/authorized_keys || printf \"%s\\n\" \"$key\" >> ~/.ssh/authorized_keys'");
+    command
 }
 
 fn verify_container_target(
@@ -1650,20 +1651,22 @@ fn verify_container_target(
             .arg(&options.user)
             .arg("-c")
             .arg(format!(
-                "ssh -i {} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout={} {} true",
+                "ssh -i {} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout={} -- {} true",
                 shell_quote(&options.key_path),
                 options.timeout_seconds,
                 shell_quote(&target.alias)
             )),
         "incus_ssh_verify_failed",
+        Duration::from_secs(options.timeout_seconds),
     )
 }
 
-fn run_status(command: &mut Command, kind: &str) -> Result<(), ToolError> {
-    let status = command.status().map_err(|e| ToolError::Sdk {
+fn run_status(command: &mut Command, kind: &str, timeout: Duration) -> Result<(), ToolError> {
+    let mut child = command.spawn().map_err(|e| ToolError::Sdk {
         message: format!("failed to run command: {e}"),
         sdk_kind: kind.into(),
     })?;
+    let status = wait_child_with_timeout(&mut child, timeout, "command", kind)?;
     if status.success() {
         Ok(())
     } else {
@@ -1674,9 +1677,71 @@ fn run_status(command: &mut Command, kind: &str) -> Result<(), ToolError> {
     }
 }
 
+fn command_output_with_timeout(
+    command: &mut Command,
+    kind: &str,
+    timeout: Duration,
+) -> Result<Output, ToolError> {
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| ToolError::Sdk {
+            message: format!("failed to run command: {e}"),
+            sdk_kind: kind.into(),
+        })?;
+    let status = wait_child_with_timeout(&mut child, timeout, "command", kind)?;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_end(&mut stdout).map_err(|e| ToolError::Sdk {
+            message: format!("failed to read command stdout: {e}"),
+            sdk_kind: kind.into(),
+        })?;
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_end(&mut stderr).map_err(|e| ToolError::Sdk {
+            message: format!("failed to read command stderr: {e}"),
+            sdk_kind: kind.into(),
+        })?;
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn wait_child_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    label: &str,
+    kind: &str,
+) -> Result<std::process::ExitStatus, ToolError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| ToolError::Sdk {
+            message: format!("failed to poll {label}: {e}"),
+            sdk_kind: kind.into(),
+        })? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            drop(child.kill());
+            drop(child.wait());
+            return Err(ToolError::Sdk {
+                message: format!("{label} timed out after {}s", timeout.as_secs()),
+                sdk_kind: kind.into(),
+            });
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1818,25 +1883,6 @@ config:
     }
 
     #[test]
-    fn resolves_explicit_web_assets_dir_with_index() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<!doctype html>").unwrap();
-
-        let resolved = resolve_sync_web_assets_dir(Some(dir.path())).unwrap();
-
-        assert_eq!(resolved, Some(dir.path().to_path_buf()));
-    }
-
-    #[test]
-    fn rejects_explicit_web_assets_dir_without_index() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let err = resolve_sync_web_assets_dir(Some(dir.path())).unwrap_err();
-
-        assert_eq!(err.kind(), "incus_sync_web_assets_missing");
-    }
-
-    #[test]
     fn passes_container_name_as_tailscale_hostname() {
         let dir = tempfile::tempdir().unwrap();
         let artifacts = materialize_bootstrap_artifacts(dir.path()).unwrap();
@@ -1857,18 +1903,18 @@ config:
 
     #[test]
     fn parses_concrete_ssh_config_hosts() {
-        let targets = parse_ssh_config(
+        let parsed = parse_ssh_config(
             r#"
 Host *
   User ignored
 
-Host alpha alpha-short
-  HostName 192.0.2.10
-  User operator
+Host tootie nas
+  HostName 100.120.242.29
+  User jacob
   Port 2222
 
-Host beta
-  HostName beta.example.test
+Host dookie
+  HostName dookie.manatee-triceratops.ts.net
 
 Host github.com
   User git
@@ -1876,83 +1922,39 @@ Host github.com
 Host GitHubEnterprise
   HostName github.internal
 
+Host -Ftmp
+  HostName bad.example
+
 Include ~/.ssh/extra
 "#,
-        )
-        .targets;
+        );
+        let targets = parsed.targets;
 
         assert_eq!(
             targets,
             vec![
                 IncusSshTarget {
-                    alias: "alpha".into(),
-                    host: "192.0.2.10".into(),
-                    user: Some("operator".into()),
+                    alias: "tootie".into(),
+                    host: "100.120.242.29".into(),
+                    user: Some("jacob".into()),
                     port: Some(2222),
                 },
                 IncusSshTarget {
-                    alias: "alpha-short".into(),
-                    host: "192.0.2.10".into(),
-                    user: Some("operator".into()),
+                    alias: "nas".into(),
+                    host: "100.120.242.29".into(),
+                    user: Some("jacob".into()),
                     port: Some(2222),
                 },
                 IncusSshTarget {
-                    alias: "beta".into(),
-                    host: "beta.example.test".into(),
+                    alias: "dookie".into(),
+                    host: "dookie.manatee-triceratops.ts.net".into(),
                     user: None,
                     port: None,
                 },
             ]
         );
-    }
-
-    #[test]
-    fn skips_ssh_config_entries_that_could_be_parsed_as_options() {
-        let targets = parse_ssh_config(
-            r#"
-Host -oProxyCommand=sh
-  HostName 192.0.2.66
-
-Host safe
-  HostName -oProxyCommand=sh
-
-Host unsafe-user
-  HostName 192.0.2.67
-  User -oProxyCommand=sh
-
-Host alpha
-  HostName 192.0.2.10
-  User operator
-"#,
-        )
-        .targets;
-
-        assert_eq!(
-            targets,
-            vec![IncusSshTarget {
-                alias: "alpha".into(),
-                host: "192.0.2.10".into(),
-                user: Some("operator".into()),
-                port: None,
-            }]
-        );
-        let parsed = parse_ssh_config(
-            r#"
-Host -oProxyCommand=sh
-  HostName 192.0.2.66
-
-Host safe
-  HostName -oProxyCommand=sh
-
-Host unsafe-user
-  HostName 192.0.2.67
-  User -oProxyCommand=sh
-"#,
-        );
-        assert_eq!(
-            parsed.skipped_unsafe,
-            vec!["-oProxyCommand=sh", "safe", "unsafe-user"]
-        );
+        assert_eq!(parsed.skipped_unsafe, vec!["-Ftmp"]);
+        assert_eq!(parsed.unsupported_include, vec!["~/.ssh/extra"]);
     }
 
     #[test]
@@ -1965,11 +1967,11 @@ Host unsafe-user
 Host *
   User ignored
 
-Host alpha
-  HostName alpha.example.test
+Host dookie
+  HostName dookie.manatee-triceratops.ts.net
 
-Host beta
-  HostName beta.example.test
+Host squirts
+  HostName squirts
 
 Host github.com
   User git
@@ -1984,8 +1986,8 @@ Host github.com
             key_path: "/home/labby/.ssh/id_ed25519".into(),
             dry_run: true,
             fail_fast: false,
-            include: vec!["alpha".into()],
-            exclude: vec!["beta".into()],
+            include: vec!["dookie".into()],
+            exclude: vec!["squirts".into()],
             install_config: true,
             timeout_seconds: 10,
         })
@@ -1997,40 +1999,51 @@ Host github.com
                 .iter()
                 .map(|target| target.alias.as_str())
                 .collect::<Vec<_>>(),
-            vec!["alpha"]
+            vec!["dookie"]
         );
         assert_eq!(outcome.skipped_wildcard, vec!["*"]);
         assert_eq!(outcome.skipped_github, vec!["github.com"]);
-        assert!(outcome.skipped_unsafe.is_empty());
-        assert_eq!(outcome.skipped_not_included, vec!["beta"]);
+        assert_eq!(outcome.skipped_not_included, vec!["squirts"]);
         assert!(outcome.steps.iter().any(|step| step.contains("sanitized")));
     }
 
     #[test]
-    fn renders_sanitized_container_ssh_config() {
-        let config = render_sanitized_ssh_config(&[
-            IncusSshTarget {
-                alias: "alpha".into(),
-                host: "192.0.2.10".into(),
-                user: Some("root".into()),
-                port: Some(29229),
-            },
-            IncusSshTarget {
-                alias: "-oProxyCommand=sh".into(),
-                host: "192.0.2.66".into(),
-                user: None,
-                port: None,
-            },
-        ]);
+    fn builds_authorize_ssh_command_with_config_and_option_terminator() {
+        let target = IncusSshTarget {
+            alias: "tootie".into(),
+            host: "100.120.242.29".into(),
+            user: Some("jacob".into()),
+            port: Some(2222),
+        };
+        let config = PathBuf::from("/tmp/labby-test-ssh-config");
+        let command = authorize_target_command(&target, &config, 7);
+        let args = command.get_args().map(OsString::from).collect::<Vec<_>>();
 
-        assert!(config.contains("Host alpha"));
-        assert!(config.contains("  HostName 192.0.2.10"));
+        assert!(has_arg_pair(&args, "-F", config.as_os_str()));
+        assert!(has_arg_pair(&args, "-o", OsStr::new("BatchMode=yes")));
+        assert!(has_arg_pair(&args, "-o", OsStr::new("ConnectTimeout=7")));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == [OsStr::new("--"), OsStr::new("tootie")])
+        );
+    }
+
+    #[test]
+    fn renders_sanitized_container_ssh_config() {
+        let config = render_sanitized_ssh_config(&[IncusSshTarget {
+            alias: "tootie".into(),
+            host: "100.120.242.29".into(),
+            user: Some("root".into()),
+            port: Some(29229),
+        }]);
+
+        assert!(config.contains("Host tootie"));
+        assert!(config.contains("  HostName 100.120.242.29"));
         assert!(config.contains("  User root"));
         assert!(config.contains("  Port 29229"));
         assert!(config.contains("  IdentityFile ~/.ssh/id_ed25519"));
         assert!(!config.contains("github"));
         assert!(!config.contains("ProxyJump"));
-        assert!(!config.contains("ProxyCommand"));
     }
 
     #[test]
@@ -2040,9 +2053,9 @@ Host github.com
         std::fs::write(
             &config,
             r#"
-Host alpha
-  HostName 192.0.2.10
-  User operator
+Host tootie
+  HostName 100.120.242.29
+  User jacob
 "#,
         )
         .unwrap();
@@ -2069,9 +2082,10 @@ Host alpha
         );
         assert_eq!(
             outcome.steps[1],
-            "authorize container public key on operator@192.0.2.10"
+            "authorize container public key on jacob@100.120.242.29"
         );
     }
+
     fn has_arg_pair(args: &[OsString], flag: &str, value: &OsStr) -> bool {
         args.windows(2)
             .any(|pair| pair[0] == OsStr::new(flag) && pair[1] == value)

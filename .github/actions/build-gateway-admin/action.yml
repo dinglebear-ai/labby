@@ -28,6 +28,16 @@ runs:
       working-directory: apps/gateway-admin
       run: pnpm run test:install-script
 
+    - name: Run gateway-admin unit tests
+      shell: bash
+      working-directory: apps/gateway-admin
+      run: pnpm run test:unit
+
+    - name: Typecheck gateway-admin
+      shell: bash
+      working-directory: apps/gateway-admin
+      run: pnpm exec tsc --noEmit
+
     - name: Build gateway-admin
       shell: bash
       working-directory: apps/gateway-admin

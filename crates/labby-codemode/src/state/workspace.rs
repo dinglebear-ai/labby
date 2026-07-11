@@ -1,4 +1,8 @@
 use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
+use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -201,9 +205,8 @@ impl StateWorkspace {
         let destination = self.resolve(path);
         labby_runtime::path_safety::reject_existing_symlink_ancestors(&self.root, &destination)?;
         self.reject_existing_symlink_path(&destination).await?;
-        self.check_total_bytes_after_write(path, content.len() as u64)
+        self.check_write_quota(&destination, content.len() as u64)
             .await?;
-        self.check_entry_quota_for_path(&destination).await?;
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -261,18 +264,18 @@ impl StateWorkspace {
         }
         Ok(dir.join(format!("{}.tmp", ulid::Ulid::new())))
     }
-    async fn check_total_bytes_after_write(
+    async fn check_write_quota(
         &self,
-        path: &VirtualPath,
+        destination: &Path,
         next_file_bytes: u64,
     ) -> Result<(), ToolError> {
-        let destination = self.resolve(path);
         let current_file_bytes = match tokio::fs::metadata(&destination).await {
             Ok(metadata) if metadata.is_file() => metadata.len(),
             Ok(_) | Err(_) => 0,
         };
-        let total = workspace_total_bytes(&self.root).await?;
-        let projected = total
+        let usage = workspace_usage(&self.root).await?;
+        let projected = usage
+            .bytes
             .saturating_sub(current_file_bytes)
             .saturating_add(next_file_bytes);
         if projected > self.limits.max_total_bytes {
@@ -281,6 +284,18 @@ impl StateWorkspace {
                 message: format!(
                     "state workspace would be {projected} bytes; maximum is {}",
                     self.limits.max_total_bytes
+                ),
+            });
+        }
+        let projected_entries = usage
+            .entries
+            .saturating_add(missing_entry_count(&self.root, destination).await?);
+        if projected_entries > self.limits.max_entries {
+            return Err(ToolError::Sdk {
+                sdk_kind: "quota_exceeded".to_string(),
+                message: format!(
+                    "state workspace would have {projected_entries} entries; maximum is {}",
+                    self.limits.max_entries
                 ),
             });
         }
@@ -900,26 +915,42 @@ impl StateWorkspace {
                 message: "state replace input exceeded max entries".to_string(),
             });
         }
-        let mut planned = Vec::new();
+        let mut changed_paths = Vec::new();
         for path in glob.matches {
             let virtual_path = VirtualPath::parse(&path)?;
             let file = self.read_file(&virtual_path).await?;
             if !file.content.contains(search) {
                 continue;
             }
-            let next = file.content.replace(search, replace);
-            planned.push((virtual_path, file.content, next));
+            changed_paths.push(virtual_path);
         }
-        let changed = planned
+        let changed = changed_paths
             .iter()
-            .map(|(path, _, _)| path.as_str().to_string())
+            .map(|path| path.as_str().to_string())
             .collect::<Vec<_>>();
         if dry_run {
             return Ok(ReplaceInFilesResult { changed, dry_run });
         }
 
         let mut originals = Vec::new();
-        for (path, original, next) in planned {
+        for path in changed_paths {
+            let file = self.read_file(&path).await?;
+            if !file.content.contains(search) {
+                return Err(self
+                    .restore_originals_after_failure(
+                        &originals,
+                        ToolError::Sdk {
+                            sdk_kind: "edit_conflict".to_string(),
+                            message: format!(
+                                "state replace input no longer matches `{}`",
+                                path.as_str()
+                            ),
+                        },
+                    )
+                    .await);
+            }
+            let original = file.content;
+            let next = original.replace(search, replace);
             if let Err(err) = self.write_file(&path, &next).await {
                 return Err(self.restore_originals_after_failure(&originals, err).await);
             }
@@ -1210,16 +1241,27 @@ fn reject_sync_symlink(path: &Path) -> Result<(), ToolError> {
     Ok(())
 }
 
-async fn workspace_total_bytes(root: &Path) -> Result<u64, ToolError> {
-    Ok(workspace_usage(root).await?.bytes)
-}
-
 struct WorkspaceUsage {
     bytes: u64,
     entries: u64,
 }
 
+#[cfg(test)]
+static WORKSPACE_USAGE_SCAN_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static WORKSPACE_USAGE_SCAN_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 async fn workspace_usage(root: &Path) -> Result<WorkspaceUsage, ToolError> {
+    #[cfg(test)]
+    if WORKSPACE_USAGE_SCAN_ROOT
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .is_some_and(|tracked| tracked == root)
+    {
+        WORKSPACE_USAGE_SCAN_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+
     let mut usage = WorkspaceUsage {
         bytes: 0,
         entries: 0,
@@ -1416,6 +1458,18 @@ mod tests {
     use super::*;
     use crate::state::quota::StateWorkspaceLimits;
 
+    fn reset_workspace_usage_scan_count() {
+        WORKSPACE_USAGE_SCAN_COUNT.store(0, Ordering::Relaxed);
+    }
+
+    fn track_workspace_usage_scans(root: Option<PathBuf>) {
+        *WORKSPACE_USAGE_SCAN_ROOT.lock().unwrap() = root;
+    }
+
+    fn workspace_usage_scan_count() -> usize {
+        WORKSPACE_USAGE_SCAN_COUNT.load(Ordering::Relaxed)
+    }
+
     #[tokio::test]
     async fn workspace_writes_reads_and_reopens() {
         let temp = tempfile::tempdir().unwrap();
@@ -1444,6 +1498,25 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn write_file_checks_workspace_usage_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+            .unwrap();
+
+        reset_workspace_usage_scan_count();
+        track_workspace_usage_scans(Some(temp.path().to_path_buf()));
+        ws.write_file(
+            &VirtualPath::parse("/src/app.rs").unwrap(),
+            "fn main() {}\n",
+        )
+        .await
+        .unwrap();
+        track_workspace_usage_scans(None);
+
+        assert_eq!(workspace_usage_scan_count(), 1);
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use futures::StreamExt as _;
 use tokio::time::Instant;
@@ -29,6 +30,9 @@ const CATALOG_REFRESH_TTL: std::time::Duration = std::time::Duration::from_secs(
 /// container isn't hit on every search call, short enough that recovery is
 /// picked up within one working session.
 const SEMANTIC_SEARCH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
+
+static CODE_MODE_WARM_UP_IN_FLIGHT: OnceLock<tokio::sync::Mutex<BTreeSet<String>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone)]
 struct CodeModeReprobeFailure {
@@ -333,7 +337,7 @@ impl GatewayManager {
                 }
             }
         }
-        catalog_cache::merge_and_store(updates);
+        catalog_cache::merge_and_store(updates).await;
         Ok(tools)
     }
 
@@ -467,7 +471,7 @@ impl GatewayManager {
                 }
             }
         }
-        crate::gateway::code_mode::catalog_cache::merge_and_store(cache_updates);
+        crate::gateway::code_mode::catalog_cache::merge_and_store(cache_updates).await;
 
         if !failures.is_empty()
             && pool
@@ -706,6 +710,16 @@ impl GatewayManager {
             let owner = owner.clone();
             let oauth_subject = oauth_subject.clone();
             tokio::spawn(async move {
+                let warm_up_key = upstream.name.clone();
+                {
+                    let mut in_flight = CODE_MODE_WARM_UP_IN_FLIGHT
+                        .get_or_init(|| tokio::sync::Mutex::new(BTreeSet::new()))
+                        .lock()
+                        .await;
+                    if !in_flight.insert(warm_up_key.clone()) {
+                        return;
+                    }
+                }
                 // `ensure_tools_for_upstream` skips the upstream internally
                 // when it already has healthy tools.
                 let subject = upstream.oauth.as_ref().and(oauth_subject.as_deref());
@@ -730,6 +744,11 @@ impl GatewayManager {
                         "code_mode upstream connected"
                     );
                 }
+                CODE_MODE_WARM_UP_IN_FLIGHT
+                    .get_or_init(|| tokio::sync::Mutex::new(BTreeSet::new()))
+                    .lock()
+                    .await
+                    .remove(&warm_up_key);
             });
         }
     }

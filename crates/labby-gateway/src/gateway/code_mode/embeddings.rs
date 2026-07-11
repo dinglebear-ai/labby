@@ -160,16 +160,35 @@ pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// Rank catalog entries by cosine similarity to `query_vector`. Returns
 /// `(id, similarity)` pairs sorted descending by similarity — callers decide
 /// how many to keep.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn rank_by_similarity(
     query_vector: &[f32],
     catalog_vectors: &[(String, Vec<f32>)],
 ) -> Vec<(String, f32)> {
-    let mut scored: Vec<(String, f32)> = catalog_vectors
+    rank_top_k_by_similarity(query_vector, catalog_vectors, catalog_vectors.len())
+}
+
+/// Rank at most `top_k` catalog entries by cosine similarity without cloning
+/// every vector id or fully sorting entries that will be discarded.
+pub(crate) fn rank_top_k_by_similarity(
+    query_vector: &[f32],
+    catalog_vectors: &[(String, Vec<f32>)],
+    top_k: usize,
+) -> Vec<(String, f32)> {
+    let limit = top_k.max(1).min(catalog_vectors.len());
+    let mut scored: Vec<(&str, f32)> = catalog_vectors
         .iter()
-        .map(|(id, vector)| (id.clone(), cosine_similarity(query_vector, vector)))
+        .map(|(id, vector)| (id.as_str(), cosine_similarity(query_vector, vector)))
         .collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    if scored.len() > limit {
+        scored.select_nth_unstable_by(limit, |a, b| b.1.total_cmp(&a.1));
+        scored.truncate(limit);
+    }
+    scored.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
     scored
+        .into_iter()
+        .map(|(id, score)| (id.to_string(), score))
+        .collect()
 }
 
 #[cfg(test)]
@@ -230,6 +249,22 @@ mod tests {
         let ranked = rank_by_similarity(&query, &catalog);
         assert_eq!(ranked[0].0, "high");
         assert_eq!(ranked[2].0, "low");
+    }
+
+    #[test]
+    fn rank_top_k_by_similarity_keeps_only_best_matches() {
+        let query = vec![1.0, 0.0];
+        let catalog = vec![
+            ("low".to_string(), vec![0.0, 1.0]),
+            ("high".to_string(), vec![1.0, 0.0]),
+            ("mid".to_string(), vec![0.7, 0.7]),
+        ];
+
+        let ranked = rank_top_k_by_similarity(&query, &catalog, 2);
+
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].0, "high");
+        assert_eq!(ranked[1].0, "mid");
     }
 
     #[tokio::test]

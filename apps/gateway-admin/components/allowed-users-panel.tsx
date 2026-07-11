@@ -4,6 +4,16 @@ import { useState, useEffect, useCallback } from 'react'
 import { Loader2, Plus, Trash2, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { AURORA_STRONG_PANEL } from '@/components/aurora/tokens'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { cn, getErrorMessage } from '@/lib/utils'
 import {
   authAdminApi,
@@ -21,6 +31,7 @@ export function AllowedUsersPanel() {
   const [addError, setAddError] = useState<string | null>(null)
 
   const [removingEmail, setRemovingEmail] = useState<string | null>(null)
+  const [pendingRemove, setPendingRemove] = useState<AllowedEmailEntry | null>(null)
 
   const loadEntries = useCallback(async () => {
     setIsLoading(true)
@@ -187,7 +198,7 @@ export function AllowedUsersPanel() {
                       <button
                         type="button"
                         aria-label={`Remove ${entry.email}`}
-                        onClick={() => void handleRemove(entry)}
+                        onClick={() => setPendingRemove(entry)}
                         disabled={removingEmail === entry.email}
                         className={cn(
                           'inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-aurora-error',
@@ -210,6 +221,37 @@ export function AllowedUsersPanel() {
         )}
       </div>
 
+      <AlertDialog
+        open={pendingRemove !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingRemove(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove user?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingRemove
+                ? `${pendingRemove.email} will no longer be able to sign in via OAuth.`
+                : 'This user will no longer be able to sign in via OAuth.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingRemove) {
+                  void handleRemove(pendingRemove)
+                }
+              }}
+            >
+              Remove user
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
