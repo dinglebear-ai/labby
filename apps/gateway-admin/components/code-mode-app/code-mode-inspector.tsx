@@ -292,7 +292,10 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
             Waiting for an MCP Apps tool result or history snapshot.
           </p>
         ) : (
-          <div>
+          // Cap the rows region (~10 rows) so long runs scroll internally
+          // instead of growing the inline card unbounded — the MCP host sizes
+          // the iframe to the document height.
+          <div className="aurora-scrollbar max-h-[300px] overflow-y-auto overscroll-contain">
             {calls.length > 0 ? (
               <CallRows calls={calls} expanded={expanded} onToggle={toggle} />
             ) : live && live.result !== undefined ? null : (
