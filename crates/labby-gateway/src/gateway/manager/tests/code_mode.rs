@@ -446,6 +446,39 @@ async fn palette_catalog_discovers_configured_upstream_tools() {
 }
 
 #[tokio::test]
+async fn palette_catalog_scoped_caller_only_sees_allowed_upstreams() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
+        .await;
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "search"))
+        .await;
+
+    let caller = crate::gateway::palette::PaletteCaller::scoped_read_only(
+        Some("user"),
+        Some("request-1"),
+        vec!["beta".to_string()],
+    );
+    let catalog = manager
+        .palette_catalog(&caller)
+        .await
+        .expect("scoped palette catalog should build for allowed upstream");
+
+    let ids = catalog
+        .entries
+        .iter()
+        .map(|entry| match entry {
+            crate::gateway::palette::LauncherEntryView::McpTool(entry) => entry.id.as_str(),
+            crate::gateway::palette::LauncherEntryView::LabbyAction(entry) => entry.id.as_str(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["mcp:beta::search"]);
+}
+
+#[tokio::test]
 async fn palette_catalog_scope_and_fingerprint_follow_visible_schema() {
     let (manager, pool) = code_mode_manager_with_upstreams(vec![
         fixture_http_upstream("alpha"),

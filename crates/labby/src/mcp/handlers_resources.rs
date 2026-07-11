@@ -1173,9 +1173,13 @@ mod tests {
         )
         .expect("codemode resource");
 
-        assert!(html.contains("statusLabel"));
         assert!(html.contains("call.ok"));
+        assert!(html.contains("call.error_kind"));
         assert!(html.contains("s.length"));
+        assert!(
+            html.contains("call.namespace"),
+            "inline app must read the emitted namespace field (with an id-split fallback)"
+        );
         assert!(
             !html.contains("call.status"),
             "inline app must use the emitted ok boolean, not stale status fields"

@@ -7,7 +7,18 @@ import React from 'react'
 import { CodeModeInspector } from './code-mode-inspector'
 import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
 
-test('renders execute call rows with redacted params', async () => {
+async function clickButton(container: Element, matcher: (text: string) => boolean) {
+  const button = [...container.querySelectorAll('button')].find((candidate) =>
+    matcher(candidate.textContent?.trim() ?? ''),
+  )
+  assert.ok(button, 'expected a matching button')
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await Promise.resolve()
+  })
+}
+
+test('renders execute call rows with expandable redacted params', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
@@ -17,7 +28,7 @@ test('renders execute call rows with redacted params', async () => {
         calls: [
           {
             id: 'github::search_issues',
-            upstream: 'github',
+            namespace: 'github',
             tool: 'search_issues',
             ok: true,
             elapsed_ms: 12,
@@ -29,96 +40,215 @@ test('renders execute call rows with redacted params', async () => {
     />,
   )
 
-  assert.match(container.textContent ?? '', /Execute calls/)
-  assert.match(container.textContent ?? '', /github \/ search_issues/)
-  assert.doesNotMatch(container.textContent ?? '', /\bok\b/)
+  assert.match(container.textContent ?? '', /Execute/)
+  assert.match(container.textContent ?? '', /1 call/)
+  assert.match(container.textContent ?? '', /github/)
+  assert.match(container.textContent ?? '', /search_issues/)
+  assert.match(container.textContent ?? '', /12 ms/)
   assert.ok(container.querySelector('[aria-label="success"]'))
-  assert.match(container.textContent ?? '', /12ms/)
+  // Params are collapsed until the call row is expanded.
+  assert.doesNotMatch(container.textContent ?? '', /\[redacted\]/)
+  await clickButton(container, (text) => text.includes('search_issues'))
+  assert.match(container.textContent ?? '', /Redacted Params/)
   assert.match(container.textContent ?? '', /\[redacted\]/)
   assert.doesNotMatch(container.textContent ?? '', /raw-secret-token/)
   await unmount()
 })
 
-test('renders search match rows', async () => {
+test('renders the result disclosure with shape summary and expandable value', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
       initialTrace={{
-        kind: 'code_mode_search_trace',
-        query_kind: 'catalog_filter',
-        match_count: 1,
-        matches: [
-          {
-            id: 'axon::ask',
-            upstream: 'axon',
-            tool: 'ask',
-            description: 'Ask indexed docs',
-            has_schema: true,
-            has_output_schema: false,
-          },
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        calls: [
+          { id: 'arcane::containers', namespace: 'arcane', tool: 'containers', ok: true, elapsed_ms: 96 },
         ],
+        result: { containers: 24, notified: true },
+        result_shape: { type: 'object', key_count: 2, size_bytes: 212, keys: ['containers', 'notified'] },
+        input_tokens: 412,
+        output_tokens: 96,
+        logs_count: 2,
       }}
     />,
   )
 
-  assert.match(container.textContent ?? '', /Search matches/)
-  assert.match(container.textContent ?? '', /axon \/ ask/)
-  assert.match(container.textContent ?? '', /schema/)
+  assert.match(container.textContent ?? '', /Result/)
+  assert.match(container.textContent ?? '', /object · 2 keys · 212 B — keys: containers, notified/)
+  // The result value is collapsed by default.
+  assert.doesNotMatch(container.textContent ?? '', /"containers": 24/)
+  await clickButton(container, (text) => text.startsWith('Result'))
+  assert.match(container.textContent ?? '', /"containers": 24/)
+  // Token/log metadata from the trace lands in the footer.
+  assert.match(container.textContent ?? '', /412 in · 96 out/)
+  assert.match(container.textContent ?? '', /2 logs/)
   await unmount()
 })
 
-test('renders search truncation count metadata', async () => {
+test('renders in-sandbox search results as discovery match rows', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
       initialTrace={{
-        kind: 'code_mode_search_trace',
-        query_kind: 'catalog_filter',
-        displayed_count: 50,
-        truncated: true,
-        match_count: 200,
-        matches: [
-          {
-            id: 'axon::ask',
-            upstream: 'axon',
-            tool: 'ask',
-            description: 'Ask indexed docs',
-            has_schema: true,
-            has_output_schema: false,
-          },
+        kind: 'code_mode_execute_trace',
+        call_count: 0,
+        calls: [],
+        result: {
+          results: [
+            {
+              id: 'unifi::device.list',
+              path: 'codemode.unifi.device_list',
+              kind: 'tool',
+              namespace: 'unifi',
+              name: 'device_list',
+              description: 'List UniFi devices.',
+              signature: 'device_list(params: { site?: string }): Promise<Device[]>',
+              score: 0.91,
+            },
+          ],
+          total: 42,
+          truncated: true,
+        },
+        result_shape: { type: 'object', key_count: 3 },
+      }}
+    />,
+  )
+
+  // Discovery runs make zero broker calls — the hits render instead of a
+  // bare "No calls were made." line.
+  assert.doesNotMatch(container.textContent ?? '', /No calls were made/)
+  assert.match(container.textContent ?? '', /1 of 42 matches/)
+  assert.match(container.textContent ?? '', /unifi/)
+  assert.match(container.textContent ?? '', /device_list/)
+  assert.match(container.textContent ?? '', /List UniFi devices/)
+  // Tool detail is collapsed until the row is clicked — like the Result row.
+  assert.doesNotMatch(container.textContent ?? '', /Promise<Device\[\]>/)
+  await clickButton(container, (text) => text.includes('device_list'))
+  assert.match(container.textContent ?? '', /Promise<Device\[\]>/)
+  assert.match(container.textContent ?? '', /codemode.unifi.device_list/)
+  assert.match(container.textContent ?? '', /score 0.91/)
+  await unmount()
+})
+
+test('renders the zero-match discovery hint', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 0,
+        calls: [],
+        result: { results: [], total: 0, truncated: false, hint: 'No matches. Broaden or try synonyms.' },
+        result_shape: { type: 'object', key_count: 4 },
+      }}
+    />,
+  )
+
+  assert.match(container.textContent ?? '', /0 of 0 matches/)
+  assert.match(container.textContent ?? '', /Broaden or try synonyms/)
+  await unmount()
+})
+
+test('renders the host-delivered tool input behind an Input row', async () => {
+  installTestDom()
+  let instance:
+    | {
+        ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
+        ontoolinput?: (params: { arguments?: Record<string, unknown> }) => void
+        connect: () => Promise<unknown>
+      }
+    | undefined
+
+  globalThis.window.ExtApps = {
+    App: class {
+      ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
+      ontoolinput?: (params: { arguments?: Record<string, unknown> }) => void
+      connect = async () => ({})
+      constructor() {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias -- capturing the mock instance for later test assertions
+        instance = this
+      }
+    },
+  }
+
+  const { container, unmount } = await renderClient(<CodeModeInspector />)
+
+  await act(async () => {
+    instance?.ontoolinput?.({
+      arguments: { code: 'async () => {\n  return await codemode.unifi.device_list({})\n}' },
+    })
+    instance?.ontoolresult?.({
+      structuredContent: {
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        calls: [
+          { id: 'unifi::device.list', namespace: 'unifi', tool: 'device.list', ok: true, elapsed_ms: 88 },
         ],
-      }}
-    />,
-  )
+        result: { devices: 12 },
+        result_shape: { type: 'object', key_count: 1 },
+      },
+    })
+  })
 
-  assert.match(container.textContent ?? '', /50 of 200/)
-  assert.match(container.textContent ?? '', /truncated/)
+  assert.match(container.textContent ?? '', /Input/)
+  assert.match(container.textContent ?? '', /3 lines/)
+  // The snippet is collapsed until the Input row is expanded.
+  assert.doesNotMatch(container.textContent ?? '', /device_list\(\{\}\)/)
+  await clickButton(container, (text) => text.startsWith('Input'))
+  assert.match(container.textContent ?? '', /await codemode.unifi.device_list\(\{\}\)/)
   await unmount()
 })
 
-test('renders reduced search result shape and value when no tool rows match', async () => {
+test('hydrates the Input row from window.openai.toolInput', async () => {
+  installTestDom()
+  globalThis.window.openai = {
+    toolInput: { code: 'async () => 1' },
+    toolOutput: {
+      kind: 'code_mode_execute_trace',
+      call_count: 0,
+      calls: [],
+      result: 1,
+      result_shape: { type: 'number', size_bytes: 1 },
+    },
+  }
+  try {
+    const { container, unmount } = await renderClient(<CodeModeInspector />)
+    assert.match(container.textContent ?? '', /Input/)
+    await clickButton(container, (text) => text.startsWith('Input'))
+    assert.match(container.textContent ?? '', /async \(\) => 1/)
+    await unmount()
+  } finally {
+    globalThis.window.openai = undefined
+  }
+})
+
+test('renders describe results as markdown behind the result row', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
       initialTrace={{
-        kind: 'code_mode_search_trace',
-        query_kind: 'catalog_filter',
-        match_count: 0,
-        matches: [],
-        result_shape: { type: 'object', key_count: 2, keys: ['total', 'upstreams'] },
-        result: { total: 398, upstreams: 42 },
+        kind: 'code_mode_execute_trace',
+        call_count: 0,
+        calls: [],
+        result: {
+          id: 'unifi::device.list',
+          kind: 'tool',
+          path: 'codemode.unifi.device_list',
+          markdown: '# device_list\n\nList UniFi devices.',
+        },
+        result_shape: { type: 'object', key_count: 4 },
       }}
     />,
   )
 
-  assert.match(container.textContent ?? '', /Search result/)
-  assert.match(container.textContent ?? '', /reduced value/)
-  assert.match(container.textContent ?? '', /keys: total, upstreams/)
-  assert.match(container.textContent ?? '', /398/)
+  assert.match(container.textContent ?? '', /describe/)
+  await clickButton(container, (text) => text.startsWith('Result'))
+  assert.match(container.textContent ?? '', /# device_list/)
   await unmount()
 })
 
-test('renders history rows and flattened nested calls', async () => {
+test('selects the latest history entry and shows failure metadata', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
@@ -126,19 +256,25 @@ test('renders history rows and flattened nested calls', async () => {
         kind: 'code_mode_history',
         entries: [
           {
+            seq: 6,
+            kind: 'execute',
+            ok: true,
+            elapsed_ms: 921,
+            calls: [{ id: 'gotify::message.create', ok: true, elapsed_ms: 903 }],
+          },
+          {
             seq: 7,
             kind: 'execute',
-            ok: 'false',
-            elapsed_ms: 24,
-            error_kind: 'tool_failed',
+            ok: false,
+            elapsed_ms: 1243,
+            error_kind: 'upstream_timeout',
             calls: [
               {
-                id: 'github::search_issues',
-                upstream: 'github',
-                tool: 'search_issues',
-                ok: 'false',
-                elapsed_ms: 12,
-                error_kind: 'tool_failed',
+                id: 'rustarr::qbittorrent.transfer_info',
+                ok: false,
+                elapsed_ms: 1010,
+                error_kind: 'upstream_timeout',
+                params: { instance: 'default' },
               },
             ],
           },
@@ -147,11 +283,110 @@ test('renders history rows and flattened nested calls', async () => {
     />,
   )
 
-  assert.match(container.textContent ?? '', /Recent history/)
-  assert.match(container.textContent ?? '', /#7 execute/)
-  assert.match(container.textContent ?? '', /tool_failed/)
-  assert.match(container.textContent ?? '', /github \/ search_issues/)
-  assert.doesNotMatch(container.textContent ?? '', /\bok\b/)
+  // The latest entry (#7, failed) is selected by default.
+  assert.match(container.textContent ?? '', /upstream_timeout/)
+  assert.match(container.textContent ?? '', /1.24 s/)
+  // upstream/tool are derived from the history call id.
+  assert.match(container.textContent ?? '', /rustarr/)
+  assert.match(container.textContent ?? '', /qbittorrent.transfer_info/)
+  assert.match(container.textContent ?? '', /Result not retained in history/)
+  assert.match(container.textContent ?? '', /#6/)
+  assert.match(container.textContent ?? '', /#7/)
+
+  // Switching to #6 shows that entry's calls.
+  await clickButton(container, (text) => text === '#6')
+  assert.match(container.textContent ?? '', /message.create/)
+  await unmount()
+})
+
+test('joins a live trace to its history entry for elapsed and chip labeling', async () => {
+  installTestDom()
+  let instance:
+    | {
+        ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
+        connect: () => Promise<unknown>
+      }
+    | undefined
+
+  globalThis.window.ExtApps = {
+    App: class {
+      ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
+      connect = async () => ({})
+      constructor() {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias -- capturing the mock instance for later test assertions
+        instance = this
+      }
+    },
+  }
+
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_history',
+        entries: [
+          {
+            seq: 8,
+            kind: 'execute',
+            ok: true,
+            elapsed_ms: 921,
+            calls: [{ id: 'gotify::message.create', ok: true, elapsed_ms: 903 }],
+          },
+          {
+            seq: 9,
+            kind: 'execute',
+            ok: true,
+            elapsed_ms: 348,
+            execution_id: 'exec-9',
+            calls: [{ id: 'arcane::containers', ok: true, elapsed_ms: 96 }],
+          },
+        ],
+      }}
+    />,
+  )
+
+  await act(async () => {
+    instance?.ontoolresult?.({
+      structuredContent: {
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        execution_id: 'exec-9',
+        calls: [
+          { id: 'arcane::containers', namespace: 'arcane', tool: 'containers', ok: true, elapsed_ms: 96 },
+        ],
+        result: { containers: 24 },
+        result_shape: { type: 'object', key_count: 1 },
+      },
+    })
+  })
+
+  // Elapsed comes from the matching history entry; the chip is marked live.
+  assert.match(container.textContent ?? '', /348 ms/)
+  assert.match(container.textContent ?? '', /#9 live/)
+  assert.match(container.textContent ?? '', /Result/)
+  // A rendered trace proves the bridge works — no status badge.
+  assert.doesNotMatch(container.textContent ?? '', /connected/i)
+  await unmount()
+})
+
+test('hides the session strip when there is only a single run', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        calls: [{ id: 'arcane::containers', namespace: 'arcane', tool: 'containers', ok: true, elapsed_ms: 96 }],
+        input_tokens: 42,
+        output_tokens: 68,
+      }}
+    />,
+  )
+
+  // One run has nothing to switch between — no Session label, no lone chip.
+  assert.doesNotMatch(container.textContent ?? '', /Session/)
+  assert.doesNotMatch(container.textContent ?? '', /\blive\b/)
+  // Token meta still earns the footer.
+  assert.match(container.textContent ?? '', /42 in · 68 out/)
   await unmount()
 })
 
@@ -198,24 +433,14 @@ test('updates from bridge tool results using both structured content field names
   await act(async () => {
     instance?.ontoolresult?.({
       structuredContent: {
-        kind: 'code_mode_search_trace',
-        query_kind: 'catalog_filter',
-        match_count: 1,
-        matches: [
-          {
-            id: 'axon::ask',
-            upstream: 'axon',
-            tool: 'ask',
-            description: 'Ask indexed docs',
-            has_schema: true,
-            has_output_schema: false,
-          },
-        ],
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        calls: [{ id: 'axon::ask', namespace: 'axon', tool: 'ask', ok: true, elapsed_ms: 40 }],
       },
     })
   })
 
-  assert.match(container.textContent ?? '', /axon \/ ask/)
+  assert.match(container.textContent ?? '', /ask/)
 
   await act(async () => {
     instance?.ontoolresult?.({
@@ -225,7 +450,7 @@ test('updates from bridge tool results using both structured content field names
         calls: [
           {
             id: 'github::search_issues',
-            upstream: 'github',
+            namespace: 'github',
             tool: 'search_issues',
             ok: true,
             elapsed_ms: 12,
@@ -235,7 +460,7 @@ test('updates from bridge tool results using both structured content field names
     })
   })
 
-  assert.match(container.textContent ?? '', /github \/ search_issues/)
+  assert.match(container.textContent ?? '', /search_issues/)
   await unmount()
 })
 
@@ -281,24 +506,14 @@ test('hydrates from window.openai.toolOutput on first paint', async () => {
   installTestDom()
   globalThis.window.openai = {
     toolOutput: {
-      kind: 'code_mode_search_trace',
-      query_kind: 'catalog_filter',
-      match_count: 1,
-      matches: [
-        {
-          id: 'axon::ask',
-          upstream: 'axon',
-          tool: 'ask',
-          description: 'Ask indexed docs',
-          has_schema: true,
-          has_output_schema: false,
-        },
-      ],
+      kind: 'code_mode_execute_trace',
+      call_count: 1,
+      calls: [{ id: 'axon::ask', namespace: 'axon', tool: 'ask', ok: true, elapsed_ms: 40 }],
     },
   }
   try {
     const { container, unmount } = await renderClient(<CodeModeInspector />)
-    assert.match(container.textContent ?? '', /axon \/ ask/)
+    assert.match(container.textContent ?? '', /ask/)
     await unmount()
   } finally {
     globalThis.window.openai = undefined
@@ -324,7 +539,7 @@ test('updates from the openai:set_globals event detail.globals', async () => {
                 calls: [
                   {
                     id: 'github::search_issues',
-                    upstream: 'github',
+                    namespace: 'github',
                     tool: 'search_issues',
                     ok: true,
                     elapsed_ms: 12,
@@ -337,7 +552,7 @@ test('updates from the openai:set_globals event detail.globals', async () => {
       )
     })
 
-    assert.match(container.textContent ?? '', /github \/ search_issues/)
+    assert.match(container.textContent ?? '', /search_issues/)
     await unmount()
   } finally {
     globalThis.window.openai = undefined
@@ -360,24 +575,14 @@ test('clears the trace when openai:set_globals carries a null toolOutput', async
   installTestDom()
   globalThis.window.openai = {
     toolOutput: {
-      kind: 'code_mode_search_trace',
-      query_kind: 'catalog_filter',
-      match_count: 1,
-      matches: [
-        {
-          id: 'axon::ask',
-          upstream: 'axon',
-          tool: 'ask',
-          description: 'Ask indexed docs',
-          has_schema: true,
-          has_output_schema: false,
-        },
-      ],
+      kind: 'code_mode_execute_trace',
+      call_count: 1,
+      calls: [{ id: 'axon::ask', namespace: 'axon', tool: 'ask', ok: true, elapsed_ms: 40 }],
     },
   }
   try {
     const { container, unmount } = await renderClient(<CodeModeInspector />)
-    assert.match(container.textContent ?? '', /axon \/ ask/)
+    assert.match(container.textContent ?? '', /ask/)
 
     await act(async () => {
       globalThis.window.dispatchEvent(
@@ -388,7 +593,7 @@ test('clears the trace when openai:set_globals carries a null toolOutput', async
     })
 
     // Host cleared the result — the stale trace is dropped, not left as "connected".
-    assert.doesNotMatch(container.textContent ?? '', /axon \/ ask/)
+    assert.doesNotMatch(container.textContent ?? '', /axon/)
     assert.match(container.textContent ?? '', /Waiting for an MCP Apps tool result/)
     await unmount()
   } finally {

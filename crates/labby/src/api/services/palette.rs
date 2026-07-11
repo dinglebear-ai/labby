@@ -1,7 +1,8 @@
 use axum::{
     Extension, Json, Router,
-    extract::State,
-    http::HeaderMap,
+    extract::{Query, State},
+    http::{HeaderMap, HeaderValue, Response, StatusCode, header},
+    response::IntoResponse,
     routing::{get, post},
 };
 use labby_gateway::gateway::palette::{
@@ -20,6 +21,7 @@ use crate::dispatch::error::ToolError;
 pub fn routes(_state: AppState) -> Router<AppState> {
     Router::new()
         .route("/catalog", get(catalog))
+        .route("/schema", get(schema))
         .route("/execute", post(execute))
 }
 
@@ -27,14 +29,40 @@ async fn catalog(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
-) -> Result<Json<LauncherCatalogView>, ApiError> {
+) -> Result<Response<axum::body::Body>, ApiError> {
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
     let mut catalog = manager.palette_catalog(&caller).await?;
     append_labby_actions(&mut catalog, &state, auth.as_ref().map(|auth| &auth.0));
-    catalog.entries.sort_by(|a, b| entry_id(a).cmp(entry_id(b)));
+    compact_catalog_schemas(&mut catalog);
+    catalog.entries.sort_by(compare_launcher_entries);
     catalog.fingerprint = catalog_fingerprint(&catalog.entries);
-    Ok(Json(catalog))
+    Ok(catalog_response(headers, catalog))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaQuery {
+    id: String,
+}
+
+async fn schema(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Query(query): Query<SchemaQuery>,
+) -> Result<Json<Value>, ApiError> {
+    if query.id.starts_with("labby:") {
+        return Ok(Json(labby_schema_response(
+            &state,
+            auth.as_ref().map(|auth| &auth.0),
+            &query.id,
+        )?));
+    }
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    let schema = manager.palette_schema(&caller, &query.id).await?;
+    Ok(Json(json!({ "id": query.id, "inputSchema": schema })))
 }
 
 async fn execute(
@@ -125,6 +153,99 @@ fn append_labby_actions(
                 }));
         }
     }
+}
+
+fn compact_catalog_schemas(catalog: &mut LauncherCatalogView) {
+    for entry in &mut catalog.entries {
+        match entry {
+            LauncherEntryView::LabbyAction(entry) => entry.input_schema = None,
+            LauncherEntryView::McpTool(entry) => entry.input_schema = None,
+        }
+    }
+}
+
+fn compare_launcher_entries(
+    left: &LauncherEntryView,
+    right: &LauncherEntryView,
+) -> std::cmp::Ordering {
+    launcher_rank(left)
+        .cmp(&launcher_rank(right))
+        .then_with(|| entry_id(left).cmp(entry_id(right)))
+}
+
+fn launcher_rank(entry: &LauncherEntryView) -> u8 {
+    match entry {
+        LauncherEntryView::LabbyAction(entry) if entry.destructive => 40,
+        LauncherEntryView::LabbyAction(_) => 10,
+        LauncherEntryView::McpTool(entry) if entry.destructive => 50,
+        LauncherEntryView::McpTool(_) => 20,
+    }
+}
+
+fn catalog_response(
+    headers: HeaderMap,
+    catalog: LauncherCatalogView,
+) -> Response<axum::body::Body> {
+    let etag = format!("\"{}\"", catalog.fingerprint);
+    let client_etag = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if etag_matches(client_etag, &etag) {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        insert_catalog_cache_headers(response.headers_mut(), &etag);
+        return response;
+    }
+    let mut response = Json(catalog).into_response();
+    insert_catalog_cache_headers(response.headers_mut(), &etag);
+    response
+}
+
+fn insert_catalog_cache_headers(headers: &mut HeaderMap, etag: &str) {
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=15, stale-while-revalidate=60"),
+    );
+    if let Ok(value) = HeaderValue::from_str(etag) {
+        headers.insert(header::ETAG, value);
+    }
+}
+
+fn etag_matches(if_none_match: &str, etag: &str) -> bool {
+    if_none_match
+        .split(',')
+        .map(str::trim)
+        .any(|candidate| candidate == "*" || candidate == etag)
+}
+
+fn labby_schema_response(
+    state: &AppState,
+    auth: Option<&AuthContext>,
+    id: &str,
+) -> Result<Value, ToolError> {
+    let (service_name, action_name) = parse_labby_launcher_id(id)?;
+    let service = state
+        .registry
+        .service(service_name)
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!("launcher entry `{id}` was not found"),
+        })?;
+    let action = service
+        .actions
+        .iter()
+        .find(|action| action.name == action_name)
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!("launcher entry `{id}` was not found"),
+        })?;
+    if !labby_action_visible(state, service_name, action, auth) {
+        return Err(ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!("launcher entry `{id}` was not found"),
+        });
+    }
+    Ok(json!({ "id": id, "inputSchema": labby_action_schema(action) }))
 }
 
 async fn execute_labby_action(
@@ -413,7 +534,7 @@ mod tests {
     };
     use labby_primitives::action::{ActionSpec, ParamSpec};
     use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use tower::ServiceExt;
 
     use crate::api::oauth::AuthContext;
@@ -491,6 +612,14 @@ mod tests {
     }
 
     fn healthy_upstream_entry(upstream: &str, tool_name: &str) -> UpstreamEntry {
+        healthy_upstream_entry_with_schema(upstream, tool_name, None)
+    }
+
+    fn healthy_upstream_entry_with_schema(
+        upstream: &str,
+        tool_name: &str,
+        input_schema: Option<Value>,
+    ) -> UpstreamEntry {
         let upstream_name: Arc<str> = Arc::from(upstream);
         let tool = rmcp::model::Tool::new(
             tool_name.to_string(),
@@ -503,7 +632,7 @@ mod tests {
                 tool_name.to_string(),
                 UpstreamTool {
                     tool,
-                    input_schema: None,
+                    input_schema,
                     output_schema: None,
                     upstream_name,
                     destructive: false,
@@ -650,7 +779,8 @@ mod tests {
             .find(|entry| entry["id"] == "labby:demo::echo.run")
             .expect("labby action should be present");
         assert_eq!(entry["kind"], "labbyAction");
-        assert_eq!(entry["inputSchema"]["required"][0], "name");
+        assert!(entry.get("inputSchema").is_none() || entry["inputSchema"].is_null());
+        assert!(entry["schemaFingerprint"].as_str().is_some());
     }
 
     #[tokio::test]
@@ -708,6 +838,188 @@ mod tests {
             .expect("configured upstream MCP tool should be present");
         assert_eq!(upstream["kind"], "mcpTool");
         assert_eq!(upstream["source"], "github");
+        assert!(upstream.get("inputSchema").is_none() || upstream["inputSchema"].is_null());
+    }
+
+    #[tokio::test]
+    async fn palette_schema_returns_lazy_labby_and_upstream_schemas() {
+        let runtime = GatewayRuntimeHandle::default();
+        let pool = Arc::new(UpstreamPool::new());
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager =
+            test_gateway_manager(std::env::temp_dir().join("palette-schema.toml"), runtime);
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                code_mode: CodeModeConfig {
+                    enabled: true,
+                    ..CodeModeConfig::default()
+                },
+                upstream: vec![test_upstream_config("github")],
+                ..GatewayConfig::default()
+            })
+            .await;
+        pool.insert_entry_for_test(
+            "github",
+            healthy_upstream_entry_with_schema(
+                "github",
+                "search_repos",
+                Some(json!({
+                    "type": "object",
+                    "properties": { "q": { "type": "string" } },
+                    "required": ["q"]
+                })),
+            ),
+        )
+        .await;
+
+        let state =
+            AppState::from_registry(test_registry()).with_gateway_manager(Arc::new(manager));
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+
+        let labby = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/schema?id=labby:demo::echo.run")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(labby.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(labby.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["inputSchema"]["required"][0], "name");
+
+        let upstream = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/schema?id=mcp:github::search_repos")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upstream.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(upstream.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["inputSchema"]["required"][0], "q");
+    }
+
+    #[tokio::test]
+    async fn palette_catalog_has_private_cache_headers_and_304() {
+        let manager = Arc::new(test_gateway_manager(
+            std::env::temp_dir().join("palette-cache.toml"),
+            GatewayRuntimeHandle::default(),
+        ));
+        let state = AppState::from_registry(test_registry()).with_gateway_manager(manager);
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/catalog")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first.headers().get(header::ETAG).cloned().expect("etag");
+        let cache_control = first
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok())
+            .unwrap();
+        assert!(cache_control.contains("private"));
+        assert!(cache_control.contains("stale-while-revalidate"));
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/catalog")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .header(header::IF_NONE_MATCH, etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[tokio::test]
+    async fn palette_catalog_filters_disabled_and_priority_zero_upstreams() {
+        let runtime = GatewayRuntimeHandle::default();
+        let pool = Arc::new(UpstreamPool::new());
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager = test_gateway_manager(
+            std::env::temp_dir().join("palette-filtered-upstreams.toml"),
+            runtime,
+        );
+        let mut disabled = test_upstream_config("disabled");
+        disabled.enabled = false;
+        let mut hidden = test_upstream_config("hidden");
+        hidden.priority = 0.0;
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                code_mode: CodeModeConfig {
+                    enabled: true,
+                    ..CodeModeConfig::default()
+                },
+                upstream: vec![disabled, hidden, test_upstream_config("visible")],
+                ..GatewayConfig::default()
+            })
+            .await;
+        pool.insert_entry_for_test("disabled", healthy_upstream_entry("disabled", "tool"))
+            .await;
+        pool.insert_entry_for_test("hidden", healthy_upstream_entry("hidden", "tool"))
+            .await;
+        pool.insert_entry_for_test("visible", healthy_upstream_entry("visible", "tool"))
+            .await;
+
+        let state =
+            AppState::from_registry(test_registry()).with_gateway_manager(Arc::new(manager));
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/catalog")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        let entries = value["entries"].as_array().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["id"] == "mcp:visible::tool")
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry["id"] == "mcp:hidden::tool")
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry["id"] == "mcp:disabled::tool")
+        );
     }
 
     #[tokio::test]

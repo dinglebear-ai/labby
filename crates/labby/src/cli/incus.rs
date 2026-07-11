@@ -110,6 +110,12 @@ pub struct IncusSyncArgs {
     /// Local labby binary to install. Defaults to LABBY_INCUS_BINARY, target/debug/labby, then the current executable.
     #[arg(long)]
     pub binary: Option<PathBuf>,
+    /// Local static web export to sync. Defaults to LABBY_INCUS_WEB_ASSETS_DIR, then apps/gateway-admin/out.
+    #[arg(long)]
+    pub web_assets_dir: Option<PathBuf>,
+    /// Skip syncing static web assets into the container web asset directory.
+    #[arg(long)]
+    pub no_web_assets: bool,
     /// Optional public or host-bound URL to verify after the service is ready.
     #[arg(long)]
     pub check_url: Option<String>,
@@ -165,6 +171,8 @@ pub(crate) async fn run_sync(args: IncusSyncArgs, format: OutputFormat) -> Resul
         crate::dispatch::setup::incus::IncusSyncOptions {
             container: args.container,
             binary: args.binary,
+            web_assets_dir: args.web_assets_dir,
+            sync_web_assets: !args.no_web_assets,
             check_url: args.check_url,
             force_fallback: args.force_fallback || !args.no_force_fallback,
             dry_run: args.dry_run,
@@ -178,6 +186,17 @@ pub(crate) async fn run_sync(args: IncusSyncArgs, format: OutputFormat) -> Resul
             outcome.binary.display(),
             outcome.container
         );
+        if let Some(path) = &outcome.web_assets_dir {
+            println!(
+                "dry-run: would sync web assets {} -> {}:{}",
+                path.display(),
+                outcome.container,
+                outcome
+                    .remote_web_assets_dir
+                    .as_deref()
+                    .unwrap_or("/home/labby/.labby/web-assets")
+            );
+        }
         for step in &outcome.steps {
             println!("  - {step}");
         }
@@ -192,6 +211,17 @@ pub(crate) async fn run_sync(args: IncusSyncArgs, format: OutputFormat) -> Resul
         }
         if let Some(version) = outcome.remote_version {
             println!("version: {version}");
+        }
+        if let Some(path) = outcome.web_assets_dir {
+            println!(
+                "web assets: {} -> {}:{}",
+                path.display(),
+                outcome.container,
+                outcome
+                    .remote_web_assets_dir
+                    .as_deref()
+                    .unwrap_or("/home/labby/.labby/web-assets")
+            );
         }
         if let Some(hash) = outcome.remote_sha256 {
             println!("sha256: {hash}");

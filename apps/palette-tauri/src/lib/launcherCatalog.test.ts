@@ -29,9 +29,9 @@ describe("launcher catalog", () => {
       ],
     });
 
-    expect(entries.map((entry) => entry.id)).toEqual(["labby:gateway::gateway.list", "mcp:github::search"]);
-    expect(entries[0].kind).toBe("labby_action");
-    expect(entries[1].kind).toBe("mcp_tool");
+    expect(entries.map((entry) => entry.id)).toEqual(["mcp:github::search", "labby:gateway::gateway.list"]);
+    expect(entries[0].kind).toBe("mcp_tool");
+    expect(entries[1].kind).toBe("labby_action");
   });
 
   it("searches name upstream source description and kind", () => {

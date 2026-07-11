@@ -48,6 +48,11 @@ export interface LauncherCatalog {
   entries: LauncherEntry[];
 }
 
+export interface LauncherSchema {
+  id: string;
+  inputSchema?: unknown;
+}
+
 export type LauncherEntry = LabbyLauncherEntry | McpToolLauncherEntry;
 
 export interface BaseLauncherEntry {
@@ -145,6 +150,20 @@ export async function fetchLauncherCatalog(etag?: string | null): Promise<Launch
     notModified: false,
     catalog: (result.payload ?? { fingerprint: "", entries: [] }) as LauncherCatalog,
   };
+}
+
+export async function fetchLauncherSchema(id: string): Promise<LauncherSchema> {
+  const result = await invoke<BridgeResult>("fetch_launcher_schema", { id });
+  if (!result.ok) {
+    throw new Error(resultErrorMessage({
+      ok: false,
+      status: result.status,
+      path: "/v1/palette/schema",
+      method: "GET",
+      payload: result.payload,
+    }));
+  }
+  return (result.payload ?? { id, inputSchema: null }) as LauncherSchema;
 }
 
 export async function executeLauncherEntry(

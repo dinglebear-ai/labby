@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { actionOptionId } from "@/components/palette/ActionList";
 import { PaletteShell } from "@/components/palette/PaletteShell";
 import { launcherEntryMatches, type LauncherEntry, useLauncherCatalog } from "@/lib/launcherCatalog";
-import { executeLauncherEntry, resultErrorMessage } from "@/lib/labbyClient";
+import { executeLauncherEntry, fetchLauncherSchema, resultErrorMessage } from "@/lib/labbyClient";
 import { exampleLauncherParams, validateLauncherParams } from "@/lib/launcherValidation";
 import { hostLabel } from "@/lib/url";
 import { invoke, isTauriRuntime } from "@/lib/invoke";
@@ -34,6 +34,7 @@ export default function App() {
   const lastParamsRef = useRef<unknown>({});
   const runRequestIdRef = useRef(0);
   const settingsFocusRef = useRef<HTMLDivElement | null>(null);
+  const schemaCacheRef = useRef(new Map<string, unknown>());
 
   const { actions: catalogActions, error: catalogError } = useLauncherCatalog();
   const { config, draftConfig, setDraftConfig, configError, saveSettings } = usePaletteConfig();
@@ -136,6 +137,16 @@ export default function App() {
     }
   }, []);
 
+  const hydrateSchema = useCallback(async (action: LauncherEntry) => {
+    if (action.inputSchema || !action.schemaFingerprint) return action;
+    if (schemaCacheRef.current.has(action.id)) {
+      return { ...action, inputSchema: schemaCacheRef.current.get(action.id) };
+    }
+    const schema = await fetchLauncherSchema(action.id);
+    schemaCacheRef.current.set(action.id, schema.inputSchema ?? null);
+    return { ...action, inputSchema: schema.inputSchema ?? null };
+  }, []);
+
   const enterArgumentMode = useCallback(
     (action: LauncherEntry) => {
       if (action.argMode === "none") {
@@ -147,8 +158,27 @@ export default function App() {
       setMode("argument");
       setPendingConfirm(null);
       focusInput();
+      void hydrateSchema(action)
+        .then((hydrated) => {
+          setActiveAction((current) => (current?.id === hydrated.id ? hydrated : current));
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          setRun({
+            kind: "error",
+            title: action.label,
+            result: {
+              ok: false,
+              status: 0,
+              path: "/v1/palette/schema",
+              method: "GET",
+              payload: { error: message },
+            },
+            message,
+          });
+        });
     },
-    [runAction],
+    [runAction, hydrateSchema],
   );
 
   const submitActive = useCallback(

@@ -1381,6 +1381,12 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --web-assets-dir <WEB_ASSETS_DIR>
+          Local static web export to sync. Defaults to LABBY_INCUS_WEB_ASSETS_DIR, then apps/gateway-admin/out
+
+      --no-web-assets
+          Skip syncing static web assets into the container web asset directory
+
       --check-url <CHECK_URL>
           Optional public or host-bound URL to verify after the service is ready
 
@@ -1436,6 +1442,9 @@ Options:
 
       --no-incus-sync
           Do not sync the updated binary into an Incus container
+
+      --no-web-assets
+          Do not update or clear the Incus filesystem web asset directory
 
       --container <CONTAINER>
           Incus container name for the post-update sync

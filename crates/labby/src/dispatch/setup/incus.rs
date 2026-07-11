@@ -34,6 +34,7 @@ const SUPPORTED_BACKUP_KEYS: &[&str] = &[
 const DEFAULT_CONTAINER_NAME: &str = "labby";
 const SERVICE_NAME: &str = "labby.service";
 const REMOTE_BINARY_PATH: &str = "/usr/local/bin/labby";
+const REMOTE_WEB_ASSETS_DIR: &str = "/home/labby/.labby/web-assets";
 const READY_URL: &str = "http://127.0.0.1:8765/ready";
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +95,8 @@ pub(crate) struct IncusBootstrapCommand {
 pub(crate) struct IncusSyncOptions {
     pub container: Option<String>,
     pub binary: Option<PathBuf>,
+    pub web_assets_dir: Option<PathBuf>,
+    pub sync_web_assets: bool,
     pub check_url: Option<String>,
     pub force_fallback: bool,
     pub dry_run: bool,
@@ -103,6 +106,8 @@ pub(crate) struct IncusSyncOptions {
 pub(crate) struct IncusSyncOutcome {
     pub container: String,
     pub binary: PathBuf,
+    pub web_assets_dir: Option<PathBuf>,
+    pub remote_web_assets_dir: Option<String>,
     pub dry_run: bool,
     pub fallback_restart_used: bool,
     pub old_pid: Option<u32>,
@@ -629,6 +634,11 @@ pub(crate) fn run_incus_bootstrap(options: IncusBootstrapOptions) -> Result<(), 
 pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOutcome, ToolError> {
     let container = resolve_sync_container(options.container.as_deref())?;
     let binary = resolve_sync_binary(options.binary.as_deref())?;
+    let web_assets_dir = if options.sync_web_assets {
+        resolve_sync_web_assets_dir(options.web_assets_dir.as_deref())?
+    } else {
+        None
+    };
     let local_sha256 = if options.dry_run {
         None
     } else {
@@ -652,6 +662,16 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
         steps.push(format!(
             "push binary and atomically install to {REMOTE_BINARY_PATH}"
         ));
+        if let Some(path) = &web_assets_dir {
+            steps.push(format!(
+                "sync web assets `{}` to {REMOTE_WEB_ASSETS_DIR}",
+                path.display()
+            ));
+        } else if options.sync_web_assets {
+            steps.push(format!(
+                "clear {REMOTE_WEB_ASSETS_DIR} so embedded web assets are used"
+            ));
+        }
         steps.push(format!("start {SERVICE_NAME} and verify {READY_URL}"));
         if let Some(url) = &options.check_url {
             steps.push(format!("check {url}"));
@@ -659,6 +679,10 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
         return Ok(IncusSyncOutcome {
             container,
             binary,
+            web_assets_dir,
+            remote_web_assets_dir: options
+                .sync_web_assets
+                .then(|| REMOTE_WEB_ASSETS_DIR.to_string()),
             dry_run: true,
             fallback_restart_used,
             old_pid: None,
@@ -738,6 +762,19 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
     )?;
     steps.push(format!("installed {REMOTE_BINARY_PATH} atomically"));
 
+    if let Some(assets_dir) = &web_assets_dir {
+        sync_web_assets_to_container(&container, assets_dir)?;
+        steps.push(format!(
+            "synced web assets `{}` to `{REMOTE_WEB_ASSETS_DIR}`",
+            assets_dir.display()
+        ));
+    } else if options.sync_web_assets {
+        clear_remote_web_assets(&container)?;
+        steps.push(format!(
+            "cleared `{REMOTE_WEB_ASSETS_DIR}` so embedded web assets are used"
+        ));
+    }
+
     drop(incus_exec(
         &container,
         &["systemctl", "reset-failed", SERVICE_NAME],
@@ -793,6 +830,10 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
     Ok(IncusSyncOutcome {
         container,
         binary,
+        web_assets_dir,
+        remote_web_assets_dir: options
+            .sync_web_assets
+            .then(|| REMOTE_WEB_ASSETS_DIR.to_string()),
         dry_run: false,
         fallback_restart_used,
         old_pid,
@@ -895,6 +936,47 @@ fn resolve_sync_container(explicit: Option<&str>) -> Result<String, ToolError> {
     })
 }
 
+fn resolve_sync_web_assets_dir(explicit: Option<&Path>) -> Result<Option<PathBuf>, ToolError> {
+    let candidate = if let Some(path) = explicit {
+        Some(path.to_path_buf())
+    } else if let Some(path) = std::env::var_os("LABBY_INCUS_WEB_ASSETS_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        Some(path)
+    } else {
+        Some(PathBuf::from("apps/gateway-admin/out"))
+    };
+
+    let Some(path) = candidate else {
+        return Ok(None);
+    };
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map_err(|e| ToolError::Sdk {
+                message: format!("failed to resolve current directory: {e}"),
+                sdk_kind: "incus_sync_web_assets_resolve_failed".into(),
+            })?
+            .join(path)
+    };
+
+    if path.join("index.html").is_file() {
+        Ok(Some(path))
+    } else if explicit.is_some() {
+        Err(ToolError::Sdk {
+            message: format!(
+                "web assets directory {} does not contain index.html",
+                path.display()
+            ),
+            sdk_kind: "incus_sync_web_assets_missing".into(),
+        })
+    } else {
+        Ok(None)
+    }
+}
+
 fn resolve_sync_binary(explicit: Option<&Path>) -> Result<PathBuf, ToolError> {
     if let Some(path) = explicit {
         return require_binary(path);
@@ -951,6 +1033,73 @@ fn ensure_container_running(container: &str) -> Result<(), ToolError> {
         "incus_sync_container_start_failed",
         "failed to start Incus container",
     )
+}
+
+fn sync_web_assets_to_container(container: &str, assets_dir: &Path) -> Result<(), ToolError> {
+    let archive = std::env::temp_dir().join(format!(
+        "labby-web-assets-{}-{}.tar",
+        std::process::id(),
+        unix_timestamp_millis()
+    ));
+    let remote_archive = format!("/tmp/.labby-web-assets-{}.tar", std::process::id());
+
+    let result = (|| {
+        command_ok(
+            Command::new("tar")
+                .arg("-C")
+                .arg(assets_dir)
+                .arg("-cf")
+                .arg(&archive)
+                .arg(".")
+                .output(),
+            "incus_sync_web_assets_archive_failed",
+            "failed to archive local web assets",
+        )?;
+        command_ok(
+            Command::new("incus")
+                .arg("file")
+                .arg("push")
+                .arg(&archive)
+                .arg(format!("{container}{remote_archive}"))
+                .output(),
+            "incus_sync_web_assets_push_failed",
+            "failed to push web assets archive into Incus container",
+        )?;
+        let script = format!(
+            "set -eu; \
+             rm -rf {remote}.new; \
+             mkdir -p {remote}.new; \
+             tar -C {remote}.new -xf {archive}; \
+             chown -R labby:labby {remote}.new; \
+             rm -rf {remote}.prev; \
+             if [ -d {remote} ]; then mv {remote} {remote}.prev; fi; \
+             mv {remote}.new {remote}; \
+             rm -f {archive}",
+            remote = shell_quote(REMOTE_WEB_ASSETS_DIR),
+            archive = shell_quote(&remote_archive),
+        );
+        incus_exec(container, &["sh", "-lc", &script])
+    })();
+
+    drop(std::fs::remove_file(&archive));
+    result
+}
+
+fn clear_remote_web_assets(container: &str) -> Result<(), ToolError> {
+    let script = format!(
+        "set -eu; \
+         rm -rf {remote}.prev; \
+         if [ -d {remote} ]; then mv {remote} {remote}.prev; fi",
+        remote = shell_quote(REMOTE_WEB_ASSETS_DIR),
+    );
+    incus_exec(container, &["sh", "-lc", &script])
+}
+
+fn unix_timestamp_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 fn service_main_pid(container: &str) -> Result<Option<u32>, ToolError> {
@@ -1635,6 +1784,25 @@ config:
 
         let err = bootstrap_command(&artifacts, &options).unwrap_err();
         assert_eq!(err.kind(), "incus_bootstrap_invalid_options");
+    }
+
+    #[test]
+    fn resolves_explicit_web_assets_dir_with_index() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<!doctype html>").unwrap();
+
+        let resolved = resolve_sync_web_assets_dir(Some(dir.path())).unwrap();
+
+        assert_eq!(resolved, Some(dir.path().to_path_buf()));
+    }
+
+    #[test]
+    fn rejects_explicit_web_assets_dir_without_index() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = resolve_sync_web_assets_dir(Some(dir.path())).unwrap_err();
+
+        assert_eq!(err.kind(), "incus_sync_web_assets_missing");
     }
 
     #[test]
