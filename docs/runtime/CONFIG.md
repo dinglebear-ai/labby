@@ -172,6 +172,13 @@ Rules:
 | `stateful` | `LABBY_MCP_STATEFUL` | `true` | Whether HTTP MCP uses stateful sessions |
 | `allowed_hosts` | `LABBY_MCP_ALLOWED_HOSTS` | `[]` | Additional allowed hosts for DNS rebinding protection |
 | `show_all` | `LABBY_SHOW_ALL` | `false` | Show the full service catalog regardless of env-var presence |
+| `destructive_elicitation_timeout_ms` | `LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS` | `120000` | Deadline for destructive-action MCP confirmation prompts; valid range `1..=600000` milliseconds |
+| `catalog_notification_timeout_ms` | `LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS` | `5000` | Per-peer deadline for MCP catalog-change notifications; valid range `1..=60000` milliseconds |
+
+`LABBY_UPSTREAM_RELAY_ENABLED=1` opts proxied upstream tool calls into the
+dedicated server-to-client relay path for upstream elicitation, sampling, and
+roots requests. The legacy `LABBY_UPSTREAM_RELAY_ELICITATION=1` name remains
+accepted for existing deployments.
 
 ### `[api]`
 
@@ -597,7 +604,7 @@ Full details in [OAUTH.md](./OAUTH.md).
 | `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
 | `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
-| `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated non-loopback redirect URI patterns. Host wildcards must be full labels, not raw suffix globs. |
+| `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns. When unset, Labby seeds common ChatGPT/Claude callbacks. Set it explicitly to replace those defaults; set it empty to disable public HTTPS product defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. Host wildcards must be full labels, not raw suffix globs except for the explicit all-HTTPS sentinel `https://*`. |
 | `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Google email of the bootstrap admin permitted to log in. Normalized to lowercase. **Required** in oauth mode — startup fails if unset so no Google account can authenticate unless explicitly permitted. The id_token's `email_verified` claim is enforced (unverified accounts are rejected even when the address matches). Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
 | `LABBY_AUTH_ACCESS_TOKEN_TTL_SECS` | no | Override lab-issued JWT access token lifetime. Defaults to `3600`. |
 | `LABBY_AUTH_REFRESH_TOKEN_TTL_SECS` | no | Override refresh token lifetime. Defaults to `2592000` (30 days). |

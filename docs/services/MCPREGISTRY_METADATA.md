@@ -89,6 +89,10 @@ If callers need non-core metadata, it must go under `extra`.
 - tags are trimmed and deduped on write
 - blank optional strings are normalized away on write
 
+The SDK helper `LabRegistryMetadata::validate_write_payload` enforces the
+write-side rules for callers that accept raw JSON before storing it under
+`_meta["dev.labby/registry"]`.
+
 ## Audit Fields
 
 Lab injects audit metadata on read:
@@ -122,15 +126,10 @@ These filter only on Lab-owned metadata and do not affect upstream official fiel
 
 ## CLI Surface
 
-Registry metadata is operated through the unified Marketplace CLI surface:
-
-```bash
-labby marketplace mcp.meta.get --params '{"name":"io.github.user/server","version":"latest"}'
-labby marketplace mcp.meta.set --params '{"name":"io.github.user/server","metadata":{"curation":{"featured":true},"trust":{"reviewed":true}}}'
-labby marketplace mcp.meta.delete --params '{"name":"io.github.user/server","version":"latest"}'
-```
-
-For advanced cases, include the full metadata object in `--params`.
+The former `labby marketplace mcp.meta.*` commands retired with the Marketplace
+product surface. Consumers that reuse `labby-apis::mcpregistry` should expose
+metadata operations from their own runtime surface and store Lab metadata under
+`_meta["dev.labby/registry"]`.
 
 ## UI Surface
 

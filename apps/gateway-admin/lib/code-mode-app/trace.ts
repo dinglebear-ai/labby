@@ -1,126 +1,145 @@
-import { z } from 'zod'
+export type CodeModeTrace = CodeModeExecuteTrace | CodeModeHistoryTrace
 
-export type CodeModeTrace =
-  | CodeModeExecuteTrace
-  | CodeModeSearchTrace
-  | CodeModeHistoryTrace
-
-export interface CodeModeTraceWarning {
-  kind: 'dropped_rows'
-  message: string
-}
-
-const finiteNumberSchema = z.number().finite()
-const optionalFiniteNumberSchema = z.preprocess(
-  (value) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined),
-  finiteNumberSchema.optional(),
-)
-const optionalBooleanSchema = z.preprocess(
-  (value) => (typeof value === 'boolean' ? value : undefined),
-  z.boolean().optional(),
-)
-const booleanValueSchema = z.preprocess((value) => value === true, z.boolean())
-const stringArraySchema = z.preprocess(
-  (value) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined),
-  z.array(z.string()).optional(),
-)
-
-const resultShapeSchema = z.object({
-  type: z.string().catch('unknown'),
-  size_bytes: optionalFiniteNumberSchema,
-  length: optionalFiniteNumberSchema,
-  key_count: optionalFiniteNumberSchema,
-  keys: stringArraySchema,
-  item_types: stringArraySchema,
-  truncated: optionalBooleanSchema,
-  content_block_kinds: stringArraySchema,
-})
-
-const callTraceSchema = z
-  .object({
-    id: z.string().catch(''),
-    namespace: z.string().optional(),
-    upstream: z.string().optional(),
-    tool: z.string().catch(''),
-    ok: booleanValueSchema,
-    elapsed_ms: finiteNumberSchema.catch(0),
-    params: z.unknown().optional(),
-    error_kind: z.string().optional(),
-  })
-  .transform(({ upstream, namespace, ...trace }) => ({
-    ...trace,
-    namespace: namespace ?? upstream ?? '',
-  }))
-
-const searchMatchSchema = z
-  .object({
-    id: z.string().catch(''),
-    namespace: z.string().optional(),
-    upstream: z.string().optional(),
-    tool: z.string().catch(''),
-    description: z.string().catch(''),
-    has_schema: booleanValueSchema,
-    has_output_schema: booleanValueSchema,
-  })
-  .transform(({ upstream, namespace, ...match }) => ({
-    ...match,
-    namespace: namespace ?? upstream ?? '',
-  }))
-
-const historyEntryBaseSchema = z.object({
-  seq: finiteNumberSchema.catch(0),
-  kind: z.enum(['search', 'execute']),
-  ok: booleanValueSchema,
-  elapsed_ms: finiteNumberSchema.catch(0),
-  error_kind: z.string().optional(),
-  calls: z.array(z.unknown()).optional(),
-  match_count: optionalFiniteNumberSchema,
-})
-
-export type ResultShape = z.infer<typeof resultShapeSchema>
-export type CodeModeCallTrace = z.infer<typeof callTraceSchema>
-export type CodeModeSearchMatch = z.infer<typeof searchMatchSchema>
-export interface CodeModeHistoryEntry {
-  seq: number
-  kind: 'search' | 'execute'
-  ok: boolean
-  elapsed_ms: number
-  error_kind?: string
-  calls?: CodeModeCallTrace[]
-  match_count?: number
-}
 export interface CodeModeExecuteTrace {
   kind: 'code_mode_execute_trace'
   call_count: number
   calls: CodeModeCallTrace[]
   result_shape?: ResultShape
   result?: unknown
+  execution_id?: string
+  /** Wall-clock run time, injected by the MCP handler. */
+  elapsed_ms?: number
+  /** Present on failed runs — the ToolError kind that aborted the snippet. */
+  error_kind?: string
+  input_tokens?: number
+  output_tokens?: number
   logs_count?: number
+  artifacts?: CodeModeArtifactReceipt[]
   warnings?: CodeModeTraceWarning[]
 }
-export interface CodeModeSearchTrace {
-  kind: 'code_mode_search_trace'
-  query_kind: string
-  match_count: number
-  displayed_count?: number
-  truncated?: boolean
-  matches: CodeModeSearchMatch[]
-  result_shape?: ResultShape
-  result?: unknown
-  warnings?: CodeModeTraceWarning[]
+
+export interface CodeModeArtifactReceipt {
+  path: string
+  content_type?: string
+  bytes?: number
+  sha256?: string
 }
+
 export interface CodeModeHistoryTrace {
   kind: 'code_mode_history'
   entries: CodeModeHistoryEntry[]
   warnings?: CodeModeTraceWarning[]
 }
 
+export interface CodeModeTraceWarning {
+  kind: 'dropped_rows'
+  message: string
+}
+
+export interface CodeModeHistoryEntry {
+  seq: number
+  execution_id?: string
+  kind: 'search' | 'execute'
+  ok: boolean
+  elapsed_ms: number
+  input_tokens?: number
+  output_tokens?: number
+  error_kind?: string
+  calls?: CodeModeCallTrace[]
+  match_count?: number
+}
+
+export interface CodeModeCallTrace {
+  id: string
+  upstream: string
+  tool: string
+  ok: boolean
+  elapsed_ms: number
+  /** Offset from execution start to dispatch, in ms — enables the waterfall. */
+  start_ms?: number
+  params?: unknown
+  error_kind?: string
+}
+
+export interface ResultShape {
+  type: string
+  size_bytes?: number
+  length?: number
+  key_count?: number
+  keys?: string[]
+  item_types?: string[]
+  truncated?: boolean
+  content_block_kinds?: string[]
+}
+
 export function parseCodeModeTrace(value: unknown): CodeModeTrace | null {
   if (!isRecord(value)) return null
   if (value.kind === 'code_mode_execute_trace') return parseExecuteTrace(value)
-  if (value.kind === 'code_mode_search_trace') return parseSearchTrace(value)
   if (value.kind === 'code_mode_history') return parseHistoryTrace(value)
   return null
+}
+
+export interface DiscoveryHit {
+  id: string
+  namespace?: string
+  name?: string
+  description?: string
+  path?: string
+  kind?: string
+  signature?: string
+  score?: number
+}
+
+export interface DiscoveryResult {
+  hits: DiscoveryHit[]
+  total: number
+  truncated: boolean
+  hint?: string
+}
+
+/**
+ * Detect the in-sandbox `codemode.search()` closure's return shape
+ * (`{ results, total, truncated, hint? }` — see labby-codemode preamble.rs).
+ * Discovery runs make zero broker calls, so the hits arrive only as the
+ * execute trace's `result`; this lets the inspector render them as match rows
+ * instead of a bare "no calls" line.
+ */
+export function parseDiscoveryResult(result: unknown): DiscoveryResult | null {
+  if (!isRecord(result)) return null
+  if (!Array.isArray(result.results) || typeof result.total !== 'number') return null
+  const hits: DiscoveryHit[] = []
+  for (const item of result.results) {
+    if (!isRecord(item)) return null
+    const id = typeof item.id === 'string' ? item.id : typeof item.path === 'string' ? item.path : null
+    if (id === null) return null
+    hits.push({
+      id,
+      namespace: optionalString(item.namespace),
+      name: optionalString(item.name),
+      description: optionalString(item.description),
+      path: optionalString(item.path),
+      kind: optionalString(item.kind),
+      signature: optionalString(item.signature),
+      score: optionalNumber(item.score),
+    })
+  }
+  return {
+    hits,
+    total: result.total,
+    truncated: result.truncated === true,
+    hint: optionalString(result.hint),
+  }
+}
+
+/**
+ * Detect the `codemode.describe()` closure's return shape
+ * (`{ path, id, kind, markdown }`) so the inspector can show the markdown doc
+ * instead of a JSON-escaped blob.
+ */
+export function describeMarkdown(result: unknown): string | null {
+  if (!isRecord(result)) return null
+  if (typeof result.markdown !== 'string' || typeof result.id !== 'string') return null
+  return result.markdown
 }
 
 export function stringifyRedactedParams(value: unknown): string {
@@ -133,21 +152,6 @@ export function stringifyRedactedParams(value: unknown): string {
   }
 }
 
-export function flattenTraceRows(trace: CodeModeTrace | null) {
-  if (!trace) return { calls: [], matches: [], history: [] }
-  if (trace.kind === 'code_mode_execute_trace') {
-    return { calls: trace.calls, matches: [], history: [] }
-  }
-  if (trace.kind === 'code_mode_search_trace') {
-    return { calls: [], matches: trace.matches, history: [] }
-  }
-  return {
-    calls: trace.entries.flatMap((entry) => entry.calls ?? []),
-    matches: [],
-    history: trace.entries,
-  }
-}
-
 function parseExecuteTrace(value: Record<string, unknown>): CodeModeExecuteTrace | null {
   const calls = arrayOfWithDropped(value.calls, parseCallTrace)
   if (!calls) return null
@@ -157,31 +161,36 @@ function parseExecuteTrace(value: Record<string, unknown>): CodeModeExecuteTrace
     calls: calls.items,
     result_shape: parseResultShape(value.result_shape),
     result: 'result' in value ? value.result : undefined,
+    execution_id: optionalString(value.execution_id),
+    elapsed_ms: optionalNumber(value.elapsed_ms),
+    error_kind: optionalString(value.error_kind),
+    input_tokens: optionalNumber(value.input_tokens),
+    output_tokens: optionalNumber(value.output_tokens),
     logs_count: optionalNumber(value.logs_count),
+    artifacts: parseArtifacts(value.artifacts),
     warnings: droppedWarning(calls.dropped, 'execute call'),
   }
 }
 
-function parseSearchTrace(value: Record<string, unknown>): CodeModeSearchTrace | null {
-  const matches = arrayOfWithDropped(value.matches, parseSearchMatch)
-  if (!matches) return null
-  return {
-    kind: 'code_mode_search_trace',
-    query_kind: stringValue(value.query_kind, 'catalog_filter'),
-    match_count: numberValue(value.match_count, matches.items.length),
-    displayed_count: optionalNumber(value.displayed_count),
-    truncated: booleanOptional(value.truncated),
-    matches: matches.items,
-    result_shape: parseResultShape(value.result_shape),
-    result: 'result' in value ? value.result : undefined,
-    warnings: droppedWarning(matches.dropped, 'search match'),
+function parseArtifacts(value: unknown): CodeModeArtifactReceipt[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const receipts: CodeModeArtifactReceipt[] = []
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.path !== 'string') continue
+    receipts.push({
+      path: item.path,
+      content_type: optionalString(item.content_type),
+      bytes: optionalNumber(item.bytes),
+      sha256: optionalString(item.sha256),
+    })
   }
+  return receipts.length > 0 ? receipts : undefined
 }
 
 /**
- * Human-readable one-line description of a result shape, used by the inspector
- * when a search returned a value with no summarizable tool rows. Returns an
- * empty string when no shape is available.
+ * Human-readable one-line description of a result shape, e.g.
+ * `object · 3 keys · 212 B — keys: containers, unhealthy, notified`.
+ * Returns an empty string when no shape is available.
  */
 export function describeResultShape(shape: ResultShape | undefined): string {
   if (!shape?.type) return ''
@@ -217,27 +226,68 @@ function parseHistoryTrace(value: Record<string, unknown>): CodeModeHistoryTrace
 }
 
 function parseHistoryEntry(value: unknown): CodeModeHistoryEntry | null {
-  const parsed = historyEntryBaseSchema.safeParse(value)
-  if (!parsed.success) return null
+  if (!isRecord(value)) return null
+  let kind: CodeModeHistoryEntry['kind']
+  switch (value.kind) {
+    case 'execute':
+      kind = 'execute'
+      break
+    case 'search':
+      kind = 'search'
+      break
+    default:
+      return null
+  }
   return {
-    ...parsed.data,
-    calls: arrayOf(parsed.data.calls, parseCallTrace) ?? [],
+    seq: numberValue(value.seq, 0),
+    execution_id: optionalString(value.execution_id),
+    kind,
+    ok: booleanValue(value.ok),
+    elapsed_ms: numberValue(value.elapsed_ms, 0),
+    input_tokens: optionalNumber(value.input_tokens),
+    output_tokens: optionalNumber(value.output_tokens),
+    error_kind: optionalString(value.error_kind),
+    calls: arrayOf(value.calls, parseCallTrace) ?? [],
+    match_count: optionalNumber(value.match_count),
   }
 }
 
 function parseCallTrace(value: unknown): CodeModeCallTrace | null {
-  const parsed = callTraceSchema.safeParse(value)
-  return parsed.success ? parsed.data : null
+  if (!isRecord(value)) return null
+  const id = stringValue(value.id, '')
+  // The gateway emits `namespace` for the upstream segment
+  // (crates/labby-codemode/src/trace.rs); history entries carry only `id`.
+  const fromId = splitCallId(id)
+  return {
+    id,
+    upstream: stringValue(value.namespace, stringValue(value.upstream, fromId.upstream)),
+    tool: stringValue(value.tool, fromId.tool),
+    ok: booleanValue(value.ok),
+    elapsed_ms: numberValue(value.elapsed_ms, 0),
+    start_ms: optionalNumber(value.start_ms),
+    params: value.params,
+    error_kind: optionalString(value.error_kind),
+  }
 }
 
-function parseSearchMatch(value: unknown): CodeModeSearchMatch | null {
-  const parsed = searchMatchSchema.safeParse(value)
-  return parsed.success ? parsed.data : null
+function splitCallId(id: string): { upstream: string; tool: string } {
+  const separator = id.indexOf('::')
+  if (separator < 0) return { upstream: '', tool: id }
+  return { upstream: id.slice(0, separator), tool: id.slice(separator + 2) }
 }
 
 function parseResultShape(value: unknown): ResultShape | undefined {
-  const parsed = resultShapeSchema.safeParse(value)
-  return parsed.success ? parsed.data : undefined
+  if (!isRecord(value)) return undefined
+  return {
+    type: stringValue(value.type, 'unknown'),
+    size_bytes: optionalNumber(value.size_bytes),
+    length: optionalNumber(value.length),
+    key_count: optionalNumber(value.key_count),
+    keys: stringArray(value.keys),
+    item_types: stringArray(value.item_types),
+    truncated: booleanOptional(value.truncated),
+    content_block_kinds: stringArray(value.content_block_kinds),
+  }
 }
 
 function arrayOf<T>(value: unknown, parse: (item: unknown) => T | null): T[] | null {
@@ -263,8 +313,17 @@ function arrayOfWithDropped<T>(
   return { items, dropped }
 }
 
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
 function stringValue(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value : fallback
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
 }
 
 function numberValue(value: unknown, fallback: number): number {
@@ -273,6 +332,10 @@ function numberValue(value: unknown, fallback: number): number {
 
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function booleanValue(value: unknown): boolean {
+  return value === true
 }
 
 function booleanOptional(value: unknown): boolean | undefined {

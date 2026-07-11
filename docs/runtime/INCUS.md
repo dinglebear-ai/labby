@@ -146,6 +146,29 @@ point is the binary-owned `labby setup` command. The explicit
 `--local-binary`, `--skip-install`, and storage overrides. For day-to-day local
 binary deploys into an existing container, use `labby incus sync`.
 
+`labby incus sync` updates both runtime surfaces that affect the web UI:
+
+- `/usr/local/bin/labby` — the executable, including embedded fallback assets
+- `/home/labby/.labby/web-assets` — the filesystem static export preferred by
+  `labby serve` when present
+
+When a local export exists, sync copies it into `/home/labby/.labby/web-assets`.
+When no local export exists, sync moves the remote filesystem export aside so
+the embedded assets in the updated binary are used instead.
+
+For a checkout-local UI or Rust change:
+
+```bash
+just web-build
+cargo build --workspace --all-features --profile release-fast --bin labby
+target/release-fast/labby incus sync \
+  --binary target/release-fast/labby \
+  --check-url https://labby.tootie.tv/gateways/
+```
+
+Pass `--no-web-assets` only for a binary-only deploy where the existing
+filesystem web export should intentionally remain in place.
+
 The distrobuilder image definition lives at `config/incus/labby-image.yaml`.
 Release CI builds it as a prebuilt Incus container image:
 `labby-incus-x86_64-unknown-linux-gnu.tar.xz` plus a `.sha256` file. Import it
@@ -162,8 +185,9 @@ scripts/incus-bootstrap.sh \
 
 The image bakes in the release `labby` binary, the bounded apt floor, and the
 agent runtime/toolchain floor: Node, uv-managed Python, Rust, Go, Claude Code,
-Codex, Gemini CLI, ffmpeg, Android platform tooling (`adb`, Android SDK platform
-tools, and build tools), and the Tailscale client. `config/incus/labby-image.yaml`
+Codex, Gemini CLI, mise, chezmoi, ffmpeg, Android platform tooling (`adb`, Android
+SDK platform tools, and build tools), and the Tailscale client.
+`config/incus/labby-image.yaml`
 is the source of truth for both the apt package list and the named provisioning
 action scripts; bare-metal `labby setup --provision` derives its install and
 verification steps from the same YAML so image builds and non-image provisioning
@@ -240,8 +264,8 @@ labby setup --provision --yes --skip-deps
 The plan is explicit about privilege. Root actions are limited to:
 
 - apt install of the bounded floor derived from `config/incus/labby-image.yaml`,
-  including core CLI/runtime packages plus `ffmpeg`, `adb`, and Android SDK
-  command-line tooling
+  including core CLI/runtime packages plus `rsync`, `ffmpeg`, `adb`, and Android
+  SDK command-line tooling
 - `lab` user creation
 - writing `/etc/systemd/system/labby.service`
 - enabling and restarting `labby.service`

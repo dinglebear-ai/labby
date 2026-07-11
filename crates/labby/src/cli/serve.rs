@@ -1739,6 +1739,8 @@ mod tests {
                 stateful: Some(false),
                 allowed_hosts: Some(vec!["lab.internal".into()]),
                 show_all: None,
+                destructive_elicitation_timeout_ms: None,
+                catalog_notification_timeout_ms: None,
             },
             ..LabConfig::default()
         };

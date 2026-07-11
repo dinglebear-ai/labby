@@ -77,6 +77,7 @@ pub fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
                 "tool": tool,
                 "ok": call.ok,
                 "elapsed_ms": call.elapsed_ms,
+                "start_ms": call.start_ms,
                 "params": call.params,
                 "error_kind": call.error_kind,
             })
@@ -111,18 +112,22 @@ pub fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
     // Surface artifact receipts so a structured-content-only client can follow
     // the "write large payloads to an artifact and read them back" path.
     if !response.artifacts.is_empty() {
-        // Receipts are a flat derived-`Serialize` struct, so this is infallible
-        // in practice. If it ever did fail, keep the signal that artifacts
-        // existed rather than collapsing to a value that reads as "no artifacts"
-        // (mirrors the degradation marker in `redact_trace_value`).
         trace.insert(
             "artifacts".to_string(),
-            serde_json::to_value(&response.artifacts).unwrap_or_else(|_| {
-                json!({
-                    "error": "artifact_serialization_failed",
-                    "count": response.artifacts.len(),
-                })
-            }),
+            Value::Array(
+                response
+                    .artifacts
+                    .iter()
+                    .map(|artifact| {
+                        json!({
+                            "path": artifact.path.as_str(),
+                            "content_type": artifact.content_type.as_str(),
+                            "bytes": artifact.bytes,
+                            "sha256": artifact.sha256.as_str(),
+                        })
+                    })
+                    .collect(),
+            ),
         );
     }
     trace.insert("logs_count".to_string(), json!(response.logs.len()));
@@ -324,6 +329,7 @@ fn is_base64ish_char(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artifacts::CodeModeArtifactReceipt;
     use serde_json::json;
 
     #[test]
@@ -418,5 +424,29 @@ mod tests {
             redact_trace_params(&json!({"token": "secret"}), false),
             None
         );
+    }
+
+    #[test]
+    fn execute_trace_omits_artifact_absolute_paths() {
+        let trace = code_mode_execute_trace(&CodeModeExecutionResponse {
+            execution_id: None,
+            result: None,
+            result_shaping: None,
+            ui: None,
+            calls: Vec::new(),
+            logs: Vec::new(),
+            artifacts: vec![CodeModeArtifactReceipt {
+                path: "reports/result.md".to_string(),
+                absolute_path: "/home/jmagar/.labby/code-mode-artifacts/run/reports/result.md"
+                    .to_string(),
+                content_type: "text/markdown".to_string(),
+                bytes: 42,
+                sha256: "abc123".to_string(),
+            }],
+        });
+
+        assert_eq!(trace["artifacts"][0]["path"], json!("reports/result.md"));
+        assert_eq!(trace["artifacts"][0]["bytes"], json!(42));
+        assert!(trace["artifacts"][0].get("absolute_path").is_none());
     }
 }

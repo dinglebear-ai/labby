@@ -23,6 +23,7 @@ use rmcp::service::RequestContext;
 
 use crate::config::UpstreamConfig;
 use crate::dispatch::upstream::pool::{UpstreamPool, redact_resource_uri_for_logging};
+use crate::mcp::context::redacted_oauth_subject_label;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::server::LabMcpServer;
 
@@ -303,7 +304,9 @@ impl LabMcpServer {
             route = "upstream_ui",
             "dispatch route selected"
         );
-        let result = pool.read_upstream_ui_resource(uri).await;
+        let result = pool
+            .read_upstream_ui_resource_allowed(uri, self.route_scope.allowed_upstreams())
+            .await;
         let elapsed_ms = start.elapsed().as_millis();
         let (outcome, response) = match result {
             Some(Ok(result)) => {
@@ -384,7 +387,7 @@ impl LabMcpServer {
             resource_uri = redact_resource_uri_for_logging(uri),
             upstream = %config.name,
             route = "subject_scoped",
-            oauth_subject = %oauth_subject,
+            oauth_subject = redacted_oauth_subject_label(),
             "dispatch route selected"
         );
         match pool
@@ -398,7 +401,7 @@ impl LabMcpServer {
                     service = "labby",
                     action = "read_resource",
                     subject,
-                    oauth_subject = %oauth_subject,
+                    oauth_subject = redacted_oauth_subject_label(),
                     upstream = %config.name,
                     resource_uri = redact_resource_uri_for_logging(uri),
                     elapsed_ms,

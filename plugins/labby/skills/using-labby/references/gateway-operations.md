@@ -7,7 +7,7 @@ import/discovery, protected routes, and Code Mode enablement.
 
 Labby is the operator gateway. External MCP servers are registered as upstream
 gateways, then exposed through policy-filtered MCP resources/tools and the public
-Code Mode `search`/`execute` tools.
+Code Mode `codemode` tool.
 
 Common CLI state checks:
 
@@ -131,7 +131,7 @@ subject; non-admin scoped users may use their own subject.
 ## Code Mode Surface
 
 The gateway-wide code-mode setting exposes the synthetic public MCP tools
-`search` and `execute` instead of raw upstream tools:
+`codemode` instead of raw upstream tools:
 
 ```bash
 labby gateway code-mode status --json

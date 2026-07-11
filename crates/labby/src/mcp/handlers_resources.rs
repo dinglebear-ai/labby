@@ -27,6 +27,7 @@ use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
+use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
 
 /// MCP Apps (Claude / SEP-1724) MIME — bound via the tool's `_meta.ui.resourceUri`.
@@ -144,7 +145,7 @@ fn strip_app_version(uri: &str) -> &str {
 impl LabMcpServer {
     pub(crate) async fn list_resources_impl(
         &self,
-        _request: Option<PaginatedRequestParams>,
+        request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
         let start = Instant::now();
@@ -157,42 +158,101 @@ impl LabMcpServer {
             "dispatch start"
         );
         let auth = auth_context_from_extensions(&context.extensions);
-        let mut resources = vec![
+        let mut resources = match PageCollector::new(request) {
+            Ok(collector) => collector,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_resources",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "resource list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_resources",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
+
+        resources.accept(
             Resource::new("lab://catalog", "catalog")
                 .with_description("Full discovery document for all services")
                 .with_mime_type("application/json"),
-        ];
-        if code_mode_app_resources_visible(
-            self.code_mode_visibility().await.exposes_synthetic_tools(),
-            auth,
-        ) {
-            resources.extend(code_mode_app_resources());
+        );
+
+        if !resources.finished()
+            && code_mode_app_resources_visible(
+                self.code_mode_visibility().await.exposes_synthetic_tools(),
+                auth,
+            )
+        {
+            for resource in code_mode_app_resources() {
+                resources.accept(resource);
+                if resources.finished() {
+                    break;
+                }
+            }
         }
 
-        for svc in self.registry.services() {
-            if self.service_visible_on_mcp(svc.name).await {
-                let uri = format!("lab://{}/actions", svc.name);
-                let name = format!("{}/actions", svc.name);
-                resources.push(
-                    Resource::new(uri, name)
-                        .with_description(format!("Action list for {}", svc.name))
-                        .with_mime_type("application/json"),
-                );
+        if !resources.finished() {
+            for svc in self.registry.services() {
+                if self.route_scope.allows_service(svc.name)
+                    && self.service_visible_on_mcp(svc.name).await
+                {
+                    let uri = format!("lab://{}/actions", svc.name);
+                    let name = format!("{}/actions", svc.name);
+                    resources.accept(
+                        Resource::new(uri, name)
+                            .with_description(format!("Action list for {}", svc.name))
+                            .with_mime_type("application/json"),
+                    );
+                    if resources.finished() {
+                        break;
+                    }
+                }
             }
         }
 
         #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await {
-            resources.extend(
-                pool.gateway_synthetic_resources_allowed(self.route_scope.allowed_upstreams())
-                    .await,
-            );
-            resources.extend(
-                pool.list_upstream_resources_allowed(self.route_scope.allowed_upstreams())
-                    .await,
-            );
-            if let Some(oauth_subject) =
-                oauth_upstream_subject_for_request(auth, self.request_subject(&context))
+        if !resources.finished()
+            && let Some(pool) = self.current_upstream_pool().await
+        {
+            for resource in pool
+                .gateway_synthetic_resources_allowed(self.route_scope.allowed_upstreams())
+                .await
+            {
+                resources.accept(resource);
+                if resources.finished() {
+                    break;
+                }
+            }
+            if !resources.finished() {
+                for resource in pool
+                    .list_upstream_resources_allowed(self.route_scope.allowed_upstreams())
+                    .await
+                {
+                    resources.accept(resource);
+                    if resources.finished() {
+                        break;
+                    }
+                }
+            }
+            if !resources.finished()
+                && let Some(oauth_subject) =
+                    oauth_upstream_subject_for_request(auth, self.request_subject(&context))
             {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let mut scoped_resources = pool
@@ -205,9 +265,43 @@ impl LabMcpServer {
                         .and_then(|rest| rest.split('/').next())
                         .is_none_or(|upstream| self.route_scope.allows_upstream(upstream))
                 });
-                resources.extend(scoped_resources);
+                for resource in scoped_resources {
+                    resources.accept(resource);
+                    if resources.finished() {
+                        break;
+                    }
+                }
             }
         }
+
+        let (resources, next_cursor) = match resources.finish() {
+            Ok(page) => page,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_resources",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "resource list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_resources",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
@@ -227,7 +321,9 @@ impl LabMcpServer {
         )
         .await;
 
-        Ok(ListResourcesResult::with_all_items(resources))
+        let mut result = ListResourcesResult::with_all_items(resources);
+        result.next_cursor = next_cursor;
+        Ok(result)
     }
 
     pub(crate) async fn read_resource_impl(
@@ -291,7 +387,56 @@ impl LabMcpServer {
             ));
         }
 
-        // Branch 1: gateway-synthetic resources.
+        // Branch 1: local per-service action resources. This must precede the
+        // `lab://gateway/*` proxy branch so `lab://gateway/actions` remains the
+        // built-in gateway service catalog resource, not a gateway synthetic
+        // resource lookup.
+        if let Some(service) = uri
+            .strip_prefix("lab://")
+            .and_then(|value| value.strip_suffix("/actions"))
+        {
+            if !self.route_scope.allows_service(service) {
+                let elapsed_ms = start.elapsed().as_millis();
+                let message = format!("service `{service}` is not exposed on this MCP route");
+                tracing::warn!(
+                    surface = "mcp",
+                    service,
+                    action = "read_resource",
+                    subject,
+                    route_scope = %self.route_scope.label(),
+                    resource_uri = %resource_uri_log,
+                    elapsed_ms,
+                    kind = "route_scope_denied",
+                    error = %message,
+                    "MCP resource read denied by protected route scope"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "read_resource",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind: "route_scope_denied",
+                    },
+                )
+                .await;
+                return Err(ErrorData::invalid_params(
+                    message,
+                    Some(json!({
+                        "kind": "route_scope_denied",
+                        "service": service,
+                    })),
+                ));
+            }
+
+            let json = self.service_actions_json(service).await;
+            return self
+                .read_local_json_resource(json, uri, &subject, start, &context)
+                .await;
+        }
+
+        // Branch 2: gateway-synthetic resources.
         #[cfg(feature = "gateway")]
         if uri.starts_with("lab://gateway/") {
             return self
@@ -299,7 +444,7 @@ impl LabMcpServer {
                 .await;
         }
 
-        // Branch 2: raw upstream resource proxy.
+        // Branch 3: raw upstream resource proxy.
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await
             && uri.starts_with("lab://upstream/")
@@ -309,7 +454,7 @@ impl LabMcpServer {
                 .await;
         }
 
-        // Branch 3: subject-scoped upstream resource proxy.
+        // Branch 4: subject-scoped upstream resource proxy.
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         #[cfg(feature = "gateway")]
@@ -338,11 +483,6 @@ impl LabMcpServer {
         // Local branch: lab://catalog + lab://<svc>/actions.
         let json = if uri == "lab://catalog" {
             self.catalog_json().await
-        } else if let Some(service) = uri
-            .strip_prefix("lab://")
-            .and_then(|value| value.strip_suffix("/actions"))
-        {
-            self.service_actions_json(service).await
         } else {
             return Err(ErrorData::resource_not_found(
                 format!("unknown resource: {uri}"),
@@ -350,6 +490,18 @@ impl LabMcpServer {
             ));
         };
 
+        self.read_local_json_resource(json, uri, &subject, start, &context)
+            .await
+    }
+
+    async fn read_local_json_resource(
+        &self,
+        json: anyhow::Result<Value>,
+        uri: &str,
+        subject: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
         match json {
             Ok(value) => {
                 let text = match serde_json::to_string_pretty(&value) {
@@ -387,7 +539,8 @@ impl LabMcpServer {
                 )
                 .await;
                 Ok(ReadResourceResult::new(vec![
-                    ResourceContents::text(text, uri.clone()).with_mime_type("application/json"),
+                    ResourceContents::text(text, uri.to_string())
+                        .with_mime_type("application/json"),
                 ]))
             }
             Err(e) => {
@@ -643,6 +796,9 @@ pub(crate) fn code_mode_app_resource_meta(uri: &str) -> Meta {
 mod tests {
     use super::*;
     use rmcp::service::{Peer, RequestContext};
+    use serde_json::Value;
+    use std::future::Future;
+    use std::pin::Pin;
 
     async fn code_mode_server() -> LabMcpServer {
         code_mode_server_with_scope(crate::mcp::route_scope::McpRouteScope::Root).await
@@ -680,6 +836,60 @@ mod tests {
                 crate::mcp::logging::logging_level_rank(LoggingLevel::Emergency),
             )),
             route_scope,
+            relay_session_id: 0,
+            code_mode_widget_callbacks_enabled_for_test: false,
+        }
+    }
+
+    async fn resource_scope_server(
+        route_scope: crate::mcp::route_scope::McpRouteScope,
+    ) -> LabMcpServer {
+        let mut server = code_mode_server_with_scope(route_scope).await;
+        server.registry = std::sync::Arc::new(crate::registry::build_default_registry());
+        server
+    }
+
+    fn noop_dispatch(
+        _action: String,
+        _params: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, crate::dispatch::error::ToolError>> + Send>>
+    {
+        Box::pin(async { Ok(Value::Null) })
+    }
+
+    fn large_resource_server(service_count: usize) -> LabMcpServer {
+        let mut registry = crate::registry::ToolRegistry::new();
+        static ACTIONS: &[labby_primitives::action::ActionSpec] =
+            &[labby_primitives::action::ActionSpec {
+                name: "thing.list",
+                description: "List things",
+                destructive: false,
+                requires_admin: false,
+                params: &[],
+                returns: "object",
+            }];
+        for index in 0..service_count {
+            let name = Box::leak(format!("resource_service_{index:03}").into_boxed_str());
+            registry.register(crate::registry::RegisteredService {
+                name,
+                description: "Synthetic service",
+                category: "test",
+                kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+                status: "available",
+                actions: ACTIONS,
+                dispatch: noop_dispatch,
+            });
+        }
+        LabMcpServer {
+            registry: std::sync::Arc::new(registry),
+            gateway_manager: None,
+            peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            client_registry: Default::default(),
+            transport_label: "test",
+            logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                crate::mcp::logging::logging_level_rank(LoggingLevel::Emergency),
+            )),
+            route_scope: crate::mcp::route_scope::McpRouteScope::Root,
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
         }
@@ -767,6 +977,219 @@ mod tests {
         assert!(
             code_mode_uris.iter().all(|uri| uri.contains("?v=")),
             "advertised Code Mode URIs must carry a cache-bust token: {code_mode_uris:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn protected_scope_omits_disallowed_service_action_resources() {
+        let server =
+            resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "media",
+                ["sonarr"],
+                ["gateway"],
+                false,
+            ))
+            .await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let resources = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+            .await
+            .expect("list resources");
+        let uris = resources
+            .resources
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(
+            uris.contains(&"lab://gateway/actions"),
+            "allowed service action resource should be listed: {uris:?}"
+        );
+        assert!(
+            !uris.contains(&"lab://deploy/actions"),
+            "disallowed service action resource leaked into resources/list: {uris:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_resources_paginates_large_builtin_catalog() {
+        let server = large_resource_server(250);
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let first = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+            .await
+            .expect("first page");
+
+        assert_eq!(
+            first.resources.len(),
+            crate::mcp::pagination::MCP_LIST_PAGE_SIZE
+        );
+        assert_eq!(first.resources[0].uri, "lab://catalog");
+        assert_eq!(first.next_cursor.as_deref(), Some("100"));
+        let first_page_service_resources = first
+            .resources
+            .iter()
+            .filter(|resource| resource.uri.starts_with("lab://resource_service_"))
+            .count();
+        assert!(
+            first_page_service_resources > 0,
+            "first page should include synthetic service resources"
+        );
+
+        let second_request =
+            PaginatedRequestParams::default().with_cursor(first.next_cursor.clone());
+        let second = running
+            .service()
+            .list_resources_impl(
+                Some(second_request),
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .expect("second page");
+
+        let expected_first_service_on_second_page =
+            format!("lab://resource_service_{first_page_service_resources:03}/actions");
+        assert_eq!(
+            second.resources[0].uri,
+            expected_first_service_on_second_page
+        );
+    }
+
+    #[tokio::test]
+    async fn protected_scope_hides_code_mode_app_resources_when_disabled() {
+        let server =
+            resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "media",
+                ["sonarr"],
+                ["gateway"],
+                false,
+            ))
+            .await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let resources = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+            .await
+            .expect("list resources");
+        let uris = resources
+            .resources
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(
+            uris.iter()
+                .all(|uri| !uri.starts_with(CODE_MODE_APP_URI_PREFIX)),
+            "Code Mode app resources leaked into resources/list with expose_code_mode=false: {uris:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn protected_scope_denies_code_mode_app_resource_read_when_disabled() {
+        let server =
+            resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "media",
+                ["sonarr"],
+                ["gateway"],
+                false,
+            ))
+            .await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        for uri in [CODE_MODE_APP_URI, CODE_MODE_HISTORY_APP_URI] {
+            let err = running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(uri),
+                    scoped_context(running.peer().clone(), &["lab:read"]),
+                )
+                .await
+                .expect_err("Code Mode app resource must be hidden");
+
+            assert!(
+                err.message.contains("unknown UI resource"),
+                "{uri} should be hidden as an unknown UI resource, got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_scope_denies_disallowed_service_action_resource_read() {
+        let server =
+            resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "media",
+                ["sonarr"],
+                ["gateway"],
+                false,
+            ))
+            .await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let err = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new("lab://deploy/actions"),
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .expect_err("disallowed service action resource must be denied");
+
+        assert_eq!(
+            err.data.as_ref().expect("error data")["kind"],
+            json!("route_scope_denied")
+        );
+    }
+
+    #[tokio::test]
+    async fn protected_scope_allows_allowed_service_action_resource_read() {
+        let server =
+            resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "media",
+                ["sonarr"],
+                ["gateway"],
+                false,
+            ))
+            .await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let allowed = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new("lab://gateway/actions"),
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .expect("allowed service action resource");
+
+        let ResourceContents::TextResourceContents { text, .. } = &allowed.contents[0] else {
+            panic!("expected text resource");
+        };
+        assert!(
+            text.contains(r#""name": "help""#),
+            "allowed action resource should render the service action catalog: {text}"
         );
     }
 
@@ -1173,9 +1596,13 @@ mod tests {
         )
         .expect("codemode resource");
 
-        assert!(html.contains("statusLabel"));
         assert!(html.contains("call.ok"));
+        assert!(html.contains("call.error_kind"));
         assert!(html.contains("s.length"));
+        assert!(
+            html.contains("call.namespace"),
+            "inline app must read the emitted namespace field (with an id-split fallback)"
+        );
         assert!(
             !html.contains("call.status"),
             "inline app must use the emitted ok boolean, not stale status fields"

@@ -6,7 +6,7 @@ vi.mock("./invoke", () => ({
   invoke: invokeMock,
 }));
 
-import { executeLauncherEntry, fetchLauncherCatalog } from "./labbyClient";
+import { executeLauncherEntry, fetchLauncherCatalog, fetchLauncherSchema } from "./labbyClient";
 
 describe("launcher client wrappers", () => {
   beforeEach(() => {
@@ -54,6 +54,19 @@ describe("launcher client wrappers", () => {
       method: "POST",
       payload: { value: 1 },
     });
+  });
+
+  it("fetchLauncherSchema requests schema by launcher id", async () => {
+    invokeMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      payload: { id: "mcp:alpha::ping", inputSchema: { type: "object" } },
+    });
+
+    const result = await fetchLauncherSchema("mcp:alpha::ping");
+
+    expect(invokeMock).toHaveBeenCalledWith("fetch_launcher_schema", { id: "mcp:alpha::ping" });
+    expect(result).toEqual({ id: "mcp:alpha::ping", inputSchema: { type: "object" } });
   });
 
   it("HTTP errors return stable payloads rather than throwing", async () => {

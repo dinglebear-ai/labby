@@ -370,7 +370,7 @@ impl GatewayManager {
             .await
     }
 
-    async fn refresh_code_mode_catalog_allowed(
+    pub(crate) async fn refresh_code_mode_catalog_allowed(
         &self,
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,

@@ -7,19 +7,24 @@
 //! The Code Mode tool description has exactly one definition; this module
 //! imports it for `list_tools`.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{ListToolsResult, Meta, PaginatedRequestParams, Tool};
+#[cfg(feature = "gateway")]
+use rmcp::model::Meta;
+use rmcp::model::{ListToolsResult, PaginatedRequestParams, Tool};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::{CodeModeUpstreamDescription, code_mode_description};
+#[cfg(feature = "gateway")]
 use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
 use crate::mcp::completion::action_schema;
+#[cfg(feature = "gateway")]
 use crate::mcp::context::auth_context_from_extensions;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
@@ -27,13 +32,17 @@ use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::handlers_resources::{
     code_mode_app_resource_uri_for_tool, code_mode_app_skybridge_uri_for_tool,
 };
-use crate::mcp::logging::DispatchLogOutcome;
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
+use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
+
+static ACTION_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> =
+    LazyLock::new(|| Arc::new(action_schema()));
 
 impl LabMcpServer {
     pub(crate) async fn list_tools_impl(
         &self,
-        _request: Option<PaginatedRequestParams>,
+        request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let start = Instant::now();
@@ -45,8 +54,36 @@ impl LabMcpServer {
             subject,
             "dispatch start"
         );
-        let schema = Arc::new(action_schema());
-        let mut tools = Vec::new();
+        let schema = Arc::clone(&ACTION_SCHEMA);
+        let mut tools = match PageCollector::new(request) {
+            Ok(collector) => collector,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_tools",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "tool list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_tools",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
+        let mut advertised_names = HashSet::new();
         let mut builtin_tool_count = 0usize;
         let mut upstream_tool_count = 0usize;
         let mut subject_scoped_tool_count = 0usize;
@@ -62,6 +99,7 @@ impl LabMcpServer {
         let process_code_mode_enabled = crate::config::process_code_mode_enabled();
         let hide_raw_tools = visibility.hides_raw_tools();
         let visibility_mode = visibility.mode_label();
+        #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         let mut builtin_names = Vec::new();
         for svc in self.registry.services() {
@@ -72,43 +110,26 @@ impl LabMcpServer {
                 if hide_raw_tools {
                     suppressed_builtin_tool_count += 1;
                 } else {
-                    tools.push(Tool::new(svc.name, svc.description, Arc::clone(&schema)));
+                    advertised_names.insert(svc.name.to_string());
+                    tools.accept(Tool::new(svc.name, svc.description, Arc::clone(&schema)));
                     builtin_tool_count += 1;
+                    if tools.finished() {
+                        break;
+                    }
                 }
             }
         }
+        // Early pagination can leave builtin_names/advertised_names partial; every later
+        // source that depends on those dedup sets must stay gated behind tools.finished().
         #[cfg(feature = "gateway")]
-        if visibility.exposes_synthetic_tools() {
+        if !tools.finished() && visibility.exposes_synthetic_tools() {
             // ── Gateway Code Mode tool. It takes `{ code, upstreams?, tools? }`
             // and exposes in-sandbox discovery through `codemode.search()` /
             // `codemode.describe()`.
             // See mcp/CLAUDE.md for the exception rationale and
             // dispatch/gateway/dispatch.rs guard.
             let trace_output_schema = code_mode_trace_output_schema();
-            let execute_schema = match serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "JavaScript async arrow function to execute. Use await callTool(id, params) with JSON-serializable params."
-                    },
-                    "upstreams": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional upstream allowlist for this execution."
-                    },
-                    "tools": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional tool allowlist for this execution. Accepts raw tool names or <upstream>::<tool> ids."
-                    }
-                },
-                "required": ["code"]
-            }) {
-                Value::Object(map) => Arc::new(map),
-                _ => unreachable!("execute schema must be an object"),
-            };
+            let execute_schema = code_mode_execute_schema();
             let code_mode_upstreams = self.code_mode_upstreams_for_description().await;
             let code_mode_description = code_mode_description(&code_mode_upstreams);
             tracing::info!(
@@ -131,7 +152,7 @@ impl LabMcpServer {
                 skybridge_uri = %codemode_skybridge_uri,
                 "advertised primary Code Mode MCP app metadata"
             );
-            tools.push(
+            tools.accept(
                 Tool::new(
                     CODE_MODE_TOOL_NAME,
                     code_mode_description,
@@ -140,6 +161,7 @@ impl LabMcpServer {
                 .with_raw_output_schema(Arc::clone(&trace_output_schema))
                 .with_meta(code_mode_tool_meta(CODE_MODE_TOOL_NAME)),
             );
+            advertised_names.insert(CODE_MODE_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
 
@@ -150,7 +172,9 @@ impl LabMcpServer {
         // Mode execution/search still performs cold discovery through the
         // gateway manager when the caller asks for upstream catalog data.
         #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await {
+        if !tools.finished()
+            && let Some(pool) = self.current_upstream_pool().await
+        {
             pool_present = true;
             let upstream_status = pool.upstream_status().await;
             catalog_upstream_count = upstream_status.len();
@@ -168,9 +192,7 @@ impl LabMcpServer {
             for ut in upstream_tools {
                 let tool_name = ut.tool.name.as_ref();
                 if builtin_names.contains(&tool_name)
-                    || tools
-                        .iter()
-                        .any(|existing| existing.name.as_ref() == tool_name)
+                    || !advertised_names.insert(tool_name.to_string())
                 {
                     tracing::debug!(
                         surface = "mcp",
@@ -181,16 +203,24 @@ impl LabMcpServer {
                     );
                     continue;
                 }
-                tools.push(ut.tool);
+                tools.accept(ut.tool);
                 if hide_raw_tools {
                     upstream_ui_tool_count += 1;
                 } else {
                     upstream_tool_count += 1;
                 }
+                if tools.finished() {
+                    break;
+                }
             }
             let oauth_subject =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context));
-            if !hide_raw_tools && let Some(oauth_subject) = oauth_subject.as_ref() {
+            // Subject-scoped tools share the same partial dedup invariant as the upstream
+            // catalog above, so this source must also stay behind tools.finished().
+            if !tools.finished()
+                && !hide_raw_tools
+                && let Some(oauth_subject) = oauth_subject.as_ref()
+            {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 for (_, upstream_tools) in pool
                     .subject_scoped_tools(&configs, oauth_subject.as_ref())
@@ -199,12 +229,18 @@ impl LabMcpServer {
                     for ut in upstream_tools {
                         let tool_name = ut.name.as_ref();
                         if builtin_names.contains(&tool_name)
-                            || tools.iter().any(|tool| tool.name.as_ref() == tool_name)
+                            || !advertised_names.insert(tool_name.to_string())
                         {
                             continue;
                         }
-                        tools.push(ut);
+                        tools.accept(ut);
                         subject_scoped_tool_count += 1;
+                        if tools.finished() {
+                            break;
+                        }
+                    }
+                    if tools.finished() {
+                        break;
                     }
                 }
             }
@@ -214,6 +250,37 @@ impl LabMcpServer {
                 }
             }
         }
+
+        let (tools, next_cursor) = match tools.finish() {
+            Ok(page) => page,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_tools",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "tool list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_tools",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
+        let page_tool_count = tools.len();
+        let has_next_cursor = next_cursor.is_some();
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
@@ -242,7 +309,8 @@ impl LabMcpServer {
             process_code_mode_enabled,
             hide_raw_tools,
             visibility_mode,
-            total_tool_count = tools.len(),
+            page_tool_count,
+            has_next_cursor,
             "tool list ok"
         );
         self.emit_dispatch_notification(
@@ -254,7 +322,9 @@ impl LabMcpServer {
         )
         .await;
 
-        Ok(ListToolsResult::with_all_items(tools))
+        let mut result = ListToolsResult::with_all_items(tools);
+        result.next_cursor = next_cursor;
+        Ok(result)
     }
 
     #[cfg(feature = "gateway")]
@@ -310,8 +380,40 @@ fn code_mode_tool_meta(tool_name: &str) -> Meta {
 }
 
 #[cfg(feature = "gateway")]
+fn code_mode_execute_schema() -> Arc<serde_json::Map<String, Value>> {
+    static EXECUTE_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(
+        || match serde_json::json!({
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "JavaScript async arrow function to execute. Use await callTool(id, params) with JSON-serializable params."
+                },
+                "upstreams": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional upstream allowlist for this execution."
+                },
+                "tools": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional tool allowlist for this execution. Accepts raw tool names or <upstream>::<tool> ids."
+                }
+            },
+            "required": ["code"]
+        }) {
+            Value::Object(map) => Arc::new(map),
+            _ => unreachable!("execute schema must be an object"),
+        },
+    );
+    Arc::clone(&EXECUTE_SCHEMA)
+}
+
+#[cfg(feature = "gateway")]
 fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
-    match serde_json::json!({
+    static TRACE_OUTPUT_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(
+        || match serde_json::json!({
         "type": "object",
         "oneOf": [
             {
@@ -354,10 +456,12 @@ fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
                 "additionalProperties": true
             }
         ]
-    }) {
-        Value::Object(map) => Arc::new(map),
-        _ => unreachable!("trace output schema must be an object"),
-    }
+        }) {
+            Value::Object(map) => Arc::new(map),
+            _ => unreachable!("trace output schema must be an object"),
+        },
+    );
+    Arc::clone(&TRACE_OUTPUT_SCHEMA)
 }
 
 #[cfg(test)]

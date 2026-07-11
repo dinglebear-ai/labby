@@ -10,6 +10,7 @@ pub mod call_tool_codemode;
 #[cfg(feature = "gateway")]
 pub mod call_tool_upstream;
 pub mod catalog;
+pub(crate) mod catalog_notifications;
 pub mod completion;
 pub mod context;
 pub mod elicitation;
@@ -22,6 +23,7 @@ pub mod handlers_tools;
 pub mod in_process_peer;
 pub mod logging;
 pub mod meta;
+pub(crate) mod pagination;
 pub mod peers;
 pub mod prompts;
 pub mod registry;

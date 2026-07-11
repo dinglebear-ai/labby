@@ -54,8 +54,16 @@ const ARTIFACT_WRITE_CALL_ID: &str = "code_mode::write_artifact";
 // `impl Future` in a non-`async fn` parameter position (which is unsupported).
 type ToolCallFut<'a> = std::pin::Pin<
     Box<
-        dyn Future<Output = (u64, String, Option<Value>, Result<Value, ToolError>, u128)>
-            + Send
+        dyn Future<
+                Output = (
+                    u64,
+                    String,
+                    Option<Value>,
+                    Result<Value, ToolError>,
+                    u128,
+                    u128,
+                ),
+            > + Send
             + 'a,
     >,
 >;
@@ -280,6 +288,8 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         }
 
         let deadline = tokio::time::Instant::now() + cfg.timeout;
+        // Epoch for per-call start offsets (waterfall timing in the trace).
+        let execution_start = std::time::Instant::now();
         let artifact_run_id = Ulid::new().to_string();
         let mut state = DriveState::new(&artifact_run_id);
         // Mark this run active before any artifact dir exists, so a concurrent
@@ -298,12 +308,6 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let child_pid = runner.child_pid;
         let stdin = &mut runner.stdin;
         let lines = &mut runner.lines;
-        let mut io = RunnerIo {
-            stdin,
-            child,
-            child_pid,
-            deadline,
-        };
 
         loop {
             tokio::select! {
@@ -313,7 +317,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         Err(_) => {
                             // Wall-clock expiry: kill the runner (do not reuse a
                             // runtime mid-execution) so the pool respawns it.
-                            io.terminate().await;
+                            terminate_code_mode_runner(child, child_pid).await;
                             return DriveOutcome::RunnerUnhealthy(
                                 code_mode_timeout_error(&state.calls),
                             );
@@ -324,7 +328,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     let Some(line_result) = line else {
                         // EOF: the runner process died unexpectedly. Surface a
                         // clean error and evict so a replacement spawns.
-                        drop(io.child.wait().await);
+                        drop(child.wait().await);
                         return DriveOutcome::RunnerUnhealthy(
                             CodeModeExecutionError::with_trace(
                                 ToolError::Sdk {
@@ -339,7 +343,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     let line = match classify_line_result(line_result) {
                         Ok(line) => line,
                         Err(err) => {
-                            io.terminate().await;
+                            terminate_code_mode_runner(child, child_pid).await;
                             return DriveOutcome::RunnerUnhealthy(
                                 CodeModeExecutionError::with_trace(err, sorted_calls(&state.calls)),
                             );
@@ -349,7 +353,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     let msg = match serde_json::from_str::<CodeModeRunnerOutput>(&line) {
                         Ok(msg) => msg,
                         Err(err) => {
-                            io.terminate().await;
+                            terminate_code_mode_runner(child, child_pid).await;
                             return DriveOutcome::RunnerUnhealthy(
                                 CodeModeExecutionError::with_trace(
                                     ToolError::Sdk {
@@ -414,7 +418,10 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                     seq,
                                     id,
                                     state.max_calls_per_run,
-                                    &mut io,
+                                    stdin,
+                                    child,
+                                    child_pid,
+                                    deadline,
                                     &mut state,
                                 )
                                 .await
@@ -430,6 +437,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                             id,
                                             local,
                                             params,
+                                            execution_start,
                                             cfg,
                                             &mut pending_tool_calls,
                                         );
@@ -441,6 +449,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                             id,
                                             params,
                                             deadline,
+                                            execution_start,
                                             cfg,
                                             &mut pending_tool_calls,
                                         );
@@ -469,7 +478,10 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 path,
                                 content,
                                 content_type,
-                                &mut io,
+                                stdin,
+                                child,
+                                child_pid,
+                                deadline,
                                 cfg,
                                 &mut state,
                             )
@@ -484,7 +496,10 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 seq,
                                 name,
                                 input,
-                                &mut io,
+                                stdin,
+                                child,
+                                child_pid,
+                                deadline,
                                 cfg,
                                 &mut state,
                             )
@@ -495,7 +510,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         }
                         CodeModeRunnerOutput::StepBegin { seq, name } => {
                             if let Err(err) = handle_step_begin_event(
-                                self, seq, name, &mut io, &mut state,
+                                self, seq, name, stdin, child, child_pid, deadline, &mut state,
                             )
                             .await
                             {
@@ -504,7 +519,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         }
                         CodeModeRunnerOutput::StepResult { seq, value } => {
                             if let Err(err) = handle_step_result_event(
-                                self, seq, value, &mut io, &mut state,
+                                self, seq, value, stdin, child, child_pid, deadline, &mut state,
                             )
                             .await
                             {
@@ -515,7 +530,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             // Preserve original invariant: Done with in-flight
                             // tool calls is a protocol error → evict.
                             if !pending_tool_calls.is_empty() {
-                                io.terminate().await;
+                                terminate_code_mode_runner(child, child_pid).await;
                                 return DriveOutcome::RunnerUnhealthy(
                                     CodeModeExecutionError::with_trace(
                                         ToolError::Sdk {
@@ -573,7 +588,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     if !pending_tool_calls.is_empty() =>
                 {
                     if let Err(err) = handle_completed_tool_call(
-                        completed, &mut io, &mut state,
+                        completed, stdin, child, child_pid, deadline, &mut state,
                     )
                     .await
                     {
@@ -599,35 +614,6 @@ enum DriveOutcome {
     /// The runner crashed, timed out, or violated the protocol; it must be
     /// killed and replaced.
     RunnerUnhealthy(CodeModeExecutionError),
-}
-
-struct RunnerIo<'a> {
-    stdin: &'a mut ChildStdin,
-    child: &'a mut tokio::process::Child,
-    child_pid: Option<u32>,
-    deadline: tokio::time::Instant,
-}
-
-impl RunnerIo<'_> {
-    async fn terminate(&mut self) {
-        terminate_code_mode_runner(self.child, self.child_pid).await;
-    }
-
-    async fn write(
-        &mut self,
-        input: &CodeModeRunnerInput,
-        calls: &[(u64, CodeModeExecutedCall)],
-    ) -> Result<(), CodeModeExecutionError> {
-        write_runner_input_by_deadline(
-            self.stdin,
-            input,
-            self.deadline,
-            self.child,
-            self.child_pid,
-            calls,
-        )
-        .await
-    }
 }
 
 /// Decode a framed-line read result into either the line text or a structured
@@ -667,12 +653,14 @@ fn classify_line_result(
 /// Free function (not `&self` method) so the returned future can capture
 /// `broker` with the same lifetime as the enclosing `run_in_runner_with_config`
 /// rather than being forced to `'static`.
+#[allow(clippy::too_many_arguments)]
 fn enqueue_tool_call<'a, H: CodeModeHost>(
     broker: &'a CodeModeBroker<'a, H>,
     seq: u64,
     id: String,
     params: Value,
     deadline: tokio::time::Instant,
+    execution_start: std::time::Instant,
     cfg: &RunnerConfig,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
 ) {
@@ -682,6 +670,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let capability_filter = cfg.capability_filter.clone();
     let surface = cfg.surface;
     pending_tool_calls.push(Box::pin(async move {
+        let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
         let ctx = ExecCtx { seq };
         let result = broker
@@ -696,7 +685,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
             )
             .await;
         let elapsed_ms = call_start.elapsed().as_millis();
-        (seq, call_id, redacted_params, result, elapsed_ms)
+        (seq, call_id, redacted_params, result, elapsed_ms, start_ms)
     }));
 }
 
@@ -719,6 +708,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     id: String,
     local: LocalProviderCall,
     params: Value,
+    execution_start: std::time::Instant,
     cfg: &RunnerConfig,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
 ) {
@@ -728,6 +718,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     let openapi_registry = cfg.openapi_registry.clone();
     let openapi_http_client = cfg.openapi_http_client.clone();
     pending_tool_calls.push(Box::pin(async move {
+        let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
         if !super::execute::local_providers_allowed(&caller, &capability_filter) {
             return (
@@ -739,6 +730,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                     required_scopes: vec!["lab:admin".to_string()],
                 }),
                 call_start.elapsed().as_millis(),
+                start_ms,
             );
         }
         let ctx = ExecCtx { seq };
@@ -756,6 +748,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                         redacted_params,
                         Ok(value),
                         call_start.elapsed().as_millis(),
+                        start_ms,
                     );
                 }
                 StepDecision::Execute => {}
@@ -769,6 +762,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                             message,
                         }),
                         call_start.elapsed().as_millis(),
+                        start_ms,
                     );
                 }
             }
@@ -797,6 +791,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 redacted_params,
                 Err(err),
                 call_start.elapsed().as_millis(),
+                start_ms,
             );
         }
         (
@@ -805,6 +800,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             redacted_params,
             dispatched,
             call_start.elapsed().as_millis(),
+            start_ms,
         )
     }));
 }
@@ -839,9 +835,9 @@ fn enqueue_rejected_tool_call(
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'_>>,
 ) {
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
-    pending_tool_calls.push(Box::pin(
-        async move { (seq, id, redacted_params, Err(err), 0) },
-    ));
+    pending_tool_calls.push(Box::pin(async move {
+        (seq, id, redacted_params, Err(err), 0, 0)
+    }));
 }
 
 /// Settle an over-ceiling `__lab_internal::*` pseudo-tool call with the
@@ -863,7 +859,7 @@ fn enqueue_internal_call_over_ceiling(
 ) {
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     pending_tool_calls.push(Box::pin(async move {
-        (seq, id, redacted_params, Ok(json!({ "ranked": [] })), 0)
+        (seq, id, redacted_params, Ok(json!({ "ranked": [] })), 0, 0)
     }));
 }
 
@@ -905,7 +901,10 @@ async fn reject_tool_call_over_budget(
     seq: u64,
     id: String,
     budget: u64,
-    io: &mut RunnerIo<'_>,
+    stdin: &mut ChildStdin,
+    child: &mut tokio::process::Child,
+    child_pid: Option<u32>,
+    deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
     if state.calls_enqueued == budget.saturating_add(1) {
@@ -918,7 +917,8 @@ async fn reject_tool_call_over_budget(
             "Code Mode run exceeded the per-run callTool fan-out budget; rejecting further calls"
         );
     }
-    io.write(
+    write_runner_input_by_deadline(
+        stdin,
         &CodeModeRunnerInput::ToolError {
             seq,
             kind: "call_budget_exceeded".to_string(),
@@ -926,6 +926,9 @@ async fn reject_tool_call_over_budget(
                 "per-run callTool budget of {budget} exceeded; reduce fan-out or split the work across multiple codemode calls"
             ),
         },
+        deadline,
+        child,
+        child_pid,
         &state.calls,
     )
     .await?;
@@ -935,6 +938,7 @@ async fn reject_tool_call_over_budget(
             id,
             ok: false,
             elapsed_ms: 0,
+            start_ms: None,
             params: None,
             error_kind: Some("call_budget_exceeded".to_string()),
         },
@@ -948,7 +952,10 @@ async fn handle_artifact_write_event(
     path: String,
     content: String,
     content_type: Option<String>,
-    io: &mut RunnerIo<'_>,
+    stdin: &mut ChildStdin,
+    child: &mut tokio::process::Child,
+    child_pid: Option<u32>,
+    deadline: tokio::time::Instant,
     cfg: &RunnerConfig,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
@@ -965,7 +972,7 @@ async fn handle_artifact_write_event(
             state.artifact_store_pruned = true;
         }
         handle_artifact_write(
-            io.stdin,
+            stdin,
             &artifact_root,
             &mut state.artifacts,
             &mut state.calls,
@@ -980,14 +987,14 @@ async fn handle_artifact_write_event(
         )
         .await
     };
-    match tokio::time::timeout_at(io.deadline, artifact_op).await {
+    match tokio::time::timeout_at(deadline, artifact_op).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(err)) => {
-            io.terminate().await;
+            terminate_code_mode_runner(child, child_pid).await;
             Err(err.into())
         }
         Err(_) => {
-            io.terminate().await;
+            terminate_code_mode_runner(child, child_pid).await;
             Err(code_mode_timeout_error(&state.calls))
         }
     }
@@ -998,33 +1005,44 @@ async fn handle_snippet_resolve_event<H: CodeModeHost>(
     seq: u64,
     name: String,
     input: Value,
-    io: &mut RunnerIo<'_>,
+    stdin: &mut ChildStdin,
+    child: &mut tokio::process::Child,
+    child_pid: Option<u32>,
+    deadline: tokio::time::Instant,
     cfg: &RunnerConfig,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
     let op = resolve_snippet_for_runner(broker, &name, input, cfg, state);
-    match tokio::time::timeout_at(io.deadline, op).await {
+    match tokio::time::timeout_at(deadline, op).await {
         Ok(Ok((code, input))) => {
-            io.write(
+            write_runner_input_by_deadline(
+                stdin,
                 &CodeModeRunnerInput::SnippetResolved { seq, code, input },
+                deadline,
+                child,
+                child_pid,
                 &state.calls,
             )
             .await
         }
         Ok(Err(err)) => {
-            io.write(
+            write_runner_input_by_deadline(
+                stdin,
                 &CodeModeRunnerInput::ToolError {
                     seq,
                     kind: err.kind().to_string(),
                     message: err.user_message().to_string(),
                 },
+                deadline,
+                child,
+                child_pid,
                 &state.calls,
             )
             .await?;
             Ok(())
         }
         Err(_) => {
-            io.terminate().await;
+            terminate_code_mode_runner(child, child_pid).await;
             Err(code_mode_timeout_error(&state.calls))
         }
     }
@@ -1101,7 +1119,10 @@ async fn handle_step_begin_event<H: CodeModeHost>(
     broker: &CodeModeBroker<'_, H>,
     seq: u64,
     name: String,
-    io: &mut RunnerIo<'_>,
+    stdin: &mut ChildStdin,
+    child: &mut tokio::process::Child,
+    child_pid: Option<u32>,
+    deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
     let ctx = ExecCtx { seq };
@@ -1119,7 +1140,7 @@ async fn handle_step_begin_event<H: CodeModeHost>(
             CodeModeRunnerInput::ToolError { seq, kind, message }
         }
     };
-    io.write(&reply, &state.calls).await
+    write_runner_input_by_deadline(stdin, &reply, deadline, child, child_pid, &state.calls).await
 }
 
 /// Handle a `StepResult` event: the step's `fn` ran (decision was execute) and
@@ -1135,7 +1156,10 @@ async fn handle_step_result_event<H: CodeModeHost>(
     broker: &CodeModeBroker<'_, H>,
     seq: u64,
     value: Value,
-    io: &mut RunnerIo<'_>,
+    stdin: &mut ChildStdin,
+    child: &mut tokio::process::Child,
+    child_pid: Option<u32>,
+    deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
     let ctx = ExecCtx { seq };
@@ -1151,7 +1175,7 @@ async fn handle_step_result_event<H: CodeModeHost>(
             message: err.user_message().to_string(),
         },
     };
-    io.write(&reply, &state.calls).await
+    write_runner_input_by_deadline(stdin, &reply, deadline, child, child_pid, &state.calls).await
 }
 
 /// Assemble the `Done` response. The runner is long-lived (it loops after Done),
@@ -1217,11 +1241,21 @@ async fn write_runner_input_by_deadline(
 
 /// Handle a completed tool-call future from `pending_tool_calls`.
 async fn handle_completed_tool_call(
-    completed: Option<(u64, String, Option<Value>, Result<Value, ToolError>, u128)>,
-    io: &mut RunnerIo<'_>,
+    completed: Option<(
+        u64,
+        String,
+        Option<Value>,
+        Result<Value, ToolError>,
+        u128,
+        u128,
+    )>,
+    stdin: &mut ChildStdin,
+    child: &mut tokio::process::Child,
+    child_pid: Option<u32>,
+    deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
-    let Some((seq, id, params, result, elapsed_ms)) = completed else {
+    let Some((seq, id, params, result, elapsed_ms, start_ms)) = completed else {
         return Ok(());
     };
     // Reserved host-internal pseudo-tool calls never appear in the call
@@ -1234,7 +1268,8 @@ async fn handle_completed_tool_call(
             let serialized_len = serde_json::to_vec(&result).map(|v| v.len()).unwrap_or(0);
             if serialized_len > state.calltool_result_max_bytes {
                 let max = state.calltool_result_max_bytes;
-                io.write(
+                write_runner_input_by_deadline(
+                    stdin,
                     &CodeModeRunnerInput::ToolError {
                         seq,
                         kind: "result_too_large".to_string(),
@@ -1242,6 +1277,9 @@ async fn handle_completed_tool_call(
                             "callTool result is {serialized_len} bytes; maximum is {max} bytes (use writeArtifact for large payloads)"
                         ),
                     },
+                    deadline,
+                    child,
+                    child_pid,
                     &state.calls,
                 )
                 .await?;
@@ -1252,6 +1290,7 @@ async fn handle_completed_tool_call(
                             id,
                             ok: false,
                             elapsed_ms,
+                            start_ms: Some(start_ms),
                             params,
                             error_kind: Some("result_too_large".to_string()),
                         },
@@ -1266,13 +1305,18 @@ async fn handle_completed_tool_call(
                         id,
                         ok: true,
                         elapsed_ms,
+                        start_ms: Some(start_ms),
                         params,
                         error_kind: None,
                     },
                 ));
             }
-            io.write(
+            write_runner_input_by_deadline(
+                stdin,
                 &CodeModeRunnerInput::ToolResult { seq, result },
+                deadline,
+                child,
+                child_pid,
                 &state.calls,
             )
             .await?;
@@ -1296,12 +1340,16 @@ async fn handle_completed_tool_call(
             // (which emits the full JSON envelope) — otherwise the
             // runner re-wraps it and the in-sandbox rejection message
             // becomes double-JSON-encoded.
-            io.write(
+            write_runner_input_by_deadline(
+                stdin,
                 &CodeModeRunnerInput::ToolError {
                     seq,
                     kind: kind.clone(),
                     message: err.user_message().to_string(),
                 },
+                deadline,
+                child,
+                child_pid,
                 &state.calls,
             )
             .await?;
@@ -1312,6 +1360,7 @@ async fn handle_completed_tool_call(
                         id,
                         ok: false,
                         elapsed_ms,
+                        start_ms: Some(start_ms),
                         params,
                         error_kind: Some(kind),
                     },
@@ -1416,6 +1465,7 @@ fn artifact_call(
             id: ARTIFACT_WRITE_CALL_ID.to_string(),
             ok,
             elapsed_ms,
+            start_ms: None,
             params,
             error_kind,
         },

@@ -59,6 +59,60 @@ pub(crate) fn env_flag_enabled(name: &str) -> bool {
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
+fn truthy_env_flag_value(value: &str) -> bool {
+    matches!(value, "1" | "true" | "TRUE" | "yes" | "YES")
+}
+
+/// Whether upstream server→client request relay is enabled for proxied tool calls.
+///
+/// `LABBY_UPSTREAM_RELAY_ENABLED` is the clearer current name because the relay
+/// covers every mirrored server→client capability (elicitation, sampling, and
+/// roots). `LABBY_UPSTREAM_RELAY_ELICITATION` remains supported for existing
+/// deployments that enabled the original narrower flag.
+pub(crate) fn upstream_relay_enabled() -> bool {
+    resolve_upstream_relay_enabled(
+        std::env::var("LABBY_UPSTREAM_RELAY_ENABLED")
+            .ok()
+            .as_deref(),
+        std::env::var("LABBY_UPSTREAM_RELAY_ELICITATION")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn resolve_upstream_relay_enabled(current: Option<&str>, legacy: Option<&str>) -> bool {
+    current.is_some_and(truthy_env_flag_value) || legacy.is_some_and(truthy_env_flag_value)
+}
+
+fn parse_bounded_ms(raw: &str, max: u64) -> Option<u64> {
+    raw.parse::<u64>()
+        .ok()
+        .filter(|value| (1..=max).contains(value))
+}
+
+fn parse_bounded_ms_env(name: &str, raw: &str, max: u64) -> Option<u64> {
+    let parsed = parse_bounded_ms(raw, max);
+    if parsed.is_none() {
+        tracing::warn!(
+            env_var = name,
+            value = raw,
+            max_ms = max,
+            "ignoring invalid millisecond timeout environment variable; expected 1..=max_ms"
+        );
+    }
+    parsed
+}
+
+#[cfg(test)]
+fn resolve_destructive_elicitation_timeout_ms(
+    env_value: Option<&str>,
+    config_value: Option<u64>,
+) -> Option<u64> {
+    env_value
+        .and_then(|raw| parse_bounded_ms(raw, MAX_DESTRUCTIVE_ELICITATION_TIMEOUT_MS))
+        .or(config_value)
+}
+
 /// Whether mcp-ui widget -> host tool callbacks are permitted while the Code
 /// Mode synthetic surface (`codemode`) is active.
 ///
@@ -87,6 +141,8 @@ static RESOLVED_DEV_MODE: AtomicBool = AtomicBool::new(false);
 static RESOLVED_WIDGET_CALLBACKS: AtomicBool = AtomicBool::new(false);
 static RESOLVED_SYMBOLS: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static RESOLVED_PROTECTED_MCP_TIMEOUT_SECS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+static RESOLVED_DESTRUCTIVE_ELICITATION_TIMEOUT_MS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+static RESOLVED_CATALOG_NOTIFICATION_TIMEOUT_MS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 
 fn resolved_symbols_cell() -> &'static Mutex<Option<String>> {
     RESOLVED_SYMBOLS.get_or_init(|| Mutex::new(None))
@@ -94,6 +150,14 @@ fn resolved_symbols_cell() -> &'static Mutex<Option<String>> {
 
 fn resolved_protected_mcp_timeout_cell() -> &'static Mutex<Option<u64>> {
     RESOLVED_PROTECTED_MCP_TIMEOUT_SECS.get_or_init(|| Mutex::new(None))
+}
+
+fn resolved_destructive_elicitation_timeout_cell() -> &'static Mutex<Option<u64>> {
+    RESOLVED_DESTRUCTIVE_ELICITATION_TIMEOUT_MS.get_or_init(|| Mutex::new(None))
+}
+
+fn resolved_catalog_notification_timeout_cell() -> &'static Mutex<Option<u64>> {
+    RESOLVED_CATALOG_NOTIFICATION_TIMEOUT_MS.get_or_init(|| Mutex::new(None))
 }
 
 /// Resolve config.toml + env-var precedence for the small set of
@@ -128,6 +192,34 @@ pub(crate) fn install_resolved_preferences(config: &LabConfig) {
     *resolved_protected_mcp_timeout_cell()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = protected_mcp_timeout_secs;
+    let destructive_elicitation_timeout_ms =
+        std::env::var("LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS")
+            .ok()
+            .and_then(|raw| {
+                parse_bounded_ms_env(
+                    "LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS",
+                    &raw,
+                    MAX_DESTRUCTIVE_ELICITATION_TIMEOUT_MS,
+                )
+            })
+            .or(config.mcp.destructive_elicitation_timeout_ms);
+    *resolved_destructive_elicitation_timeout_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = destructive_elicitation_timeout_ms;
+    let catalog_notification_timeout_ms =
+        std::env::var("LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS")
+            .ok()
+            .and_then(|raw| {
+                parse_bounded_ms_env(
+                    "LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS",
+                    &raw,
+                    MAX_CATALOG_NOTIFICATION_TIMEOUT_MS,
+                )
+            })
+            .or(config.mcp.catalog_notification_timeout_ms);
+    *resolved_catalog_notification_timeout_cell()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = catalog_notification_timeout_ms;
 }
 
 pub(crate) fn resolved_show_all() -> bool {
@@ -155,6 +247,24 @@ pub(crate) fn resolved_protected_mcp_connect_timeout_secs() -> Option<u64> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+pub(crate) fn resolved_destructive_elicitation_timeout() -> Duration {
+    Duration::from_millis(
+        resolved_destructive_elicitation_timeout_cell()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or(DEFAULT_DESTRUCTIVE_ELICITATION_TIMEOUT_MS),
+    )
+}
+
+pub(crate) fn resolved_catalog_notification_timeout() -> Duration {
+    Duration::from_millis(
+        resolved_catalog_notification_timeout_cell()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or(DEFAULT_CATALOG_NOTIFICATION_TIMEOUT_MS),
+    )
+}
+
 use anyhow::{Context, Result};
 use labby_auth::config as auth_config;
 use serde::{Deserialize, Serialize, Serializer};
@@ -164,6 +274,10 @@ pub const DEFAULT_MCPREGISTRY_URL: &str = "https://registry.modelcontextprotocol
 pub const WEB_UI_AUTH_DISABLED_ENV: &str = "LABBY_WEB_UI_AUTH_DISABLED";
 pub const WEB_UI_AUTH_DISABLED_LEGACY_ENV: &str = "LABBY_WEB_UI_DISABLE_AUTH";
 const DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_DESTRUCTIVE_ELICITATION_TIMEOUT_MS: u64 = 120_000;
+const MAX_DESTRUCTIVE_ELICITATION_TIMEOUT_MS: u64 = 600_000;
+const DEFAULT_CATALOG_NOTIFICATION_TIMEOUT_MS: u64 = 5_000;
+const MAX_CATALOG_NOTIFICATION_TIMEOUT_MS: u64 = 60_000;
 /// Default deadline for a *relayed* upstream tool call (see
 /// [`LabConfig::upstream_relay_timeout`]).
 ///
@@ -548,6 +662,16 @@ impl LabConfig {
         {
             return Err(ConfigError::InvalidUpstreamRelayTimeout { value });
         }
+        if let Some(value) = self.mcp.destructive_elicitation_timeout_ms
+            && !(1..=MAX_DESTRUCTIVE_ELICITATION_TIMEOUT_MS).contains(&value)
+        {
+            return Err(ConfigError::InvalidDestructiveElicitationTimeout { value });
+        }
+        if let Some(value) = self.mcp.catalog_notification_timeout_ms
+            && !(1..=MAX_CATALOG_NOTIFICATION_TIMEOUT_MS).contains(&value)
+        {
+            return Err(ConfigError::InvalidCatalogNotificationTimeout { value });
+        }
         for upstream in &self.upstream {
             upstream.validate()?;
         }
@@ -909,6 +1033,15 @@ pub struct McpPreferences {
     /// Overridden by `LABBY_SHOW_ALL` env var.
     #[serde(default)]
     pub show_all: Option<bool>,
+    /// Maximum time to wait for a downstream MCP client to answer a destructive
+    /// action confirmation elicitation.
+    /// Overridden by `LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS`.
+    #[serde(default)]
+    pub destructive_elicitation_timeout_ms: Option<u64>,
+    /// Maximum time to wait for one MCP peer catalog-change notification.
+    /// Overridden by `LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS`.
+    #[serde(default)]
+    pub catalog_notification_timeout_ms: Option<u64>,
 }
 
 /// Canonical public URL model.
@@ -995,6 +1128,13 @@ pub struct AuthFileConfig {
     pub max_pending_oauth_states: Option<usize>,
 }
 
+const DEFAULT_CLIENT_REDIRECT_URI_PATTERNS: &[&str] = &[
+    "https://chatgpt.com/connector/oauth/*",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+];
+
 /// Resolve auth configuration from a full `LabConfig`.
 ///
 /// This is the preferred entry point. Precedence for the public URL is:
@@ -1054,10 +1194,9 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
             config.bootstrap_secret.clone(),
         );
         if let Some(patterns) = config.allowed_client_redirect_uris.as_ref() {
-            insert_if_some(
-                &mut merged,
-                "LABBY_AUTH_ALLOWED_REDIRECT_URIS",
-                Some(patterns.join(",")),
+            merged.insert(
+                "LABBY_AUTH_ALLOWED_REDIRECT_URIS".to_string(),
+                patterns.join(","),
             );
         }
         insert_if_some(
@@ -1129,6 +1268,10 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
             merged.insert(key, value);
         }
     }
+
+    merged
+        .entry("LABBY_AUTH_ALLOWED_REDIRECT_URIS".to_string())
+        .or_insert_with(|| DEFAULT_CLIENT_REDIRECT_URI_PATTERNS.join(","));
 
     auth_config::AuthConfigBuilder::new()
         .env_prefix("LABBY")
@@ -2450,6 +2593,8 @@ mod tests {
         config.mcp.show_all = Some(true);
         config.api.dev_mode = Some(true);
         config.api.protected_mcp_connect_timeout_secs = Some(42);
+        config.mcp.destructive_elicitation_timeout_ms = Some(45_000);
+        config.mcp.catalog_notification_timeout_ms = Some(2_500);
         config.code_mode.widget_callbacks = Some(true);
         config.output.symbols = Some("ascii".to_string());
 
@@ -2463,6 +2608,14 @@ mod tests {
         );
         assert_eq!(resolved_symbols().as_deref(), Some("ascii"));
         assert_eq!(resolved_protected_mcp_connect_timeout_secs(), Some(42));
+        assert_eq!(
+            resolved_destructive_elicitation_timeout(),
+            Duration::from_millis(45_000)
+        );
+        assert_eq!(
+            resolved_catalog_notification_timeout(),
+            Duration::from_millis(2_500)
+        );
 
         // Restore defaults so this test doesn't leak state into whichever
         // test the process/thread runs next (matches the existing
@@ -2473,6 +2626,14 @@ mod tests {
         assert!(!resolved_widget_callbacks_enabled());
         assert_eq!(resolved_symbols(), None);
         assert_eq!(resolved_protected_mcp_connect_timeout_secs(), None);
+        assert_eq!(
+            resolved_destructive_elicitation_timeout(),
+            Duration::from_millis(DEFAULT_DESTRUCTIVE_ELICITATION_TIMEOUT_MS)
+        );
+        assert_eq!(
+            resolved_catalog_notification_timeout(),
+            Duration::from_millis(DEFAULT_CATALOG_NOTIFICATION_TIMEOUT_MS)
+        );
     }
 
     fn parse_normalized_config(toml: &str) -> LabConfig {
@@ -2805,6 +2966,67 @@ future = "keep"
         assert_eq!(resolved.register_requests_per_minute, 5);
         assert_eq!(resolved.authorize_requests_per_minute, 15);
         assert_eq!(resolved.max_pending_oauth_states, 256);
+    }
+
+    #[test]
+    fn resolve_auth_uses_curated_client_redirects_by_default() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+
+        assert_eq!(
+            resolved.allowed_client_redirect_uris,
+            vec![
+                "https://chatgpt.com/connector/oauth/*".to_string(),
+                "https://chatgpt.com/connector_platform_oauth_redirect".to_string(),
+                "https://claude.ai/api/mcp/auth_callback".to_string(),
+                "https://claude.com/api/mcp/auth_callback".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_auth_explicit_empty_redirects_disable_product_defaults() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            allowed_client_redirect_uris: Some(Vec::new()),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+
+        assert_eq!(resolved.allowed_client_redirect_uris, Vec::<String>::new());
+    }
+
+    #[test]
+    fn resolve_auth_preserves_explicit_all_https_redirect_opt_in() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            allowed_client_redirect_uris: Some(vec!["https://*".to_string()]),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+
+        assert_eq!(
+            resolved.allowed_client_redirect_uris,
+            vec!["https://*".to_string()]
+        );
     }
 
     #[test]
@@ -3363,6 +3585,126 @@ upstream_relay_timeout_ms = 600000
             zero.validate(),
             Err(ConfigError::InvalidUpstreamRelayTimeout { value: 0 })
         ));
+    }
+
+    #[test]
+    fn destructive_elicitation_timeout_defaults_to_two_minutes_and_is_configurable() {
+        let default_cfg = LabConfig::default();
+        assert_eq!(default_cfg.mcp.destructive_elicitation_timeout_ms, None);
+
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+[mcp]
+destructive_elicitation_timeout_ms = 45000
+",
+        )
+        .expect("mcp destructive elicitation timeout parses");
+
+        assert_eq!(cfg.mcp.destructive_elicitation_timeout_ms, Some(45_000));
+        cfg.validate().expect("destructive timeout validates");
+        assert_eq!(
+            resolve_destructive_elicitation_timeout_ms(
+                None,
+                cfg.mcp.destructive_elicitation_timeout_ms
+            ),
+            Some(45_000)
+        );
+        assert_eq!(
+            resolve_destructive_elicitation_timeout_ms(
+                Some("90000"),
+                cfg.mcp.destructive_elicitation_timeout_ms,
+            ),
+            Some(90_000)
+        );
+        assert_eq!(
+            resolve_destructive_elicitation_timeout_ms(
+                Some("900000"),
+                cfg.mcp.destructive_elicitation_timeout_ms,
+            ),
+            Some(45_000)
+        );
+    }
+
+    #[test]
+    fn destructive_elicitation_timeout_rejects_out_of_range() {
+        let too_big = LabConfig {
+            mcp: McpPreferences {
+                destructive_elicitation_timeout_ms: Some(600_001),
+                ..McpPreferences::default()
+            },
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            too_big.validate(),
+            Err(ConfigError::InvalidDestructiveElicitationTimeout { value: 600_001 })
+        ));
+
+        let zero = LabConfig {
+            mcp: McpPreferences {
+                destructive_elicitation_timeout_ms: Some(0),
+                ..McpPreferences::default()
+            },
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            zero.validate(),
+            Err(ConfigError::InvalidDestructiveElicitationTimeout { value: 0 })
+        ));
+    }
+
+    #[test]
+    fn catalog_notification_timeout_defaults_to_five_seconds_and_is_configurable() {
+        let default_cfg = LabConfig::default();
+        assert_eq!(default_cfg.mcp.catalog_notification_timeout_ms, None);
+
+        let cfg = toml::from_str::<LabConfig>(
+            r"
+[mcp]
+catalog_notification_timeout_ms = 2500
+",
+        )
+        .expect("mcp catalog notification timeout parses");
+
+        assert_eq!(cfg.mcp.catalog_notification_timeout_ms, Some(2_500));
+        cfg.validate()
+            .expect("catalog notification timeout validates");
+    }
+
+    #[test]
+    fn catalog_notification_timeout_rejects_out_of_range() {
+        let too_big = LabConfig {
+            mcp: McpPreferences {
+                catalog_notification_timeout_ms: Some(60_001),
+                ..McpPreferences::default()
+            },
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            too_big.validate(),
+            Err(ConfigError::InvalidCatalogNotificationTimeout { value: 60_001 })
+        ));
+
+        let zero = LabConfig {
+            mcp: McpPreferences {
+                catalog_notification_timeout_ms: Some(0),
+                ..McpPreferences::default()
+            },
+            ..LabConfig::default()
+        };
+        assert!(matches!(
+            zero.validate(),
+            Err(ConfigError::InvalidCatalogNotificationTimeout { value: 0 })
+        ));
+    }
+
+    #[test]
+    fn upstream_relay_enabled_accepts_current_and_legacy_env_names() {
+        assert!(!resolve_upstream_relay_enabled(None, None));
+        assert!(resolve_upstream_relay_enabled(Some("1"), None));
+        assert!(resolve_upstream_relay_enabled(Some("yes"), None));
+        assert!(resolve_upstream_relay_enabled(None, Some("true")));
+        assert!(resolve_upstream_relay_enabled(Some("0"), Some("TRUE")));
+        assert!(!resolve_upstream_relay_enabled(Some("0"), Some("false")));
     }
 
     #[test]

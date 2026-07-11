@@ -228,7 +228,8 @@ Tool-search observability:
 
 - root MCP `list_tools` logs include `visibility_mode`, `hide_raw_tools`,
   `manager_code_mode_enabled`, `process_code_mode_enabled`,
-  `suppressed_builtin_tool_count`, and the final advertised `total_tool_count`
+  `suppressed_builtin_tool_count`, the returned `page_tool_count`, and
+  `has_next_cursor`
 - in-process Lab service peer discovery logs `in_process.list_tools.start` and
   `in_process.list_tools.finish` with `process_code_mode_enabled` and
   `tool_count`; when root code mode is enabled, built-in peers should report

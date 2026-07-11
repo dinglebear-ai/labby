@@ -424,6 +424,7 @@ Commands:
   check                Check local setup prerequisites without mutating the filesystem
   repair               Repair missing local setup prerequisites without contacting external services
   incusbackup          Validate or apply local Incus backup policy
+  incus-ssh            Bootstrap container SSH trust from the host ~/.ssh/config
   install              Copy the labby binary into ~/.local/bin so it is callable in your own terminal
   install-plugin       Install the Claude Code plugin for a configured service
   uninstall-plugin     Uninstall the Claude Code plugin for a service
@@ -998,6 +999,170 @@ Arguments:
           Print help for the subcommand(s)
 ```
 
+## `labby setup incus-ssh`
+
+```text
+Bootstrap container SSH trust from the host ~/.ssh/config
+
+Usage: incus-ssh [OPTIONS] <COMMAND>
+
+Commands:
+  bootstrap  Generate an id_ed25519 key in the container and authorize it on configured hosts
+  verify     Verify container-side SSH access to configured hosts
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby setup incus-ssh bootstrap`
+
+```text
+Generate an id_ed25519 key in the container and authorize it on configured hosts
+
+Usage: bootstrap [OPTIONS]
+
+Options:
+      --container <CONTAINER>
+          Incus container name
+
+          [default: labby]
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --user <USER>
+          User inside the Incus container
+
+          [default: labby]
+
+      --ssh-config <SSH_CONFIG>
+          Host SSH config to read
+
+      --key-path <KEY_PATH>
+          Private key path inside the container. Defaults to the labby user's Ed25519 key
+
+      --dry-run
+          Print the plan without mutating the container or remote hosts
+
+      --include <INCLUDE>
+          Only process hosts whose alias or HostName matches this filter. Repeatable
+
+      --exclude <EXCLUDE>
+          Skip hosts whose alias or HostName matches this filter. Repeatable
+
+      --fail-fast
+          Abort on the first failed host instead of continuing and reporting failures
+
+      --continue-on-error
+          Continue past failed hosts and report them at the end (default)
+
+      --install-config
+          Install a sanitized SSH config into the container. Default for unfiltered runs
+
+      --no-install-config
+          Do not install a sanitized SSH config into the container. Default for filtered runs
+
+      --timeout-seconds <TIMEOUT_SECONDS>
+          SSH connection timeout in seconds
+
+          [default: 10]
+
+  -y, --yes
+          Confirm remote authorized_keys updates
+
+  -h, --help
+          Print help
+```
+
+## `labby setup incus-ssh verify`
+
+```text
+Verify container-side SSH access to configured hosts
+
+Usage: verify [OPTIONS]
+
+Options:
+      --container <CONTAINER>
+          Incus container name
+
+          [default: labby]
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --user <USER>
+          User inside the Incus container
+
+          [default: labby]
+
+      --ssh-config <SSH_CONFIG>
+          Host SSH config to read
+
+      --key-path <KEY_PATH>
+          Private key path inside the container. Defaults to the labby user's Ed25519 key
+
+      --include <INCLUDE>
+          Only process hosts whose alias or HostName matches this filter. Repeatable
+
+      --exclude <EXCLUDE>
+          Skip hosts whose alias or HostName matches this filter. Repeatable
+
+      --fail-fast
+          Abort on the first failed host instead of continuing and reporting failures
+
+      --continue-on-error
+          Continue past failed hosts and report them at the end (default)
+
+      --install-config
+          Refresh the sanitized SSH config before verifying. Default for unfiltered runs
+
+      --no-install-config
+          Do not refresh the sanitized SSH config before verifying. Default for filtered runs
+
+      --timeout-seconds <TIMEOUT_SECONDS>
+          SSH connection timeout in seconds
+
+          [default: 10]
+
+  -h, --help
+          Print help
+```
+
+## `labby setup incus-ssh help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
+```
+
 ## `labby setup install`
 
 ```text
@@ -1216,6 +1381,12 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --web-assets-dir <WEB_ASSETS_DIR>
+          Local static web export to sync. Defaults to LABBY_INCUS_WEB_ASSETS_DIR, then apps/gateway-admin/out
+
+      --no-web-assets
+          Skip syncing static web assets into the container web asset directory
+
       --check-url <CHECK_URL>
           Optional public or host-bound URL to verify after the service is ready
 
@@ -1271,6 +1442,9 @@ Options:
 
       --no-incus-sync
           Do not sync the updated binary into an Incus container
+
+      --no-web-assets
+          Do not update or clear the Incus filesystem web asset directory
 
       --container <CONTAINER>
           Incus container name for the post-update sync

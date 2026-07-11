@@ -133,6 +133,7 @@ fn canonical_kind_round_trips_all_tool_error_kinds() {
         "server_error",
         "decode_error",
         "confirmation_required",
+        "http_only",
     ];
 
     for &sdk_kind in sdk_kinds {
@@ -148,6 +149,25 @@ fn canonical_kind_round_trips_all_tool_error_kinds() {
             canonical_kind(kind),
         );
     }
+}
+
+#[test]
+fn extract_error_info_preserves_http_only_from_json_fallback() {
+    let serialized = serde_json::json!({
+        "kind": "http_only",
+        "message": "fs.preview is not available on the MCP surface; use GET /v1/fs/preview"
+    })
+    .to_string();
+    let anyhow_error = anyhow::anyhow!(serialized);
+
+    let (kind, message, extra) = extract_error_info(&anyhow_error);
+
+    assert_eq!(kind, "http_only");
+    assert_eq!(
+        message,
+        "fs.preview is not available on the MCP surface; use GET /v1/fs/preview"
+    );
+    assert!(extra.is_none());
 }
 
 #[test]
