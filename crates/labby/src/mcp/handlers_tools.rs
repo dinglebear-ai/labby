@@ -119,6 +119,8 @@ impl LabMcpServer {
                 }
             }
         }
+        // Early pagination can leave builtin_names/advertised_names partial; every later
+        // source that depends on those dedup sets must stay gated behind tools.finished().
         #[cfg(feature = "gateway")]
         if !tools.finished() && visibility.exposes_synthetic_tools() {
             // ── Gateway Code Mode tool. It takes `{ code, upstreams?, tools? }`
@@ -213,6 +215,8 @@ impl LabMcpServer {
             }
             let oauth_subject =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context));
+            // Subject-scoped tools share the same partial dedup invariant as the upstream
+            // catalog above, so this source must also stay behind tools.finished().
             if !tools.finished()
                 && !hide_raw_tools
                 && let Some(oauth_subject) = oauth_subject.as_ref()
