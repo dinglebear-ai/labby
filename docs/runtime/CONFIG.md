@@ -597,7 +597,7 @@ Full details in [OAUTH.md](./OAUTH.md).
 | `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
 | `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
-| `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated non-loopback redirect URI patterns. Host wildcards must be full labels, not raw suffix globs. |
+| `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated additional redirect URI patterns. Labby accepts all HTTPS callbacks by default for gateway DCR, and loopback/native-app callbacks are accepted by the auth layer. Host wildcards must be full labels, not raw suffix globs except for the explicit all-HTTPS sentinel `https://*`. |
 | `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Google email of the bootstrap admin permitted to log in. Normalized to lowercase. **Required** in oauth mode — startup fails if unset so no Google account can authenticate unless explicitly permitted. The id_token's `email_verified` claim is enforced (unverified accounts are rejected even when the address matches). Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
 | `LABBY_AUTH_ACCESS_TOKEN_TTL_SECS` | no | Override lab-issued JWT access token lifetime. Defaults to `3600`. |
 | `LABBY_AUTH_REFRESH_TOKEN_TTL_SECS` | no | Override refresh token lifetime. Defaults to `2592000` (30 days). |

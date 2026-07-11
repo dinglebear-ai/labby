@@ -112,13 +112,15 @@ default_port = 38935
 3. Start `labby oauth relay-local` on the browser machine.
 4. Complete the OAuth login flow in the browser before either listener exits.
 
-If you need public `https://` redirect URIs for a relay or browser-facing callback domain,
-remember to allowlist them in `lab-auth` with `LABBY_AUTH_ALLOWED_REDIRECT_URIS` or
-`[auth].allowed_client_redirect_uris`. Loopback redirects (`http://127.0.0.1`, `localhost`) and
-native-app private-use URI scheme redirects (RFC 8252 §7.1, e.g. `com.raycast:/oauth`,
-`warp://mcp/oauth2callback`) never need an allowlist entry — only an app the OS has registered
-for that scheme can receive them, so DCR clients using them are auto-allowed. Only network-reachable
-`http(s)://` targets go through the allowlist.
+Loopback redirects (`http://127.0.0.1`, `localhost`) and native-app private-use URI
+scheme redirects (RFC 8252 §7.1, e.g. `com.raycast:/oauth`,
+`warp://mcp/oauth2callback`) never need an allowlist entry — only an app the OS has
+registered for that scheme can receive them, so DCR clients using them are
+auto-allowed. The Labby gateway product seeds the explicit `https://*` pattern,
+so browser-based MCP clients with HTTPS callbacks do not need per-client entries.
+Use `LABBY_AUTH_ALLOWED_REDIRECT_URIS` or `[auth].allowed_client_redirect_uris`
+only for extra callback patterns outside those defaults. Arbitrary non-loopback
+`http://` callbacks remain blocked.
 
 ## Dev/Prod Container Drift
 
