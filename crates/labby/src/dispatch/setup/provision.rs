@@ -79,6 +79,8 @@ enum ActionKind {
     UvPython,
     RustGo,
     AgentClis,
+    Mise,
+    Chezmoi,
     TailscaleInstall,
     TailscaleJoin,
     ControllerConfig,
@@ -206,6 +208,16 @@ fn build_plan(skip_deps: bool) -> Vec<ProvisionAction> {
                 kind: ActionKind::AgentClis,
             },
             ProvisionAction {
+                privilege: Privilege::Lab,
+                label: Cow::Borrowed("install mise (user-space)"),
+                kind: ActionKind::Mise,
+            },
+            ProvisionAction {
+                privilege: Privilege::Lab,
+                label: Cow::Borrowed("install chezmoi (user-space)"),
+                kind: ActionKind::Chezmoi,
+            },
+            ProvisionAction {
                 privilege: Privilege::Root,
                 label: Cow::Borrowed("install tailscale client"),
                 kind: ActionKind::TailscaleInstall,
@@ -278,6 +290,8 @@ impl ProvisionAction {
                 )
                 .await
             }
+            ActionKind::Mise => lab_command_success("command -v mise >/dev/null").await,
+            ActionKind::Chezmoi => lab_command_success("command -v chezmoi >/dev/null").await,
             ActionKind::TailscaleInstall => command_success("tailscale", &["version"]).await,
             ActionKind::TailscaleJoin => command_success("tailscale", &["ip", "-4"]).await,
             ActionKind::ControllerConfig => controller_config_ready().await,
@@ -307,6 +321,12 @@ impl ProvisionAction {
             }
             ActionKind::AgentClis => {
                 run_image_provision_action("agent-clis").await?;
+            }
+            ActionKind::Mise => {
+                run_image_provision_action("mise").await?;
+            }
+            ActionKind::Chezmoi => {
+                run_image_provision_action("chezmoi").await?;
             }
             ActionKind::TailscaleInstall => {
                 run_image_provision_action("tailscale-install").await?;
@@ -916,6 +936,8 @@ mod tests {
         assert!(text.contains("[labby] install node v24.x"));
         assert!(text.contains("[labby] install rust + go toolchains"));
         assert!(text.contains("[labby] install claude + codex + gemini"));
+        assert!(text.contains("[labby] install mise (user-space)"));
+        assert!(text.contains("[labby] install chezmoi (user-space)"));
         assert!(text.contains("[root] install tailscale client"));
         assert!(text.contains("[root] set Labby node runtime role to controller"));
         assert!(text.contains("[root] write /etc/systemd/system/labby.service"));
@@ -933,6 +955,7 @@ mod tests {
                 "gh",
                 "ca-certificates",
                 "curl",
+                "rsync",
                 "xz-utils",
                 "python3",
                 "zsh",
@@ -977,6 +1000,8 @@ files:
             "uv-python",
             "rust-go",
             "agent-clis",
+            "mise",
+            "chezmoi",
             "tailscale-install",
         ] {
             let script = image_provision_action(name).expect("named action should exist");

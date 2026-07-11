@@ -221,6 +221,8 @@ python --version
 rustc --version
 cargo --version
 go version
+mise --version
+chezmoi --version
 claude --version
 codex --version
 gemini --version'
@@ -229,6 +231,7 @@ log "checking root-level tools"
 incus_cmd exec "$container_name" -- sh -lc 'set -e
 ffmpeg -version | head -1
 adb version | head -2
+rsync --version | head -1
 tailscale version | head -1
 labby --version'
 
