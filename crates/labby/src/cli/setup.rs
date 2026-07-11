@@ -29,6 +29,8 @@ use serde_json::{Value, json};
 use crate::output::theme::CliTheme;
 use crate::output::{OutputFormat, print};
 
+const DEFAULT_INCUS_SSH_KEY_PATH: &str = "/home/labby/.ssh/id_ed25519";
+
 #[derive(Debug, Args)]
 pub struct SetupArgs {
     /// Provision this Ubuntu 24.04/Incus box for the Labby gateway.
@@ -257,7 +259,7 @@ pub enum IncusSshCommand {
         #[arg(long)]
         ssh_config: Option<PathBuf>,
         /// Private key path inside the container.
-        #[arg(long, default_value = "/home/labby/.ssh/id_ed25519")]
+        #[arg(long, default_value = DEFAULT_INCUS_SSH_KEY_PATH, hide_default_value = true)]
         key_path: String,
         /// Print the plan without mutating the container or remote hosts.
         #[arg(long)]
@@ -299,7 +301,7 @@ pub enum IncusSshCommand {
         #[arg(long)]
         ssh_config: Option<PathBuf>,
         /// Private key path inside the container.
-        #[arg(long, default_value = "/home/labby/.ssh/id_ed25519")]
+        #[arg(long, default_value = DEFAULT_INCUS_SSH_KEY_PATH, hide_default_value = true)]
         key_path: String,
         /// Only process hosts whose alias or HostName matches this filter. Repeatable.
         #[arg(long)]
@@ -651,7 +653,7 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
             timeout_seconds,
             yes,
         } => {
-            let options = incus_ssh_options(
+            let options = incus_ssh_options(IncusSshOptionInput {
                 container,
                 user,
                 ssh_config,
@@ -663,7 +665,7 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
                 no_install_config,
                 dry_run,
                 timeout_seconds,
-            );
+            });
             let plan = crate::dispatch::setup::incus::incus_ssh_bootstrap_plan(&options)?;
             if format.is_json() {
                 if dry_run {
@@ -726,7 +728,7 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
             no_install_config,
             timeout_seconds,
         } => {
-            let options = incus_ssh_options(
+            let options = incus_ssh_options(IncusSshOptionInput {
                 container,
                 user,
                 ssh_config,
@@ -736,9 +738,9 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
                 exclude,
                 install_config,
                 no_install_config,
-                false,
+                dry_run: false,
                 timeout_seconds,
-            );
+            });
             let outcome = crate::dispatch::setup::incus::incus_ssh_verify(&options)?;
             if format.is_json() {
                 print(&serde_json::to_value(outcome)?, format)?;
@@ -764,7 +766,7 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
     Ok(())
 }
 
-fn incus_ssh_options(
+struct IncusSshOptionInput {
     container: String,
     user: String,
     ssh_config: Option<PathBuf>,
@@ -776,7 +778,24 @@ fn incus_ssh_options(
     no_install_config: bool,
     dry_run: bool,
     timeout_seconds: u64,
+}
+
+fn incus_ssh_options(
+    input: IncusSshOptionInput,
 ) -> crate::dispatch::setup::incus::IncusSshBootstrapOptions {
+    let IncusSshOptionInput {
+        container,
+        user,
+        ssh_config,
+        key_path,
+        fail_fast,
+        include,
+        exclude,
+        install_config,
+        no_install_config,
+        dry_run,
+        timeout_seconds,
+    } = input;
     let ssh_config = ssh_config.unwrap_or_else(default_ssh_config_path);
     let install_config =
         should_install_incus_ssh_config(install_config, no_install_config, &include, &exclude);

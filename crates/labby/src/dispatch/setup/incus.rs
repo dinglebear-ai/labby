@@ -1010,12 +1010,10 @@ fn require_binary(path: &Path) -> Result<PathBuf, ToolError> {
 fn resolve_sync_web_assets_dir(explicit: Option<&Path>) -> Result<Option<PathBuf>, ToolError> {
     let candidate = if let Some(path) = explicit {
         Some(path.to_path_buf())
-    } else if let Some(path) =
-        std::env::var_os("LABBY_INCUS_WEB_ASSETS_DIR").filter(|value| !value.is_empty())
-    {
-        Some(PathBuf::from(path))
     } else {
-        None
+        std::env::var_os("LABBY_INCUS_WEB_ASSETS_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
     };
     let Some(path) = candidate else {
         return Ok(None);
