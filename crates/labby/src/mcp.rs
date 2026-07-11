@@ -22,6 +22,7 @@ pub mod handlers_tools;
 pub mod in_process_peer;
 pub mod logging;
 pub mod meta;
+pub(crate) mod pagination;
 pub mod peers;
 pub mod prompts;
 pub mod registry;

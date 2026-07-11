@@ -3,10 +3,15 @@
 //! These types closely follow the official MCP Registry OpenAPI specification
 //! plus the Lab-specific extension metadata stored alongside registry records.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Lab-owned MCP Registry metadata extension namespace.
+pub const LAB_REGISTRY_METADATA_NAMESPACE: &str = "dev.labby/registry";
 
 // ---------------------------------------------------------------------------
 // Core registry types (mirrors the upstream API)
@@ -24,7 +29,7 @@ pub struct ServerResponse {
     pub server: ServerJSON,
     /// Registry-managed metadata attached to this response.
     /// `None` when absent in both the upstream response and the local store.
-    #[serde(alias = "_meta")]
+    #[serde(rename = "_meta", alias = "meta")]
     pub meta: Option<ResponseMeta>,
 }
 
@@ -59,7 +64,11 @@ pub struct ServerJSON {
     #[serde(default)]
     pub icons: Vec<Icon>,
     /// Canonical website URL, if any.
-    #[serde(alias = "websiteUrl", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "websiteUrl",
+        alias = "website_url",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub website_url: Option<String>,
 }
 
@@ -75,7 +84,7 @@ impl ServerJSON {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     /// Registry type: `"npm"`, `"pypi"`, `"docker"`, `"mcpb"`, etc.
-    #[serde(alias = "registryType")]
+    #[serde(rename = "registryType", alias = "registry_type")]
     pub registry_type: String,
     /// Package identifier within that registry (e.g. `@scope/name`).
     pub identifier: String,
@@ -85,22 +94,38 @@ pub struct Package {
     /// Transport configuration for this package.
     pub transport: Transport,
     /// Runtime hint: `"npx"`, `"uvx"`, `"docker"`, etc.
-    #[serde(alias = "runtimeHint", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "runtimeHint",
+        alias = "runtime_hint",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub runtime_hint: Option<String>,
     /// Extra arguments prepended before the package identifier.
-    #[serde(alias = "runtimeArguments", default)]
+    #[serde(rename = "runtimeArguments", alias = "runtime_arguments", default)]
     pub runtime_arguments: Vec<Value>,
     /// Extra arguments appended after the package identifier.
-    #[serde(alias = "packageArguments", default)]
+    #[serde(rename = "packageArguments", alias = "package_arguments", default)]
     pub package_arguments: Vec<Value>,
     /// Environment variables accepted or required by this package.
-    #[serde(alias = "environmentVariables", default)]
+    #[serde(
+        rename = "environmentVariables",
+        alias = "environment_variables",
+        default
+    )]
     pub environment_variables: Vec<EnvironmentVariable>,
     /// SHA-256 hash of the binary artifact (MCPB packages only).
-    #[serde(alias = "fileSha256", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "fileSha256",
+        alias = "file_sha256",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub file_sha256: Option<String>,
     /// Override base URL for the package registry (used by self-hosted npm mirrors).
-    #[serde(alias = "registryBaseUrl", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "registryBaseUrl",
+        alias = "registry_base_url",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub registry_base_url: Option<String>,
 }
 
@@ -108,7 +133,7 @@ pub struct Package {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transport {
     /// Transport type: `"stdio"`, `"sse"`, `"http"`, etc.
-    #[serde(alias = "type")]
+    #[serde(rename = "type", alias = "transport_type")]
     pub transport_type: String,
     /// URL for HTTP-based transports.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,10 +158,18 @@ pub struct Header {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Whether this header must be supplied by the caller.
-    #[serde(alias = "isRequired", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "isRequired",
+        alias = "is_required",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub is_required: Option<bool>,
     /// Whether this header should be treated as secret.
-    #[serde(alias = "isSecret", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "isSecret",
+        alias = "is_secret",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub is_secret: Option<bool>,
     /// Placeholder text shown in UIs.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,10 +194,10 @@ pub struct EnvironmentVariable {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Whether this variable must be set.
-    #[serde(alias = "isRequired", default)]
+    #[serde(rename = "isRequired", alias = "is_required", default)]
     pub is_required: bool,
     /// Whether this variable should be treated as a secret.
-    #[serde(alias = "isSecret", default)]
+    #[serde(rename = "isSecret", alias = "is_secret", default)]
     pub is_secret: bool,
     /// Default value to use when the caller does not provide one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -184,7 +217,7 @@ pub struct EnvironmentVariable {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Remote {
     /// Transport type: `"sse"`, `"http"`, etc.
-    #[serde(alias = "type")]
+    #[serde(rename = "type", alias = "transport_type")]
     pub transport_type: String,
     /// URL of the remote endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,10 +242,14 @@ pub struct Repository {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Icon {
     /// MIME type hint.
-    #[serde(alias = "mimeType", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "mimeType",
+        alias = "mime_type",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mime_type: Option<String>,
     /// URL or data URI of the icon.
-    #[serde(alias = "src")]
+    #[serde(rename = "src", alias = "url")]
     pub url: String,
 }
 
@@ -233,7 +270,7 @@ pub struct ServerListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PaginationMetadata {
     /// Opaque cursor for fetching the next page, if any.
-    #[serde(alias = "nextCursor")]
+    #[serde(rename = "nextCursor", alias = "next_cursor")]
     pub next_cursor: Option<String>,
 }
 
@@ -253,7 +290,8 @@ pub struct ResponseMeta {
     pub official: Option<RegistryExtensions>,
     /// Arbitrary extension metadata keyed by namespace.
     ///
-    /// Lab stores its own curation data here under the `"lab"` key.
+    /// Lab stores its own curation data here under
+    /// [`LAB_REGISTRY_METADATA_NAMESPACE`].
     #[serde(flatten)]
     pub extensions: BTreeMap<String, Value>,
 }
@@ -269,27 +307,51 @@ impl ResponseMeta {
     pub fn insert_extension(&mut self, namespace: &str, value: Value) {
         self.extensions.insert(namespace.to_owned(), value);
     }
+
+    /// Insert or replace Lab-owned registry metadata under the canonical
+    /// extension namespace.
+    ///
+    /// # Errors
+    /// Returns a serde error if `metadata` cannot be represented as JSON.
+    pub fn insert_lab_registry_metadata(
+        &mut self,
+        metadata: &LabRegistryMetadata,
+    ) -> serde_json::Result<()> {
+        self.insert_extension(
+            LAB_REGISTRY_METADATA_NAMESPACE,
+            serde_json::to_value(metadata)?,
+        );
+        Ok(())
+    }
 }
 
 /// Official registry-managed extension fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryExtensions {
     /// Whether this is the latest published version of the server.
-    #[serde(alias = "isLatest")]
+    #[serde(rename = "isLatest", alias = "is_latest")]
     pub is_latest: bool,
     /// ISO-8601 timestamp when this version was first published.
-    #[serde(alias = "publishedAt")]
+    #[serde(rename = "publishedAt", alias = "published_at")]
     pub published_at: String,
     /// Lifecycle status: `"active"`, `"deprecated"`, `"deleted"`, etc.
     pub status: String,
     /// ISO-8601 timestamp when `status` last changed.
-    #[serde(alias = "statusChangedAt")]
+    #[serde(rename = "statusChangedAt", alias = "status_changed_at")]
     pub status_changed_at: String,
     /// Human-readable message accompanying a non-active status.
-    #[serde(alias = "statusMessage", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "statusMessage",
+        alias = "status_message",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub status_message: Option<String>,
     /// ISO-8601 timestamp of the most recent upstream update.
-    #[serde(alias = "updatedAt", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "updatedAt",
+        alias = "updated_at",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub updated_at: Option<String>,
 }
 
@@ -363,8 +425,9 @@ impl ListServersParams {
 
 /// Lab-managed curation metadata attached to a registry record.
 ///
-/// Stored in the local registry SQLite store under the `"lab"` extension
-/// namespace. Never accepted from the upstream registry API.
+/// Stored in the local registry SQLite store under the
+/// [`LAB_REGISTRY_METADATA_NAMESPACE`] extension namespace. Never accepted from
+/// the upstream registry API.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LabRegistryMetadata {
     /// Lab audit trail (populated by the store, read-only for callers).
@@ -379,9 +442,238 @@ pub struct LabRegistryMetadata {
     /// Installation quality signals.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality: Option<LabQualityMeta>,
+    /// Security review signals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<LabSecurityMeta>,
     /// UX-level annotations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ux: Option<LabUxMeta>,
+    /// Caller-owned metadata that is not part of the first-class Lab contract.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, Value>,
+}
+
+impl LabRegistryMetadata {
+    /// Validate a caller-supplied Lab metadata write payload.
+    ///
+    /// The upstream registry response shape uses `_meta["dev.labby/registry"]`
+    /// for storage. This helper validates only the extension payload inside
+    /// that namespace and rejects Lab-managed fields callers are not allowed to
+    /// write.
+    ///
+    /// # Errors
+    /// Returns a semicolon-separated validation message when the payload is not
+    /// an object, contains unsupported top-level fields, tries to write
+    /// `audit`, or violates the documented first-class metadata rules.
+    pub fn validate_write_payload(value: &Value) -> Result<Self, String> {
+        let Some(object) = value.as_object() else {
+            return Err("metadata payload must be a JSON object".to_string());
+        };
+
+        let mut errors = Vec::new();
+        let allowed_sections =
+            BTreeSet::from(["curation", "trust", "quality", "security", "ux", "extra"]);
+        for key in object.keys() {
+            if key == "audit" {
+                errors.push("audit is Lab-managed and cannot be supplied by callers".to_string());
+            } else if !allowed_sections.contains(key.as_str()) {
+                errors.push(format!(
+                    "unknown top-level metadata field `{key}`; put caller-owned metadata under `extra`"
+                ));
+            }
+        }
+        validate_section_fields(
+            value,
+            "curation",
+            &[
+                "tags",
+                "notes",
+                "featured",
+                "reviewed",
+                "recommended",
+                "hidden",
+            ],
+            &mut errors,
+        );
+        validate_section_fields(
+            value,
+            "trust",
+            &[
+                "reviewed",
+                "reviewed_at",
+                "source_verified",
+                "maintainer_known",
+            ],
+            &mut errors,
+        );
+        validate_section_fields(
+            value,
+            "quality",
+            &[
+                "install_tested",
+                "last_install_tested_at",
+                "transport_score",
+            ],
+            &mut errors,
+        );
+        validate_section_fields(
+            value,
+            "security",
+            &["ssrf_reviewed", "permissions_reviewed", "secrets_reviewed"],
+            &mut errors,
+        );
+        validate_section_fields(
+            value,
+            "ux",
+            &[
+                "works_in_lab",
+                "recommended_for_homelab",
+                "setup_difficulty",
+            ],
+            &mut errors,
+        );
+        validate_extra_section(value, &mut errors);
+
+        validate_rfc3339_field(
+            value,
+            "/trust/reviewed_at",
+            "trust.reviewed_at",
+            &mut errors,
+        );
+        validate_rfc3339_field(
+            value,
+            "/quality/last_install_tested_at",
+            "quality.last_install_tested_at",
+            &mut errors,
+        );
+        validate_enum_field(
+            value,
+            "/quality/transport_score",
+            "quality.transport_score",
+            &["good", "mixed", "poor"],
+            &mut errors,
+        );
+        validate_enum_field(
+            value,
+            "/ux/setup_difficulty",
+            "ux.setup_difficulty",
+            &["easy", "medium", "hard"],
+            &mut errors,
+        );
+        validate_tags(value, &mut errors);
+
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+
+        let mut metadata: Self = serde_json::from_value(value.clone())
+            .map_err(|err| format!("metadata payload is invalid: {err}"))?;
+        normalize_write_metadata(&mut metadata);
+        Ok(metadata)
+    }
+}
+
+fn validate_section_fields(
+    value: &Value,
+    section: &str,
+    allowed: &[&str],
+    errors: &mut Vec<String>,
+) {
+    let Some(section_value) = value.get(section) else {
+        return;
+    };
+    let Some(section_object) = section_value.as_object() else {
+        errors.push(format!("{section} must be a JSON object"));
+        return;
+    };
+    for key in section_object.keys() {
+        if !allowed.contains(&key.as_str()) {
+            errors.push(format!(
+                "unknown metadata field `{section}.{key}`; put caller-owned metadata under `extra`"
+            ));
+        }
+    }
+}
+
+fn validate_extra_section(value: &Value, errors: &mut Vec<String>) {
+    let Some(extra) = value.get("extra") else {
+        return;
+    };
+    if !extra.is_object() {
+        errors.push("extra must be a JSON object".to_string());
+    }
+}
+
+fn validate_rfc3339_field(value: &Value, pointer: &str, label: &str, errors: &mut Vec<String>) {
+    let Some(field) = value.pointer(pointer) else {
+        return;
+    };
+    let Some(raw) = field.as_str() else {
+        errors.push(format!("{label} must be an RFC3339 string"));
+        return;
+    };
+    if Timestamp::from_str(raw).is_err() {
+        errors.push(format!("{label} must be RFC3339"));
+    }
+}
+
+fn validate_enum_field(
+    value: &Value,
+    pointer: &str,
+    label: &str,
+    allowed: &[&str],
+    errors: &mut Vec<String>,
+) {
+    let Some(field) = value.pointer(pointer) else {
+        return;
+    };
+    let Some(raw) = field.as_str() else {
+        errors.push(format!("{label} must be a string"));
+        return;
+    };
+    if !allowed.contains(&raw) {
+        errors.push(format!("{label} must be one of: {}", allowed.join(", ")));
+    }
+}
+
+fn validate_tags(value: &Value, errors: &mut Vec<String>) {
+    let Some(tags) = value.pointer("/curation/tags") else {
+        return;
+    };
+    let Some(tags) = tags.as_array() else {
+        errors.push("curation.tags must be an array of non-empty strings".to_string());
+        return;
+    };
+    for tag in tags {
+        match tag.as_str() {
+            Some(raw) if !raw.trim().is_empty() => {}
+            _ => errors.push("curation.tags must not contain empty values".to_string()),
+        }
+    }
+}
+
+fn normalize_write_metadata(metadata: &mut LabRegistryMetadata) {
+    if let Some(curation) = metadata.curation.as_mut() {
+        let mut seen = BTreeSet::new();
+        curation.tags = curation
+            .tags
+            .iter()
+            .filter_map(|tag| {
+                let trimmed = tag.trim();
+                if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+                    return None;
+                }
+                Some(trimmed.to_string())
+            })
+            .collect();
+        if curation
+            .notes
+            .as_deref()
+            .is_some_and(|notes| notes.trim().is_empty())
+        {
+            curation.notes = None;
+        }
+    }
 }
 
 /// Audit trail automatically populated by Lab.
@@ -421,14 +713,26 @@ pub struct LabCuration {
 /// Trust signals.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabTrustMeta {
+    /// Whether Lab has reviewed this server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviewed: Option<bool>,
     /// ISO-8601 timestamp when a human last reviewed this server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reviewed_at: Option<String>,
+    /// Whether Lab verified the published source repository.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_verified: Option<bool>,
+    /// Whether Lab recognizes the maintainer identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintainer_known: Option<bool>,
 }
 
 /// Installation quality signals.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabQualityMeta {
+    /// Whether Lab has performed an install smoke test.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_tested: Option<bool>,
     /// ISO-8601 timestamp of the last successful install test.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_install_tested_at: Option<String>,
@@ -437,9 +741,29 @@ pub struct LabQualityMeta {
     pub transport_score: Option<LabRegistryTransportScore>,
 }
 
+/// Security review signals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabSecurityMeta {
+    /// Whether SSRF-sensitive fields have been reviewed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssrf_reviewed: Option<bool>,
+    /// Whether requested permissions/capabilities have been reviewed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions_reviewed: Option<bool>,
+    /// Whether secret handling has been reviewed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secrets_reviewed: Option<bool>,
+}
+
 /// UX-level annotations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabUxMeta {
+    /// Whether this server works in Lab's gateway/runtime setup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub works_in_lab: Option<bool>,
+    /// Whether Lab recommends this server for homelab deployments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommended_for_homelab: Option<bool>,
     /// Subjective setup difficulty rating.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setup_difficulty: Option<LabRegistrySetupDifficulty>,
@@ -512,9 +836,15 @@ mod tests {
     #[test]
     fn server_response_meta_insert_extension() {
         let mut meta = ResponseMeta::default();
-        meta.insert_extension("lab", serde_json::json!({"featured": true}));
+        meta.insert_extension(
+            LAB_REGISTRY_METADATA_NAMESPACE,
+            serde_json::json!({"curation": {"featured": true}}),
+        );
         assert!(!meta.is_empty());
-        assert!(meta.extensions.contains_key("lab"));
+        assert!(
+            meta.extensions
+                .contains_key(LAB_REGISTRY_METADATA_NAMESPACE)
+        );
     }
 
     #[test]
@@ -550,6 +880,173 @@ mod tests {
             back.audit.as_ref().unwrap().updated_at.as_deref(),
             Some("2025-01-01T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn response_meta_serializes_lab_registry_metadata_under_canonical_namespace() {
+        let metadata = LabRegistryMetadata {
+            curation: Some(LabCuration {
+                tags: vec!["recommended".into(), "stable".into()],
+                notes: Some("Works well in small homelab setups.".into()),
+                featured: Some(true),
+                reviewed: None,
+                recommended: None,
+                hidden: Some(false),
+            }),
+            trust: Some(LabTrustMeta {
+                reviewed: Some(true),
+                reviewed_at: Some("2026-04-23T15:00:00Z".into()),
+                source_verified: Some(true),
+                maintainer_known: Some(false),
+            }),
+            quality: Some(LabQualityMeta {
+                install_tested: Some(true),
+                last_install_tested_at: Some("2026-04-23T15:00:00Z".into()),
+                transport_score: Some(LabRegistryTransportScore::Good),
+            }),
+            security: Some(LabSecurityMeta {
+                ssrf_reviewed: Some(true),
+                permissions_reviewed: Some(true),
+                secrets_reviewed: Some(true),
+            }),
+            ux: Some(LabUxMeta {
+                works_in_lab: Some(true),
+                recommended_for_homelab: Some(true),
+                setup_difficulty: Some(LabRegistrySetupDifficulty::Easy),
+            }),
+            extra: BTreeMap::from([(
+                "review_source".to_owned(),
+                Value::String("manual".to_owned()),
+            )]),
+            audit: Some(LabRegistryAudit {
+                updated_at: Some("2026-04-23T15:00:00Z".into()),
+                updated_by: Some("gateway-admin".into()),
+            }),
+        };
+        let mut meta = ResponseMeta::default();
+        meta.insert_lab_registry_metadata(&metadata)
+            .expect("metadata should serialize");
+
+        let value = serde_json::to_value(&meta).expect("response meta should serialize");
+        let lab = &value[LAB_REGISTRY_METADATA_NAMESPACE];
+        assert!(value.get("lab").is_none());
+        assert_eq!(lab["curation"]["featured"], true);
+        assert_eq!(lab["trust"]["reviewed"], true);
+        assert_eq!(lab["trust"]["source_verified"], true);
+        assert_eq!(lab["quality"]["install_tested"], true);
+        assert_eq!(lab["quality"]["transport_score"], "good");
+        assert_eq!(lab["security"]["ssrf_reviewed"], true);
+        assert_eq!(lab["ux"]["works_in_lab"], true);
+        assert_eq!(lab["ux"]["setup_difficulty"], "easy");
+        assert_eq!(lab["extra"]["review_source"], "manual");
+        assert_eq!(lab["audit"]["updated_by"], "gateway-admin");
+    }
+
+    #[test]
+    fn lab_registry_metadata_validation_rejects_unknown_top_level_fields() {
+        let err = LabRegistryMetadata::validate_write_payload(&serde_json::json!({
+            "curation": { "featured": true },
+            "unexpected": true
+        }))
+        .expect_err("unknown top-level fields should be rejected");
+
+        assert!(err.contains("unexpected"));
+        assert!(err.contains("extra"));
+    }
+
+    #[test]
+    fn lab_registry_metadata_validation_rejects_caller_supplied_audit() {
+        let err = LabRegistryMetadata::validate_write_payload(&serde_json::json!({
+            "audit": { "updated_by": "caller" }
+        }))
+        .expect_err("audit is Lab-managed");
+
+        assert!(err.contains("audit"));
+    }
+
+    #[test]
+    fn lab_registry_metadata_validation_rejects_unknown_nested_first_class_fields() {
+        let err = LabRegistryMetadata::validate_write_payload(&serde_json::json!({
+            "quality": {
+                "transportScore": "good"
+            },
+            "ux": {
+                "setupDifficulty": "easy"
+            }
+        }))
+        .expect_err("unknown nested first-class fields should be rejected");
+
+        assert!(err.contains("quality.transportScore"));
+        assert!(err.contains("ux.setupDifficulty"));
+        assert!(err.contains("extra"));
+    }
+
+    #[test]
+    fn lab_registry_metadata_validation_rejects_invalid_dates_enums_and_tags() {
+        let err = LabRegistryMetadata::validate_write_payload(&serde_json::json!({
+            "curation": { "tags": ["stable", " "] },
+            "trust": { "reviewed_at": "not-a-date" },
+            "quality": {
+                "last_install_tested_at": "2026-04-23",
+                "transport_score": "excellent"
+            },
+            "ux": { "setup_difficulty": "trivial" }
+        }))
+        .expect_err("invalid metadata should be rejected");
+
+        assert!(err.contains("curation.tags"));
+        assert!(err.contains("trust.reviewed_at"));
+        assert!(err.contains("quality.last_install_tested_at"));
+        assert!(err.contains("quality.transport_score"));
+        assert!(err.contains("ux.setup_difficulty"));
+    }
+
+    #[test]
+    fn lab_registry_metadata_validation_accepts_documented_write_shape() {
+        let metadata = LabRegistryMetadata::validate_write_payload(&serde_json::json!({
+            "curation": {
+                "featured": true,
+                "hidden": false,
+                "tags": ["recommended", "stable"],
+                "notes": "Works well in small homelab setups."
+            },
+            "trust": {
+                "reviewed": true,
+                "reviewed_at": "2026-04-23T15:00:00Z",
+                "source_verified": true,
+                "maintainer_known": false
+            },
+            "quality": {
+                "install_tested": true,
+                "last_install_tested_at": "2026-04-23T15:00:00Z",
+                "transport_score": "good"
+            },
+            "security": {
+                "ssrf_reviewed": true,
+                "permissions_reviewed": true,
+                "secrets_reviewed": true
+            },
+            "ux": {
+                "works_in_lab": true,
+                "recommended_for_homelab": true,
+                "setup_difficulty": "easy"
+            },
+            "extra": {
+                "review_source": "manual"
+            }
+        }))
+        .expect("documented shape should validate");
+
+        assert_eq!(
+            metadata
+                .curation
+                .as_ref()
+                .expect("curation")
+                .tags
+                .as_slice(),
+            ["recommended", "stable"]
+        );
+        assert!(metadata.audit.is_none());
     }
 
     #[test]
@@ -670,5 +1167,146 @@ mod tests {
         assert_eq!(server.remotes[0].headers[0].value, None);
         assert_eq!(server.icons[0].url, "https://example.com/icon.png");
         assert_eq!(server.icons[0].mime_type.as_deref(), Some("image/png"));
+    }
+
+    #[test]
+    fn server_json_serializes_canonical_registry_field_names() {
+        let server: ServerJSON = serde_json::from_value(serde_json::json!({
+            "name": "io.example/server",
+            "description": "Example MCP server",
+            "version": "1.2.3",
+            "websiteUrl": "https://example.com",
+            "packages": [{
+                "registryType": "npm",
+                "identifier": "@example/server",
+                "runtimeHint": "npx",
+                "runtimeArguments": ["-y"],
+                "packageArguments": ["--stdio"],
+                "fileSha256": "abc123",
+                "registryBaseUrl": "https://registry.npmjs.org",
+                "transport": {
+                    "type": "stdio"
+                },
+                "environmentVariables": [{
+                    "name": "EXAMPLE_TOKEN",
+                    "isRequired": true,
+                    "isSecret": true
+                }]
+            }],
+            "remotes": [{
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "headers": [{
+                    "name": "Authorization",
+                    "isRequired": true,
+                    "isSecret": true
+                }]
+            }],
+            "icons": [{
+                "src": "https://example.com/icon.png",
+                "mimeType": "image/png"
+            }]
+        }))
+        .expect("canonical registry JSON should deserialize");
+
+        let value = serde_json::to_value(&server).expect("server should serialize");
+        let package = &value["packages"][0];
+        assert_eq!(value["websiteUrl"], "https://example.com");
+        assert!(value.get("website_url").is_none());
+        assert_eq!(package["registryType"], "npm");
+        assert!(package.get("registry_type").is_none());
+        assert_eq!(package["runtimeHint"], "npx");
+        assert!(package.get("runtime_hint").is_none());
+        assert_eq!(package["runtimeArguments"], serde_json::json!(["-y"]));
+        assert!(package.get("runtime_arguments").is_none());
+        assert_eq!(package["packageArguments"], serde_json::json!(["--stdio"]));
+        assert!(package.get("package_arguments").is_none());
+        assert_eq!(package["environmentVariables"][0]["name"], "EXAMPLE_TOKEN");
+        assert!(package.get("environment_variables").is_none());
+        assert_eq!(package["fileSha256"], "abc123");
+        assert!(package.get("file_sha256").is_none());
+        assert_eq!(package["registryBaseUrl"], "https://registry.npmjs.org");
+        assert!(package.get("registry_base_url").is_none());
+        assert_eq!(package["transport"]["type"], "stdio");
+        assert!(package["transport"].get("transport_type").is_none());
+        assert_eq!(value["remotes"][0]["type"], "streamable-http");
+        assert!(value["remotes"][0].get("transport_type").is_none());
+        assert_eq!(value["icons"][0]["src"], "https://example.com/icon.png");
+        assert!(value["icons"][0].get("url").is_none());
+        assert_eq!(value["icons"][0]["mimeType"], "image/png");
+        assert!(value["icons"][0].get("mime_type").is_none());
+        assert_eq!(package["environmentVariables"][0]["isRequired"], true);
+        assert!(
+            package["environmentVariables"][0]
+                .get("is_required")
+                .is_none()
+        );
+        assert_eq!(package["environmentVariables"][0]["isSecret"], true);
+        assert!(
+            package["environmentVariables"][0]
+                .get("is_secret")
+                .is_none()
+        );
+        assert_eq!(value["remotes"][0]["headers"][0]["isRequired"], true);
+        assert!(
+            value["remotes"][0]["headers"][0]
+                .get("is_required")
+                .is_none()
+        );
+        assert_eq!(value["remotes"][0]["headers"][0]["isSecret"], true);
+        assert!(value["remotes"][0]["headers"][0].get("is_secret").is_none());
+    }
+
+    #[test]
+    fn server_list_response_serializes_canonical_metadata_field_names() {
+        let response: ServerListResponse = serde_json::from_value(serde_json::json!({
+            "servers": [{
+                "server": {
+                    "name": "io.example/server",
+                    "description": "Example MCP server",
+                    "version": "1.2.3"
+                },
+                "_meta": {
+                    "io.modelcontextprotocol.registry/official": {
+                        "isLatest": true,
+                        "publishedAt": "2026-01-01T00:00:00Z",
+                        "status": "active",
+                        "statusChangedAt": "2026-01-01T00:00:00Z",
+                        "statusMessage": "Ready",
+                        "updatedAt": "2026-01-02T00:00:00Z"
+                    },
+                    "dev.labby/registry": {
+                        "curation": {
+                            "featured": true
+                        }
+                    }
+                }
+            }],
+            "metadata": {
+                "nextCursor": "io.example/server:1.2.3"
+            }
+        }))
+        .expect("canonical registry response should deserialize");
+
+        let value = serde_json::to_value(&response).expect("response should serialize");
+        let first = &value["servers"][0];
+        let official = &first["_meta"]["io.modelcontextprotocol.registry/official"];
+        let lab = &first["_meta"][LAB_REGISTRY_METADATA_NAMESPACE];
+        assert!(first.get("_meta").is_some());
+        assert!(first.get("meta").is_none());
+        assert!(first["_meta"].get("lab").is_none());
+        assert_eq!(lab["curation"]["featured"], true);
+        assert_eq!(value["metadata"]["nextCursor"], "io.example/server:1.2.3");
+        assert!(value["metadata"].get("next_cursor").is_none());
+        assert_eq!(official["isLatest"], true);
+        assert!(official.get("is_latest").is_none());
+        assert_eq!(official["publishedAt"], "2026-01-01T00:00:00Z");
+        assert!(official.get("published_at").is_none());
+        assert_eq!(official["statusChangedAt"], "2026-01-01T00:00:00Z");
+        assert!(official.get("status_changed_at").is_none());
+        assert_eq!(official["statusMessage"], "Ready");
+        assert!(official.get("status_message").is_none());
+        assert_eq!(official["updatedAt"], "2026-01-02T00:00:00Z");
+        assert!(official.get("updated_at").is_none());
     }
 }

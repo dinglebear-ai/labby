@@ -88,13 +88,14 @@ back at the gateway during a proxied tool call — is bridged by the relay path.
 `mcp/call_tool_upstream.rs` routes the proxied call through
 `UpstreamPool::call_tool_relayed` (a dedicated connection served with
 `RelayClientHandler`, see `dispatch/upstream/pool/relay.rs`) instead of the
-pooled `call_tool` / `subject_scoped_call_tool` when **both**: the
-`LABBY_UPSTREAM_RELAY_ELICITATION` env flag is set, and the downstream agent
-advertised elicitation (`context.peer.supported_elicitation_modes()` non-empty).
-Both proxy branches honor the gate — the raw branch passes `subject = None`, the
-OAuth/subject-scoped branch forwards the resolved `oauth_subject` so the
-dedicated connection authenticates as the caller. The relay forwards the
-upstream's request straight to `context.peer` (the agent).
+pooled `call_tool` / `subject_scoped_call_tool` when **both**:
+`LABBY_UPSTREAM_RELAY_ENABLED` is set (legacy
+`LABBY_UPSTREAM_RELAY_ELICITATION` remains accepted), and the downstream agent
+advertised at least one relayed server→client capability (elicitation, sampling,
+or roots). Both proxy branches honor the gate — the raw branch passes
+`subject = None`, the OAuth/subject-scoped branch forwards the resolved
+`oauth_subject` so the dedicated connection authenticates as the caller. The
+relay forwards the upstream's request straight to `context.peer` (the agent).
 
 Relay connections are cached per `(upstream, session_id, subject)`. `session_id`
 is minted once per `LabMcpServer` session (`next_relay_session_id()`) and passed

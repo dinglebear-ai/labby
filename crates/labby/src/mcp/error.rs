@@ -234,6 +234,7 @@ pub(crate) fn canonical_kind(s: &str) -> &'static str {
         "decode_error" => "decode_error",
         "internal_error" => "internal_error",
         "upstream_error" => "upstream_error",
+        "http_only" => "http_only",
         "route_scope_denied" => "route_scope_denied",
         "restart_required" => "restart_required",
         _ => "internal_error",
@@ -278,6 +279,10 @@ mod tests {
             },
             ToolError::Sdk {
                 sdk_kind: "upstream_error".into(),
+                message: String::new(),
+            },
+            ToolError::Sdk {
+                sdk_kind: "http_only".into(),
                 message: String::new(),
             },
             ToolError::Sdk {

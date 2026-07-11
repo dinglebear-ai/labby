@@ -311,6 +311,36 @@ jobs:
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo clippy --workspace --all-features --locked -- -D warnings
 
+  mcp-regressions:
+    name: MCP focused regressions
+    runs-on: ubuntu-latest
+    needs: [changes, frontend-assets]
+    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gateway-admin-out
+          path: apps/gateway-admin/out
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - name: MCP route-scope resources/tools and list pagination
+        run: |
+          cargo test -p labby --all-features --locked mcp::handlers_resources::tests
+          cargo test -p labby --all-features --locked mcp::handlers_tools::tests
+      - name: Upstream ui resource route scope
+        run: |
+          cargo test -p labby-gateway --features testkit --locked read_upstream_ui_resource
+          cargo test -p labby-gateway --lib --features testkit --locked healthy_tool_names_allowed_matches_route_and_exposure_filters
+      - name: Elicitation and relay controls
+        run: |
+          cargo test -p labby --all-features --locked destructive_elicitation_timeout
+          cargo test -p labby --all-features --locked upstream_relay_enabled_accepts_current_and_legacy_env_names
+      - name: Registry metadata and canonical serde
+        run: cargo test -p labby-apis --features mcpregistry --locked mcpregistry
+
   test:
     name: Test
     # Self-hosted Linux runner on a PUBLIC repo: fork PRs must NEVER reach it.
