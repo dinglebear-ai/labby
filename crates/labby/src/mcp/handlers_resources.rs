@@ -227,7 +227,9 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if !resources.finished() && let Some(pool) = self.current_upstream_pool().await {
+        if !resources.finished()
+            && let Some(pool) = self.current_upstream_pool().await
+        {
             for resource in pool
                 .gateway_synthetic_resources_allowed(self.route_scope.allowed_upstreams())
                 .await

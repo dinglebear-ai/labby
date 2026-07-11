@@ -170,7 +170,9 @@ impl LabMcpServer {
         // Mode execution/search still performs cold discovery through the
         // gateway manager when the caller asks for upstream catalog data.
         #[cfg(feature = "gateway")]
-        if !tools.finished() && let Some(pool) = self.current_upstream_pool().await {
+        if !tools.finished()
+            && let Some(pool) = self.current_upstream_pool().await
+        {
             pool_present = true;
             let upstream_status = pool.upstream_status().await;
             catalog_upstream_count = upstream_status.len();
@@ -211,7 +213,10 @@ impl LabMcpServer {
             }
             let oauth_subject =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context));
-            if !tools.finished() && !hide_raw_tools && let Some(oauth_subject) = oauth_subject.as_ref() {
+            if !tools.finished()
+                && !hide_raw_tools
+                && let Some(oauth_subject) = oauth_subject.as_ref()
+            {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 for (_, upstream_tools) in pool
                     .subject_scoped_tools(&configs, oauth_subject.as_ref())

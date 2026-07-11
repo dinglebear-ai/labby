@@ -21,7 +21,10 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, atomic::{AtomicU8, AtomicUsize, Ordering::SeqCst}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, AtomicUsize, Ordering::SeqCst},
+};
 
 const TEST_ACTIONS_ONE: &[ActionSpec] = &[
     ActionSpec {

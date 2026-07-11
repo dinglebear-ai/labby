@@ -85,7 +85,9 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if !prompts.finished() && let Some(pool) = self.current_upstream_pool().await {
+        if !prompts.finished()
+            && let Some(pool) = self.current_upstream_pool().await
+        {
             let builtin_name_refs: Vec<&str> = builtin_names.iter().map(String::as_str).collect();
             let upstream_prompts = pool
                 .list_upstream_prompts_allowed(
@@ -106,7 +108,11 @@ impl LabMcpServer {
                 {
                     let configs = self.route_scoped_oauth_upstream_configs().await;
                     let scoped_prompts = pool
-                        .subject_scoped_prompts(&configs, oauth_subject.as_ref(), &builtin_name_refs)
+                        .subject_scoped_prompts(
+                            &configs,
+                            oauth_subject.as_ref(),
+                            &builtin_name_refs,
+                        )
                         .await;
                     for prompt in scoped_prompts.into_iter().filter(|prompt| {
                         prompt

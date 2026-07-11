@@ -46,7 +46,9 @@ impl<T> PageCollector<T> {
     }
 
     pub(crate) fn finish(self) -> (Vec<T>, Option<String>) {
-        let next_cursor = self.has_next.then(|| (self.start + self.page.len()).to_string());
+        let next_cursor = self
+            .has_next
+            .then(|| (self.start + self.page.len()).to_string());
         (self.page, next_cursor)
     }
 }
