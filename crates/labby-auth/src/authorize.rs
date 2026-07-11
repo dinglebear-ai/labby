@@ -770,6 +770,10 @@ fn wildcard_matches(pattern: &str, value: &str) -> bool {
 }
 
 fn redirect_pattern_matches(pattern: &str, candidate: &reqwest::Url) -> bool {
+    if pattern == "https://*" {
+        return candidate.scheme() == "https" && candidate.host_str().is_some();
+    }
+
     let Ok(pattern_url) = reqwest::Url::parse(pattern) else {
         return false;
     };
@@ -1276,6 +1280,26 @@ pub mod tests {
         assert!(is_allowed_redirect_uri(
             "https://callback.tootie.tv/callback/node-a",
             &[String::from("https://callback.tootie.tv/callback/*")]
+        ));
+        assert!(is_allowed_redirect_uri(
+            "https://chatgpt.com/connector/oauth/test-callback-id",
+            &[String::from("https://chatgpt.com/connector/oauth/*")]
+        ));
+    }
+
+    #[test]
+    fn all_https_redirect_pattern_allows_any_https_callback_only() {
+        assert!(is_allowed_redirect_uri(
+            "https://gemini.google.com/mcp/oauth/callback",
+            &[String::from("https://*")]
+        ));
+        assert!(is_allowed_redirect_uri(
+            "https://example.deeply.nested.client.invalid/path/callback?state=ok",
+            &[String::from("https://*")]
+        ));
+        assert!(!is_allowed_redirect_uri(
+            "http://example.deeply.nested.client.invalid/path/callback",
+            &[String::from("https://*")]
         ));
     }
 
