@@ -162,8 +162,9 @@ scripts/incus-bootstrap.sh \
 
 The image bakes in the release `labby` binary, the bounded apt floor, and the
 agent runtime/toolchain floor: Node, uv-managed Python, Rust, Go, Claude Code,
-Codex, Gemini CLI, ffmpeg, Android platform tooling (`adb`, Android SDK platform
-tools, and build tools), and the Tailscale client. `config/incus/labby-image.yaml`
+Codex, Gemini CLI, mise, chezmoi, ffmpeg, Android platform tooling (`adb`, Android
+SDK platform tools, and build tools), and the Tailscale client.
+`config/incus/labby-image.yaml`
 is the source of truth for both the apt package list and the named provisioning
 action scripts; bare-metal `labby setup --provision` derives its install and
 verification steps from the same YAML so image builds and non-image provisioning
@@ -240,8 +241,8 @@ labby setup --provision --yes --skip-deps
 The plan is explicit about privilege. Root actions are limited to:
 
 - apt install of the bounded floor derived from `config/incus/labby-image.yaml`,
-  including core CLI/runtime packages plus `ffmpeg`, `adb`, and Android SDK
-  command-line tooling
+  including core CLI/runtime packages plus `rsync`, `ffmpeg`, `adb`, and Android
+  SDK command-line tooling
 - `lab` user creation
 - writing `/etc/systemd/system/labby.service`
 - enabling and restarting `labby.service`

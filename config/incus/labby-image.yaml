@@ -32,6 +32,7 @@ packages:
         - gh
         - ca-certificates
         - curl
+        - rsync
         - xz-utils
         - python3
         - zsh
@@ -202,6 +203,38 @@ actions:
       export PATH="$HOME/.local/bin:$PATH"
       npm config set prefix "$HOME/.local"
       npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
+      '
+
+  - trigger: post-packages
+    action: |-
+      #!/usr/bin/env bash
+      set -euo pipefail
+      # LABBY_PROVISION_ACTION: mise
+      runuser -u labby -- env HOME=/home/labby USER=labby LOGNAME=labby XDG_CONFIG_HOME=/home/labby/.config XDG_CACHE_HOME=/home/labby/.cache XDG_DATA_HOME=/home/labby/.local/share sh -lc '
+      set -eu
+      mkdir -p "$HOME/.local/bin"
+      tmp="$(mktemp -d)"
+      trap '\''rm -rf "$tmp"'\'' EXIT
+      installer="$tmp/mise-install.sh"
+      curl -fsSL -o "$installer" https://mise.run
+      test -s "$installer"
+      env MISE_INSTALL_PATH="$HOME/.local/bin/mise" sh "$installer"
+      '
+
+  - trigger: post-packages
+    action: |-
+      #!/usr/bin/env bash
+      set -euo pipefail
+      # LABBY_PROVISION_ACTION: chezmoi
+      runuser -u labby -- env HOME=/home/labby USER=labby LOGNAME=labby XDG_CONFIG_HOME=/home/labby/.config XDG_CACHE_HOME=/home/labby/.cache XDG_DATA_HOME=/home/labby/.local/share sh -lc '
+      set -eu
+      mkdir -p "$HOME/.local/bin"
+      tmp="$(mktemp -d)"
+      trap '\''rm -rf "$tmp"'\'' EXIT
+      installer="$tmp/chezmoi-install.sh"
+      curl -fsSL -o "$installer" https://get.chezmoi.io
+      test -s "$installer"
+      sh "$installer" -b "$HOME/.local/bin"
       '
 
   - trigger: post-packages
