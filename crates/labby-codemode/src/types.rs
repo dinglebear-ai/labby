@@ -342,6 +342,11 @@ pub struct CodeModeExecutedCall {
     pub id: String,
     pub ok: bool,
     pub elapsed_ms: u128,
+    /// Offset from execution start to this call's dispatch, in ms. `None` for
+    /// synthetic entries (budget rejections, artifact pseudo-calls) that have
+    /// no meaningful dispatch time. Lets the inspector render a true waterfall
+    /// (sequential vs `Promise.all` fan-out) instead of bare duration bars.
+    pub start_ms: Option<u128>,
     /// Redacted/capped params captured at the broker boundary. Raw params must
     /// never be stored in this public trace type.
     pub params: Option<Value>,
@@ -351,12 +356,15 @@ pub struct CodeModeExecutedCall {
 impl Serialize for CodeModeExecutedCall {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let (namespace, tool) = split_code_mode_call_id(&self.id);
-        let mut state = serializer.serialize_struct("CodeModeExecutedCall", 7)?;
+        let mut state = serializer.serialize_struct("CodeModeExecutedCall", 8)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("namespace", namespace)?;
         state.serialize_field("tool", tool)?;
         state.serialize_field("ok", &self.ok)?;
         state.serialize_field("elapsed_ms", &self.elapsed_ms)?;
+        if let Some(start_ms) = &self.start_ms {
+            state.serialize_field("start_ms", start_ms)?;
+        }
         if let Some(params) = &self.params {
             state.serialize_field("params", params)?;
         }

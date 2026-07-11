@@ -427,15 +427,29 @@ impl LabMcpServer {
                         elapsed_ms,
                         input_tokens: Some(input_tokens),
                         output_tokens: Some(0),
-                        error_kind: Some(error_kind),
-                        calls,
+                        error_kind: Some(error_kind.clone()),
+                        calls: calls.clone(),
                         match_count: None,
                     })
                     .await;
                 let env = tool_error_envelope(service, "call_tool", &tool_error);
-                return Ok(CallToolResult::error(vec![ContentBlock::text(
-                    env.to_string(),
-                )]));
+                // Failures carry a structured trace too — otherwise the inline
+                // inspector renders nothing for a failed run (the error text
+                // block is host-consumed, not widget-consumed).
+                let structured = serde_json::json!({
+                    "kind": "code_mode_execute_trace",
+                    "call_count": calls.len(),
+                    "calls": calls,
+                    "error_kind": error_kind,
+                    "execution_id": execution_id,
+                    "elapsed_ms": elapsed_ms as u64,
+                    "input_tokens": input_tokens as u64,
+                    "output_tokens": 0,
+                    "result_shape": { "type": "undefined" },
+                });
+                let mut result = CallToolResult::error(vec![ContentBlock::text(env.to_string())]);
+                result.structured_content = Some(structured);
+                return Ok(result);
             }
         };
         response.execution_id = Some(execution_id.clone());
@@ -508,6 +522,10 @@ impl LabMcpServer {
             object.insert(
                 "execution_id".to_string(),
                 Value::String(execution_id.clone()),
+            );
+            object.insert(
+                "elapsed_ms".to_string(),
+                Value::from(started.elapsed().as_millis() as u64),
             );
             object.insert("input_tokens".to_string(), Value::from(input_tokens as u64));
             object.insert(
