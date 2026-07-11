@@ -124,6 +124,10 @@ async fn is_labby_gateway_daemon(
     base_url: &str,
     token: Option<&str>,
 ) -> bool {
+    if token.is_none() && labby_discovery_identifies_daemon(client, base_url).await {
+        return true;
+    }
+
     let mut request = client
         .get(format!("{base_url}/v1/gateway/actions"))
         .timeout(PROBE_TIMEOUT);
@@ -140,6 +144,31 @@ async fn is_labby_gateway_daemon(
         return false;
     };
     actions_include_gateway_reload(&actions)
+}
+
+async fn labby_discovery_identifies_daemon(client: &reqwest::Client, base_url: &str) -> bool {
+    let Ok(response) = client
+        .get(format!("{base_url}/.well-known/labby.json"))
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+    else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    let Ok(discovery) = response.json::<Value>().await else {
+        return false;
+    };
+    discovery
+        .get("paletteCatalogUrl")
+        .and_then(Value::as_str)
+        .is_some()
+        && discovery
+            .get("paletteExecuteUrl")
+            .and_then(Value::as_str)
+            .is_some()
 }
 
 fn actions_include_gateway_reload(actions: &Value) -> bool {
@@ -394,6 +423,63 @@ mod tests {
         config.mcp.port = url.port();
 
         assert!(detect(&config).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn detect_accepts_labby_discovery_when_no_static_token_is_configured() {
+        ensure_tls_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/labby.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiBaseUrl": server.uri(),
+                "paletteCatalogUrl": format!("{}/v1/palette/catalog", server.uri()),
+                "paletteExecuteUrl": format!("{}/v1/palette/execute", server.uri()),
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        assert!(is_labby_gateway_daemon(&client, &server.uri(), None).await);
+    }
+
+    #[tokio::test]
+    async fn detect_rejects_discovery_when_static_token_fails_gateway_actions_probe() {
+        ensure_tls_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/labby.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiBaseUrl": server.uri(),
+                "paletteCatalogUrl": format!("{}/v1/palette/catalog", server.uri()),
+                "paletteExecuteUrl": format!("{}/v1/palette/execute", server.uri()),
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .and(header("authorization", "Bearer wrong-token"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        assert!(!is_labby_gateway_daemon(&client, &server.uri(), Some("wrong-token")).await);
     }
 
     #[tokio::test]

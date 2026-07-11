@@ -1,5 +1,11 @@
 import type { LauncherEntry } from "@/lib/launcherCatalog";
-import { schemaFieldValue, schemaFormFields, updateSchemaFormJson } from "@/lib/schemaForm";
+import { useMemo } from "react";
+import {
+  parseSchemaFormObject,
+  schemaFieldValueFromObject,
+  schemaFormFields,
+  updateSchemaFormJson,
+} from "@/lib/schemaForm";
 
 interface SchemaFormProps {
   action: LauncherEntry | null;
@@ -9,13 +15,16 @@ interface SchemaFormProps {
 
 export function SchemaForm({ action, value, onChange }: SchemaFormProps) {
   const fields = schemaFormFields(action);
+  const currentValue = useMemo(() => parseSchemaFormObject(value), [value]);
   if (fields.length === 0) return null;
 
   return (
     <section className="schema-form" aria-label="Parameters">
       {fields.map((field) => {
         const id = `schema-field-${field.name}`;
-        const fieldValue = schemaFieldValue(value, field);
+        const fieldValue = schemaFieldValueFromObject(currentValue, field);
+        const selectValue =
+          field.type === "boolean" && field.required && fieldValue === "" ? "false" : fieldValue;
         return (
           <label className="schema-field" key={field.name} htmlFor={id}>
             <span className="schema-field-label">
@@ -25,9 +34,12 @@ export function SchemaForm({ action, value, onChange }: SchemaFormProps) {
             {field.type === "boolean" ? (
               <select
                 id={id}
-                value={fieldValue || "false"}
-                onChange={(event) => onChange(updateSchemaFormJson(value, field, event.target.value))}
+                value={selectValue}
+                onChange={(event) =>
+                  onChange(updateSchemaFormJson(value, field, event.target.value))
+                }
               >
+                {!field.required ? <option value="" /> : null}
                 <option value="false">false</option>
                 <option value="true">true</option>
               </select>
@@ -35,7 +47,9 @@ export function SchemaForm({ action, value, onChange }: SchemaFormProps) {
               <select
                 id={id}
                 value={fieldValue}
-                onChange={(event) => onChange(updateSchemaFormJson(value, field, event.target.value))}
+                onChange={(event) =>
+                  onChange(updateSchemaFormJson(value, field, event.target.value))
+                }
               >
                 {!field.required ? <option value="" /> : null}
                 {field.enumValues.map((option) => (
@@ -50,7 +64,9 @@ export function SchemaForm({ action, value, onChange }: SchemaFormProps) {
                 value={fieldValue}
                 type={field.type === "string" ? "text" : "number"}
                 step={field.type === "integer" ? "1" : "any"}
-                onChange={(event) => onChange(updateSchemaFormJson(value, field, event.target.value))}
+                onChange={(event) =>
+                  onChange(updateSchemaFormJson(value, field, event.target.value))
+                }
               />
             )}
           </label>

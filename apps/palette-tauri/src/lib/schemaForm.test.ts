@@ -27,33 +27,43 @@ function entry(inputSchema: unknown): LauncherEntry {
 
 describe("schema form helpers", () => {
   it("extracts simple object schema fields", () => {
-    const fields = schemaFormFields(entry({
-      type: "object",
-      required: ["q"],
-      properties: {
-        q: { type: "string", description: "Query" },
-        limit: { type: "integer" },
-        archived: { type: "boolean" },
-        nested: { type: "object" },
-      },
-    }));
+    const fields = schemaFormFields(
+      entry({
+        type: "object",
+        required: ["q"],
+        properties: {
+          q: { type: "string", description: "Query" },
+          limit: { type: "integer" },
+          archived: { type: "boolean" },
+          nested: { type: "object" },
+        },
+      }),
+    );
 
     expect(fields).toEqual([
       { name: "q", type: "string", required: true, description: "Query", enumValues: undefined },
       { name: "limit", type: "integer", required: false, description: "", enumValues: undefined },
-      { name: "archived", type: "boolean", required: false, description: "", enumValues: undefined },
+      {
+        name: "archived",
+        type: "boolean",
+        required: false,
+        description: "",
+        enumValues: undefined,
+      },
     ]);
   });
 
   it("updates JSON payload values with typed coercion", () => {
-    const [query, limit, archived] = schemaFormFields(entry({
-      type: "object",
-      properties: {
-        q: { type: "string" },
-        limit: { type: "integer" },
-        archived: { type: "boolean" },
-      },
-    }));
+    const [query, limit, archived] = schemaFormFields(
+      entry({
+        type: "object",
+        properties: {
+          q: { type: "string" },
+          limit: { type: "integer" },
+          archived: { type: "boolean" },
+        },
+      }),
+    );
 
     let json = updateSchemaFormJson("{}", query, "labby");
     json = updateSchemaFormJson(json, limit, "5");
@@ -61,5 +71,33 @@ describe("schema form helpers", () => {
 
     expect(JSON.parse(json)).toEqual({ q: "labby", limit: 5, archived: true });
     expect(schemaFieldValue(json, limit)).toBe("5");
+  });
+
+  it("leaves invalid JSON and invalid numeric input unchanged", () => {
+    const [, limit] = schemaFormFields(
+      entry({
+        type: "object",
+        properties: {
+          q: { type: "string" },
+          limit: { type: "integer" },
+        },
+      }),
+    );
+
+    expect(updateSchemaFormJson("{", limit, "5")).toBe("{");
+    expect(JSON.parse(updateSchemaFormJson("{}", limit, "12abc"))).toEqual({ limit: "12abc" });
+  });
+
+  it("removes optional fields when the form value is cleared", () => {
+    const [archived] = schemaFormFields(
+      entry({
+        type: "object",
+        properties: {
+          archived: { type: "boolean" },
+        },
+      }),
+    );
+
+    expect(JSON.parse(updateSchemaFormJson('{"archived":true}', archived, ""))).toEqual({});
   });
 });

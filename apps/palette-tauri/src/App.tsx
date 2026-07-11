@@ -34,6 +34,9 @@ export default function App() {
   const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
   const lastParamsRef = useRef<unknown>({});
   const runRequestIdRef = useRef(0);
+  const schemaRequestIdRef = useRef(0);
+  const modeRef = useRef(mode);
+  const activeActionIdRef = useRef<string | null>(null);
   const settingsFocusRef = useRef<HTMLDivElement | null>(null);
   const schemaCacheRef = useRef(new Map<string, unknown>());
 
@@ -96,11 +99,21 @@ export default function App() {
     }
   }, [mode, query]);
 
+  useEffect(() => {
+    modeRef.current = mode;
+    activeActionIdRef.current = activeAction?.id ?? null;
+  }, [mode, activeAction?.id]);
+
+  const argumentValidation = useMemo(() => {
+    if (mode !== "argument" || !active || !argumentJson.ok) return { valid: true };
+    return validateLauncherParams(active, argumentJson.value);
+  }, [mode, active, argumentJson]);
+
   const validation =
     mode === "argument" && !argumentJson.ok
       ? "Invalid JSON — fix and press Enter"
-      : mode === "argument" && active && !validateLauncherParams(active, argumentJson.value).valid
-        ? (validateLauncherParams(active, argumentJson.value).message ?? "Params do not match schema")
+      : mode === "argument" && active && !argumentValidation.valid
+        ? (argumentValidation.message ?? "Params do not match schema")
       : !active
         ? "No matching action"
         : pendingConfirm === active.id
@@ -111,10 +124,10 @@ export default function App() {
     const requestId = runRequestIdRef.current + 1;
     runRequestIdRef.current = requestId;
     lastParamsRef.current = params;
-    setRun({ kind: "running", title: action.label });
+      setRun({ kind: "running", title: action.label });
     try {
       const result = await executeLauncherEntry(action.id, params, { confirmDestructive: action.destructive });
-      recordPaletteLaunch(action, params, result);
+      recordPaletteLaunch(action, result);
       if (runRequestIdRef.current !== requestId) return;
       setRun(
         result.ok
@@ -131,7 +144,7 @@ export default function App() {
         method: "POST",
         payload: { error: message },
       };
-      recordPaletteLaunch(action, params, result);
+      recordPaletteLaunch(action, result);
       setRun({
         kind: "error",
         title: action.label,
@@ -160,13 +173,25 @@ export default function App() {
       setActiveAction(action);
       setQuery(exampleLauncherParams(action));
       setMode("argument");
+      modeRef.current = "argument";
+      activeActionIdRef.current = action.id;
       setPendingConfirm(null);
       focusInput();
+      const schemaRequestId = schemaRequestIdRef.current + 1;
+      schemaRequestIdRef.current = schemaRequestId;
       void hydrateSchema(action)
         .then((hydrated) => {
+          if (schemaRequestIdRef.current !== schemaRequestId) return;
           setActiveAction((current) => (current?.id === hydrated.id ? hydrated : current));
         })
         .catch((err) => {
+          if (
+            schemaRequestIdRef.current !== schemaRequestId ||
+            modeRef.current !== "argument" ||
+            activeActionIdRef.current !== action.id
+          ) {
+            return;
+          }
           const message = err instanceof Error ? err.message : String(err);
           setRun({
             kind: "error",
@@ -209,6 +234,9 @@ export default function App() {
     setQuery("");
     setSelected(0);
     setMode("browse");
+    schemaRequestIdRef.current += 1;
+    modeRef.current = "browse";
+    activeActionIdRef.current = null;
     setActiveAction(null);
     setBrowseOpen(false);
     setPendingConfirm(null);
@@ -225,6 +253,9 @@ export default function App() {
       setRun({ kind: "idle" });
       setQuery("");
       setMode("browse");
+      schemaRequestIdRef.current += 1;
+      modeRef.current = "browse";
+      activeActionIdRef.current = null;
       setActiveAction(null);
       focusInput();
       return;
@@ -240,9 +271,12 @@ export default function App() {
 
   const onCollapse = useCallback(() => {
     setRun({ kind: "idle" });
-    setQuery("");
-    setMode("browse");
-    setActiveAction(null);
+      setQuery("");
+      setMode("browse");
+      schemaRequestIdRef.current += 1;
+      modeRef.current = "browse";
+      activeActionIdRef.current = null;
+      setActiveAction(null);
   }, []);
 
   const onCopy = useCallback((text: string) => {

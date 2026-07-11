@@ -12,11 +12,24 @@ use labby_gateway::gateway::palette::{
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
 use crate::api::state::AppState;
 use crate::dispatch::error::ToolError;
+
+const PALETTE_CATALOG_CACHE_TTL: Duration = Duration::from_secs(2);
+static PALETTE_CATALOG_CACHE: OnceLock<Mutex<Option<CachedPaletteCatalog>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct CachedPaletteCatalog {
+    key: String,
+    expires_at: Instant,
+    catalog: LauncherCatalogView,
+}
 
 pub fn routes(_state: AppState) -> Router<AppState> {
     Router::new()
@@ -31,11 +44,8 @@ async fn catalog(
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
 ) -> Result<Response<axum::body::Body>, ApiError> {
-    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
-    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
-    let mut catalog = manager.palette_catalog(&caller).await?;
-    append_labby_actions(&mut catalog, &state, auth.as_ref().map(|auth| &auth.0));
-    compact_catalog_schemas(&mut catalog);
+    let mut catalog =
+        compact_palette_catalog(&state, &headers, auth.as_ref().map(|auth| &auth.0)).await?;
     catalog.entries.sort_by(compare_launcher_entries);
     catalog.fingerprint = catalog_fingerprint(&catalog.entries);
     Ok(catalog_response(headers, catalog))
@@ -66,14 +76,68 @@ async fn search(
     auth: Option<Extension<AuthContext>>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Response<axum::body::Body>, ApiError> {
-    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
-    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
-    let mut catalog = manager.palette_catalog(&caller).await?;
-    append_labby_actions(&mut catalog, &state, auth.as_ref().map(|auth| &auth.0));
-    compact_catalog_schemas(&mut catalog);
+    let mut catalog =
+        compact_palette_catalog(&state, &headers, auth.as_ref().map(|auth| &auth.0)).await?;
     catalog.entries = search_entries(catalog.entries, &query.q, query.limit.min(100));
     catalog.fingerprint = catalog_fingerprint(&catalog.entries);
     Ok(catalog_response(headers, catalog))
+}
+
+async fn compact_palette_catalog(
+    state: &AppState,
+    headers: &HeaderMap,
+    auth: Option<&AuthContext>,
+) -> Result<LauncherCatalogView, ApiError> {
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let cache_key = palette_catalog_cache_key(state, &manager, auth);
+    let cache = PALETTE_CATALOG_CACHE.get_or_init(|| Mutex::new(None));
+    {
+        let cached = cache.lock().await;
+        if let Some(cached) = cached.as_ref()
+            && cached.key == cache_key
+            && cached.expires_at > Instant::now()
+        {
+            return Ok(cached.catalog.clone());
+        }
+    }
+
+    let caller = palette_caller(auth, request_id(headers))?;
+    let mut catalog = manager.palette_catalog(&caller).await?;
+    append_labby_actions(&mut catalog, state, auth);
+    compact_catalog_schemas(&mut catalog);
+    *cache.lock().await = Some(CachedPaletteCatalog {
+        key: cache_key,
+        expires_at: Instant::now() + PALETTE_CATALOG_CACHE_TTL,
+        catalog: catalog.clone(),
+    });
+    Ok(catalog)
+}
+
+fn palette_catalog_cache_key(
+    state: &AppState,
+    manager: &std::sync::Arc<crate::dispatch::gateway::manager::GatewayManager>,
+    auth: Option<&AuthContext>,
+) -> String {
+    let mut key = format!("manager:{:p}", std::sync::Arc::as_ptr(manager));
+    key.push_str("|services:");
+    let mut services = state
+        .enabled_services
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    services.sort_unstable();
+    key.push_str(&services.join(","));
+    if let Some(auth) = auth {
+        let mut scopes = auth.scopes.clone();
+        scopes.sort_unstable();
+        key.push_str("|sub:");
+        key.push_str(&auth.sub);
+        key.push_str("|scopes:");
+        key.push_str(&scopes.join(","));
+    } else {
+        key.push_str("|anonymous");
+    }
+    key
 }
 
 async fn schema(
@@ -216,6 +280,15 @@ fn search_entries(
             (score > 0 || needle.is_empty()).then_some((entry, score))
         })
         .collect::<Vec<_>>();
+    let limit = limit.max(1);
+    if scored.len() > limit {
+        scored.select_nth_unstable_by(limit, |(left, left_score), (right, right_score)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| compare_launcher_entries(left, right))
+        });
+        scored.truncate(limit);
+    }
     scored.sort_by(|(left, left_score), (right, right_score)| {
         right_score
             .cmp(left_score)
@@ -223,7 +296,7 @@ fn search_entries(
     });
     scored
         .into_iter()
-        .take(limit.max(1))
+        .take(limit)
         .map(|(entry, _)| entry)
         .collect()
 }
@@ -232,39 +305,37 @@ fn launcher_search_score(entry: &LauncherEntryView, needle: &str) -> u16 {
     if needle.is_empty() {
         return 1;
     }
-    let fields = launcher_search_fields(entry);
-    fields
-        .iter()
+    match entry {
+        LauncherEntryView::LabbyAction(entry) => [
+            entry.id.as_str(),
+            entry.label.as_str(),
+            entry.description.as_str(),
+            entry.source.as_str(),
+            entry.service.as_str(),
+            entry.action.as_str(),
+        ]
+        .into_iter()
         .map(|field| field_score(field, needle))
         .max()
-        .unwrap_or(0)
-}
-
-fn launcher_search_fields(entry: &LauncherEntryView) -> Vec<String> {
-    match entry {
-        LauncherEntryView::LabbyAction(entry) => vec![
-            entry.id.clone(),
-            entry.label.clone(),
-            entry.description.clone(),
-            entry.source.clone(),
-            entry.service.clone(),
-            entry.action.clone(),
-        ],
-        LauncherEntryView::McpTool(entry) => vec![
-            entry.id.clone(),
-            entry.label.clone(),
-            entry.description.clone(),
-            entry.source.clone(),
-            entry.upstream.clone(),
-            entry.tool.clone(),
-        ],
+        .unwrap_or(0),
+        LauncherEntryView::McpTool(entry) => [
+            entry.id.as_str(),
+            entry.label.as_str(),
+            entry.description.as_str(),
+            entry.source.as_str(),
+            entry.upstream.as_str(),
+            entry.tool.as_str(),
+        ]
+        .into_iter()
+        .map(|field| field_score(field, needle))
+        .max()
+        .unwrap_or(0),
     }
-    .into_iter()
-    .map(|value| value.to_ascii_lowercase())
-    .collect()
 }
 
 fn field_score(field: &str, needle: &str) -> u16 {
+    let field = field.to_ascii_lowercase();
+    let field = field.as_str();
     if field == needle {
         100
     } else if field.starts_with(needle) {
@@ -611,19 +682,9 @@ fn entry_id(entry: &LauncherEntryView) -> &str {
 fn catalog_fingerprint(entries: &[LauncherEntryView]) -> String {
     let mut hasher = Sha256::new();
     for entry in entries {
-        hasher.update(entry_id(entry).as_bytes());
-        hasher.update([0]);
-        match entry {
-            LauncherEntryView::LabbyAction(entry) => {
-                if let Some(fp) = &entry.schema_fingerprint {
-                    hasher.update(fp.as_bytes());
-                }
-            }
-            LauncherEntryView::McpTool(entry) => {
-                if let Some(fp) = &entry.schema_fingerprint {
-                    hasher.update(fp.as_bytes());
-                }
-            }
+        match serde_json::to_vec(entry) {
+            Ok(bytes) => hasher.update(bytes),
+            Err(_) => hasher.update(entry_id(entry).as_bytes()),
         }
         hasher.update([0xff]);
     }
@@ -648,7 +709,9 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LauncherEntryView, append_labby_actions, entry_id, search_entries};
+    use super::{
+        LauncherEntryView, append_labby_actions, catalog_fingerprint, entry_id, search_entries,
+    };
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -1219,6 +1282,26 @@ mod tests {
 
         assert_eq!(entry_id(&entries[0]), "mcp:github::search_repos");
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn palette_catalog_fingerprint_changes_when_visible_metadata_changes() {
+        let mut entry = labby_gateway::gateway::palette::McpToolLauncherEntry {
+            id: "mcp:github::search_repos".to_string(),
+            label: "search_repos".to_string(),
+            description: "Search repositories".to_string(),
+            source: "github".to_string(),
+            destructive: false,
+            input_schema: None,
+            schema_fingerprint: None,
+            upstream: "github".to_string(),
+            tool: "search_repos".to_string(),
+        };
+        let first = catalog_fingerprint(&[LauncherEntryView::McpTool(entry.clone())]);
+        entry.description = "Search GitHub repositories".to_string();
+        let second = catalog_fingerprint(&[LauncherEntryView::McpTool(entry)]);
+
+        assert_ne!(first, second);
     }
 
     #[tokio::test]

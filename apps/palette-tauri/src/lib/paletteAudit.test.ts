@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LauncherEntry } from "@/lib/launcherCatalog";
 import { readPaletteLaunches, recordPaletteLaunch } from "@/lib/paletteAudit";
@@ -27,8 +27,8 @@ describe("palette audit trail", () => {
     window.localStorage.clear();
   });
 
-  it("records recent launches with redacted params", () => {
-    recordPaletteLaunch(action, { query: "labby", token: "secret-token" }, {
+  it("records recent launches without persisting params", () => {
+    recordPaletteLaunch(action, {
       ok: true,
       status: 200,
       path: "/v1/palette/execute",
@@ -43,8 +43,25 @@ describe("palette audit trail", () => {
         source: "github",
         ok: true,
         status: 200,
-        params: { query: "labby", token: "[REDACTED]" },
       },
     ]);
+  });
+
+  it("ignores localStorage write failures", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+
+    expect(() =>
+      recordPaletteLaunch(action, {
+        ok: true,
+        status: 200,
+        path: "/v1/palette/execute",
+        method: "POST",
+        payload: { ok: true },
+      }),
+    ).not.toThrow();
+
+    setItem.mockRestore();
   });
 });

@@ -19,11 +19,6 @@ execute_params="${LABBY_PALETTE_EXECUTE_PARAMS:-{}}"
 api_url="${api_url%/}"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
-encoded_query="$(python3 - "${query}" <<'PY'
-import sys, urllib.parse
-print(urllib.parse.quote(sys.argv[1], safe=""))
-PY
-)"
 
 curl_json() {
   curl -fsS \
@@ -33,7 +28,9 @@ curl_json() {
 }
 
 catalog="${tmp_dir}/catalog.json"
-curl_json "${api_url}/v1/palette/search?q=${encoded_query}&limit=10" > "${catalog}"
+curl_json --get "${api_url}/v1/palette/search" \
+  --data-urlencode "q=${query}" \
+  --data-urlencode "limit=10" > "${catalog}"
 
 python3 - "${catalog}" "${query}" <<'PY'
 import json, sys
