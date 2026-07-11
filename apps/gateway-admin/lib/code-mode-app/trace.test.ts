@@ -61,6 +61,7 @@ test('parses execute trace token and log metadata', () => {
     call_count: 0,
     calls: [],
     execution_id: 'exec-1',
+    elapsed_ms: 348,
     input_tokens: 412,
     output_tokens: 96,
     logs_count: 2,
@@ -69,9 +70,55 @@ test('parses execute trace token and log metadata', () => {
   assert.equal(trace?.kind, 'code_mode_execute_trace')
   if (trace?.kind === 'code_mode_execute_trace') {
     assert.equal(trace.execution_id, 'exec-1')
+    assert.equal(trace.elapsed_ms, 348)
     assert.equal(trace.input_tokens, 412)
     assert.equal(trace.output_tokens, 96)
     assert.equal(trace.logs_count, 2)
+  }
+})
+
+test('parses failed-run traces with error kind and call start offsets', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    error_kind: 'timeout',
+    elapsed_ms: 30012,
+    calls: [
+      {
+        id: 'rustarr::qbittorrent.transfer_info',
+        namespace: 'rustarr',
+        tool: 'qbittorrent.transfer_info',
+        ok: false,
+        elapsed_ms: 1010,
+        start_ms: 226,
+        error_kind: 'upstream_timeout',
+      },
+    ],
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.error_kind, 'timeout')
+    assert.equal(trace.calls[0].start_ms, 226)
+  }
+})
+
+test('parses artifact receipts', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 0,
+    calls: [],
+    artifacts: [
+      { path: 'report.md', content_type: 'text/markdown', bytes: 2048, sha256: 'abc' },
+      { not_a_receipt: true },
+    ],
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.artifacts?.length, 1)
+    assert.equal(trace.artifacts?.[0].path, 'report.md')
+    assert.equal(trace.artifacts?.[0].bytes, 2048)
   }
 })
 
