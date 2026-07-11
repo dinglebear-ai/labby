@@ -130,6 +130,7 @@ export function useLauncherCatalog(): LauncherCatalogState {
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
+    void tick;
     let active = true;
     setLoading(true);
     fetchLauncherCatalog(etagRef.current)
