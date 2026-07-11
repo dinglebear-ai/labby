@@ -21,10 +21,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, AtomicUsize, Ordering::SeqCst},
-};
+use std::sync::{Arc, atomic::AtomicU8};
 
 const TEST_ACTIONS_ONE: &[ActionSpec] = &[
     ActionSpec {
@@ -64,13 +61,6 @@ const TEST_ACTIONS_TWO: &[ActionSpec] = &[
     },
 ];
 
-static TOOL_DESCRIPTION_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-fn counted_description(index: usize) -> String {
-    TOOL_DESCRIPTION_COUNT.fetch_add(1, SeqCst);
-    format!("Synthetic service {index:03}")
-}
-
 fn noop_dispatch(
     _action: String,
     _params: Value,
@@ -105,10 +95,9 @@ fn large_test_registry(service_count: usize) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     for index in 0..service_count {
         let name = Box::leak(format!("service_{index:03}").into_boxed_str());
-        let description = Box::leak(counted_description(index).into_boxed_str());
         registry.register(RegisteredService {
             name,
-            description,
+            description: "Synthetic service",
             category: "test",
             kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
             status: "available",
@@ -1548,7 +1537,6 @@ async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks
 
 #[tokio::test]
 async fn list_tools_paginates_large_builtin_catalog() {
-    TOOL_DESCRIPTION_COUNT.store(0, SeqCst);
     let manager = code_mode_manager(false).await;
     let server = test_server(
         large_test_registry(250),

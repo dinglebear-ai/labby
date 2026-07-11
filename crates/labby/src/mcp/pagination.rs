@@ -45,15 +45,19 @@ impl<T> PageCollector<T> {
         self.has_next
     }
 
-    pub(crate) fn finish(self) -> (Vec<T>, Option<String>) {
+    pub(crate) fn finish(self) -> Result<(Vec<T>, Option<String>), ErrorData> {
+        if self.seen < self.start {
+            return Err(invalid_cursor("cursor is past the end of the result set"));
+        }
         let next_cursor = self
             .has_next
             .then(|| (self.start + self.page.len()).to_string());
-        (self.page, next_cursor)
+        Ok((self.page, next_cursor))
     }
 }
 
-pub(crate) fn try_collect_page<T, I>(
+#[cfg(test)]
+fn try_collect_page<T, I>(
     items: I,
     request: Option<PaginatedRequestParams>,
 ) -> Result<(Vec<T>, Option<String>), ErrorData>
@@ -67,10 +71,11 @@ where
             break;
         }
     }
-    Ok(collector.finish())
+    collector.finish()
 }
 
-pub(crate) fn paginate_items<T>(
+#[cfg(test)]
+fn paginate_items<T>(
     items: Vec<T>,
     request: Option<PaginatedRequestParams>,
 ) -> Result<(Vec<T>, Option<String>), ErrorData> {
@@ -129,7 +134,7 @@ mod tests {
             }
         }
 
-        let (page, next_cursor) = collector.finish();
+        let (page, next_cursor) = collector.finish().expect("page");
         assert_eq!(visited, MCP_LIST_PAGE_SIZE + 1);
         assert_eq!(page, (0..MCP_LIST_PAGE_SIZE).collect::<Vec<_>>());
         assert_eq!(next_cursor.as_deref(), Some("100"));
@@ -149,10 +154,27 @@ mod tests {
             }
         }
 
-        let (page, next_cursor) = collector.finish();
+        let (page, next_cursor) = collector.finish().expect("page");
         assert_eq!(visited, 250);
         assert_eq!(page, (200..250).collect::<Vec<_>>());
         assert_eq!(next_cursor, None);
+    }
+
+    #[test]
+    fn page_collector_rejects_cursor_past_end() {
+        let request = PaginatedRequestParams::default().with_cursor(Some("4".to_string()));
+        let mut collector = PageCollector::new(Some(request)).expect("collector");
+
+        for item in 0..3 {
+            collector.accept(item);
+        }
+
+        let err = collector.finish().expect_err("cursor past end");
+
+        assert_eq!(
+            err.data.as_ref().expect("error data")["kind"],
+            serde_json::json!("invalid_cursor")
+        );
     }
 
     #[test]

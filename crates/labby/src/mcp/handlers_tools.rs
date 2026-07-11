@@ -252,7 +252,34 @@ impl LabMcpServer {
             + upstream_tool_count
             + upstream_ui_tool_count
             + subject_scoped_tool_count;
-        let (tools, next_cursor) = tools.finish();
+        let (tools, next_cursor) = match tools.finish() {
+            Ok(page) => page,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_tools",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "tool list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_tools",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(

@@ -274,7 +274,34 @@ impl LabMcpServer {
             }
         }
 
-        let (resources, next_cursor) = resources.finish();
+        let (resources, next_cursor) = match resources.finish() {
+            Ok(page) => page,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_resources",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "resource list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_resources",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(

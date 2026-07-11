@@ -129,7 +129,34 @@ impl LabMcpServer {
             }
         }
 
-        let (prompts, next_cursor) = prompts.finish();
+        let (prompts, next_cursor) = match prompts.finish() {
+            Ok(page) => page,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_prompts",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "prompt list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_prompts",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
