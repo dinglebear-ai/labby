@@ -24,7 +24,7 @@ use crate::mcp::context::auth_context_from_extensions;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
-use crate::mcp::pagination::{error_kind as pagination_error_kind, paginate_items};
+use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
 
 impl LabMcpServer {
@@ -42,14 +42,52 @@ impl LabMcpServer {
             subject,
             "dispatch start"
         );
-        let mut prompts = crate::mcp::prompts::list_all().prompts;
+        let mut prompts = match PageCollector::new(request) {
+            Ok(collector) => collector,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_prompts",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "prompt list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_prompts",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
+
+        let builtin_prompts = crate::mcp::prompts::list_all().prompts;
+        let builtin_names: Vec<String> = builtin_prompts
+            .iter()
+            .map(|prompt| prompt.name.to_string())
+            .collect();
+
+        for prompt in builtin_prompts {
+            prompts.accept(prompt);
+            if prompts.finished() {
+                break;
+            }
+        }
 
         #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await {
-            let builtin_names: Vec<String> = prompts
-                .iter()
-                .map(|prompt| prompt.name.to_string())
-                .collect();
+        if !prompts.finished()
+            && let Some(pool) = self.current_upstream_pool().await
+        {
             let builtin_name_refs: Vec<&str> = builtin_names.iter().map(String::as_str).collect();
             let upstream_prompts = pool
                 .list_upstream_prompts_allowed(
@@ -57,25 +95,41 @@ impl LabMcpServer {
                     self.route_scope.allowed_upstreams(),
                 )
                 .await;
-            prompts.extend(upstream_prompts);
-            let auth = auth_context_from_extensions(&context.extensions);
-            if let Some(oauth_subject) =
-                oauth_upstream_subject_for_request(auth, self.request_subject(&context))
-            {
-                let configs = self.route_scoped_oauth_upstream_configs().await;
-                let scoped_prompts = pool
-                    .subject_scoped_prompts(&configs, oauth_subject.as_ref(), &builtin_name_refs)
-                    .await;
-                prompts.extend(scoped_prompts.into_iter().filter(|prompt| {
-                    prompt
-                        .name
-                        .split_once('/')
-                        .is_none_or(|(upstream, _)| self.route_scope.allows_upstream(upstream))
-                }));
+            for prompt in upstream_prompts {
+                prompts.accept(prompt);
+                if prompts.finished() {
+                    break;
+                }
+            }
+            if !prompts.finished() {
+                let auth = auth_context_from_extensions(&context.extensions);
+                if let Some(oauth_subject) =
+                    oauth_upstream_subject_for_request(auth, self.request_subject(&context))
+                {
+                    let configs = self.route_scoped_oauth_upstream_configs().await;
+                    let scoped_prompts = pool
+                        .subject_scoped_prompts(
+                            &configs,
+                            oauth_subject.as_ref(),
+                            &builtin_name_refs,
+                        )
+                        .await;
+                    for prompt in scoped_prompts.into_iter().filter(|prompt| {
+                        prompt
+                            .name
+                            .split_once('/')
+                            .is_none_or(|(upstream, _)| self.route_scope.allows_upstream(upstream))
+                    }) {
+                        prompts.accept(prompt);
+                        if prompts.finished() {
+                            break;
+                        }
+                    }
+                }
             }
         }
 
-        let (prompts, next_cursor) = match paginate_items(prompts, request) {
+        let (prompts, next_cursor) = match prompts.finish() {
             Ok(page) => page,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
