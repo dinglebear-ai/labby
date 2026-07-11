@@ -1,11 +1,13 @@
 'use client'
 
-import { type CSSProperties, useCallback, useEffect, useState } from 'react'
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle,
   Check,
   ChevronRight,
+  Copy,
   CornerDownLeft,
+  FileBox,
   History,
   Terminal,
   Wrench,
@@ -14,6 +16,7 @@ import {
 
 import { AURORA_BADGE_LABEL } from '@/components/aurora/tokens'
 import {
+  type CodeModeArtifactReceipt,
   type CodeModeCallTrace,
   type CodeModeExecuteTrace,
   type CodeModeHistoryEntry,
@@ -125,6 +128,17 @@ function applyTrace(state: InspectorState, trace: CodeModeTrace): InspectorState
   }
 }
 
+/**
+ * Expansion state that opens the first failed call, so an error run shows its
+ * error_kind and params without a tap.
+ */
+function expandFirstFailedCall(calls: CodeModeCallTrace[] | undefined): Record<string, boolean> {
+  const index = (calls ?? []).findIndex((call) => !call.ok)
+  if (index < 0) return {}
+  const call = (calls ?? [])[index]
+  return { [`call:${call.id}-${index}`]: true }
+}
+
 function stateFromInitialTrace(initialTrace: unknown): InspectorState {
   const trace = parseCodeModeTrace(initialTrace)
   return trace ? applyTrace(emptyState(), trace) : emptyState()
@@ -132,7 +146,10 @@ function stateFromInitialTrace(initialTrace: unknown): InspectorState {
 
 export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   const [state, setState] = useState<InspectorState>(() => stateFromInitialTrace(initialTrace))
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
+    const trace = parseCodeModeTrace(initialTrace)
+    return trace?.kind === 'code_mode_execute_trace' ? expandFirstFailedCall(trace.calls) : {}
+  })
   const [toolInput, setToolInput] = useState<unknown>(null)
   const [bridgeWarning, setBridgeWarning] = useState<string | null>(null)
   const [bridgeState, setBridgeState] = useState<'connecting' | 'connected' | 'fallback'>('fallback')
@@ -141,7 +158,7 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
     const trace = parseCodeModeTrace(raw)
     if (!trace) return false
     setState((previous) => applyTrace(previous, trace))
-    setExpanded({})
+    setExpanded(trace.kind === 'code_mode_execute_trace' ? expandFirstFailedCall(trace.calls) : {})
     setBridgeWarning(null)
     return true
   }, [])
@@ -228,14 +245,17 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   const live = state.selected === 'live' ? state.live : null
   const run = live ?? selectedEntry ?? null
   const calls: CodeModeCallTrace[] = live ? live.calls : (selectedEntry?.calls ?? [])
-  const runOk = live ? calls.every((call) => call.ok) : (selectedEntry?.ok ?? true)
+  const runOk = live
+    ? live.error_kind === undefined && calls.every((call) => call.ok)
+    : (selectedEntry?.ok ?? true)
   const errorKind = live
-    ? calls.find((call) => !call.ok)?.error_kind
+    ? (live.error_kind ?? calls.find((call) => !call.ok)?.error_kind)
     : selectedEntry?.error_kind
   const elapsedMs = live
-    ? state.history.find(
+    ? (live.elapsed_ms ??
+      state.history.find(
         (entry) => entry.execution_id !== undefined && entry.execution_id === live.execution_id,
-      )?.elapsed_ms
+      )?.elapsed_ms)
     : selectedEntry?.elapsed_ms
   const tokens = live ?? selectedEntry
   const discovery = live ? parseDiscoveryResult(live.result) : null
@@ -319,6 +339,13 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
                 onToggle={() => toggle('result')}
               />
             ) : null}
+            {live?.artifacts?.length ? (
+              <ArtifactsRow
+                artifacts={live.artifacts}
+                open={Boolean(expanded.artifacts)}
+                onToggle={() => toggle('artifacts')}
+              />
+            ) : null}
             {selectedEntry ? <HistoryNote /> : null}
           </div>
         )}
@@ -329,7 +356,15 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
           selected={state.selected}
           onSelect={(selection) => {
             setState((previous) => ({ ...previous, selected: selection }))
-            setExpanded({})
+            const entry =
+              selection === 'live'
+                ? null
+                : state.history.find((candidate) => candidate.seq === selection)
+            setExpanded(
+              selection === 'live'
+                ? expandFirstFailedCall(state.live?.calls)
+                : expandFirstFailedCall(entry?.calls),
+            )
           }}
           inputTokens={tokens?.input_tokens}
           outputTokens={tokens?.output_tokens}
@@ -446,12 +481,23 @@ function CallRows({
   onToggle: (key: string) => void
 }) {
   const maxElapsed = Math.max(...calls.map((call) => call.elapsed_ms), 1)
+  // When start offsets are present (newer traces), bars form a true waterfall
+  // over the run span; otherwise they fall back to relative duration bars.
+  const hasOffsets = calls.some((call) => call.start_ms !== undefined)
+  const span = hasOffsets
+    ? Math.max(...calls.map((call) => (call.start_ms ?? 0) + call.elapsed_ms), 1)
+    : maxElapsed
   return (
     <div>
       {calls.map((call, index) => {
         const key = `call:${call.id}-${index}`
         const open = Boolean(expanded[key])
         const params = stringifyRedactedParams(call.params)
+        const left = hasOffsets ? ((call.start_ms ?? 0) / span) * 100 : 0
+        const width = Math.min(
+          Math.max((call.elapsed_ms / span) * 100, 4),
+          100 - left,
+        )
         return (
           <div key={key}>
             <button
@@ -488,9 +534,10 @@ function CallRows({
                 style={{ background: 'color-mix(in srgb, var(--aurora-border-default) 34%, transparent)' }}
               >
                 <span
-                  className="absolute inset-y-0 left-0 min-w-1 rounded-full"
+                  className="absolute inset-y-0 min-w-1 rounded-full"
                   style={{
-                    width: `${Math.max((call.elapsed_ms / maxElapsed) * 100, 4).toFixed(1)}%`,
+                    left: `${left.toFixed(1)}%`,
+                    width: `${width.toFixed(1)}%`,
                     background: call.ok
                       ? 'linear-gradient(90deg, var(--aurora-accent-deep), var(--aurora-accent-primary))'
                       : 'linear-gradient(90deg, color-mix(in srgb, var(--aurora-error) 70%, var(--aurora-page-bg)), var(--aurora-error))',
@@ -655,7 +702,12 @@ function ResultRow({
       >
         <CornerDownLeft className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
         <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Result</span>
-        <span className="truncate text-[11px] text-aurora-text-muted">{shape}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-[11px] text-aurora-text-muted">{shape}</span>
+          {trace.result_shape?.truncated ? (
+            <span className={cn(AURORA_BADGE_LABEL, 'shrink-0 text-aurora-warn')}>truncated</span>
+          ) : null}
+        </span>
         <ChevronRight
           className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
           strokeWidth={1.75}
@@ -663,10 +715,135 @@ function ResultRow({
       </button>
       {open ? (
         <div className="px-3 pb-2 pl-[34px]">
-          <CodeBlock value={markdown ?? stringifyRedactedParams(trace.result)} />
+          {markdown !== null ? (
+            <MarkdownDoc source={markdown} />
+          ) : (
+            <CodeBlock value={stringifyRedactedParams(trace.result)} />
+          )}
         </div>
       ) : null}
     </div>
+  )
+}
+
+function ArtifactsRow({
+  artifacts,
+  open,
+  onToggle,
+}: {
+  artifacts: CodeModeArtifactReceipt[]
+  open: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,auto)_minmax(30px,1fr)_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors hover:bg-aurora-hover-bg/40"
+        style={{ borderColor: HAIRLINE }}
+      >
+        <FileBox className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
+        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Artifacts</span>
+        <span className="truncate text-[11px] text-aurora-text-muted">
+          {artifacts.length} file{artifacts.length === 1 ? '' : 's'}
+        </span>
+        <ChevronRight
+          className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+          strokeWidth={1.75}
+        />
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-1 px-3 pb-2 pl-[34px]">
+          {artifacts.map((artifact, index) => (
+            <p key={`${artifact.path}-${index}`} className="flex min-w-0 items-baseline gap-1.5">
+              <span className="truncate text-xs font-semibold">{artifact.path}</span>
+              <span className="shrink-0 text-[10.5px] text-aurora-text-muted">
+                {[artifact.content_type, artifact.bytes !== undefined ? `${artifact.bytes} B` : undefined]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </span>
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * Minimal renderer for the markdown subset `codemode.describe()` emits:
+ * headings, fenced code, bullet lists, inline code, paragraphs.
+ */
+function MarkdownDoc({ source }: { source: string }) {
+  const blocks: ReactNode[] = []
+  const lines = source.split('\n')
+  let index = 0
+  let key = 0
+  while (index < lines.length) {
+    const line = lines[index]
+    if (line.startsWith('```')) {
+      const fence: string[] = []
+      index += 1
+      while (index < lines.length && !lines[index].startsWith('```')) {
+        fence.push(lines[index])
+        index += 1
+      }
+      index += 1
+      blocks.push(<CodeBlock key={key++} value={fence.join('\n')} />)
+      continue
+    }
+    const heading = /^(#{1,3})\s+(.*)$/.exec(line)
+    if (heading) {
+      blocks.push(
+        <p key={key++} className="text-xs font-bold text-aurora-text-primary">
+          {renderInline(heading[2])}
+        </p>,
+      )
+      index += 1
+      continue
+    }
+    if (line.startsWith('- ')) {
+      const items: string[] = []
+      while (index < lines.length && lines[index].startsWith('- ')) {
+        items.push(lines[index].slice(2))
+        index += 1
+      }
+      blocks.push(
+        <ul key={key++} className="list-disc pl-4 text-[11px] leading-relaxed text-aurora-text-muted">
+          {items.map((item, itemIndex) => (
+            <li key={itemIndex}>{renderInline(item)}</li>
+          ))}
+        </ul>,
+      )
+      continue
+    }
+    if (line.trim().length > 0) {
+      blocks.push(
+        <p key={key++} className="text-[11px] leading-relaxed text-aurora-text-muted">
+          {renderInline(line)}
+        </p>,
+      )
+    }
+    index += 1
+  }
+  return <div className="flex flex-col gap-1.5">{blocks}</div>
+}
+
+function renderInline(text: string): ReactNode[] {
+  // Split on `code` spans; everything else renders as plain text.
+  return text.split(/(`[^`]+`)/).map((segment, index) =>
+    segment.startsWith('`') && segment.endsWith('`') && segment.length > 1 ? (
+      <code
+        key={index}
+        className="rounded px-1 font-mono text-[10.5px] text-aurora-text-primary"
+        style={{ background: 'color-mix(in srgb, var(--aurora-page-bg) 55%, var(--aurora-control-surface))' }}
+      >
+        {segment.slice(1, -1)}
+      </code>
+    ) : (
+      segment
+    ),
   )
 }
 
@@ -683,16 +860,40 @@ function HistoryNote() {
 }
 
 function CodeBlock({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
   return (
-    <pre
-      className="aurora-scrollbar m-0 max-h-[150px] overflow-auto whitespace-pre-wrap break-words rounded-lg border px-2.5 py-2 font-mono text-[11px] leading-relaxed text-aurora-text-primary"
-      style={{
-        background: 'color-mix(in srgb, var(--aurora-page-bg) 55%, var(--aurora-control-surface))',
-        borderColor: 'color-mix(in srgb, var(--aurora-border-default) 50%, var(--aurora-page-bg))',
-      }}
-    >
-      {value}
-    </pre>
+    <div className="relative">
+      <pre
+        className="aurora-scrollbar m-0 max-h-[150px] overflow-auto whitespace-pre-wrap break-words rounded-lg border px-2.5 py-2 font-mono text-[11px] leading-relaxed text-aurora-text-primary"
+        style={{
+          background: 'color-mix(in srgb, var(--aurora-page-bg) 55%, var(--aurora-control-surface))',
+          borderColor: 'color-mix(in srgb, var(--aurora-border-default) 50%, var(--aurora-page-bg))',
+        }}
+      >
+        {value}
+      </pre>
+      <button
+        type="button"
+        aria-label="Copy"
+        title="Copy"
+        onClick={() => {
+          void navigator.clipboard
+            ?.writeText(value)
+            .then(() => {
+              setCopied(true)
+              setTimeout(() => setCopied(false), 1200)
+            })
+            .catch(() => {})
+        }}
+        className="absolute right-1.5 top-1.5 flex size-5 cursor-pointer items-center justify-center rounded border border-transparent text-aurora-text-muted transition-colors hover:border-aurora-border-strong hover:text-aurora-text-primary"
+      >
+        {copied ? (
+          <Check className="size-3 text-aurora-success" strokeWidth={2} />
+        ) : (
+          <Copy className="size-3" strokeWidth={1.75} />
+        )}
+      </button>
+    </div>
   )
 }
 

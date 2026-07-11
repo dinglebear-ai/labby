@@ -7,10 +7,22 @@ export interface CodeModeExecuteTrace {
   result_shape?: ResultShape
   result?: unknown
   execution_id?: string
+  /** Wall-clock run time, injected by the MCP handler. */
+  elapsed_ms?: number
+  /** Present on failed runs — the ToolError kind that aborted the snippet. */
+  error_kind?: string
   input_tokens?: number
   output_tokens?: number
   logs_count?: number
+  artifacts?: CodeModeArtifactReceipt[]
   warnings?: CodeModeTraceWarning[]
+}
+
+export interface CodeModeArtifactReceipt {
+  path: string
+  content_type?: string
+  bytes?: number
+  sha256?: string
 }
 
 export interface CodeModeHistoryTrace {
@@ -43,6 +55,8 @@ export interface CodeModeCallTrace {
   tool: string
   ok: boolean
   elapsed_ms: number
+  /** Offset from execution start to dispatch, in ms — enables the waterfall. */
+  start_ms?: number
   params?: unknown
   error_kind?: string
 }
@@ -148,11 +162,29 @@ function parseExecuteTrace(value: Record<string, unknown>): CodeModeExecuteTrace
     result_shape: parseResultShape(value.result_shape),
     result: 'result' in value ? value.result : undefined,
     execution_id: optionalString(value.execution_id),
+    elapsed_ms: optionalNumber(value.elapsed_ms),
+    error_kind: optionalString(value.error_kind),
     input_tokens: optionalNumber(value.input_tokens),
     output_tokens: optionalNumber(value.output_tokens),
     logs_count: optionalNumber(value.logs_count),
+    artifacts: parseArtifacts(value.artifacts),
     warnings: droppedWarning(calls.dropped, 'execute call'),
   }
+}
+
+function parseArtifacts(value: unknown): CodeModeArtifactReceipt[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const receipts: CodeModeArtifactReceipt[] = []
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.path !== 'string') continue
+    receipts.push({
+      path: item.path,
+      content_type: optionalString(item.content_type),
+      bytes: optionalNumber(item.bytes),
+      sha256: optionalString(item.sha256),
+    })
+  }
+  return receipts.length > 0 ? receipts : undefined
 }
 
 /**
@@ -232,6 +264,7 @@ function parseCallTrace(value: unknown): CodeModeCallTrace | null {
     tool: stringValue(value.tool, fromId.tool),
     ok: booleanValue(value.ok),
     elapsed_ms: numberValue(value.elapsed_ms, 0),
+    start_ms: optionalNumber(value.start_ms),
     params: value.params,
     error_kind: optionalString(value.error_kind),
   }
