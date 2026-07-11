@@ -1,4 +1,3 @@
-use futures::future::join_all;
 use rmcp::RoleServer;
 use rmcp::service::Peer;
 use std::sync::Arc;
@@ -57,129 +56,15 @@ impl PeerNotifier {
 
     #[cfg(feature = "gateway")]
     async fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff) {
-        let peers = self.peers.read().await.clone();
-        tracing::info!(
-            surface = "mcp",
-            service = "peers",
-            action = "catalog.notify",
-            subsystem = "mcp_server",
-            phase = "catalog.notify",
-            peer_count = peers.len(),
-            tools_changed = diff.tools_changed,
-            resources_changed = diff.resources_changed,
-            prompts_changed = diff.prompts_changed,
-            "broadcasting catalog change to connected peers"
-        );
-
-        // Notify all peers concurrently so one slow peer cannot stall the
-        // fanout. Each peer future is bounded by the configured notification
-        // timeout so a hung session times out independently.
-        let notification_timeout = crate::config::resolved_catalog_notification_timeout();
-        let notify_futures = peers.iter().enumerate().map(|(index, peer)| {
-            let peer = peer.clone();
-            let diff = diff.clone();
-            async move {
-                let result = tokio::time::timeout(notification_timeout, async {
-                    if diff.tools_changed && peer.notify_tool_list_changed().await.is_err() {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = "peers",
-                            action = "peer.disconnect",
-                            peer_index = index,
-                            phase = "tools",
-                            tools_changed = diff.tools_changed,
-                            resources_changed = diff.resources_changed,
-                            prompts_changed = diff.prompts_changed,
-                            "failed to notify peer about catalog change; pruning stale session"
-                        );
-                        return false;
-                    }
-                    if diff.resources_changed && peer.notify_resource_list_changed().await.is_err()
-                    {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = "peers",
-                            action = "peer.disconnect",
-                            peer_index = index,
-                            phase = "resources",
-                            tools_changed = diff.tools_changed,
-                            resources_changed = diff.resources_changed,
-                            prompts_changed = diff.prompts_changed,
-                            "failed to notify peer about catalog change; pruning stale session"
-                        );
-                        return false;
-                    }
-                    if diff.prompts_changed && peer.notify_prompt_list_changed().await.is_err() {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = "peers",
-                            action = "peer.disconnect",
-                            peer_index = index,
-                            phase = "prompts",
-                            tools_changed = diff.tools_changed,
-                            resources_changed = diff.resources_changed,
-                            prompts_changed = diff.prompts_changed,
-                            "failed to notify peer about catalog change; pruning stale session"
-                        );
-                        return false;
-                    }
-                    true
-                })
-                .await;
-                match result {
-                    Ok(alive) => alive,
-                    Err(_elapsed) => {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = "peers",
-                            action = "peer.disconnect",
-                            peer_index = index,
-                            timeout_ms = notification_timeout.as_millis(),
-                            tools_changed = diff.tools_changed,
-                            resources_changed = diff.resources_changed,
-                            prompts_changed = diff.prompts_changed,
-                            "peer notification timed out; pruning stale session"
-                        );
-                        false
-                    }
-                }
-            }
-        });
-
-        let snapshot_len = peers.len();
-        let results = join_all(notify_futures).await;
-        let alive: Vec<Peer<RoleServer>> = peers
-            .into_iter()
-            .zip(results)
-            .filter_map(|(peer, ok)| ok.then_some(peer))
-            .collect();
-
-        let pruned = snapshot_len.saturating_sub(alive.len());
-
-        let mut guard = self.peers.write().await;
-        // Preserve peers that connected after we took the snapshot so they are
-        // not incorrectly GC'd — identical to the original serial logic.
-        let added_since_snapshot = guard.split_off(snapshot_len);
-        *guard = alive;
-        guard.extend(added_since_snapshot);
-        let total = guard.len();
-        if pruned > 0 {
-            tracing::info!(
-                surface = "mcp",
-                service = "peers",
-                action = "peer.gc",
-                pruned_count = pruned,
-                active_count = total,
-                "pruned stale MCP peer sessions after catalog notify",
-            );
-        } else {
-            tracing::debug!(
-                surface = "mcp",
-                service = "peers",
-                action = "peer.gc",
-                active_count = total,
-                "catalog notify complete — all peers alive",
-            );
-        }
+        crate::mcp::catalog_notifications::notify_catalog_peers(
+            &self.peers,
+            crate::mcp::catalog_notifications::CatalogNotificationChanges::new(
+                diff.tools_changed,
+                diff.resources_changed,
+                diff.prompts_changed,
+            ),
+            "broadcasting catalog change to connected peers",
+        )
+        .await;
     }
 }
