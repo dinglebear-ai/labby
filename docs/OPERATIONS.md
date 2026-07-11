@@ -116,10 +116,11 @@ Loopback redirects (`http://127.0.0.1`, `localhost`) and native-app private-use 
 scheme redirects (RFC 8252 §7.1, e.g. `com.raycast:/oauth`,
 `warp://mcp/oauth2callback`) never need an allowlist entry — only an app the OS has
 registered for that scheme can receive them, so DCR clients using them are
-auto-allowed. The Labby gateway product seeds the explicit `https://*` pattern,
-so browser-based MCP clients with HTTPS callbacks do not need per-client entries.
-Use `LABBY_AUTH_ALLOWED_REDIRECT_URIS` or `[auth].allowed_client_redirect_uris`
-only for extra callback patterns outside those defaults. Arbitrary non-loopback
+auto-allowed. When no explicit redirect allowlist is configured, the Labby
+gateway product seeds common ChatGPT/Claude HTTPS callback patterns. Use
+`LABBY_AUTH_ALLOWED_REDIRECT_URIS` or `[auth].allowed_client_redirect_uris` to
+replace those defaults with a narrower or broader list. Use `https://*` only
+when you intentionally trust any HTTPS DCR callback. Arbitrary non-loopback
 `http://` callbacks remain blocked.
 
 ## Dev/Prod Container Drift

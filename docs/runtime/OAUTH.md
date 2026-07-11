@@ -26,7 +26,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
 | `LABBY_AUTH_SQLITE_PATH` | no | Override path for the SQLite auth database. |
 | `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. |
-| `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated additional redirect URI patterns allowed for dynamic client registration. Labby accepts all HTTPS callbacks by default for gateway DCR, and loopback/native-app callbacks are accepted by the auth layer. |
+| `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration. When unset, Labby seeds common ChatGPT/Claude callback patterns. Set it explicitly to replace those defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. |
 | `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Google email address of the bootstrap admin permitted to log in. Normalized to lowercase at startup. **Required** when `LABBY_AUTH_MODE=oauth`: startup fails if unset so no Google account can authenticate unless explicitly permitted. The `email_verified` claim in Google's id_token is enforced — accounts with unverified email addresses are rejected even if the address matches. Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
 | `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
@@ -64,14 +64,17 @@ OAuth mode exposes:
 Registration rules in the initial launch:
 
 - loopback redirect URIs are always accepted
-- optional non-loopback redirect URI patterns can be allowed with `LABBY_AUTH_ALLOWED_REDIRECT_URIS` or `[auth].allowed_client_redirect_uris`
-- unlisted public HTTPS redirect URIs are rejected
+- native-app private-use URI redirects are always accepted
+- when no explicit redirect allowlist is configured, Labby seeds common ChatGPT/Claude callback patterns
+- explicit `LABBY_AUTH_ALLOWED_REDIRECT_URIS` or `[auth].allowed_client_redirect_uris` values replace the product defaults
+- unlisted public HTTPS redirect URIs are rejected unless a configured pattern matches them
+- `https://*` is supported as an explicit operator opt-in for trusting any HTTPS DCR callback
 - `POST /register`, `/authorize`, and hosted browser-login initiation are process-locally rate limited
 - new login/authorization state is rejected once the pending non-expired state cap is reached
 
 Flow summary:
 
-1. A client registers a loopback redirect URI or one that matches the configured allowlist.
+1. A client registers a loopback redirect URI, a native-app URI, a product-default callback URI, or one that matches the configured allowlist.
 2. The client sends the user to `/authorize` with `response_type=code`.
 3. `lab` stores the request state, generates PKCE data, and redirects to Google.
 4. Google redirects back to `/auth/google/callback`.
@@ -144,19 +147,19 @@ Loopback redirect URIs are always accepted by `lab-auth`. Native-app private-use
 URI schemes such as `cursor://...`, `warp://...`, `vscode://...`, and
 `com.raycast:/...` are also accepted without per-client allowlist entries.
 
-The Labby gateway product additionally seeds `https://*`, so any HTTPS callback
-URL used during dynamic client registration is accepted by default. This avoids
-having to track the callback shapes of ChatGPT, Claude, Gemini, Cursor,
-Windsurf, Cline, Roo Code, Kilo Code, Droid, Antigravity, OpenClaw, Hermes,
-Zed, Warp, VS Code, and whatever new MCP client shows up next week. Arbitrary
-non-loopback `http://` callbacks remain blocked.
+The Labby gateway product seeds common browser-based MCP callback patterns for
+ChatGPT and Claude when no explicit redirect allowlist is configured. It does
+not trust every HTTPS callback by default. This keeps common ChatGPT/Claude
+connectors working out of the box while preserving an operator-controlled
+boundary for other public HTTPS callbacks. Arbitrary non-loopback `http://`
+callbacks remain blocked.
 
 Configure extra allowed redirect URI patterns with either:
 
 - `LABBY_AUTH_ALLOWED_REDIRECT_URIS`
 - `[auth].allowed_client_redirect_uris`
 
-Example for an additional non-HTTPS callback relay:
+Example for an additional HTTPS callback relay:
 
 ```env
 LABBY_AUTH_ALLOWED_REDIRECT_URIS=https://callback.example.com/callback/*
@@ -170,9 +173,13 @@ allowed_client_redirect_uris = [
 ```
 
 ChatGPT custom MCP connectors use callback URLs shaped like
-`https://chatgpt.com/connector/oauth/{callback_id}`; Claude, Gemini, VS Code,
-Zed, and other browser-based clients may use different HTTPS domains. Labby does
-not require exact entries for those HTTPS callbacks.
+`https://chatgpt.com/connector/oauth/{callback_id}`. Labby's product defaults
+also include the legacy ChatGPT redirect and Claude callback URLs. Other
+browser-based clients, such as Gemini, VS Code, Zed, Cursor, Windsurf, Cline,
+Roo Code, Kilo Code, Droid, Antigravity, OpenClaw, Hermes, and future MCP
+clients, may use different HTTPS domains. Add those patterns explicitly as they
+are verified, or configure `https://*` only when you intentionally accept the
+risk of trusting any HTTPS DCR callback.
 
 Patterns are matched as structured URLs, not raw substrings:
 

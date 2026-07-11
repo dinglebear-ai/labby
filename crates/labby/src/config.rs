@@ -995,7 +995,12 @@ pub struct AuthFileConfig {
     pub max_pending_oauth_states: Option<usize>,
 }
 
-const DEFAULT_CLIENT_REDIRECT_URI_PATTERNS: &[&str] = &["https://*"];
+const DEFAULT_CLIENT_REDIRECT_URI_PATTERNS: &[&str] = &[
+    "https://chatgpt.com/connector/oauth/*",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+];
 
 /// Resolve auth configuration from a full `LabConfig`.
 ///
@@ -1056,10 +1061,9 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
             config.bootstrap_secret.clone(),
         );
         if let Some(patterns) = config.allowed_client_redirect_uris.as_ref() {
-            insert_if_some(
-                &mut merged,
-                "LABBY_AUTH_ALLOWED_REDIRECT_URIS",
-                Some(patterns.join(",")),
+            merged.insert(
+                "LABBY_AUTH_ALLOWED_REDIRECT_URIS".to_string(),
+                patterns.join(","),
             );
         }
         insert_if_some(
@@ -1132,39 +1136,14 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
         }
     }
 
-    let redirect_patterns = merge_default_client_redirect_uri_patterns(
-        merged
-            .get("LABBY_AUTH_ALLOWED_REDIRECT_URIS")
-            .map(String::as_str),
-    );
-    merged.insert(
-        "LABBY_AUTH_ALLOWED_REDIRECT_URIS".to_string(),
-        redirect_patterns.join(","),
-    );
+    merged
+        .entry("LABBY_AUTH_ALLOWED_REDIRECT_URIS".to_string())
+        .or_insert_with(|| DEFAULT_CLIENT_REDIRECT_URI_PATTERNS.join(","));
 
     auth_config::AuthConfigBuilder::new()
         .env_prefix("LABBY")
         .build_from_sources(merged)
         .map_err(anyhow::Error::from)
-}
-
-fn merge_default_client_redirect_uri_patterns(existing: Option<&str>) -> Vec<String> {
-    let mut patterns = Vec::new();
-    for pattern in DEFAULT_CLIENT_REDIRECT_URI_PATTERNS {
-        push_unique_pattern(&mut patterns, pattern);
-    }
-    if let Some(existing) = existing {
-        for pattern in existing.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            push_unique_pattern(&mut patterns, pattern);
-        }
-    }
-    patterns
-}
-
-fn push_unique_pattern(patterns: &mut Vec<String>, pattern: &str) {
-    if !patterns.iter().any(|existing| existing == pattern) {
-        patterns.push(pattern.to_string());
-    }
 }
 
 fn insert_if_some(target: &mut HashMap<String, String>, key: &str, value: Option<String>) {
@@ -2831,10 +2810,7 @@ future = "keep"
         assert_eq!(resolved.auth_code_ttl.as_secs(), 45);
         assert_eq!(
             resolved.allowed_client_redirect_uris,
-            vec![
-                "https://*".to_string(),
-                "https://callback.example.com/callback/*".to_string(),
-            ]
+            vec!["https://callback.example.com/callback/*".to_string()]
         );
         assert_eq!(resolved.register_requests_per_minute, 5);
         assert_eq!(resolved.authorize_requests_per_minute, 15);
@@ -2842,13 +2818,55 @@ future = "keep"
     }
 
     #[test]
-    fn resolve_auth_accepts_https_client_redirects_by_default() {
+    fn resolve_auth_uses_curated_client_redirects_by_default() {
         let cfg = AuthFileConfig {
             mode: Some("oauth".to_string()),
             public_url: Some("https://lab.example.com".to_string()),
             google_client_id: Some("client-id".to_string()),
             google_client_secret: Some("client-secret".to_string()),
             admin_email: Some("admin@example.com".to_string()),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+
+        assert_eq!(
+            resolved.allowed_client_redirect_uris,
+            vec![
+                "https://chatgpt.com/connector/oauth/*".to_string(),
+                "https://chatgpt.com/connector_platform_oauth_redirect".to_string(),
+                "https://claude.ai/api/mcp/auth_callback".to_string(),
+                "https://claude.com/api/mcp/auth_callback".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_auth_explicit_empty_redirects_disable_product_defaults() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            allowed_client_redirect_uris: Some(Vec::new()),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_auth(Some(&cfg)).expect("auth config should resolve");
+
+        assert_eq!(resolved.allowed_client_redirect_uris, Vec::<String>::new());
+    }
+
+    #[test]
+    fn resolve_auth_preserves_explicit_all_https_redirect_opt_in() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            allowed_client_redirect_uris: Some(vec!["https://*".to_string()]),
             ..AuthFileConfig::default()
         };
 
