@@ -2,9 +2,10 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  describeMarkdown,
   describeResultShape,
-  flattenTraceRows,
   parseCodeModeTrace,
+  parseDiscoveryResult,
   stringifyRedactedParams,
 } from './trace'
 
@@ -15,7 +16,7 @@ test('parses execute traces with redacted params', () => {
     calls: [
       {
         id: 'github::search_issues',
-        upstream: 'github',
+        namespace: 'github',
         tool: 'search_issues',
         ok: true,
         elapsed_ms: 12,
@@ -26,51 +27,102 @@ test('parses execute traces with redacted params', () => {
   })
 
   assert.equal(trace?.kind, 'code_mode_execute_trace')
-  const rows = flattenTraceRows(trace)
-  assert.equal(rows.calls.length, 1)
-  assert.equal(stringifyRedactedParams(rows.calls[0].params).includes('[redacted]'), true)
+  const calls = trace?.kind === 'code_mode_execute_trace' ? trace.calls : []
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].upstream, 'github')
+  assert.equal(stringifyRedactedParams(calls[0].params).includes('[redacted]'), true)
 })
 
-test('parses search traces with matched tools', () => {
+test('derives upstream and tool from the call id when fields are absent', () => {
+  // History entries (CodeModeExecutedCall) carry only `id`, never
+  // namespace/tool — the parser must split `upstream::tool` itself.
   const trace = parseCodeModeTrace({
-    kind: 'code_mode_search_trace',
-    query_kind: 'catalog_filter',
-    match_count: 1,
-    matches: [
+    kind: 'code_mode_history',
+    entries: [
       {
-        id: 'axon::ask',
-        upstream: 'axon',
-        tool: 'ask',
-        description: 'Ask indexed docs',
-        has_schema: true,
-        has_output_schema: false,
+        seq: 3,
+        kind: 'execute',
+        ok: true,
+        elapsed_ms: 24,
+        calls: [{ id: 'github::search_issues', ok: true, elapsed_ms: 12 }],
       },
     ],
   })
 
-  assert.equal(trace?.kind, 'code_mode_search_trace')
-  assert.equal(flattenTraceRows(trace).matches[0].tool, 'ask')
+  assert.equal(trace?.kind, 'code_mode_history')
+  const call = trace?.kind === 'code_mode_history' ? trace.entries[0].calls?.[0] : undefined
+  assert.equal(call?.upstream, 'github')
+  assert.equal(call?.tool, 'search_issues')
 })
 
-test('parses search traces that carry a reduced result value', () => {
+test('parses execute trace token and log metadata', () => {
   const trace = parseCodeModeTrace({
-    kind: 'code_mode_search_trace',
-    query_kind: 'catalog_filter',
-    match_count: 0,
-    matches: [],
-    result_shape: { type: 'object', key_count: 2, keys: ['total', 'upstreams'] },
-    result: { total: 398, upstreams: 42 },
+    kind: 'code_mode_execute_trace',
+    call_count: 0,
+    calls: [],
+    execution_id: 'exec-1',
+    elapsed_ms: 348,
+    input_tokens: 412,
+    output_tokens: 96,
+    logs_count: 2,
   })
 
-  assert.equal(trace?.kind, 'code_mode_search_trace')
-  assert.equal(flattenTraceRows(trace).matches.length, 0)
-  assert.deepEqual(
-    trace?.kind === 'code_mode_search_trace' ? trace.result : undefined,
-    { total: 398, upstreams: 42 },
-  )
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.execution_id, 'exec-1')
+    assert.equal(trace.elapsed_ms, 348)
+    assert.equal(trace.input_tokens, 412)
+    assert.equal(trace.output_tokens, 96)
+    assert.equal(trace.logs_count, 2)
+  }
 })
 
-test('describes result shapes for the no-match search view', () => {
+test('parses failed-run traces with error kind and call start offsets', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    error_kind: 'timeout',
+    elapsed_ms: 30012,
+    calls: [
+      {
+        id: 'rustarr::qbittorrent.transfer_info',
+        namespace: 'rustarr',
+        tool: 'qbittorrent.transfer_info',
+        ok: false,
+        elapsed_ms: 1010,
+        start_ms: 226,
+        error_kind: 'upstream_timeout',
+      },
+    ],
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.error_kind, 'timeout')
+    assert.equal(trace.calls[0].start_ms, 226)
+  }
+})
+
+test('parses artifact receipts', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 0,
+    calls: [],
+    artifacts: [
+      { path: 'report.md', content_type: 'text/markdown', bytes: 2048, sha256: 'abc' },
+      { not_a_receipt: true },
+    ],
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') {
+    assert.equal(trace.artifacts?.length, 1)
+    assert.equal(trace.artifacts?.[0].path, 'report.md')
+    assert.equal(trace.artifacts?.[0].bytes, 2048)
+  }
+})
+
+test('describes result shapes', () => {
   assert.equal(
     describeResultShape({ type: 'object', key_count: 2, keys: ['total', 'upstreams'] }),
     'object · 2 keys — keys: total, upstreams',
@@ -82,7 +134,7 @@ test('describes result shapes for the no-match search view', () => {
   assert.equal(describeResultShape(undefined), '')
 })
 
-test('parses history traces and flattens nested execute calls', () => {
+test('parses history traces with nested execute calls', () => {
   const trace = parseCodeModeTrace({
     kind: 'code_mode_history',
     entries: [
@@ -91,11 +143,11 @@ test('parses history traces and flattens nested execute calls', () => {
         kind: 'execute',
         ok: true,
         elapsed_ms: 24,
+        input_tokens: 388,
+        output_tokens: 44,
         calls: [
           {
             id: 'github::search_issues',
-            upstream: 'github',
-            tool: 'search_issues',
             ok: true,
             elapsed_ms: 12,
           },
@@ -113,10 +165,12 @@ test('parses history traces and flattens nested execute calls', () => {
   })
 
   assert.equal(trace?.kind, 'code_mode_history')
-  const rows = flattenTraceRows(trace)
-  assert.equal(rows.history.length, 2)
-  assert.equal(rows.calls.length, 1)
-  assert.equal(rows.calls[0].tool, 'search_issues')
+  if (trace?.kind === 'code_mode_history') {
+    assert.equal(trace.entries.length, 2)
+    assert.equal(trace.entries[0].calls?.[0].tool, 'search_issues')
+    assert.equal(trace.entries[0].input_tokens, 388)
+    assert.equal(trace.entries[1].error_kind, 'invalid_query')
+  }
 })
 
 test('reports dropped malformed history rows', () => {
@@ -142,7 +196,7 @@ test('accepts only literal booleans for status fields', () => {
     calls: [
       {
         id: 'github::search_issues',
-        upstream: 'github',
+        namespace: 'github',
         tool: 'search_issues',
         ok: 'false',
         elapsed_ms: 12,
@@ -151,7 +205,8 @@ test('accepts only literal booleans for status fields', () => {
   })
 
   assert.equal(trace?.kind, 'code_mode_execute_trace')
-  assert.equal(flattenTraceRows(trace).calls[0].ok, false)
+  const calls = trace?.kind === 'code_mode_execute_trace' ? trace.calls : []
+  assert.equal(calls[0].ok, false)
 })
 
 test('stringifies unsupported params without throwing', () => {
@@ -164,22 +219,60 @@ test('stringifies unsupported params without throwing', () => {
   assert.ok(params.length < 160)
 })
 
-test('parses search truncation metadata', () => {
-  const trace = parseCodeModeTrace({
-    kind: 'code_mode_search_trace',
-    query_kind: 'catalog_filter',
-    displayed_count: 50,
+test('detects in-sandbox codemode.search results', () => {
+  const discovery = parseDiscoveryResult({
+    results: [
+      {
+        id: 'unifi::device.list',
+        path: 'codemode.unifi.device_list',
+        kind: 'tool',
+        namespace: 'unifi',
+        name: 'device_list',
+        description: 'List UniFi devices.',
+        score: 0.9,
+      },
+    ],
+    total: 42,
     truncated: true,
-    match_count: 200,
-    matches: [],
   })
 
-  assert.equal(trace?.kind, 'code_mode_search_trace')
-  assert.equal(trace?.displayed_count, 50)
-  assert.equal(trace?.truncated, true)
-  assert.equal(trace?.match_count, 200)
+  assert.ok(discovery)
+  assert.equal(discovery.hits.length, 1)
+  assert.equal(discovery.hits[0].namespace, 'unifi')
+  assert.equal(discovery.total, 42)
+  assert.equal(discovery.truncated, true)
+
+  const empty = parseDiscoveryResult({
+    results: [],
+    total: 0,
+    truncated: false,
+    hint: 'No matches. Broaden or try synonyms.',
+  })
+  assert.ok(empty)
+  assert.equal(empty.hits.length, 0)
+  assert.equal(empty.hint, 'No matches. Broaden or try synonyms.')
+
+  // Non-search shapes stay null so ordinary results render as plain values.
+  assert.equal(parseDiscoveryResult({ containers: 24 }), null)
+  assert.equal(parseDiscoveryResult({ results: [{ score: 1 }], total: 1 }), null)
+  assert.equal(parseDiscoveryResult([1, 2, 3]), null)
+})
+
+test('detects codemode.describe markdown docs', () => {
+  assert.equal(
+    describeMarkdown({ id: 'unifi::device.list', kind: 'tool', path: 'x', markdown: '# device_list' }),
+    '# device_list',
+  )
+  assert.equal(describeMarkdown({ markdown: '# no id' }), null)
+  assert.equal(describeMarkdown({ containers: 24 }), null)
 })
 
 test('rejects unknown trace shapes', () => {
+  // Includes the never-emitted `code_mode_search_trace`: nothing server-side
+  // produces it, so it falls through to the malformed-payload path.
   assert.equal(parseCodeModeTrace({ kind: 'tool_explorer' }), null)
+  assert.equal(
+    parseCodeModeTrace({ kind: 'code_mode_search_trace', match_count: 0, matches: [] }),
+    null,
+  )
 })

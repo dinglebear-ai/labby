@@ -5,49 +5,100 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Lab Code Mode Inspector</title>
 <style>
-:root{color-scheme:dark;--aurora-page-bg:#07131c;--aurora-panel-medium:#102330;--aurora-panel-strong:#13293a;--aurora-control-surface:#0c1a24;--aurora-border-default:#1d3d4e;--aurora-border-strong:#24536c;--aurora-text-primary:#e6f4fb;--aurora-text-muted:#a7bcc9;--aurora-accent-primary:#29b6f6;--aurora-accent-strong:#67cbfa;--aurora-success:#7dd3c7;--aurora-warn:#c6a36b;--aurora-error:#c78490;--aurora-shadow-strong:0 20px 38px rgba(0,0,0,.26);--aurora-highlight-strong:inset 0 1px 0 rgba(255,255,255,.05);--aurora-highlight-medium:inset 0 1px 0 rgba(255,255,255,.035);--aurora-active-glow:0 0 0 1px rgba(41,182,246,.18),0 0 16px rgba(41,182,246,.08);background:var(--aurora-page-bg);color:var(--aurora-text-primary);font-family:Inter,"Segoe UI",system-ui,sans-serif}
+:root{color-scheme:dark;--aurora-page-bg:#07131c;--aurora-panel-strong:#13293a;--aurora-panel-strong-top:#173245;--aurora-control-surface:#0c1a24;--aurora-border-default:#1d3d4e;--aurora-border-strong:#24536c;--aurora-text-primary:#e6f4fb;--aurora-text-muted:#a7bcc9;--aurora-accent-primary:#29b6f6;--aurora-accent-strong:#67cbfa;--aurora-accent-deep:#1c7fac;--aurora-success:#7dd3c7;--aurora-warn:#c6a36b;--aurora-error:#c78490;--aurora-hover-bg:#17364b;--aurora-shadow-medium:0 12px 24px rgba(0,0,0,.18);--aurora-highlight-strong:inset 0 1px 0 rgba(255,255,255,.05);background:var(--aurora-page-bg);color:var(--aurora-text-primary);font-family:Inter,"Segoe UI",system-ui,sans-serif}
 *{box-sizing:border-box}
-body{height:auto;min-height:0;margin:0;padding:10px;overflow:visible;background:radial-gradient(circle at top left,rgba(41,182,246,.10),transparent 32%),radial-gradient(circle at top right,rgba(103,203,250,.08),transparent 26%),var(--aurora-page-bg);color:var(--aurora-text-primary)}
-main{display:grid;gap:8px;width:100%;max-width:940px;margin:0 auto;overflow:visible;overscroll-behavior:contain}
-header{position:relative;overflow:visible;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;min-height:54px;border:1px solid var(--aurora-border-strong);border-radius:12px;background:linear-gradient(180deg,var(--aurora-panel-strong),var(--aurora-panel-medium));padding:8px 82px 8px 10px;box-shadow:var(--aurora-shadow-strong),var(--aurora-highlight-strong)}
-header:before{content:"";position:absolute;inset:0 0 auto;height:1px;background:linear-gradient(90deg,transparent,rgba(41,182,246,.58),transparent)}
-.titleline{display:flex;gap:8px;min-width:0}
-.mark{display:grid;place-items:center;width:28px;height:28px;flex:0 0 auto;border:1px solid rgba(41,182,246,.38);border-radius:8px;background:color-mix(in srgb,var(--aurora-accent-primary) 14%,transparent);color:var(--aurora-accent-strong);box-shadow:var(--aurora-active-glow)}
-.eyebrow{display:flex;align-items:center;gap:6px;color:var(--aurora-text-muted);font-size:10px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}
-h1{font-family:Manrope,Inter,system-ui,sans-serif;font-size:16px;line-height:1.04;margin:0;font-weight:850}
-.sub{max-width:620px;color:var(--aurora-text-muted);font-size:10px;line-height:1.25;margin-top:2px}
-.badge{position:absolute;top:8px;right:10px;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--aurora-border-strong);border-radius:6px;background:var(--aurora-control-surface);padding:3px 7px;color:var(--aurora-text-muted);font-size:10px;font-weight:650;white-space:nowrap;box-shadow:var(--aurora-highlight-medium)}
+[hidden]{display:none!important}
+html.light{color-scheme:light;--aurora-page-bg:#f0f6f8;--aurora-panel-strong:#edf4f7;--aurora-panel-strong-top:#e4eff3;--aurora-control-surface:#e8f2f5;--aurora-border-default:#c5dae2;--aurora-border-strong:#9fbfcc;--aurora-text-primary:#162126;--aurora-text-muted:#4a6872;--aurora-accent-primary:#0288d1;--aurora-accent-strong:#0277bd;--aurora-accent-deep:#01579b;--aurora-success:#2d7d6e;--aurora-warn:#8a6914;--aurora-error:#9c3545;--aurora-hover-bg:#dcedf2;--aurora-shadow-medium:0 12px 24px rgba(0,0,0,.08);--aurora-highlight-strong:inset 0 1px 0 rgba(255,255,255,.9)}
+html.light body{background:radial-gradient(900px 420px at 12% -10%,rgba(2,136,209,.07),transparent 60%),var(--aurora-page-bg)}
+.codewrap{position:relative}
+.copybtn{position:absolute;top:5px;right:5px;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border-radius:5px;border:1px solid transparent;background:transparent;color:var(--aurora-text-muted);cursor:pointer;transition:color .15s ease-out,border-color .15s ease-out}
+.copybtn:hover{color:var(--aurora-text-primary);border-color:var(--aurora-border-strong)}
+.copybtn .ok-icon{color:var(--aurora-success)}
+.trunc{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--aurora-warn);flex:none;margin-left:6px}
+.md{display:grid;gap:6px;font-size:11px;line-height:1.55;color:var(--aurora-text-muted)}
+.md h4{margin:0;font-size:12px;font-weight:700;color:var(--aurora-text-primary)}
+.md ul{margin:0;padding-left:16px}
+.md code{padding:0 4px;border-radius:4px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:10.5px;color:var(--aurora-text-primary);background:color-mix(in srgb,var(--aurora-page-bg) 55%,var(--aurora-control-surface))}
+#content{max-height:300px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--aurora-border-strong) transparent}
+#content::-webkit-scrollbar{width:6px}
+#content::-webkit-scrollbar-track{background:transparent}
+#content::-webkit-scrollbar-thumb{background-color:var(--aurora-border-strong);border-radius:999px}
+body{margin:0;padding:8px;background:radial-gradient(900px 420px at 12% -10%,rgba(41,182,246,.08),transparent 60%),var(--aurora-page-bg);color:var(--aurora-text-primary)}
+.widget{width:100%;max-width:680px;margin:0 auto;overflow:hidden;border-radius:18px;background:linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong));border:1px solid color-mix(in srgb,var(--aurora-border-default) 45%,var(--aurora-page-bg));box-shadow:var(--aurora-shadow-medium),var(--aurora-highlight-strong)}
+.head,.foot{display:flex;align-items:center;gap:8px;padding:8px 12px;background:color-mix(in srgb,var(--aurora-page-bg) 25%,transparent)}
+.head{border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg))}
+.foot{border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg));padding:6px 12px}
+.mark{width:15px;height:15px;flex:none;color:var(--aurora-accent-strong)}
+.head-title{font-size:12.5px;font-weight:700;white-space:nowrap}
+.head-sub{font-size:11.5px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.spacer{flex:1}
+.dot{display:inline-block;width:5px;height:5px;border-radius:999px;flex:none;background:currentColor;box-shadow:0 0 4px currentColor}
+.ok{color:var(--aurora-success)}
+.err{color:var(--aurora-error)}
+.info{color:var(--aurora-accent-primary)}
+.errkind{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--aurora-error)}
+.ms{font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--aurora-text-muted);white-space:nowrap}
+.badge{display:inline-flex;align-items:center;border:1px solid var(--aurora-border-strong);border-radius:6px;background:var(--aurora-control-surface);padding:2px 6px;color:var(--aurora-text-muted);font-size:9.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}
 .badge.connected{border-color:rgba(125,211,199,.52);background:color-mix(in srgb,var(--aurora-success) 10%,transparent);color:var(--aurora-success)}
-.grid{display:grid;gap:8px;min-height:0;overflow:visible}
-.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.stat{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;border:1px solid var(--aurora-border-strong);border-radius:10px;background:linear-gradient(180deg,rgba(18,40,56,.96),rgba(14,31,44,.98));padding:5px 8px;box-shadow:0 8px 16px rgba(0,0,0,.16),var(--aurora-highlight-medium)}
-.stat span:first-child{color:var(--aurora-text-muted);font-size:10px;font-weight:750;letter-spacing:.14em;text-transform:uppercase}
-.stat strong{font-family:Manrope,Inter,system-ui,sans-serif;font-size:14px;font-weight:850;font-variant-numeric:tabular-nums}
-.panel{min-height:0;overflow:visible;border:1px solid var(--aurora-border-strong);border-radius:12px;background:linear-gradient(180deg,var(--aurora-panel-strong),var(--aurora-panel-medium));box-shadow:var(--aurora-shadow-strong),var(--aurora-highlight-strong)}
-.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid rgba(29,61,78,.8);padding:9px 12px}
-.panel-title{font-family:Manrope,Inter,system-ui,sans-serif;font-size:15px;font-weight:850}
-.panel-body{display:grid;gap:8px;overflow:visible;overscroll-behavior:contain;padding:9px}
-.card{border:1px solid var(--aurora-border-strong);border-radius:12px;background:linear-gradient(180deg,rgba(18,40,56,.96),rgba(14,31,44,.98));padding:9px;box-shadow:0 8px 16px rgba(0,0,0,.16),var(--aurora-highlight-medium)}
-.row{display:flex;gap:8px;align-items:flex-start;justify-content:space-between}
-.name{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:12px;font-weight:700;color:var(--aurora-text-primary);overflow-wrap:anywhere}
-.meta{font-size:11px;line-height:1.45;color:var(--aurora-text-muted)}
-.pill{display:inline-flex;align-items:center;border:1px solid var(--aurora-border-strong);border-radius:6px;background:var(--aurora-control-surface);padding:3px 8px;font-size:11px;font-weight:700;white-space:nowrap}
-.ok{color:var(--aurora-success)}.err{color:var(--aurora-error)}.info{color:var(--aurora-accent-primary)}
-.pill.ok{border-color:rgba(125,211,199,.52);background:color-mix(in srgb,var(--aurora-success) 10%,transparent)}.pill.err{border-color:rgba(199,132,144,.52);background:color-mix(in srgb,var(--aurora-error) 10%,transparent)}.pill.info{border-color:rgba(41,182,246,.52);background:color-mix(in srgb,var(--aurora-accent-primary) 10%,transparent)}
-details{margin-top:6px}
-summary{cursor:pointer;color:var(--aurora-accent-strong);font-size:12px;font-weight:700}
-pre{margin:8px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--aurora-border-default);border-radius:10px;background:var(--aurora-page-bg);padding:8px;color:var(--aurora-text-primary);font-size:11px}
-@media(max-width:620px){body{padding:10px}main{gap:8px}header{min-height:50px;padding:7px 78px 7px 9px}.sub{display:none}.stats{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.stat{gap:3px;border-radius:10px;padding:4px 6px}.stat span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:8px;letter-spacing:.06em}.stat strong{white-space:nowrap;font-size:12px}.row{flex-direction:column}.card{border-radius:10px;padding:8px}.meta{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}details{margin-top:5px}}
+.call{border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 30%,transparent)}
+.call:first-child{border-top:none}
+.row{display:grid;grid-template-columns:14px minmax(0,auto) minmax(30px,1fr) 52px 13px;align-items:center;gap:8px;padding:5px 12px;cursor:pointer;list-style:none;transition:background .15s ease-out}
+.row::-webkit-details-marker{display:none}
+.row:hover{background:color-mix(in srgb,var(--aurora-accent-primary) 5%,transparent)}
+.row.wide{grid-template-columns:14px minmax(0,auto) minmax(30px,1fr) 13px}
+.st{display:flex;align-items:center;justify-content:center}
+.name{display:flex;align-items:baseline;gap:6px;min-width:0}
+.up{font-size:10px;font-weight:600;color:var(--aurora-text-muted);letter-spacing:.04em;text-transform:uppercase;flex:none}
+.tool{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--aurora-text-primary)}
+.track{position:relative;height:4px;border-radius:999px;background:color-mix(in srgb,var(--aurora-border-default) 34%,transparent)}
+.bar{position:absolute;inset:0 auto 0 0;border-radius:999px;min-width:4px;background:linear-gradient(90deg,var(--aurora-accent-deep),var(--aurora-accent-primary))}
+.bar.err{background:linear-gradient(90deg,color-mix(in srgb,var(--aurora-error) 70%,var(--aurora-page-bg)),var(--aurora-error))}
+.row .ms{text-align:right}
+.chev{display:flex;align-items:center;justify-content:center;color:var(--aurora-text-muted);transition:transform .15s ease-out}
+details[open]>.row .chev{transform:rotate(90deg)}
+.sub{display:grid;gap:5px;padding:2px 12px 8px 34px}
+.errline{font-size:11px;color:var(--aurora-error)}
+.kv-label,.meta-label{font-size:10px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--aurora-text-muted)}
+.meta-val{font-size:11px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+pre{margin:0;padding:8px 10px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11px;line-height:1.55;color:var(--aurora-text-primary);white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:150px;border-radius:8px;background:color-mix(in srgb,var(--aurora-page-bg) 55%,var(--aurora-control-surface));border:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg))}
+.empty{margin:0;padding:14px 12px;font-size:12px;color:var(--aurora-text-muted);text-align:center}
+.histnote{display:flex;align-items:center;gap:7px;padding:7px 12px;font-size:11px;color:var(--aurora-text-muted);border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 30%,transparent)}
+.mrow{display:grid;grid-template-columns:14px minmax(0,1fr) 13px;align-items:center;gap:8px;padding:5px 12px;cursor:pointer;list-style:none}
+.mrow::-webkit-details-marker{display:none}
+.mrow:hover{background:color-mix(in srgb,var(--aurora-accent-primary) 5%,transparent)}
+details[open]>.mrow .chev{transform:rotate(90deg)}
+.m-detail{font-size:11px;line-height:1.5;color:var(--aurora-text-muted)}
+.m-meta{font-size:10.5px;color:var(--aurora-text-muted)}
+.m-main{display:flex;align-items:baseline;gap:6px;min-width:0}
+.m-name{font-size:12px;font-weight:600;flex:none;color:var(--aurora-text-primary)}
+.m-desc{font-size:11px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.dump{border-radius:0;border:none;max-height:260px}
+.foot-label{font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--aurora-text-muted)}
+.chips{display:flex;align-items:center;gap:6px;min-width:0;overflow-x:auto;scrollbar-width:none}
+.foot-meta{font-size:10.5px;color:var(--aurora-text-muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.runchip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:999px;font:inherit;font-size:10.5px;font-weight:600;color:var(--aurora-text-muted);background:var(--aurora-control-surface);border:1px solid color-mix(in srgb,var(--aurora-border-default) 55%,var(--aurora-page-bg));cursor:pointer;white-space:nowrap;transition:border-color .15s ease-out,color .15s ease-out}
+.runchip:hover{border-color:var(--aurora-border-strong);color:var(--aurora-text-primary)}
+.runchip.sel{color:var(--aurora-text-primary);border-color:color-mix(in srgb,var(--aurora-accent-primary) 55%,var(--aurora-border-strong));box-shadow:0 0 0 1px rgba(41,182,246,.24);background:color-mix(in srgb,var(--aurora-accent-primary) 8%,var(--aurora-control-surface))}
 </style>
 </head>
 <body>
-<main>
-<header>
-<div class="titleline"><div class="mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 3v18M3 12h18M6.7 6.7l10.6 10.6M17.3 6.7 6.7 17.3" stroke="currentColor" stroke-width="1.65" stroke-linecap="round"/></svg></div><div><div class="eyebrow">Code Mode trace</div><h1>Code Mode Inspector</h1><div class="sub" id="summary">Waiting for a tool result</div></div></div>
-<div class="badge" id="state">read only</div>
-</header>
-<section class="stats" id="stats" hidden></section>
-<section class="grid" id="content"></section>
+<main class="widget">
+<div class="head">
+<svg class="mark" aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M12 3v18M3 12h18M6.7 6.7l10.6 10.6M17.3 6.7 6.7 17.3" stroke="currentColor" stroke-width="1.65" stroke-linecap="round"/></svg>
+<span class="head-title">Execute</span>
+<span class="head-sub" id="headsub">waiting for a tool result</span>
+<span class="spacer"></span>
+<span id="headstatus"></span>
+<span class="ms" id="headelapsed" hidden></span>
+<span class="badge" id="state">read only</span>
+</div>
+<div id="content"><p class="empty">Run codemode to populate the inspector.</p></div>
+<div class="foot" id="foot" hidden>
+<span class="foot-label" id="footlabel">Session</span>
+<span class="chips" id="chips"></span>
+<span class="spacer"></span>
+<span class="foot-meta" id="footmeta"></span>
+</div>
 </main>
 <script>window.__LAB_CODE_MODE_INITIAL_TRACE__ = null;</script>
 <script type="module">
@@ -133,49 +184,295 @@ const { App } = globalThis.ExtApps;
 (() => {
 "use strict";
 const content=document.getElementById("content");
-const summary=document.getElementById("summary");
 const state=document.getElementById("state");
-const stats=document.getElementById("stats");
+const headSub=document.getElementById("headsub");
+const headStatus=document.getElementById("headstatus");
+const headElapsed=document.getElementById("headelapsed");
+const foot=document.getElementById("foot");
+const chips=document.getElementById("chips");
+const footMeta=document.getElementById("footmeta");
+// Widget state: the latest live execute trace plus the server-injected
+// bounded history snapshot. `selected` is "live" or a history entry seq.
+let live=null;
+let history=[];
+let selected="live";
+// The LLM's tool-call arguments, delivered by the host (MCP Apps
+// ui/notifications/tool-input, or window.openai.toolInput). For codemode that
+// is { code: "async () => { … }" } — the snippet that drove the run.
+let toolInput=null;
+// A rendered trace proves the bridge works — the state badge only earns its
+// place while the card is empty, explaining why (connecting/waiting/etc).
+let recognizedOnce=false;
+function applyTheme(theme){
+  if(theme!=="light"&&theme!=="dark")return;
+  document.documentElement.classList.toggle("light",theme==="light");
+}
+const COPY_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+const CHECK_ICON='<svg class="ok-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+function codeBlock(text){
+  return `<div class="codewrap"><pre>${esc(text)}</pre><button type="button" class="copybtn" aria-label="Copy" title="Copy">${COPY_ICON}</button></div>`;
+}
+// Minimal renderer for the markdown subset codemode.describe() emits:
+// headings, fenced code, bullet lists, inline code, paragraphs.
+function inlineMd(text){
+  return esc(text).replace(/`([^`]+)`/g,"<code>$1</code>");
+}
+function mdHtml(source){
+  const lines=source.split("\n");
+  const out=[];
+  let i=0;
+  while(i<lines.length){
+    const line=lines[i];
+    if(line.startsWith("```")){
+      const fence=[];
+      i++;
+      while(i<lines.length&&!lines[i].startsWith("```")){fence.push(lines[i]);i++;}
+      i++;
+      out.push(codeBlock(fence.join("\n")));
+      continue;
+    }
+    const heading=/^#{1,3}\s+(.*)$/.exec(line);
+    if(heading){out.push(`<h4>${inlineMd(heading[1])}</h4>`);i++;continue;}
+    if(line.startsWith("- ")){
+      const items=[];
+      while(i<lines.length&&lines[i].startsWith("- ")){items.push(lines[i].slice(2));i++;}
+      out.push(`<ul>${items.map(item=>`<li>${inlineMd(item)}</li>`).join("")}</ul>`);
+      continue;
+    }
+    if(line.trim().length)out.push(`<p>${inlineMd(line)}</p>`);
+    i++;
+  }
+  return out.join("");
+}
+function toolInputSnippet(){
+  const input=toolInput;
+  if(!input||typeof input!=="object"||Array.isArray(input))return null;
+  if(typeof input.code==="string"&&input.code.length)return input.code;
+  if(!Object.keys(input).length)return null;
+  return json(input);
+}
+const CHECK='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+const XMARK='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+const CHEV='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+const RETURN_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>';
+const HISTORY_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>';
 function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
 function json(value){try{return JSON.stringify(value,null,2)}catch{return String(value)}}
-function shape(s){if(!s)return"";return [s.type,s.key_count&&`${s.key_count} keys`,s.length&&`${s.length} items`].filter(Boolean).join(" / ")}
-function shapeDetail(s){if(!s||!s.type)return"";const parts=[s.type];if(s.type==="object"&&s.key_count!=null)parts.push(`${s.key_count} key${s.key_count===1?"":"s"}`);if(s.type==="array"&&s.length!=null)parts.push(`${s.length} item${s.length===1?"":"s"}`);if(s.type==="string"&&s.length!=null)parts.push(`${s.length} chars`);if(s.size_bytes!=null)parts.push(`${s.size_bytes} B`);let label=parts.join(" · ");if(s.type==="object"&&Array.isArray(s.keys)&&s.keys.length)label+=` — keys: ${s.keys.join(", ")}`;if(s.type==="array"&&Array.isArray(s.item_types)&&s.item_types.length)label+=` — items: ${s.item_types.join(", ")}`;return label;}
-function card(body){return `<article class="card">${body}</article>`}
-function panel(title,count,body,meta=""){return `<section class="panel"><div class="panel-head"><div class="panel-title">${esc(title)}</div><div class="row"><span class="pill info">${esc(count)}</span>${meta?`<span class="pill err">${esc(meta)}</span>`:""}</div></div><div class="panel-body">${body}</div></section>`}
-function compactStatLabel(label){return String(label).replace("Execute calls","Calls").replace("Catalog matches","Matches").replace("History entries","History")}
-function compactStatValue(value){return String(value).replace(/\bof\b/g,"/").replace(/\s+/g,"")}
-function renderStats(values){if(!stats)return;stats.hidden=false;stats.innerHTML=values.map(([label,value])=>`<div class="stat"><span>${esc(compactStatLabel(label))}</span><strong>${esc(compactStatValue(value))}</strong></div>`).join("")}
-function clearStats(){if(!stats)return;stats.hidden=true;stats.innerHTML=""}
-function statusLabel(item){return item.ok?"ok":(item.error_kind||"error")}
-function callRow(call){
-  const cls=call.ok?"ok":"err";
-  const params=call.params?`<details><summary>Params</summary><pre>${esc(json(call.params))}</pre></details>`:"";
-  const status=call.ok?`<span class="ok" role="img" aria-label="success">✓</span>`:`<span class="pill ${cls}">${esc(statusLabel(call))}</span>`;
-  return card(`<div class="name">${esc(call.upstream||"upstream")} / ${esc(call.tool||"tool")}</div><div class="meta">${esc(call.id||"call")} ${status} ${esc(call.elapsed_ms??0)} ms${call.result_shape?` / ${esc(shape(call.result_shape))}`:""}</div>${params}`);
+function num(value){return typeof value==="number"&&Number.isFinite(value)?value:0}
+function fmtMs(ms){const v=num(ms);return v>=1000?`${(v/1000).toFixed(2).replace(/0$/,"")} s`:`${v} ms`}
+// The gateway emits `namespace` for the upstream segment; history entries
+// carry only `id` ("upstream::tool"), so derive the split as a fallback.
+function callFields(call){
+  const id=typeof call.id==="string"?call.id:"";
+  const sep=id.indexOf("::");
+  const fromId=sep<0?{upstream:"",tool:id}:{upstream:id.slice(0,sep),tool:id.slice(sep+2)};
+  return{
+    upstream:typeof call.namespace==="string"?call.namespace:(typeof call.upstream==="string"?call.upstream:fromId.upstream),
+    tool:typeof call.tool==="string"?call.tool:fromId.tool,
+  };
 }
-function resultCard(t){
+function shapeDetail(s){if(!s||!s.type)return"";const parts=[s.type];if(s.type==="object"&&s.key_count!=null)parts.push(`${s.key_count} key${s.key_count===1?"":"s"}`);if(s.type==="array"&&s.length!=null)parts.push(`${s.length} item${s.length===1?"":"s"}`);if(s.type==="string"&&s.length!=null)parts.push(`${s.length} chars`);if(s.size_bytes!=null)parts.push(`${s.size_bytes} B`);let label=parts.join(" · ");if(s.type==="object"&&Array.isArray(s.keys)&&s.keys.length)label+=` — keys: ${s.keys.join(", ")}`;if(s.type==="array"&&Array.isArray(s.item_types)&&s.item_types.length)label+=` — items: ${s.item_types.join(", ")}`;return label;}
+const WRENCH='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>';
+// Detect the in-sandbox codemode.search() closure result
+// ({ results, total, truncated, hint? } — labby-codemode preamble.rs).
+// Discovery runs make zero broker calls, so the hits arrive only as the
+// execute trace's result.
+function discoveryResult(t){
+  const r=t&&t.result;
+  if(!r||typeof r!=="object"||Array.isArray(r))return null;
+  if(!Array.isArray(r.results)||typeof r.total!=="number")return null;
+  const hits=[];
+  for(const item of r.results){
+    if(!item||typeof item!=="object")return null;
+    const id=typeof item.id==="string"?item.id:(typeof item.path==="string"?item.path:null);
+    if(id===null)return null;
+    hits.push({
+      id:id,
+      namespace:typeof item.namespace==="string"?item.namespace:"",
+      name:typeof item.name==="string"?item.name:id,
+      description:typeof item.description==="string"?item.description:"",
+      path:typeof item.path==="string"?item.path:"",
+      kind:typeof item.kind==="string"?item.kind:"",
+      signature:typeof item.signature==="string"?item.signature:"",
+      score:typeof item.score==="number"&&Number.isFinite(item.score)?item.score:null
+    });
+  }
+  return{hits:hits,total:r.total,truncated:r.truncated===true,hint:typeof r.hint==="string"?r.hint:""};
+}
+// Detect codemode.describe() output ({ path, id, kind, markdown }).
+function describeMarkdown(t){
+  const r=t&&t.result;
+  if(!r||typeof r!=="object"||Array.isArray(r))return null;
+  return typeof r.markdown==="string"&&typeof r.id==="string"?r.markdown:null;
+}
+function discoveryRows(d){
+  if(!d.hits.length)return `<p class="empty">${esc(d.hint||"No matches.")}</p>`;
+  return d.hits.map(h=>{
+    const summary=`<span class="st info">${WRENCH}</span><span class="m-main">${h.namespace?`<span class="up">${esc(h.namespace)}</span>`:""}<span class="m-name">${esc(h.name)}</span>${h.description?`<span class="m-desc">${esc(h.description)}</span>`:""}</span>`;
+    const meta=[h.path,h.kind,h.score!==null?`score ${h.score.toFixed(2)}`:""].filter(Boolean).join(" · ");
+    const detail=`${h.description?`<div class="m-detail">${esc(h.description)}</div>`:""}${meta?`<div class="m-meta">${esc(meta)}</div>`:""}${h.signature?codeBlock(h.signature):""}`;
+    if(!detail)return `<div class="call"><div class="mrow">${summary}</div></div>`;
+    return `<details class="call"><summary class="mrow">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${detail}</div></details>`;
+  }).join("");
+}
+function callRow(call,timing,autoOpen){
+  const f=callFields(call);
+  const ok=call.ok===true;
+  const status=ok
+    ?`<span class="st ok" role="img" aria-label="success">${CHECK}</span>`
+    :`<span class="st err" role="img" aria-label="failed">${XMARK}</span>`;
+  // With start offsets (newer traces) the bars form a true waterfall over the
+  // run span; otherwise they fall back to relative duration bars.
+  const left=timing.hasOffsets?(num(call.start_ms)/timing.span)*100:0;
+  const width=Math.min(Math.max((num(call.elapsed_ms)/timing.span)*100,4),100-left);
+  const summary=`${status}<span class="name"><span class="up">${esc(f.upstream)}</span><span class="tool">${esc(f.tool)}</span></span><span class="track"><span class="bar${ok?"":" err"}" style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%"></span></span><span class="ms">${esc(fmtMs(call.elapsed_ms))}</span>`;
+  const err=!ok&&call.error_kind?`<div class="errline">${esc(call.error_kind)}</div>`:"";
+  const params=call.params!==undefined&&call.params!==null?`<div class="kv-label">Redacted params</div>${codeBlock(json(call.params))}`:"";
+  if(!err&&!params)return `<div class="call"><div class="row">${summary}<span class="chev"></span></div></div>`;
+  return `<details class="call"${autoOpen?" open":""}><summary class="row">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${params}</div></details>`;
+}
+const TERMINAL_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>';
+function inputRow(){
+  const snippet=toolInputSnippet();
+  if(snippet===null)return "";
+  const lines=snippet.split("\n").length;
+  return `<details class="call"><summary class="row wide"><span class="st info">${TERMINAL_ICON}</span><span class="meta-label">Input</span><span class="meta-val">${esc(lines)} line${lines===1?"":"s"}</span><span class="chev">${CHEV}</span></summary><div class="sub">${codeBlock(snippet)}</div></details>`;
+}
+function resultRow(t){
   if(t.result===undefined)return "";
   const detail=shapeDetail(t.result_shape);
-  return card(`<div class="name">Returned value</div>${detail?`<div class="meta">${esc(detail)}</div>`:""}<details><summary>Result</summary><pre>${esc(json(t.result))}</pre></details>`);
+  const doc=describeMarkdown(t);
+  const truncated=t.result_shape&&t.result_shape.truncated===true?'<span class="trunc">truncated</span>':"";
+  const body=doc!==null?`<div class="md">${mdHtml(doc)}</div>`:codeBlock(json(t.result));
+  return `<details class="call"><summary class="row wide"><span class="st info">${RETURN_ICON}</span><span class="meta-label">Result</span><span class="meta-val">${esc(detail)}${truncated}</span><span class="chev">${CHEV}</span></summary><div class="sub">${body}</div></details>`;
 }
-function historyRow(entry){
-  const count=Array.isArray(entry.calls)?entry.calls.length:0;
-  const status=entry.ok?`<span class="ok" role="img" aria-label="success">✓</span>`:`<span class="pill err">${esc(statusLabel(entry))}</span>`;
-  const tokens=`${entry.input_tokens!==undefined?` / in ${esc(entry.input_tokens)} tok`:""}${entry.output_tokens!==undefined?` / out ${esc(entry.output_tokens)} tok`:""}`;
-  return card(`<div class="row"><div class="name">${esc(entry.kind||"entry")}</div>${status}</div><div class="meta">${esc(entry.elapsed_ms??0)} ms / ${count} calls${tokens}${entry.match_count!==undefined?` / ${esc(entry.match_count)} matches`:""}</div>`);
+const FILE_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M2 15h10"/><path d="m9 18 3-3-3-3"/></svg>';
+function artifactsRow(t){
+  const receipts=Array.isArray(t.artifacts)?t.artifacts.filter(a=>a&&typeof a==="object"&&typeof a.path==="string"):[];
+  if(!receipts.length)return "";
+  const rows=receipts.map(a=>{
+    const meta=[typeof a.content_type==="string"?a.content_type:"",typeof a.bytes==="number"?`${a.bytes} B`:""].filter(Boolean).join(" · ");
+    return `<p class="m-main" style="margin:0"><span class="m-name">${esc(a.path)}</span>${meta?`<span class="m-desc">${esc(meta)}</span>`:""}</p>`;
+  }).join("");
+  return `<details class="call"><summary class="row wide"><span class="st info">${FILE_ICON}</span><span class="meta-label">Artifacts</span><span class="meta-val">${receipts.length} file${receipts.length===1?"":"s"}</span><span class="chev">${CHEV}</span></summary><div class="sub">${rows}</div></details>`;
 }
+function liveHistoryEntry(){
+  if(!live||typeof live.execution_id!=="string")return undefined;
+  return history.find(e=>e.execution_id===live.execution_id);
+}
+function paintFoot(current){
+  const liveSeq=(liveHistoryEntry()||{}).seq;
+  const parts=[];
+  for(const entry of history){
+    const isLive=liveSeq!==undefined&&entry.seq===liveSeq;
+    const target=isLive?"live":String(entry.seq);
+    const sel=selected==="live"?target==="live":String(selected)===target;
+    parts.push(`<button type="button" class="runchip${sel?" sel":""}" data-target="${esc(target)}"><span class="dot ${entry.ok===true?"ok":"err"}"></span>#${esc(entry.seq)}${isLive?" live":""}</button>`);
+  }
+  if(live&&liveSeq===undefined){
+    const ok=(live.calls||[]).every(c=>c.ok===true);
+    parts.push(`<button type="button" class="runchip${selected==="live"?" sel":""}" data-target="live"><span class="dot ${ok?"ok":"err"}"></span>live</button>`);
+  }
+  const meta=[];
+  if(current&&(current.input_tokens!==undefined||current.output_tokens!==undefined)){
+    meta.push(`${num(current.input_tokens)} in · ${num(current.output_tokens)} out`);
+  }
+  if(selected==="live"&&live&&num(live.logs_count)>0){
+    meta.push(`${num(live.logs_count)} log${num(live.logs_count)===1?"":"s"}`);
+  }
+  // A single run has nothing to switch between — the chip strip only earns
+  // its place once history gives it a second entry.
+  const showChips=parts.length>1;
+  chips.innerHTML=showChips?parts.join(""):"";
+  document.getElementById("footlabel").hidden=!showChips;
+  footMeta.textContent=meta.join(" · ");
+  foot.hidden=!showChips&&meta.length===0;
+}
+function paint(){
+  const entry=selected==="live"?null:history.find(e=>e.seq===selected);
+  const t=selected==="live"?live:null;
+  const run=t||entry||null;
+  if(!run){
+    headSub.textContent="waiting for a tool result";
+    headStatus.innerHTML="";
+    headElapsed.hidden=true;
+    content.innerHTML='<p class="empty">Run codemode to populate the inspector.</p>';
+    paintFoot(null);
+    return;
+  }
+  const calls=Array.isArray(run.calls)?run.calls:[];
+  const discovery=t?discoveryResult(t):null;
+  const doc=t?describeMarkdown(t):null;
+  headSub.textContent=discovery
+    ?`· ${discovery.hits.length} of ${discovery.total} match${discovery.total===1?"":"es"}`
+    :(doc!==null?"· describe":`· ${calls.length} call${calls.length===1?"":"s"}`);
+  const traceErrKind=t&&typeof t.error_kind==="string"?t.error_kind:undefined;
+  const ok=t?(traceErrKind===undefined&&calls.every(c=>c.ok===true)):entry.ok===true;
+  const errKind=t?(traceErrKind||(calls.find(c=>c.ok!==true)||{}).error_kind):entry.error_kind;
+  headStatus.innerHTML=ok
+    ?'<span class="dot ok" role="img" aria-label="success"></span>'
+    :`<span class="errkind">${esc(errKind||"error")}</span>`;
+  const elapsed=t
+    ?(typeof t.elapsed_ms==="number"&&Number.isFinite(t.elapsed_ms)?t.elapsed_ms:(liveHistoryEntry()||{}).elapsed_ms)
+    :entry.elapsed_ms;
+  if(typeof elapsed==="number"&&Number.isFinite(elapsed)){headElapsed.textContent=fmtMs(elapsed);headElapsed.hidden=false}
+  else{headElapsed.hidden=true}
+  const hasOffsets=calls.some(c=>typeof c.start_ms==="number");
+  const span=Math.max(1,...calls.map(c=>hasOffsets?num(c.start_ms)+num(c.elapsed_ms):num(c.elapsed_ms)));
+  const timing={span:span,hasOffsets:hasOffsets};
+  const firstFailed=calls.findIndex(c=>c.ok!==true);
+  let html=calls.map((c,i)=>callRow(c,timing,i===firstFailed)).join("");
+  if(!html&&(!t||t.result===undefined))html='<p class="empty">No calls were made.</p>';
+  if(discovery)html+=discoveryRows(discovery);
+  if(t)html+=inputRow();
+  if(t)html+=resultRow(t);
+  if(t)html+=artifactsRow(t);
+  if(entry)html+=`<div class="histnote">${HISTORY_ICON}<span>Result not retained in history — params and call outcomes only.</span></div>`;
+  content.innerHTML=html;
+  paintFoot(run);
+}
+content.addEventListener("click",(event)=>{
+  const button=event.target.closest(".copybtn");
+  if(!button)return;
+  const pre=button.parentElement&&button.parentElement.querySelector("pre");
+  if(!pre)return;
+  const text=pre.textContent||"";
+  const done=()=>{
+    button.innerHTML=CHECK_ICON;
+    setTimeout(()=>{button.innerHTML=COPY_ICON;},1200);
+  };
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(()=>{});
+  }
+});
+chips.addEventListener("click",(event)=>{
+  const button=event.target.closest("button[data-target]");
+  if(!button)return;
+  selected=button.dataset.target==="live"?"live":Number(button.dataset.target);
+  paint();
+});
 // Returns true when `trace` matched a known Code Mode trace kind, false for the
 // empty placeholder or an unrecognized shape (rendered as a raw JSON dump).
 function render(trace){
   const t=trace&&trace.structuredContent?trace.structuredContent:trace;
-  if(!t||!t.kind){clearStats();content.innerHTML=card('<div class="meta">Run codemode to populate the inspector.</div>');return false;}
-  if(t.kind==="code_mode_execute_trace"){const rows=(t.calls||[]).map(callRow).join("")||card('<div class="meta">No calls were made.</div>');const result=resultCard(t);summary.textContent=`${t.call_count||0} calls captured`;renderStats([["Execute calls",t.call_count||0],["Input tokens",t.input_tokens||0],["Output tokens",t.output_tokens||0]]);content.innerHTML=panel("Execute trace",t.call_count||0,rows+result);return true;}
-  if(t.kind==="code_mode_history"){const rows=(t.entries||[]).map(historyRow).join("")||card('<div class="meta">History is empty.</div>');summary.textContent=`${(t.entries||[]).length} bounded history entries`;renderStats([["Execute calls",0],["Catalog matches",0],["History entries",(t.entries||[]).length]]);content.innerHTML=panel("Recent history",(t.entries||[]).length,rows);return true;}
-  clearStats();content.innerHTML=card(`<pre>${esc(json(t))}</pre>`);return false;
+  if(!t||!t.kind){live=null;history=[];selected="live";paint();return false;}
+  if(t.kind==="code_mode_execute_trace"){live=t;selected="live";recognizedOnce=true;paint();return true;}
+  if(t.kind==="code_mode_history"){
+    history=Array.isArray(t.entries)?t.entries:[];
+    if(!live){selected=history.length?history[history.length-1].seq:"live";}
+    recognizedOnce=true;
+    paint();
+    return true;
+  }
+  headSub.textContent="";headStatus.innerHTML="";headElapsed.hidden=true;
+  content.innerHTML=`<pre class="dump">${esc(json(t))}</pre>`;
+  paintFoot(null);
+  return false;
 }
-// Render immediately from the OpenAI Apps tool output (ChatGPT / Codex) when
-// present, otherwise the server-injected snapshot (history widget) / null seed.
-render(window.openai && window.openai.toolOutput != null ? window.openai.toolOutput : window.__LAB_CODE_MODE_INITIAL_TRACE__);
+// Seed from the server-injected snapshot first — the bounded history renders
+// even when a live tool output also exists (the OpenAI sync below layers the
+// live execute trace on top without discarding history).
+render(window.__LAB_CODE_MODE_INITIAL_TRACE__);
 if (window.openai) {
   // OpenAI Apps runtime: there is no MCP Apps host to hand-shake with. The
   // structured tool result is the tool's structuredContent, exposed as
@@ -185,10 +482,19 @@ if (window.openai) {
   // without that key do we fall back to the live snapshot.
   let hydrated = false;
   const setState = (label, connected) => {
-    try { state.textContent = label; state.classList.toggle("connected", connected); } catch (_) {}
+    try {
+      state.textContent = label;
+      state.classList.toggle("connected", connected);
+      state.hidden = connected || recognizedOnce;
+    } catch (_) {}
   };
   const syncOpenai = (event) => {
     const globals = event && event.detail && event.detail.globals;
+    const themeValue = globals && typeof globals.theme === "string" ? globals.theme : (window.openai && window.openai.theme);
+    if (typeof themeValue === "string") applyTheme(themeValue);
+    const hasInputKey = globals && Object.prototype.hasOwnProperty.call(globals, "toolInput");
+    const rawInput = hasInputKey ? globals.toolInput : (window.openai && window.openai.toolInput);
+    if (rawInput !== undefined) { toolInput = rawInput; }
     const hasKey = globals && Object.prototype.hasOwnProperty.call(globals, "toolOutput");
     const out = hasKey ? globals.toolOutput : (window.openai && window.openai.toolOutput);
     if (out != null) {
@@ -217,10 +523,20 @@ if (window.openai) {
 } else {
   // MCP Apps bridge (Claude): live codemode traces arrive via ontoolresult.
   const app = new App({ name: "LabCodeModeInspector", version: "1.0.0" }, {});
-  app.onhostcontextchanged = (ctx) => { if (ctx && ctx.theme) { document.documentElement.classList.toggle("dark", ctx.theme === "dark"); } };
+  app.onhostcontextchanged = (ctx) => { if (ctx && ctx.theme) applyTheme(ctx.theme); };
   let hydrated = false;
   const setState = (label, connected) => {
-    try { state.textContent = label; state.classList.toggle("connected", connected); } catch (_) {}
+    try {
+      state.textContent = label;
+      state.classList.toggle("connected", connected);
+      state.hidden = connected || recognizedOnce;
+    } catch (_) {}
+  };
+  // The host streams the tool-call arguments (the snippet the LLM sent)
+  // alongside the result — surface them as the run's Input row.
+  app.ontoolinput = (params) => {
+    toolInput = params && params.arguments ? params.arguments : null;
+    paint();
   };
   app.ontoolresult = (result) => {
     // Recognized trace -> connected; non-null-but-unrecognized -> "malformed"
@@ -241,7 +557,11 @@ if (window.openai) {
     // Fire-and-forget per the MCP Apps spec — resolves async after the host
     // postMessage handshake, which may be delayed or unavailable. A tool result
     // may have already rendered by then (don't downgrade a live trace).
-    .then(() => { if (!hydrated) setState("connected", true); })
+    .then(() => {
+      const ctx = app.getHostContext && app.getHostContext();
+      if (ctx && ctx.theme) applyTheme(ctx.theme);
+      if (!hydrated) setState("connected", true);
+    })
     .catch(() => { if (!hydrated) setState("read only", false); });
 }
 })();

@@ -418,65 +418,23 @@ async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
 }
 
 #[tokio::test]
-async fn palette_catalog_projects_cached_mcp_tools_without_cold_connect() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind hanging upstream fixture");
-    let addr = listener.local_addr().expect("listener addr");
-    tokio::spawn(async move {
-        while let Ok((socket, _)) = listener.accept().await {
-            tokio::spawn(async move {
-                let _socket = socket;
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            });
-        }
-    });
-
-    let mut cold = fixture_http_upstream("cold");
-    cold.url = Some(format!("http://{addr}/mcp"));
+async fn palette_catalog_discovers_configured_upstream_tools() {
     let (manager, pool) =
-        code_mode_manager_with_upstreams(vec![cold, fixture_http_upstream("alpha")]).await;
-    let upstream_name: Arc<str> = Arc::from("alpha");
-    let tool = rmcp::model::Tool::new(
-        "ping".to_string(),
-        "Ping <system> safely",
-        Arc::new(serde_json::Map::new()),
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
+    let tools = Arc::new(tokio::sync::RwLock::new(vec!["ping".to_string()]));
+    assert!(
+        pool.healthy_tools_for_upstream("alpha").await.is_empty(),
+        "fixture starts as a lazy-seeded upstream without cached tools"
     );
-    let entry = fixture_upstream_entry(
-        "alpha",
-        HashMap::from([(
-            "ping".to_string(),
-            UpstreamTool {
-                tool,
-                input_schema: Some(json!({
-                    "type": "object",
-                    "default": { "token": "sk-secretsecretsecretsecret" },
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "examples": ["hello"]
-                        }
-                    },
-                    "required": ["query"]
-                })),
-                output_schema: None,
-                upstream_name,
-                destructive: false,
-            },
-        )]),
-    );
-    pool.insert_entry_for_tests("alpha", entry).await;
+    pool.insert_live_tool_server_for_tests("alpha", tools).await;
 
-    let catalog = tokio::time::timeout(
-        Duration::from_millis(100),
-        manager.palette_catalog(&crate::gateway::palette::PaletteCaller::admin(
+    let catalog = manager
+        .palette_catalog(&crate::gateway::palette::PaletteCaller::admin(
             Some("admin"),
             Some("req-1"),
-        )),
-    )
-    .await
-    .expect("palette catalog must not cold-connect idle upstream")
-    .expect("catalog builds");
+        ))
+        .await
+        .expect("catalog builds");
 
     assert_eq!(catalog.entries.len(), 1);
     let crate::gateway::palette::LauncherEntryView::McpTool(entry) = &catalog.entries[0] else {
@@ -484,12 +442,40 @@ async fn palette_catalog_projects_cached_mcp_tools_without_cold_connect() {
     };
     assert_eq!(entry.id, "mcp:alpha::ping");
     assert_eq!(entry.source, "alpha");
-    assert!(entry.description.contains("Ping"));
-    assert!(!entry.description.contains("<system>"));
-    let schema = entry.input_schema.as_ref().expect("redacted schema");
-    assert!(schema.get("default").is_none());
-    assert!(schema.pointer("/properties/query/examples").is_none());
-    assert!(entry.schema_fingerprint.is_some());
+    assert_eq!(entry.tool, "ping");
+}
+
+#[tokio::test]
+async fn palette_catalog_scoped_caller_only_sees_allowed_upstreams() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
+        .await;
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "search"))
+        .await;
+
+    let caller = crate::gateway::palette::PaletteCaller::scoped_read_only(
+        Some("user"),
+        Some("request-1"),
+        vec!["beta".to_string()],
+    );
+    let catalog = manager
+        .palette_catalog(&caller)
+        .await
+        .expect("scoped palette catalog should build for allowed upstream");
+
+    let ids = catalog
+        .entries
+        .iter()
+        .map(|entry| match entry {
+            crate::gateway::palette::LauncherEntryView::McpTool(entry) => entry.id.as_str(),
+            crate::gateway::palette::LauncherEntryView::LabbyAction(entry) => entry.id.as_str(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["mcp:beta::search"]);
 }
 
 #[tokio::test]

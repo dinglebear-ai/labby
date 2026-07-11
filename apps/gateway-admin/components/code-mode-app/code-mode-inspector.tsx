@@ -1,38 +1,39 @@
 'use client'
 
-import { type CSSProperties, useEffect, useState } from 'react'
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle,
-  Braces,
-  CheckCircle2,
-  Clock3,
-  Database,
+  Check,
+  ChevronRight,
+  Copy,
+  CornerDownLeft,
+  FileBox,
   History,
-  Search,
-  Sparkles,
+  Terminal,
+  Wrench,
+  X,
 } from 'lucide-react'
 
+import { AURORA_BADGE_LABEL } from '@/components/aurora/tokens'
 import {
-  AURORA_CARD_TITLE,
-  AURORA_DENSE_META,
-  AURORA_MESSAGE_SURFACE,
-  AURORA_MUTED_LABEL,
-  AURORA_PAGE_SHELL,
-  AURORA_STRONG_PANEL,
-} from '@/components/aurora/tokens'
-import {
+  type CodeModeArtifactReceipt,
+  type CodeModeCallTrace,
+  type CodeModeExecuteTrace,
+  type CodeModeHistoryEntry,
   type CodeModeTrace,
+  type DiscoveryResult,
+  describeMarkdown,
   describeResultShape,
-  flattenTraceRows,
   parseCodeModeTrace,
+  parseDiscoveryResult,
   stringifyRedactedParams,
 } from '@/lib/code-mode-app/trace'
 import { cn } from '@/lib/utils'
 
 const AURORA_DARK_TOKENS = {
   '--aurora-page-bg': '#07131c',
-  '--aurora-panel-medium': '#102330',
   '--aurora-panel-strong': '#13293a',
+  '--aurora-panel-strong-top': '#173245',
   '--aurora-control-surface': '#0c1a24',
   '--aurora-border-default': '#1d3d4e',
   '--aurora-border-strong': '#24536c',
@@ -40,17 +41,14 @@ const AURORA_DARK_TOKENS = {
   '--aurora-text-muted': '#a7bcc9',
   '--aurora-accent-primary': '#29b6f6',
   '--aurora-accent-strong': '#67cbfa',
+  '--aurora-accent-deep': '#1c7fac',
   '--aurora-warn': '#c6a36b',
   '--aurora-error': '#c78490',
   '--aurora-success': '#7dd3c7',
   '--aurora-hover-bg': '#17364b',
-  '--aurora-active-glow': '0 0 0 1px rgba(41, 182, 246, 0.18), 0 0 16px rgba(41, 182, 246, 0.08)',
   '--aurora-shadow-medium': '0 12px 24px rgba(0, 0, 0, 0.18)',
-  '--aurora-shadow-strong': '0 20px 38px rgba(0, 0, 0, 0.26)',
-  '--aurora-highlight-medium': 'inset 0 1px 0 rgba(255, 255, 255, 0.035)',
   '--aurora-highlight-strong': 'inset 0 1px 0 rgba(255, 255, 255, 0.05)',
   '--color-aurora-page-bg': 'var(--aurora-page-bg)',
-  '--color-aurora-panel-medium': 'var(--aurora-panel-medium)',
   '--color-aurora-panel-strong': 'var(--aurora-panel-strong)',
   '--color-aurora-control-surface': 'var(--aurora-control-surface)',
   '--color-aurora-border-default': 'var(--aurora-border-default)',
@@ -69,7 +67,7 @@ declare global {
   interface Window {
     __LAB_CODE_MODE_INITIAL_TRACE__?: unknown
     // OpenAI Apps runtime (ChatGPT / Codex) injects this; MCP Apps hosts do not.
-    openai?: { toolOutput?: unknown }
+    openai?: { toolOutput?: unknown; toolInput?: unknown }
     ExtApps?: {
       App?: new (
         appInfo: { name: string; version: string },
@@ -77,6 +75,7 @@ declare global {
         options?: Record<string, unknown>,
       ) => {
         ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
+        ontoolinput?: (params: { arguments?: Record<string, unknown> }) => void
         connect: () => Promise<unknown>
         close?: () => Promise<unknown> | void
       }
@@ -84,21 +83,89 @@ declare global {
   }
 }
 
+/**
+ * The LLM's tool-call arguments, delivered by the host (MCP Apps
+ * `ui/notifications/tool-input`, or `window.openai.toolInput`). For codemode
+ * that is `{ code: "async () => { … }" }` — the snippet that drove the run.
+ */
+function toolInputSnippet(input: unknown): string | null {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return null
+  const record = input as Record<string, unknown>
+  if (typeof record.code === 'string' && record.code.length > 0) return record.code
+  if (Object.keys(record).length === 0) return null
+  return stringifyRedactedParams(record)
+}
+
 interface CodeModeInspectorProps {
   initialTrace?: unknown
 }
 
+type RunSelection = 'live' | number
+
+interface InspectorState {
+  live: CodeModeExecuteTrace | null
+  history: CodeModeHistoryEntry[]
+  historyWarnings: string[]
+  selected: RunSelection
+}
+
+function emptyState(): InspectorState {
+  return { live: null, history: [], historyWarnings: [], selected: 'live' }
+}
+
+function applyTrace(state: InspectorState, trace: CodeModeTrace): InspectorState {
+  if (trace.kind === 'code_mode_execute_trace') {
+    return { ...state, live: trace, selected: 'live' }
+  }
+  const entries = trace.entries
+  const selected =
+    state.live || entries.length === 0 ? state.selected : entries[entries.length - 1].seq
+  return {
+    ...state,
+    history: entries,
+    historyWarnings: trace.warnings?.map((warning) => warning.message) ?? [],
+    selected,
+  }
+}
+
+/**
+ * Expansion state that opens the first failed call, so an error run shows its
+ * error_kind and params without a tap.
+ */
+function expandFirstFailedCall(calls: CodeModeCallTrace[] | undefined): Record<string, boolean> {
+  const index = (calls ?? []).findIndex((call) => !call.ok)
+  if (index < 0) return {}
+  const call = (calls ?? [])[index]
+  return { [`call:${call.id}-${index}`]: true }
+}
+
+function stateFromInitialTrace(initialTrace: unknown): InspectorState {
+  const trace = parseCodeModeTrace(initialTrace)
+  return trace ? applyTrace(emptyState(), trace) : emptyState()
+}
+
 export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
-  const [trace, setTrace] = useState<CodeModeTrace | null>(() => parseCodeModeTrace(initialTrace))
+  const [state, setState] = useState<InspectorState>(() => stateFromInitialTrace(initialTrace))
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
+    const trace = parseCodeModeTrace(initialTrace)
+    return trace?.kind === 'code_mode_execute_trace' ? expandFirstFailedCall(trace.calls) : {}
+  })
+  const [toolInput, setToolInput] = useState<unknown>(null)
   const [bridgeWarning, setBridgeWarning] = useState<string | null>(null)
   const [bridgeState, setBridgeState] = useState<'connecting' | 'connected' | 'fallback'>('fallback')
 
+  const acceptTrace = useCallback((raw: unknown): boolean => {
+    const trace = parseCodeModeTrace(raw)
+    if (!trace) return false
+    setState((previous) => applyTrace(previous, trace))
+    setExpanded(trace.kind === 'code_mode_execute_trace' ? expandFirstFailedCall(trace.calls) : {})
+    setBridgeWarning(null)
+    return true
+  }, [])
+
   useEffect(() => {
-    const injected = parseCodeModeTrace(window.__LAB_CODE_MODE_INITIAL_TRACE__)
-    if (injected) {
-      setTrace(injected)
-      setBridgeWarning(null)
-    } else if (window.__LAB_CODE_MODE_INITIAL_TRACE__ !== undefined) {
+    const injected = window.__LAB_CODE_MODE_INITIAL_TRACE__
+    if (injected !== undefined && !acceptTrace(injected) && injected !== null) {
       setBridgeWarning('Ignored malformed initial trace payload.')
     }
 
@@ -106,19 +173,20 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
     if (!App) return
 
     const app = new App(
-      { name: 'Lab Code Mode Inspector', version: '0.1.0' },
+      { name: 'Lab Code Mode Inspector', version: '0.2.0' },
       {},
       { autoResize: true },
     )
     app.ontoolresult = (result) => {
       const payload = result.structuredContent ?? result.structured_content
-      const next = parseCodeModeTrace(payload)
-      if (next) {
-        setTrace(next)
-        setBridgeWarning(null)
-      } else {
+      if (!acceptTrace(payload)) {
         setBridgeWarning('Ignored malformed bridge payload.')
       }
+    }
+    // The host streams the tool-call arguments (the snippet the LLM sent)
+    // alongside the result — surface them as the run's Input.
+    app.ontoolinput = (params) => {
+      setToolInput(params?.arguments ?? null)
     }
     setBridgeState('connecting')
     app
@@ -129,7 +197,7 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
     return () => {
       void app.close?.()
     }
-  }, [])
+  }, [acceptTrace])
 
   // OpenAI Apps runtime (ChatGPT / Codex) bridge. These hosts bind the widget
   // via the tool's `openai/outputTemplate` meta and expose the structured tool
@@ -144,12 +212,13 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
         ?.globals
       // The event's globals are authoritative for the changed key (including an
       // explicit null clear); only without it do we read the live snapshot.
+      const hasInputKey =
+        globals != null && Object.prototype.hasOwnProperty.call(globals, 'toolInput')
+      const rawInput = hasInputKey ? globals.toolInput : window.openai?.toolInput
+      if (rawInput !== undefined) setToolInput(rawInput)
       const hasKey = globals != null && Object.prototype.hasOwnProperty.call(globals, 'toolOutput')
       const raw = hasKey ? globals.toolOutput : window.openai?.toolOutput
-      const next = parseCodeModeTrace(raw)
-      if (next) {
-        setTrace(next)
-        setBridgeWarning(null)
+      if (acceptTrace(raw)) {
         setBridgeState('connected')
       } else if (raw != null) {
         // Present but unparseable — surface it like the ExtApps path does
@@ -157,427 +226,767 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
         setBridgeWarning('Ignored malformed bridge payload.')
       } else if (hasKey) {
         // Host explicitly cleared the result — drop the stale trace.
-        setTrace(null)
+        setState(emptyState())
+        setExpanded({})
         setBridgeWarning(null)
       }
     }
     sync()
     window.addEventListener('openai:set_globals', sync)
     return () => window.removeEventListener('openai:set_globals', sync)
-  }, [])
+  }, [acceptTrace])
 
-  const rows = flattenTraceRows(trace)
+  const toggle = (key: string) => {
+    setExpanded((previous) => ({ ...previous, [key]: !previous[key] }))
+  }
+
+  const selectedEntry =
+    state.selected === 'live' ? null : state.history.find((entry) => entry.seq === state.selected)
+  const live = state.selected === 'live' ? state.live : null
+  const run = live ?? selectedEntry ?? null
+  const calls: CodeModeCallTrace[] = live ? live.calls : (selectedEntry?.calls ?? [])
+  const runOk = live
+    ? live.error_kind === undefined && calls.every((call) => call.ok)
+    : (selectedEntry?.ok ?? true)
+  const errorKind = live
+    ? (live.error_kind ?? calls.find((call) => !call.ok)?.error_kind)
+    : selectedEntry?.error_kind
+  const elapsedMs = live
+    ? (live.elapsed_ms ??
+      state.history.find(
+        (entry) => entry.execution_id !== undefined && entry.execution_id === live.execution_id,
+      )?.elapsed_ms)
+    : selectedEntry?.elapsed_ms
+  const tokens = live ?? selectedEntry
+  const discovery = live ? parseDiscoveryResult(live.result) : null
+  const describeDoc = live ? describeMarkdown(live.result) : null
+  // Host-delivered tool-call arguments apply to the live run only.
+  const inputSnippet = live ? toolInputSnippet(toolInput) : null
   const warnings = [
     ...(bridgeWarning ? [bridgeWarning] : []),
-    ...(trace?.warnings?.map((warning) => warning.message) ?? []),
+    ...(state.live?.warnings?.map((warning) => warning.message) ?? []),
+    ...state.historyWarnings,
   ]
-  const searchCountLabel =
-    trace?.kind === 'code_mode_search_trace' ? formatSearchCount(trace) : undefined
 
   return (
     <main
-      className={cn('h-[100dvh] overflow-hidden bg-aurora-page-bg text-aurora-text-primary', AURORA_PAGE_SHELL)}
-      style={AURORA_DARK_TOKENS}
+      className="min-h-[100dvh] bg-aurora-page-bg p-4 font-sans text-aurora-text-primary"
+      style={{
+        ...AURORA_DARK_TOKENS,
+        background:
+          'radial-gradient(900px 420px at 12% -10%, rgba(41,182,246,0.08), transparent 60%), var(--aurora-page-bg)',
+      }}
     >
-      <section className="aurora-scrollbar mx-auto flex h-full w-full max-w-5xl flex-col gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-5">
-        <header className={cn('relative min-h-[54px] overflow-visible px-2.5 py-2 pr-24 sm:px-3 sm:py-2.5', AURORA_STRONG_PANEL)}>
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-aurora-accent-primary/50 to-transparent" />
-          <div className="flex flex-col gap-2.5 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex min-w-0 gap-2.5">
-              <div className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-aurora-accent-primary/35 bg-[color-mix(in_srgb,var(--aurora-accent-primary)_14%,transparent)] shadow-[var(--aurora-active-glow)] sm:size-8">
-                <Sparkles className="size-4 text-aurora-accent-strong" strokeWidth={1.65} />
-              </div>
-              <div className="min-w-0">
-                <div className={cn('flex items-center gap-1.5', AURORA_MUTED_LABEL, 'text-[10px] tracking-[0.12em] sm:text-[11px] sm:tracking-[0.18em]')}>
-                  <Database className="size-3.5 text-aurora-accent-primary" strokeWidth={1.65} />
-                  Code Mode trace
-                </div>
-                <h1 className="mt-0.5 font-display text-[16px] font-extrabold leading-tight text-aurora-text-primary sm:text-[18px]">
-                  Call inspector
-                </h1>
-                <p className={cn('mt-0.5 hidden max-w-2xl text-aurora-text-muted sm:block', AURORA_DENSE_META)}>
-                  {trace
-                    ? 'Live calls, search matches, and recent history from the active MCP app session.'
-                    : 'Waiting for an MCP Apps tool result or history snapshot.'}
-                </p>
-              </div>
-            </div>
-            <div className="absolute right-2.5 top-2 flex flex-wrap items-center justify-end gap-1.5 text-xs text-aurora-text-muted">
-              <StatusPill tone={bridgeState === 'connected' ? 'success' : 'neutral'}>
-                {bridgeState}
-              </StatusPill>
-            </div>
+      <section
+        className="mx-auto w-full max-w-[680px] overflow-hidden rounded-[18px] border"
+        style={{
+          background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
+          borderColor: 'color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
+          boxShadow: 'var(--aurora-shadow-medium), var(--aurora-highlight-strong)',
+        }}
+      >
+        <WidgetHead
+          subLabel={
+            !run
+              ? null
+              : discovery
+                ? `${discovery.hits.length} of ${discovery.total} match${discovery.total === 1 ? '' : 'es'}`
+                : describeDoc
+                  ? 'describe'
+                  : `${calls.length} call${calls.length === 1 ? '' : 's'}`
+          }
+          ok={runOk}
+          errorKind={errorKind}
+          elapsedMs={elapsedMs}
+          // A rendered trace proves the bridge works — the state label only
+          // earns its place while the card is empty, explaining why.
+          bridgeLabel={run ? null : bridgeState}
+        />
+
+        {warnings.map((warning, index) => (
+          <WarnLine key={`${warning}-${index}`} message={warning} />
+        ))}
+
+        {!run ? (
+          <p className="px-3 py-4 text-center text-xs text-aurora-text-muted">
+            Waiting for an MCP Apps tool result or history snapshot.
+          </p>
+        ) : (
+          // Cap the rows region (~10 rows) so long runs scroll internally
+          // instead of growing the inline card unbounded — the MCP host sizes
+          // the iframe to the document height.
+          <div className="aurora-scrollbar max-h-[300px] overflow-y-auto overscroll-contain">
+            {calls.length > 0 ? (
+              <CallRows calls={calls} expanded={expanded} onToggle={toggle} />
+            ) : live && live.result !== undefined ? null : (
+              <p className="px-3 py-3 text-xs text-aurora-text-muted">No calls were made.</p>
+            )}
+            {discovery ? (
+              <DiscoveryRows discovery={discovery} expanded={expanded} onToggle={toggle} />
+            ) : null}
+            {inputSnippet ? (
+              <InputRow
+                snippet={inputSnippet}
+                open={Boolean(expanded.input)}
+                onToggle={() => toggle('input')}
+              />
+            ) : null}
+            {live && live.result !== undefined ? (
+              <ResultRow
+                trace={live}
+                markdown={describeDoc}
+                open={Boolean(expanded.result)}
+                onToggle={() => toggle('result')}
+              />
+            ) : null}
+            {live?.artifacts?.length ? (
+              <ArtifactsRow
+                artifacts={live.artifacts}
+                open={Boolean(expanded.artifacts)}
+                onToggle={() => toggle('artifacts')}
+              />
+            ) : null}
+            {selectedEntry ? <HistoryNote /> : null}
           </div>
-        </header>
+        )}
 
-        {!trace ? <EmptyState /> : null}
-
-        {warnings.length > 0 ? <WarningBanner warnings={warnings} /> : null}
-
-        {trace ? (
-          <SummaryStrip
-            calls={rows.calls.length}
-            matches={searchCountLabel ?? rows.matches.length}
-            history={rows.history.length}
-          />
-        ) : null}
-
-        {rows.calls.length > 0 ? (
-          <Panel title="Execute calls" count={rows.calls.length}>
-            <div className="grid gap-2">
-              {rows.calls.map((call, index) => (
-                <CallRow key={`${call.id}-${index}`} call={call} />
-              ))}
-            </div>
-          </Panel>
-        ) : null}
-
-        {trace?.kind === 'code_mode_execute_trace' && trace.result !== undefined ? (
-          <ExecuteResultPanel trace={trace} />
-        ) : null}
-
-        {rows.matches.length > 0 ? (
-          <Panel
-            title="Search matches"
-            count={
-              trace?.kind === 'code_mode_search_trace' && trace.truncated
-                ? `${rows.matches.length} shown`
-                : rows.matches.length
-            }
-            meta={trace?.kind === 'code_mode_search_trace' && trace.truncated ? 'truncated' : undefined}
-            scrollable
-          >
-            <div className="grid gap-2">
-              {rows.matches.map((match) => (
-                <SearchRow key={match.id} match={match} />
-              ))}
-            </div>
-          </Panel>
-        ) : null}
-
-        {trace?.kind === 'code_mode_search_trace' && rows.matches.length === 0 ? (
-          <SearchResultPanel trace={trace} />
-        ) : null}
-
-        {rows.history.length > 0 ? (
-          <Panel title="Recent history" count={rows.history.length}>
-            <div className="grid gap-2">
-              {rows.history.map((entry) => (
-                <div
-                  key={entry.seq}
-                  className="grid gap-1 rounded-md border border-aurora-border-default bg-aurora-control-surface p-3"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-aurora-text-primary">
-                      #{entry.seq} {entry.kind}
-                    </span>
-                    {entry.ok ? (
-                      <span aria-label="success" className="inline-flex" role="img">
-                        <CheckCircle2 aria-hidden="true" className="size-4 shrink-0 text-aurora-success" />
-                      </span>
-                    ) : (
-                      <StatusPill tone="error">{entry.error_kind ?? 'error'}</StatusPill>
-                    )}
-                  </div>
-                  <p className="text-xs text-aurora-text-muted">
-                    {entry.elapsed_ms}ms
-                    {entry.match_count !== undefined ? ` / ${entry.match_count} matches` : ''}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </Panel>
-        ) : null}
+        <WidgetFoot
+          history={state.history}
+          live={state.live}
+          selected={state.selected}
+          onSelect={(selection) => {
+            setState((previous) => ({ ...previous, selected: selection }))
+            const entry =
+              selection === 'live'
+                ? null
+                : state.history.find((candidate) => candidate.seq === selection)
+            setExpanded(
+              selection === 'live'
+                ? expandFirstFailedCall(state.live?.calls)
+                : expandFirstFailedCall(entry?.calls),
+            )
+          }}
+          inputTokens={tokens?.input_tokens}
+          outputTokens={tokens?.output_tokens}
+          logsCount={live?.logs_count}
+        />
       </section>
     </main>
   )
 }
 
-function Panel({
-  title,
-  count,
-  meta,
-  scrollable,
-  children,
+function formatMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(2).replace(/0$/, '')} s` : `${ms} ms`
+}
+
+const HAIRLINE = 'color-mix(in srgb, var(--aurora-border-default) 30%, transparent)'
+const HEAD_FOOT_BG = 'color-mix(in srgb, var(--aurora-page-bg) 25%, transparent)'
+const HEAD_FOOT_BORDER = 'color-mix(in srgb, var(--aurora-border-default) 50%, var(--aurora-page-bg))'
+
+function WidgetHead({
+  subLabel,
+  ok,
+  errorKind,
+  elapsedMs,
+  bridgeLabel,
 }: {
-  title: string
-  count: number | string
-  meta?: string
-  scrollable?: boolean
-  children: React.ReactNode
+  subLabel: string | null
+  ok: boolean
+  errorKind: string | undefined
+  elapsedMs: number | undefined
+  bridgeLabel: string | null
 }) {
   return (
-    <section className={cn('overflow-hidden', AURORA_STRONG_PANEL)}>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-aurora-border-default/80 px-4 py-3">
-        <div className="min-w-0">
-          <h2 className={cn(AURORA_CARD_TITLE, 'text-aurora-text-primary')}>{title}</h2>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded-md border border-aurora-border-strong bg-aurora-control-surface px-2.5 py-1 text-[11px] font-semibold tabular-nums text-aurora-text-muted shadow-[var(--aurora-highlight-medium)]">
-            {count}
-          </span>
-          {meta ? <StatusPill tone="warning">{meta}</StatusPill> : null}
-        </div>
-      </div>
-      <div className={cn('grid gap-2 p-3', scrollable && 'aurora-scrollbar max-h-36 overflow-y-auto overscroll-contain sm:max-h-52')}>
-        {children}
-      </div>
-    </section>
-  )
-}
-
-function WarningBanner({ warnings }: { warnings: string[] }) {
-  return (
-    <section className="rounded-aurora-2 border border-aurora-warn/50 bg-[color-mix(in_srgb,var(--aurora-warn)_12%,transparent)] p-3 text-sm text-aurora-warn shadow-[var(--aurora-highlight-medium)]">
-      <div className="flex gap-2">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-        <div className="grid gap-1">
-          {warnings.map((warning, index) => (
-            <p key={`${warning}-${index}`}>{warning}</p>
-          ))}
-        </div>
-      </div>
-    </section>
-  )
-}
-
-function formatSearchCount(trace: Extract<CodeModeTrace, { kind: 'code_mode_search_trace' }>) {
-  const displayed = trace.displayed_count ?? trace.matches.length
-  if (trace.match_count !== displayed || trace.truncated) return `${displayed} of ${trace.match_count}`
-  return displayed
-}
-
-function SummaryStrip({
-  calls,
-  matches,
-  history,
-}: {
-  calls: number
-  matches: number | string
-  history: number
-}) {
-  return (
-    <section className="grid grid-cols-3 gap-1.5 sm:gap-2">
-      <SummaryStat icon={Braces} label="Execute calls" value={calls} />
-      <SummaryStat icon={Search} label="Catalog matches" value={matches} accent />
-      <SummaryStat icon={History} label="History entries" value={history} />
-    </section>
-  )
-}
-
-function SummaryStat({
-  icon: Icon,
-  label,
-  value,
-  accent,
-}: {
-  icon: typeof Braces
-  label: string
-  value: number | string
-  accent?: boolean
-}) {
-  const compactLabel = label.replace('Execute calls', 'Calls').replace('Catalog matches', 'Matches').replace('History entries', 'History')
-  const compactValue =
-    typeof value === 'string' ? value.replace(/\bof\b/g, '/').replace(/\s+/g, '') : value
-
-  return (
-    <div className={cn('flex min-w-0 items-center justify-between gap-1 px-1.5 py-1 sm:gap-3 sm:p-3', AURORA_MESSAGE_SURFACE)}>
-      <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
-        <span
-          className={cn(
-            'hidden size-8 items-center justify-center rounded-aurora-1 border sm:flex',
-            accent
-              ? 'border-aurora-accent-primary/35 bg-[color-mix(in_srgb,var(--aurora-accent-primary)_12%,transparent)] text-aurora-accent-strong'
-              : 'border-aurora-border-strong bg-aurora-control-surface text-aurora-text-muted',
-          )}
-        >
-          <Icon className="size-4" strokeWidth={1.65} />
+    <div
+      className="flex items-center gap-2 border-b px-3 py-2"
+      style={{ borderColor: HEAD_FOOT_BORDER, background: HEAD_FOOT_BG }}
+    >
+      <LabbyMark />
+      <span className="text-[12.5px] font-bold">Execute</span>
+      {subLabel !== null ? (
+        <span className="truncate text-[11.5px] text-aurora-text-muted">· {subLabel}</span>
+      ) : null}
+      <span className="flex-1" />
+      {subLabel !== null ? (
+        ok ? (
+          <StatusDot tone="success" label="success" />
+        ) : (
+          <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-error')}>{errorKind ?? 'error'}</span>
+        )
+      ) : null}
+      {elapsedMs !== undefined ? (
+        <span className="text-[11px] font-semibold tabular-nums text-aurora-text-muted">
+          {formatMs(elapsedMs)}
         </span>
-        <span className={cn(AURORA_MUTED_LABEL, 'truncate text-[8px] tracking-[0.06em] sm:text-[11px] sm:tracking-[0.14em]')}>
-          <span className="sm:hidden">{compactLabel}</span>
-          <span className="hidden sm:inline">{label}</span>
-        </span>
-      </div>
-      <span className="shrink-0 whitespace-nowrap font-display text-[12px] font-extrabold tabular-nums text-aurora-text-primary sm:text-[18px]">
-        <span className="sm:hidden">{compactValue}</span>
-        <span className="hidden sm:inline">{value}</span>
-      </span>
+      ) : null}
+      {bridgeLabel !== null && bridgeLabel !== 'connected' ? (
+        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>{bridgeLabel}</span>
+      ) : null}
     </div>
   )
 }
 
-function CallRow({ call }: { call: ReturnType<typeof flattenTraceRows>['calls'][number] }) {
-  const params = stringifyRedactedParams(call.params)
+function LabbyMark() {
   return (
-    <article
-      className={cn(
-        'p-2.5 transition-colors hover:border-aurora-accent-primary/60 hover:bg-aurora-hover-bg/45 sm:p-3',
-        AURORA_MESSAGE_SURFACE,
-      )}
+    <svg
+      aria-hidden="true"
+      className="size-[15px] shrink-0 text-aurora-accent-strong"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.65"
+      strokeLinecap="round"
     >
-      <div className="flex flex-col gap-1.5">
-        <div className="min-w-0">
-          <p className="truncate font-mono text-[13px] font-semibold text-aurora-text-primary">
-            {call.upstream} / {call.tool}
-          </p>
-          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-aurora-text-muted">
-            <span className="truncate font-mono text-[11px] sm:text-xs">{call.id}</span>
-            {call.ok ? (
-              <span aria-label="success" className="inline-flex" role="img">
-                <CheckCircle2 aria-hidden="true" className="size-4 shrink-0 text-aurora-success" />
-              </span>
-            ) : (
-              <StatusPill tone="error">{call.error_kind ?? 'error'}</StatusPill>
-            )}
-            <span className="flex items-center gap-1 whitespace-nowrap">
-              <Clock3 className="size-3" />
-              {call.elapsed_ms}ms
-            </span>
-          </div>
-        </div>
-      </div>
-      {params ? (
-        <details className="mt-1.5 rounded-md border border-aurora-border-default bg-aurora-panel-strong sm:mt-3 sm:rounded-aurora-2">
-          <summary className="cursor-pointer px-2.5 py-1 text-xs font-semibold text-aurora-accent-strong sm:px-3 sm:py-2">
-            Redacted params
-          </summary>
-          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-xs text-aurora-text-primary sm:px-3 sm:pb-3">
-            {params}
-          </pre>
-        </details>
-      ) : null}
-    </article>
+      <path d="M12 3v18M3 12h18M6.7 6.7l10.6 10.6M17.3 6.7 6.7 17.3" />
+    </svg>
   )
 }
 
-function SearchRow({ match }: { match: ReturnType<typeof flattenTraceRows>['matches'][number] }) {
-  return (
-    <article className={cn('p-2.5 transition-colors hover:border-aurora-accent-primary/60 hover:bg-aurora-hover-bg/45 sm:p-3', AURORA_MESSAGE_SURFACE)}>
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Search className="size-4 text-aurora-accent-primary" />
-            <p className="truncate font-mono text-[13px] font-semibold text-aurora-text-primary">
-              {match.upstream} / {match.tool}
-            </p>
-          </div>
-          <p className="mt-1 line-clamp-1 text-xs text-aurora-text-muted sm:line-clamp-2">{match.description}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {match.has_schema ? <StatusPill tone="info">schema</StatusPill> : null}
-          {match.has_output_schema ? <StatusPill tone="neutral">output</StatusPill> : null}
-        </div>
-      </div>
-    </article>
-  )
-}
-
-function SearchResultPanel({
-  trace,
-}: {
-  trace: Extract<CodeModeTrace, { kind: 'code_mode_search_trace' }>
-}) {
-  const shape = trace.result_shape
-  const headline =
-    shape?.type === 'array'
-      ? trace.match_count > 0
-        ? `Search returned ${trace.match_count} array items, but none are tool-entry objects.`
-        : 'Search returned an empty list — no tools matched.'
-      : 'Search returned a reduced value, not a tool list — the matches panel only lists tool-entry objects.'
-  const shapeLabel = describeResultShape(shape)
-  const resultJson = stringifyRedactedParams(trace.result)
-
-  return (
-    <Panel title="Search result" count={shape?.type ?? 'empty'}>
-      <article className={cn('p-2.5 sm:p-3', AURORA_MESSAGE_SURFACE)}>
-        <div className="flex items-center gap-2">
-          <Search className="size-4 text-aurora-accent-primary" />
-          <p className="text-sm font-medium text-aurora-text-primary">{headline}</p>
-        </div>
-        {shapeLabel ? (
-          <p className="mt-1 font-mono text-xs text-aurora-text-muted">{shapeLabel}</p>
-        ) : null}
-        {resultJson ? (
-          <details className="mt-1.5 rounded-md border border-aurora-border-default bg-aurora-panel-strong sm:mt-3 sm:rounded-aurora-2">
-            <summary className="cursor-pointer px-2.5 py-1 text-xs font-semibold text-aurora-accent-strong sm:px-3 sm:py-2">
-              Returned value
-            </summary>
-            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-xs text-aurora-text-primary sm:px-3 sm:pb-3">
-              {resultJson}
-            </pre>
-          </details>
-        ) : null}
-      </article>
-    </Panel>
-  )
-}
-
-function ExecuteResultPanel({
-  trace,
-}: {
-  trace: Extract<CodeModeTrace, { kind: 'code_mode_execute_trace' }>
-}) {
-  const shapeLabel = describeResultShape(trace.result_shape)
-  const resultJson = stringifyRedactedParams(trace.result)
-
-  if (!resultJson) return null
-
-  return (
-    <Panel title="Returned value" count={trace.result_shape?.type ?? 'value'}>
-      <article className={cn('p-2.5 sm:p-3', AURORA_MESSAGE_SURFACE)}>
-        <div className="flex items-center gap-2">
-          <Braces className="size-4 text-aurora-accent-primary" />
-          <p className="text-sm font-medium text-aurora-text-primary">Execute returned a value.</p>
-        </div>
-        {shapeLabel ? (
-          <p className="mt-1 font-mono text-xs text-aurora-text-muted">{shapeLabel}</p>
-        ) : null}
-        <details className="mt-1.5 rounded-md border border-aurora-border-default bg-aurora-panel-strong sm:mt-3 sm:rounded-aurora-2">
-          <summary className="cursor-pointer px-2.5 py-1 text-xs font-semibold text-aurora-accent-strong sm:px-3 sm:py-2">
-            Result
-          </summary>
-          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-xs text-aurora-text-primary sm:px-3 sm:pb-3">
-            {resultJson}
-          </pre>
-        </details>
-      </article>
-    </Panel>
-  )
-}
-
-function EmptyState() {
-  return (
-    <section className={cn('flex items-center gap-3 p-5 text-sm text-aurora-text-muted', AURORA_STRONG_PANEL)}>
-      <div className="flex size-9 items-center justify-center rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface text-aurora-accent-primary">
-        <Search className="size-4" strokeWidth={1.65} />
-      </div>
-      <span>Waiting for an MCP Apps tool result or history snapshot.</span>
-    </section>
-  )
-}
-
-function StatusPill({
-  tone,
-  children,
-}: {
-  tone: 'success' | 'error' | 'info' | 'neutral' | 'warning'
-  children: React.ReactNode
-}) {
+function StatusDot({ tone, label }: { tone: 'success' | 'error'; label: string }) {
   return (
     <span
+      aria-label={label}
+      role="img"
       className={cn(
-        'inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold shadow-[var(--aurora-highlight-medium)]',
-        tone === 'success' &&
-          'border-aurora-success/50 bg-aurora-success/10 text-aurora-success',
-        tone === 'error' && 'border-aurora-error/50 bg-aurora-error/10 text-aurora-error',
-        tone === 'info' &&
-          'border-aurora-accent-primary/50 bg-aurora-accent-primary/10 text-aurora-accent-primary',
-        tone === 'warning' && 'border-aurora-warn/50 bg-aurora-warn/10 text-aurora-warn',
-        tone === 'neutral' &&
-          'border-aurora-border-strong bg-aurora-control-surface text-aurora-text-muted',
+        'inline-block size-[5px] shrink-0 rounded-full',
+        tone === 'success' ? 'bg-aurora-success' : 'bg-aurora-error',
       )}
+      style={{ boxShadow: '0 0 4px currentColor', color: tone === 'success' ? 'var(--aurora-success)' : 'var(--aurora-error)' }}
+    />
+  )
+}
+
+function WarnLine({ message }: { message: string }) {
+  return (
+    <p
+      className="flex items-center gap-2 border-b px-3 py-1.5 text-[11px] text-aurora-warn"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--aurora-warn) 22%, transparent)',
+        background: 'color-mix(in srgb, var(--aurora-warn) 8%, transparent)',
+      }}
     >
-      {children}
-    </span>
+      <AlertTriangle className="size-3 shrink-0" strokeWidth={1.75} />
+      {message}
+    </p>
+  )
+}
+
+function CallRows({
+  calls,
+  expanded,
+  onToggle,
+}: {
+  calls: CodeModeCallTrace[]
+  expanded: Record<string, boolean>
+  onToggle: (key: string) => void
+}) {
+  const maxElapsed = Math.max(...calls.map((call) => call.elapsed_ms), 1)
+  // When start offsets are present (newer traces), bars form a true waterfall
+  // over the run span; otherwise they fall back to relative duration bars.
+  const hasOffsets = calls.some((call) => call.start_ms !== undefined)
+  const span = hasOffsets
+    ? Math.max(...calls.map((call) => (call.start_ms ?? 0) + call.elapsed_ms), 1)
+    : maxElapsed
+  return (
+    <div>
+      {calls.map((call, index) => {
+        const key = `call:${call.id}-${index}`
+        const open = Boolean(expanded[key])
+        const params = stringifyRedactedParams(call.params)
+        const left = hasOffsets ? ((call.start_ms ?? 0) / span) * 100 : 0
+        const width = Math.min(
+          Math.max((call.elapsed_ms / span) * 100, 4),
+          100 - left,
+        )
+        return (
+          <div key={key}>
+            <button
+              type="button"
+              onClick={() => onToggle(key)}
+              className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,auto)_minmax(30px,1fr)_52px_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors first:border-t-0 hover:bg-aurora-hover-bg/40"
+              style={{ borderColor: index === 0 ? 'transparent' : HAIRLINE }}
+            >
+              <span className="flex items-center justify-center">
+                {call.ok ? (
+                  <Check
+                    aria-label="success"
+                    role="img"
+                    className="size-3 shrink-0 text-aurora-success"
+                    strokeWidth={2}
+                  />
+                ) : (
+                  <X
+                    aria-label="failed"
+                    role="img"
+                    className="size-3 shrink-0 text-aurora-error"
+                    strokeWidth={2}
+                  />
+                )}
+              </span>
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.04em] text-aurora-text-muted">
+                  {call.upstream}
+                </span>
+                <span className="truncate text-xs font-semibold">{call.tool}</span>
+              </span>
+              <span
+                className="relative h-1 rounded-full"
+                style={{ background: 'color-mix(in srgb, var(--aurora-border-default) 34%, transparent)' }}
+              >
+                <span
+                  className="absolute inset-y-0 min-w-1 rounded-full"
+                  style={{
+                    left: `${left.toFixed(1)}%`,
+                    width: `${width.toFixed(1)}%`,
+                    background: call.ok
+                      ? 'linear-gradient(90deg, var(--aurora-accent-deep), var(--aurora-accent-primary))'
+                      : 'linear-gradient(90deg, color-mix(in srgb, var(--aurora-error) 70%, var(--aurora-page-bg)), var(--aurora-error))',
+                  }}
+                />
+              </span>
+              <span className="text-right text-[11px] font-semibold tabular-nums text-aurora-text-muted">
+                {formatMs(call.elapsed_ms)}
+              </span>
+              <ChevronRight
+                className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+                strokeWidth={1.75}
+              />
+            </button>
+            {open ? (
+              <div className="flex flex-col gap-1.5 px-3 pb-2 pl-[34px]">
+                {!call.ok && call.error_kind ? (
+                  <p className="text-[11px] text-aurora-error">{call.error_kind}</p>
+                ) : null}
+                {params ? (
+                  <>
+                    <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>
+                      Redacted Params
+                    </span>
+                    <CodeBlock value={params} />
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function DiscoveryRows({
+  discovery,
+  expanded,
+  onToggle,
+}: {
+  discovery: DiscoveryResult
+  expanded: Record<string, boolean>
+  onToggle: (key: string) => void
+}) {
+  if (discovery.hits.length === 0) {
+    return (
+      <p className="px-3 py-3 text-xs text-aurora-text-muted">
+        {discovery.hint ?? 'No matches.'}
+      </p>
+    )
+  }
+  return (
+    <div>
+      {discovery.hits.map((hit, index) => {
+        const key = `hit:${hit.id}-${index}`
+        const open = Boolean(expanded[key])
+        const meta = [
+          hit.path,
+          hit.kind,
+          hit.score !== undefined ? `score ${hit.score.toFixed(2)}` : undefined,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+        return (
+          <div key={key}>
+            <button
+              type="button"
+              onClick={() => onToggle(key)}
+              className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,1fr)_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors first:border-t-0 hover:bg-aurora-hover-bg/40"
+              style={{ borderColor: index === 0 ? 'transparent' : HAIRLINE }}
+            >
+              <Wrench className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                {hit.namespace ? (
+                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.04em] text-aurora-text-muted">
+                    {hit.namespace}
+                  </span>
+                ) : null}
+                <span className="shrink-0 text-xs font-semibold">{hit.name ?? hit.id}</span>
+                {hit.description ? (
+                  <span className="truncate text-[11px] text-aurora-text-muted">{hit.description}</span>
+                ) : null}
+              </span>
+              <ChevronRight
+                className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+                strokeWidth={1.75}
+              />
+            </button>
+            {open ? (
+              <div className="flex flex-col gap-1.5 px-3 pb-2 pl-[34px]">
+                {hit.description ? (
+                  <p className="text-[11px] leading-relaxed text-aurora-text-muted">{hit.description}</p>
+                ) : null}
+                {meta ? <p className="text-[10.5px] text-aurora-text-muted">{meta}</p> : null}
+                {hit.signature ? <CodeBlock value={hit.signature} /> : null}
+              </div>
+            ) : null}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function InputRow({
+  snippet,
+  open,
+  onToggle,
+}: {
+  snippet: string
+  open: boolean
+  onToggle: () => void
+}) {
+  const lines = snippet.split('\n').length
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,auto)_minmax(30px,1fr)_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors hover:bg-aurora-hover-bg/40"
+        style={{ borderColor: HAIRLINE }}
+      >
+        <Terminal className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
+        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Input</span>
+        <span className="truncate text-[11px] text-aurora-text-muted">
+          {lines} line{lines === 1 ? '' : 's'}
+        </span>
+        <ChevronRight
+          className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+          strokeWidth={1.75}
+        />
+      </button>
+      {open ? (
+        <div className="px-3 pb-2 pl-[34px]">
+          <CodeBlock value={snippet} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ResultRow({
+  trace,
+  markdown,
+  open,
+  onToggle,
+}: {
+  trace: CodeModeExecuteTrace
+  markdown: string | null
+  open: boolean
+  onToggle: () => void
+}) {
+  const shape = describeResultShape(trace.result_shape)
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,auto)_minmax(30px,1fr)_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors hover:bg-aurora-hover-bg/40"
+        style={{ borderColor: HAIRLINE }}
+      >
+        <CornerDownLeft className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
+        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Result</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-[11px] text-aurora-text-muted">{shape}</span>
+          {trace.result_shape?.truncated ? (
+            <span className={cn(AURORA_BADGE_LABEL, 'shrink-0 text-aurora-warn')}>truncated</span>
+          ) : null}
+        </span>
+        <ChevronRight
+          className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+          strokeWidth={1.75}
+        />
+      </button>
+      {open ? (
+        <div className="px-3 pb-2 pl-[34px]">
+          {markdown !== null ? (
+            <MarkdownDoc source={markdown} />
+          ) : (
+            <CodeBlock value={stringifyRedactedParams(trace.result)} />
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ArtifactsRow({
+  artifacts,
+  open,
+  onToggle,
+}: {
+  artifacts: CodeModeArtifactReceipt[]
+  open: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="grid w-full cursor-pointer grid-cols-[14px_minmax(0,auto)_minmax(30px,1fr)_13px] items-center gap-2 border-t px-3 py-1.5 text-left transition-colors hover:bg-aurora-hover-bg/40"
+        style={{ borderColor: HAIRLINE }}
+      >
+        <FileBox className="size-3 text-aurora-accent-primary" strokeWidth={1.75} />
+        <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>Artifacts</span>
+        <span className="truncate text-[11px] text-aurora-text-muted">
+          {artifacts.length} file{artifacts.length === 1 ? '' : 's'}
+        </span>
+        <ChevronRight
+          className={cn('size-3 text-aurora-text-muted transition-transform', open && 'rotate-90')}
+          strokeWidth={1.75}
+        />
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-1 px-3 pb-2 pl-[34px]">
+          {artifacts.map((artifact, index) => (
+            <p key={`${artifact.path}-${index}`} className="flex min-w-0 items-baseline gap-1.5">
+              <span className="truncate text-xs font-semibold">{artifact.path}</span>
+              <span className="shrink-0 text-[10.5px] text-aurora-text-muted">
+                {[artifact.content_type, artifact.bytes !== undefined ? `${artifact.bytes} B` : undefined]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </span>
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * Minimal renderer for the markdown subset `codemode.describe()` emits:
+ * headings, fenced code, bullet lists, inline code, paragraphs.
+ */
+function MarkdownDoc({ source }: { source: string }) {
+  const blocks: ReactNode[] = []
+  const lines = source.split('\n')
+  let index = 0
+  let key = 0
+  while (index < lines.length) {
+    const line = lines[index]
+    if (line.startsWith('```')) {
+      const fence: string[] = []
+      index += 1
+      while (index < lines.length && !lines[index].startsWith('```')) {
+        fence.push(lines[index])
+        index += 1
+      }
+      index += 1
+      blocks.push(<CodeBlock key={key++} value={fence.join('\n')} />)
+      continue
+    }
+    const heading = /^(#{1,3})\s+(.*)$/.exec(line)
+    if (heading) {
+      blocks.push(
+        <p key={key++} className="text-xs font-bold text-aurora-text-primary">
+          {renderInline(heading[2])}
+        </p>,
+      )
+      index += 1
+      continue
+    }
+    if (line.startsWith('- ')) {
+      const items: string[] = []
+      while (index < lines.length && lines[index].startsWith('- ')) {
+        items.push(lines[index].slice(2))
+        index += 1
+      }
+      blocks.push(
+        <ul key={key++} className="list-disc pl-4 text-[11px] leading-relaxed text-aurora-text-muted">
+          {items.map((item, itemIndex) => (
+            <li key={itemIndex}>{renderInline(item)}</li>
+          ))}
+        </ul>,
+      )
+      continue
+    }
+    if (line.trim().length > 0) {
+      blocks.push(
+        <p key={key++} className="text-[11px] leading-relaxed text-aurora-text-muted">
+          {renderInline(line)}
+        </p>,
+      )
+    }
+    index += 1
+  }
+  return <div className="flex flex-col gap-1.5">{blocks}</div>
+}
+
+function renderInline(text: string): ReactNode[] {
+  // Split on `code` spans; everything else renders as plain text.
+  return text.split(/(`[^`]+`)/).map((segment, index) =>
+    segment.startsWith('`') && segment.endsWith('`') && segment.length > 1 ? (
+      <code
+        key={index}
+        className="rounded px-1 font-mono text-[10.5px] text-aurora-text-primary"
+        style={{ background: 'color-mix(in srgb, var(--aurora-page-bg) 55%, var(--aurora-control-surface))' }}
+      >
+        {segment.slice(1, -1)}
+      </code>
+    ) : (
+      segment
+    ),
+  )
+}
+
+function HistoryNote() {
+  return (
+    <p
+      className="flex items-center gap-2 border-t px-3 py-1.5 text-[11px] text-aurora-text-muted"
+      style={{ borderColor: HAIRLINE }}
+    >
+      <History className="size-3 shrink-0" strokeWidth={1.75} />
+      Result not retained in history — params and call outcomes only.
+    </p>
+  )
+}
+
+function CodeBlock({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="relative">
+      <pre
+        className="aurora-scrollbar m-0 max-h-[150px] overflow-auto whitespace-pre-wrap break-words rounded-lg border px-2.5 py-2 font-mono text-[11px] leading-relaxed text-aurora-text-primary"
+        style={{
+          background: 'color-mix(in srgb, var(--aurora-page-bg) 55%, var(--aurora-control-surface))',
+          borderColor: 'color-mix(in srgb, var(--aurora-border-default) 50%, var(--aurora-page-bg))',
+        }}
+      >
+        {value}
+      </pre>
+      <button
+        type="button"
+        aria-label="Copy"
+        title="Copy"
+        onClick={() => {
+          void navigator.clipboard
+            ?.writeText(value)
+            .then(() => {
+              setCopied(true)
+              setTimeout(() => setCopied(false), 1200)
+            })
+            .catch(() => {})
+        }}
+        className="absolute right-1.5 top-1.5 flex size-5 cursor-pointer items-center justify-center rounded border border-transparent text-aurora-text-muted transition-colors hover:border-aurora-border-strong hover:text-aurora-text-primary"
+      >
+        {copied ? (
+          <Check className="size-3 text-aurora-success" strokeWidth={2} />
+        ) : (
+          <Copy className="size-3" strokeWidth={1.75} />
+        )}
+      </button>
+    </div>
+  )
+}
+
+function WidgetFoot({
+  history,
+  live,
+  selected,
+  onSelect,
+  inputTokens,
+  outputTokens,
+  logsCount,
+}: {
+  history: CodeModeHistoryEntry[]
+  live: CodeModeExecuteTrace | null
+  selected: RunSelection
+  onSelect: (selection: RunSelection) => void
+  inputTokens: number | undefined
+  outputTokens: number | undefined
+  logsCount: number | undefined
+}) {
+  const liveEntrySeq =
+    live?.execution_id !== undefined
+      ? history.find((entry) => entry.execution_id === live.execution_id)?.seq
+      : undefined
+  const chips: { key: string; label: string; ok: boolean; target: RunSelection }[] = history.map(
+    (entry) => ({
+      key: `seq-${entry.seq}`,
+      label: entry.seq === liveEntrySeq ? `#${entry.seq} live` : `#${entry.seq}`,
+      ok: entry.ok,
+      target: entry.seq === liveEntrySeq ? 'live' : entry.seq,
+    }),
+  )
+  if (live && liveEntrySeq === undefined) {
+    chips.push({ key: 'live', label: 'live', ok: live.calls.every((call) => call.ok), target: 'live' })
+  }
+  // A single run has nothing to switch between — the chip strip only earns
+  // its place once history gives it a second entry.
+  const showChips = chips.length > 1
+
+  const meta: string[] = []
+  if (inputTokens !== undefined || outputTokens !== undefined) {
+    meta.push(`${inputTokens ?? 0} in · ${outputTokens ?? 0} out`)
+  }
+  if (logsCount) meta.push(`${logsCount} log${logsCount === 1 ? '' : 's'}`)
+
+  if (!showChips && meta.length === 0) return null
+
+  return (
+    <div
+      className="flex items-center gap-1.5 border-t px-3 py-1.5"
+      style={{ borderColor: HEAD_FOOT_BORDER, background: HEAD_FOOT_BG }}
+    >
+      {showChips ? (
+        <span className={cn(AURORA_BADGE_LABEL, 'mr-0.5 text-aurora-text-muted')}>Session</span>
+      ) : null}
+      {(showChips ? chips : []).map((chip) => {
+        const isSelected =
+          chip.target === selected || (chip.target === 'live' && selected === 'live')
+        return (
+          <button
+            key={chip.key}
+            type="button"
+            onClick={() => onSelect(chip.target)}
+            className={cn(
+              'inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] font-semibold transition-colors',
+              isSelected
+                ? 'text-aurora-text-primary'
+                : 'text-aurora-text-muted hover:text-aurora-text-primary',
+            )}
+            style={{
+              background: isSelected
+                ? 'color-mix(in srgb, var(--aurora-accent-primary) 8%, var(--aurora-control-surface))'
+                : 'var(--aurora-control-surface)',
+              borderColor: isSelected
+                ? 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))'
+                : 'color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
+              boxShadow: isSelected ? '0 0 0 1px rgba(41,182,246,0.24)' : undefined,
+            }}
+          >
+            <span
+              className={cn(
+                'inline-block size-[5px] rounded-full',
+                chip.ok ? 'bg-aurora-success' : 'bg-aurora-error',
+              )}
+            />
+            {chip.label}
+          </button>
+        )
+      })}
+      <span className="flex-1" />
+      {meta.length > 0 ? (
+        <span className="text-[10.5px] tabular-nums text-aurora-text-muted">{meta.join(' · ')}</span>
+      ) : null}
+    </div>
   )
 }

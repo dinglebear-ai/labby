@@ -1355,6 +1355,27 @@ async fn dev_nodeinfo(State(_state): State<AppState>) -> axum::response::Respons
     .into_response()
 }
 
+async fn labby_discovery(State(state): State<AppState>) -> axum::response::Response {
+    let api_base_url = state
+        .auth_config
+        .as_ref()
+        .and_then(|cfg| cfg.public_url.as_ref())
+        .map(|url| url.as_str().trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "http://localhost:8765".to_string());
+    let mut response = Json(serde_json::json!({
+        "apiBaseUrl": api_base_url,
+        "paletteCatalogUrl": format!("{api_base_url}/v1/palette/catalog"),
+        "paletteSchemaUrl": format!("{api_base_url}/v1/palette/schema"),
+        "paletteExecuteUrl": format!("{api_base_url}/v1/palette/execute"),
+    }))
+    .into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
+    );
+    response
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn build_router(
     mut state: AppState,
@@ -1459,6 +1480,7 @@ pub fn build_router(
     let mut router = Router::new()
         .route("/health", get(health::health))
         .route("/ready", get(health::ready))
+        .route("/.well-known/labby.json", get(labby_discovery))
         .merge(v1_protected);
     #[cfg(feature = "gateway")]
     {

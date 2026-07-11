@@ -35,7 +35,7 @@ export interface NormalizedMcpToolEntry extends BaseLauncherEntry {
 }
 
 export function normalizeLauncherCatalog(catalog: LauncherCatalog): LauncherEntry[] {
-  return (catalog.entries ?? []).map(normalizeEntry).sort((a, b) => a.id.localeCompare(b.id));
+  return (catalog.entries ?? []).map(normalizeEntry);
 }
 
 function normalizeEntry(entry: BridgeLauncherEntry): LauncherEntry {
@@ -74,7 +74,7 @@ function normalizeEntry(entry: BridgeLauncherEntry): LauncherEntry {
     source: entry.source || entry.service,
     destructive: Boolean(entry.destructive),
     params: [],
-    argMode: entry.inputSchema ? "json" : "none",
+    argMode: entry.inputSchema || entry.schemaFingerprint ? "json" : "none",
     inputSchema: entry.inputSchema,
     schemaFingerprint: entry.schemaFingerprint ?? null,
     searchText: "",

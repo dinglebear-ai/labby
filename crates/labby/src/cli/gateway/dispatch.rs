@@ -503,6 +503,15 @@ mod tests {
             .respond_with(ResponseTemplate::new(200))
             .mount(&server)
             .await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/labby.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiBaseUrl": server.uri(),
+                "paletteCatalogUrl": format!("{}/v1/palette/catalog", server.uri()),
+                "paletteExecuteUrl": format!("{}/v1/palette/execute", server.uri()),
+            })))
+            .mount(&server)
+            .await;
         Mock::given(method("POST"))
             .and(path("/v1/gateway"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"name": "example"}])))

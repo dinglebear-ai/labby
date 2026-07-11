@@ -152,6 +152,12 @@ impl GatewayManager {
         let mut schema_bytes = 0usize;
 
         let cfg = self.config.read().await.clone();
+        self.refresh_code_mode_catalog_allowed(
+            Some(&caller.owner),
+            Some(&caller.oauth_subject),
+            caller.allowed_upstreams(),
+        )
+        .await?;
         if let Some(pool) = self.current_pool().await {
             for upstream in cfg.upstream.iter().filter(|upstream| {
                 upstream.enabled
@@ -198,6 +204,7 @@ impl GatewayManager {
         caller: &PaletteCaller,
         request: PaletteExecuteRequest,
     ) -> Result<PaletteExecuteResponse, ToolError> {
+        let start = Instant::now();
         let (upstream, tool) = parse_mcp_launcher_id(&request.id)?;
         if caller
             .allowed_upstreams()
@@ -247,7 +254,60 @@ impl GatewayManager {
         let outcome = self
             .execute_upstream_tool(upstream, tool, request.params)
             .await?;
+        tracing::info!(
+            surface = "api",
+            service = "palette",
+            action = "palette.execute",
+            upstream,
+            tool,
+            destructive = upstream_tool.destructive,
+            elapsed_ms = start.elapsed().as_millis(),
+            "palette launcher tool executed"
+        );
         Ok(execution_response(request.id, outcome))
+    }
+
+    pub async fn palette_schema(
+        &self,
+        caller: &PaletteCaller,
+        id: &str,
+    ) -> Result<Option<Value>, ToolError> {
+        let start = Instant::now();
+        let (upstream, tool) = parse_mcp_launcher_id(id)?;
+        if caller
+            .allowed_upstreams()
+            .is_some_and(|allowed| !allowed.contains(upstream))
+        {
+            return Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("launcher entry `{id}` was not found"),
+            });
+        }
+        let upstream_tool = self
+            .resolve_code_mode_upstream_tool(
+                upstream,
+                tool,
+                Some(&caller.owner),
+                Some(&caller.oauth_subject),
+            )
+            .await
+            .map_err(map_unknown_tool_to_not_found)?;
+        let schema = project_palette_schema(upstream_tool.input_schema);
+        tracing::info!(
+            surface = "api",
+            service = "palette",
+            action = "palette.schema",
+            upstream,
+            tool,
+            has_schema = schema.is_some(),
+            schema_bytes = schema
+                .as_ref()
+                .map(|schema| schema.to_string().len())
+                .unwrap_or(0),
+            elapsed_ms = start.elapsed().as_millis(),
+            "palette launcher schema resolved"
+        );
+        Ok(schema)
     }
 }
 

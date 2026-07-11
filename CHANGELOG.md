@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0](https://github.com/jmagar/labby/compare/v1.0.1...v1.1.0) (2026-07-09)
+
+
+### Added
+
+* add Labby desktop palette (Tauri), ported from Axon's palette shell ([44b8a4d](https://github.com/jmagar/labby/commit/44b8a4d5ac6c76f104f99bdc1d45fa4b24b3b98a))
+* add unified palette launcher ([#205](https://github.com/jmagar/labby/issues/205)) ([28a7a97](https://github.com/jmagar/labby/commit/28a7a97f335f7fd2b96f265212cc8a040d334e1e))
+* **auth:** add native callback/poll OAuth flow for desktop/native clients ([467d632](https://github.com/jmagar/labby/commit/467d6328ed180e70db531d0e04f084b3be788034))
+
+
+### Fixed
+
+* **auth:** review fixes for native-poll OAuth flow ([8b13f95](https://github.com/jmagar/labby/commit/8b13f959dcac9a392b5b188fbf48a9b6d2996155))
+* **gateway-admin:** remove dead-route references missed by static analysis ([af49ecc](https://github.com/jmagar/labby/commit/af49ecc1e003a06730d86da4ab5639a813172857))
+* review fixes for the desktop palette client ([5629ad6](https://github.com/jmagar/labby/commit/5629ad6796ffdd9c3f61c2a2363f96de9f5195f3))
+
 ## [1.0.1](https://github.com/jmagar/labby/compare/v1.0.0...v1.0.1) (2026-07-09)
 
 

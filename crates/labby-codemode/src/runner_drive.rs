@@ -54,8 +54,16 @@ const ARTIFACT_WRITE_CALL_ID: &str = "code_mode::write_artifact";
 // `impl Future` in a non-`async fn` parameter position (which is unsupported).
 type ToolCallFut<'a> = std::pin::Pin<
     Box<
-        dyn Future<Output = (u64, String, Option<Value>, Result<Value, ToolError>, u128)>
-            + Send
+        dyn Future<
+                Output = (
+                    u64,
+                    String,
+                    Option<Value>,
+                    Result<Value, ToolError>,
+                    u128,
+                    u128,
+                ),
+            > + Send
             + 'a,
     >,
 >;
@@ -280,6 +288,8 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         }
 
         let deadline = tokio::time::Instant::now() + cfg.timeout;
+        // Epoch for per-call start offsets (waterfall timing in the trace).
+        let execution_start = std::time::Instant::now();
         let artifact_run_id = Ulid::new().to_string();
         let mut state = DriveState::new(&artifact_run_id);
         // Mark this run active before any artifact dir exists, so a concurrent
@@ -427,6 +437,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                             id,
                                             local,
                                             params,
+                                            execution_start,
                                             cfg,
                                             &mut pending_tool_calls,
                                         );
@@ -438,6 +449,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                             id,
                                             params,
                                             deadline,
+                                            execution_start,
                                             cfg,
                                             &mut pending_tool_calls,
                                         );
@@ -641,12 +653,14 @@ fn classify_line_result(
 /// Free function (not `&self` method) so the returned future can capture
 /// `broker` with the same lifetime as the enclosing `run_in_runner_with_config`
 /// rather than being forced to `'static`.
+#[allow(clippy::too_many_arguments)]
 fn enqueue_tool_call<'a, H: CodeModeHost>(
     broker: &'a CodeModeBroker<'a, H>,
     seq: u64,
     id: String,
     params: Value,
     deadline: tokio::time::Instant,
+    execution_start: std::time::Instant,
     cfg: &RunnerConfig,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
 ) {
@@ -656,6 +670,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let capability_filter = cfg.capability_filter.clone();
     let surface = cfg.surface;
     pending_tool_calls.push(Box::pin(async move {
+        let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
         let ctx = ExecCtx { seq };
         let result = broker
@@ -670,7 +685,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
             )
             .await;
         let elapsed_ms = call_start.elapsed().as_millis();
-        (seq, call_id, redacted_params, result, elapsed_ms)
+        (seq, call_id, redacted_params, result, elapsed_ms, start_ms)
     }));
 }
 
@@ -693,6 +708,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     id: String,
     local: LocalProviderCall,
     params: Value,
+    execution_start: std::time::Instant,
     cfg: &RunnerConfig,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
 ) {
@@ -702,6 +718,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     let openapi_registry = cfg.openapi_registry.clone();
     let openapi_http_client = cfg.openapi_http_client.clone();
     pending_tool_calls.push(Box::pin(async move {
+        let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
         if !super::execute::local_providers_allowed(&caller, &capability_filter) {
             return (
@@ -713,6 +730,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                     required_scopes: vec!["lab:admin".to_string()],
                 }),
                 call_start.elapsed().as_millis(),
+                start_ms,
             );
         }
         let ctx = ExecCtx { seq };
@@ -730,6 +748,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                         redacted_params,
                         Ok(value),
                         call_start.elapsed().as_millis(),
+                        start_ms,
                     );
                 }
                 StepDecision::Execute => {}
@@ -743,6 +762,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                             message,
                         }),
                         call_start.elapsed().as_millis(),
+                        start_ms,
                     );
                 }
             }
@@ -771,6 +791,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 redacted_params,
                 Err(err),
                 call_start.elapsed().as_millis(),
+                start_ms,
             );
         }
         (
@@ -779,6 +800,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             redacted_params,
             dispatched,
             call_start.elapsed().as_millis(),
+            start_ms,
         )
     }));
 }
@@ -813,9 +835,9 @@ fn enqueue_rejected_tool_call(
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'_>>,
 ) {
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
-    pending_tool_calls.push(Box::pin(
-        async move { (seq, id, redacted_params, Err(err), 0) },
-    ));
+    pending_tool_calls.push(Box::pin(async move {
+        (seq, id, redacted_params, Err(err), 0, 0)
+    }));
 }
 
 /// Settle an over-ceiling `__lab_internal::*` pseudo-tool call with the
@@ -837,7 +859,7 @@ fn enqueue_internal_call_over_ceiling(
 ) {
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     pending_tool_calls.push(Box::pin(async move {
-        (seq, id, redacted_params, Ok(json!({ "ranked": [] })), 0)
+        (seq, id, redacted_params, Ok(json!({ "ranked": [] })), 0, 0)
     }));
 }
 
@@ -916,6 +938,7 @@ async fn reject_tool_call_over_budget(
             id,
             ok: false,
             elapsed_ms: 0,
+            start_ms: None,
             params: None,
             error_kind: Some("call_budget_exceeded".to_string()),
         },
@@ -1218,14 +1241,21 @@ async fn write_runner_input_by_deadline(
 
 /// Handle a completed tool-call future from `pending_tool_calls`.
 async fn handle_completed_tool_call(
-    completed: Option<(u64, String, Option<Value>, Result<Value, ToolError>, u128)>,
+    completed: Option<(
+        u64,
+        String,
+        Option<Value>,
+        Result<Value, ToolError>,
+        u128,
+        u128,
+    )>,
     stdin: &mut ChildStdin,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
-    let Some((seq, id, params, result, elapsed_ms)) = completed else {
+    let Some((seq, id, params, result, elapsed_ms, start_ms)) = completed else {
         return Ok(());
     };
     // Reserved host-internal pseudo-tool calls never appear in the call
@@ -1260,6 +1290,7 @@ async fn handle_completed_tool_call(
                             id,
                             ok: false,
                             elapsed_ms,
+                            start_ms: Some(start_ms),
                             params,
                             error_kind: Some("result_too_large".to_string()),
                         },
@@ -1274,6 +1305,7 @@ async fn handle_completed_tool_call(
                         id,
                         ok: true,
                         elapsed_ms,
+                        start_ms: Some(start_ms),
                         params,
                         error_kind: None,
                     },
@@ -1328,6 +1360,7 @@ async fn handle_completed_tool_call(
                         id,
                         ok: false,
                         elapsed_ms,
+                        start_ms: Some(start_ms),
                         params,
                         error_kind: Some(kind),
                     },
@@ -1432,6 +1465,7 @@ fn artifact_call(
             id: ARTIFACT_WRITE_CALL_ID.to_string(),
             ok,
             elapsed_ms,
+            start_ms: None,
             params,
             error_kind,
         },
