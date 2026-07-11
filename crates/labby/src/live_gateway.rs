@@ -106,7 +106,9 @@ pub async fn detect(config: &LabConfig) -> Option<LiveGateway> {
         else {
             continue;
         };
-        if health.status().is_success() {
+        if health.status().is_success()
+            && is_labby_gateway_daemon(&client, &base_url, token.as_deref()).await
+        {
             return Some(LiveGateway {
                 base_url,
                 token,
@@ -115,6 +117,39 @@ pub async fn detect(config: &LabConfig) -> Option<LiveGateway> {
         }
     }
     None
+}
+
+async fn is_labby_gateway_daemon(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: Option<&str>,
+) -> bool {
+    let mut request = client
+        .get(format!("{base_url}/v1/gateway/actions"))
+        .timeout(PROBE_TIMEOUT);
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let Ok(response) = request.send().await else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    let Ok(actions) = response.json::<Value>().await else {
+        return false;
+    };
+    actions_include_gateway_reload(&actions)
+}
+
+fn actions_include_gateway_reload(actions: &Value) -> bool {
+    actions.as_array().is_some_and(|items| {
+        items.iter().any(|item| {
+            item.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name == "gateway.reload")
+        })
+    })
 }
 
 impl LiveGateway {
@@ -336,12 +371,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detect_returns_some_when_health_check_succeeds() {
+    async fn detect_returns_some_when_health_check_and_gateway_actions_succeed() {
         ensure_tls_provider();
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/health"))
             .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{ "name": "gateway.reload" }])),
+            )
             .mount(&server)
             .await;
 
@@ -354,12 +397,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detect_ignores_healthy_non_labby_server() {
+        ensure_tls_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": "not_found"
+            })))
+            .mount(&server)
+            .await;
+
+        let url = url::Url::parse(&server.uri()).expect("wiremock uri parses");
+        let mut config = LabConfig::default();
+        config.mcp.host = Some(url.host_str().expect("wiremock host").to_string());
+        config.mcp.port = url.port();
+
+        assert!(detect(&config).await.is_none());
+    }
+
+    #[tokio::test]
     async fn detect_falls_through_to_a_public_url_when_local_is_unreachable() {
         ensure_tls_provider();
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/health"))
             .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{ "name": "gateway.reload" }])),
+            )
             .mount(&server)
             .await;
 
