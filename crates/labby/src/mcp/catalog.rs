@@ -61,12 +61,6 @@ pub(crate) struct CatalogChangeSet {
     pub(crate) prompts_changed: bool,
 }
 
-impl CatalogChangeSet {
-    pub(crate) const fn any(self) -> bool {
-        self.tools_changed || self.resources_changed || self.prompts_changed
-    }
-}
-
 impl ToolCatalogSnapshot {
     pub(crate) fn changes_since(&self, before: &Self) -> CatalogChangeSet {
         CatalogChangeSet {

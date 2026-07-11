@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 
 use axum::http;
-use futures::future::join_all;
 #[cfg(feature = "gateway")]
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
@@ -337,111 +336,12 @@ use crate::mcp::catalog::CatalogChangeSet;
 
 impl LabMcpServer {
     pub(crate) async fn notify_catalog_changes(&self, changes: CatalogChangeSet) {
-        if !changes.any() {
-            return;
-        }
-
-        let peers = self.peers.read().await.clone();
-        let peer_count = peers.len();
-        tracing::info!(
-            surface = "mcp",
-            service = "peers",
-            action = "catalog.notify",
-            subsystem = "mcp_server",
-            phase = "catalog.notify",
-            peer_count,
-            tools_changed = changes.tools_changed,
-            resources_changed = changes.resources_changed,
-            prompts_changed = changes.prompts_changed,
-            "notifying MCP peers about catalog change"
-        );
-
-        let notification_timeout = crate::config::resolved_catalog_notification_timeout();
-        let notify_futures = peers.iter().enumerate().map(|(peer_index, peer)| {
-            let peer = peer.clone();
-            async move {
-                let result = tokio::time::timeout(notification_timeout, async {
-                    if changes.tools_changed && peer.notify_tool_list_changed().await.is_err() {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = "peers",
-                            action = "peer.disconnect",
-                            peer_index,
-                            phase = "tools",
-                            "failed to notify peer about tool catalog change; pruning stale session"
-                        );
-                        return false;
-                    }
-                    if changes.resources_changed
-                        && peer.notify_resource_list_changed().await.is_err()
-                    {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = "peers",
-                            action = "peer.disconnect",
-                            peer_index,
-                            phase = "resources",
-                            "failed to notify peer about resource catalog change; pruning stale session"
-                        );
-                        return false;
-                    }
-                    if changes.prompts_changed && peer.notify_prompt_list_changed().await.is_err() {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = "peers",
-                            action = "peer.disconnect",
-                            peer_index,
-                            phase = "prompts",
-                            "failed to notify peer about prompt catalog change; pruning stale session"
-                        );
-                        return false;
-                    }
-                    true
-                })
-                .await;
-                match result {
-                    Ok(alive) => alive,
-                    Err(_elapsed) => {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = "peers",
-                            action = "peer.disconnect",
-                            peer_index,
-                            timeout_ms = notification_timeout.as_millis(),
-                            tools_changed = changes.tools_changed,
-                            resources_changed = changes.resources_changed,
-                            prompts_changed = changes.prompts_changed,
-                            "peer notification timed out; pruning stale session"
-                        );
-                        false
-                    }
-                }
-            }
-        });
-        let results = join_all(notify_futures).await;
-        let alive: Vec<_> = peers
-            .into_iter()
-            .zip(results)
-            .filter_map(|(peer, ok)| ok.then_some(peer))
-            .collect();
-        let mut guard = self.peers.write().await;
-        let added_since_snapshot = if guard.len() > peer_count {
-            guard.split_off(peer_count)
-        } else {
-            Vec::new()
-        };
-        let alive_count = alive.len();
-        *guard = alive;
-        guard.extend(added_since_snapshot);
-        let pruned = peer_count.saturating_sub(alive_count);
-        tracing::info!(
-            surface = "mcp",
-            service = "peers",
-            action = "peer.gc",
-            pruned_count = pruned,
-            active_count = guard.len(),
-            "MCP peer catalog-change notification complete"
-        );
+        crate::mcp::catalog_notifications::notify_catalog_peers(
+            &self.peers,
+            changes.into(),
+            "notifying MCP peers about catalog change",
+        )
+        .await;
     }
 }
 
