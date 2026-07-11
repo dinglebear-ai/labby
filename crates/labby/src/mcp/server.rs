@@ -338,11 +338,7 @@ impl LabMcpServer {
     pub(crate) async fn notify_catalog_changes(&self, changes: CatalogChangeSet) {
         crate::mcp::catalog_notifications::notify_catalog_peers(
             &self.peers,
-            crate::mcp::catalog_notifications::CatalogNotificationChanges::new(
-                changes.tools_changed,
-                changes.resources_changed,
-                changes.prompts_changed,
-            ),
+            changes.into(),
             "notifying MCP peers about catalog change",
         )
         .await;

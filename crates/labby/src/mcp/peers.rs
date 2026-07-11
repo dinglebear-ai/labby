@@ -58,11 +58,7 @@ impl PeerNotifier {
     async fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff) {
         crate::mcp::catalog_notifications::notify_catalog_peers(
             &self.peers,
-            crate::mcp::catalog_notifications::CatalogNotificationChanges::new(
-                diff.tools_changed,
-                diff.resources_changed,
-                diff.prompts_changed,
-            ),
+            diff.into(),
             "broadcasting catalog change to connected peers",
         )
         .await;
