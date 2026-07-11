@@ -244,7 +244,10 @@ test('renders describe results as markdown behind the result row', async () => {
 
   assert.match(container.textContent ?? '', /describe/)
   await clickButton(container, (text) => text.startsWith('Result'))
-  assert.match(container.textContent ?? '', /# device_list/)
+  // Rendered as markdown: the heading text appears without the '#' marker.
+  assert.match(container.textContent ?? '', /device_list/)
+  assert.doesNotMatch(container.textContent ?? '', /# device_list/)
+  assert.match(container.textContent ?? '', /List UniFi devices/)
   await unmount()
 })
 
@@ -387,6 +390,103 @@ test('hides the session strip when there is only a single run', async () => {
   assert.doesNotMatch(container.textContent ?? '', /\blive\b/)
   // Token meta still earns the footer.
   assert.match(container.textContent ?? '', /42 in · 68 out/)
+  await unmount()
+})
+
+test('renders a failed-run trace with auto-expanded failing call', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 2,
+        error_kind: 'timeout',
+        elapsed_ms: 30012,
+        calls: [
+          {
+            id: 'rustarr::sonarr.series.list',
+            namespace: 'rustarr',
+            tool: 'sonarr.series.list',
+            ok: true,
+            elapsed_ms: 214,
+            start_ms: 0,
+          },
+          {
+            id: 'rustarr::qbittorrent.transfer_info',
+            namespace: 'rustarr',
+            tool: 'qbittorrent.transfer_info',
+            ok: false,
+            elapsed_ms: 1010,
+            start_ms: 226,
+            error_kind: 'upstream_timeout',
+            params: { instance: 'default' },
+          },
+        ],
+      }}
+    />,
+  )
+
+  // Trace-level error kind wins the header; elapsed comes from the trace.
+  assert.match(container.textContent ?? '', /timeout/)
+  assert.match(container.textContent ?? '', /30.01 s/)
+  // The failing call is auto-expanded — its error kind and params are visible
+  // without a click.
+  assert.match(container.textContent ?? '', /upstream_timeout/)
+  assert.match(container.textContent ?? '', /"instance": "default"/)
+  await unmount()
+})
+
+test('renders artifact receipts behind an Artifacts row', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 0,
+        calls: [],
+        result: { ok: true },
+        result_shape: { type: 'object', key_count: 1, truncated: true },
+        artifacts: [{ path: 'report.md', content_type: 'text/markdown', bytes: 2048 }],
+      }}
+    />,
+  )
+
+  assert.match(container.textContent ?? '', /Artifacts/)
+  assert.match(container.textContent ?? '', /1 file/)
+  // result_shape.truncated surfaces as a chip on the Result row.
+  assert.match(container.textContent ?? '', /truncated/)
+  // Receipt detail is collapsed until expanded.
+  assert.doesNotMatch(container.textContent ?? '', /text\/markdown/)
+  await clickButton(container, (text) => text.startsWith('Artifacts'))
+  assert.match(container.textContent ?? '', /report.md/)
+  assert.match(container.textContent ?? '', /text\/markdown/)
+  assert.match(container.textContent ?? '', /2048 B/)
+  await unmount()
+})
+
+test('code blocks carry a copy affordance', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        calls: [
+          {
+            id: 'arcane::containers',
+            namespace: 'arcane',
+            tool: 'containers',
+            ok: true,
+            elapsed_ms: 96,
+            params: { action: 'list' },
+          },
+        ],
+      }}
+    />,
+  )
+
+  await clickButton(container, (text) => text.includes('containers'))
+  assert.ok(container.querySelector('[aria-label="Copy"]'))
   await unmount()
 })
 

@@ -287,6 +287,7 @@ fn execute_trace_embeds_result_and_redacts_call_params() {
             id: "github::search_issues".to_string(),
             ok: true,
             elapsed_ms: 12,
+            start_ms: Some(3),
             params: Some(json!({"query": "bug", "token": "[redacted]"})),
             error_kind: None,
         }],

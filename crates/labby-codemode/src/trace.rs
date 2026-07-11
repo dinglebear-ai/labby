@@ -77,6 +77,7 @@ pub fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
                 "tool": tool,
                 "ok": call.ok,
                 "elapsed_ms": call.elapsed_ms,
+                "start_ms": call.start_ms,
                 "params": call.params,
                 "error_kind": call.error_kind,
             })
