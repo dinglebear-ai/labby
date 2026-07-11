@@ -247,11 +247,6 @@ impl LabMcpServer {
             }
         }
 
-        let total_tool_count = builtin_tool_count
-            + gateway_tool_count
-            + upstream_tool_count
-            + upstream_ui_tool_count
-            + subject_scoped_tool_count;
         let (tools, next_cursor) = match tools.finish() {
             Ok(page) => page,
             Err(error) => {
@@ -280,6 +275,8 @@ impl LabMcpServer {
                 return Err(error);
             }
         };
+        let page_tool_count = tools.len();
+        let has_next_cursor = next_cursor.is_some();
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
@@ -308,7 +305,8 @@ impl LabMcpServer {
             process_code_mode_enabled,
             hide_raw_tools,
             visibility_mode,
-            total_tool_count,
+            page_tool_count,
+            has_next_cursor,
             "tool list ok"
         );
         self.emit_dispatch_notification(

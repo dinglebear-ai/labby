@@ -318,12 +318,9 @@ if tools.finished() {
 Replace the old `let total_tool_count = tools.len();` and `paginate_items(...)` block with:
 
 ```rust
-let total_tool_count = builtin_tool_count
-    + gateway_tool_count
-    + upstream_tool_count
-    + upstream_ui_tool_count
-    + subject_scoped_tool_count;
-let (tools, next_cursor) = tools.finish();
+let (tools, next_cursor) = tools.finish()?;
+let page_tool_count = tools.len();
+let has_next_cursor = next_cursor.is_some();
 ```
 
 - [ ] **Step 7: Run tools pagination tests**
