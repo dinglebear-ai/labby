@@ -33,7 +33,7 @@ use crate::mcp::handlers_resources::{
     code_mode_app_resource_uri_for_tool, code_mode_app_skybridge_uri_for_tool,
 };
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
-use crate::mcp::pagination::{error_kind as pagination_error_kind, paginate_items};
+use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
 
 static ACTION_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> =
@@ -55,7 +55,34 @@ impl LabMcpServer {
             "dispatch start"
         );
         let schema = Arc::clone(&ACTION_SCHEMA);
-        let mut tools = Vec::new();
+        let mut tools = match PageCollector::new(request) {
+            Ok(collector) => collector,
+            Err(error) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                let kind = pagination_error_kind(&error);
+                tracing::warn!(
+                    surface = "mcp",
+                    service = "labby",
+                    action = "list_tools",
+                    subject,
+                    elapsed_ms,
+                    kind,
+                    "tool list failed"
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "list_tools",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind,
+                    },
+                )
+                .await;
+                return Err(error);
+            }
+        };
         let mut advertised_names = HashSet::new();
         let mut builtin_tool_count = 0usize;
         let mut upstream_tool_count = 0usize;
@@ -84,13 +111,16 @@ impl LabMcpServer {
                     suppressed_builtin_tool_count += 1;
                 } else {
                     advertised_names.insert(svc.name.to_string());
-                    tools.push(Tool::new(svc.name, svc.description, Arc::clone(&schema)));
+                    tools.accept(Tool::new(svc.name, svc.description, Arc::clone(&schema)));
                     builtin_tool_count += 1;
+                    if tools.finished() {
+                        break;
+                    }
                 }
             }
         }
         #[cfg(feature = "gateway")]
-        if visibility.exposes_synthetic_tools() {
+        if !tools.finished() && visibility.exposes_synthetic_tools() {
             // ── Gateway Code Mode tool. It takes `{ code, upstreams?, tools? }`
             // and exposes in-sandbox discovery through `codemode.search()` /
             // `codemode.describe()`.
@@ -120,7 +150,7 @@ impl LabMcpServer {
                 skybridge_uri = %codemode_skybridge_uri,
                 "advertised primary Code Mode MCP app metadata"
             );
-            tools.push(
+            tools.accept(
                 Tool::new(
                     CODE_MODE_TOOL_NAME,
                     code_mode_description,
@@ -140,7 +170,7 @@ impl LabMcpServer {
         // Mode execution/search still performs cold discovery through the
         // gateway manager when the caller asks for upstream catalog data.
         #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await {
+        if !tools.finished() && let Some(pool) = self.current_upstream_pool().await {
             pool_present = true;
             let upstream_status = pool.upstream_status().await;
             catalog_upstream_count = upstream_status.len();
@@ -169,16 +199,19 @@ impl LabMcpServer {
                     );
                     continue;
                 }
-                tools.push(ut.tool);
+                tools.accept(ut.tool);
                 if hide_raw_tools {
                     upstream_ui_tool_count += 1;
                 } else {
                     upstream_tool_count += 1;
                 }
+                if tools.finished() {
+                    break;
+                }
             }
             let oauth_subject =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context));
-            if !hide_raw_tools && let Some(oauth_subject) = oauth_subject.as_ref() {
+            if !tools.finished() && !hide_raw_tools && let Some(oauth_subject) = oauth_subject.as_ref() {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 for (_, upstream_tools) in pool
                     .subject_scoped_tools(&configs, oauth_subject.as_ref())
@@ -191,8 +224,14 @@ impl LabMcpServer {
                         {
                             continue;
                         }
-                        tools.push(ut);
+                        tools.accept(ut);
                         subject_scoped_tool_count += 1;
+                        if tools.finished() {
+                            break;
+                        }
+                    }
+                    if tools.finished() {
+                        break;
                     }
                 }
             }
@@ -203,35 +242,12 @@ impl LabMcpServer {
             }
         }
 
-        let total_tool_count = tools.len();
-        let (tools, next_cursor) = match paginate_items(tools, request) {
-            Ok(page) => page,
-            Err(error) => {
-                let elapsed_ms = start.elapsed().as_millis();
-                let kind = pagination_error_kind(&error);
-                tracing::warn!(
-                    surface = "mcp",
-                    service = "labby",
-                    action = "list_tools",
-                    subject,
-                    elapsed_ms,
-                    kind,
-                    "tool list failed"
-                );
-                self.emit_dispatch_notification(
-                    &context,
-                    "lab",
-                    "list_tools",
-                    elapsed_ms,
-                    DispatchLogOutcome::Failure {
-                        level: LoggingLevel::Warning,
-                        kind,
-                    },
-                )
-                .await;
-                return Err(error);
-            }
-        };
+        let total_tool_count = builtin_tool_count
+            + gateway_tool_count
+            + upstream_tool_count
+            + upstream_ui_tool_count
+            + subject_scoped_tool_count;
+        let (tools, next_cursor) = tools.finish();
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
