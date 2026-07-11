@@ -124,10 +124,10 @@ export default function App() {
     const requestId = runRequestIdRef.current + 1;
     runRequestIdRef.current = requestId;
     lastParamsRef.current = params;
-      setRun({ kind: "running", title: action.label });
+    setRun({ kind: "running", title: action.label });
     try {
       const result = await executeLauncherEntry(action.id, params, { confirmDestructive: action.destructive });
-      recordPaletteLaunch(action, result);
+      recordPaletteLaunch(action, params, result);
       if (runRequestIdRef.current !== requestId) return;
       setRun(
         result.ok
@@ -144,7 +144,7 @@ export default function App() {
         method: "POST",
         payload: { error: message },
       };
-      recordPaletteLaunch(action, result);
+      recordPaletteLaunch(action, params, result);
       setRun({
         kind: "error",
         title: action.label,
@@ -271,12 +271,12 @@ export default function App() {
 
   const onCollapse = useCallback(() => {
     setRun({ kind: "idle" });
-      setQuery("");
-      setMode("browse");
-      schemaRequestIdRef.current += 1;
-      modeRef.current = "browse";
-      activeActionIdRef.current = null;
-      setActiveAction(null);
+    setQuery("");
+    setMode("browse");
+    schemaRequestIdRef.current += 1;
+    modeRef.current = "browse";
+    activeActionIdRef.current = null;
+    setActiveAction(null);
   }, []);
 
   const onCopy = useCallback((text: string) => {

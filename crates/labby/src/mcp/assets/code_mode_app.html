@@ -23,8 +23,8 @@ html.light body{background:radial-gradient(900px 420px at 12% -10%,rgba(2,136,20
 #content::-webkit-scrollbar{width:6px}
 #content::-webkit-scrollbar-track{background:transparent}
 #content::-webkit-scrollbar-thumb{background-color:var(--aurora-border-strong);border-radius:999px}
-body{margin:0;padding:8px;background:radial-gradient(900px 420px at 12% -10%,rgba(41,182,246,.08),transparent 60%),var(--aurora-page-bg);color:var(--aurora-text-primary)}
-.widget{width:100%;max-width:680px;margin:0 auto;overflow:hidden;border-radius:18px;background:linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong));border:1px solid color-mix(in srgb,var(--aurora-border-default) 45%,var(--aurora-page-bg));box-shadow:var(--aurora-shadow-medium),var(--aurora-highlight-strong)}
+body{margin:0;padding:0;background:radial-gradient(900px 420px at 12% -10%,rgba(41,182,246,.08),transparent 60%),var(--aurora-page-bg);color:var(--aurora-text-primary)}
+.widget{width:100%;max-width:none;margin:0;overflow:hidden;border-radius:18px;background:linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong));border:1px solid color-mix(in srgb,var(--aurora-border-default) 45%,var(--aurora-page-bg));box-shadow:var(--aurora-shadow-medium),var(--aurora-highlight-strong)}
 .head,.foot{display:flex;align-items:center;gap:8px;padding:8px 12px;background:color-mix(in srgb,var(--aurora-page-bg) 25%,transparent)}
 .head{border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg))}
 .foot{border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg));padding:6px 12px}
@@ -260,6 +260,24 @@ function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;"
 function json(value){try{return JSON.stringify(value,null,2)}catch{return String(value)}}
 function num(value){return typeof value==="number"&&Number.isFinite(value)?value:0}
 function fmtMs(ms){const v=num(ms);return v>=1000?`${(v/1000).toFixed(2).replace(/0$/,"")} s`:`${v} ms`}
+let expandedRows=null;
+function rowKey(...parts){return parts.map(part=>String(part??"")).join(":");}
+function snapshotExpandedRows(){
+  const rows=content.querySelectorAll("details[data-row-key]");
+  if(!rows.length)return expandedRows;
+  const keys=new Set();
+  rows.forEach(row=>{const key=row.dataset.rowKey;if(key&&row.open)keys.add(key);});
+  expandedRows=keys;
+  return keys;
+}
+function restoreExpandedRows(keys){
+  if(!keys)return;
+  content.querySelectorAll("details[data-row-key]").forEach(row=>{
+    const key=row.dataset.rowKey;
+    if(key)row.open=keys.has(key);
+  });
+  expandedRows=keys;
+}
 // The gateway emits `namespace` for the upstream segment; history entries
 // carry only `id` ("upstream::tool"), so derive the split as a fallback.
 function callFields(call){
@@ -312,10 +330,10 @@ function discoveryRows(d){
     const meta=[h.path,h.kind,h.score!==null?`score ${h.score.toFixed(2)}`:""].filter(Boolean).join(" · ");
     const detail=`${h.description?`<div class="m-detail">${esc(h.description)}</div>`:""}${meta?`<div class="m-meta">${esc(meta)}</div>`:""}${h.signature?codeBlock(h.signature):""}`;
     if(!detail)return `<div class="call"><div class="mrow">${summary}</div></div>`;
-    return `<details class="call"><summary class="mrow">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${detail}</div></details>`;
+    return `<details class="call" data-row-key="${esc(rowKey("discovery",h.id))}"><summary class="mrow">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${detail}</div></details>`;
   }).join("");
 }
-function callRow(call,timing,autoOpen){
+function callRow(call,timing,autoOpen,key){
   const f=callFields(call);
   const ok=call.ok===true;
   const status=ok
@@ -329,14 +347,14 @@ function callRow(call,timing,autoOpen){
   const err=!ok&&call.error_kind?`<div class="errline">${esc(call.error_kind)}</div>`:"";
   const params=call.params!==undefined&&call.params!==null?`<div class="kv-label">Redacted params</div>${codeBlock(json(call.params))}`:"";
   if(!err&&!params)return `<div class="call"><div class="row">${summary}<span class="chev"></span></div></div>`;
-  return `<details class="call"${autoOpen?" open":""}><summary class="row">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${params}</div></details>`;
+  return `<details class="call"${autoOpen?" open":""} data-row-key="${esc(key)}"><summary class="row">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${params}</div></details>`;
 }
 const TERMINAL_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>';
 function inputRow(){
   const snippet=toolInputSnippet();
   if(snippet===null)return "";
   const lines=snippet.split("\n").length;
-  return `<details class="call"><summary class="row wide"><span class="st info">${TERMINAL_ICON}</span><span class="meta-label">Input</span><span class="meta-val">${esc(lines)} line${lines===1?"":"s"}</span><span class="chev">${CHEV}</span></summary><div class="sub">${codeBlock(snippet)}</div></details>`;
+  return `<details class="call" data-row-key="input"><summary class="row wide"><span class="st info">${TERMINAL_ICON}</span><span class="meta-label">Input</span><span class="meta-val">${esc(lines)} line${lines===1?"":"s"}</span><span class="chev">${CHEV}</span></summary><div class="sub">${codeBlock(snippet)}</div></details>`;
 }
 function resultRow(t){
   if(t.result===undefined)return "";
@@ -344,7 +362,7 @@ function resultRow(t){
   const doc=describeMarkdown(t);
   const truncated=t.result_shape&&t.result_shape.truncated===true?'<span class="trunc">truncated</span>':"";
   const body=doc!==null?`<div class="md">${mdHtml(doc)}</div>`:codeBlock(json(t.result));
-  return `<details class="call"><summary class="row wide"><span class="st info">${RETURN_ICON}</span><span class="meta-label">Result</span><span class="meta-val">${esc(detail)}${truncated}</span><span class="chev">${CHEV}</span></summary><div class="sub">${body}</div></details>`;
+  return `<details class="call" data-row-key="result"><summary class="row wide"><span class="st info">${RETURN_ICON}</span><span class="meta-label">Result</span><span class="meta-val">${esc(detail)}${truncated}</span><span class="chev">${CHEV}</span></summary><div class="sub">${body}</div></details>`;
 }
 const FILE_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M2 15h10"/><path d="m9 18 3-3-3-3"/></svg>';
 function artifactsRow(t){
@@ -354,7 +372,7 @@ function artifactsRow(t){
     const meta=[typeof a.content_type==="string"?a.content_type:"",typeof a.bytes==="number"?`${a.bytes} B`:""].filter(Boolean).join(" · ");
     return `<p class="m-main" style="margin:0"><span class="m-name">${esc(a.path)}</span>${meta?`<span class="m-desc">${esc(meta)}</span>`:""}</p>`;
   }).join("");
-  return `<details class="call"><summary class="row wide"><span class="st info">${FILE_ICON}</span><span class="meta-label">Artifacts</span><span class="meta-val">${receipts.length} file${receipts.length===1?"":"s"}</span><span class="chev">${CHEV}</span></summary><div class="sub">${rows}</div></details>`;
+  return `<details class="call" data-row-key="artifacts"><summary class="row wide"><span class="st info">${FILE_ICON}</span><span class="meta-label">Artifacts</span><span class="meta-val">${receipts.length} file${receipts.length===1?"":"s"}</span><span class="chev">${CHEV}</span></summary><div class="sub">${rows}</div></details>`;
 }
 function liveHistoryEntry(){
   if(!live||typeof live.execution_id!=="string")return undefined;
@@ -389,10 +407,12 @@ function paintFoot(current){
   foot.hidden=!showChips&&meta.length===0;
 }
 function paint(){
+  const openRows=snapshotExpandedRows();
   const entry=selected==="live"?null:history.find(e=>e.seq===selected);
   const t=selected==="live"?live:null;
   const run=t||entry||null;
   if(!run){
+    expandedRows=null;
     headSub.textContent="waiting for a tool result";
     headStatus.innerHTML="";
     headElapsed.hidden=true;
@@ -421,7 +441,7 @@ function paint(){
   const span=Math.max(1,...calls.map(c=>hasOffsets?num(c.start_ms)+num(c.elapsed_ms):num(c.elapsed_ms)));
   const timing={span:span,hasOffsets:hasOffsets};
   const firstFailed=calls.findIndex(c=>c.ok!==true);
-  let html=calls.map((c,i)=>callRow(c,timing,i===firstFailed)).join("");
+  let html=calls.map((c,i)=>callRow(c,timing,i===firstFailed,rowKey("call",i,callFields(c).upstream,callFields(c).tool))).join("");
   if(!html&&(!t||t.result===undefined))html='<p class="empty">No calls were made.</p>';
   if(discovery)html+=discoveryRows(discovery);
   if(t)html+=inputRow();
@@ -429,6 +449,7 @@ function paint(){
   if(t)html+=artifactsRow(t);
   if(entry)html+=`<div class="histnote">${HISTORY_ICON}<span>Result not retained in history — params and call outcomes only.</span></div>`;
   content.innerHTML=html;
+  restoreExpandedRows(openRows);
   paintFoot(run);
 }
 content.addEventListener("click",(event)=>{
