@@ -7,6 +7,7 @@ This directory contains the GitHub Actions workflows for `lab`. The authoritativ
 | File | Trigger | Purpose |
 |------|---------|---------|
 | `workflows/ci.yml` | push/PR to `main`, weekly schedule, manual dispatch | Correctness, release-smoke, and container-smoke checks |
+| `workflows/openwiki-update.yml` | daily schedule, manual dispatch | Refreshes `/openwiki` through the OpenAI-compatible gateway on the trusted `linux-lab` runner |
 | `workflows/release.yml` | push of `v*.*.*` tag, manual dispatch | Release builds, container image, and GitHub Release |
 
 ## CI Path Routing
@@ -51,6 +52,13 @@ enabled and the event is not a PR. Windows release smoke is skipped on PRs
 (20-25 min of runner time per PR, and a Linux cross-check is not viable because
 aws-lc-sys requires a real Windows C toolchain even under `cargo check`).
 Windows breakage therefore surfaces on the post-merge main run, not in the PR.
+
+The scheduled OpenWiki updater also runs on `linux-lab`: its OpenAI-compatible
+gateway endpoint is intentionally private enough that GitHub-hosted runners can
+receive Cloudflare managed challenges. Keep the endpoint and model configurable
+through `OPENAI_COMPATIBLE_BASE_URL` and `OPENWIKI_MODEL_ID` repository
+variables rather than hardcoding runner-specific infrastructure into the
+workflow.
 
 `RUSTFLAGS: -D warnings` is set globally — zero warnings permitted. The lone
 exception is the `feature-slices` job, which overrides it to `""` because
