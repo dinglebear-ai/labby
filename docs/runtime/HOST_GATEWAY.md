@@ -166,6 +166,21 @@ sudo labby setup host-service restart -y
 Do not rely on `systemd --user`, linger, or `XDG_RUNTIME_DIR` for the supported
 self-hosted runtime.
 
+For the recommended Incus container, use the Incus sync command instead of a
+host-local install. It updates the in-container binary and the filesystem web
+asset directory that `labby serve` prefers over embedded fallback assets:
+
+```bash
+just web-build
+cargo build --workspace --all-features --profile release-fast --bin labby
+target/release-fast/labby incus sync --binary target/release-fast/labby
+```
+
+The web asset target is `/home/labby/.labby/web-assets`. Pass
+`--no-web-assets` only when intentionally doing a binary-only sync. If no local
+web export exists, sync moves the remote filesystem export aside so the
+updated binary's embedded assets are used.
+
 ## Explicit Docker Smoke Path
 
 Docker remains an explicit compatibility and development-image smoke path:

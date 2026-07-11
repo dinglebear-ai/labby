@@ -53,7 +53,9 @@ cargo test --manifest-path apps/palette-tauri/src-tauri/Cargo.toml
 `scripts/desktop-smoke.ps1` drives a built Windows palette from environment
 configuration. It fetches `/v1/palette/catalog`, asserts the configured query
 matches at least one launcher row, launches the app, types the query, captures a
-screenshot, and writes `result.json`.
+screenshot, asserts the app process is still responding, and writes
+`result.json`. The script closes the app by default; pass `-KeepApp` to leave it
+open for debugging.
 
 Copy `scripts/desktop-smoke.env.example` outside the repo and fill in local
 values:
@@ -79,7 +81,9 @@ The app reads Labby connection settings from environment defaults first:
 `LABBY_PUBLIC_URL` remains a compatibility fallback, but deployments with
 separate web UI and API origins should set `LABBY_API_URL`. If the configured
 origin returns HTML for `/v1/palette/catalog`, the bridge reports a wrong-host
-configuration error instead of treating the web UI page as catalog data.
+configuration error instead of treating the web UI page as catalog data. If the
+origin exposes `/.well-known/labby.json`, the bridge can discover `apiBaseUrl`
+and retry palette catalog/execute calls against the advertised API origin.
 
 Runtime palette preferences are stored in the platform app config directory as
 `settings.json`. The settings panel can override the server URL, static bearer
@@ -99,10 +103,12 @@ to the static token when configured.
 
 ## Schema Validation
 
-The backend sends a redacted schema projection for launcher forms. The renderer
-uses Ajv for best-effort JSON Schema validation before submit, memoized by
+The launcher catalog is intentionally compact: rows include
+`schemaFingerprint`, but not the full input schema. The renderer lazily fetches
+`/v1/palette/schema?id=<launcher-id>` when a row enters argument mode, then uses
+Ajv for best-effort JSON Schema validation before submit, memoized by
 `entry.id + schemaFingerprint`. Unknown or unsupported schemas fail open in the
-renderer; the backend remains the authoritative validator.
+renderer; the backend remains the authoritative validator for every execution.
 
 The schema projection intentionally strips defaults, examples, and
 secret-looking values before they reach the renderer.

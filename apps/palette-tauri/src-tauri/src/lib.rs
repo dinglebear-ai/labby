@@ -457,6 +457,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             labby_bridge::fetch_catalog,
             labby_bridge::dispatch_action,
             labby_bridge::fetch_launcher_catalog,
+            labby_bridge::fetch_launcher_schema,
             labby_bridge::execute_launcher_entry,
             oauth::labby_oauth_login,
             oauth::labby_oauth_logout,

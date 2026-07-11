@@ -1,5 +1,6 @@
 param(
-  [string]$EnvFile = $env:LABBY_PALETTE_ENV_FILE
+  [string]$EnvFile = $env:LABBY_PALETTE_ENV_FILE,
+  [switch]$KeepApp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,39 +74,56 @@ $settings = [ordered]@{
 }
 $settings | ConvertTo-Json | Set-Content -Path (Join-Path $settingsDir 'settings.json') -Encoding UTF8
 
-Get-Process labby-palette-tauri -ErrorAction SilentlyContinue |
-  Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 500
-$process = Start-Process -FilePath $exe -PassThru
-Start-Sleep -Seconds 8
+$process = $null
+try {
+  Get-Process labby-palette-tauri -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 500
+  $process = Start-Process -FilePath $exe -PassThru
+  Start-Sleep -Seconds 8
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.SendKeys]::SendWait('^+ ')
-Start-Sleep -Seconds 2
-[System.Windows.Forms.SendKeys]::SendWait($query)
-Start-Sleep -Seconds 4
+  Add-Type -AssemblyName System.Windows.Forms
+  Add-Type -AssemblyName System.Drawing
+  [System.Windows.Forms.SendKeys]::SendWait('^+ ')
+  Start-Sleep -Seconds 2
+  [System.Windows.Forms.SendKeys]::SendWait($query)
+  Start-Sleep -Seconds 4
 
-$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
-$bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-$screenshot = Join-Path $evidenceDir 'palette-smoke.png'
-$bitmap.Save($screenshot, [System.Drawing.Imaging.ImageFormat]::Png)
-$graphics.Dispose()
-$bitmap.Dispose()
+  $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+  $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+  $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+  $screenshot = Join-Path $evidenceDir 'palette-smoke.png'
+  $bitmap.Save($screenshot, [System.Drawing.Imaging.ImageFormat]::Png)
+  $graphics.Dispose()
+  $bitmap.Dispose()
 
-$procInfo = Get-Process -Id $process.Id -ErrorAction SilentlyContinue |
-  Select-Object -First 1 Id, MainWindowTitle, Path, Responding
-$result = [ordered]@{
-  ok = $true
-  apiUrl = $apiUrl
-  query = $query
-  catalogEntries = $entries.Count
-  matchedEntries = $matches.Count
-  screenshot = $screenshot
-  process = $procInfo
+  $screenshotInfo = Get-Item $screenshot
+  if ($screenshotInfo.Length -lt 1024) {
+    throw "screenshot was unexpectedly small: $($screenshotInfo.Length) bytes"
+  }
+  $procInfo = Get-Process -Id $process.Id -ErrorAction SilentlyContinue |
+    Select-Object -First 1 Id, MainWindowTitle, Path, Responding
+  if (-not $procInfo) { throw 'palette process exited before smoke assertions completed' }
+  if ($procInfo.Responding -eq $false) { throw 'palette process is not responding' }
+
+  $result = [ordered]@{
+    ok = $true
+    apiUrl = $apiUrl
+    query = $query
+    catalogEntries = $entries.Count
+    matchedEntries = $matches.Count
+    matchedIds = @($matches | Select-Object -First 10 -ExpandProperty id)
+    screenshot = $screenshot
+    screenshotBytes = $screenshotInfo.Length
+    process = $procInfo
+  }
+  $result | ConvertTo-Json -Depth 5 |
+    Set-Content -Path (Join-Path $evidenceDir 'result.json') -Encoding UTF8
+  $result | ConvertTo-Json -Depth 5
 }
-$result | ConvertTo-Json -Depth 5 |
-  Set-Content -Path (Join-Path $evidenceDir 'result.json') -Encoding UTF8
-$result | ConvertTo-Json -Depth 5
+finally {
+  if (-not $KeepApp -and $process) {
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+  }
+}

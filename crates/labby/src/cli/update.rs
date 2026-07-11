@@ -21,6 +21,9 @@ pub struct UpdateArgs {
     /// Do not sync the updated binary into an Incus container.
     #[arg(long)]
     pub no_incus_sync: bool,
+    /// Do not update or clear the Incus filesystem web asset directory.
+    #[arg(long)]
+    pub no_web_assets: bool,
     /// Incus container name for the post-update sync.
     #[arg(long)]
     pub container: Option<String>,
@@ -79,6 +82,8 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
             crate::dispatch::setup::incus::IncusSyncOptions {
                 container: args.container,
                 binary: Some(binary.clone()),
+                web_assets_dir: None,
+                sync_web_assets: !args.no_web_assets,
                 check_url: args.check_url,
                 force_fallback: args.force_fallback || !args.no_force_fallback,
                 dry_run: false,
