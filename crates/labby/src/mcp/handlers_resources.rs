@@ -27,7 +27,7 @@ use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
-use crate::mcp::pagination::{error_kind as pagination_error_kind, paginate_items};
+use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
 use crate::mcp::server::LabMcpServer;
 
 /// MCP Apps (Claude / SEP-1724) MIME — bound via the tool's `_meta.ui.resourceUri`.
@@ -158,62 +158,8 @@ impl LabMcpServer {
             "dispatch start"
         );
         let auth = auth_context_from_extensions(&context.extensions);
-        let mut resources = vec![
-            Resource::new("lab://catalog", "catalog")
-                .with_description("Full discovery document for all services")
-                .with_mime_type("application/json"),
-        ];
-        if code_mode_app_resources_visible(
-            self.code_mode_visibility().await.exposes_synthetic_tools(),
-            auth,
-        ) {
-            resources.extend(code_mode_app_resources());
-        }
-
-        for svc in self.registry.services() {
-            if self.route_scope.allows_service(svc.name)
-                && self.service_visible_on_mcp(svc.name).await
-            {
-                let uri = format!("lab://{}/actions", svc.name);
-                let name = format!("{}/actions", svc.name);
-                resources.push(
-                    Resource::new(uri, name)
-                        .with_description(format!("Action list for {}", svc.name))
-                        .with_mime_type("application/json"),
-                );
-            }
-        }
-
-        #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await {
-            resources.extend(
-                pool.gateway_synthetic_resources_allowed(self.route_scope.allowed_upstreams())
-                    .await,
-            );
-            resources.extend(
-                pool.list_upstream_resources_allowed(self.route_scope.allowed_upstreams())
-                    .await,
-            );
-            if let Some(oauth_subject) =
-                oauth_upstream_subject_for_request(auth, self.request_subject(&context))
-            {
-                let configs = self.route_scoped_oauth_upstream_configs().await;
-                let mut scoped_resources = pool
-                    .subject_scoped_resources(&configs, oauth_subject.as_ref())
-                    .await;
-                scoped_resources.retain(|resource| {
-                    resource
-                        .uri
-                        .strip_prefix("lab://upstream/")
-                        .and_then(|rest| rest.split('/').next())
-                        .is_none_or(|upstream| self.route_scope.allows_upstream(upstream))
-                });
-                resources.extend(scoped_resources);
-            }
-        }
-
-        let (resources, next_cursor) = match paginate_items(resources, request) {
-            Ok(page) => page,
+        let mut resources = match PageCollector::new(request) {
+            Ok(collector) => collector,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
                 let kind = pagination_error_kind(&error);
@@ -240,6 +186,93 @@ impl LabMcpServer {
                 return Err(error);
             }
         };
+
+        resources.accept(
+            Resource::new("lab://catalog", "catalog")
+                .with_description("Full discovery document for all services")
+                .with_mime_type("application/json"),
+        );
+
+        if !resources.finished()
+            && code_mode_app_resources_visible(
+                self.code_mode_visibility().await.exposes_synthetic_tools(),
+                auth,
+            )
+        {
+            for resource in code_mode_app_resources() {
+                resources.accept(resource);
+                if resources.finished() {
+                    break;
+                }
+            }
+        }
+
+        if !resources.finished() {
+            for svc in self.registry.services() {
+                if self.route_scope.allows_service(svc.name)
+                    && self.service_visible_on_mcp(svc.name).await
+                {
+                    let uri = format!("lab://{}/actions", svc.name);
+                    let name = format!("{}/actions", svc.name);
+                    resources.accept(
+                        Resource::new(uri, name)
+                            .with_description(format!("Action list for {}", svc.name))
+                            .with_mime_type("application/json"),
+                    );
+                    if resources.finished() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        #[cfg(feature = "gateway")]
+        if !resources.finished() && let Some(pool) = self.current_upstream_pool().await {
+            for resource in pool
+                .gateway_synthetic_resources_allowed(self.route_scope.allowed_upstreams())
+                .await
+            {
+                resources.accept(resource);
+                if resources.finished() {
+                    break;
+                }
+            }
+            if !resources.finished() {
+                for resource in pool
+                    .list_upstream_resources_allowed(self.route_scope.allowed_upstreams())
+                    .await
+                {
+                    resources.accept(resource);
+                    if resources.finished() {
+                        break;
+                    }
+                }
+            }
+            if !resources.finished()
+                && let Some(oauth_subject) =
+                    oauth_upstream_subject_for_request(auth, self.request_subject(&context))
+            {
+                let configs = self.route_scoped_oauth_upstream_configs().await;
+                let mut scoped_resources = pool
+                    .subject_scoped_resources(&configs, oauth_subject.as_ref())
+                    .await;
+                scoped_resources.retain(|resource| {
+                    resource
+                        .uri
+                        .strip_prefix("lab://upstream/")
+                        .and_then(|rest| rest.split('/').next())
+                        .is_none_or(|upstream| self.route_scope.allows_upstream(upstream))
+                });
+                for resource in scoped_resources {
+                    resources.accept(resource);
+                    if resources.finished() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let (resources, next_cursor) = resources.finish();
 
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
