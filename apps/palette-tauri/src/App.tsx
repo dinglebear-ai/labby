@@ -5,6 +5,7 @@ import { PaletteShell } from "@/components/palette/PaletteShell";
 import { launcherEntryMatches, type LauncherEntry, useLauncherCatalog } from "@/lib/launcherCatalog";
 import { executeLauncherEntry, fetchLauncherSchema, resultErrorMessage } from "@/lib/labbyClient";
 import { exampleLauncherParams, validateLauncherParams } from "@/lib/launcherValidation";
+import { recordPaletteLaunch } from "@/lib/paletteAudit";
 import { hostLabel } from "@/lib/url";
 import { invoke, isTauriRuntime } from "@/lib/invoke";
 import type { RunState } from "@/lib/runState";
@@ -113,6 +114,7 @@ export default function App() {
     setRun({ kind: "running", title: action.label });
     try {
       const result = await executeLauncherEntry(action.id, params, { confirmDestructive: action.destructive });
+      recordPaletteLaunch(action, params, result);
       if (runRequestIdRef.current !== requestId) return;
       setRun(
         result.ok
@@ -122,16 +124,18 @@ export default function App() {
     } catch (err) {
       if (runRequestIdRef.current !== requestId) return;
       const message = err instanceof Error ? err.message : String(err);
+      const result = {
+        ok: false,
+        status: 0,
+        path: "/v1/palette/execute",
+        method: "POST",
+        payload: { error: message },
+      };
+      recordPaletteLaunch(action, params, result);
       setRun({
         kind: "error",
         title: action.label,
-        result: {
-          ok: false,
-          status: 0,
-          path: "/v1/palette/execute",
-          method: "POST",
-          payload: { error: message },
-        },
+        result,
         message,
       });
     }

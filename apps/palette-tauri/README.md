@@ -66,6 +66,18 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -EnvFile C:\path\palette-smoke.env
 ```
 
+API-only smoke can run from any Unix shell:
+
+```bash
+LABBY_PALETTE_ENV_FILE=/path/palette-smoke.env pnpm smoke:live
+```
+
+Remote Windows smoke is also env-driven:
+
+```bash
+LABBY_PALETTE_ENV_FILE=/path/palette-smoke.env pnpm smoke:agent-os
+```
+
 For a remote Windows desktop session, invoke it through an interactive scheduled
 task (`schtasks /IT`) so keyboard input and screenshots target the visible
 desktop.
@@ -109,9 +121,18 @@ The launcher catalog is intentionally compact: rows include
 Ajv for best-effort JSON Schema validation before submit, memoized by
 `entry.id + schemaFingerprint`. Unknown or unsupported schemas fail open in the
 renderer; the backend remains the authoritative validator for every execution.
+Simple top-level object schemas render lightweight form controls that keep the
+JSON payload synchronized; complex schemas stay in JSON mode.
 
 The schema projection intentionally strips defaults, examples, and
 secret-looking values before they reach the renderer.
+
+## Search And Audit
+
+The backend exposes `/v1/palette/search?q=<query>&limit=<n>` for server-side
+filtering/ranking over compact launcher rows. The renderer also records the last
+50 launches in local storage with redacted params so failed runs can be debugged
+without leaking tokens or secrets.
 
 ## Notes
 

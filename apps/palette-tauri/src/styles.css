@@ -1963,6 +1963,43 @@ textarea {
   flex: 0 1 auto;
 }
 
+.schema-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--aurora-border-default);
+  background: var(--aurora-page-bg);
+}
+
+.schema-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--aurora-text-muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.schema-field-label {
+  display: inline-flex;
+  gap: 3px;
+  min-width: 0;
+  color: var(--aurora-text-muted);
+}
+
+.schema-field input,
+.schema-field select {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  color: var(--aurora-text);
+  background: color-mix(in srgb, var(--aurora-panel-strong) 78%, transparent);
+  border: 1px solid var(--aurora-border-default);
+  border-radius: 6px;
+}
+
 .action-panel,
 .output-panel {
   display: flex;

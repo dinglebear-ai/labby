@@ -5,6 +5,7 @@ import { AuthNotice } from "@/components/palette/AuthNotice";
 import { PaletteCommandBar } from "@/components/palette/PaletteCommandBar";
 import { PaletteFooter } from "@/components/palette/PaletteFooter";
 import { ResultView } from "@/components/palette/ResultView";
+import { SchemaForm } from "@/components/palette/SchemaForm";
 import { SettingsPanel } from "@/components/palette/SettingsPanel";
 import type { PaletteConfig } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
@@ -114,6 +115,14 @@ export function PaletteShell(props: PaletteShellProps) {
               onEnterMode={props.onEnterMode}
             />
           )}
+
+          {props.modeAction && !props.showResultsLayout ? (
+            <SchemaForm
+              action={props.modeAction}
+              value={props.query}
+              onChange={props.onQueryChange}
+            />
+          ) : null}
 
           {props.showResultsLayout && (
             <ResultView

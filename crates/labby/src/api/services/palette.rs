@@ -21,6 +21,7 @@ use crate::dispatch::error::ToolError;
 pub fn routes(_state: AppState) -> Router<AppState> {
     Router::new()
         .route("/catalog", get(catalog))
+        .route("/search", get(search))
         .route("/schema", get(schema))
         .route("/execute", post(execute))
 }
@@ -44,6 +45,35 @@ async fn catalog(
 #[serde(rename_all = "camelCase")]
 struct SchemaQuery {
     id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+}
+
+const fn default_search_limit() -> usize {
+    30
+}
+
+async fn search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Query(query): Query<SearchQuery>,
+) -> Result<Response<axum::body::Body>, ApiError> {
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    let mut catalog = manager.palette_catalog(&caller).await?;
+    append_labby_actions(&mut catalog, &state, auth.as_ref().map(|auth| &auth.0));
+    compact_catalog_schemas(&mut catalog);
+    catalog.entries = search_entries(catalog.entries, &query.q, query.limit.min(100));
+    catalog.fingerprint = catalog_fingerprint(&catalog.entries);
+    Ok(catalog_response(headers, catalog))
 }
 
 async fn schema(
@@ -171,6 +201,106 @@ fn compare_launcher_entries(
     launcher_rank(left)
         .cmp(&launcher_rank(right))
         .then_with(|| entry_id(left).cmp(entry_id(right)))
+}
+
+fn search_entries(
+    entries: Vec<LauncherEntryView>,
+    query: &str,
+    limit: usize,
+) -> Vec<LauncherEntryView> {
+    let needle = query.trim().to_ascii_lowercase();
+    let mut scored = entries
+        .into_iter()
+        .filter_map(|entry| {
+            let score = launcher_search_score(&entry, &needle);
+            (score > 0 || needle.is_empty()).then_some((entry, score))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|(left, left_score), (right, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| compare_launcher_entries(left, right))
+    });
+    scored
+        .into_iter()
+        .take(limit.max(1))
+        .map(|(entry, _)| entry)
+        .collect()
+}
+
+fn launcher_search_score(entry: &LauncherEntryView, needle: &str) -> u16 {
+    if needle.is_empty() {
+        return 1;
+    }
+    let fields = launcher_search_fields(entry);
+    fields
+        .iter()
+        .map(|field| field_score(field, needle))
+        .max()
+        .unwrap_or(0)
+}
+
+fn launcher_search_fields(entry: &LauncherEntryView) -> Vec<String> {
+    match entry {
+        LauncherEntryView::LabbyAction(entry) => vec![
+            entry.id.clone(),
+            entry.label.clone(),
+            entry.description.clone(),
+            entry.source.clone(),
+            entry.service.clone(),
+            entry.action.clone(),
+        ],
+        LauncherEntryView::McpTool(entry) => vec![
+            entry.id.clone(),
+            entry.label.clone(),
+            entry.description.clone(),
+            entry.source.clone(),
+            entry.upstream.clone(),
+            entry.tool.clone(),
+        ],
+    }
+    .into_iter()
+    .map(|value| value.to_ascii_lowercase())
+    .collect()
+}
+
+fn field_score(field: &str, needle: &str) -> u16 {
+    if field == needle {
+        100
+    } else if field.starts_with(needle) {
+        80
+    } else if field
+        .split([' ', ':', '.', '_', '-'])
+        .any(|part| part.starts_with(needle))
+    {
+        60
+    } else if field.contains(needle) {
+        30
+    } else if is_subsequence(needle, field) {
+        10
+    } else {
+        0
+    }
+}
+
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let mut chars = needle.chars();
+    let Some(mut current) = chars.next() else {
+        return true;
+    };
+    for ch in haystack.chars() {
+        if ch == current {
+            if let Some(next) = chars.next() {
+                current = next;
+            } else {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn launcher_rank(entry: &LauncherEntryView) -> u8 {
@@ -518,7 +648,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_labby_actions, entry_id};
+    use super::{LauncherEntryView, append_labby_actions, entry_id, search_entries};
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -1020,6 +1150,75 @@ mod tests {
                 .iter()
                 .any(|entry| entry["id"] == "mcp:disabled::tool")
         );
+    }
+
+    #[tokio::test]
+    async fn palette_search_filters_and_ranks_launcher_entries() {
+        let manager = Arc::new(test_gateway_manager(
+            std::env::temp_dir().join("palette-search.toml"),
+            GatewayRuntimeHandle::default(),
+        ));
+        let state = AppState::from_registry(test_registry()).with_gateway_manager(manager);
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/search?q=echo.run&limit=5")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        let entries = value["entries"].as_array().unwrap();
+        assert_eq!(entries[0]["id"], "labby:demo::echo.run");
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry["id"] == "labby:demo::admin.run")
+        );
+        assert!(entries.len() <= 5);
+    }
+
+    #[test]
+    fn palette_search_ranks_exact_mcp_tool_matches() {
+        let entries = search_entries(
+            vec![
+                LauncherEntryView::McpTool(labby_gateway::gateway::palette::McpToolLauncherEntry {
+                    id: "mcp:github::list_issues".to_string(),
+                    label: "list_issues".to_string(),
+                    description: "List repository issues".to_string(),
+                    source: "github".to_string(),
+                    destructive: false,
+                    input_schema: None,
+                    schema_fingerprint: None,
+                    upstream: "github".to_string(),
+                    tool: "list_issues".to_string(),
+                }),
+                LauncherEntryView::McpTool(labby_gateway::gateway::palette::McpToolLauncherEntry {
+                    id: "mcp:github::search_repos".to_string(),
+                    label: "search_repos".to_string(),
+                    description: "Search repositories".to_string(),
+                    source: "github".to_string(),
+                    destructive: false,
+                    input_schema: None,
+                    schema_fingerprint: None,
+                    upstream: "github".to_string(),
+                    tool: "search_repos".to_string(),
+                }),
+            ],
+            "search",
+            10,
+        );
+
+        assert_eq!(entry_id(&entries[0]), "mcp:github::search_repos");
+        assert_eq!(entries.len(), 1);
     }
 
     #[tokio::test]
