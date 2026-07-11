@@ -64,6 +64,7 @@ const AURORA_DARK_TOKENS = {
   '--color-aurora-success': 'var(--aurora-success)',
   '--color-aurora-hover-bg': 'var(--aurora-hover-bg)',
 } as CSSProperties
+const ROW_DISPLAY_LIMIT = 50
 
 declare global {
   interface Window {
@@ -167,6 +168,12 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   }, [])
 
   const rows = flattenTraceRows(trace)
+  const visibleCalls = rows.calls.slice(0, ROW_DISPLAY_LIMIT)
+  const hiddenCalls = Math.max(0, rows.calls.length - visibleCalls.length)
+  const visibleMatches = rows.matches.slice(0, ROW_DISPLAY_LIMIT)
+  const hiddenMatches = Math.max(0, rows.matches.length - visibleMatches.length)
+  const visibleHistory = rows.history.slice(0, ROW_DISPLAY_LIMIT)
+  const hiddenHistory = Math.max(0, rows.history.length - visibleHistory.length)
   const warnings = [
     ...(bridgeWarning ? [bridgeWarning] : []),
     ...(trace?.warnings?.map((warning) => warning.message) ?? []),
@@ -223,9 +230,13 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
         ) : null}
 
         {rows.calls.length > 0 ? (
-          <Panel title="Execute calls" count={rows.calls.length}>
+          <Panel
+            title="Execute calls"
+            count={hiddenCalls > 0 ? `${visibleCalls.length} shown` : rows.calls.length}
+            meta={hiddenCalls > 0 ? `${hiddenCalls} hidden` : undefined}
+          >
             <div className="grid gap-2">
-              {rows.calls.map((call, index) => (
+              {visibleCalls.map((call, index) => (
                 <CallRow key={`${call.id}-${index}`} call={call} />
               ))}
             </div>
@@ -240,15 +251,23 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
           <Panel
             title="Search matches"
             count={
-              trace?.kind === 'code_mode_search_trace' && trace.truncated
+              hiddenMatches > 0
+                ? `${visibleMatches.length} shown`
+                : trace?.kind === 'code_mode_search_trace' && trace.truncated
                 ? `${rows.matches.length} shown`
                 : rows.matches.length
             }
-            meta={trace?.kind === 'code_mode_search_trace' && trace.truncated ? 'truncated' : undefined}
+            meta={
+              hiddenMatches > 0
+                ? `${hiddenMatches} hidden`
+                : trace?.kind === 'code_mode_search_trace' && trace.truncated
+                  ? 'truncated'
+                  : undefined
+            }
             scrollable
           >
             <div className="grid gap-2">
-              {rows.matches.map((match) => (
+              {visibleMatches.map((match) => (
                 <SearchRow key={match.id} match={match} />
               ))}
             </div>
@@ -260,9 +279,13 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
         ) : null}
 
         {rows.history.length > 0 ? (
-          <Panel title="Recent history" count={rows.history.length}>
+          <Panel
+            title="Recent history"
+            count={hiddenHistory > 0 ? `${visibleHistory.length} shown` : rows.history.length}
+            meta={hiddenHistory > 0 ? `${hiddenHistory} hidden` : undefined}
+          >
             <div className="grid gap-2">
-              {rows.history.map((entry) => (
+              {visibleHistory.map((entry) => (
                 <div
                   key={entry.seq}
                   className="grid gap-1 rounded-md border border-aurora-border-default bg-aurora-control-surface p-3"
@@ -407,7 +430,7 @@ function SummaryStat({
 }
 
 function CallRow({ call }: { call: ReturnType<typeof flattenTraceRows>['calls'][number] }) {
-  const params = stringifyRedactedParams(call.params)
+  const hasParams = call.params !== undefined && call.params !== null
   return (
     <article
       className={cn(
@@ -418,7 +441,7 @@ function CallRow({ call }: { call: ReturnType<typeof flattenTraceRows>['calls'][
       <div className="flex flex-col gap-1.5">
         <div className="min-w-0">
           <p className="truncate font-mono text-[13px] font-semibold text-aurora-text-primary">
-            {call.upstream} / {call.tool}
+            {call.namespace} / {call.tool}
           </p>
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-aurora-text-muted">
             <span className="truncate font-mono text-[11px] sm:text-xs">{call.id}</span>
@@ -436,16 +459,7 @@ function CallRow({ call }: { call: ReturnType<typeof flattenTraceRows>['calls'][
           </div>
         </div>
       </div>
-      {params ? (
-        <details className="mt-1.5 rounded-md border border-aurora-border-default bg-aurora-panel-strong sm:mt-3 sm:rounded-aurora-2">
-          <summary className="cursor-pointer px-2.5 py-1 text-xs font-semibold text-aurora-accent-strong sm:px-3 sm:py-2">
-            Redacted params
-          </summary>
-          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-xs text-aurora-text-primary sm:px-3 sm:pb-3">
-            {params}
-          </pre>
-        </details>
-      ) : null}
+      {hasParams ? <LazyJsonDetails label="Redacted params" value={call.params} /> : null}
     </article>
   )
 }
@@ -458,7 +472,7 @@ function SearchRow({ match }: { match: ReturnType<typeof flattenTraceRows>['matc
           <div className="flex items-center gap-2">
             <Search className="size-4 text-aurora-accent-primary" />
             <p className="truncate font-mono text-[13px] font-semibold text-aurora-text-primary">
-              {match.upstream} / {match.tool}
+              {match.namespace} / {match.tool}
             </p>
           </div>
           <p className="mt-1 line-clamp-1 text-xs text-aurora-text-muted sm:line-clamp-2">{match.description}</p>
@@ -485,7 +499,7 @@ function SearchResultPanel({
         : 'Search returned an empty list — no tools matched.'
       : 'Search returned a reduced value, not a tool list — the matches panel only lists tool-entry objects.'
   const shapeLabel = describeResultShape(shape)
-  const resultJson = stringifyRedactedParams(trace.result)
+  const hasResult = trace.result !== undefined && trace.result !== null
 
   return (
     <Panel title="Search result" count={shape?.type ?? 'empty'}>
@@ -497,16 +511,7 @@ function SearchResultPanel({
         {shapeLabel ? (
           <p className="mt-1 font-mono text-xs text-aurora-text-muted">{shapeLabel}</p>
         ) : null}
-        {resultJson ? (
-          <details className="mt-1.5 rounded-md border border-aurora-border-default bg-aurora-panel-strong sm:mt-3 sm:rounded-aurora-2">
-            <summary className="cursor-pointer px-2.5 py-1 text-xs font-semibold text-aurora-accent-strong sm:px-3 sm:py-2">
-              Returned value
-            </summary>
-            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-xs text-aurora-text-primary sm:px-3 sm:pb-3">
-              {resultJson}
-            </pre>
-          </details>
-        ) : null}
+        {hasResult ? <LazyJsonDetails label="Returned value" value={trace.result} /> : null}
       </article>
     </Panel>
   )
@@ -518,9 +523,8 @@ function ExecuteResultPanel({
   trace: Extract<CodeModeTrace, { kind: 'code_mode_execute_trace' }>
 }) {
   const shapeLabel = describeResultShape(trace.result_shape)
-  const resultJson = stringifyRedactedParams(trace.result)
 
-  if (!resultJson) return null
+  if (trace.result === undefined || trace.result === null) return null
 
   return (
     <Panel title="Returned value" count={trace.result_shape?.type ?? 'value'}>
@@ -532,16 +536,30 @@ function ExecuteResultPanel({
         {shapeLabel ? (
           <p className="mt-1 font-mono text-xs text-aurora-text-muted">{shapeLabel}</p>
         ) : null}
-        <details className="mt-1.5 rounded-md border border-aurora-border-default bg-aurora-panel-strong sm:mt-3 sm:rounded-aurora-2">
-          <summary className="cursor-pointer px-2.5 py-1 text-xs font-semibold text-aurora-accent-strong sm:px-3 sm:py-2">
-            Result
-          </summary>
-          <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-xs text-aurora-text-primary sm:px-3 sm:pb-3">
-            {resultJson}
-          </pre>
-        </details>
+        <LazyJsonDetails label="Result" value={trace.result} />
       </article>
     </Panel>
+  )
+}
+
+function LazyJsonDetails({ label, value }: { label: string; value: unknown }) {
+  const [open, setOpen] = useState(false)
+  const rendered = open ? stringifyRedactedParams(value) : ''
+
+  return (
+    <details
+      className="mt-1.5 rounded-md border border-aurora-border-default bg-aurora-panel-strong sm:mt-3 sm:rounded-aurora-2"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="cursor-pointer px-2.5 py-1 text-xs font-semibold text-aurora-accent-strong sm:px-3 sm:py-2">
+        {label}
+      </summary>
+      {open ? (
+        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words px-2.5 pb-2.5 font-mono text-xs text-aurora-text-primary sm:px-3 sm:pb-3">
+          {rendered}
+        </pre>
+      ) : null}
+    </details>
   )
 }
 

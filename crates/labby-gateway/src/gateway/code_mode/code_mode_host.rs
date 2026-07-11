@@ -219,9 +219,11 @@ impl CodeModeHost for GatewayManager {
             }
         };
         self.record_semantic_search_recovery().await;
-        let mut ranked = super::embeddings::rank_by_similarity(&query_vec, &scoped_vectors);
-        ranked.truncate(top_k.max(1));
-        Ok(ranked)
+        Ok(super::embeddings::rank_top_k_by_similarity(
+            &query_vec,
+            &scoped_vectors,
+            top_k,
+        ))
     }
 
     async fn config(&self) -> CodeModeConfig {
@@ -252,6 +254,7 @@ impl GatewayManager {
         tool: &str,
         params: Value,
     ) -> Result<ToolCallOutcome, ToolError> {
+        let arguments = upstream_arguments(upstream, tool, params)?;
         let Some(pool) = self.current_pool().await else {
             return Err(ToolError::Sdk {
                 sdk_kind: "upstream_error".to_string(),
@@ -259,10 +262,7 @@ impl GatewayManager {
             });
         };
         let mut upstream_params = CallToolRequestParams::new(tool.to_string());
-        upstream_params.arguments = Some(match params {
-            Value::Object(map) => map,
-            _ => Map::new(),
-        });
+        upstream_params.arguments = Some(arguments);
         match pool.call_tool(upstream, upstream_params).await {
             Some(Ok(result)) => {
                 if result.is_error == Some(true) {
@@ -393,6 +393,20 @@ fn unwrap_code_mode_upstream_result(result: CallToolResult) -> Value {
     }
 }
 
+fn upstream_arguments(
+    upstream: &str,
+    tool: &str,
+    params: Value,
+) -> Result<Map<String, Value>, ToolError> {
+    match params {
+        Value::Object(arguments) => Ok(arguments),
+        _ => Err(ToolError::Sdk {
+            sdk_kind: "invalid_param".to_string(),
+            message: format!("Code Mode tool `{upstream}::{tool}` params must be an object"),
+        }),
+    }
+}
+
 fn code_mode_canonical_error_kind(s: &str) -> &'static str {
     match s {
         "unknown_action" => "unknown_action",
@@ -402,6 +416,17 @@ fn code_mode_canonical_error_kind(s: &str) -> &'static str {
         "unknown_instance" => "unknown_instance",
         "confirmation_required" => "confirmation_required",
         "conflict" => "conflict",
+        "forbidden" => "forbidden",
+        "unknown_tool" => "unknown_tool",
+        "route_scope_denied" => "route_scope_denied",
+        "path_traversal" => "path_traversal",
+        "permission_denied" => "permission_denied",
+        "timeout" => "timeout",
+        "budget_exceeded" => "budget_exceeded",
+        "quota_exceeded" => "quota_exceeded",
+        "invalid_code_mode_id" => "invalid_code_mode_id",
+        "snippet_not_found" => "snippet_not_found",
+        "artifact_too_large" => "artifact_too_large",
         "auth_failed" => "auth_failed",
         "not_found" => "not_found",
         "rate_limited" => "rate_limited",
@@ -412,11 +437,10 @@ fn code_mode_canonical_error_kind(s: &str) -> &'static str {
         "internal_error" => "internal_error",
         "upstream_error" => "upstream_error",
         "code_mode_timeout" => "code_mode_timeout",
-        // `code_mode_fuel_exhausted` is intentionally NOT mapped: it is reserved
-        // for the dead Wasmtime/fuel path and is never emitted on the live
-        // Javy/QuickJS path. Normalize to `internal_error` rather than pass
-        // through a reserved/dead kind. See docs/dev/ERRORS.md.
-        _ => "internal_error",
+        // `code_mode_fuel_exhausted` and any future upstream-local kinds are
+        // intentionally not passed through. They are upstream payloads, not
+        // host infrastructure failures.
+        _ => "upstream_error",
     }
 }
 
@@ -439,11 +463,11 @@ fn code_mode_upstream_error_info(text: Option<&str>) -> (&'static str, String, b
     let Some(error_obj) = error_obj else {
         return ("upstream_error", text.to_string(), true);
     };
-    let kind = error_obj
+    let raw_kind = error_obj
         .get("kind")
         .and_then(Value::as_str)
-        .map(code_mode_canonical_error_kind)
         .unwrap_or("upstream_error");
+    let kind = code_mode_canonical_error_kind(raw_kind);
     let message = error_obj
         .get("message")
         .and_then(Value::as_str)
@@ -451,7 +475,102 @@ fn code_mode_upstream_error_info(text: Option<&str>) -> (&'static str, String, b
         .to_string();
     let counts_as_failure = matches!(
         kind,
-        "upstream_error" | "network_error" | "server_error" | "decode_error" | "internal_error"
+        "network_error" | "server_error" | "decode_error" | "internal_error"
     );
     (kind, message, counts_as_failure)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserves_stable_upstream_error_kinds() {
+        for kind in [
+            "forbidden",
+            "unknown_tool",
+            "route_scope_denied",
+            "path_traversal",
+            "permission_denied",
+            "timeout",
+            "budget_exceeded",
+            "quota_exceeded",
+        ] {
+            let payload = serde_json::json!({
+                "kind": kind,
+                "message": format!("{kind} message"),
+            })
+            .to_string();
+
+            let (actual, message, counts_as_failure) =
+                code_mode_upstream_error_info(Some(&payload));
+
+            assert_eq!(actual, kind);
+            assert_eq!(message, format!("{kind} message"));
+            assert!(
+                !counts_as_failure,
+                "{kind} should not poison upstream health"
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_nested_upstream_error_kinds() {
+        let payload = serde_json::json!({
+            "error": {
+                "kind": "unknown_tool",
+                "message": "tool is not available"
+            }
+        })
+        .to_string();
+
+        let (kind, message, counts_as_failure) = code_mode_upstream_error_info(Some(&payload));
+
+        assert_eq!(kind, "unknown_tool");
+        assert_eq!(message, "tool is not available");
+        assert!(!counts_as_failure);
+    }
+
+    #[test]
+    fn classifies_unstructured_upstream_errors_as_infra_failures() {
+        let (kind, message, counts_as_failure) =
+            code_mode_upstream_error_info(Some("plain upstream failure"));
+        assert_eq!(kind, "upstream_error");
+        assert_eq!(message, "plain upstream failure");
+        assert!(counts_as_failure);
+
+        let (kind, message, counts_as_failure) = code_mode_upstream_error_info(None);
+        assert_eq!(kind, "upstream_error");
+        assert_eq!(message, "upstream returned a non-text error payload");
+        assert!(counts_as_failure);
+    }
+
+    #[test]
+    fn unknown_structured_error_kinds_are_upstream_errors_without_health_failure() {
+        let payload = serde_json::json!({
+            "kind": "surprise_kind",
+            "message": "new kind"
+        })
+        .to_string();
+
+        let (kind, message, counts_as_failure) = code_mode_upstream_error_info(Some(&payload));
+
+        assert_eq!(kind, "upstream_error");
+        assert_eq!(message, "new kind");
+        assert!(!counts_as_failure);
+    }
+
+    #[test]
+    fn non_object_upstream_params_reject_before_pool_lookup() {
+        for value in [
+            Value::Null,
+            Value::Bool(true),
+            Value::String("oops".to_string()),
+            Value::Array(vec![]),
+        ] {
+            let err = upstream_arguments("demo", "tool", value).expect_err("must reject");
+
+            assert_eq!(err.kind(), "invalid_param");
+        }
+    }
 }

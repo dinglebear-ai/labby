@@ -15,7 +15,7 @@ test('parses execute traces with redacted params', () => {
     calls: [
       {
         id: 'github::search_issues',
-        upstream: 'github',
+        namespace: 'github',
         tool: 'search_issues',
         ok: true,
         elapsed_ms: 12,
@@ -28,7 +28,27 @@ test('parses execute traces with redacted params', () => {
   assert.equal(trace?.kind, 'code_mode_execute_trace')
   const rows = flattenTraceRows(trace)
   assert.equal(rows.calls.length, 1)
+  assert.equal(rows.calls[0].namespace, 'github')
   assert.equal(stringifyRedactedParams(rows.calls[0].params).includes('[redacted]'), true)
+})
+
+test('accepts legacy upstream aliases but normalizes to namespace', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    calls: [
+      {
+        id: 'github::search_issues',
+        upstream: 'github',
+        tool: 'search_issues',
+        ok: true,
+        elapsed_ms: 12,
+      },
+    ],
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  assert.equal(flattenTraceRows(trace).calls[0].namespace, 'github')
 })
 
 test('parses search traces with matched tools', () => {
@@ -39,7 +59,7 @@ test('parses search traces with matched tools', () => {
     matches: [
       {
         id: 'axon::ask',
-        upstream: 'axon',
+        namespace: 'axon',
         tool: 'ask',
         description: 'Ask indexed docs',
         has_schema: true,
@@ -94,7 +114,7 @@ test('parses history traces and flattens nested execute calls', () => {
         calls: [
           {
             id: 'github::search_issues',
-            upstream: 'github',
+            namespace: 'github',
             tool: 'search_issues',
             ok: true,
             elapsed_ms: 12,
@@ -142,7 +162,7 @@ test('accepts only literal booleans for status fields', () => {
     calls: [
       {
         id: 'github::search_issues',
-        upstream: 'github',
+        namespace: 'github',
         tool: 'search_issues',
         ok: 'false',
         elapsed_ms: 12,

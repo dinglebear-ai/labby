@@ -1,47 +1,85 @@
+import { z } from 'zod'
+
 export type CodeModeTrace =
   | CodeModeExecuteTrace
   | CodeModeSearchTrace
   | CodeModeHistoryTrace
-
-export interface CodeModeExecuteTrace {
-  kind: 'code_mode_execute_trace'
-  call_count: number
-  calls: CodeModeCallTrace[]
-  result_shape?: ResultShape
-  result?: unknown
-  logs_count?: number
-  warnings?: CodeModeTraceWarning[]
-}
-
-export interface CodeModeSearchTrace {
-  kind: 'code_mode_search_trace'
-  query_kind: string
-  match_count: number
-  displayed_count?: number
-  truncated?: boolean
-  matches: CodeModeSearchMatch[]
-  result_shape?: ResultShape
-  /**
-   * Present when no tool rows were summarized (the snippet returned a
-   * reduced/aggregate value, or an array of non-entry items). Carries the
-   * bounded actual return value so the inspector can show what the search
-   * produced instead of a bare "No matches".
-   */
-  result?: unknown
-  warnings?: CodeModeTraceWarning[]
-}
-
-export interface CodeModeHistoryTrace {
-  kind: 'code_mode_history'
-  entries: CodeModeHistoryEntry[]
-  warnings?: CodeModeTraceWarning[]
-}
 
 export interface CodeModeTraceWarning {
   kind: 'dropped_rows'
   message: string
 }
 
+const finiteNumberSchema = z.number().finite()
+const optionalFiniteNumberSchema = z.preprocess(
+  (value) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined),
+  finiteNumberSchema.optional(),
+)
+const optionalBooleanSchema = z.preprocess(
+  (value) => (typeof value === 'boolean' ? value : undefined),
+  z.boolean().optional(),
+)
+const booleanValueSchema = z.preprocess((value) => value === true, z.boolean())
+const stringArraySchema = z.preprocess(
+  (value) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined),
+  z.array(z.string()).optional(),
+)
+
+const resultShapeSchema = z.object({
+  type: z.string().catch('unknown'),
+  size_bytes: optionalFiniteNumberSchema,
+  length: optionalFiniteNumberSchema,
+  key_count: optionalFiniteNumberSchema,
+  keys: stringArraySchema,
+  item_types: stringArraySchema,
+  truncated: optionalBooleanSchema,
+  content_block_kinds: stringArraySchema,
+})
+
+const callTraceSchema = z
+  .object({
+    id: z.string().catch(''),
+    namespace: z.string().optional(),
+    upstream: z.string().optional(),
+    tool: z.string().catch(''),
+    ok: booleanValueSchema,
+    elapsed_ms: finiteNumberSchema.catch(0),
+    params: z.unknown().optional(),
+    error_kind: z.string().optional(),
+  })
+  .transform(({ upstream, namespace, ...trace }) => ({
+    ...trace,
+    namespace: namespace ?? upstream ?? '',
+  }))
+
+const searchMatchSchema = z
+  .object({
+    id: z.string().catch(''),
+    namespace: z.string().optional(),
+    upstream: z.string().optional(),
+    tool: z.string().catch(''),
+    description: z.string().catch(''),
+    has_schema: booleanValueSchema,
+    has_output_schema: booleanValueSchema,
+  })
+  .transform(({ upstream, namespace, ...match }) => ({
+    ...match,
+    namespace: namespace ?? upstream ?? '',
+  }))
+
+const historyEntryBaseSchema = z.object({
+  seq: finiteNumberSchema.catch(0),
+  kind: z.enum(['search', 'execute']),
+  ok: booleanValueSchema,
+  elapsed_ms: finiteNumberSchema.catch(0),
+  error_kind: z.string().optional(),
+  calls: z.array(z.unknown()).optional(),
+  match_count: optionalFiniteNumberSchema,
+})
+
+export type ResultShape = z.infer<typeof resultShapeSchema>
+export type CodeModeCallTrace = z.infer<typeof callTraceSchema>
+export type CodeModeSearchMatch = z.infer<typeof searchMatchSchema>
 export interface CodeModeHistoryEntry {
   seq: number
   kind: 'search' | 'execute'
@@ -51,35 +89,30 @@ export interface CodeModeHistoryEntry {
   calls?: CodeModeCallTrace[]
   match_count?: number
 }
-
-export interface CodeModeCallTrace {
-  id: string
-  upstream: string
-  tool: string
-  ok: boolean
-  elapsed_ms: number
-  params?: unknown
-  error_kind?: string
+export interface CodeModeExecuteTrace {
+  kind: 'code_mode_execute_trace'
+  call_count: number
+  calls: CodeModeCallTrace[]
+  result_shape?: ResultShape
+  result?: unknown
+  logs_count?: number
+  warnings?: CodeModeTraceWarning[]
 }
-
-export interface CodeModeSearchMatch {
-  id: string
-  upstream: string
-  tool: string
-  description: string
-  has_schema: boolean
-  has_output_schema: boolean
-}
-
-export interface ResultShape {
-  type: string
-  size_bytes?: number
-  length?: number
-  key_count?: number
-  keys?: string[]
-  item_types?: string[]
+export interface CodeModeSearchTrace {
+  kind: 'code_mode_search_trace'
+  query_kind: string
+  match_count: number
+  displayed_count?: number
   truncated?: boolean
-  content_block_kinds?: string[]
+  matches: CodeModeSearchMatch[]
+  result_shape?: ResultShape
+  result?: unknown
+  warnings?: CodeModeTraceWarning[]
+}
+export interface CodeModeHistoryTrace {
+  kind: 'code_mode_history'
+  entries: CodeModeHistoryEntry[]
+  warnings?: CodeModeTraceWarning[]
 }
 
 export function parseCodeModeTrace(value: unknown): CodeModeTrace | null {
@@ -184,66 +217,27 @@ function parseHistoryTrace(value: Record<string, unknown>): CodeModeHistoryTrace
 }
 
 function parseHistoryEntry(value: unknown): CodeModeHistoryEntry | null {
-  if (!isRecord(value)) return null
-  let kind: CodeModeHistoryEntry['kind']
-  switch (value.kind) {
-    case 'execute':
-      kind = 'execute'
-      break
-    case 'search':
-      kind = 'search'
-      break
-    default:
-      return null
-  }
+  const parsed = historyEntryBaseSchema.safeParse(value)
+  if (!parsed.success) return null
   return {
-    seq: numberValue(value.seq, 0),
-    kind,
-    ok: booleanValue(value.ok),
-    elapsed_ms: numberValue(value.elapsed_ms, 0),
-    error_kind: optionalString(value.error_kind),
-    calls: arrayOf(value.calls, parseCallTrace) ?? [],
-    match_count: optionalNumber(value.match_count),
+    ...parsed.data,
+    calls: arrayOf(parsed.data.calls, parseCallTrace) ?? [],
   }
 }
 
 function parseCallTrace(value: unknown): CodeModeCallTrace | null {
-  if (!isRecord(value)) return null
-  return {
-    id: stringValue(value.id, ''),
-    upstream: stringValue(value.upstream, ''),
-    tool: stringValue(value.tool, ''),
-    ok: booleanValue(value.ok),
-    elapsed_ms: numberValue(value.elapsed_ms, 0),
-    params: value.params,
-    error_kind: optionalString(value.error_kind),
-  }
+  const parsed = callTraceSchema.safeParse(value)
+  return parsed.success ? parsed.data : null
 }
 
 function parseSearchMatch(value: unknown): CodeModeSearchMatch | null {
-  if (!isRecord(value)) return null
-  return {
-    id: stringValue(value.id, ''),
-    upstream: stringValue(value.upstream, ''),
-    tool: stringValue(value.tool, ''),
-    description: stringValue(value.description, ''),
-    has_schema: booleanValue(value.has_schema),
-    has_output_schema: booleanValue(value.has_output_schema),
-  }
+  const parsed = searchMatchSchema.safeParse(value)
+  return parsed.success ? parsed.data : null
 }
 
 function parseResultShape(value: unknown): ResultShape | undefined {
-  if (!isRecord(value)) return undefined
-  return {
-    type: stringValue(value.type, 'unknown'),
-    size_bytes: optionalNumber(value.size_bytes),
-    length: optionalNumber(value.length),
-    key_count: optionalNumber(value.key_count),
-    keys: stringArray(value.keys),
-    item_types: stringArray(value.item_types),
-    truncated: booleanOptional(value.truncated),
-    content_block_kinds: stringArray(value.content_block_kinds),
-  }
+  const parsed = resultShapeSchema.safeParse(value)
+  return parsed.success ? parsed.data : undefined
 }
 
 function arrayOf<T>(value: unknown, parse: (item: unknown) => T | null): T[] | null {
@@ -269,17 +263,8 @@ function arrayOfWithDropped<T>(
   return { items, dropped }
 }
 
-function stringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  return value.filter((item): item is string => typeof item === 'string')
-}
-
 function stringValue(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value : fallback
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
 }
 
 function numberValue(value: unknown, fallback: number): number {
@@ -288,10 +273,6 @@ function numberValue(value: unknown, fallback: number): number {
 
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function booleanValue(value: unknown): boolean {
-  return value === true
 }
 
 function booleanOptional(value: unknown): boolean | undefined {

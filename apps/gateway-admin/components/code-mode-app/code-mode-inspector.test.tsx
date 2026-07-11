@@ -34,8 +34,41 @@ test('renders execute call rows with redacted params', async () => {
   assert.doesNotMatch(container.textContent ?? '', /\bok\b/)
   assert.ok(container.querySelector('[aria-label="success"]'))
   assert.match(container.textContent ?? '', /12ms/)
+  assert.doesNotMatch(container.textContent ?? '', /\[redacted\]/)
+  await act(async () => {
+    const details = container.querySelector('details')
+    assert.ok(details)
+    details.open = true
+    details.dispatchEvent(new window.Event('toggle', { bubbles: true }))
+  })
   assert.match(container.textContent ?? '', /\[redacted\]/)
   assert.doesNotMatch(container.textContent ?? '', /raw-secret-token/)
+  await unmount()
+})
+
+test('caps execute call rows for large traces', async () => {
+  installTestDom()
+  const calls = Array.from({ length: 75 }, (_, index) => ({
+    id: `demo::tool_${index}`,
+    namespace: 'demo',
+    tool: `tool_${index}`,
+    ok: true,
+    elapsed_ms: index,
+  }))
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: calls.length,
+        calls,
+      }}
+    />,
+  )
+
+  assert.match(container.textContent ?? '', /50 shown/)
+  assert.match(container.textContent ?? '', /25 hidden/)
+  assert.match(container.textContent ?? '', /demo \/ tool_49/)
+  assert.doesNotMatch(container.textContent ?? '', /demo \/ tool_50/)
   await unmount()
 })
 
@@ -114,6 +147,12 @@ test('renders reduced search result shape and value when no tool rows match', as
   assert.match(container.textContent ?? '', /Search result/)
   assert.match(container.textContent ?? '', /reduced value/)
   assert.match(container.textContent ?? '', /keys: total, upstreams/)
+  await act(async () => {
+    const details = container.querySelector('details')
+    assert.ok(details)
+    details.open = true
+    details.dispatchEvent(new window.Event('toggle', { bubbles: true }))
+  })
   assert.match(container.textContent ?? '', /398/)
   await unmount()
 })

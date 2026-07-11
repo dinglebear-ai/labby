@@ -1,7 +1,7 @@
 //! Code Mode tool resolution: mapping `<upstream>::<tool>` selectors onto live
 //! upstream catalog entries for `execute`/`callTool` and the raw tool proxy.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::gateway::code_mode::split_namespaced_id;
 use crate::upstream::pool::tool_has_mcp_app_ui_resource;
@@ -21,7 +21,7 @@ impl GatewayManager {
     pub async fn resolve_widget_callback_tool_candidates_scoped(
         &self,
         tool: &str,
-        allowed_upstreams: Option<&std::collections::BTreeSet<String>>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
         _owner: Option<&UpstreamRuntimeOwner>,
         _oauth_subject: Option<&str>,
         lookup: CallbackToolLookup,
@@ -126,6 +126,28 @@ impl GatewayManager {
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,
     ) -> Result<(String, UpstreamTool), ToolError> {
+        self.resolve_raw_upstream_tool_allowed(tool, None, owner, oauth_subject)
+            .await
+    }
+
+    pub async fn resolve_raw_upstream_tool_scoped(
+        &self,
+        tool: &str,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+        owner: Option<&UpstreamRuntimeOwner>,
+        oauth_subject: Option<&str>,
+    ) -> Result<(String, UpstreamTool), ToolError> {
+        self.resolve_raw_upstream_tool_allowed(tool, allowed_upstreams, owner, oauth_subject)
+            .await
+    }
+
+    async fn resolve_raw_upstream_tool_allowed(
+        &self,
+        tool: &str,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+        owner: Option<&UpstreamRuntimeOwner>,
+        oauth_subject: Option<&str>,
+    ) -> Result<(String, UpstreamTool), ToolError> {
         let selector = ToolExecuteSelector::parse(tool, None)?;
         let cfg = self.config.read().await.clone();
         let priority_by_upstream: HashMap<String, f32> = cfg
@@ -133,7 +155,6 @@ impl GatewayManager {
             .iter()
             .map(|upstream| (upstream.name.clone(), upstream.priority))
             .collect();
-
         let Some(pool) = self.current_pool().await else {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
@@ -142,6 +163,12 @@ impl GatewayManager {
         };
 
         if let Some(upstream_name) = selector.upstream.as_deref() {
+            if allowed_upstreams.is_some_and(|allowed| !allowed.contains(upstream_name)) {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "unknown_tool".to_string(),
+                    message: format!("unknown tool `{}`", selector.display_name()),
+                });
+            }
             let priority = priority_by_upstream
                 .get(upstream_name)
                 .copied()
@@ -175,7 +202,14 @@ impl GatewayManager {
                 });
         }
 
-        if let Some((upstream, tool)) = pool.find_tool(&selector.tool_name).await
+        let found = match allowed_upstreams {
+            Some(allowed) => {
+                pool.find_tool_allowed(&selector.tool_name, Some(allowed))
+                    .await
+            }
+            None => pool.find_tool(&selector.tool_name).await,
+        };
+        if let Some((upstream, tool)) = found
             && is_routable(priority_by_upstream.get(&upstream).copied().unwrap_or(1.0))
         {
             return Ok((upstream, tool));
@@ -185,113 +219,10 @@ impl GatewayManager {
         for upstream in cfg
             .upstream
             .iter()
-            .filter(|upstream| upstream.enabled && is_routable(upstream.priority))
-        {
-            self.ensure_upstream_tool_runtime_ready(&upstream.name, owner, oauth_subject)
-                .await?;
-            matches.extend(
-                pool.healthy_tools_for_upstream(&upstream.name)
-                    .await
-                    .into_iter()
-                    .filter(|candidate| candidate.tool.name.as_ref() == selector.tool_name)
-                    .map(|tool| (upstream.name.clone(), tool)),
-            );
-        }
-
-        if matches.is_empty() {
-            return Err(ToolError::Sdk {
-                sdk_kind: "unknown_tool".to_string(),
-                message: format!("unknown tool `{}`", selector.display_name()),
-            });
-        }
-        if matches.len() > 1 {
-            let valid = matches
-                .iter()
-                .map(|(upstream, tool)| format!("{upstream}::{}", tool.tool.name))
-                .collect::<Vec<_>>();
-            return Err(ToolError::AmbiguousTool {
-                message: format!(
-                    "tool `{}` matched multiple upstream tools",
-                    selector.tool_name
-                ),
-                valid,
-            });
-        }
-        Ok(matches.into_iter().next().expect("checked len"))
-    }
-
-    pub async fn resolve_raw_upstream_tool_scoped(
-        &self,
-        tool: &str,
-        allowed_upstreams: Option<&std::collections::BTreeSet<String>>,
-        owner: Option<&UpstreamRuntimeOwner>,
-        oauth_subject: Option<&str>,
-    ) -> Result<(String, UpstreamTool), ToolError> {
-        if allowed_upstreams.is_none() {
-            return self
-                .resolve_raw_upstream_tool(tool, owner, oauth_subject)
-                .await;
-        }
-
-        let selector = ToolExecuteSelector::parse(tool, None)?;
-        let allowed = allowed_upstreams.expect("checked some");
-        let cfg = self.config.read().await.clone();
-        let Some(pool) = self.current_pool().await else {
-            return Err(ToolError::Sdk {
-                sdk_kind: "unknown_tool".to_string(),
-                message: format!("unknown tool `{}`", selector.display_name()),
-            });
-        };
-
-        if let Some(upstream_name) = selector.upstream.as_deref() {
-            if !allowed.contains(upstream_name) {
-                return Err(ToolError::Sdk {
-                    sdk_kind: "unknown_tool".to_string(),
-                    message: format!("unknown tool `{}`", selector.display_name()),
-                });
-            }
-            if cfg
-                .upstream
-                .iter()
-                .find(|candidate| candidate.name == upstream_name)
-                .is_some_and(|candidate| !is_routable(candidate.priority))
-            {
-                return Err(ToolError::Sdk {
-                    sdk_kind: "unknown_tool".to_string(),
-                    message: format!("unknown tool `{}`", selector.display_name()),
-                });
-            }
-            self.ensure_upstream_tool_runtime_ready(upstream_name, owner, oauth_subject)
-                .await?;
-            return pool
-                .healthy_tools_for_upstream(upstream_name)
-                .await
-                .into_iter()
-                .find(|candidate| candidate.tool.name.as_ref() == selector.tool_name)
-                .map(|tool| (upstream_name.to_string(), tool))
-                .ok_or_else(|| ToolError::Sdk {
-                    sdk_kind: "unknown_tool".to_string(),
-                    message: format!("unknown tool `{}`", selector.display_name()),
-                });
-        }
-
-        if let Some((upstream, tool)) = pool
-            .find_tool_allowed(&selector.tool_name, Some(allowed))
-            .await
-            && cfg
-                .upstream
-                .iter()
-                .find(|candidate| candidate.name == upstream)
-                .is_none_or(|candidate| is_routable(candidate.priority))
-        {
-            return Ok((upstream, tool));
-        }
-
-        let mut matches = Vec::new();
-        for upstream in cfg
-            .upstream
-            .iter()
-            .filter(|upstream| upstream.enabled && allowed.contains(&upstream.name))
+            .filter(|upstream| upstream.enabled)
+            .filter(|upstream| {
+                allowed_upstreams.is_none_or(|allowed| allowed.contains(&upstream.name))
+            })
             .filter(|upstream| is_routable(upstream.priority))
         {
             self.ensure_upstream_tool_runtime_ready(&upstream.name, owner, oauth_subject)

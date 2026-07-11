@@ -1,4 +1,21 @@
-//! JSON Schema validation for Code Mode callTool params.
+//! JSON Schema validation for Code Mode `callTool` params.
+//!
+//! This is deliberately a small MCP `inputSchema` validator, not a full JSON
+//! Schema implementation. It enforces the assertion keywords Lab currently
+//! depends on for tool-call safety:
+//!
+//! - structure: `$ref` for local JSON pointers, `type`, `properties`,
+//!   `required`, `additionalProperties`, `patternProperties`, and `items`
+//! - composition: `anyOf`, `oneOf`, and `allOf`
+//! - values: `enum`, `const`, `minimum`, `maximum`, `minLength`, `maxLength`,
+//!   `pattern`, `minItems`, `maxItems`, and `uniqueItems`
+//!
+//! Annotation-only keywords such as `title`, `description`, `default`, and
+//! `examples` are intentionally ignored. Other JSON Schema assertion keywords
+//! are also ignored rather than treated as validation failures, so adding a new
+//! assertion to this file must include a focused test that proves the supported
+//! subset changed.
+#![deny(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::{BTreeSet, HashSet};
 

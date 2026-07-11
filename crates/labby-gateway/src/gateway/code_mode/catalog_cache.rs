@@ -140,11 +140,17 @@ impl CatalogCache {
 /// The write is completed before returning so one-shot CLI invocations do not
 /// exit before a refreshed cache lands on disk. The write is skipped entirely
 /// only when no entry has changed and no TTL timestamp needs renewal.
-pub(crate) fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
+pub(crate) async fn merge_and_store(updates: Vec<CatalogCacheUpdate>) {
     if updates.is_empty() {
         return;
     }
-    merge_and_store_blocking(updates);
+    if let Err(error) = tokio::task::spawn_blocking(move || merge_and_store_blocking(updates)).await
+    {
+        tracing::warn!(
+            error = %error,
+            "failed to join code_mode catalog cache persistence task"
+        );
+    }
 }
 
 fn merge_and_store_blocking(updates: Vec<CatalogCacheUpdate>) {

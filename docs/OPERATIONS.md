@@ -205,6 +205,91 @@ Typical checks include:
 
 `labby health` should expose normalized health status using shared service contracts.
 
+## Code Mode Operations
+
+Use these checks when Code Mode search, execution, or inspector output drifts
+from expected gateway behavior.
+
+### Stale Runner Or MCP Session
+
+Symptoms:
+
+- `codemode.search()` shows old tools after an upstream config change.
+- `callTool()` succeeds for a tool that search does not list, or the inspector
+  shows old trace shapes.
+
+Actions:
+
+1. Run `labby gateway reload` to rebuild the active upstream runtime pool.
+2. Reconnect the MCP client session so it receives the current gateway manager
+   state and widget assets.
+3. If the issue is CLI-only, rerun `labby gateway code exec`; CLI executions
+   build a fresh host-side execution envelope per process.
+
+### Runner Pool Overflow Or Timeout Storms
+
+Symptoms:
+
+- Code Mode calls queue behind long-running snippets.
+- Logs show repeated `timeout`, pool overflow, or runner start failures.
+
+Actions:
+
+1. Split large snippets into smaller executions and reduce tool fan-out.
+2. Inspect `[code_mode]` timeout and pool settings in `~/.labby/config.toml`.
+3. Temporarily disable pooling only for diagnosis by restarting with the
+   smallest configured pool size and watching whether failures become runner
+   startup failures or snippet timeouts.
+4. Restart the gateway service if pooled child processes are wedged.
+
+### Semantic Search Degradation
+
+Symptoms:
+
+- Search still returns lexical/catalog results but semantic ranking disappears.
+- Logs show `tei_unavailable`, `network_error`, or embedding decode failures.
+
+Actions:
+
+1. Check the configured TEI endpoint in `[code_mode.semantic_search]`.
+2. Verify the TEI service health and response size; oversized or malformed
+   responses are rejected and Code Mode fails open to lexical search.
+3. Wait through the semantic-search cooldown, then run a small
+   `codemode.search()` query to confirm recovery.
+
+### Catalog Cache Reloads
+
+Symptoms:
+
+- CLI Code Mode cold-starts after upstream changes.
+- One-shot executions miss newly enabled upstream tools.
+
+Actions:
+
+1. Run `labby gateway reload` or a targeted catalog refresh path.
+2. Delete only the Code Mode catalog cache under the Lab home if the on-disk
+   cache is suspected corrupt; do not delete auth or gateway config state.
+3. Re-run a small `labby --json gateway code exec --code 'async () => 1'`
+   smoke to repopulate the cache.
+
+### Snippet Caveats
+
+Built-in and user snippets merge their declared input before execution. A
+missing snippet returns `snippet_not_found`; malformed input returns
+`invalid_param` or `validation_failed`. Snippets do not bypass route scope,
+schema validation, response caps, or destructive-tool permission checks.
+
+### Rollback
+
+To roll back Code Mode behavior quickly:
+
+1. Disable Code Mode in config or route the affected MCP clients away from the
+   gateway instance.
+2. Restart the gateway service so runner pools and in-memory catalog state are
+   dropped.
+3. Re-enable only after `labby doctor`, `labby gateway list`, and a one-line
+   `gateway code exec` smoke pass.
+
 ## Device Runtime Operations
 
 In the current Linux `x86_64` v1 target, every supported fleet member runs `labby serve` as a node runtime.

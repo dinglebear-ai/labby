@@ -200,13 +200,7 @@ pub(crate) async fn run_git(workspace_root: &Path, args: &[String]) -> Result<St
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    let result = tokio::time::timeout(Duration::from_secs(10), run_capped_command(command))
-        .await
-        .map_err(|_| ToolError::Sdk {
-            sdk_kind: "timeout".to_string(),
-            message: "git command timed out".to_string(),
-        })?;
-    let output = result?;
+    let output = run_capped_command(command).await?;
 
     if output.stdout_truncated {
         return Err(git_output_too_large(MAX_GIT_STDOUT_BYTES, "stdout"));
@@ -256,9 +250,32 @@ async fn run_capped_command(mut command: Command) -> Result<CappedGitOutput, Too
     let mut stderr_task = tokio::spawn(read_capped_pipe(stderr, MAX_GIT_STDERR_BYTES));
     let mut stdout_result = None;
     let mut stderr_result = None;
+    let mut status_result = None;
+    let deadline = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(deadline);
 
-    while stdout_result.is_none() || stderr_result.is_none() {
+    while stdout_result.is_none() || stderr_result.is_none() || status_result.is_none() {
         tokio::select! {
+            () = &mut deadline => {
+                drop(child.start_kill());
+                drop(child.wait().await);
+                if stdout_result.is_none() {
+                    drop((&mut stdout_task).await);
+                }
+                if stderr_result.is_none() {
+                    drop((&mut stderr_task).await);
+                }
+                return Err(ToolError::Sdk {
+                    sdk_kind: "timeout".to_string(),
+                    message: "git command timed out".to_string(),
+                });
+            }
+            status = child.wait(), if status_result.is_none() => {
+                status_result = Some(status.map_err(|err| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: format!("failed to wait for git: {err}"),
+                })?);
+            }
             result = &mut stdout_task, if stdout_result.is_none() => {
                 let pipe = join_capped_pipe(result)?;
                 if pipe.truncated {
@@ -276,12 +293,8 @@ async fn run_capped_command(mut command: Command) -> Result<CappedGitOutput, Too
         }
     }
 
-    let status = child.wait().await.map_err(|err| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("failed to wait for git: {err}"),
-    })?;
     Ok(CappedGitOutput {
-        status,
+        status: status_result.expect("status result set"),
         stdout: stdout_result
             .as_ref()
             .expect("stdout result set")
