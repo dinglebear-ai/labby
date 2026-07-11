@@ -489,6 +489,7 @@ Canonical error kinds:
 | --- | --- | --- |
 | `missing_param` | Fix and retry | Required input was absent. |
 | `invalid_param` | Fix and retry | Input shape or type is invalid, including non-object upstream params. |
+| `invalid_code_mode_id` | Fix and retry | Code Mode tool id parsing failed; valid ids are `<upstream-name>::<tool-name>` only. |
 | `validation_failed` | Fix and retry | Nested schema validation failed. |
 | `unknown_tool` | Fix and retry | Tool id is unknown or outside this run's route scope. |
 | `unknown_action` / `unknown_subaction` | Fix and retry | Action id is not exposed by the upstream dispatcher. |

@@ -651,25 +651,19 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
             timeout_seconds,
             yes,
         } => {
-            let ssh_config = ssh_config.unwrap_or_else(default_ssh_config_path);
-            let install_config = should_install_incus_ssh_config(
-                install_config,
-                no_install_config,
-                &include,
-                &exclude,
-            );
-            let options = crate::dispatch::setup::incus::IncusSshBootstrapOptions {
+            let options = incus_ssh_options(
                 container,
                 user,
                 ssh_config,
                 key_path,
-                dry_run,
                 fail_fast,
                 include,
                 exclude,
                 install_config,
+                no_install_config,
+                dry_run,
                 timeout_seconds,
-            };
+            );
             let plan = crate::dispatch::setup::incus::incus_ssh_bootstrap_plan(&options)?;
             if format.is_json() {
                 if dry_run {
@@ -684,6 +678,12 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
                 for step in &plan.steps {
                     println!("  - {step}");
                 }
+                print_incus_ssh_skips(
+                    &plan.skipped_unsafe,
+                    &plan.unsupported_include,
+                    &plan.skipped_excluded,
+                    &plan.skipped_not_included,
+                );
             }
             if dry_run {
                 return Ok(());
@@ -702,6 +702,12 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
                 if outcome.config_installed {
                     println!("installed sanitized SSH config in container");
                 }
+                print_incus_ssh_skips(
+                    &outcome.skipped_unsafe,
+                    &outcome.unsupported_include,
+                    &outcome.skipped_excluded,
+                    &outcome.skipped_not_included,
+                );
                 for failure in &outcome.failed {
                     println!("  failed: {} - {}", failure.target, failure.error);
                 }
@@ -720,25 +726,19 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
             no_install_config,
             timeout_seconds,
         } => {
-            let ssh_config = ssh_config.unwrap_or_else(default_ssh_config_path);
-            let install_config = should_install_incus_ssh_config(
-                install_config,
-                no_install_config,
-                &include,
-                &exclude,
-            );
-            let options = crate::dispatch::setup::incus::IncusSshBootstrapOptions {
+            let options = incus_ssh_options(
                 container,
                 user,
                 ssh_config,
                 key_path,
-                dry_run: false,
                 fail_fast,
                 include,
                 exclude,
                 install_config,
+                no_install_config,
+                false,
                 timeout_seconds,
-            };
+            );
             let outcome = crate::dispatch::setup::incus::incus_ssh_verify(&options)?;
             if format.is_json() {
                 print(&serde_json::to_value(outcome)?, format)?;
@@ -749,6 +749,12 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
                     outcome.container,
                     outcome.failed.len()
                 );
+                print_incus_ssh_skips(
+                    &outcome.skipped_unsafe,
+                    &outcome.unsupported_include,
+                    &outcome.skipped_excluded,
+                    &outcome.skipped_not_included,
+                );
                 for failure in &outcome.failed {
                     println!("  failed: {} - {}", failure.target, failure.error);
                 }
@@ -756,6 +762,56 @@ async fn run_incus_ssh_command(args: IncusSshArgs, format: OutputFormat) -> Resu
         }
     }
     Ok(())
+}
+
+fn incus_ssh_options(
+    container: String,
+    user: String,
+    ssh_config: Option<PathBuf>,
+    key_path: String,
+    fail_fast: bool,
+    include: Vec<String>,
+    exclude: Vec<String>,
+    install_config: bool,
+    no_install_config: bool,
+    dry_run: bool,
+    timeout_seconds: u64,
+) -> crate::dispatch::setup::incus::IncusSshBootstrapOptions {
+    let ssh_config = ssh_config.unwrap_or_else(default_ssh_config_path);
+    let install_config =
+        should_install_incus_ssh_config(install_config, no_install_config, &include, &exclude);
+    crate::dispatch::setup::incus::IncusSshBootstrapOptions {
+        container,
+        user,
+        ssh_config,
+        key_path,
+        dry_run,
+        fail_fast,
+        include,
+        exclude,
+        install_config,
+        timeout_seconds,
+    }
+}
+
+fn print_incus_ssh_skips(
+    skipped_unsafe: &[String],
+    unsupported_include: &[String],
+    skipped_excluded: &[String],
+    skipped_not_included: &[String],
+) {
+    for alias in skipped_unsafe {
+        println!("  skipped unsafe SSH host alias: {alias}");
+    }
+    for include in unsupported_include {
+        println!("  unsupported SSH Include ignored: {include}");
+    }
+    for alias in skipped_excluded {
+        println!("  skipped excluded SSH host: {alias}");
+    }
+    for alias in skipped_not_included {
+        println!("  skipped non-included SSH host: {alias}");
+    }
 }
 
 async fn run_incus_backup_command(args: IncusBackupArgs, format: OutputFormat) -> Result<()> {
