@@ -172,15 +172,18 @@ The top-level discovery resource is:
 
 Code Mode also exposes MCP App UI resources:
 
-- `ui://lab/code-mode/search`
-- `ui://lab/code-mode/execute`
+- `ui://lab/code-mode/codemode`
 - `ui://lab/code-mode/history`
 
-These resources return `text/html;profile=mcp-app` and locked-down resource
-metadata for MCP Apps-capable hosts. `ui://` resource reads are handled before
-the local `lab://` discovery fallback so UI resources have exact lookup
-semantics. The Code Mode `ui://` response is self-contained HTML; browser/static
-build verification for the richer Next route lives under
+These listed resources return `text/html;profile=mcp-app` and locked-down
+resource metadata for MCP Apps-capable hosts. The `codemode` tool also
+advertises the OpenAI Apps output template at
+`ui://lab/code-mode/codemode.skybridge`, served as `text/html+skybridge`; that
+skybridge resource is reached through tool metadata, not `resources/list`.
+`ui://` resource reads are handled before the local `lab://` discovery fallback
+so UI resources have exact lookup semantics. The Code Mode `ui://` response is
+self-contained HTML; browser/static build verification for the richer Next route
+lives under
 `apps/gateway-admin/app/mcp/code-mode/`.
 The history resource is process-local inspection state, not a durable audit log
 or a hard quota guarantee.
@@ -245,10 +248,9 @@ payloads, and raw tool params never leave the broker boundary. If
 `code_mode.trace_params = false`, params are omitted from traces entirely.
 
 When Code Mode mode advertises synthetic `codemode`, only that tool definition
-includes canonical nested `_meta.ui.resourceUri` metadata. Lab
-does not add flat compatibility aliases such as `_meta["openai/outputTemplate"]`
-without host evidence. The v1 MCP App is read-only and does not initiate tools
-from the iframe.
+includes canonical `_meta.ui.resourceUri` metadata for MCP Apps and
+`openai/outputTemplate` metadata for OpenAI Apps. The v1 MCP App is read-only
+and does not initiate tools from the iframe.
 
 ## Prompt Templates
 
@@ -374,12 +376,36 @@ elicitation when the client supports it. If elicitation is unavailable, callers
 must pass `params.confirm: true`; otherwise the dispatcher returns
 `confirmation_required`.
 
+Destructive elicitation waits are bounded. The default deadline is 120 seconds;
+operators can set `[mcp].destructive_elicitation_timeout_ms` or
+`LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS` to any value from `1` through
+`600000` milliseconds. A timeout is returned as `confirmation_required`; callers
+can retry when ready to confirm.
+
+Catalog-change notifications are bounded independently. Labby notifies MCP
+peers concurrently and waits up to 5 seconds per peer by default. Operators can
+set `[mcp].catalog_notification_timeout_ms` or
+`LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS` to any value from `1` through
+`60000` milliseconds. Timed-out peers are pruned so one stuck client cannot
+stall tool/resource/prompt refresh notifications for other sessions.
+
 Prompts must include:
 
 - service
 - action
 - key params
 - plain-language risk description
+
+## Upstream Relay
+
+Gateway-proxied upstream tool calls normally use the pooled upstream connection.
+When an upstream tool can raise server-to-client requests during a tool call,
+operators can opt into a dedicated relay connection by setting
+`LABBY_UPSTREAM_RELAY_ENABLED=1`. The relay forwards upstream elicitation,
+sampling, and roots requests to the downstream MCP client when that client
+advertises the corresponding capability. The older
+`LABBY_UPSTREAM_RELAY_ELICITATION=1` flag is still accepted for backward
+compatibility, but new deployments should use `LABBY_UPSTREAM_RELAY_ENABLED`.
 
 ## Registry
 

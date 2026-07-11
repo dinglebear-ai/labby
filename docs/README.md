@@ -19,7 +19,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [acp/README.md](./acp/README.md) for ACP service architecture, the `acp` vs `chat` boundary, and gateway integration direction.
 - Use [acp/design.md](./acp/design.md) for ACP design details and [acp/research-findings.md](./acp/research-findings.md) for the supporting research notes.
 - Use [coverage/README.md](./coverage/README.md), [upstream-api/README.md](./upstream-api/README.md), [generated/README.md](./generated/README.md), and [features/README.md](./features/README.md) for directory-level indexes.
-- Use [MCPREGISTRY_METADATA.md](./services/MCPREGISTRY_METADATA.md) for Lab-owned registry metadata layered onto the mirrored MCP Registry surface.
+- Use [MCPREGISTRY_METADATA.md](./services/MCPREGISTRY_METADATA.md) for the SDK/extracted-service Lab-owned registry metadata contract layered onto MCP Registry response `_meta`.
 - Use [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md) and [DEPLOY.md](./runtime/DEPLOY.md) for the master/non-master fleet runtime, device inventory, and deployment model.
 - Use [MONITORS.md](./services/MONITORS.md) for Claude Code monitor definitions (`plugins/monitors/monitors.json`) and the `labby deploy monitor` command.
 - See [UPSTREAM.md](./services/UPSTREAM.md) for upstream MCP gateway setup, configuration, tool merging, circuit breaker behavior, and resource proxying.
@@ -30,7 +30,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [DISPATCH.md](./dev/DISPATCH.md) for the shared surface-neutral dispatch-layer contract and dependency rules.
 - Use [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md) for the current status of the older service-layer migration plan.
 - Use [SERVICE_ONBOARDING.md](./dev/SERVICE_ONBOARDING.md) when you are bringing a new service online end to end.
-- Use [SCAFFOLD_AND_AUDIT.md](./dev/SCAFFOLD_AND_AUDIT.md) for the deferred scaffold/audit command contract, [DEPLOY_SERVICE.md](./runtime/DEPLOY_SERVICE.md) for deploy-service actions, and [FLEET_METHODS.md](./runtime/FLEET_METHODS.md) for fleet WebSocket methods.
+- Use [SCAFFOLD_AND_AUDIT.md](./dev/SCAFFOLD_AND_AUDIT.md) for the deferred scaffold/audit command contract. [DEPLOY_SERVICE.md](./runtime/DEPLOY_SERVICE.md) and [FLEET_METHODS.md](./runtime/FLEET_METHODS.md) are historical/extracted-surface references, not current slim Labby gateway-host product surfaces.
 
 ## Reading Paths
 
@@ -106,7 +106,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - [acp/research-findings.md](./acp/research-findings.md)
   ACP supporting research findings.
 - [MCPREGISTRY_METADATA.md](./services/MCPREGISTRY_METADATA.md)
-  Lab-owned metadata layered onto mirrored MCP Registry entries: contract, validation, audit fields, filters, CLI, and UI behavior.
+  Lab-owned metadata layered onto mirrored MCP Registry entries: SDK/extracted-service contract, validation, audit fields, filters, and wire shape.
 - [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md)
   Master/non-master runtime roles, `/v1/nodes/*`, AI CLI inventory upload, queueing, and device OAuth relay.
 - [NODES.md](./runtime/NODES.md)
@@ -118,7 +118,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - [DEPLOY.md](./runtime/DEPLOY.md)
   Device-runtime deployment model for master and non-master machines.
 - [DEPLOY_SERVICE.md](./runtime/DEPLOY_SERVICE.md)
-  Deploy service action/API contract.
+  Historical deploy service action/API contract retained for extracted/runtime reference.
 - [MONITORS.md](./services/MONITORS.md)
   Claude Code monitor definitions and `labby deploy monitor`.
 - [UPSTREAM.md](./services/UPSTREAM.md)
@@ -221,9 +221,9 @@ Use the smallest correct doc:
 - serialization and output-shape rules: [design/SERIALIZATION.md](./design/SERIALIZATION.md)
 - dispatch-layer ownership and adapter rules: [DISPATCH.md](./dev/DISPATCH.md)
 - service-layer migration execution plan: [SERVICE_LAYER_MIGRATION.md](./dev/SERVICE_LAYER_MIGRATION.md)
-- stash versioning service and provider sync model: [STASH.md](./services/STASH.md)
-- marketplace service and plugin workspace flows: [MARKETPLACE.md](./services/MARKETPLACE.md)
-- deploy-service actions: [DEPLOY_SERVICE.md](./runtime/DEPLOY_SERVICE.md)
+- retired/extracted stash versioning service and provider sync model: [STASH.md](./services/STASH.md)
+- retired/extracted marketplace service and plugin workspace flows: [MARKETPLACE.md](./services/MARKETPLACE.md)
+- retired/extracted deploy-service actions: [DEPLOY_SERVICE.md](./runtime/DEPLOY_SERVICE.md)
 - node CLI/API behavior: [NODES.md](./runtime/NODES.md)
 - fleet WebSocket methods: [FLEET_METHODS.md](./runtime/FLEET_METHODS.md)
 - env examples: [ENV.md](./runtime/ENV.md)

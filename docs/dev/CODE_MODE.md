@@ -436,9 +436,9 @@ Semantics:
 ### Widget → host callbacks
 
 While the synthetic `codemode` surface is active, raw upstream tools stay hidden
-from `list_tools`. Compatibility `search` and `execute` remain listed during the
-migration window. MCP App tools that carry `_meta.ui.resourceUri` may still be
-advertised so the host can render the widget.
+from `list_tools`; the public Code Mode MCP surface is the single `codemode`
+tool. MCP App tools that carry `_meta.ui.resourceUri` may still be advertised so
+the host can render the widget.
 
 A rendered MCP App can call back to its server only through host
 `callServerTool` / `tools/call`. Lab allows those callback calls through Code

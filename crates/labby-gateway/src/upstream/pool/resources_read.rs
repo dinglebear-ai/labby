@@ -78,6 +78,14 @@ impl UpstreamPool {
         &self,
         uri: &str,
     ) -> Option<Result<ReadResourceResult, String>> {
+        self.read_upstream_ui_resource_allowed(uri, None).await
+    }
+
+    pub async fn read_upstream_ui_resource_allowed(
+        &self,
+        uri: &str,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Option<Result<ReadResourceResult, String>> {
         let start = Instant::now();
         let redacted_uri = redact_resource_uri_for_logging(uri);
 
@@ -89,8 +97,9 @@ impl UpstreamPool {
             let catalog = self.catalog.read().await;
             catalog
                 .iter()
-                .find(|(_, entry)| {
-                    entry.resource_health.is_routable()
+                .find(|(name, entry)| {
+                    allowed.is_none_or(|allowed| allowed.contains(name.as_str()))
+                        && entry.resource_health.is_routable()
                         && entry.resource_uris.iter().any(|cached| cached == uri)
                 })
                 .map(|(name, _)| name.clone())
@@ -99,6 +108,7 @@ impl UpstreamPool {
         let (upstream_name, resolution) = if let Some(name) = cached_owner {
             (name, "cached_resource_uri")
         } else if let Some(name) = ui_uri_authority(uri)
+            && allowed.is_none_or(|allowed| allowed.contains(name))
             && self.catalog.read().await.contains_key(name)
         {
             (name.to_string(), "uri_authority")
@@ -593,5 +603,153 @@ mod tests {
             }
             other => panic!("expected text contents, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn read_upstream_ui_resource_allowed_denies_hidden_owner_before_forwarding() {
+        use std::collections::{BTreeSet, HashMap};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use rmcp::model::{
+            ErrorData, ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+        };
+        use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
+
+        use super::super::super::types::UpstreamRuntimeMetadata;
+        use super::super::entries::healthy_in_process_entry;
+        use super::super::helpers::IN_PROCESS_PEER_BUFFER_BYTES;
+        use super::super::{UpstreamConnection, UpstreamPool};
+
+        const HIDDEN_URI: &str = "ui://hidden-upstream/app.html";
+        const ALLOWED_URI: &str = "ui://allowed-upstream/app.html";
+        const WIDGET_HTML: &str = "<html><body>dashboard</body></html>";
+
+        #[derive(Clone)]
+        struct CountingUiResourceServer {
+            reads: Arc<AtomicUsize>,
+        }
+
+        impl ServerHandler for CountingUiResourceServer {
+            fn get_info(&self) -> ServerInfo {
+                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            }
+
+            async fn read_resource(
+                &self,
+                params: rmcp::model::ReadResourceRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<ReadResourceResult, ErrorData> {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                Ok(ReadResourceResult::new(vec![
+                    ResourceContents::text(WIDGET_HTML, params.uri)
+                        .with_mime_type("text/html;profile=mcp-app"),
+                ]))
+            }
+        }
+
+        async fn install_ui_upstream(
+            pool: &Arc<UpstreamPool>,
+            upstream_name: &str,
+            widget_uri: &str,
+            reads: Arc<AtomicUsize>,
+        ) {
+            let (server_transport, client_transport) =
+                tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+            let server = CountingUiResourceServer { reads };
+            let server_task = tokio::spawn(async move {
+                let running = server
+                    .serve(server_transport)
+                    .await
+                    .expect("ui resource server starts");
+                running.waiting().await.ok();
+            });
+            let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+                .serve(client_transport)
+                .await
+                .expect("ui resource client starts");
+            let peer = client_service.peer().clone();
+            let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+            let mut entry =
+                healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new());
+            entry.resource_count = 1;
+            entry.resource_uris = vec![widget_uri.to_string()];
+            pool.catalog
+                .write()
+                .await
+                .insert(upstream_name.to_string(), entry);
+            pool.connections.write().await.insert(
+                upstream_name.to_string(),
+                UpstreamConnection {
+                    _client_service: client_service,
+                    _server_task: Some(server_task),
+                    peer,
+                    runtime: UpstreamRuntimeMetadata::default(),
+                },
+            );
+        }
+
+        let pool = Arc::new(UpstreamPool::new());
+        let hidden_reads = Arc::new(AtomicUsize::new(0));
+        let allowed_reads = Arc::new(AtomicUsize::new(0));
+        install_ui_upstream(
+            &pool,
+            "hidden-upstream",
+            HIDDEN_URI,
+            Arc::clone(&hidden_reads),
+        )
+        .await;
+        install_ui_upstream(
+            &pool,
+            "allowed-upstream",
+            ALLOWED_URI,
+            Arc::clone(&allowed_reads),
+        )
+        .await;
+        pool.catalog
+            .write()
+            .await
+            .get_mut("hidden-upstream")
+            .expect("hidden upstream")
+            .resource_uris
+            .push(ALLOWED_URI.to_string());
+
+        let allowed = BTreeSet::from(["allowed-upstream".to_string()]);
+
+        assert!(
+            pool.read_upstream_ui_resource_allowed(HIDDEN_URI, Some(&allowed))
+                .await
+                .is_none(),
+            "hidden upstream UI resource should be denied"
+        );
+        assert_eq!(
+            hidden_reads.load(Ordering::SeqCst),
+            0,
+            "hidden upstream must be denied before forwarding"
+        );
+
+        let result = pool
+            .read_upstream_ui_resource_allowed(ALLOWED_URI, Some(&allowed))
+            .await
+            .expect("allowed upstream owns the ui:// resource")
+            .expect("allowed upstream read succeeds");
+        let contents = result.contents.first().expect("one content block");
+        match contents {
+            ResourceContents::TextResourceContents { text, uri, .. } => {
+                assert_eq!(text, WIDGET_HTML);
+                assert_eq!(uri, ALLOWED_URI);
+            }
+            other => panic!("expected text contents, got {other:?}"),
+        }
+        assert_eq!(
+            allowed_reads.load(Ordering::SeqCst),
+            1,
+            "allowed upstream should still be forwarded"
+        );
+        assert_eq!(
+            hidden_reads.load(Ordering::SeqCst),
+            0,
+            "hidden upstream must not win a cached-resource URI collision"
+        );
     }
 }

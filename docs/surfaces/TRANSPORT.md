@@ -41,6 +41,9 @@ labby serve --services gateway,marketplace
 | `LABBY_MCP_SESSION_TTL_SECS` | `300` | Session keep-alive TTL in seconds. |
 | `LABBY_MCP_STATEFUL` | `true` | Whether to use stateful MCP sessions. |
 | `LABBY_MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames for DNS rebinding protection. |
+| `LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS` | `120000` | Deadline for destructive-action MCP confirmation prompts. |
+| `LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS` | `5000` | Per-peer deadline for MCP catalog-change notifications. |
+| `LABBY_UPSTREAM_RELAY_ENABLED` | unset | Opt into upstream server-to-client request relay for proxied tool calls. Legacy alias: `LABBY_UPSTREAM_RELAY_ELICITATION`. |
 | `LABBY_PUBLIC_URL` | — | Public URL of this lab instance. Its host is added to the allowed-host list in OAuth mode. |
 | `LABBY_CORS_ORIGINS` | — | Comma-separated CORS origin allowlist. |
 | `LABBY_WEB_ASSETS_DIR` | auto-detect | Optional path to exported Labby assets served by `labby serve`. |
@@ -52,6 +55,8 @@ Config TOML equivalents (env vars take precedence):
 transport = "http"
 host = "127.0.0.1"
 port = 8765
+destructive_elicitation_timeout_ms = 120000
+catalog_notification_timeout_ms = 5000
 
 [web]
 assets_dir = "/path/to/labby/out"

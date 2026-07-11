@@ -7,3 +7,5 @@
 
 #[cfg(feature = "fs")]
 pub mod fs;
+#[cfg(feature = "gateway")]
+pub mod snippets;

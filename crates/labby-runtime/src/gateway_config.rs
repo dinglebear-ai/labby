@@ -838,6 +838,12 @@ pub enum ConfigError {
     InvalidUpstreamRequestTimeout { value: u64 },
     #[error("gateway upstream_relay_timeout_ms={value} is invalid — expected 1..=1800000")]
     InvalidUpstreamRelayTimeout { value: u64 },
+    #[error(
+        "gateway mcp.destructive_elicitation_timeout_ms={value} is invalid — expected 1..=600000"
+    )]
+    InvalidDestructiveElicitationTimeout { value: u64 },
+    #[error("gateway mcp.catalog_notification_timeout_ms={value} is invalid — expected 1..=60000")]
+    InvalidCatalogNotificationTimeout { value: u64 },
     #[error("protected MCP route '{name}' has invalid {field}: {value}")]
     InvalidProtectedRoute {
         name: String,

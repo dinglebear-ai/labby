@@ -66,7 +66,7 @@ use rmcp::model::{
 use rmcp::model::SetLevelRequestParams;
 #[allow(deprecated)]
 use rmcp::model::{CreateMessageRequestParams, CreateMessageResult, ListRootsResult};
-use rmcp::service::{NotificationContext, Peer, RequestContext, RunningService};
+use rmcp::service::{NotificationContext, Peer, RequestContext, RunningService, ServiceError};
 use rmcp::{ClientHandler, ErrorData, RoleClient, RoleServer, ServerHandler};
 use tokio::sync::OnceCell;
 
@@ -212,16 +212,28 @@ impl BridgeServerHandler {
     }
 }
 
-fn bridge_error(action: &str, error: impl std::fmt::Display) -> ErrorData {
+fn bridge_error(action: &str, error: ServiceError) -> ErrorData {
+    if let ServiceError::McpError(error) = error {
+        tracing::warn!(
+            surface = "mcp",
+            service = "labby",
+            action = format!("bridge.{action}"),
+            subsystem = "mcp_bridge",
+            error_code = error.code.0,
+            "bridged request to live daemon failed"
+        );
+        return error;
+    }
+
     tracing::warn!(
         surface = "mcp",
         service = "labby",
         action = format!("bridge.{action}"),
         subsystem = "mcp_bridge",
-        error = %error,
+        error_kind = "bridge_transport_error",
         "bridged request to live daemon failed"
     );
-    ErrorData::internal_error(format!("live daemon request failed: {error}"), None)
+    ErrorData::internal_error("live daemon request failed", None)
 }
 
 /// The live daemon replied to a raw `send_request` with a `ServerResult`
@@ -230,7 +242,15 @@ fn bridge_error(action: &str, error: impl std::fmt::Display) -> ErrorData {
 /// practice; only reachable if the daemon itself violates the SEP-1319
 /// contract.
 fn unexpected_response(action: &str) -> ErrorData {
-    bridge_error(action, "live daemon returned an unexpected result type")
+    tracing::warn!(
+        surface = "mcp",
+        service = "labby",
+        action = format!("bridge.{action}"),
+        subsystem = "mcp_bridge",
+        error_kind = "unexpected_response",
+        "live daemon returned an unexpected result type"
+    );
+    ErrorData::internal_error("live daemon returned an unexpected result type", None)
 }
 
 impl ServerHandler for BridgeServerHandler {
@@ -654,6 +674,7 @@ mod tests {
     };
     use rmcp::service::{RequestContext, RunningService};
     use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
+    use serde_json::json;
 
     use super::*;
 
@@ -662,6 +683,23 @@ mod tests {
     /// Canonical fake task id, asserted verbatim end-to-end to prove the
     /// data actually crossed both hops rather than being stubbed locally.
     const FAKE_TASK_ID: &str = "fake-task-42";
+
+    #[test]
+    fn bridge_error_preserves_daemon_mcp_error_code_message_and_data() {
+        let daemon_error = ErrorData::invalid_params(
+            "missing required parameter `query`",
+            Some(json!({
+                "kind": "missing_param",
+                "param": "query"
+            })),
+        );
+
+        let bridged = bridge_error("call_tool", ServiceError::McpError(daemon_error.clone()));
+
+        assert_eq!(bridged.code, daemon_error.code);
+        assert_eq!(bridged.message, daemon_error.message);
+        assert_eq!(bridged.data, daemon_error.data);
+    }
 
     fn fake_task() -> Task {
         Task::new(

@@ -332,7 +332,6 @@ pub enum IncusSshCommand {
         timeout_seconds: u64,
     },
 }
-
 #[derive(Debug, Subcommand)]
 pub enum IncusBackupCommand {
     /// Validate a backup policy YAML without mutating Incus.

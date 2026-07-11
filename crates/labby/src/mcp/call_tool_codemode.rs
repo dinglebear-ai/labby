@@ -7,7 +7,7 @@
 //! `string_array_arg`.
 //!
 //! This branch logs via `tracing` directly (not `emit_dispatch_notification`)
-//! and fires `notify_catalog_changes` around the broker call.
+//! and fires lightweight catalog-change detection around the broker call.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -375,7 +375,7 @@ impl LabMcpServer {
         });
 
         let broker = CodeModeBroker::new(Some(manager.as_ref()));
-        let before = self.snapshot_catalog().await;
+        let before = self.snapshot_tool_catalog().await;
         let mut response = match broker
             .execute(
                 code,
@@ -387,13 +387,15 @@ impl LabMcpServer {
             .await
         {
             Ok(response) => {
-                let after = self.snapshot_catalog().await;
-                self.notify_catalog_changes(&before, &after).await;
+                let after = self.snapshot_tool_catalog().await;
+                self.notify_catalog_changes(after.changes_since(&before))
+                    .await;
                 response
             }
             Err(err) => {
-                let after = self.snapshot_catalog().await;
-                self.notify_catalog_changes(&before, &after).await;
+                let after = self.snapshot_tool_catalog().await;
+                self.notify_catalog_changes(after.changes_since(&before))
+                    .await;
                 let calls = err.calls().to_vec();
                 let code_mode_calls = code_mode_call_metrics_json(&calls);
                 let error_kind = err.kind().to_string();

@@ -486,11 +486,25 @@ impl UpstreamPool {
     /// (e.g. `snapshot_catalog` change-detection): avoids deep-cloning every
     /// tool schema just to extract the name field.
     pub async fn healthy_tool_names(&self) -> Vec<String> {
+        self.healthy_tool_names_allowed(None).await
+    }
+
+    /// Return just the names of healthy exposed upstream tools allowed by a
+    /// route scope.
+    ///
+    /// This is the lightweight counterpart to `healthy_tools_allowed`: it uses
+    /// the same exposure, health, and global cap rules without cloning schemas.
+    pub async fn healthy_tool_names_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<String> {
         let catalog = self.catalog.read().await;
         let mut names: Vec<String> = catalog
-            .values()
-            .filter(|entry| entry.tool_health.is_routable())
-            .flat_map(|entry| {
+            .iter()
+            .filter(|(name, entry)| {
+                upstream_allowed(allowed, name) && entry.tool_health.is_routable()
+            })
+            .flat_map(|(_, entry)| {
                 entry.tools.values().filter_map(|tool| {
                     entry
                         .exposure_policy
@@ -519,6 +533,7 @@ pub fn tool_has_mcp_app_ui_resource(tool: &UpstreamTool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::Arc;
 
     use rmcp::model::Meta;
@@ -797,6 +812,34 @@ mod tests {
             result.len(),
             MAX_UPSTREAM_TOOLS,
             "healthy_tools() must not truncate exactly MAX_UPSTREAM_TOOLS tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn healthy_tool_names_allowed_matches_route_and_exposure_filters() {
+        let pool = UpstreamPool::new();
+        let allowed_name: Arc<str> = Arc::from("allowed");
+        let denied_name: Arc<str> = Arc::from("denied");
+
+        let allowed_tools = test_upstream_tools(&allowed_name, &["visible", "hidden"]);
+        let mut allowed_entry = healthy_in_process_entry(Arc::clone(&allowed_name), allowed_tools);
+        allowed_entry.exposure_policy =
+            ToolExposurePolicy::from_patterns(vec!["visible".to_string()]).expect("policy");
+        pool.catalog
+            .write()
+            .await
+            .insert("allowed".to_string(), allowed_entry);
+
+        let denied_tools = test_upstream_tools(&denied_name, &["denied_tool"]);
+        pool.catalog.write().await.insert(
+            "denied".to_string(),
+            healthy_in_process_entry(Arc::clone(&denied_name), denied_tools),
+        );
+
+        let allowed = BTreeSet::from(["allowed".to_string()]);
+        assert_eq!(
+            pool.healthy_tool_names_allowed(Some(&allowed)).await,
+            vec!["visible".to_string()]
         );
     }
 }
