@@ -13,7 +13,6 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-#[cfg(feature = "gateway")]
 use rmcp::model::Meta;
 use rmcp::model::{ListToolsResult, PaginatedRequestParams, Tool};
 use rmcp::service::RequestContext;
@@ -23,6 +22,7 @@ use serde_json::Value;
 use crate::mcp::call_tool_codemode::{CodeModeUpstreamDescription, code_mode_description};
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
+use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 use crate::mcp::completion::action_schema;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::auth_context_from_extensions;
@@ -31,6 +31,10 @@ use crate::mcp::context::oauth_upstream_subject_for_request;
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::{
     code_mode_app_resource_uri_for_tool, code_mode_app_skybridge_uri_for_tool,
+};
+use crate::mcp::handlers_resources::{
+    server_logs_app_resource_uri_for_tool, server_logs_app_resources_visible,
+    server_logs_app_skybridge_uri_for_tool,
 };
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
@@ -101,17 +105,33 @@ impl LabMcpServer {
         let visibility_mode = visibility.mode_label();
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
+        let server_logs_app_visible = {
+            #[cfg(feature = "gateway")]
+            {
+                server_logs_app_resources_visible(auth)
+            }
+            #[cfg(not(feature = "gateway"))]
+            {
+                true
+            }
+        };
         let mut builtin_names = Vec::new();
         for svc in self.registry.services() {
             if self.route_scope.allows_service(svc.name)
                 && self.service_visible_on_mcp(svc.name).await
             {
                 builtin_names.push(svc.name);
-                if hide_raw_tools {
+                if hide_raw_tools && svc.name != SERVER_LOGS_TOOL_NAME {
                     suppressed_builtin_tool_count += 1;
                 } else {
                     advertised_names.insert(svc.name.to_string());
-                    tools.accept(Tool::new(svc.name, svc.description, Arc::clone(&schema)));
+                    let tool = Tool::new(svc.name, svc.description, Arc::clone(&schema));
+                    let tool = if svc.name == SERVER_LOGS_TOOL_NAME && server_logs_app_visible {
+                        tool.with_meta(server_logs_tool_meta(svc.name))
+                    } else {
+                        tool
+                    };
+                    tools.accept(tool);
                     builtin_tool_count += 1;
                     if tools.finished() {
                         break;
@@ -371,6 +391,25 @@ fn code_mode_tool_meta(tool_name: &str) -> Meta {
     // `text/html+skybridge` MIME those hosts expect — so the Claude resource
     // stays untouched. The widget self-hydrates from `window.openai.toolOutput`.
     if let Some(skybridge_uri) = code_mode_app_skybridge_uri_for_tool(tool_name) {
+        meta.insert(
+            "openai/outputTemplate".to_string(),
+            serde_json::json!(skybridge_uri),
+        );
+    }
+    Meta(meta)
+}
+
+fn server_logs_tool_meta(tool_name: &str) -> Meta {
+    let resource_uri = server_logs_app_resource_uri_for_tool(tool_name)
+        .expect("server log tools must have an associated UI resource");
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "ui".to_string(),
+        serde_json::json!({
+            "resourceUri": resource_uri,
+        }),
+    );
+    if let Some(skybridge_uri) = server_logs_app_skybridge_uri_for_tool(tool_name) {
         meta.insert(
             "openai/outputTemplate".to_string(),
             serde_json::json!(skybridge_uri),

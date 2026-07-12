@@ -73,6 +73,7 @@ const KNOWN_SERVICES: &[&str] = &[
     "lab_admin",
     "logs",
     "marketplace",
+    "server_logs",
     "setup",
     "snippets",
     "stash",

@@ -9,9 +9,14 @@ use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::dispatch::upstream::types::{
     ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
 };
-use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
-use crate::mcp::handlers_resources::{CODE_MODE_APP_SKYBRIDGE_URI, CODE_MODE_APP_URI};
-use crate::mcp::handlers_tools::{code_mode_tool_meta, code_mode_trace_output_schema};
+use crate::mcp::catalog::{CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
+use crate::mcp::handlers_resources::{
+    CODE_MODE_APP_SKYBRIDGE_URI, CODE_MODE_APP_URI, SERVER_LOGS_APP_SKYBRIDGE_URI,
+    SERVER_LOGS_APP_URI,
+};
+use crate::mcp::handlers_tools::{
+    code_mode_tool_meta, code_mode_trace_output_schema, server_logs_tool_meta,
+};
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
 use crate::registry::{RegisteredService, ToolRegistry};
@@ -330,6 +335,40 @@ async fn call_tool_error_text(server: LabMcpServer, tool_name: &str) -> String {
     result.content[0].as_text().expect("text").text.clone()
 }
 
+#[tokio::test]
+async fn call_tool_server_logs_requires_admin_scope() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new(SERVER_LOGS_TOOL_NAME).with_arguments(
+            serde_json::Map::from_iter([
+                (
+                    "action".to_string(),
+                    Value::String("server_logs.query".to_string()),
+                ),
+                ("params".to_string(), serde_json::json!({})),
+            ]),
+        ),
+        scoped_context(running.peer().clone(), &["lab"]),
+    ))
+    .await
+    .expect("call tool result");
+
+    assert!(result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    assert!(text.contains("\"kind\":\"forbidden\""));
+    assert!(text.contains("lab:admin"));
+}
+
 #[test]
 fn code_mode_tool_meta_points_to_canonical_ui_resource() {
     let codemode = code_mode_tool_meta(CODE_MODE_TOOL_NAME);
@@ -355,6 +394,28 @@ fn code_mode_tool_meta_points_to_canonical_ui_resource() {
         "codemode tool must expose the OpenAI Apps output template"
     );
     assert!(codemode_skybridge.contains("?v="));
+}
+
+#[test]
+fn server_logs_tool_meta_points_to_log_viewer_ui_resource() {
+    let server_logs = server_logs_tool_meta(SERVER_LOGS_TOOL_NAME);
+
+    let ui = server_logs.0["ui"]["resourceUri"]
+        .as_str()
+        .expect("server logs resourceUri");
+    assert!(ui.starts_with(SERVER_LOGS_APP_URI));
+    assert!(ui.contains("?v="));
+
+    let skybridge = server_logs
+        .0
+        .get("openai/outputTemplate")
+        .and_then(|value| value.as_str())
+        .expect("server logs openai/outputTemplate");
+    assert!(
+        skybridge.starts_with(SERVER_LOGS_APP_SKYBRIDGE_URI),
+        "server_logs tool must expose the OpenAI Apps output template"
+    );
+    assert!(skybridge.contains("?v="));
 }
 
 #[test]
@@ -410,6 +471,79 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         .filter_map(|variant| variant["properties"]["kind"]["const"].as_str())
         .collect::<Vec<_>>();
     assert_eq!(kinds, vec!["code_mode_execute_trace"]);
+}
+
+#[tokio::test]
+async fn list_tools_keeps_server_logs_visible_when_code_mode_hides_raw_tools() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .list_tools_impl(None, request_context_with_peer(running.peer().clone()))
+        .await
+        .expect("list tools");
+
+    let tool = result
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == SERVER_LOGS_TOOL_NAME)
+        .expect("server_logs should remain visible as an app-backed operator tool");
+    let meta = tool.meta.as_ref().expect("server_logs meta");
+    assert!(
+        meta.0["ui"]["resourceUri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with(SERVER_LOGS_APP_URI)),
+        "server_logs should advertise MCP app metadata"
+    );
+    assert!(
+        meta.0
+            .get("openai/outputTemplate")
+            .and_then(|value| value.as_str())
+            .is_some_and(|uri| uri.starts_with(SERVER_LOGS_APP_SKYBRIDGE_URI)),
+        "server_logs should advertise ChatGPT output template"
+    );
+}
+
+#[tokio::test]
+async fn list_tools_does_not_advertise_unreadable_server_logs_ui_metadata() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .await
+        .expect("list tools");
+
+    let tool = result
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == SERVER_LOGS_TOOL_NAME)
+        .expect("server_logs action tool remains discoverable");
+    let meta = tool.meta.as_ref().map(|meta| &meta.0);
+    assert!(
+        meta.is_none_or(|meta| {
+            !meta.contains_key("ui") && !meta.contains_key("openai/outputTemplate")
+        }),
+        "server_logs must not advertise MCP App metadata unless the caller can read the admin UI resource"
+    );
 }
 
 #[tokio::test]
