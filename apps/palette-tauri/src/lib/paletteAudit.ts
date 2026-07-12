@@ -1,5 +1,6 @@
 import type { LauncherEntry } from "@/lib/launcherCatalog";
 import type { PaletteResult } from "@/lib/labbyClient";
+import { redactLauncherParams } from "@/lib/launcherValidation";
 
 const STORAGE_KEY = "labby.palette.recentLaunches";
 const MAX_RECENT = 50;
@@ -11,9 +12,10 @@ export interface PaletteLaunchAudit {
   ok: boolean;
   status: number;
   at: string;
+  params?: unknown;
 }
 
-export function recordPaletteLaunch(action: LauncherEntry, result: PaletteResult): void {
+export function recordPaletteLaunch(action: LauncherEntry, params: unknown, result: PaletteResult): void {
   try {
     if (typeof window === "undefined" || !window.localStorage) return;
     const current = readPaletteLaunches();
@@ -24,6 +26,7 @@ export function recordPaletteLaunch(action: LauncherEntry, result: PaletteResult
       ok: result.ok,
       status: result.status,
       at: new Date().toISOString(),
+      params: redactLauncherParams(params),
     };
     window.localStorage.setItem(
       STORAGE_KEY,

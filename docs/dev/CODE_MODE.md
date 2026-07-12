@@ -522,11 +522,15 @@ confirmation or pause step on top of that. Concretely:
 - **CLI:** Code Mode execution is operator-driven and always execute-capable,
   so destructive upstream calls are permitted unconditionally.
 
-Code Mode has **no destructive-call pause/resume/reject mechanism**. There is
-no durable execution log, no `resume_token`, and no `confirm` parameter on the
-`codemode` MCP tool. This is a deliberate, permanent design decision — a caller
-that can invoke `codemode` at all can call destructive tools immediately. Do
-not reintroduce a pause/confirm gate on top of Code Mode dispatch.
+Code Mode persists a **durable, read/replay-only step journal** of every
+`codemode.step(name, fn)` boundary (append-only, owner-scoped, redacted at
+rest). It has **no** `resume_token` and **no** `confirm` parameter on the
+`codemode` MCP tool, and **no** pause/resume/reject mechanism: the journal is
+orthogonal to dispatch and never interrupts, gates, or confirms a running
+snippet. This preserves the permanent decision to remove the destructive-call
+pause gate — the journal is a record, not a gate. A caller that can invoke
+`codemode` at all can call destructive tools immediately. Do not reintroduce a
+pause/confirm gate on top of Code Mode dispatch.
 
 ## Scope
 

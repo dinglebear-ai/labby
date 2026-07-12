@@ -1626,4 +1626,55 @@ mod tests {
             "MCP Apps branch must gate 'connected' on the connect() handshake"
         );
     }
+
+    #[test]
+    fn code_mode_app_html_preserves_expanded_rows_and_uses_available_width() {
+        let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
+
+        assert!(
+            html.contains("data-row-key"),
+            "rows need stable keys so repaint can preserve expanded state"
+        );
+        assert!(
+            html.contains("snapshotExpandedRows"),
+            "paint must snapshot expanded rows before replacing the DOM"
+        );
+        assert!(
+            html.contains("restoreExpandedRows"),
+            "paint must restore expanded rows after replacing the DOM"
+        );
+        assert!(
+            html.contains("max-width:none"),
+            "the ChatGPT app should use the host-provided width"
+        );
+        assert!(
+            !html.contains("max-width:680px"),
+            "the old 680px cap leaves unused space around the inspector"
+        );
+    }
+
+    #[test]
+    fn code_mode_app_html_exposes_debugger_ui_affordances() {
+        let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
+
+        for expected in [
+            "summaryStats",
+            "section(\"Calls\"",
+            "section(\"Request\"",
+            "section(\"Response\"",
+            "row-error",
+            "viewTab(\"pretty\"",
+            "viewTab(\"raw\"",
+            "viewTab(\"shape\"",
+            "rowcopy",
+            "longest",
+            "Run ",
+            "border-radius:10px",
+        ] {
+            assert!(
+                html.contains(expected),
+                "inline app must include debugger UI affordance marker `{expected}`"
+            );
+        }
+    }
 }

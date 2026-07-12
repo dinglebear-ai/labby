@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0](https://github.com/jmagar/labby/compare/v1.1.0...v1.2.0) (2026-07-12)
+
+
+### Added
+
+* **auth:** support explicit HTTPS DCR callback opt-in ([28718bd](https://github.com/jmagar/labby/commit/28718bd422e05b9a62436df84b2a950a13dddeae))
+* **code-mode:** cap inspector body at ~10 rows with internal scroll ([80176d7](https://github.com/jmagar/labby/commit/80176d7eabd7b029685695c944e1c29d018fcbea))
+* **code-mode:** expandable tool rows and host-delivered Input row ([f77778c](https://github.com/jmagar/labby/commit/f77778c608d402b854d5a0ed075f5ba9baa90010))
+* **code-mode:** inspector enrichment batch — failure traces, waterfall, artifacts, UX polish ([bf75ed4](https://github.com/jmagar/labby/commit/bf75ed4ac034b823b7a586da450ba54dc14820ca))
+* **code-mode:** redesign inspector as compact inline widget ([b39faab](https://github.com/jmagar/labby/commit/b39faab4024232139194e0997de3dc0b927d6a4e))
+* **code-mode:** render in-sandbox discovery results in the inspector ([916c1b1](https://github.com/jmagar/labby/commit/916c1b1cd9633a50c0a388d5221ba151b07c8dc3))
+* **codemode:** notebook-as-log durable step journal (v1, lab-d6ke7) ([#230](https://github.com/jmagar/labby/issues/230)) ([7ff89d3](https://github.com/jmagar/labby/commit/7ff89d32c4e0c7b9feb55833f36bca92352c5bb0))
+* enrich code mode inspector app ([58872d5](https://github.com/jmagar/labby/commit/58872d58e97d5e131eff7ee107c130e23877dd93))
+* harden palette production flows ([b11e002](https://github.com/jmagar/labby/commit/b11e00289c4ef3a06eeccae747b327e7e7ff1bef))
+* **incus:** provision rsync, mise, and chezmoi in the labby image ([d3130df](https://github.com/jmagar/labby/commit/d3130df44cef86a17ffcbd78f2ee9c229e4e484f))
+* **incus:** provision rsync, mise, and chezmoi in the labby image ([b80e68f](https://github.com/jmagar/labby/commit/b80e68f516d1ab77d40a36df334ad2d251bd10e9))
+* **palette,incus:** palette launcher service + incus setup CLI ([57550aa](https://github.com/jmagar/labby/commit/57550aa25041b49dae1dc98fb5606e0b4c3f9cca))
+
+
+### Fixed
+
+* address lavra review findings ([c9ed770](https://github.com/jmagar/labby/commit/c9ed770ab137e854be399fdf206c406a0627beb0))
+* align dozzle skill drift env flag ([afa553c](https://github.com/jmagar/labby/commit/afa553c6dedcba0d709dae70d0e7e1b2e78de843))
+* **code-mode:** drop redundant status indicators from the inspector ([018ce79](https://github.com/jmagar/labby/commit/018ce79f1d5a6bdde07444e462c332ee8a90d4ec))
+* harden code mode review findings ([edb2e89](https://github.com/jmagar/labby/commit/edb2e89ff027b25df3d959a6fb07b3041a88d7d1))
+* harden code mode review findings ([4a58cce](https://github.com/jmagar/labby/commit/4a58cce9cb7f7a819bb0bd1360cbd4dd285cf45f))
+* **mcp:** clarify paginated tool list logging ([7d1b5bb](https://github.com/jmagar/labby/commit/7d1b5bbdeb8235b45ecc945f3bb5c8f67ad97cd1))
+* **mcp:** finish pagination collector integration ([2d56246](https://github.com/jmagar/labby/commit/2d56246960da15935013f8d482099e4be9957c8b))
+* **mcp:** preserve pagination cursor errors ([f47455d](https://github.com/jmagar/labby/commit/f47455d666471d40246d2e52dd12093e58f5a209))
+* quiet palette refresh lint ([3309bb0](https://github.com/jmagar/labby/commit/3309bb0bd364a8b12aa0137157f05a94dcc6ab5d))
+* restore incus web asset sync after merge ([afb4c2e](https://github.com/jmagar/labby/commit/afb4c2edf8616bbc8963c68df8107dec4d3b3813))
+* satisfy generated docs and clippy gates ([b7ba0ea](https://github.com/jmagar/labby/commit/b7ba0ea2cd3ff3644bee128ead81116ff1269435))
+* stabilize gateway admin frontend checks ([aacce4d](https://github.com/jmagar/labby/commit/aacce4db495b08d44c029df2a488f427daa8eb20))
+* verify labby gateway daemon before dispatch ([444ab99](https://github.com/jmagar/labby/commit/444ab993851a98ce0ba4a71a66f59e1896409ac8))
+
+
+### Changed
+
+* **mcp:** add bounded pagination collector ([ee12533](https://github.com/jmagar/labby/commit/ee12533b0a6b2fbafe3798b94dcc17f655472f65))
+* **mcp:** add shared catalog notification helper ([8b9031a](https://github.com/jmagar/labby/commit/8b9031a90cf54c94fe39cc1ed039e060444f7359))
+* **mcp:** bound resources and prompts page collection ([55d470e](https://github.com/jmagar/labby/commit/55d470e49152e46858ef6246155a3dc114737005))
+* **mcp:** bound tools list page collection ([14c9e44](https://github.com/jmagar/labby/commit/14c9e44f57f195ba9a651f7415adbc4892167e93))
+* **mcp:** remove stale catalog change helper ([46ec8d1](https://github.com/jmagar/labby/commit/46ec8d158fa8fe57c5eb4fb1bde865a215789456))
+* **mcp:** reuse catalog notification fanout for gateway peers ([e5c67e5](https://github.com/jmagar/labby/commit/e5c67e52df6ab946dbb6633cbf07755883a1d1cf))
+* **mcp:** reuse catalog notification fanout in server ([6e0ab89](https://github.com/jmagar/labby/commit/6e0ab8933e1168928e6035d802af6d9cea483173))
+* **mcp:** share catalog notification fanout ([82132d4](https://github.com/jmagar/labby/commit/82132d49cc30c87ba037d444beb2dfb5181699ba))
+
 ## [1.1.0](https://github.com/jmagar/labby/compare/v1.0.1...v1.1.0) (2026-07-09)
 
 

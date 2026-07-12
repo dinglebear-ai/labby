@@ -1,6 +1,6 @@
 {
   "name": "labby-mcp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Node launcher for the Labby MCP gateway and CLI binary.",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/jmagar/labby#readme",

@@ -55,10 +55,10 @@ Windows breakage therefore surfaces on the post-merge main run, not in the PR.
 
 The scheduled OpenWiki updater also runs on `linux-lab`: its public
 OpenAI-compatible gateway hostname can serve Cloudflare managed challenges to
-automation, so the workflow defaults to tootie's Tailscale endpoint
-(`http://100.120.242.29:8317/v1`). Keep the endpoint and model configurable
-through `OPENAI_COMPATIBLE_BASE_URL` and `OPENWIKI_MODEL_ID` repository
-variables.
+automation, so the workflow points at a private Tailscale endpoint. The
+endpoint has no committed default — set it (and the model) through the
+`OPENAI_COMPATIBLE_BASE_URL` and `OPENWIKI_MODEL_ID` repository variables; the
+preflight step fails clearly if `OPENAI_COMPATIBLE_BASE_URL` is unset.
 
 `RUSTFLAGS: -D warnings` is set globally — zero warnings permitted. The lone
 exception is the `feature-slices` job, which overrides it to `""` because
