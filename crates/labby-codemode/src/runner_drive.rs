@@ -1148,11 +1148,12 @@ async fn resolve_snippet_for_runner<H: CodeModeHost>(
 /// standalone path the host's default `decide_step` returns `Execute`, so `fn`
 /// runs normally (behavior unchanged from before the primitive existed).
 ///
-/// The step consumes the SAME `seq` ordinal space as tool calls (allocated by
-/// the runner's shared `next_runner_seq`), so it participates in the durable
-/// replay cursor — a step added/removed/reordered between pause and resume
-/// shifts a later journaled tool call's `seq` and surfaces as
-/// `resume_divergence`, exactly like `codemode.search`/`writeArtifact`.
+/// The step consumes a `seq` from the SAME shared `next_runner_seq` spine as
+/// tool calls; that seq is used for intra-run attribution only (the notebook
+/// projection maps a call into the step-cell whose `seq_base` span contains it).
+/// The durable journal key is the parent-derived `step_ordinal`, NOT the seq —
+/// cross-run replay (v2, epic lab-5dtw9) keys on `step_ordinal`, so the single
+/// seq spine is preserved and untouched here.
 #[allow(clippy::too_many_arguments)]
 async fn handle_step_begin_event<H: CodeModeHost>(
     broker: &CodeModeBroker<'_, H>,

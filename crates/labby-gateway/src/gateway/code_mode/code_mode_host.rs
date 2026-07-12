@@ -150,6 +150,15 @@ impl CodeModeHost for GatewayManager {
             .entry(execution_id.to_string())
             .or_default()
             .push(row);
+        // name/value are deliberately NOT logged: both are redacted at rest and
+        // the identifiers below are sufficient to trace journaling.
+        tracing::debug!(
+            surface = "gateway",
+            service = "codemode",
+            execution_id = %execution_id,
+            step_ordinal = ordinal,
+            "codemode.step journaled"
+        );
         Ok(())
     }
 
@@ -619,9 +628,11 @@ mod tests {
         store: crate::codemode_journal::StepJournalStore,
     ) -> (GatewayManager, tempfile::TempDir) {
         let cfg_dir = tempfile::tempdir().unwrap();
-        let manager =
-            GatewayManager::new(cfg_dir.path().join("config.toml"), GatewayRuntimeHandle::default())
-                .with_step_journal(Arc::new(store));
+        let manager = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        )
+        .with_step_journal(Arc::new(store));
         (manager, cfg_dir)
     }
 

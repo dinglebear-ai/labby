@@ -4,8 +4,10 @@
 //! and `replayed_from` are persisted for the v2 replay-auth path (epic
 //! lab-5dtw9) even though v1 never reads them.
 
+pub mod notebook;
 pub mod store;
 
+pub use notebook::{CallSummary, Notebook, NotebookCell, project_notebook};
 pub use store::{StepJournalStore, redact_journal_text};
 
 /// One persisted `codemode.step` boundary. `value` is redacted, bounded JSON text.

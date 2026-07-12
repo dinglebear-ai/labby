@@ -102,8 +102,11 @@ pub struct GatewayManager {
     /// the run boundary drains one execution's buffer. Keyed per execution — not
     /// a single shared "current execution" scalar — so concurrent runs never
     /// cross-contaminate.
-    pub(super) step_buffers:
-        Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<crate::codemode_journal::StepJournalRow>>>>,
+    pub(super) step_buffers: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, Vec<crate::codemode_journal::StepJournalRow>>,
+        >,
+    >,
     protected_route_index: Arc<RwLock<ProtectedRouteIndex>>,
     code_mode_history: Arc<Mutex<CodeModeHistory>>,
     code_mode_source_store: Arc<Mutex<CodeModeSourceStore>>,
