@@ -23,7 +23,7 @@ use serde_json::Value;
 use crate::dispatch::error::ToolError as DispatchToolError;
 use crate::dispatch::gateway::code_mode::{
     CodeModeBroker, CodeModeCaller, CodeModeCallerCapabilities, CodeModeExecutionSource,
-    CodeModeHistoryEntry, CodeModeHistoryKind, ToolScope, code_mode_execute_trace,
+    CodeModeHistoryEntry, CodeModeHistoryKind, JournalOwner, ToolScope, code_mode_execute_trace,
 };
 use crate::mcp::context::{auth_context_from_extensions, tool_execute_scope_allowed};
 use crate::mcp::envelope::{build_error, build_error_extra};
@@ -374,6 +374,15 @@ impl LabMcpServer {
             }
         });
 
+        // Per-run caller identity stamped onto journal rows at the flush
+        // boundary (captured once, not per step). Fingerprint is cloned here
+        // because `capability_filter` is moved into `execute()` below.
+        let journal_owner = JournalOwner {
+            actor_key: actor_key.map(ToOwned::to_owned),
+            route_scope: self.route_scope.label(),
+            capability_filter_fingerprint: Some(capability_filter_fingerprint.clone()),
+        };
+
         let broker = CodeModeBroker::new(Some(manager.as_ref()));
         let before = self.snapshot_tool_catalog().await;
         let mut response = match broker
@@ -419,6 +428,11 @@ impl LabMcpServer {
                     kind = error_kind.as_str(),
                     "gateway codemode failed"
                 );
+                // Flush the durable step journal at the run boundary regardless
+                // of run success/failure (fail-open — a flush failure only logs).
+                manager
+                    .flush_step_journal(&execution_id, &journal_owner)
+                    .await;
                 let tool_error = err.into_tool_error();
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
@@ -455,6 +469,10 @@ impl LabMcpServer {
                 return Ok(result);
             }
         };
+        // Flush the durable step journal at the run boundary (success path).
+        manager
+            .flush_step_journal(&execution_id, &journal_owner)
+            .await;
         response.execution_id = Some(execution_id.clone());
 
         // Mirror the upstream's `_meta.ui` verbatim onto the codemode result so

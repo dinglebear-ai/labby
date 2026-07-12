@@ -14,6 +14,8 @@ use labby_codemode::{
     ToolCallOutcome, ToolScope, ToolsRender, UiLink, destructive_permitted,
     discovery_entry_visible, discovery_render_params,
 };
+use std::sync::Arc;
+
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use serde_json::{Map, Value};
 
@@ -102,6 +104,53 @@ impl CodeModeHost for GatewayManager {
         }
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
         self.execute_upstream_tool(upstream, tool, params).await
+    }
+
+    /// Buffer one `codemode.step` boundary for the run's `execution_id`.
+    ///
+    /// FAIL-OPEN + write-free on the runner drive loop: this only pushes a row
+    /// into an in-memory per-execution buffer (nanoseconds, no SQLite I/O). The
+    /// single bulk flush happens at the run boundary via `flush_step_journal`.
+    /// A `None` `execution_id`/`step_ordinal` or unconfigured journal short-
+    /// circuits to `Ok(())`. This method can never fail the run — the buffer
+    /// push is infallible barring a poisoned mutex.
+    async fn record_step(
+        &self,
+        ctx: labby_codemode::ExecCtx,
+        name: &str,
+        value: &Value,
+    ) -> Result<(), ToolError> {
+        let (Some(execution_id), Some(ordinal), Some(_store)) = (
+            ctx.execution_id.as_ref(),
+            ctx.step_ordinal,
+            self.step_journal.as_ref(),
+        ) else {
+            return Ok(());
+        };
+        let row = crate::codemode_journal::StepJournalRow {
+            execution_id: execution_id.to_string(),
+            step_ordinal: ordinal,
+            seq_base: ctx.seq,
+            // Redact BOTH name (caller-authored JS) and value at rest.
+            name: labby_codemode::redact_secret_like_segments(name),
+            value: crate::codemode_journal::redact_journal_text(value, JOURNAL_VALUE_CAP_BYTES),
+            ok: true,
+            // Per-step elapsed isn't threaded in v1; owner identity is stamped
+            // at flush from the run context.
+            elapsed_ms: 0,
+            recorded_at: unix_now(),
+            actor_key: None,
+            route_scope: String::new(),
+            capability_filter_fingerprint: None,
+            replayed_from: None,
+        };
+        self.step_buffers
+            .lock()
+            .expect("step_buffers mutex poisoned")
+            .entry(execution_id.to_string())
+            .or_default()
+            .push(row);
+        Ok(())
     }
 
     async fn resolve_snippet(
@@ -243,8 +292,85 @@ impl CodeModeHost for GatewayManager {
     }
 }
 
+/// Per-run caller identity stamped onto journal rows at flush time (captured
+/// once at the run boundary rather than per `record_step`). Persisted for the
+/// v2 replay-auth path (epic lab-5dtw9); v1 never reads it back.
+#[derive(Debug, Clone, Default)]
+pub struct JournalOwner {
+    pub actor_key: Option<String>,
+    pub route_scope: String,
+    pub capability_filter_fingerprint: Option<String>,
+}
+
+/// Byte cap for a journaled step value's serialized JSON (mirrors the history
+/// byte-cap spirit). Oversize values become a small truncation sentinel.
+const JOURNAL_VALUE_CAP_BYTES: usize = 64 * 1024;
+
+/// Current wall-clock time as unix seconds (0 on a pre-epoch clock).
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Gateway-side Code Mode dispatch helpers (not trait methods).
 impl GatewayManager {
+    /// Drain the `execution_id` step buffer and persist it in ONE bulk insert
+    /// at the run boundary.
+    ///
+    /// FAIL-OPEN: journaling is orthogonal to dispatch. A flush failure logs a
+    /// warning and returns — a lost journal only costs future replay
+    /// completeness, never the run's success. The buffer is drained
+    /// unconditionally (even on flush error) so a failed run can't leak buffered
+    /// rows across executions.
+    pub async fn flush_step_journal(&self, execution_id: &str, owner: &JournalOwner) {
+        let Some(store) = self.step_journal.as_ref() else {
+            return;
+        };
+        let mut rows = {
+            let mut buffers = self
+                .step_buffers
+                .lock()
+                .expect("step_buffers mutex poisoned");
+            buffers.remove(execution_id).unwrap_or_default()
+        };
+        if rows.is_empty() {
+            return;
+        }
+        for r in &mut rows {
+            r.actor_key = owner.actor_key.clone();
+            r.route_scope = owner.route_scope.clone();
+            r.capability_filter_fingerprint = owner.capability_filter_fingerprint.clone();
+        }
+        if let Err(err) = store.flush(rows).await {
+            tracing::warn!(
+                surface = "gateway",
+                service = "codemode",
+                execution_id,
+                kind = %err.kind(),
+                "step journal flush failed (fail-open)"
+            );
+        }
+    }
+
+    /// Read-only accessor to the step journal store (used by tests and future
+    /// read surfaces). `None` when journaling is unconfigured.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn step_journal(&self) -> Option<&Arc<crate::codemode_journal::StepJournalStore>> {
+        self.step_journal.as_ref()
+    }
+
+    /// True when no execution has any buffered (un-flushed) journal rows.
+    #[cfg(test)]
+    pub(crate) fn step_buffer_is_empty(&self) -> bool {
+        self.step_buffers
+            .lock()
+            .expect("step_buffers mutex poisoned")
+            .values()
+            .all(Vec::is_empty)
+    }
+
     /// Dispatch a resolved Code Mode call to the upstream MCP pool and unwrap
     /// the result. Shared by the durable and write-free `call_tool` paths
     /// (mcp-ui capture, error classification, success/failure recording).
@@ -483,6 +609,176 @@ fn code_mode_upstream_error_info(text: Option<&str>) -> (&'static str, String, b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::runtime::GatewayRuntimeHandle;
+    use labby_codemode::ExecCtx;
+
+    /// Build a `GatewayManager` wired to a fresh temp `StepJournalStore`. The
+    /// tempdir is intentionally leaked so the DB file outlives the store's open
+    /// connections for the test's duration.
+    async fn manager_with_store(
+        store: crate::codemode_journal::StepJournalStore,
+    ) -> (GatewayManager, tempfile::TempDir) {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let manager =
+            GatewayManager::new(cfg_dir.path().join("config.toml"), GatewayRuntimeHandle::default())
+                .with_step_journal(Arc::new(store));
+        (manager, cfg_dir)
+    }
+
+    async fn test_manager_with_journal() -> (GatewayManager, tempfile::TempDir, tempfile::TempDir) {
+        let db_dir = tempfile::tempdir().unwrap();
+        let store =
+            crate::codemode_journal::StepJournalStore::open(db_dir.path().join("journal.db"))
+                .await
+                .unwrap();
+        let (manager, cfg_dir) = manager_with_store(store).await;
+        (manager, cfg_dir, db_dir)
+    }
+
+    async fn test_manager_with_failing_journal()
+    -> (GatewayManager, tempfile::TempDir, tempfile::TempDir) {
+        let db_dir = tempfile::tempdir().unwrap();
+        let db_path = db_dir.path().join("journal.db");
+        let store = crate::codemode_journal::StepJournalStore::open(db_path.clone())
+            .await
+            .unwrap();
+        // Drop the table out from under the store via a side connection so a
+        // subsequent flush INSERT fails deterministically.
+        {
+            let side = rusqlite::Connection::open(&db_path).unwrap();
+            side.execute_batch("DROP TABLE step_journal").unwrap();
+        }
+        let (manager, cfg_dir) = manager_with_store(store).await;
+        (manager, cfg_dir, db_dir)
+    }
+
+    #[tokio::test]
+    async fn record_step_buffers_then_flush_persists() {
+        let (mgr, _cfg, _db) = test_manager_with_journal().await;
+        let exec = Arc::<str>::from("exec_t1");
+        let ctx = ExecCtx {
+            seq: 3,
+            execution_id: Some(exec.clone()),
+            step_ordinal: Some(0),
+        };
+        mgr.record_step(ctx, "fetch", &serde_json::json!({"id": 7}))
+            .await
+            .unwrap();
+        // Buffered only — nothing on disk yet (proves no I/O on the record path).
+        assert!(
+            mgr.step_journal()
+                .unwrap()
+                .load("exec_t1")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // Flush at the run boundary stamps owner identity and persists.
+        mgr.flush_step_journal(
+            "exec_t1",
+            &JournalOwner {
+                actor_key: Some("a".into()),
+                route_scope: "default".into(),
+                capability_filter_fingerprint: None,
+            },
+        )
+        .await;
+        let rows = mgr.step_journal().unwrap().load("exec_t1").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "fetch");
+        assert_eq!(rows[0].step_ordinal, 0);
+        assert_eq!(rows[0].seq_base, 3);
+        assert_eq!(rows[0].actor_key.as_deref(), Some("a"));
+        assert_eq!(rows[0].route_scope, "default");
+        assert!(mgr.step_buffer_is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_step_none_execution_id_is_noop() {
+        let (mgr, _cfg, _db) = test_manager_with_journal().await;
+        let ctx = ExecCtx {
+            seq: 1,
+            execution_id: None,
+            step_ordinal: Some(0),
+        };
+        mgr.record_step(ctx, "x", &serde_json::json!(1))
+            .await
+            .unwrap();
+        assert!(mgr.step_buffer_is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_step_redacts_secret_name_and_value() {
+        let (mgr, _cfg, _db) = test_manager_with_journal().await;
+        let ctx = ExecCtx {
+            seq: 1,
+            execution_id: Some(Arc::<str>::from("exec_secret")),
+            step_ordinal: Some(0),
+        };
+        mgr.record_step(
+            ctx,
+            "token sk-abcdefghij0123456789extra",
+            &serde_json::json!({"authorization": "Bearer sk-abcdefghij0123456789extra"}),
+        )
+        .await
+        .unwrap();
+        mgr.flush_step_journal("exec_secret", &JournalOwner::default())
+            .await;
+        let rows = mgr
+            .step_journal()
+            .unwrap()
+            .load("exec_secret")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !rows[0].name.contains("sk-abcdefghij0123456789extra"),
+            "step name must be redacted at rest: {}",
+            rows[0].name
+        );
+        assert!(
+            !rows[0].value.contains("sk-abcdefghij0123456789extra"),
+            "step value must be redacted at rest: {}",
+            rows[0].value
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_without_journal_configured_is_noop() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let mgr = GatewayManager::new(
+            cfg_dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        );
+        // No journal store configured: record_step + flush are pure no-ops.
+        let ctx = ExecCtx {
+            seq: 1,
+            execution_id: Some(Arc::<str>::from("e")),
+            step_ordinal: Some(0),
+        };
+        mgr.record_step(ctx, "s", &serde_json::json!(1))
+            .await
+            .unwrap();
+        assert!(mgr.step_journal().is_none());
+        mgr.flush_step_journal("e", &JournalOwner::default()).await;
+        assert!(mgr.step_buffer_is_empty());
+    }
+
+    #[tokio::test]
+    async fn flush_failure_is_fail_open() {
+        let (mgr, _cfg, _db) = test_manager_with_failing_journal().await;
+        let ctx = ExecCtx {
+            seq: 1,
+            execution_id: Some(Arc::<str>::from("e")),
+            step_ordinal: Some(0),
+        };
+        mgr.record_step(ctx, "s", &serde_json::json!(1))
+            .await
+            .unwrap();
+        // Must not panic/propagate, and must drain the buffer even on error.
+        mgr.flush_step_journal("e", &JournalOwner::default()).await;
+        assert!(mgr.step_buffer_is_empty());
+    }
 
     #[test]
     fn preserves_stable_upstream_error_kinds() {

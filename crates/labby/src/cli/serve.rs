@@ -939,6 +939,24 @@ async fn build_gateway_runtime(
     } else {
         None
     };
+    let step_journal = if crate::config::codemode_journal_enabled() {
+        match labby_gateway::codemode_journal::StepJournalStore::open(
+            crate::config::codemode_journal_db_path(),
+        )
+        .await
+        {
+            Ok(store) => Some(Arc::new(store)),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to open Code Mode step journal; journaling disabled for this run"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut pool_builder = crate::dispatch::upstream::pool::UpstreamPool::new()
         .with_request_timeout(config.upstream_request_timeout())
         .with_relay_timeout(config.upstream_relay_timeout())
@@ -1019,6 +1037,9 @@ async fn build_gateway_runtime(
     let mut gateway_manager = gateway_manager
         .with_openapi(openapi_registry, openapi_http_client)
         .with_client_registry(client_registry);
+    if let Some(store) = step_journal {
+        gateway_manager = gateway_manager.with_step_journal(store);
+    }
 
     gateway_manager.set_notifier(CatalogChangeNotifier::new(notify_tx));
     let gateway_manager = Arc::new(gateway_manager);
