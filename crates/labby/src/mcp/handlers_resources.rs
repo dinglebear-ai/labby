@@ -75,58 +75,67 @@ impl CodeModeRuntime {
     }
 }
 
-pub(crate) struct CodeModeAppResourceDescriptor {
+pub(crate) struct AppResourceDescriptor {
     pub(crate) uri: &'static str,
     pub(crate) name: &'static str,
     pub(crate) runtime: CodeModeRuntime,
     /// Tool this widget binds to, or `None` for the history widget (not tool-
     /// bound). `runtime` selects which `_meta` key the URI is exposed under.
     pub(crate) tool_name: Option<&'static str>,
+    pub(crate) resource_description: &'static str,
+    pub(crate) skybridge_widget_description: Option<&'static str>,
 }
 
-pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[CodeModeAppResourceDescriptor] = &[
-    CodeModeAppResourceDescriptor {
+pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
+    AppResourceDescriptor {
         uri: CODE_MODE_APP_URI,
         name: "code-mode/codemode",
         runtime: CodeModeRuntime::McpApp,
         tool_name: Some(CODE_MODE_TOOL_NAME),
+        resource_description: "Read-only MCP App for Code Mode call traces",
+        skybridge_widget_description: None,
     },
-    CodeModeAppResourceDescriptor {
+    AppResourceDescriptor {
         uri: CODE_MODE_HISTORY_APP_URI,
         name: "code-mode/history",
         runtime: CodeModeRuntime::McpApp,
         tool_name: None,
+        resource_description: "Read-only MCP App for Code Mode call traces",
+        skybridge_widget_description: None,
     },
-    CodeModeAppResourceDescriptor {
+    AppResourceDescriptor {
         uri: CODE_MODE_APP_SKYBRIDGE_URI,
         name: "code-mode/codemode.skybridge",
         runtime: CodeModeRuntime::Skybridge,
         tool_name: Some(CODE_MODE_TOOL_NAME),
+        resource_description: "Read-only MCP App for Code Mode call traces",
+        skybridge_widget_description: Some(
+            "Live Code Mode call trace — upstream tool calls, catalog search matches, and recent gateway history.",
+        ),
     },
 ];
 
 const CODE_MODE_APP_FALLBACK_HTML: &str = include_str!("assets/code_mode_app.html");
 const SERVER_LOGS_APP_FALLBACK_HTML: &str = crate::app_assets::SERVER_LOGS_APP_HTML;
 
-pub(crate) struct ServerLogsAppResourceDescriptor {
-    pub(crate) uri: &'static str,
-    pub(crate) name: &'static str,
-    pub(crate) runtime: CodeModeRuntime,
-    pub(crate) tool_name: Option<&'static str>,
-}
-
-pub(crate) const SERVER_LOGS_APP_RESOURCE_DESCRIPTORS: &[ServerLogsAppResourceDescriptor] = &[
-    ServerLogsAppResourceDescriptor {
+pub(crate) const SERVER_LOGS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
+    AppResourceDescriptor {
         uri: SERVER_LOGS_APP_URI,
         name: "server-logs/viewer",
         runtime: CodeModeRuntime::McpApp,
         tool_name: Some(SERVER_LOGS_TOOL_NAME),
+        resource_description: "Admin MCP App for Labby server process logs",
+        skybridge_widget_description: None,
     },
-    ServerLogsAppResourceDescriptor {
+    AppResourceDescriptor {
         uri: SERVER_LOGS_APP_SKYBRIDGE_URI,
         name: "server-logs/viewer.skybridge",
         runtime: CodeModeRuntime::Skybridge,
         tool_name: Some(SERVER_LOGS_TOOL_NAME),
+        resource_description: "Admin MCP App for Labby server process logs",
+        skybridge_widget_description: Some(
+            "Admin viewer for Labby's rolling server process logs with level, service, action, kind, and text filters.",
+        ),
     },
 ];
 
@@ -825,34 +834,45 @@ fn code_mode_app_html(uri: &str, history: Option<&Value>) -> Result<String, Stri
     Ok(html)
 }
 
-fn code_mode_app_resource(descriptor: &CodeModeAppResourceDescriptor) -> Resource {
-    let uri = versioned_app_uri(descriptor.uri);
+fn app_resource(
+    descriptor: &AppResourceDescriptor,
+    versioned_uri: impl Fn(&str) -> String,
+) -> Resource {
+    let uri = versioned_uri(descriptor.uri);
     Resource::new(uri.clone(), descriptor.name.to_string())
-        .with_description("Read-only MCP App for Code Mode call traces")
+        .with_description(descriptor.resource_description)
         .with_mime_type(descriptor.runtime.mime())
-        .with_meta(code_mode_app_resource_meta(&uri))
+        .with_meta(app_resource_meta_for_descriptor(&uri, descriptor))
 }
 
 fn server_logs_app_html(uri: &str) -> Result<String, String> {
     let base = strip_app_version(uri);
-    if !SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
+    let Some(descriptor) = SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
         .iter()
-        .any(|descriptor| descriptor.uri == base)
-    {
+        .find(|descriptor| descriptor.uri == base)
+    else {
         return Err(format!("unknown UI resource: {uri}"));
-    }
+    };
+    let mcp_resource_flag = if descriptor.runtime == CodeModeRuntime::McpApp {
+        "window.__LABBY_MCP_RESOURCE=true;"
+    } else {
+        ""
+    };
     Ok(SERVER_LOGS_APP_FALLBACK_HTML.replace(
         r#"<script src="/apps/assets/labby-app-host.js"></script>"#,
-        &format!("<script>{}</script>", crate::app_assets::LABBY_APP_HOST_JS),
+        &format!(
+            "<script>{mcp_resource_flag}{}</script>",
+            crate::app_assets::LABBY_APP_HOST_JS
+        ),
     ))
 }
 
-fn server_logs_app_resource(descriptor: &ServerLogsAppResourceDescriptor) -> Resource {
-    let uri = versioned_server_logs_app_uri(descriptor.uri);
-    Resource::new(uri.clone(), descriptor.name.to_string())
-        .with_description("Admin MCP App for Labby server process logs")
-        .with_mime_type(descriptor.runtime.mime())
-        .with_meta(server_logs_app_resource_meta(&uri))
+fn code_mode_app_resource(descriptor: &AppResourceDescriptor) -> Resource {
+    app_resource(descriptor, versioned_app_uri)
+}
+
+fn server_logs_app_resource(descriptor: &AppResourceDescriptor) -> Resource {
+    app_resource(descriptor, versioned_server_logs_app_uri)
 }
 
 /// Host runtime a Code Mode app URI targets. Callers must pass a table URI; an
@@ -860,40 +880,31 @@ fn server_logs_app_resource(descriptor: &ServerLogsAppResourceDescriptor) -> Res
 /// and binding, so a silent wrong default would mis-bind the widget) — assert in
 /// debug, warn and fall back to MCP Apps in release rather than serving nothing.
 fn code_mode_app_runtime_for_uri(uri: &str) -> CodeModeRuntime {
-    let base = strip_app_version(uri);
-    CODE_MODE_APP_RESOURCE_DESCRIPTORS
-        .iter()
-        .find(|descriptor| descriptor.uri == base)
-        .map_or_else(
-            || {
-                debug_assert!(
-                    false,
-                    "code_mode_app_runtime_for_uri called with un-tabled URI: {uri}"
-                );
-                tracing::warn!(
-                    resource_uri = uri,
-                    "unknown Code Mode URI; defaulting to MCP Apps runtime"
-                );
-                CodeModeRuntime::McpApp
-            },
-            |descriptor| descriptor.runtime,
-        )
+    app_runtime_for_uri(uri, CODE_MODE_APP_RESOURCE_DESCRIPTORS, "Code Mode")
 }
 
 fn server_logs_app_runtime_for_uri(uri: &str) -> CodeModeRuntime {
+    app_runtime_for_uri(uri, SERVER_LOGS_APP_RESOURCE_DESCRIPTORS, "server logs")
+}
+
+fn app_runtime_for_uri(
+    uri: &str,
+    descriptors: &[AppResourceDescriptor],
+    label: &'static str,
+) -> CodeModeRuntime {
     let base = strip_app_version(uri);
-    SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
+    descriptors
         .iter()
         .find(|descriptor| descriptor.uri == base)
         .map_or_else(
             || {
                 debug_assert!(
                     false,
-                    "server_logs_app_runtime_for_uri called with un-tabled URI: {uri}"
+                    "{label} app runtime lookup called with un-tabled URI: {uri}"
                 );
                 tracing::warn!(
                     resource_uri = uri,
-                    "unknown server logs URI; defaulting to MCP Apps runtime"
+                    "unknown app resource URI; defaulting to MCP Apps runtime"
                 );
                 CodeModeRuntime::McpApp
             },
@@ -956,51 +967,65 @@ pub(crate) fn server_logs_app_skybridge_uri_for_tool(tool_name: &str) -> Option<
 }
 
 fn code_mode_app_uri_for_tool(runtime: CodeModeRuntime, tool_name: &str) -> Option<String> {
-    CODE_MODE_APP_RESOURCE_DESCRIPTORS
-        .iter()
-        .find(|descriptor| descriptor.runtime == runtime && descriptor.tool_name == Some(tool_name))
-        .map(|descriptor| versioned_app_uri(descriptor.uri))
+    app_uri_for_tool(
+        CODE_MODE_APP_RESOURCE_DESCRIPTORS,
+        runtime,
+        tool_name,
+        versioned_app_uri,
+    )
 }
 
 fn server_logs_app_uri_for_tool(runtime: CodeModeRuntime, tool_name: &str) -> Option<String> {
-    SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
+    app_uri_for_tool(
+        SERVER_LOGS_APP_RESOURCE_DESCRIPTORS,
+        runtime,
+        tool_name,
+        versioned_server_logs_app_uri,
+    )
+}
+
+fn app_uri_for_tool(
+    descriptors: &[AppResourceDescriptor],
+    runtime: CodeModeRuntime,
+    tool_name: &str,
+    versioned_uri: impl Fn(&str) -> String,
+) -> Option<String> {
+    descriptors
         .iter()
         .find(|descriptor| descriptor.runtime == runtime && descriptor.tool_name == Some(tool_name))
-        .map(|descriptor| versioned_server_logs_app_uri(descriptor.uri))
+        .map(|descriptor| versioned_uri(descriptor.uri))
 }
 
 pub(crate) fn code_mode_app_resource_meta(uri: &str) -> Meta {
-    let runtime = code_mode_app_runtime_for_uri(uri);
-    let mut meta = serde_json::Map::new();
-    meta.insert(
-        "ui".to_string(),
-        json!({
-            "resourceUri": uri,
-            "mimeTypes": [runtime.mime()],
-            "csp": {
-                "connectDomains": [],
-                "resourceDomains": [],
-                "frameDomains": [],
-            },
-            "prefersBorder": false,
-        }),
-    );
-    // OpenAI Apps exposes a model-facing description of the widget. Skybridge-
-    // only, so the Claude (`text/html;profile=mcp-app`) resource `_meta` stays
-    // byte-identical.
-    if runtime == CodeModeRuntime::Skybridge {
-        meta.insert(
-            "openai/widgetDescription".to_string(),
-            json!(
-                "Live Code Mode call trace — upstream tool calls, catalog search matches, and recent gateway history."
-            ),
-        );
-    }
-    Meta(meta)
+    app_resource_meta(uri, CODE_MODE_APP_RESOURCE_DESCRIPTORS)
 }
 
 pub(crate) fn server_logs_app_resource_meta(uri: &str) -> Meta {
-    let runtime = server_logs_app_runtime_for_uri(uri);
+    app_resource_meta(uri, SERVER_LOGS_APP_RESOURCE_DESCRIPTORS)
+}
+
+fn app_resource_meta(uri: &str, descriptors: &[AppResourceDescriptor]) -> Meta {
+    let base = strip_app_version(uri);
+    let descriptor = descriptors.iter().find(|descriptor| descriptor.uri == base);
+    let runtime = descriptor.map_or(CodeModeRuntime::McpApp, |descriptor| descriptor.runtime);
+    let widget_description =
+        descriptor.and_then(|descriptor| descriptor.skybridge_widget_description);
+    build_app_resource_meta(uri, runtime, widget_description)
+}
+
+fn app_resource_meta_for_descriptor(uri: &str, descriptor: &AppResourceDescriptor) -> Meta {
+    build_app_resource_meta(
+        uri,
+        descriptor.runtime,
+        descriptor.skybridge_widget_description,
+    )
+}
+
+fn build_app_resource_meta(
+    uri: &str,
+    runtime: CodeModeRuntime,
+    skybridge_widget_description: Option<&'static str>,
+) -> Meta {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "ui".to_string(),
@@ -1015,11 +1040,10 @@ pub(crate) fn server_logs_app_resource_meta(uri: &str) -> Meta {
             "prefersBorder": false,
         }),
     );
-    if runtime == CodeModeRuntime::Skybridge {
-        meta.insert(
-            "openai/widgetDescription".to_string(),
-            json!("Admin viewer for Labby's rolling server process logs with level, service, action, kind, and text filters."),
-        );
+    if runtime == CodeModeRuntime::Skybridge
+        && let Some(description) = skybridge_widget_description
+    {
+        meta.insert("openai/widgetDescription".to_string(), json!(description));
     }
     Meta(meta)
 }

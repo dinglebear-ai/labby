@@ -1139,7 +1139,11 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
 
     v1 = v1
         .route("/apps/manifest", get(apps_manifest))
-        .nest("/server-logs", services::server_logs::routes(state.clone()))
+        .nest("/server_logs", services::server_logs::routes(state.clone()))
+        .nest(
+            "/server-logs",
+            services::server_logs::data_routes(state.clone()),
+        )
         // Unauthenticated route groups are gated by host_validation_layer —
         // non-loopback Host headers are rejected before reaching the dispatcher
         // (DNS rebinding mitigation for the v1 wizard, lab-bg3e.3.3).
@@ -1976,7 +1980,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/server-logs")
+                    .uri("/v1/server_logs")
                     .header(header::AUTHORIZATION, "Bearer secret-token")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"action":"help","params":{}}"#))
@@ -1996,6 +2000,30 @@ mod tests {
                 .iter()
                 .any(|action| action["name"] == "server_logs.query")
         }));
+    }
+
+    #[tokio::test]
+    async fn server_logs_help_does_not_require_admin_scope() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, None, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/server_logs")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"help","params":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["service"], "server_logs");
     }
 
     #[tokio::test]

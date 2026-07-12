@@ -10,8 +10,8 @@ use axum::{
     http::HeaderMap,
     routing::{get, post},
 };
-use serde::Deserialize;
-use serde_json::{Map, Number, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
@@ -21,12 +21,14 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::server_logs::ACTIONS;
 
 pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/", post(handle))
-        .route("/query", get(query))
+    Router::new().route("/", post(handle))
 }
 
-#[derive(Debug, Deserialize)]
+pub fn data_routes(_state: AppState) -> Router<AppState> {
+    Router::new().route("/query", get(query))
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 struct ServerLogsQuery {
     limit: Option<u64>,
     level: Option<String>,
@@ -45,7 +47,7 @@ async fn query(
     Query(query): Query<ServerLogsQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
-    require_server_logs_admin(request_id, auth.as_ref())?;
+    require_server_logs_admin("server_logs.query", request_id, auth.as_ref())?;
     dispatch_request(headers, auth, query_request(query)).await
 }
 
@@ -55,7 +57,7 @@ async fn handle(
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
-    require_server_logs_admin(request_id, auth.as_ref())?;
+    require_server_logs_admin(&req.action, request_id, auth.as_ref())?;
     dispatch_request(headers, auth, req).await
 }
 
@@ -84,54 +86,46 @@ fn query_request(query: ServerLogsQuery) -> ActionRequest {
     }
 }
 
+fn server_logs_action_requires_admin(action: &str) -> bool {
+    let bare = action.strip_prefix("server_logs.").unwrap_or(action);
+    if bare == "help" || bare == "schema" {
+        return false;
+    }
+    ACTIONS
+        .iter()
+        .find(|spec| spec.name == action)
+        .map(|spec| spec.requires_admin)
+        .unwrap_or(true)
+}
+
+fn has_admin_scope(auth: Option<&Extension<AuthContext>>) -> bool {
+    auth.is_some_and(|ctx| ctx.0.scopes.iter().any(|scope| scope == "lab:admin"))
+}
+
 fn require_server_logs_admin(
+    action: &str,
     request_id: Option<&str>,
     auth: Option<&Extension<AuthContext>>,
 ) -> Result<(), ToolError> {
-    if auth.is_some_and(|ctx| ctx.0.scopes.iter().any(|scope| scope == "lab:admin")) {
+    if !server_logs_action_requires_admin(action) || has_admin_scope(auth) {
         return Ok(());
     }
     tracing::warn!(
         surface = "api",
         service = "server_logs",
-        action = "server_logs.query",
+        action,
         request_id,
         kind = "forbidden",
-        "server_logs query rejected: lab:admin scope required"
+        "server_logs action rejected: lab:admin scope required"
     );
     Err(ToolError::Sdk {
         sdk_kind: "forbidden".to_string(),
-        message: "server_logs.query requires `lab:admin` scope".to_string(),
+        message: format!("action `{action}` requires `lab:admin` scope"),
     })
 }
 
 impl ServerLogsQuery {
     fn into_params(self) -> Value {
-        let mut map = Map::new();
-        insert_number(&mut map, "limit", self.limit);
-        insert_number(&mut map, "max_scan_bytes", self.max_scan_bytes);
-        insert_string(&mut map, "level", self.level);
-        insert_string(&mut map, "target", self.target);
-        insert_string(&mut map, "service", self.service);
-        insert_string(&mut map, "action", self.action);
-        insert_string(&mut map, "kind", self.kind);
-        insert_string(&mut map, "query", self.query);
-        insert_string(&mut map, "file", self.file);
-        Value::Object(map)
-    }
-}
-
-fn insert_string(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
-    let Some(value) = value.map(|value| value.trim().to_string()) else {
-        return;
-    };
-    if !value.is_empty() {
-        map.insert(key.to_string(), Value::String(value));
-    }
-}
-
-fn insert_number(map: &mut Map<String, Value>, key: &str, value: Option<u64>) {
-    if let Some(value) = value {
-        map.insert(key.to_string(), Value::Number(Number::from(value)));
+        serde_json::to_value(self).unwrap_or_else(|_| Value::Object(serde_json::Map::new()))
     }
 }

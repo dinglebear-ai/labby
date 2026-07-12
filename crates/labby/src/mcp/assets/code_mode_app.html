@@ -264,6 +264,9 @@ let resultView="pretty";
 let resultQuery="";
 let saveState={kind:"idle",message:""};
 let saveSeq=0;
+let toolMessageToken=0;
+let toolMessageTimer=null;
+const copyButtonTimers=new WeakMap();
 let resizeApp=null;
 let resizePending=false;
 // The LLM's tool-call arguments, delivered by the host (MCP Apps
@@ -353,15 +356,37 @@ function setToolMessage(message,kind=""){
   toolMsg.textContent=message||"";
   toolMsg.className=["toolmsg",kind].filter(Boolean).join(" ");
 }
+function saveMessageKind(){
+  return saveState.kind==="error"?"err":saveState.kind==="saved"?"ok":"";
+}
+function showSaveStateMessage(){
+  toolMessageToken++;
+  if(toolMessageTimer){clearTimeout(toolMessageTimer);toolMessageTimer=null;}
+  setToolMessage(saveState.message,saveMessageKind());
+}
+function showCopiedMessage(){
+  const token=++toolMessageToken;
+  if(toolMessageTimer)clearTimeout(toolMessageTimer);
+  setToolMessage("Copied","ok");
+  toolMessageTimer=setTimeout(()=>{
+    if(token!==toolMessageToken)return;
+    toolMessageTimer=null;
+    setToolMessage(saveState.message,saveMessageKind());
+  },1400);
+}
 function copyText(text,button){
   const done=()=>{
     if(button){
-      const previous=button.innerHTML;
+      const previousTimer=copyButtonTimers.get(button);
+      if(previousTimer)clearTimeout(previousTimer);
       button.innerHTML=CHECK_ICON;
-      setTimeout(()=>{button.innerHTML=previous;},1200);
+      const timer=setTimeout(()=>{
+        button.innerHTML=COPY_ICON;
+        copyButtonTimers.delete(button);
+      },1200);
+      copyButtonTimers.set(button,timer);
     }
-    setToolMessage("Copied","ok");
-    setTimeout(()=>setToolMessage(saveState.message,saveState.kind==="error"?"err":saveState.kind==="saved"?"ok":""),1400);
+    showCopiedMessage();
   };
   const fallback=()=>{
     const area=document.createElement("textarea");
@@ -472,18 +497,18 @@ async function saveSnippet(){
   const args=snippetSaveArguments(run,name,description||"");
   const seq=++saveSeq;
   saveState={kind:"saving",message:"Saving..."};
-  setToolMessage(saveState.message);
+  showSaveStateMessage();
   paintToolbar(run);
   try{
     await callSnippetsTool(args);
     if(seq!==saveSeq)return;
     saveState={kind:"saved",message:"Saved snippet"};
-    setToolMessage(saveState.message,"ok");
+    showSaveStateMessage();
   }catch(_){
     if(seq!==saveSeq)return;
     await copyText(promoteSnippetCommand(args),saveSnippetButton);
     saveState={kind:"error",message:"Copied save command"};
-    setToolMessage(saveState.message,"err");
+    showSaveStateMessage();
   }finally{
     if(seq===saveSeq)paintToolbar(currentRun());
   }
@@ -787,7 +812,7 @@ function paintToolbar(run){
   if(document.activeElement!==resultSearch)resultSearch.value=resultQuery;
   copyReplay.disabled=!Array.isArray(run.calls)||run.calls.length===0;
   saveSnippetButton.disabled=saveState.kind==="saving"||(!run.execution_id&&!toolInputSnippet());
-  setToolMessage(saveState.message,saveState.kind==="error"?"err":saveState.kind==="saved"?"ok":"");
+  setToolMessage(saveState.message,saveMessageKind());
 }
 function setAllRows(open){
   content.querySelectorAll("details[data-row-key]").forEach(row=>{row.open=open;});

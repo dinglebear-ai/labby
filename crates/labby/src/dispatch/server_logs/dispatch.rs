@@ -1,8 +1,10 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::{Arc, LazyLock};
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::sync::Semaphore;
 
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, require_str, to_json};
@@ -11,6 +13,8 @@ use crate::dispatch::server_logs::catalog::ACTIONS;
 use crate::dispatch::server_logs::client::{LogFile, display_path, log_dir, log_files};
 use crate::dispatch::server_logs::params::{QueryParams, parse};
 
+static QUERY_SCAN_PERMITS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(2)));
+
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     match action {
         "help" => Ok(help_payload("server_logs", ACTIONS)),
@@ -18,7 +22,27 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
             let a = require_str(&params, "action")?;
             action_schema(ACTIONS, a)
         }
-        "server_logs.query" => to_json(query(parse(&params)?)?),
+        "server_logs.query" => {
+            let params = parse(&params)?;
+            let permit = QUERY_SCAN_PERMITS
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|err| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: format!("server log query semaphore closed: {err}"),
+                })?;
+            let result = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                query(params)
+            })
+            .await
+            .map_err(|err| ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: format!("server log query worker failed: {err}"),
+            })??;
+            to_json(result)
+        }
         unknown => Err(ToolError::UnknownAction {
             message: format!("unknown action `server_logs.{unknown}`"),
             valid: ACTIONS.iter().map(|a| a.name.to_string()).collect(),
@@ -83,6 +107,7 @@ fn query(params: QueryParams) -> Result<QueryResult, ToolError> {
 
 fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolError> {
     let files = log_files(&dir)?;
+    let filters = NormalizedFilters::from(&params);
     let mut remaining_bytes = params.max_scan_bytes;
     let mut summaries = Vec::new();
     let mut entries = Vec::new();
@@ -92,12 +117,12 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
     let mut scanned_bytes = 0u64;
     let mut truncated = false;
 
-    for file in files.iter().rev() {
+    'files: for file in files.iter().rev() {
         if remaining_bytes == 0 {
             truncated = true;
             break;
         }
-        if !matches_file_filter(file, &params) {
+        if !matches_file_filter(file, &filters) {
             continue;
         }
         let bytes_to_read = remaining_bytes.min(file.bytes);
@@ -126,12 +151,16 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
                 malformed_lines += 1;
                 continue;
             };
-            if !entry_matches(&entry, &params) {
+            if !entry_matches(&entry, &filters) {
                 continue;
             }
             matched_total += 1;
             if entries.len() < params.limit {
                 entries.push(entry);
+                if entries.len() == params.limit {
+                    truncated = true;
+                    break 'files;
+                }
             }
         }
     }
@@ -173,10 +202,12 @@ fn read_tail(path: &Path, file_bytes: u64, bytes_to_read: u64) -> Result<String,
             message: format!("failed to seek server log file `{}`: {err}", path.display()),
         })?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|err| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("failed to read server log file `{}`: {err}", path.display()),
-    })?;
+    file.take(bytes_to_read)
+        .read_to_end(&mut bytes)
+        .map_err(|err| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to read server log file `{}`: {err}", path.display()),
+        })?;
     if offset > 0 {
         if let Some(index) = bytes.iter().position(|byte| *byte == b'\n') {
             bytes.drain(..=index);
@@ -233,34 +264,58 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn matches_file_filter(file: &LogFile, params: &QueryParams) -> bool {
-    params
-        .file
-        .as_deref()
-        .is_none_or(|needle| contains_ci(&file.name, needle))
+#[derive(Debug)]
+struct NormalizedFilters {
+    level: Option<String>,
+    target: Option<String>,
+    service: Option<String>,
+    action: Option<String>,
+    kind: Option<String>,
+    query: Option<String>,
+    file: Option<String>,
 }
 
-fn entry_matches(entry: &LogEntry, params: &QueryParams) -> bool {
-    if let Some(level) = &params.level
+impl From<&QueryParams> for NormalizedFilters {
+    fn from(params: &QueryParams) -> Self {
+        Self {
+            level: params.level.clone(),
+            target: params.target.as_deref().map(str::to_ascii_lowercase),
+            service: params.service.as_deref().map(str::to_ascii_lowercase),
+            action: params.action.as_deref().map(str::to_ascii_lowercase),
+            kind: params.kind.as_deref().map(str::to_ascii_lowercase),
+            query: params.query.as_deref().map(str::to_ascii_lowercase),
+            file: params.file.as_deref().map(str::to_ascii_lowercase),
+        }
+    }
+}
+
+fn matches_file_filter(file: &LogFile, filters: &NormalizedFilters) -> bool {
+    filters
+        .file
+        .as_deref()
+        .is_none_or(|needle| contains_lower(&file.name, needle))
+}
+
+fn entry_matches(entry: &LogEntry, filters: &NormalizedFilters) -> bool {
+    if let Some(level) = &filters.level
         && entry.level.as_deref() != Some(level.as_str())
     {
         return false;
     }
-    if !matches_optional(&entry.target, &params.target) {
+    if !matches_optional(&entry.target, &filters.target) {
         return false;
     }
-    if !matches_optional(&entry.service, &params.service) {
+    if !matches_optional(&entry.service, &filters.service) {
         return false;
     }
-    if !matches_optional(&entry.action, &params.action) {
+    if !matches_optional(&entry.action, &filters.action) {
         return false;
     }
-    if !matches_optional(&entry.kind, &params.kind) {
+    if !matches_optional(&entry.kind, &filters.kind) {
         return false;
     }
-    if let Some(query) = &params.query {
-        let haystack = serde_json::to_string(entry).unwrap_or_default();
-        if !contains_ci(&haystack, query) {
+    if let Some(query) = &filters.query {
+        if !entry_contains_query(entry, query) {
             return false;
         }
     }
@@ -272,14 +327,44 @@ fn matches_optional(value: &Option<String>, filter: &Option<String>) -> bool {
         None => true,
         Some(needle) => value
             .as_deref()
-            .is_some_and(|value| contains_ci(value, needle)),
+            .is_some_and(|value| contains_lower(value, needle)),
     }
 }
 
-fn contains_ci(haystack: &str, needle: &str) -> bool {
-    haystack
-        .to_ascii_lowercase()
-        .contains(&needle.to_ascii_lowercase())
+fn entry_contains_query(entry: &LogEntry, needle: &str) -> bool {
+    [
+        entry.timestamp.as_deref(),
+        entry.level.as_deref(),
+        entry.target.as_deref(),
+        entry.message.as_deref(),
+        entry.service.as_deref(),
+        entry.action.as_deref(),
+        entry.kind.as_deref(),
+        Some(entry.file.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| contains_lower(value, needle))
+        || value_contains_query(&entry.fields, needle)
+}
+
+fn value_contains_query(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(value) => contains_lower(value, needle),
+        Value::Number(value) => value.to_string().contains(needle),
+        Value::Bool(value) => value.to_string().contains(needle),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| value_contains_query(value, needle)),
+        Value::Object(map) => map
+            .iter()
+            .any(|(key, value)| contains_lower(key, needle) || value_contains_query(value, needle)),
+        Value::Null => false,
+    }
+}
+
+fn contains_lower(haystack: &str, needle: &str) -> bool {
+    haystack.to_ascii_lowercase().contains(needle)
 }
 
 #[cfg(test)]
@@ -317,5 +402,52 @@ mod tests {
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].message.as_deref(), Some("started"));
         assert_eq!(result.entries[0].fields["token"], json!("[redacted]"));
+    }
+
+    #[test]
+    fn read_tail_caps_reads_to_requested_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("lab.active.log");
+        std::fs::write(&log_path, "abcd\nsecond line\n").expect("write log");
+
+        let text = read_tail(&log_path, 4, 4).expect("tail");
+
+        assert_eq!(text.len(), 4);
+        assert_eq!(text, "abcd");
+    }
+
+    #[test]
+    fn query_stops_after_limit_and_marks_truncated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("lab.2026-07-12.log");
+        std::fs::write(
+            &log_path,
+            [
+                r#"{"timestamp":"2026-07-12T00:00:01Z","level":"INFO","fields":{"message":"one","service":"gateway"}}"#,
+                r#"{"timestamp":"2026-07-12T00:00:02Z","level":"INFO","fields":{"message":"two","service":"gateway"}}"#,
+                r#"{"timestamp":"2026-07-12T00:00:03Z","level":"INFO","fields":{"message":"three","service":"gateway"}}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("write log");
+
+        let params = QueryParams {
+            limit: 1,
+            level: None,
+            target: None,
+            service: Some("gateway".to_string()),
+            action: None,
+            kind: None,
+            query: Some("message".to_string()),
+            file: None,
+            max_scan_bytes: 1024 * 1024,
+        };
+
+        let result = query_from_dir(dir.path(), params).expect("query");
+
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.matched, 1);
+        assert!(result.truncated);
+        assert_eq!(result.scanned_lines, 1);
     }
 }

@@ -493,6 +493,102 @@ pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> 
     paths
 }
 
+#[must_use]
+pub fn build_app_paths() -> Vec<(String, PathItem)> {
+    let generic_json = || {
+        ContentBuilder::new()
+            .schema(Some(RefOr::T(
+                ObjectBuilder::new()
+                    .schema_type(SchemaType::Type(Type::Object))
+                    .build()
+                    .into(),
+            )))
+            .build()
+    };
+    let ok_response = |description: &str| {
+        ResponseBuilder::new()
+            .description(description)
+            .content("application/json", generic_json())
+            .build()
+    };
+    let auth_response = || {
+        ResponseBuilder::new()
+            .description("Authentication failed")
+            .content(
+                "application/json",
+                ContentBuilder::new()
+                    .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
+                        "#/components/schemas/ErrorSdk",
+                    ))))
+                    .build(),
+            )
+            .build()
+    };
+    let manifest = OperationBuilder::new()
+        .tag("apps")
+        .summary(Some("List Labby operator apps"))
+        .description(Some(
+            "Returns app metadata resolved against the live ActionSpec registry.",
+        ))
+        .responses(
+            ResponsesBuilder::new()
+                .response("200", ok_response("Operator app manifest"))
+                .response("401", auth_response())
+                .build(),
+        )
+        .security(SecurityRequirement::new::<&str, [&str; 0], &str>(
+            "bearer_auth",
+            [],
+        ))
+        .build();
+    let server_logs_query = OperationBuilder::new()
+        .tag("apps")
+        .summary(Some("Query Labby server process logs"))
+        .description(Some(
+            "Browser-friendly data route for the Server Logs operator app. Mirrors `server_logs.query`.",
+        ))
+        .responses(
+            ResponsesBuilder::new()
+                .response("200", ok_response("Server log query result"))
+                .response("401", auth_response())
+                .response(
+                    "403",
+                    ResponseBuilder::new()
+                        .description("Admin scope required")
+                        .content(
+                            "application/json",
+                            ContentBuilder::new()
+                                .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
+                                    "#/components/schemas/ErrorSdk",
+                                ))))
+                                .build(),
+                        )
+                        .build(),
+                )
+                .build(),
+        )
+        .security(SecurityRequirement::new::<&str, [&str; 0], &str>(
+            "bearer_auth",
+            [],
+        ))
+        .build();
+
+    vec![
+        (
+            "/v1/apps/manifest".to_string(),
+            PathItemBuilder::new()
+                .operation(utoipa::openapi::HttpMethod::Get, manifest)
+                .build(),
+        ),
+        (
+            "/v1/server-logs/query".to_string(),
+            PathItemBuilder::new()
+                .operation(utoipa::openapi::HttpMethod::Get, server_logs_query)
+                .build(),
+        ),
+    ]
+}
+
 // ── Top-level spec builder ──────────────────────────────────────────────
 
 /// The `OpenApi` derive target. Component schemas are registered here;
@@ -541,6 +637,9 @@ pub fn build_openapi_spec(
         spec.paths.paths.insert(path, item);
     }
     for (path, item) in build_service_paths(&service_names) {
+        spec.paths.paths.insert(path, item);
+    }
+    for (path, item) in build_app_paths() {
         spec.paths.paths.insert(path, item);
     }
 
@@ -771,6 +870,17 @@ mod tests {
         assert_eq!(paths[1].0, "/v1/sonarr");
     }
 
+    #[test]
+    fn build_app_paths_generates_operator_app_routes() {
+        let paths = build_app_paths();
+        assert!(paths.iter().any(|(path, _)| path == "/v1/apps/manifest"));
+        assert!(
+            paths
+                .iter()
+                .any(|(path, _)| path == "/v1/server-logs/query")
+        );
+    }
+
     /// Round-trip integration test: build the full spec from the default registry
     /// and validate its top-level structure.
     #[test]
@@ -797,6 +907,14 @@ mod tests {
             .expect("paths should be an object");
         assert!(paths.contains_key("/health"), "missing /health path");
         assert!(paths.contains_key("/ready"), "missing /ready path");
+        assert!(
+            paths.contains_key("/v1/apps/manifest"),
+            "missing /v1/apps/manifest path"
+        );
+        assert!(
+            paths.contains_key("/v1/server-logs/query"),
+            "missing /v1/server-logs/query path"
+        );
 
         // At least setup (always-on) should have a /v1/setup path
         assert!(paths.contains_key("/v1/setup"), "missing /v1/setup path");
@@ -859,21 +977,28 @@ mod tests {
             "missing bearer_auth security scheme"
         );
 
-        // Service paths should have POST operations with security requirement
+        // Service dispatch paths should have POST operations with security requirement.
+        // Non-dispatch app routes under /v1 (for example /v1/apps/manifest)
+        // are documented separately and may use GET.
         for (path, item) in paths {
-            if path.starts_with("/v1/") && !path.ends_with("/actions") {
-                let post = item.get("post");
+            if path.starts_with("/v1/")
+                && let Some(post) = item.get("post")
+            {
                 assert!(
-                    post.is_some(),
-                    "service path {path} should have a POST operation"
+                    post.get("security").is_some(),
+                    "POST {path} should have security requirement"
                 );
-                if let Some(post) = post {
-                    assert!(
-                        post.get("security").is_some(),
-                        "POST {path} should have security requirement"
-                    );
-                }
             }
+        }
+        for path in ["/v1/apps/manifest", "/v1/server-logs/query"] {
+            let get = paths
+                .get(path)
+                .and_then(|item| item.get("get"))
+                .unwrap_or_else(|| panic!("{path} should have a GET operation"));
+            assert!(
+                get.get("security").is_some(),
+                "GET {path} should have security requirement"
+            );
         }
     }
 }

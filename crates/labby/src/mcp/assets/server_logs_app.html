@@ -134,17 +134,21 @@ const auto=document.getElementById("auto");
 const reload=document.getElementById("reload");
 const widget=document.querySelector(".widget");
 const host=window.LabbyAppHost;
-const bridge=host.mode()==="chatgpt";
+const mode=host.mode();
+const bridge=mode!=="browser";
+const chatgpt=mode==="chatgpt";
 const savedViewsKey="labby.serverLogs.savedViews";
 const filterStateKey="serverLogsFilters";
 let current=null;
 let timer=null;
 let resizePending=false;
 let requestSeq=0;
+let refreshInFlight=false;
+let refreshQueued=false;
 let savedViewCache=null;
 let openLogRows=new Set();
 if(!bridge)document.documentElement.classList.add("browser");
-modePill.textContent=bridge?"chatgpt":"browser";
+modePill.textContent=mode;
 scopePill.textContent="lab:admin";
 function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
 function json(value){try{return JSON.stringify(value,null,2)}catch{return String(value)}}
@@ -193,10 +197,7 @@ function scheduleResize(){
     const height=Math.ceil(rect.height);
     document.documentElement.style.height=`${height}px`;
     document.body.style.height=`${height}px`;
-    const openai=window.openai;
-    if(openai&&typeof openai.requestWidgetResize==="function"){
-      try{openai.requestWidgetResize({height,width:Math.ceil(rect.width)});}catch(_){}
-    }
+    host.requestResize({height,width:Math.ceil(rect.width)});
   });
 }
 function normalizeOutput(value){
@@ -232,12 +233,11 @@ function initialFilters(){
   const params=new URLSearchParams(location.search);
   const fromUrl={level:params.get("level")||"",service:params.get("service")||"",action:params.get("action")||"",kind:params.get("kind")||"",query:params.get("query")||""};
   if(Object.values(fromUrl).some(Boolean))return fromUrl;
-  if(bridge&&window.openai&&window.openai.widgetState&&window.openai.widgetState[filterStateKey])return window.openai.widgetState[filterStateKey];
+  if(chatgpt&&window.openai&&window.openai.widgetState&&window.openai.widgetState[filterStateKey])return window.openai.widgetState[filterStateKey];
   return host.readState(filterStateKey);
 }
-function persistFilters(){
-  const currentFilters=filters();
-  if(bridge&&window.openai&&typeof window.openai.setWidgetState==="function"){
+function persistFilters(currentFilters=filters()){
+  if(chatgpt&&window.openai&&typeof window.openai.setWidgetState==="function"){
     try{window.openai.setWidgetState({[filterStateKey]:currentFilters});}catch(_){}
   }else if(!bridge){
     const params=new URLSearchParams();
@@ -338,16 +338,23 @@ function render(data){
   updatedPill.textContent=new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
   scheduleResize();
 }
-async function callServerLogs(){
-  return await host.callAction("server_logs","server_logs.query",filters(),{route:"/v1/server-logs/query"});
+async function callServerLogs(activeFilters=filters()){
+  return await host.callAction("server_logs","server_logs.query",activeFilters,{route:"/v1/server-logs/query"});
 }
 async function refresh(){
+  if(refreshInFlight){
+    refreshQueued=true;
+    requestSeq++;
+    return;
+  }
+  refreshInFlight=true;
   const seq=++requestSeq;
-  persistFilters();
+  const activeFilters=filters();
+  persistFilters(activeFilters);
   msg.textContent="Loading...";
   refreshPill.textContent="loading";
   try{
-    const result=normalizeOutput(await callServerLogs());
+    const result=normalizeOutput(await callServerLogs(activeFilters));
     if(seq!==requestSeq)return;
     if(result){
       msg.textContent="";
@@ -364,11 +371,25 @@ async function refresh(){
     refreshPill.textContent="error";
     dot.className="dot err";
     scheduleResize();
+  }finally{
+    refreshInFlight=false;
+    if(refreshQueued){
+      refreshQueued=false;
+      void refresh();
+    }else{
+      scheduleAutoRefresh();
+    }
   }
 }
+function clearAutoTimer(){
+  if(timer){clearTimeout(timer);timer=null;}
+}
+function scheduleAutoRefresh(){
+  clearAutoTimer();
+  if(auto.checked)timer=setTimeout(()=>void refresh(),5000);
+}
 function installAuto(){
-  if(timer){clearInterval(timer);timer=null;}
-  if(auto.checked)timer=setInterval(refresh,5000);
+  scheduleAutoRefresh();
 }
 reload.addEventListener("click",()=>void refresh());
 auto.addEventListener("change",installAuto);
@@ -412,7 +433,7 @@ renderSavedViews("");
 if(window.openai&&window.openai.toolOutput)render(normalizeOutput(window.openai.toolOutput));
 else {
   render(null);
-  if(!bridge)void refresh();
+  void refresh();
 }
 })();
 </script>

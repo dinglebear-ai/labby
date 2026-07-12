@@ -11,11 +11,9 @@ use serde::Serialize;
 use crate::app_assets::{SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX};
 use crate::registry::ToolRegistry;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AppKind {
-    Invoke,
     Browse,
 }
 

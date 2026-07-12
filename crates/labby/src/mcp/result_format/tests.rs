@@ -3,7 +3,7 @@
 
 use super::{
     estimate_tokens, estimate_tokens_args, estimate_tokens_value, extract_error_info,
-    tool_error_envelope,
+    format_dispatch_result, tool_error_envelope,
 };
 use crate::dispatch::error::ToolError;
 use crate::mcp::error::{DispatchError, canonical_kind};
@@ -36,6 +36,33 @@ fn estimate_tokens_args_handles_empty_and_populated_maps() {
     populated.insert("name".into(), Value::String("code_mode".into()));
     // `{"name":"code_mode"}` is 20 chars → 5 tokens.
     assert_eq!(estimate_tokens_args(&populated), 5);
+}
+
+#[test]
+fn format_dispatch_result_preserves_text_and_structured_content() {
+    let payload = serde_json::json!({"kind": "server_logs", "entries": []});
+
+    let (result, outcome) = format_dispatch_result(
+        Ok(payload),
+        "server_logs",
+        "server_logs.query",
+        12,
+        "subject",
+        None,
+        2,
+    );
+
+    assert!(matches!(
+        outcome,
+        crate::mcp::logging::DispatchLogOutcome::Success
+    ));
+    assert_eq!(result.content.len(), 1);
+    let structured = result
+        .structured_content
+        .expect("dispatch success should expose structured content");
+    assert_eq!(structured["service"], "server_logs");
+    assert_eq!(structured["action"], "server_logs.query");
+    assert_eq!(structured["data"]["kind"], "server_logs");
 }
 
 #[tokio::test]

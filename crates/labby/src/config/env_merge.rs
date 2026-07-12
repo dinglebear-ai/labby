@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{ErrorKind, Write as _};
+use std::io::{ErrorKind, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::SystemTime;
@@ -483,10 +483,11 @@ fn create_backup(path: &Path) -> Result<PathBuf, MergeError> {
     let counter = BACKUP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     let backup = PathBuf::from(format!("{}.bak.{ms}.{pid}.{counter}", path.display()));
-    fs::copy(path, &backup).map_err(|e| MergeError::WriteFailed {
+    copy_file_contents(path, &backup).map_err(|e| MergeError::WriteFailed {
         path: backup.clone(),
         reason: WriteFailReason::from_io(&e),
     })?;
+    set_secure_perms(&backup);
     Ok(backup)
 }
 
@@ -539,12 +540,25 @@ fn prune_backups(parent: &Path, target: &Path) -> std::io::Result<PruneStats> {
 /// Restore a backup over `target`. Used by setup.draft.commit on rollback.
 #[allow(dead_code)]
 pub fn restore_backup(target: &Path, backup: &Path) -> Result<(), MergeError> {
-    fs::copy(backup, target).map_err(|e| MergeError::CommitRollbackFailed {
+    copy_file_contents(backup, target).map_err(|e| MergeError::CommitRollbackFailed {
         backup_path: backup.to_path_buf(),
         source: e,
     })?;
     set_secure_perms(target);
     Ok(())
+}
+
+fn copy_file_contents(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let mut src = fs::File::open(src)?;
+    let mut dest = fs::File::create(dest)?;
+    let mut buf = [0_u8; 8 * 1024];
+    loop {
+        let read = src.read(&mut buf)?;
+        if read == 0 {
+            return Ok(());
+        }
+        dest.write_all(&buf[..read])?;
+    }
 }
 
 fn quote_value(value: &str) -> String {

@@ -58,6 +58,42 @@
         }
       }
     },
+    "/v1/apps/manifest": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "List Labby operator apps",
+        "description": "Returns app metadata resolved against the live ActionSpec registry.",
+        "responses": {
+          "200": {
+            "description": "Operator app manifest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/doctor": {
       "post": {
         "tags": [
@@ -310,6 +346,52 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMissingParam"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/server-logs/query": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Query Labby server process logs",
+        "description": "Browser-friendly data route for the Server Logs operator app. Mirrors `server_logs.query`.",
+        "responses": {
+          "200": {
+            "description": "Server log query result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin scope required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
                 }
               }
             }
