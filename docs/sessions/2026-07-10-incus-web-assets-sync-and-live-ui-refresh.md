@@ -41,7 +41,7 @@ CARGO_BUILD_JOBS=16 cargo build --workspace --all-features --profile release-fas
 ```
 
 - Identified the live path:
-  - SWAG on `squirts` routes `labby.tootie.tv` to `100.88.16.79:40100`.
+  - SWAG on `squirts` routes `labby.tootie.tv` to `100.64.0.79:40100`.
   - `dookie` maps host port `40100` into the Incus container `labby`.
   - The container service runs `/usr/local/bin/labby serve`.
   - Startup logs showed filesystem web assets at `/home/labby/.labby/web-assets`.
