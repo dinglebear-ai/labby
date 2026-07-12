@@ -368,6 +368,15 @@ smoke-setup:
     rm -rf /tmp/lab-smoke-home
     LABBY_HOME=/tmp/lab-smoke-home cargo run --all-features -- setup --no-browser --smoke
 
+# Validate the Labby plugin setup lifecycle against a throw-away LABBY_HOME.
+validate-plugin:
+    rm -rf /tmp/labby-plugin-validate
+    LABBY_HOME=/tmp/labby-plugin-validate cargo run --all-features -- setup plugin-hook --no-repair --json
+
+# Report the currently installed Labby host-service runtime.
+runtime-current:
+    just host-service-status
+
 # Diagnose the sccache build cache. Reports daemon health (systemd-owned),
 # binary-vs-daemon version skew, cache stats, distributed-build config, and the
 # tail of the error log. Run this FIRST when builds behave oddly (stale/wrong
