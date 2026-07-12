@@ -1,14 +1,15 @@
 [package]
 name = "labby"
-description = "Pluggable homelab CLI + MCP server. One binary, runtime service selection."
+description = "Rust homelab control plane and Labby MCP gateway for agents, plugins, registries, stash workspaces, setup, logs, and fleet operations."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
 readme = "../../README.md"
-keywords = ["homelab", "mcp", "cli", "tui"]
+keywords = ["mcp", "gateway", "homelab", "labby", "agents"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
