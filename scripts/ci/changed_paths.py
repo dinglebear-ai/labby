@@ -18,6 +18,7 @@ OUTPUT_KEYS = [
     "rust_compile",
     "rust_test",
     "web",
+    "npm",
     "docker",
     "security",
     "release",
@@ -65,6 +66,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         },
     )
     web = any_match(paths, lambda p: starts(p, "apps/gateway-admin/"))
+    npm = any_match(paths, lambda p: starts(p, "packages/labby-mcp/") or p == "server.json")
     rust_sources = any_match(
         paths,
         lambda p: starts(
@@ -119,6 +121,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "rust_compile": rust_compile,
         "rust_test": rust_test,
         "web": web,
+        "npm": npm,
         "docker": docker,
         "security": security,
         "release": release,
