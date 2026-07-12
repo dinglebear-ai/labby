@@ -386,7 +386,7 @@ sccache-doctor:
     set -uo pipefail
     # MUST match the systemd unit's socket, or sccache spawns an unmanaged
     # ephemeral server and reports misleading zero stats.
-    export SCCACHE_SERVER_UDS=/tmp/sccache-jmagar.sock
+    export SCCACHE_SERVER_UDS=/home/jmagar/.local/state/sccache/sccache.sock
     echo "── daemon (systemd --user) ─────────────────────────"
     systemctl --user is-active sccache.service 2>/dev/null && \
       systemctl --user show sccache.service -p MainPID -p ActiveEnterTimestamp -p NRestarts 2>/dev/null
@@ -420,7 +420,7 @@ sccache-doctor:
 sccache-restart:
     #!/usr/bin/env bash
     set -euo pipefail
-    export SCCACHE_SERVER_UDS=/tmp/sccache-jmagar.sock
+    export SCCACHE_SERVER_UDS=/home/jmagar/.local/state/sccache/sccache.sock
     echo "restarting sccache.service (systemd --user)…"
     systemctl --user restart sccache.service
     sleep 1
