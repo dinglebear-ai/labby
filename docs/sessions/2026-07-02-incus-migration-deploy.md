@@ -41,7 +41,7 @@ Feature-gated `stash`/`acp`/`nodes` behind cargo features for a lean gateway-onl
 
 - Merged (not rebased/squashed) main into the clean-break branch to preserve every commit on both sides; resolved conflicts keeping main's `#[cfg(feature = "nodes")]` gating **with** the branch's `.labby` paths.
 - Chose full bootstrap re-provision (once the `.labby` migration was merging into main, the earlier revert-collision risk dissolved).
-- TEI URL = `http://100.88.16.79:52000` (dookie Tailscale IP; verified 200 from container; `127.0.0.1` confirmed unreachable from the container).
+- TEI URL = `http://100.64.0.79:52000` (dookie Tailscale IP; verified 200 from container; `127.0.0.1` confirmed unreachable from the container).
 - Fixed uv centrally in the provision action (`cd $HOME` + `UV_NO_CONFIG=1`); siblings use absolute `$HOME` paths so no CWD fix needed there.
 
 ## Files Changed
@@ -90,7 +90,7 @@ Feature-gated `stash`/`acp`/`nodes` behind cargo features for a lean gateway-onl
 | `bash scripts/incus-bootstrap.sh --local-binary target/release-fast/labby --name labby` | exit 0; `provision complete: executed=1, skipped=8` |
 | `incus exec labby -- systemctl is-active labby.service` | active (no manual restart) |
 | `incus exec labby -- curl .../health` and `/ready` | 200 / 200 |
-| `labby gateway code status --json` | `{tei_url: http://100.88.16.79:52000, blend_weight: 0.5}` |
+| `labby gateway code status --json` | `{tei_url: http://100.64.0.79:52000, blend_weight: 0.5}` |
 
 ## Errors Encountered
 
@@ -106,7 +106,7 @@ Feature-gated `stash`/`acp`/`nodes` behind cargo features for a lean gateway-onl
 | full bootstrap re-run | exit 0, provision self-completes | exit 0, executed=1/skipped=8, service auto-started | pass |
 | systemctl is-active labby.service | active (unattended) | active | pass |
 | /health, /ready | 200 | 200, 200 | pass |
-| gateway code status | tei_url set | `http://100.88.16.79:52000` | pass |
+| gateway code status | tei_url set | `http://100.64.0.79:52000` | pass |
 | `python --version` (labby) | resolves | Python 3.14.6 | pass |
 | TEI reachable from container | 200 | 200 | pass |
 

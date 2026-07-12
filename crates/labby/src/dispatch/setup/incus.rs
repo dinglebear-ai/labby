@@ -1908,13 +1908,13 @@ config:
 Host *
   User ignored
 
-Host tootie nas
-  HostName 100.120.242.29
-  User jacob
+Host nas-host nas
+  HostName 100.64.0.29
+  User operator
   Port 2222
 
-Host dookie
-  HostName dookie.manatee-triceratops.ts.net
+Host dev-host
+  HostName dev-host.example-tailnet.ts.net
 
 Host github.com
   User git
@@ -1934,20 +1934,20 @@ Include ~/.ssh/extra
             targets,
             vec![
                 IncusSshTarget {
-                    alias: "tootie".into(),
-                    host: "100.120.242.29".into(),
-                    user: Some("jacob".into()),
+                    alias: "nas-host".into(),
+                    host: "100.64.0.29".into(),
+                    user: Some("operator".into()),
                     port: Some(2222),
                 },
                 IncusSshTarget {
                     alias: "nas".into(),
-                    host: "100.120.242.29".into(),
-                    user: Some("jacob".into()),
+                    host: "100.64.0.29".into(),
+                    user: Some("operator".into()),
                     port: Some(2222),
                 },
                 IncusSshTarget {
-                    alias: "dookie".into(),
-                    host: "dookie.manatee-triceratops.ts.net".into(),
+                    alias: "dev-host".into(),
+                    host: "dev-host.example-tailnet.ts.net".into(),
                     user: None,
                     port: None,
                 },
@@ -1967,11 +1967,11 @@ Include ~/.ssh/extra
 Host *
   User ignored
 
-Host dookie
-  HostName dookie.manatee-triceratops.ts.net
+Host dev-host
+  HostName dev-host.example-tailnet.ts.net
 
-Host squirts
-  HostName squirts
+Host edge-host
+  HostName edge-host
 
 Host github.com
   User git
@@ -1986,8 +1986,8 @@ Host github.com
             key_path: "/home/labby/.ssh/id_ed25519".into(),
             dry_run: true,
             fail_fast: false,
-            include: vec!["dookie".into()],
-            exclude: vec!["squirts".into()],
+            include: vec!["dev-host".into()],
+            exclude: vec!["edge-host".into()],
             install_config: true,
             timeout_seconds: 10,
         })
@@ -1999,20 +1999,20 @@ Host github.com
                 .iter()
                 .map(|target| target.alias.as_str())
                 .collect::<Vec<_>>(),
-            vec!["dookie"]
+            vec!["dev-host"]
         );
         assert_eq!(outcome.skipped_wildcard, vec!["*"]);
         assert_eq!(outcome.skipped_github, vec!["github.com"]);
-        assert_eq!(outcome.skipped_not_included, vec!["squirts"]);
+        assert_eq!(outcome.skipped_not_included, vec!["edge-host"]);
         assert!(outcome.steps.iter().any(|step| step.contains("sanitized")));
     }
 
     #[test]
     fn builds_authorize_ssh_command_with_config_and_option_terminator() {
         let target = IncusSshTarget {
-            alias: "tootie".into(),
-            host: "100.120.242.29".into(),
-            user: Some("jacob".into()),
+            alias: "nas-host".into(),
+            host: "100.64.0.29".into(),
+            user: Some("operator".into()),
             port: Some(2222),
         };
         let config = PathBuf::from("/tmp/labby-test-ssh-config");
@@ -2024,21 +2024,21 @@ Host github.com
         assert!(has_arg_pair(&args, "-o", OsStr::new("ConnectTimeout=7")));
         assert!(
             args.windows(2)
-                .any(|pair| pair == [OsStr::new("--"), OsStr::new("tootie")])
+                .any(|pair| pair == [OsStr::new("--"), OsStr::new("nas-host")])
         );
     }
 
     #[test]
     fn renders_sanitized_container_ssh_config() {
         let config = render_sanitized_ssh_config(&[IncusSshTarget {
-            alias: "tootie".into(),
-            host: "100.120.242.29".into(),
+            alias: "nas-host".into(),
+            host: "100.64.0.29".into(),
             user: Some("root".into()),
             port: Some(29229),
         }]);
 
-        assert!(config.contains("Host tootie"));
-        assert!(config.contains("  HostName 100.120.242.29"));
+        assert!(config.contains("Host nas-host"));
+        assert!(config.contains("  HostName 100.64.0.29"));
         assert!(config.contains("  User root"));
         assert!(config.contains("  Port 29229"));
         assert!(config.contains("  IdentityFile ~/.ssh/id_ed25519"));
@@ -2053,9 +2053,9 @@ Host github.com
         std::fs::write(
             &config,
             r#"
-Host tootie
-  HostName 100.120.242.29
-  User jacob
+Host nas-host
+  HostName 100.64.0.29
+  User operator
 "#,
         )
         .unwrap();
@@ -2082,7 +2082,7 @@ Host tootie
         );
         assert_eq!(
             outcome.steps[1],
-            "authorize container public key on jacob@100.120.242.29"
+            "authorize container public key on operator@100.64.0.29"
         );
     }
 
