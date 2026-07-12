@@ -59,9 +59,13 @@ export default defineConfig({
         // action list, no markdown/code yet) does not pay their JS-init before
         // first interactive paint. Pairs with Lane R's React.lazy on the
         // markdown body — these chunks then load only when a result renders.
-        manualChunks: {
-          shiki: ["shiki"],
-          streamdown: ["streamdown"],
+        manualChunks: (id) => {
+          if (id.includes("/node_modules/shiki/")) {
+            return "shiki";
+          }
+          if (id.includes("/node_modules/streamdown/")) {
+            return "streamdown";
+          }
         },
       },
     },
