@@ -1,0 +1,87 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "ai.dinglebear/labby",
+  "title": "Labby",
+  "description": "Local-first MCP gateway and homelab control plane with CLI, HTTP API, and web UI.",
+  "version": "1.1.0",
+  "websiteUrl": "https://github.com/jmagar/labby",
+  "repository": {
+    "url": "https://github.com/jmagar/labby",
+    "source": "github",
+    "id": "1204404948"
+  },
+  "icons": [
+    {
+      "src": "https://avatars.githubusercontent.com/u/38927646?v=4",
+      "mimeType": "image/png",
+      "sizes": [
+        "460x460"
+      ],
+      "theme": "dark"
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "labby-mcp",
+      "version": "1.1.0",
+      "runtimeHint": "npx",
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp",
+          "description": "Run Labby's stdio MCP server entrypoint.",
+          "format": "string",
+          "isRequired": true,
+          "isSecret": false,
+          "isRepeated": false
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "LABBY_VERSION",
+          "description": "Optional GitHub release tag override for the downloaded Labby binary.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": false,
+          "placeholder": "v1.1.0"
+        },
+        {
+          "name": "LABBY_REPO",
+          "description": "Optional GitHub owner/repo override for release asset downloads.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "jmagar/labby",
+          "placeholder": "jmagar/labby"
+        },
+        {
+          "name": "LABBY_LOG",
+          "description": "Tracing filter for Labby runtime logs.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "labby=info,labby_apis=warn",
+          "placeholder": "labby=info,labby_apis=warn"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "namespace": "ai.dinglebear",
+      "dnsDomain": "dinglebear.ai",
+      "distribution": {
+        "npm": "labby-mcp@1.1.0"
+      },
+      "buildInfo": {
+        "version": "1.1.0",
+        "repository": "https://github.com/jmagar/labby"
+      }
+    }
+  }
+}

@@ -120,6 +120,8 @@ RUN find crates -type f -exec touch {} + \
 #       builds — floating tag resolves a fresh image per build.
 FROM debian:trixie-slim AS runtime
 
+LABEL io.modelcontextprotocol.server.name="ai.dinglebear/labby"
+
 # ca-certificates: reqwest uses rustls for TLS but still validates against the
 # system CA bundle — required for outbound HTTPS calls.
 # git: the marketplace feature shells out to `git` (fetch/show/rev-parse) for

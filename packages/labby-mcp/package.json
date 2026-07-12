@@ -1,0 +1,41 @@
+{
+  "name": "labby-mcp",
+  "version": "1.1.0",
+  "description": "Node launcher for the Labby MCP gateway and CLI binary.",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/jmagar/labby#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jmagar/labby.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jmagar/labby/issues"
+  },
+  "mcpName": "ai.dinglebear/labby",
+  "bin": {
+    "labby-mcp": "bin/labby.js",
+    "labby": "bin/labby.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "scripts/",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "test": "node --test",
+    "check": "node --check bin/labby.js && node --check scripts/install.js && node --check lib/platform.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "agent",
+    "cli",
+    "gateway",
+    "homelab",
+    "labby",
+    "mcp"
+  ]
+}

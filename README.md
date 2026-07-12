@@ -61,6 +61,12 @@ labby setup
 labby serve --host 127.0.0.1 --port 8765
 ```
 
+MCP clients that prefer npm launchers can run Labby through the Node wrapper:
+
+```bash
+npx -y labby-mcp mcp
+```
+
 Windows PowerShell:
 
 ```powershell

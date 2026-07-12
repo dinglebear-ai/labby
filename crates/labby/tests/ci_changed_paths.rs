@@ -63,10 +63,30 @@ fn docs_only_changes_skip_expensive_runtime_categories() {
     assert_eq!(out["rust_compile"], "false");
     assert_eq!(out["rust_test"], "false");
     assert_eq!(out["web"], "false");
+    assert_eq!(out["npm"], "false");
     assert_eq!(out["docker"], "false");
     assert_eq!(out["security"], "false");
     assert_eq!(out["release"], "false");
     assert_eq!(out["docs_check"], "true");
+}
+
+#[test]
+fn npm_launcher_changes_enable_npm_checks_only() {
+    let out = classify("pull_request", &["packages/labby-mcp/lib/platform.js"]);
+    assert_eq!(out["npm"], "true");
+    assert_eq!(out["rust_compile"], "false");
+    assert_eq!(out["rust_test"], "false");
+    assert_eq!(out["web"], "false");
+    assert_eq!(out["docker"], "false");
+    assert_eq!(out["security"], "false");
+}
+
+#[test]
+fn server_json_changes_enable_npm_registry_checks() {
+    let out = classify("pull_request", &["server.json"]);
+    assert_eq!(out["npm"], "true");
+    assert_eq!(out["rust_compile"], "false");
+    assert_eq!(out["rust_test"], "false");
 }
 
 #[test]

@@ -271,3 +271,111 @@ jobs:
           else
             gh release create "$RELEASE_TAG" "${files[@]}" --generate-notes
           fi
+
+  npm:
+    name: Publish npm launcher
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      - name: Verify launcher version matches tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./packages/labby-mcp/package.json').version")"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::packages/labby-mcp/package.json version $version does not match tag $GITHUB_REF_NAME"
+            exit 1
+          fi
+      - name: Verify npm launcher package
+        run: |
+          set -euo pipefail
+          npm test --prefix packages/labby-mcp
+          npm run check --prefix packages/labby-mcp
+          npm pack --dry-run --json ./packages/labby-mcp
+      - name: Check whether npm version already exists
+        id: npm-version
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./packages/labby-mcp/package.json').version")"
+          if npm view "labby-mcp@$version" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish npm launcher
+        if: steps.npm-version.outputs.exists != 'true'
+        run: npm publish --access public ./packages/labby-mcp
+
+  mcp-registry:
+    name: Publish MCP Registry metadata
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Install mcp-publisher
+        run: |
+          set -euo pipefail
+          archive="mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz"
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/${archive}" \
+            | tar xz mcp-publisher
+          chmod +x ./mcp-publisher
+          ./mcp-publisher --version
+      - name: Verify registry metadata version matches tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(python3 -c "import json; print(json.load(open('server.json'))['version'])")"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::server.json version $version does not match tag $GITHUB_REF_NAME"
+            exit 1
+          fi
+      - name: Check whether MCP Registry version already exists
+        id: mcp-version
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          doc = json.load(open("server.json"))
+          name = urllib.parse.quote(doc["name"], safe="")
+          version = urllib.parse.quote(doc["version"], safe="")
+          url = f"https://registry.modelcontextprotocol.io/v0.1/servers/{name}/versions/{version}"
+          request = urllib.request.Request(url, headers={"Accept": "application/json"})
+          try:
+              with urllib.request.urlopen(request, timeout=20):
+                  print("exists=true")
+          except urllib.error.HTTPError as error:
+              if error.code == 404:
+                  print("exists=false")
+              else:
+                  raise
+          PY
+      - name: Publish MCP Registry metadata
+        if: steps.mcp-version.outputs.exists != 'true'
+        env:
+          MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$MCP_PRIVATE_KEY"
+          ./mcp-publisher login dns --domain dinglebear.ai --private-key "$MCP_PRIVATE_KEY"
+          ./mcp-publisher publish server.json
