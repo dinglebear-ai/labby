@@ -322,6 +322,9 @@ async fn execute_snippet_outcome(
             CodeModeSurface::Cli,
             config,
             ToolScope::default(),
+            // Snippet execution is a local trusted-CLI path with no durable-run
+            // execution id; `None` keeps `record_step` write-free here.
+            None,
         )
         .await
         .map_err(|error| error.into_tool_error())?;

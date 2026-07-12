@@ -39,7 +39,10 @@ pub(crate) fn sanitize_log_text(input: &str, max_len: usize) -> String {
     redacted.chars().take(max_len).collect()
 }
 
-fn redact_secret_like_segments(input: &str) -> String {
+/// Redact secret-shaped whitespace-delimited segments (API keys, tokens, JWTs)
+/// from free text. Reused by the gateway step-journal store to redact
+/// caller-authored step names/values at rest.
+pub fn redact_secret_like_segments(input: &str) -> String {
     let after_split = input
         .split_whitespace()
         .map(|segment| {

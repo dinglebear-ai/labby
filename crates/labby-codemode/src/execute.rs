@@ -47,9 +47,10 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         config: CodeModeConfig,
         scope: ToolScope,
+        execution_id: Option<std::sync::Arc<str>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         Ok(self
-            .execute_with_raw_response(code, caller, surface, config, scope)
+            .execute_with_raw_response(code, caller, surface, config, scope, execution_id)
             .await?
             .display_response)
     }
@@ -61,6 +62,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         config: CodeModeConfig,
         scope: ToolScope,
+        execution_id: Option<std::sync::Arc<str>>,
     ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
         // `codemode` is exposed only when the host's Code Mode surface is
         // enabled; the surface handler gates on that before reaching here.
@@ -82,6 +84,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 config.max_log_bytes,
                 config.trace_params,
                 scope,
+                execution_id,
             )
             .await?;
         // Surface any last-wins captured mcp-ui widget link. `{ __ui: <result> }`
@@ -229,6 +232,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         max_log_bytes: usize,
         trace_params: bool,
         scope: ToolScope,
+        execution_id: Option<std::sync::Arc<str>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Cloudflare-parity: no typed TypeScript preamble is injected. The
         // sandbox exposes only `callTool(id, params)`; the agent uses tool ids
@@ -285,6 +289,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             max_log_bytes,
             trace_params,
             scope,
+            execution_id,
         )
         .await
     }
