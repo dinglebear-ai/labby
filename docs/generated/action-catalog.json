@@ -2041,6 +2041,122 @@
     "builtin": false
   },
   {
+    "service": "server_logs",
+    "action": "help",
+    "description": "Show this action catalog",
+    "destructive": false,
+    "params": [],
+    "returns": "Catalog",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "server_logs",
+    "action": "schema",
+    "description": "Return the parameter schema for a named action",
+    "destructive": false,
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "Schema",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "server_logs",
+    "action": "server_logs.query",
+    "description": "Read and filter Labby's rolling JSON server process logs",
+    "destructive": false,
+    "params": [
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Maximum matching entries to return, newest first after filtering"
+      },
+      {
+        "name": "level",
+        "ty": "string",
+        "required": false,
+        "description": "Exact tracing level filter, such as INFO, WARN, or ERROR"
+      },
+      {
+        "name": "target",
+        "ty": "string",
+        "required": false,
+        "description": "Substring filter for the tracing target/module"
+      },
+      {
+        "name": "service",
+        "ty": "string",
+        "required": false,
+        "description": "Exact or substring filter for the structured service field"
+      },
+      {
+        "name": "action",
+        "ty": "string",
+        "required": false,
+        "description": "Exact or substring filter for the structured action field"
+      },
+      {
+        "name": "kind",
+        "ty": "string",
+        "required": false,
+        "description": "Exact or substring filter for the structured kind/error field"
+      },
+      {
+        "name": "query",
+        "ty": "string",
+        "required": false,
+        "description": "Case-insensitive text search across message, target, and fields"
+      },
+      {
+        "name": "file",
+        "ty": "string",
+        "required": false,
+        "description": "Substring filter for a retained log filename"
+      },
+      {
+        "name": "max_scan_bytes",
+        "ty": "integer",
+        "required": false,
+        "description": "Bounded byte budget scanned across newest retained log files"
+      }
+    ],
+    "returns": "ServerLogsQueryResult",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
     "service": "setup",
     "action": "bootstrap",
     "description": "Create ~/.labby/.env with a generated token + loopback defaults when absent (first-run)",

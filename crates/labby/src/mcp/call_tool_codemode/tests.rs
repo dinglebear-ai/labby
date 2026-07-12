@@ -288,7 +288,11 @@ fn execute_trace_embeds_result_and_redacts_call_params() {
             ok: true,
             elapsed_ms: 12,
             start_ms: Some(3),
-            params: Some(json!({"query": "bug", "token": "[redacted]"})),
+            params: Some(json!({
+                "action": "issues.search",
+                "query": "bug",
+                "token": "[redacted]"
+            })),
             error_kind: None,
         }],
         logs: vec!["one".to_string()],
@@ -301,6 +305,10 @@ fn execute_trace_embeds_result_and_redacts_call_params() {
     // namespace field is `namespace` (was `upstream`).
     assert_eq!(trace["calls"][0]["namespace"], json!("github"));
     assert_eq!(trace["calls"][0]["tool"], json!("search_issues"));
+    assert_eq!(
+        trace["calls"][0]["params"]["action"],
+        json!("issues.search")
+    );
     // Per-call params remain redacted — that is the secret-bearing channel.
     assert_eq!(trace["calls"][0]["params"]["token"], json!("[redacted]"));
 

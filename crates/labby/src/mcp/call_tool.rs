@@ -30,6 +30,7 @@ use crate::dispatch::upstream::types::UpstreamTool;
 use crate::mcp::call_tool_upstream::PreResolvedUpstreamTool;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
+use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 use crate::mcp::context::{
     auth_context_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
@@ -219,7 +220,7 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let mut resolved_upstream_tool = None;
         #[cfg(feature = "gateway")]
-        if self.code_mode_visibility().await.hides_raw_tools() {
+        if self.code_mode_visibility().await.hides_raw_tools() && service != SERVER_LOGS_TOOL_NAME {
             let widget_callback = if svc.is_none() {
                 match self.resolve_widget_callback_gate(&service, &context).await {
                     Ok(gate) => gate,

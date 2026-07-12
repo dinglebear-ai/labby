@@ -506,6 +506,24 @@ The `plugins/labby` plugin ships skills, commands, and MCP config, not a
 `labby setup plugin-hook` to sync settings. Hooks should stay advisory: no binary
 bundling, no auto-install, and no Docker/systemd bootstrap.
 
+## Related Servers
+
+- `unifi-rmcp / rustifi` - UniFi controller REST API bridge.
+- `tailscale-rmcp / rustscale` - Tailscale API bridge for devices, users, and tailnet operations.
+- `unraid-rmcp / unrust` - Unraid GraphQL bridge for NAS and server management.
+- `apprise-rmcp` - Apprise notification fan-out bridge for many delivery backends.
+- `gotify-rmcp` - Gotify push notification bridge for sends, messages, apps, and clients.
+- `arcane-rmcp` - Arcane Docker management bridge for containers and related resources.
+- `yarr-rmcp` - Media-stack bridge for Sonarr, Radarr, Prowlarr, Plex, and related services.
+- `ytdl-mcp` - Media download and metadata workflow server.
+- `synapse` - Local Synapse workflow server for scout and flux actions.
+- `cortex` - Syslog and homelab log aggregation MCP server.
+- `axon` - RAG, crawl, scrape, extract, and semantic search project.
+- `lumen` - Local semantic code search MCP server.
+- `nugs` - Project/package management helper for local agent workflows.
+- `agentcast` - Agent transcript and activity publishing project.
+- `soma` - RMCP scaffold/runtime template for new provider-backed servers.
+
 ## Documentation
 
 Start at [docs/README.md](./docs/README.md). High-value entrypoints:

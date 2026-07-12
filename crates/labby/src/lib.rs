@@ -21,6 +21,8 @@
 
 #[allow(unreachable_pub)]
 pub mod api;
+pub(crate) mod app_assets;
+pub(crate) mod app_manifest;
 pub mod catalog;
 #[allow(unreachable_pub)]
 pub mod cli;
