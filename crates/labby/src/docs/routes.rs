@@ -1,4 +1,8 @@
 use super::types::RouteDoc;
+use crate::app_manifest::{
+    APPS_LAUNCHER_ROUTE, APPS_MANIFEST_API_ROUTE, LABBY_APP_HOST_JS_ROUTE,
+    SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_QUERY_API_ROUTE,
+};
 
 pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
     let mut routes = vec![
@@ -35,6 +39,18 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             concat!("/v1/", "{service}", "/actions"),
             "services",
             "service action metadata",
+        ),
+        auth(
+            "GET",
+            APPS_MANIFEST_API_ROUTE,
+            "apps",
+            "operator app manifest",
+        ),
+        auth(
+            "GET",
+            SERVER_LOGS_QUERY_API_ROUTE,
+            "apps",
+            "server logs app data query",
         ),
         auth(
             "POST",
@@ -176,9 +192,27 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "get MCP Registry compatibility server version",
         )
         .feature("marketplace"),
-        browser("GET", "/auth/login", "browser login redirect"),
-        browser("GET", "/auth/session", "browser session introspection"),
-        browser("POST", "/auth/logout", "browser session logout"),
+        browser("GET", "/auth/login", "oauth", "browser login redirect"),
+        browser(
+            "GET",
+            "/auth/session",
+            "oauth",
+            "browser session introspection",
+        ),
+        browser("POST", "/auth/logout", "oauth", "browser session logout"),
+        browser("GET", APPS_LAUNCHER_ROUTE, "apps", "operator app launcher"),
+        browser(
+            "GET",
+            SERVER_LOGS_BROWSER_ROUTE,
+            "apps",
+            "server logs app page",
+        ),
+        public(
+            "GET",
+            LABBY_APP_HOST_JS_ROUTE,
+            "apps",
+            "shared app host bridge asset",
+        ),
         public(
             "GET",
             "/auth/google/callback",
@@ -286,12 +320,12 @@ fn oauth(method: &str, path: &str, notes: &str) -> RouteDoc {
     }
 }
 
-fn browser(method: &str, path: &str, notes: &str) -> RouteDoc {
+fn browser(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
     RouteDoc {
         auth_required: true,
         session_cookie_allowed: true,
         csrf_required: csrf_required(method, true),
-        ..public(method, path, "oauth", notes)
+        ..public(method, path, group, notes)
     }
 }
 
@@ -355,5 +389,25 @@ mod tests {
         assert!(mcp.bearer_only);
         assert!(!mcp.session_cookie_allowed);
         assert!(!mcp.csrf_required);
+    }
+
+    #[test]
+    fn operator_app_routes_are_documented() {
+        let routes = build_route_docs(&["server_logs".to_string()]);
+        for (method, path) in [
+            ("GET", APPS_MANIFEST_API_ROUTE),
+            ("GET", SERVER_LOGS_QUERY_API_ROUTE),
+            ("POST", "/v1/server_logs"),
+            ("GET", APPS_LAUNCHER_ROUTE),
+            ("GET", SERVER_LOGS_BROWSER_ROUTE),
+            ("GET", LABBY_APP_HOST_JS_ROUTE),
+        ] {
+            assert!(
+                routes
+                    .iter()
+                    .any(|route| route.method == method && route.path == path),
+                "missing documented route {method} {path}"
+            );
+        }
     }
 }

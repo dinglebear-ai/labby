@@ -75,10 +75,10 @@ pub(crate) fn format_dispatch_result(
                 "dispatch ok"
             );
             let envelope = build_success(service, action, &v);
-            (
-                CallToolResult::success(vec![ContentBlock::text(envelope.to_string())]),
-                DispatchLogOutcome::Success,
-            )
+            let mut result =
+                CallToolResult::success(vec![ContentBlock::text(envelope.to_string())]);
+            result.structured_content = Some(envelope);
+            (result, DispatchLogOutcome::Success)
         }
         Err(e) => {
             let (kind, message, extra) = extract_error_info(&e);
@@ -120,8 +120,10 @@ pub(crate) fn format_dispatch_result(
                 || build_error(service, action, kind, &message),
                 |ref extra| build_error_extra(service, action, kind, &message, extra),
             );
+            let mut result = CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
+            result.structured_content = Some(envelope);
             (
-                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]),
+                result,
                 DispatchLogOutcome::Failure {
                     level: if is_fatal {
                         LoggingLevel::Error

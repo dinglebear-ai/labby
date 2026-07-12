@@ -11,7 +11,22 @@ pub(crate) const SERVER_LOGS_APP_HTML: &str = include_str!("mcp/assets/server_lo
 pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
   "use strict";
   if (window.LabbyAppHost) return;
-  const hasBridge = () => !!(window.openai && typeof window.openai.callTool === "function");
+  const MCP_PROTOCOL_VERSION = "2026-01-26";
+  const mcpState = {};
+  const pending = new Map();
+  let rpcId = 1;
+  let mcpConnectPromise = null;
+  const hasOpenAiBridge = () => !!(window.openai && typeof window.openai.callTool === "function");
+  const hasMcpBridge = () => window.__LABBY_MCP_RESOURCE === true && window.parent && window.parent !== window;
+  window.addEventListener("message", event => {
+    if (event.source !== window.parent) return;
+    const data = event.data;
+    if (!data || data.jsonrpc !== "2.0" || !pending.has(data.id)) return;
+    const callbacks = pending.get(data.id);
+    pending.delete(data.id);
+    if (data.error) callbacks.reject(new Error(data.error.message || "MCP app request failed"));
+    else callbacks.resolve(data.result);
+  });
   function paramsToSearch(params) {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params || {})) {
@@ -19,7 +34,50 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
     }
     return search;
   }
-  async function callViaBridge(service, action, params) {
+  function mcpRequest(method, params, timeoutMs = 15000) {
+    if (!hasMcpBridge()) throw new Error("MCP app bridge unavailable");
+    const id = rpcId++;
+    const message = { jsonrpc: "2.0", id, method, params };
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`${method} timed out`));
+      }, timeoutMs);
+      pending.set(id, {
+        resolve(value) {
+          clearTimeout(timeout);
+          resolve(value);
+        },
+        reject(error) {
+          clearTimeout(timeout);
+          reject(error);
+        }
+      });
+      window.parent.postMessage(message, "*");
+    });
+  }
+  function mcpNotify(method, params) {
+    if (!hasMcpBridge()) return;
+    window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+  }
+  async function connectMcp() {
+    if (!hasMcpBridge()) throw new Error("MCP app bridge unavailable");
+    if (!mcpConnectPromise) {
+      mcpConnectPromise = mcpRequest("ui/initialize", {
+        appInfo: { name: "LabbyServerLogs", version: "1.0.0" },
+        appCapabilities: {},
+        protocolVersion: MCP_PROTOCOL_VERSION
+      }).then(result => {
+        mcpNotify("ui/notifications/initialized", {});
+        return result;
+      }).catch(err => {
+        mcpConnectPromise = null;
+        throw err;
+      });
+    }
+    return mcpConnectPromise;
+  }
+  async function callViaOpenAi(service, action, params) {
     const args = { action, params: params || {} };
     try {
       return await window.openai.callTool({ name: service, arguments: args });
@@ -27,6 +85,13 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
       if (!shouldRetryLegacyCallTool(err)) throw err;
       return await window.openai.callTool(service, args);
     }
+  }
+  async function callViaMcp(service, action, params) {
+    await connectMcp();
+    return await mcpRequest("tools/call", {
+      name: service,
+      arguments: { action, params: params || {} }
+    }, 30000);
   }
   function shouldRetryLegacyCallTool(err) {
     if (err instanceof TypeError) return true;
@@ -50,23 +115,39 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
     return payload;
   }
   window.LabbyAppHost = {
-    mode() { return hasBridge() ? "chatgpt" : "browser"; },
-    hasBridge,
+    mode() {
+      if (hasOpenAiBridge()) return "chatgpt";
+      if (hasMcpBridge()) return "mcp";
+      return "browser";
+    },
+    hasBridge() { return hasOpenAiBridge() || hasMcpBridge(); },
     async callAction(service, action, params, options = {}) {
-      return hasBridge()
-        ? callViaBridge(service, action, params)
-        : callViaHttp(service, action, params, options);
+      if (hasOpenAiBridge()) return callViaOpenAi(service, action, params);
+      if (hasMcpBridge()) return callViaMcp(service, action, params);
+      return callViaHttp(service, action, params, options);
+    },
+    requestResize(size) {
+      if (hasOpenAiBridge() && typeof window.openai.requestWidgetResize === "function") {
+        try { window.openai.requestWidgetResize(size); } catch (_) {}
+      } else if (hasMcpBridge()) {
+        mcpNotify("ui/notifications/size-changed", size || {});
+      }
     },
     readState(key) {
-      if (hasBridge() && window.openai.widgetState && key in window.openai.widgetState) {
+      if (hasOpenAiBridge() && window.openai.widgetState && key in window.openai.widgetState) {
         return window.openai.widgetState[key];
       }
+      if (hasMcpBridge()) return key ? (mcpState[key] ?? null) : null;
       if (!key) return null;
       try { return JSON.parse(localStorage.getItem(key) || "null"); } catch (_) { return null; }
     },
     writeState(key, value) {
-      if (hasBridge() && typeof window.openai.setWidgetState === "function") {
+      if (hasOpenAiBridge() && typeof window.openai.setWidgetState === "function") {
         try { window.openai.setWidgetState({ [key]: value }); } catch (_) {}
+        return;
+      }
+      if (hasMcpBridge()) {
+        if (key) mcpState[key] = value;
         return;
       }
       if (!key) return;

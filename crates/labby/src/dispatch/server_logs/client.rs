@@ -18,8 +18,8 @@ pub(super) fn log_dir() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    crate::config::load_toml(&crate::config::toml_candidates())
-        .ok()
+    crate::config::config_toml_path()
+        .and_then(|path| crate::config::load_toml(&[path]).ok())
         .and_then(|config| config.log.dir)
         .unwrap_or_else(default_log_dir)
 }
@@ -44,12 +44,22 @@ pub(super) fn log_files(dir: &Path) -> Result<Vec<LogFile>, ToolError> {
             message: format!("failed to read server log directory entry: {err}"),
         })?;
         let path = entry.path();
-        if !path.is_file() || !looks_like_lab_log(&path) {
+        let file_type = entry.file_type().map_err(|err| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!(
+                "failed to inspect server log file `{}`: {err}",
+                display_path(&path)
+            ),
+        })?;
+        if !file_type.is_file() || !looks_like_lab_log(&path) {
             continue;
         }
         let metadata = entry.metadata().map_err(|err| ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
-            message: format!("failed to stat server log file `{}`: {err}", path.display()),
+            message: format!(
+                "failed to stat server log file `{}`: {err}",
+                display_path(&path)
+            ),
         })?;
         let modified_unix_ms = metadata
             .modified()
@@ -88,4 +98,26 @@ fn looks_like_lab_log(path: &Path) -> bool {
         return false;
     };
     name.starts_with("lab") && name.ends_with(".log")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn log_files_skip_symlinked_lab_logs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("lab.real.log");
+        let target = dir.path().join("outside.log");
+        let link = dir.path().join("lab.link.log");
+        std::fs::write(&real, "real\n").expect("write real");
+        std::fs::write(&target, "secret\n").expect("write target");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        let files = log_files(dir.path()).expect("log files");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "lab.real.log");
+    }
 }
