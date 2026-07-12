@@ -58,6 +58,14 @@ function extractTarGz(archive, destination) {
   run("tar", ["-xzf", archive, "-C", destination], "tar extraction failed");
 }
 
+function powershellLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function powershellExpandArchiveCommand(archive, destination) {
+  return `Expand-Archive -LiteralPath ${powershellLiteral(archive)} -DestinationPath ${powershellLiteral(destination)} -Force`;
+}
+
 function extractZip(archive, destination) {
   if (process.platform === "win32") {
     run(
@@ -69,9 +77,7 @@ function extractZip(archive, destination) {
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
-        archive,
-        destination,
+        powershellExpandArchiveCommand(archive, destination),
       ],
       "zip extraction failed",
     );
@@ -127,7 +133,14 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  log(error.message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    log(error.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  powershellExpandArchiveCommand,
+  powershellLiteral,
+};
