@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0](https://github.com/jmagar/labby/compare/v1.2.0...v1.3.0) (2026-07-12)
+
+
+### Added
+
+* add Labby operator apps ([efd06ff](https://github.com/jmagar/labby/commit/efd06ff8e20f29a904a638c364869fb14d4d1df9))
+* publish labby via npm and MCP registry ([a0db54c](https://github.com/jmagar/labby/commit/a0db54c1ed71573de5c2a7a065b560cdf69a98cd))
+
+
+### Fixed
+
+* address operator app review findings ([ada96f2](https://github.com/jmagar/labby/commit/ada96f22441311611c89b304ae455b6bb73a4436))
+* address pr toolkit review findings ([15c5541](https://github.com/jmagar/labby/commit/15c55412ceb491ed10b1c1077d88f049e75ff6bc))
+* **lab-5vssx:** repair Windows npm archive extraction ([#235](https://github.com/jmagar/labby/issues/235)) ([69c1e90](https://github.com/jmagar/labby/commit/69c1e90a2337d520cef9a38b3bf51badf27db4ef))
+
 ## [1.2.0](https://github.com/jmagar/labby/compare/v1.1.0...v1.2.0) (2026-07-12)
 
 
