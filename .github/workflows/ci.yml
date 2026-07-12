@@ -40,6 +40,7 @@ jobs:
       rust_compile: ${{ steps.classify.outputs.rust_compile }}
       rust_test: ${{ steps.classify.outputs.rust_test }}
       web: ${{ steps.classify.outputs.web }}
+      npm: ${{ steps.classify.outputs.npm }}
       docker: ${{ steps.classify.outputs.docker }}
       security: ${{ steps.classify.outputs.security }}
       release: ${{ steps.classify.outputs.release }}
@@ -59,7 +60,7 @@ jobs:
           #!/usr/bin/env python3
           import argparse
           from pathlib import Path
-          keys = "all docs docs_check workflow rust_compile rust_test web docker security release".split()
+          keys = "all docs docs_check workflow rust_compile rust_test web npm docker security release".split()
           parser = argparse.ArgumentParser()
           parser.add_argument("--event", required=True)
           parser.add_argument("--output", type=Path, required=True)
@@ -204,6 +205,25 @@ jobs:
           cargo run -p labby --all-features --locked -- --json gateway code exec \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
+
+  npm-launcher:
+    name: npm launcher
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.npm == 'true' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "lts/*"
+      - name: Test npm launcher
+        run: |
+          set -euo pipefail
+          npm test --prefix packages/labby-mcp
+          npm run check --prefix packages/labby-mcp
+          npm pack --dry-run --json ./packages/labby-mcp
 
   feature-slices:
     name: Feature slice (${{ matrix.slice }})
@@ -886,6 +906,7 @@ jobs:
       - fmt
       - deny
       - check
+      - npm-launcher
       - feature-slices
       - extracted-crate-slices
       - docs-check
@@ -914,6 +935,7 @@ jobs:
           require_success_or_skipped fmt "${{ needs.fmt.result }}"
           require_success_or_skipped deny "${{ needs.deny.result }}"
           require_success_or_skipped check "${{ needs.check.result }}"
+          require_success_or_skipped npm-launcher "${{ needs.npm-launcher.result }}"
           require_success_or_skipped feature-slices "${{ needs.feature-slices.result }}"
           require_success_or_skipped extracted-crate-slices "${{ needs.extracted-crate-slices.result }}"
           require_success_or_skipped docs-check "${{ needs.docs-check.result }}"
