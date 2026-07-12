@@ -383,6 +383,7 @@ impl LabMcpServer {
                 self.code_mode_surface(),
                 config,
                 capability_filter,
+                Some(std::sync::Arc::<str>::from(execution_id.as_str())),
             )
             .await
         {

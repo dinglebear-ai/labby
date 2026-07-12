@@ -8,7 +8,7 @@
 //! select loop readable.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -86,6 +86,10 @@ pub(crate) struct RunnerConfig {
     pub max_log_bytes: usize,
     pub trace_params: bool,
     pub capability_filter: ToolScope,
+    /// Durable-run execution id, minted by the caller (binary/gateway). `None`
+    /// on the write-free/standalone path; flows into every [`ExecCtx`] so the
+    /// host's `record_step` can key its per-execution journal buffer.
+    pub execution_id: Option<Arc<str>>,
     /// Loaded OpenAPI specs for the `openapi` local provider (cheap `Arc` clone).
     pub openapi_registry: labby_openapi::OpenApiRegistry,
     /// Hardened dispatch client for the `openapi` provider (cheap `Arc` clone).
@@ -113,6 +117,11 @@ struct DriveState {
     /// ordinary budget) against `MAX_INTERNAL_CALLS_PER_RUN`.
     internal_calls_enqueued: usize,
     calltool_result_max_bytes: usize,
+    /// Monotonic count of `step_begin` events seen so far (the journal ordinate).
+    next_step_ordinal: u64,
+    /// Maps a step's runner `seq` -> (step_ordinal, name), populated at
+    /// step_begin and read at step_result (which reuses the step_begin seq).
+    step_ordinals: std::collections::HashMap<u64, (u64, String)>,
 }
 
 impl DriveState {
@@ -131,6 +140,8 @@ impl DriveState {
             max_calls_per_run: max_calltool_per_run(),
             internal_calls_enqueued: 0,
             calltool_result_max_bytes: calltool_result_max_bytes(),
+            next_step_ordinal: 0,
+            step_ordinals: std::collections::HashMap::new(),
         }
     }
 }
@@ -159,6 +170,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         max_log_bytes: usize,
         trace_params: bool,
         capability_filter: ToolScope,
+        execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Read the openapi registry/client from the host at the config-build site
         // (per the plan's I4 fix — do NOT thread them down the positional arg
@@ -193,6 +205,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             max_log_bytes,
             trace_params,
             capability_filter,
+            execution_id,
             openapi_registry,
             openapi_http_client,
         };
@@ -510,7 +523,15 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         }
                         CodeModeRunnerOutput::StepBegin { seq, name } => {
                             if let Err(err) = handle_step_begin_event(
-                                self, seq, name, stdin, child, child_pid, deadline, &mut state,
+                                self,
+                                seq,
+                                name,
+                                cfg.execution_id.clone(),
+                                stdin,
+                                child,
+                                child_pid,
+                                deadline,
+                                &mut state,
                             )
                             .await
                             {
@@ -519,7 +540,15 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         }
                         CodeModeRunnerOutput::StepResult { seq, value } => {
                             if let Err(err) = handle_step_result_event(
-                                self, seq, value, stdin, child, child_pid, deadline, &mut state,
+                                self,
+                                seq,
+                                value,
+                                cfg.execution_id.clone(),
+                                stdin,
+                                child,
+                                child_pid,
+                                deadline,
+                                &mut state,
                             )
                             .await
                             {
@@ -669,10 +698,15 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
     let surface = cfg.surface;
+    let execution_id = cfg.execution_id.clone();
     pending_tool_calls.push(Box::pin(async move {
         let start_ms = execution_start.elapsed().as_millis();
         let call_start = std::time::Instant::now();
-        let ctx = ExecCtx { seq };
+        let ctx = ExecCtx {
+            seq,
+            execution_id,
+            step_ordinal: None,
+        };
         let result = broker
             .call_tool_id_before_deadline(
                 &id,
@@ -715,6 +749,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
+    let execution_id = cfg.execution_id.clone();
     let openapi_registry = cfg.openapi_registry.clone();
     let openapi_http_client = cfg.openapi_http_client.clone();
     pending_tool_calls.push(Box::pin(async move {
@@ -733,12 +768,16 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 start_ms,
             );
         }
-        let ctx = ExecCtx { seq };
+        let ctx = ExecCtx {
+            seq,
+            execution_id,
+            step_ordinal: None,
+        };
         // Journal (ephemeral) BEFORE dispatch so a resume divergence at this seq
         // is caught before the local side effect runs. The default `decide_local`
         // returns Execute (no host currently overrides this hook).
         if let Some(host) = broker.host {
-            match host.decide_local(ctx, &id, &params).await {
+            match host.decide_local(ctx.clone(), &id, &params).await {
                 StepDecision::Replay(value) => {
                     // Ephemeral entries never replay a stored result — but honor
                     // it defensively if a host ever returns one.
@@ -1119,13 +1158,27 @@ async fn handle_step_begin_event<H: CodeModeHost>(
     broker: &CodeModeBroker<'_, H>,
     seq: u64,
     name: String,
+    execution_id: Option<Arc<str>>,
     stdin: &mut ChildStdin,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
-    let ctx = ExecCtx { seq };
+    // Allocate the parent-derived journal ordinate (a monotonic count of
+    // step_begin events — the journal key, distinct from the runner `seq`
+    // spine) and remember it for the matching step_result, which reuses the
+    // step_begin seq.
+    let step_ordinal = state.next_step_ordinal;
+    state.next_step_ordinal += 1;
+    state
+        .step_ordinals
+        .insert(seq, (step_ordinal, name.clone()));
+    let ctx = ExecCtx {
+        seq,
+        execution_id,
+        step_ordinal: Some(step_ordinal),
+    };
     let decision = match broker.host {
         Some(host) => host.decide_step(ctx, &name).await,
         None => StepDecision::Execute,
@@ -1156,15 +1209,28 @@ async fn handle_step_result_event<H: CodeModeHost>(
     broker: &CodeModeBroker<'_, H>,
     seq: u64,
     value: Value,
+    execution_id: Option<Arc<str>>,
     stdin: &mut ChildStdin,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
-    let ctx = ExecCtx { seq };
+    // Reuse the (step_ordinal, name) allocated at step_begin (same seq). Fall
+    // back defensively if the pairing is missing (should not happen — the
+    // runner always emits step_begin before step_result for a seq).
+    let (step_ordinal, name) = state
+        .step_ordinals
+        .get(&seq)
+        .cloned()
+        .unwrap_or((state.next_step_ordinal, String::new()));
+    let ctx = ExecCtx {
+        seq,
+        execution_id,
+        step_ordinal: Some(step_ordinal),
+    };
     let record = match broker.host {
-        Some(host) => host.record_step(ctx, &value).await,
+        Some(host) => host.record_step(ctx, &name, &value).await,
         None => Ok(()),
     };
     let reply = match record {
@@ -1489,6 +1555,7 @@ mod tests {
             max_log_bytes: 4096,
             trace_params: false,
             capability_filter: ToolScope::default(),
+            execution_id: None,
             openapi_registry: labby_openapi::OpenApiRegistry::default(),
             openapi_http_client: labby_openapi::http::build_dispatch_client()
                 .expect("test dispatch client"),
@@ -1764,6 +1831,168 @@ sleep 3600
             contents.matches(r#""ranked":[]"#).count(),
             internal_total,
             "every internal call (including over-ceiling) must settle with the fail-open empty ranked result"
+        );
+    }
+
+    /// The parent-derived `step_ordinal` is a contiguous monotonic count of
+    /// `step_begin` events (0, 1, …), independent of the runner `seq` spine:
+    /// even with a `tool_call` interleaved (bumping seq) between two steps, the
+    /// two recorded steps get ordinals `[0, 1]`. The threaded `execution_id`
+    /// and step `name` also reach `record_step`.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn step_ordinal_is_contiguous_across_interleaved_tool_calls() {
+        use std::sync::Mutex as StdMutex;
+
+        use crate::host::{ResolvedSnippet, ToolCallOutcome, ToolsRender};
+        use crate::types::{CodeModeCaller, CodeModeSurface, ToolScope};
+        use labby_runtime::CodeModeConfig;
+
+        type Recorded = Vec<(Option<String>, Option<u64>, String)>;
+
+        struct RecordingHost {
+            pool: RunnerPool,
+            recorded: Arc<StdMutex<Recorded>>,
+        }
+
+        impl CodeModeHost for RecordingHost {
+            async fn list_tools(
+                &self,
+                _caller: &CodeModeCaller,
+                _surface: CodeModeSurface,
+                _scope: &ToolScope,
+                _include_snippets: bool,
+                _use_cache: bool,
+            ) -> Result<ToolsRender, ToolError> {
+                Ok(ToolsRender {
+                    fingerprint: "recording".to_string(),
+                    entries: Vec::new(),
+                    catalog_json: "[]".to_string(),
+                    serialized_size: 2,
+                })
+            }
+
+            async fn call_tool(
+                &self,
+                _id: &str,
+                _params: Value,
+                _caller: &CodeModeCaller,
+                _surface: CodeModeSurface,
+                _scope: &ToolScope,
+                _ctx: ExecCtx,
+            ) -> Result<ToolCallOutcome, ToolError> {
+                Ok(ToolCallOutcome {
+                    value: json!({"ok": true}),
+                    ui: None,
+                })
+            }
+
+            async fn record_step(
+                &self,
+                ctx: ExecCtx,
+                name: &str,
+                _value: &Value,
+            ) -> Result<(), ToolError> {
+                self.recorded.lock().expect("recorded mutex").push((
+                    ctx.execution_id.as_deref().map(ToString::to_string),
+                    ctx.step_ordinal,
+                    name.to_string(),
+                ));
+                Ok(())
+            }
+
+            async fn resolve_snippet(
+                &self,
+                _name: &str,
+                _input: Value,
+            ) -> Result<ResolvedSnippet, ToolError> {
+                Err(ToolError::Sdk {
+                    sdk_kind: "not_found".to_string(),
+                    message: "RecordingHost exposes no snippets".to_string(),
+                })
+            }
+
+            async fn semantic_rank(
+                &self,
+                _query: String,
+                _top_k: usize,
+                _caller: &CodeModeCaller,
+                _surface: CodeModeSurface,
+                _scope: &ToolScope,
+            ) -> Result<Vec<(String, f32)>, ToolError> {
+                Ok(Vec::new())
+            }
+
+            async fn config(&self) -> CodeModeConfig {
+                CodeModeConfig::default()
+            }
+
+            fn runner_pool(&self) -> &RunnerPool {
+                &self.pool
+            }
+
+            fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+                labby_openapi::OpenApiRegistry::default()
+            }
+
+            fn openapi_http_client(&self) -> reqwest::Client {
+                labby_openapi::http::build_dispatch_client().expect("test dispatch client")
+            }
+        }
+
+        // step_begin(5,"a") -> tool_call(6) -> step_result(5) ->
+        // step_begin(7,"b") -> step_result(7). The seq gap (6 between the two
+        // steps) must NOT show up in the step ordinals.
+        let script = r#"
+exec 3<&0
+cat <&3 >/dev/null &
+printf '{"type":"step_begin","seq":5,"name":"a"}\n'
+printf '{"type":"tool_call","seq":6,"id":"stub::tool","params":{}}\n'
+printf '{"type":"step_result","seq":5,"value":{"r":1}}\n'
+printf '{"type":"step_begin","seq":7,"name":"b"}\n'
+printf '{"type":"step_result","seq":7,"value":{"r":2}}\n'
+sleep 2
+printf '{"type":"done"}\n'
+sleep 3600
+"#;
+        let recorded: Arc<StdMutex<Recorded>> = Arc::new(StdMutex::new(Vec::new()));
+        let host = RecordingHost {
+            pool: RunnerPool::from_env().expect("test process must expose current executable"),
+            recorded: Arc::clone(&recorded),
+        };
+        let broker = CodeModeBroker::new(Some(&host));
+        let mut cfg = test_config(Duration::from_secs(30));
+        cfg.execution_id = Some(Arc::<str>::from("exec_test"));
+        let mut runner = PooledRunner::spawn_stub_script(script).expect("spawn script stub");
+        let outcome = broker.drive_runner(&mut runner, &cfg).await;
+        match outcome {
+            DriveOutcome::Completed(_) => {}
+            DriveOutcome::ExecutionError(err) | DriveOutcome::RunnerUnhealthy(err) => {
+                panic!("run must complete, got error kind `{}`", err.kind())
+            }
+        }
+        let recorded = recorded.lock().expect("recorded mutex").clone();
+        assert_eq!(
+            recorded
+                .iter()
+                .map(|(_, ordinal, _)| *ordinal)
+                .collect::<Vec<_>>(),
+            vec![Some(0), Some(1)],
+            "step ordinals must be contiguous regardless of seq gap"
+        );
+        assert_eq!(
+            recorded
+                .iter()
+                .map(|(_, _, name)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"],
+            "step names must be threaded to record_step"
+        );
+        assert!(
+            recorded
+                .iter()
+                .all(|(exec, _, _)| exec.as_deref() == Some("exec_test")),
+            "execution_id must reach record_step"
         );
     }
 

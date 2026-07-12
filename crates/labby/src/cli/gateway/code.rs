@@ -93,6 +93,10 @@ async fn execute_code_mode(
             CodeModeSurface::Cli,
             manager.code_mode_config().await,
             crate::dispatch::gateway::code_mode::ToolScope::default(),
+            // No durable-run execution id on the local CLI broker path: journaling
+            // is driven through the MCP `codemode` tool where an execution id +
+            // owner context exist. `None` keeps `record_step` write-free here.
+            None,
         )
         .await?;
     Ok(serde_json::to_value(response)?)
