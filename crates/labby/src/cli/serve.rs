@@ -1037,7 +1037,7 @@ async fn build_gateway_runtime(
     let mut gateway_manager = gateway_manager
         .with_openapi(openapi_registry, openapi_http_client)
         .with_client_registry(client_registry);
-    if let Some(store) = step_journal {
+    if let Some(store) = step_journal.clone() {
         gateway_manager = gateway_manager.with_step_journal(store);
     }
 
@@ -1129,6 +1129,13 @@ async fn build_gateway_runtime(
     const USAGE_RETENTION_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
     if let Some(store) = usage_store.clone() {
         store.spawn_prune_loop(USAGE_RETENTION_SECS, USAGE_PRUNE_INTERVAL);
+    }
+    // Retention/cadence policy for the durable Code Mode step journal; mirrors
+    // the usage-store cadence above.
+    const JOURNAL_PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+    const JOURNAL_RETENTION_SECS: i64 = 30 * 24 * 60 * 60; // 30 days
+    if let Some(store) = step_journal.clone() {
+        store.spawn_prune_loop(JOURNAL_RETENTION_SECS, JOURNAL_PRUNE_INTERVAL);
     }
     Ok(gateway_manager)
 }

@@ -178,6 +178,51 @@ impl StepJournalStore {
         Ok(total_deleted)
     }
 
+    /// Spawn a background loop that periodically prunes journal rows older than
+    /// `retention_secs`. Ticks every `interval`; missed ticks are skipped (not
+    /// backlogged) so a slow prune never causes a burst of catch-up runs. A
+    /// sustained failure (disk full, permissions) escalates to `error` after
+    /// three consecutive failures. Mirrors `UsageStore::spawn_prune_loop`.
+    pub fn spawn_prune_loop(self: Arc<Self>, retention_secs: i64, interval: std::time::Duration) {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut consecutive_failures: u32 = 0;
+            loop {
+                ticker.tick().await;
+                let now_unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let cutoff = now_unix.saturating_sub(retention_secs);
+                match self.prune_older_than(cutoff).await {
+                    Ok(deleted) => {
+                        consecutive_failures = 0;
+                        if deleted > 0 {
+                            tracing::info!(deleted, "pruned stale Code Mode step-journal rows");
+                        }
+                    }
+                    Err(error) => {
+                        consecutive_failures += 1;
+                        if consecutive_failures >= 3 {
+                            tracing::error!(
+                                error = %error,
+                                consecutive_failures,
+                                "Code Mode step-journal prune failed repeatedly"
+                            );
+                        } else {
+                            tracing::warn!(
+                                error = %error,
+                                consecutive_failures,
+                                "Code Mode step-journal prune failed"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     async fn with_conn<T, F>(&self, op: F) -> Result<T, ToolError>
     where
         T: Send + 'static,
@@ -282,6 +327,10 @@ pub fn redact_journal_text(raw: &Value, cap_bytes: usize) -> String {
         raw.serialize(&mut ser).is_ok()
     };
     if !bounded {
+        // Conflating "over cap" with "genuine serialize error" is safe here
+        // ONLY because serializing a `serde_json::Value` is infallible except
+        // for the `BoundedWriter` IO abort — so a non-`Ok` result can only mean
+        // the value exceeded `cap_bytes`.
         return format!("{{\"__journal_truncated\":true,\"cap_bytes\":{cap_bytes}}}");
     }
     let text = String::from_utf8_lossy(&buf).into_owned();

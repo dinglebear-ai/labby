@@ -131,8 +131,14 @@ impl CodeModeHost for GatewayManager {
             execution_id: execution_id.to_string(),
             step_ordinal: ordinal,
             seq_base: ctx.seq,
-            // Redact BOTH name (caller-authored JS) and value at rest.
-            name: labby_codemode::redact_secret_like_segments(name),
+            // Redact BOTH name (caller-authored JS) and value at rest. `name` is
+            // a short label, so cap it on a char boundary BEFORE redacting so a
+            // caller can't write a multi-MB step name into the durable DB (the
+            // value path is bounded by `redact_journal_text`'s BoundedWriter).
+            name: labby_codemode::redact_secret_like_segments(cap_on_char_boundary(
+                name,
+                JOURNAL_NAME_CAP_BYTES,
+            )),
             value: crate::codemode_journal::redact_journal_text(value, JOURNAL_VALUE_CAP_BYTES),
             ok: true,
             // Per-step elapsed isn't threaded in v1; owner identity is stamped
@@ -146,15 +152,16 @@ impl CodeModeHost for GatewayManager {
         };
         self.step_buffers
             .lock()
-            .expect("step_buffers mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(execution_id.to_string())
             .or_default()
             .push(row);
         // name/value are deliberately NOT logged: both are redacted at rest and
         // the identifiers below are sufficient to trace journaling.
         tracing::debug!(
-            surface = "gateway",
-            service = "codemode",
+            surface = "dispatch",
+            service = labby_codemode::SERVICE,
+            action = "step_journal.record",
             execution_id = %execution_id,
             step_ordinal = ordinal,
             "codemode.step journaled"
@@ -315,6 +322,22 @@ pub struct JournalOwner {
 /// byte-cap spirit). Oversize values become a small truncation sentinel.
 const JOURNAL_VALUE_CAP_BYTES: usize = 64 * 1024;
 
+/// Byte cap for a journaled step `name`. A step name is a short label, so this
+/// bounds a hostile caller's per-row name growth at rest.
+const JOURNAL_NAME_CAP_BYTES: usize = 4096;
+
+/// Truncate `s` to at most `cap` bytes on a UTF-8 char boundary.
+fn cap_on_char_boundary(s: &str, cap: usize) -> &str {
+    if s.len() <= cap {
+        return s;
+    }
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Current wall-clock time as unix seconds (0 on a pre-epoch clock).
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
@@ -341,7 +364,7 @@ impl GatewayManager {
             let mut buffers = self
                 .step_buffers
                 .lock()
-                .expect("step_buffers mutex poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             buffers.remove(execution_id).unwrap_or_default()
         };
         if rows.is_empty() {
@@ -352,12 +375,19 @@ impl GatewayManager {
             r.route_scope = owner.route_scope.clone();
             r.capability_filter_fingerprint = owner.capability_filter_fingerprint.clone();
         }
+        let row_count = rows.len();
         if let Err(err) = store.flush(rows).await {
+            // `err.kind()` is always the generic `journal_store_error`; log the
+            // full `err` Display for the real cause (disk full / no such table /
+            // locked). rusqlite's Display references SQL text and constraints,
+            // never bound parameter values, so this leaks no journaled content.
             tracing::warn!(
-                surface = "gateway",
-                service = "codemode",
+                surface = "dispatch",
+                service = labby_codemode::SERVICE,
+                action = "step_journal.flush",
                 execution_id,
-                kind = %err.kind(),
+                rows = row_count,
+                error = %err,
                 "step journal flush failed (fail-open)"
             );
         }
@@ -375,7 +405,7 @@ impl GatewayManager {
     pub(crate) fn step_buffer_is_empty(&self) -> bool {
         self.step_buffers
             .lock()
-            .expect("step_buffers mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .all(Vec::is_empty)
     }
@@ -751,6 +781,31 @@ mod tests {
             !rows[0].value.contains("sk-abcdefghij0123456789extra"),
             "step value must be redacted at rest: {}",
             rows[0].value
+        );
+    }
+
+    #[tokio::test]
+    async fn record_step_caps_oversized_name() {
+        let (mgr, _cfg, _db) = test_manager_with_journal().await;
+        // An all-ASCII name that is not secret-shaped, so redaction leaves it
+        // intact and only the byte cap can shorten it.
+        let huge = "n".repeat(100_000);
+        let ctx = ExecCtx {
+            seq: 1,
+            execution_id: Some(Arc::<str>::from("exec_cap")),
+            step_ordinal: Some(0),
+        };
+        mgr.record_step(ctx, &huge, &serde_json::json!(1))
+            .await
+            .unwrap();
+        mgr.flush_step_journal("exec_cap", &JournalOwner::default())
+            .await;
+        let rows = mgr.step_journal().unwrap().load("exec_cap").await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].name.len() <= JOURNAL_NAME_CAP_BYTES,
+            "step name must be capped at rest, got {} bytes",
+            rows[0].name.len()
         );
     }
 
