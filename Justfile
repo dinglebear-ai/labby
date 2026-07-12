@@ -99,7 +99,7 @@ host-sync:
     if command -v mold >/dev/null 2>&1; then
       export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
     fi
-    CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-16}" cargo build --workspace --all-features --profile "$profile" --bin labby
+    cargo build --workspace --all-features --profile "$profile" --bin labby
     LABBY_BIN="target/$profile/labby"
     sudo install -D -m 755 "$LABBY_BIN" /usr/local/bin/labby
     if systemctl is-active --quiet labby.service; then
@@ -128,7 +128,7 @@ host-service-install:
     if command -v mold >/dev/null 2>&1; then
       export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
     fi
-    CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-16}" cargo build --workspace --all-features --profile "$profile" --bin labby
+    cargo build --workspace --all-features --profile "$profile" --bin labby
     LABBY_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
     case "$LABBY_TARGET_DIR" in
       /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;
@@ -188,7 +188,7 @@ sync-container:
       done < <(git ls-files -z -- Cargo.toml Cargo.lock rust-toolchain.toml .cargo build.rs crates config apps/gateway-admin/out)
     fi
     if [ "$release_stale" -eq 1 ]; then
-      CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-16}" cargo build --workspace --all-features --profile "$profile" --bin labby
+      cargo build --workspace --all-features --profile "$profile" --bin labby
     else
       echo "$profile binary is current: $LABBY_BIN"
     fi
