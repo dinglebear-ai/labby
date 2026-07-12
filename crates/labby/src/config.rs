@@ -2168,6 +2168,28 @@ pub fn usage_db_path() -> PathBuf {
         .join("usage.db")
 }
 
+/// Path to the SQLite Code Mode step-journal database:
+/// `~/.labby/codemode_journal.db`.
+///
+/// Creates no files — callers are responsible for opening/creating the store.
+pub fn codemode_journal_db_path() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".labby")
+        .join("codemode_journal.db")
+}
+
+/// Whether the durable Code Mode step journal is enabled.
+///
+/// Set `LABBY_CODE_MODE_JOURNAL_DISABLED=1` to opt out — e.g. for a throwaway
+/// dev instance where step-boundary journaling is unwanted.
+pub fn codemode_journal_enabled() -> bool {
+    std::env::var("LABBY_CODE_MODE_JOURNAL_DISABLED")
+        .ok()
+        .as_deref()
+        != Some("1")
+}
+
 /// Whether gateway call-usage telemetry capture is enabled.
 ///
 /// Set `LABBY_GATEWAY_USAGE_DISABLED=1` to opt out — e.g. for a throwaway

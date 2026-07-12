@@ -93,6 +93,20 @@ pub struct GatewayManager {
     pub(super) oauth_key: Option<EncryptionKey>,
     pub(super) oauth_redirect_uri: Option<Arc<String>>,
     pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
+    /// Durable append-only journal for `codemode.step` boundaries. `None`
+    /// disables journaling (pure no-op path). Owned as an `Arc` so every `Clone`
+    /// of the manager shares one store.
+    pub(super) step_journal: Option<Arc<crate::codemode_journal::StepJournalStore>>,
+    /// Per-execution in-memory buffers of journal rows, keyed by `execution_id`.
+    /// `record_step` pushes here (nanoseconds, no I/O); the single bulk flush at
+    /// the run boundary drains one execution's buffer. Keyed per execution — not
+    /// a single shared "current execution" scalar — so concurrent runs never
+    /// cross-contaminate.
+    pub(super) step_buffers: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, Vec<crate::codemode_journal::StepJournalRow>>,
+        >,
+    >,
     protected_route_index: Arc<RwLock<ProtectedRouteIndex>>,
     code_mode_history: Arc<Mutex<CodeModeHistory>>,
     code_mode_source_store: Arc<Mutex<CodeModeSourceStore>>,

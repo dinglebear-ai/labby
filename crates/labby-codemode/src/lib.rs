@@ -82,6 +82,7 @@ pub use runner::run_code_mode_runner_stdio;
 pub use schema::validate_code_mode_params_against_schema;
 pub use shape::CodeModeResultShapeMetadata;
 pub use trace::{code_mode_execute_trace, redact_trace_value};
+pub use truncate::redact_secret_like_segments;
 pub use types::{
     CodeModeCaller, CodeModeCallerCapabilities, CodeModeCatalogKind, CodeModeExecutedCall,
     CodeModeExecutionError, CodeModeExecutionResponse, CodeModeExecutionSource, CodeModeHistory,

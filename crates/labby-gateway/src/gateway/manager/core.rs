@@ -131,6 +131,8 @@ impl GatewayManager {
             oauth_key: None,
             oauth_redirect_uri: None,
             usage_store: None,
+            step_journal: None,
+            step_buffers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             protected_route_index: Arc::new(RwLock::new(ProtectedRouteIndex::default())),
             code_mode_history: Arc::new(Mutex::new(CodeModeHistory::default())),
             code_mode_source_store: Arc::new(Mutex::new(CodeModeSourceStore::default())),
@@ -167,6 +169,17 @@ impl GatewayManager {
     #[must_use]
     pub fn with_usage_store(mut self, store: Arc<crate::usage::UsageStore>) -> Self {
         self.usage_store = Some(store);
+        self
+    }
+
+    /// Attach the durable `codemode.step` journal store. Without this,
+    /// `record_step` is a pure no-op (write-free) and no run is journaled.
+    #[must_use]
+    pub fn with_step_journal(
+        mut self,
+        store: Arc<crate::codemode_journal::StepJournalStore>,
+    ) -> Self {
+        self.step_journal = Some(store);
         self
     }
 

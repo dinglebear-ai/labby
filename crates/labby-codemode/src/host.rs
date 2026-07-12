@@ -55,17 +55,27 @@ pub struct ToolCallOutcome {
 }
 
 /// Per-call execution context threaded from the runner drive layer into
-/// [`CodeModeHost::call_tool`]. Carries the protocol `seq` for this call.
-#[derive(Debug, Clone, Copy)]
+/// [`CodeModeHost`] hooks. Carries the protocol `seq` for this call, the
+/// durable-run `execution_id` (None on the write-free/standalone path), and,
+/// for a `codemode.step` boundary, the parent-derived `step_ordinal` (a
+/// monotonic count of step_begin events — the journal key ordinate, distinct
+/// from `seq`).
+#[derive(Debug, Clone)]
 pub struct ExecCtx {
     pub seq: u64,
+    pub execution_id: Option<std::sync::Arc<str>>,
+    pub step_ordinal: Option<u64>,
 }
 
 impl ExecCtx {
     /// The write-free context used when no durable run is active.
     #[must_use]
-    pub const fn none() -> Self {
-        Self { seq: 0 }
+    pub fn none() -> Self {
+        Self {
+            seq: 0,
+            execution_id: None,
+            step_ordinal: None,
+        }
     }
 }
 
@@ -130,21 +140,23 @@ pub trait CodeModeHost: Send + Sync {
     /// The default impl always returns [`StepDecision::Execute`], so `fn` runs
     /// normally; no host currently overrides this hook.
     fn decide_step(&self, ctx: ExecCtx, name: &str) -> impl Future<Output = StepDecision> + Send {
-        let _ = (ctx, name);
+        let _ = (&ctx, name);
         async { StepDecision::Execute }
     }
 
-    /// Record the value a step's `fn` produced (decision was execute) so a later
-    /// resume replays it without re-running `fn`.
+    /// Record the value a step's `fn` produced (decision was execute) so a
+    /// later resume replays it without re-running `fn`. `name` + `ctx.step_ordinal`
+    /// + `ctx.execution_id` form the journal key.
     ///
     /// The default impl is a no-op `Ok(())`; no host currently overrides this
     /// hook, so `fn` is simply re-run on any re-execution.
     fn record_step(
         &self,
         ctx: ExecCtx,
+        name: &str,
         value: &Value,
     ) -> impl Future<Output = Result<(), ToolError>> + Send {
-        let _ = (ctx, value);
+        let _ = (&ctx, name, value);
         async { Ok(()) }
     }
 
@@ -165,7 +177,7 @@ pub trait CodeModeHost: Send + Sync {
         id: &str,
         params: &Value,
     ) -> impl Future<Output = StepDecision> + Send {
-        let _ = (ctx, id, params);
+        let _ = (&ctx, id, params);
         async { StepDecision::Execute }
     }
 
@@ -178,7 +190,7 @@ pub trait CodeModeHost: Send + Sync {
         ctx: ExecCtx,
         value: &Value,
     ) -> impl Future<Output = Result<(), ToolError>> + Send {
-        let _ = (ctx, value);
+        let _ = (&ctx, value);
         async { Ok(()) }
     }
 
@@ -325,6 +337,26 @@ impl CodeModeHost for NoopHost {
 mod tests {
     use super::*;
 
+    #[test]
+    fn exec_ctx_none_is_write_free() {
+        let ctx = ExecCtx::none();
+        assert_eq!(ctx.seq, 0);
+        assert!(ctx.execution_id.is_none());
+        assert!(ctx.step_ordinal.is_none());
+    }
+
+    #[test]
+    fn exec_ctx_carries_execution_id_and_ordinal() {
+        let ctx = ExecCtx {
+            seq: 7,
+            execution_id: Some(std::sync::Arc::from("exec_abc")),
+            step_ordinal: Some(2),
+        };
+        assert_eq!(ctx.seq, 7);
+        assert_eq!(ctx.execution_id.as_deref(), Some("exec_abc"));
+        assert_eq!(ctx.step_ordinal, Some(2));
+    }
+
     /// A host that does not override the journaling hooks (`NoopHost`) uses the
     /// trait DEFAULT impls: `decide_step`/`decide_local` return `Execute` and
     /// `record_step`/`record_local` are no-op `Ok(())`, so `codemode.step`'s `fn`
@@ -332,17 +364,24 @@ mod tests {
     #[tokio::test]
     async fn default_step_and_local_hooks_execute_and_noop() {
         let host = NoopHost::default();
-        let ctx = ExecCtx::none();
         assert!(matches!(
-            host.decide_step(ctx, "s").await,
+            host.decide_step(ExecCtx::none(), "s").await,
             StepDecision::Execute
         ));
-        assert!(host.record_step(ctx, &Value::Null).await.is_ok());
+        assert!(
+            host.record_step(ExecCtx::none(), "s", &Value::Null)
+                .await
+                .is_ok()
+        );
         assert!(matches!(
-            host.decide_local(ctx, "state::writeFile", &Value::Null)
+            host.decide_local(ExecCtx::none(), "state::writeFile", &Value::Null)
                 .await,
             StepDecision::Execute
         ));
-        assert!(host.record_local(ctx, &Value::Null).await.is_ok());
+        assert!(
+            host.record_local(ExecCtx::none(), &Value::Null)
+                .await
+                .is_ok()
+        );
     }
 }

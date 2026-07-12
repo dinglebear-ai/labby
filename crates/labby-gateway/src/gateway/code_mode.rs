@@ -27,6 +27,8 @@ pub use labby_codemode::{CodeModeExecutionSource, ToolDescriptor, ToolScope};
 
 pub(crate) use labby_codemode::split_namespaced_id;
 
+pub use code_mode_host::JournalOwner;
+
 // ── Host-side render caches (gateway-owned, keyed on the live tool set) ──────
 
 /// Cached rendered Code Mode discovery catalog.
