@@ -1,4 +1,8 @@
 use super::types::RouteDoc;
+use crate::app_manifest::{
+    APPS_LAUNCHER_ROUTE, APPS_MANIFEST_API_ROUTE, LABBY_APP_HOST_JS_ROUTE,
+    SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_QUERY_API_ROUTE,
+};
 
 pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
     let mut routes = vec![
@@ -36,10 +40,15 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "services",
             "service action metadata",
         ),
-        auth("GET", "/v1/apps/manifest", "apps", "operator app manifest"),
         auth(
             "GET",
-            "/v1/server-logs/query",
+            APPS_MANIFEST_API_ROUTE,
+            "apps",
+            "operator app manifest",
+        ),
+        auth(
+            "GET",
+            SERVER_LOGS_QUERY_API_ROUTE,
             "apps",
             "server logs app data query",
         ),
@@ -191,11 +200,16 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "browser session introspection",
         ),
         browser("POST", "/auth/logout", "oauth", "browser session logout"),
-        browser("GET", "/apps", "apps", "operator app launcher"),
-        browser("GET", "/apps/server-logs", "apps", "server logs app page"),
+        browser("GET", APPS_LAUNCHER_ROUTE, "apps", "operator app launcher"),
+        browser(
+            "GET",
+            SERVER_LOGS_BROWSER_ROUTE,
+            "apps",
+            "server logs app page",
+        ),
         public(
             "GET",
-            "/apps/assets/labby-app-host.js",
+            LABBY_APP_HOST_JS_ROUTE,
             "apps",
             "shared app host bridge asset",
         ),
@@ -381,12 +395,12 @@ mod tests {
     fn operator_app_routes_are_documented() {
         let routes = build_route_docs(&["server_logs".to_string()]);
         for (method, path) in [
-            ("GET", "/v1/apps/manifest"),
-            ("GET", "/v1/server-logs/query"),
+            ("GET", APPS_MANIFEST_API_ROUTE),
+            ("GET", SERVER_LOGS_QUERY_API_ROUTE),
             ("POST", "/v1/server_logs"),
-            ("GET", "/apps"),
-            ("GET", "/apps/server-logs"),
-            ("GET", "/apps/assets/labby-app-host.js"),
+            ("GET", APPS_LAUNCHER_ROUTE),
+            ("GET", SERVER_LOGS_BROWSER_ROUTE),
+            ("GET", LABBY_APP_HOST_JS_ROUTE),
         ] {
             assert!(
                 routes

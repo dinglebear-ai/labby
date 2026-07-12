@@ -65,6 +65,41 @@ fn format_dispatch_result_preserves_text_and_structured_content() {
     assert_eq!(structured["data"]["kind"], "server_logs");
 }
 
+#[test]
+fn format_dispatch_error_preserves_text_and_structured_content() {
+    let (result, outcome) = format_dispatch_result(
+        Err(anyhow::Error::from(ToolError::UnknownAction {
+            message: "unknown action `server_logs.bad`".to_string(),
+            valid: vec!["help".to_string(), "server_logs.query".to_string()],
+            hint: None,
+        })),
+        "server_logs",
+        "bad",
+        7,
+        "subject",
+        None,
+        2,
+    );
+
+    assert!(matches!(
+        outcome,
+        crate::mcp::logging::DispatchLogOutcome::Failure { .. }
+    ));
+    assert_eq!(result.content.len(), 1);
+    let text = result.content[0]
+        .as_text()
+        .expect("error result should include text content")
+        .text
+        .as_str();
+    assert!(text.contains("\"ok\":false"));
+    let structured = result
+        .structured_content
+        .expect("dispatch error should expose structured content");
+    assert_eq!(structured["ok"], false);
+    assert_eq!(structured["service"], "server_logs");
+    assert_eq!(structured["error"]["kind"], "unknown_action");
+}
+
 #[tokio::test]
 async fn extract_error_info_preserves_unknown_action_from_real_dispatch_downcast() {
     let err = crate::dispatch::lab_admin::dispatch("definitely.unknown", serde_json::json!({}))

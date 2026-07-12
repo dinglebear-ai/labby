@@ -699,9 +699,12 @@ impl LabMcpServer {
         } else {
             None
         };
-        let html = code_mode_app_html(uri, history.as_ref())
-            .map_err(|message| ErrorData::resource_not_found(message, None))?;
-        let runtime = code_mode_app_runtime_for_uri(uri);
+        let descriptor = app_descriptor_for_uri(CODE_MODE_APP_RESOURCE_DESCRIPTORS, uri)
+            .ok_or_else(|| {
+                ErrorData::resource_not_found(format!("unknown UI resource: {uri}"), None)
+            })?;
+        let html = code_mode_app_html_for_descriptor(history.as_ref());
+        let runtime = descriptor.runtime;
         let mime_type = runtime.mime();
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
@@ -728,7 +731,7 @@ impl LabMcpServer {
         Ok(ReadResourceResult::new(vec![
             ResourceContents::text(html, uri.to_string())
                 .with_mime_type(mime_type)
-                .with_meta(code_mode_app_resource_meta(uri)),
+                .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
         ]))
     }
 
@@ -780,9 +783,13 @@ impl LabMcpServer {
             ));
         }
 
-        let html = server_logs_app_html(uri)
-            .map_err(|message| ErrorData::resource_not_found(message, None))?;
-        let runtime = server_logs_app_runtime_for_uri(uri);
+        let descriptor = app_descriptor_for_uri(SERVER_LOGS_APP_RESOURCE_DESCRIPTORS, uri)
+            .ok_or_else(|| {
+                ErrorData::resource_not_found(format!("unknown UI resource: {uri}"), None)
+            })?;
+        let html = server_logs_app_html_for_descriptor(descriptor)
+            .map_err(|message| ErrorData::internal_error(message, None))?;
+        let runtime = descriptor.runtime;
         let mime_type = runtime.mime();
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
@@ -809,20 +816,20 @@ impl LabMcpServer {
         Ok(ReadResourceResult::new(vec![
             ResourceContents::text(html, uri.to_string())
                 .with_mime_type(mime_type)
-                .with_meta(server_logs_app_resource_meta(uri)),
+                .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
         ]))
     }
 }
 
+#[cfg(test)]
 fn code_mode_app_html(uri: &str, history: Option<&Value>) -> Result<String, String> {
-    let base = strip_app_version(uri);
-    if !CODE_MODE_APP_RESOURCE_DESCRIPTORS
-        .iter()
-        .any(|descriptor| descriptor.uri == base)
-    {
+    if app_descriptor_for_uri(CODE_MODE_APP_RESOURCE_DESCRIPTORS, uri).is_none() {
         return Err(format!("unknown UI resource: {uri}"));
     }
+    Ok(code_mode_app_html_for_descriptor(history))
+}
 
+fn code_mode_app_html_for_descriptor(history: Option<&Value>) -> String {
     let mut html = CODE_MODE_APP_FALLBACK_HTML.to_string();
     if let Some(snapshot) = history {
         let injected = format!(
@@ -831,7 +838,7 @@ fn code_mode_app_html(uri: &str, history: Option<&Value>) -> Result<String, Stri
         );
         html = html.replace("window.__LAB_CODE_MODE_INITIAL_TRACE__ = null;", &injected);
     }
-    Ok(html)
+    html
 }
 
 fn app_resource(
@@ -845,26 +852,48 @@ fn app_resource(
         .with_meta(app_resource_meta_for_descriptor(&uri, descriptor))
 }
 
+#[cfg(test)]
 fn server_logs_app_html(uri: &str) -> Result<String, String> {
-    let base = strip_app_version(uri);
-    let Some(descriptor) = SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
-        .iter()
-        .find(|descriptor| descriptor.uri == base)
-    else {
+    let Some(descriptor) = app_descriptor_for_uri(SERVER_LOGS_APP_RESOURCE_DESCRIPTORS, uri) else {
         return Err(format!("unknown UI resource: {uri}"));
     };
+    server_logs_app_html_for_descriptor(descriptor)
+}
+
+fn server_logs_app_html_for_descriptor(
+    descriptor: &AppResourceDescriptor,
+) -> Result<String, String> {
+    inline_server_logs_host_script(SERVER_LOGS_APP_FALLBACK_HTML, descriptor)
+}
+
+fn inline_server_logs_host_script(
+    html: &str,
+    descriptor: &AppResourceDescriptor,
+) -> Result<String, String> {
+    const HOST_SCRIPT_MARKER: &str = r#"<script src="/apps/assets/labby-app-host.js"></script>"#;
+    if !html.contains(HOST_SCRIPT_MARKER) {
+        return Err("missing Labby app host script marker".to_string());
+    }
     let mcp_resource_flag = if descriptor.runtime == CodeModeRuntime::McpApp {
         "window.__LABBY_MCP_RESOURCE=true;"
     } else {
         ""
     };
-    Ok(SERVER_LOGS_APP_FALLBACK_HTML.replace(
-        r#"<script src="/apps/assets/labby-app-host.js"></script>"#,
+    Ok(html.replace(
+        HOST_SCRIPT_MARKER,
         &format!(
             "<script>{mcp_resource_flag}{}</script>",
             crate::app_assets::LABBY_APP_HOST_JS
         ),
     ))
+}
+
+fn app_descriptor_for_uri<'a>(
+    descriptors: &'a [AppResourceDescriptor],
+    uri: &str,
+) -> Option<&'a AppResourceDescriptor> {
+    let base = strip_app_version(uri);
+    descriptors.iter().find(|descriptor| descriptor.uri == base)
 }
 
 fn code_mode_app_resource(descriptor: &AppResourceDescriptor) -> Resource {
@@ -876,40 +905,22 @@ fn server_logs_app_resource(descriptor: &AppResourceDescriptor) -> Resource {
 }
 
 /// Host runtime a Code Mode app URI targets. Callers must pass a table URI; an
-/// un-tabled URI is a programming error (the runtime selects MIME/listed-ness
-/// and binding, so a silent wrong default would mis-bind the widget) — assert in
-/// debug, warn and fall back to MCP Apps in release rather than serving nothing.
+/// un-tabled URI is a programming error because runtime selects MIME,
+/// listed-ness, and tool binding.
+#[cfg(test)]
 fn code_mode_app_runtime_for_uri(uri: &str) -> CodeModeRuntime {
     app_runtime_for_uri(uri, CODE_MODE_APP_RESOURCE_DESCRIPTORS, "Code Mode")
 }
 
-fn server_logs_app_runtime_for_uri(uri: &str) -> CodeModeRuntime {
-    app_runtime_for_uri(uri, SERVER_LOGS_APP_RESOURCE_DESCRIPTORS, "server logs")
-}
-
+#[cfg(test)]
 fn app_runtime_for_uri(
     uri: &str,
     descriptors: &[AppResourceDescriptor],
     label: &'static str,
 ) -> CodeModeRuntime {
-    let base = strip_app_version(uri);
-    descriptors
-        .iter()
-        .find(|descriptor| descriptor.uri == base)
-        .map_or_else(
-            || {
-                debug_assert!(
-                    false,
-                    "{label} app runtime lookup called with un-tabled URI: {uri}"
-                );
-                tracing::warn!(
-                    resource_uri = uri,
-                    "unknown app resource URI; defaulting to MCP Apps runtime"
-                );
-                CodeModeRuntime::McpApp
-            },
-            |descriptor| descriptor.runtime,
-        )
+    app_descriptor_for_uri(descriptors, uri)
+        .unwrap_or_else(|| panic!("{label} app runtime lookup called with un-tabled URI: {uri}"))
+        .runtime
 }
 
 fn code_mode_app_resources_visible(
@@ -996,21 +1007,16 @@ fn app_uri_for_tool(
         .map(|descriptor| versioned_uri(descriptor.uri))
 }
 
+#[cfg(test)]
 pub(crate) fn code_mode_app_resource_meta(uri: &str) -> Meta {
     app_resource_meta(uri, CODE_MODE_APP_RESOURCE_DESCRIPTORS)
 }
 
-pub(crate) fn server_logs_app_resource_meta(uri: &str) -> Meta {
-    app_resource_meta(uri, SERVER_LOGS_APP_RESOURCE_DESCRIPTORS)
-}
-
+#[cfg(test)]
 fn app_resource_meta(uri: &str, descriptors: &[AppResourceDescriptor]) -> Meta {
-    let base = strip_app_version(uri);
-    let descriptor = descriptors.iter().find(|descriptor| descriptor.uri == base);
-    let runtime = descriptor.map_or(CodeModeRuntime::McpApp, |descriptor| descriptor.runtime);
-    let widget_description =
-        descriptor.and_then(|descriptor| descriptor.skybridge_widget_description);
-    build_app_resource_meta(uri, runtime, widget_description)
+    let descriptor = app_descriptor_for_uri(descriptors, uri)
+        .unwrap_or_else(|| panic!("app resource meta lookup called with un-tabled URI: {uri}"));
+    app_resource_meta_for_descriptor(uri, descriptor)
 }
 
 fn app_resource_meta_for_descriptor(uri: &str, descriptor: &AppResourceDescriptor) -> Meta {
@@ -1339,6 +1345,8 @@ mod tests {
             "Kind",
             "Search",
             "normalizeOutput",
+            "value.ok===false&&value.error",
+            "clearRows",
             "requestWidgetResize",
         ] {
             assert!(
@@ -1346,6 +1354,19 @@ mod tests {
                 "server logs app must include marker `{expected}`"
             );
         }
+    }
+
+    #[test]
+    fn server_logs_host_script_injection_fails_without_marker() {
+        let descriptor = SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.uri == SERVER_LOGS_APP_URI)
+            .expect("server logs descriptor");
+
+        let err = inline_server_logs_host_script("<html></html>", descriptor)
+            .expect_err("missing host script marker should fail");
+
+        assert!(err.contains("missing Labby app host script marker"));
     }
 
     #[tokio::test]

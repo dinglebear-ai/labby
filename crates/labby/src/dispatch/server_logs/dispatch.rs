@@ -117,7 +117,7 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
     let mut scanned_bytes = 0u64;
     let mut truncated = false;
 
-    'files: for file in files.iter().rev() {
+    for file in files.iter().rev() {
         if remaining_bytes == 0 {
             truncated = true;
             break;
@@ -126,6 +126,9 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
             continue;
         }
         let bytes_to_read = remaining_bytes.min(file.bytes);
+        if bytes_to_read < file.bytes {
+            truncated = true;
+        }
         remaining_bytes -= bytes_to_read;
         scanned_bytes += bytes_to_read;
         summaries.push(FileSummary {
@@ -157,15 +160,12 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
             matched_total += 1;
             if entries.len() < params.limit {
                 entries.push(entry);
-                if entries.len() == params.limit {
-                    truncated = true;
-                    break 'files;
-                }
+            } else {
+                truncated = true;
             }
         }
     }
 
-    let returned_full_match_set = matched_total <= entries.len();
     Ok(QueryResult {
         kind: "server_logs",
         log_dir: display_path(dir),
@@ -186,7 +186,7 @@ fn query_from_dir(dir: &Path, params: QueryParams) -> Result<QueryResult, ToolEr
         malformed_lines,
         scanned_bytes,
         max_scan_bytes: params.max_scan_bytes,
-        truncated: truncated || !returned_full_match_set,
+        truncated,
     })
 }
 
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn query_stops_after_limit_and_marks_truncated() {
+    fn query_caps_returned_entries_but_counts_matches_within_scan_budget() {
         let dir = tempfile::tempdir().expect("tempdir");
         let log_path = dir.path().join("lab.2026-07-12.log");
         std::fs::write(
@@ -446,8 +446,39 @@ mod tests {
         let result = query_from_dir(dir.path(), params).expect("query");
 
         assert_eq!(result.entries.len(), 1);
-        assert_eq!(result.matched, 1);
+        assert_eq!(result.matched, 3);
         assert!(result.truncated);
-        assert_eq!(result.scanned_lines, 1);
+        assert_eq!(result.scanned_lines, 3);
+    }
+
+    #[test]
+    fn query_marks_single_oversized_file_as_truncated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("lab.active.log");
+        let old_line = r#"{"timestamp":"2026-07-12T00:00:01Z","level":"INFO","fields":{"message":"old hidden","service":"gateway"}}"#;
+        let new_line = r#"{"timestamp":"2026-07-12T00:00:02Z","level":"INFO","fields":{"message":"new visible","service":"gateway"}}"#;
+        std::fs::write(&log_path, format!("{old_line}\n{new_line}\n")).expect("write log");
+
+        let params = QueryParams {
+            limit: 10,
+            level: None,
+            target: None,
+            service: Some("gateway".to_string()),
+            action: None,
+            kind: None,
+            query: Some("visible".to_string()),
+            file: None,
+            max_scan_bytes: u64::try_from(new_line.len() + 2).expect("line length fits"),
+        };
+
+        let result = query_from_dir(dir.path(), params).expect("query");
+
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.truncated);
+        assert_eq!(
+            result.scanned_bytes,
+            u64::try_from(new_line.len() + 2).unwrap()
+        );
+        assert!(result.scanned_bytes < result.files[0].bytes);
     }
 }

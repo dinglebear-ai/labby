@@ -550,7 +550,14 @@ pub fn restore_backup(target: &Path, backup: &Path) -> Result<(), MergeError> {
 
 fn copy_file_contents(src: &Path, dest: &Path) -> std::io::Result<()> {
     let mut src = fs::File::open(src)?;
-    let mut dest = fs::File::create(dest)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut dest = options.open(dest)?;
     let mut buf = [0_u8; 8 * 1024];
     loop {
         let read = src.read(&mut buf)?;
@@ -838,6 +845,21 @@ mod tests {
         let backup = outcome.backup_path.expect("backup created");
         restore_backup(&path, &backup).unwrap();
         assert!(fs::read_to_string(&path).unwrap().contains("FOO=original"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_file_contents_creates_destination_with_secure_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = write_initial(dir.path(), "source.env", "SECRET=value\n");
+        let dest = dir.path().join("dest.env");
+
+        copy_file_contents(&source, &dest).unwrap();
+
+        let mode = fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600, got {mode:o}");
     }
 
     #[test]

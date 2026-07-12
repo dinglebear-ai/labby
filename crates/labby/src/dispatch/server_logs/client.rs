@@ -18,8 +18,8 @@ pub(super) fn log_dir() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    crate::config::load_toml(&crate::config::toml_candidates())
-        .ok()
+    crate::config::config_toml_path()
+        .and_then(|path| crate::config::load_toml(&[path]).ok())
         .and_then(|config| config.log.dir)
         .unwrap_or_else(default_log_dir)
 }

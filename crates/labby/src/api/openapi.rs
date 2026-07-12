@@ -7,16 +7,17 @@
 use std::sync::Arc;
 
 use serde::Serialize;
-use utoipa::openapi::path::{OperationBuilder, PathItemBuilder};
+use utoipa::openapi::path::{OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::SchemaType;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
-    Components, ContentBuilder, ObjectBuilder, PathItem, RefOr, ResponseBuilder, ResponsesBuilder,
-    Schema, SecurityRequirement, Type,
+    Components, ContentBuilder, ObjectBuilder, PathItem, RefOr, Required, ResponseBuilder,
+    ResponsesBuilder, Schema, SecurityRequirement, Type,
 };
 use utoipa::{Modify, OpenApi, ToSchema};
 
+use crate::app_manifest::{APPS_MANIFEST_API_ROUTE, SERVER_LOGS_QUERY_API_ROUTE};
 use crate::registry::RegisteredService;
 
 // ── Documentation-only error schemas ────────────────────────────────────
@@ -411,7 +412,7 @@ pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> 
                                 ))))
                                 .build(),
                         )
-                        .required(Some(utoipa::openapi::Required::True))
+                        .required(Some(Required::True))
                         .build(),
                 ))
                 .responses(
@@ -547,6 +548,7 @@ pub fn build_app_paths() -> Vec<(String, PathItem)> {
         .description(Some(
             "Browser-friendly data route for the Server Logs operator app. Mirrors `server_logs.query`.",
         ))
+        .parameters(Some(server_logs_query_parameters()))
         .responses(
             ResponsesBuilder::new()
                 .response("200", ok_response("Server log query result"))
@@ -575,18 +577,51 @@ pub fn build_app_paths() -> Vec<(String, PathItem)> {
 
     vec![
         (
-            "/v1/apps/manifest".to_string(),
+            APPS_MANIFEST_API_ROUTE.to_string(),
             PathItemBuilder::new()
                 .operation(utoipa::openapi::HttpMethod::Get, manifest)
                 .build(),
         ),
         (
-            "/v1/server-logs/query".to_string(),
+            SERVER_LOGS_QUERY_API_ROUTE.to_string(),
             PathItemBuilder::new()
                 .operation(utoipa::openapi::HttpMethod::Get, server_logs_query)
                 .build(),
         ),
     ]
+}
+
+fn server_logs_query_parameters() -> Vec<utoipa::openapi::path::Parameter> {
+    [
+        (
+            "limit",
+            "integer",
+            "Maximum number of log entries to return.",
+        ),
+        ("level", "string", "Filter by log level."),
+        ("target", "string", "Filter by tracing target."),
+        ("service", "string", "Filter by service field."),
+        ("action", "string", "Filter by action field."),
+        ("kind", "string", "Filter by error/event kind field."),
+        ("query", "string", "Case-insensitive text search."),
+        ("file", "string", "Filter by log file name."),
+        (
+            "max_scan_bytes",
+            "integer",
+            "Maximum number of log bytes to scan.",
+        ),
+    ]
+    .into_iter()
+    .map(|(name, ty, description)| {
+        ParameterBuilder::new()
+            .name(name)
+            .parameter_in(ParameterIn::Query)
+            .required(Required::False)
+            .description(Some(description))
+            .schema(Some(param_type_to_schema(ty)))
+            .build()
+    })
+    .collect()
 }
 
 // ── Top-level spec builder ──────────────────────────────────────────────
@@ -873,12 +908,50 @@ mod tests {
     #[test]
     fn build_app_paths_generates_operator_app_routes() {
         let paths = build_app_paths();
-        assert!(paths.iter().any(|(path, _)| path == "/v1/apps/manifest"));
         assert!(
             paths
                 .iter()
-                .any(|(path, _)| path == "/v1/server-logs/query")
+                .any(|(path, _)| path == APPS_MANIFEST_API_ROUTE)
         );
+        assert!(
+            paths
+                .iter()
+                .any(|(path, _)| path == SERVER_LOGS_QUERY_API_ROUTE)
+        );
+    }
+
+    #[test]
+    fn server_logs_query_openapi_lists_query_parameters() {
+        let paths = build_app_paths();
+        let (_, query_path) = paths
+            .iter()
+            .find(|(path, _)| path == SERVER_LOGS_QUERY_API_ROUTE)
+            .expect("server logs query path");
+        let json = serde_json::to_value(query_path).expect("path json");
+        let parameters = json["get"]["parameters"]
+            .as_array()
+            .expect("query route should declare parameters");
+        let names: std::collections::BTreeSet<_> = parameters
+            .iter()
+            .filter_map(|param| param["name"].as_str())
+            .collect();
+
+        for expected in [
+            "limit",
+            "level",
+            "target",
+            "service",
+            "action",
+            "kind",
+            "query",
+            "file",
+            "max_scan_bytes",
+        ] {
+            assert!(
+                names.contains(expected),
+                "missing query parameter {expected}"
+            );
+        }
     }
 
     /// Round-trip integration test: build the full spec from the default registry
@@ -908,12 +981,12 @@ mod tests {
         assert!(paths.contains_key("/health"), "missing /health path");
         assert!(paths.contains_key("/ready"), "missing /ready path");
         assert!(
-            paths.contains_key("/v1/apps/manifest"),
-            "missing /v1/apps/manifest path"
+            paths.contains_key(APPS_MANIFEST_API_ROUTE),
+            "missing {APPS_MANIFEST_API_ROUTE} path"
         );
         assert!(
-            paths.contains_key("/v1/server-logs/query"),
-            "missing /v1/server-logs/query path"
+            paths.contains_key(SERVER_LOGS_QUERY_API_ROUTE),
+            "missing {SERVER_LOGS_QUERY_API_ROUTE} path"
         );
 
         // At least setup (always-on) should have a /v1/setup path
@@ -990,7 +1063,7 @@ mod tests {
                 );
             }
         }
-        for path in ["/v1/apps/manifest", "/v1/server-logs/query"] {
+        for path in [APPS_MANIFEST_API_ROUTE, SERVER_LOGS_QUERY_API_ROUTE] {
             let get = paths
                 .get(path)
                 .and_then(|item| item.get("get"))

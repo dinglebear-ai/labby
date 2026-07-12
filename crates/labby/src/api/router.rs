@@ -34,6 +34,11 @@ use crate::dispatch::upstream::auth::configured_bearer_token;
 use labby_auth::AuthLayer;
 use labby_auth::error::AuthError as LabAuthError;
 
+use crate::app_manifest::{
+    APPS_LAUNCHER_ROUTE, APPS_MANIFEST_API_ROUTE, LABBY_APP_HOST_JS_ROUTE,
+    SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_DATA_API_PREFIX,
+};
+
 /// Convert lab's strongly-typed [`crate::observability::activity::ActorKeyDeriver`]
 /// into the closure-erased [`labby_auth::ActorKeyDeriver`] alias accepted by
 /// [`AuthLayer::with_actor_key_deriver`]. Keeps the lab-specific HMAC actor-key
@@ -1138,10 +1143,17 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
     }
 
     v1 = v1
-        .route("/apps/manifest", get(apps_manifest))
+        .route(
+            APPS_MANIFEST_API_ROUTE
+                .strip_prefix("/v1")
+                .expect("apps manifest route must be under /v1"),
+            get(apps_manifest),
+        )
         .nest("/server_logs", services::server_logs::routes(state.clone()))
         .nest(
-            "/server-logs",
+            SERVER_LOGS_DATA_API_PREFIX
+                .strip_prefix("/v1")
+                .expect("server logs data route must be under /v1"),
             services::server_logs::data_routes(state.clone()),
         )
         // Unauthenticated route groups are gated by host_validation_layer —
@@ -1611,15 +1623,17 @@ pub fn build_router(
     };
     router = router.merge(dev_routes);
 
-    let asset_routes =
-        Router::new().route("/apps/assets/labby-app-host.js", get(labby_app_host_js));
+    let asset_routes = Router::new().route(LABBY_APP_HOST_JS_ROUTE, get(labby_app_host_js));
     router = router.merge(asset_routes);
 
     let app_routes = Router::new()
-        .route("/apps", get(apps_launcher_page))
-        .route("/apps/", get(apps_launcher_page))
-        .route("/apps/server-logs", get(server_logs_app_page))
-        .route("/apps/server-logs/", get(server_logs_app_page));
+        .route(APPS_LAUNCHER_ROUTE, get(apps_launcher_page))
+        .route(&format!("{APPS_LAUNCHER_ROUTE}/"), get(apps_launcher_page))
+        .route(SERVER_LOGS_BROWSER_ROUTE, get(server_logs_app_page))
+        .route(
+            &format!("{SERVER_LOGS_BROWSER_ROUTE}/"),
+            get(server_logs_app_page),
+        );
     let app_routes = if needs_auth {
         app_routes.route_layer(make_auth_layer(true))
     } else {

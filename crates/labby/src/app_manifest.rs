@@ -11,6 +11,13 @@ use serde::Serialize;
 use crate::app_assets::{SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX};
 use crate::registry::ToolRegistry;
 
+pub(crate) const APPS_MANIFEST_API_ROUTE: &str = "/v1/apps/manifest";
+pub(crate) const SERVER_LOGS_DATA_API_PREFIX: &str = "/v1/server-logs";
+pub(crate) const SERVER_LOGS_QUERY_API_ROUTE: &str = "/v1/server-logs/query";
+pub(crate) const APPS_LAUNCHER_ROUTE: &str = "/apps";
+pub(crate) const SERVER_LOGS_BROWSER_ROUTE: &str = "/apps/server-logs";
+pub(crate) const LABBY_APP_HOST_JS_ROUTE: &str = "/apps/assets/labby-app-host.js";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AppKind {
@@ -93,7 +100,7 @@ pub(crate) struct AppManifestError {
 const SERVER_LOGS_DATA_ROUTES: &[AppDataRoute] = &[AppDataRoute {
     label: "query",
     method: "GET",
-    path: "/v1/server-logs/query",
+    path: SERVER_LOGS_QUERY_API_ROUTE,
     binding: AppActionBinding {
         service: "server_logs",
         action: "server_logs.query",
@@ -106,7 +113,7 @@ const APPS: &[AppSpec] = &[AppSpec {
     description: "Browse and filter Labby's own rolling server process logs.",
     icon: "activity",
     kind: AppKind::Browse,
-    browser_path: "/apps/server-logs",
+    browser_path: SERVER_LOGS_BROWSER_ROUTE,
     ui_resource_uri: SERVER_LOGS_APP_URI,
     ui_resource_prefix: SERVER_LOGS_APP_URI_PREFIX,
     primary_action: AppActionBinding {

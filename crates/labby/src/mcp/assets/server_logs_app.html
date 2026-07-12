@@ -152,6 +152,13 @@ modePill.textContent=mode;
 scopePill.textContent="lab:admin";
 function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
 function json(value){try{return JSON.stringify(value,null,2)}catch{return String(value)}}
+function errorMessage(error){
+  if(!error)return "Failed";
+  if(typeof error==="string")return error;
+  if(error.message)return error.message;
+  if(error.kind)return `${error.kind}${error.param?`: ${error.param}`:""}`;
+  return json(error);
+}
 function stableHash(value){
   const text=String(value??"");
   let hash=2166136261;
@@ -200,8 +207,17 @@ function scheduleResize(){
     host.requestResize({height,width:Math.ceil(rect.width)});
   });
 }
+function clearRows(){
+  current=null;
+  stats.hidden=true;
+  rows.innerHTML='<p class="empty">No log data.</p>';
+  foot.textContent="";
+  openLogRows=new Set();
+  scheduleResize();
+}
 function normalizeOutput(value){
   if(!value)return null;
+  if(value.ok===false&&value.error)throw new Error(errorMessage(value.error));
   if(value.structuredContent)return normalizeOutput(value.structuredContent);
   if(value.data&&value.data.kind==="server_logs")return value.data;
   if(value.kind==="server_logs")return value;
@@ -303,18 +319,16 @@ function render(data){
   if(!data){
     dot.className="dot";
     sub.textContent="waiting";
-    stats.hidden=true;
-    rows.innerHTML='<p class="empty">No log data.</p>';
-    foot.textContent="";
-    scheduleResize();
+    clearRows();
     return;
   }
   dot.className="dot ok";
   const entries=Array.isArray(data.entries)?data.entries:[];
+  const matched=data.matched??entries.length;
   sub.textContent=`${entries.length} shown`;
   stats.hidden=false;
   stats.innerHTML=[
-    stat("Matched",data.matched??entries.length),
+    stat("Matched",data.truncated?`>= ${matched}`:matched),
     stat("Scanned",data.scanned_lines??0),
     stat("Files",(data.files||[]).length),
     stat("Bytes",data.scanned_bytes??0),
@@ -336,6 +350,13 @@ function render(data){
 	  }
   foot.textContent=[data.log_dir,`max ${data.max_scan_bytes||0} B`,data.malformed_lines?`${data.malformed_lines} malformed`:""].filter(Boolean).join(" · ");
   updatedPill.textContent=new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+  scheduleResize();
+}
+function showError(err){
+  clearRows();
+  msg.textContent=(err&&err.message)||"Failed";
+  refreshPill.textContent="error";
+  dot.className="dot err";
   scheduleResize();
 }
 async function callServerLogs(activeFilters=filters()){
@@ -361,16 +382,14 @@ async function refresh(){
       refreshPill.textContent=auto.checked?"live":"idle";
       render(result);
     }else{
+      clearRows();
       msg.textContent="No data";
       refreshPill.textContent="empty";
       dot.className="dot err";
     }
   }catch(err){
     if(seq!==requestSeq)return;
-    msg.textContent=(err&&err.message)||"Failed";
-    refreshPill.textContent="error";
-    dot.className="dot err";
-    scheduleResize();
+    showError(err);
   }finally{
     refreshInFlight=false;
     if(refreshQueued){
@@ -425,12 +444,14 @@ rows.addEventListener("toggle",scheduleResize,true);
 window.addEventListener("openai:set_globals",event=>{
   const globals=event&&event.detail&&event.detail.globals;
   if(globals&&Object.prototype.hasOwnProperty.call(globals,"toolOutput")){
-    render(normalizeOutput(globals.toolOutput));
+    try{render(normalizeOutput(globals.toolOutput));}catch(err){showError(err);}
   }
 });
 applyFilters(initialFilters());
 renderSavedViews("");
-if(window.openai&&window.openai.toolOutput)render(normalizeOutput(window.openai.toolOutput));
+if(window.openai&&window.openai.toolOutput){
+  try{render(normalizeOutput(window.openai.toolOutput));}catch(err){showError(err);}
+}
 else {
   render(null);
   void refresh();
