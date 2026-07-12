@@ -6,7 +6,10 @@ members = ["crates/labby-apis", "crates/labby", "crates/labby-auth", "crates/lab
 version = "1.2.0"
 edition = "2024"
 rust-version = "1.92"
+keywords = ["mcp", "gateway", "homelab", "labby", "agents"]
+description = "Rust homelab control plane and Labby MCP gateway for agents, plugins, registries, stash workspaces, setup, logs, and fleet operations."
 license = "MIT OR Apache-2.0"
+homepage = "https://github.com/jmagar/labby#readme"
 repository = "https://github.com/jmagar/labby"
 authors = ["jmagar"]
 
