@@ -29,7 +29,7 @@ atomic_install() {
   base="$(basename -- "$dest")"
   mkdir -p "$dir"
   tmp="$(mktemp "$dir/.${base}.tmp.XXXXXX")"
-  cp "$src" "$tmp"
+  cat -- "$src" >"$tmp"
   chmod 755 "$tmp"
   mv -f "$tmp" "$dest"
 }

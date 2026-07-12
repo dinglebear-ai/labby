@@ -10,8 +10,8 @@ use axum::{
     http::HeaderMap,
     routing::{get, post},
 };
-use serde::Deserialize;
-use serde_json::{Map, Number, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
@@ -21,12 +21,14 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::server_logs::ACTIONS;
 
 pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/", post(handle))
-        .route("/query", get(query))
+    Router::new().route("/", post(handle))
 }
 
-#[derive(Debug, Deserialize)]
+pub fn data_routes(_state: AppState) -> Router<AppState> {
+    Router::new().route("/query", get(query))
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 struct ServerLogsQuery {
     limit: Option<u64>,
     level: Option<String>,
@@ -45,7 +47,7 @@ async fn query(
     Query(query): Query<ServerLogsQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
-    require_server_logs_admin(request_id, auth.as_ref())?;
+    require_server_logs_admin("server_logs.query", request_id, auth.as_ref())?;
     dispatch_request(headers, auth, query_request(query)).await
 }
 
@@ -55,7 +57,7 @@ async fn handle(
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
-    require_server_logs_admin(request_id, auth.as_ref())?;
+    require_server_logs_admin(&req.action, request_id, auth.as_ref())?;
     dispatch_request(headers, auth, req).await
 }
 
@@ -84,54 +86,161 @@ fn query_request(query: ServerLogsQuery) -> ActionRequest {
     }
 }
 
+fn server_logs_action_requires_admin(action: &str) -> bool {
+    let bare = action.strip_prefix("server_logs.").unwrap_or(action);
+    if bare == "help" || bare == "schema" {
+        return false;
+    }
+    ACTIONS
+        .iter()
+        .find(|spec| spec.name == action)
+        .map(|spec| spec.requires_admin)
+        .unwrap_or(true)
+}
+
+fn has_admin_scope(auth: Option<&Extension<AuthContext>>) -> bool {
+    auth.is_some_and(|ctx| ctx.0.scopes.iter().any(|scope| scope == "lab:admin"))
+}
+
 fn require_server_logs_admin(
+    action: &str,
     request_id: Option<&str>,
     auth: Option<&Extension<AuthContext>>,
 ) -> Result<(), ToolError> {
-    if auth.is_some_and(|ctx| ctx.0.scopes.iter().any(|scope| scope == "lab:admin")) {
+    if !server_logs_action_requires_admin(action) || has_admin_scope(auth) {
         return Ok(());
     }
     tracing::warn!(
         surface = "api",
         service = "server_logs",
-        action = "server_logs.query",
+        action,
         request_id,
         kind = "forbidden",
-        "server_logs query rejected: lab:admin scope required"
+        "server_logs action rejected: lab:admin scope required"
     );
     Err(ToolError::Sdk {
         sdk_kind: "forbidden".to_string(),
-        message: "server_logs.query requires `lab:admin` scope".to_string(),
+        message: format!("action `{action}` requires `lab:admin` scope"),
     })
 }
 
 impl ServerLogsQuery {
     fn into_params(self) -> Value {
-        let mut map = Map::new();
-        insert_number(&mut map, "limit", self.limit);
-        insert_number(&mut map, "max_scan_bytes", self.max_scan_bytes);
-        insert_string(&mut map, "level", self.level);
-        insert_string(&mut map, "target", self.target);
-        insert_string(&mut map, "service", self.service);
-        insert_string(&mut map, "action", self.action);
-        insert_string(&mut map, "kind", self.kind);
-        insert_string(&mut map, "query", self.query);
-        insert_string(&mut map, "file", self.file);
-        Value::Object(map)
+        serde_json::to_value(self).unwrap_or_else(|_| Value::Object(serde_json::Map::new()))
     }
 }
 
-fn insert_string(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
-    let Some(value) = value.map(|value| value.trim().to_string()) else {
-        return;
+#[cfg(test)]
+mod tests {
+    use std::sync::{LazyLock, Mutex};
+
+    use axum::{
+        Extension, Router,
+        body::Body,
+        http::{Request, StatusCode, header},
     };
-    if !value.is_empty() {
-        map.insert(key.to_string(), Value::String(value));
-    }
-}
+    use serde_json::json;
+    use tower::ServiceExt;
 
-fn insert_number(map: &mut Map<String, Value>, key: &str, value: Option<u64>) {
-    if let Some(value) = value {
-        map.insert(key.to_string(), Value::Number(Number::from(value)));
+    use crate::api::{oauth::AuthContext, state::AppState};
+
+    static CONFIG_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn auth(scopes: &[&str]) -> AuthContext {
+        AuthContext {
+            sub: "server-logs-test".to_string(),
+            actor_key: None,
+            scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+            issuer: "test".to_string(),
+            via_session: false,
+            csrf_token: None,
+            email: Some("server-logs@example.com".to_string()),
+        }
+    }
+
+    fn app_with_auth(auth: AuthContext) -> Router {
+        let state = AppState::from_registry(crate::registry::build_default_registry());
+        Router::new()
+            .merge(super::routes(state.clone()))
+            .merge(super::data_routes(state.clone()))
+            .layer(Extension(auth))
+            .with_state(state)
+    }
+
+    async fn request(
+        app: Router,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> axum::response::Response {
+        let builder = Request::builder().method(method).uri(uri);
+        let builder = if body.is_some() {
+            builder.header(header::CONTENT_TYPE, "application/json")
+        } else {
+            builder
+        };
+        let request = builder
+            .body(Body::from(
+                body.map_or_else(String::new, |body| body.to_string()),
+            ))
+            .expect("request");
+        app.oneshot(request).await.expect("response")
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn query_get_returns_logs_for_admin_scope() {
+        let _guard = CONFIG_TEST_LOCK.lock().expect("config test lock");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let log_dir = temp.path().join("logs");
+        std::fs::create_dir_all(&log_dir).expect("log dir");
+        let log_path = log_dir.join("lab.test.log");
+        std::fs::write(
+            &log_path,
+            r#"{"timestamp":"2026-07-12T00:00:01Z","level":"INFO","fields":{"message":"route ok","service":"gateway"}}"#,
+        )
+        .expect("write log");
+        let config_path = temp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            format!("[log]\ndir = \"{}\"\n", log_dir.display()),
+        )
+        .expect("write config");
+        crate::config::set_test_config_toml_path(Some(config_path));
+
+        let response = request(
+            app_with_auth(auth(&["lab:read", "lab:admin"])),
+            "GET",
+            "/query?service=gateway&limit=5",
+            None,
+        )
+        .await;
+
+        crate::config::set_test_config_toml_path(None);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["kind"], "server_logs");
+        assert_eq!(json["filters"]["service"], "gateway");
+        assert_eq!(json["entries"][0]["message"], "route ok");
+    }
+
+    #[tokio::test]
+    async fn query_routes_reject_read_only_scope() {
+        let app = app_with_auth(auth(&["lab:read"]));
+
+        let get = request(app.clone(), "GET", "/query", None).await;
+        assert_eq!(get.status(), StatusCode::FORBIDDEN);
+
+        let post = request(
+            app,
+            "POST",
+            "/",
+            Some(json!({"action": "server_logs.query", "params": {}})),
+        )
+        .await;
+        assert_eq!(post.status(), StatusCode::FORBIDDEN);
     }
 }
