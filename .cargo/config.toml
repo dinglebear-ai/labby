@@ -10,11 +10,9 @@
 # canonical family reference.
 # =============================================================================
 
-# sccache and incremental compilation are mutually exclusive — sccache cannot
-# cache Rust artifacts when incremental=true because incremental produces
-# non-deterministic intermediate files. The global ~/.cargo/config.toml sets
-# incremental=true for normal dev; this file overrides it for developers who
-# have sccache configured. See docs/RUST.md §Repo-specific overrides.
+# Keep Lab cache-friendly even if a developer's global Cargo config differs.
+# The managed host config also disables incremental builds for sccache, but a
+# repo-local override prevents accidental cache-bypassing profile overrides.
 [build]
 incremental = false
 
