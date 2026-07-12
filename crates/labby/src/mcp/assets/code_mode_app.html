@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Lab Code Mode Inspector</title>
 <style>
-:root{color-scheme:dark;--aurora-page-bg:#07131c;--aurora-panel-strong:#13293a;--aurora-panel-strong-top:#173245;--aurora-control-surface:#0c1a24;--aurora-border-default:#1d3d4e;--aurora-border-strong:#24536c;--aurora-text-primary:#e6f4fb;--aurora-text-muted:#a7bcc9;--aurora-accent-primary:#29b6f6;--aurora-accent-strong:#67cbfa;--aurora-accent-deep:#1c7fac;--aurora-success:#7dd3c7;--aurora-warn:#c6a36b;--aurora-error:#c78490;--aurora-hover-bg:#17364b;--aurora-shadow-medium:0 12px 24px rgba(0,0,0,.18);--aurora-highlight-strong:inset 0 1px 0 rgba(255,255,255,.05);background:var(--aurora-page-bg);color:var(--aurora-text-primary);font-family:Inter,"Segoe UI",system-ui,sans-serif}
+:root{color-scheme:dark;--aurora-page-bg:#07131c;--aurora-panel-strong:#13293a;--aurora-panel-strong-top:#173245;--aurora-control-surface:#0c1a24;--aurora-border-default:#1d3d4e;--aurora-border-strong:#24536c;--aurora-text-primary:#e6f4fb;--aurora-text-muted:#a7bcc9;--aurora-accent-primary:#29b6f6;--aurora-accent-strong:#67cbfa;--aurora-accent-deep:#1c7fac;--aurora-success:#7dd3c7;--aurora-warn:#c6a36b;--aurora-error:#c78490;--aurora-hover-bg:#17364b;--aurora-shadow-medium:0 12px 24px rgba(0,0,0,.18);--aurora-highlight-strong:inset 0 1px 0 rgba(255,255,255,.05);color:var(--aurora-text-primary);font-family:Inter,"Segoe UI",system-ui,sans-serif}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html.light{color-scheme:light;--aurora-page-bg:#f0f6f8;--aurora-panel-strong:#edf4f7;--aurora-panel-strong-top:#e4eff3;--aurora-control-surface:#e8f2f5;--aurora-border-default:#c5dae2;--aurora-border-strong:#9fbfcc;--aurora-text-primary:#162126;--aurora-text-muted:#4a6872;--aurora-accent-primary:#0288d1;--aurora-accent-strong:#0277bd;--aurora-accent-deep:#01579b;--aurora-success:#2d7d6e;--aurora-warn:#8a6914;--aurora-error:#9c3545;--aurora-hover-bg:#dcedf2;--aurora-shadow-medium:0 12px 24px rgba(0,0,0,.08);--aurora-highlight-strong:inset 0 1px 0 rgba(255,255,255,.9)}
-html.light body{background:radial-gradient(900px 420px at 12% -10%,rgba(2,136,209,.07),transparent 60%),var(--aurora-page-bg)}
+html{margin:0;padding:0;width:100%;min-height:0;height:auto;overflow:hidden;background:transparent}
+html.light body{background:transparent}
 .codewrap{position:relative}
 .copybtn{position:absolute;top:5px;right:5px;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border-radius:5px;border:1px solid transparent;background:transparent;color:var(--aurora-text-muted);cursor:pointer;transition:color .15s ease-out,border-color .15s ease-out}
 .copybtn:hover{color:var(--aurora-text-primary);border-color:var(--aurora-border-strong)}
@@ -23,12 +24,20 @@ html.light body{background:radial-gradient(900px 420px at 12% -10%,rgba(2,136,20
 #content::-webkit-scrollbar{width:6px}
 #content::-webkit-scrollbar-track{background:transparent}
 #content::-webkit-scrollbar-thumb{background-color:var(--aurora-border-strong);border-radius:999px}
-body{margin:0;padding:0;background:radial-gradient(900px 420px at 12% -10%,rgba(41,182,246,.08),transparent 60%),var(--aurora-page-bg);color:var(--aurora-text-primary)}
+body{margin:0;padding:0;width:100%;min-height:0;height:auto;overflow:hidden;background:transparent;color:var(--aurora-text-primary)}
 .widget{width:100%;max-width:none;margin:0;overflow:hidden;border-radius:10px;background:linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong));border:1px solid color-mix(in srgb,var(--aurora-border-default) 45%,var(--aurora-page-bg));box-shadow:var(--aurora-shadow-medium),var(--aurora-highlight-strong)}
 .head,.foot{display:flex;align-items:center;gap:8px;padding:8px 10px;background:color-mix(in srgb,var(--aurora-page-bg) 25%,transparent)}
 .head{border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg))}
 .foot{border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg));padding:6px 12px}
 .summary{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 35%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 18%,transparent);overflow-x:auto;scrollbar-width:none}
+.toolbar{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 35%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 10%,transparent)}
+.toolbar-group{display:flex;align-items:center;gap:3px}
+.search{width:130px;min-width:80px;height:24px;border-radius:6px;border:1px solid color-mix(in srgb,var(--aurora-border-default) 65%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 38%,var(--aurora-control-surface));color:var(--aurora-text-primary);font:inherit;font-size:11px;padding:0 8px;outline:none}
+.search:focus{border-color:color-mix(in srgb,var(--aurora-accent-primary) 60%,var(--aurora-border-strong));box-shadow:0 0 0 1px rgba(41,182,246,.22)}
+.search::placeholder{color:var(--aurora-text-muted)}
+.toolmsg{font-size:10.5px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+.toolmsg.ok{color:var(--aurora-success)}
+.toolmsg.err{color:var(--aurora-error)}
 .stat{display:inline-flex;align-items:baseline;gap:4px;padding:3px 7px;border-radius:6px;background:color-mix(in srgb,var(--aurora-control-surface) 78%,transparent);border:1px solid color-mix(in srgb,var(--aurora-border-default) 52%,transparent);white-space:nowrap;font-variant-numeric:tabular-nums}
 .stat-label{font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--aurora-text-muted)}
 .stat-val{font-size:11px;font-weight:700;color:var(--aurora-text-primary)}
@@ -66,17 +75,28 @@ body{margin:0;padding:0;background:radial-gradient(900px 420px at 12% -10%,rgba(
 .name{display:flex;align-items:baseline;gap:6px;min-width:0}
 .up{font-size:10px;font-weight:600;color:var(--aurora-text-muted);letter-spacing:.04em;text-transform:uppercase;flex:none}
 .tool{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--aurora-text-primary)}
+.action-label{font-size:11px;font-weight:650;color:var(--aurora-accent-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.action-label::before{content:"·";margin-right:6px;color:var(--aurora-text-muted)}
+.action-desc{font-size:10.5px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .track{position:relative;height:4px;border-radius:999px;background:color-mix(in srgb,var(--aurora-border-default) 34%,transparent)}
 .bar{position:absolute;inset:0 auto 0 0;border-radius:999px;min-width:4px;background:linear-gradient(90deg,var(--aurora-accent-deep),var(--aurora-accent-primary))}
 .bar.err{background:linear-gradient(90deg,color-mix(in srgb,var(--aurora-error) 70%,var(--aurora-page-bg)),var(--aurora-error))}
 .row .ms{text-align:right}
 .row-error{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--aurora-error);white-space:nowrap}
+.row-actions{display:flex;align-items:center;gap:2px}
 .chev{display:flex;align-items:center;justify-content:center;color:var(--aurora-text-muted);transition:transform .15s ease-out}
 details[open]>.row .chev{transform:rotate(90deg)}
 .sub{display:grid;gap:5px;padding:2px 12px 8px 34px}
 .errline{font-size:11px;color:var(--aurora-error)}
+.notice{display:flex;align-items:flex-start;gap:7px;padding:7px 9px;border-radius:7px;border:1px solid color-mix(in srgb,var(--aurora-border-default) 52%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 32%,transparent);font-size:11px;line-height:1.45;color:var(--aurora-text-muted)}
+.notice.warn{border-color:color-mix(in srgb,var(--aurora-warn) 45%,transparent);background:color-mix(in srgb,var(--aurora-warn) 9%,transparent);color:var(--aurora-warn)}
+.notice.empty-reason{border-color:color-mix(in srgb,var(--aurora-accent-primary) 32%,transparent)}
+.call-meta{display:flex;flex-wrap:wrap;gap:5px}
+.meta-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:999px;background:color-mix(in srgb,var(--aurora-page-bg) 42%,transparent);border:1px solid color-mix(in srgb,var(--aurora-border-default) 46%,transparent);font-size:10px;color:var(--aurora-text-muted)}
 .iconbtn{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border-radius:5px;border:1px solid transparent;background:transparent;color:var(--aurora-text-muted);cursor:pointer}
 .iconbtn:hover{color:var(--aurora-text-primary);border-color:var(--aurora-border-strong)}
+.iconbtn.primary{color:var(--aurora-accent-strong);border-color:color-mix(in srgb,var(--aurora-accent-primary) 22%,transparent)}
+.iconbtn:disabled{opacity:.42;cursor:not-allowed}
 .viewbar{display:inline-flex;align-items:center;gap:2px;width:max-content;padding:2px;border-radius:7px;border:1px solid color-mix(in srgb,var(--aurora-border-default) 55%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 35%,transparent)}
 .viewtab{border:0;border-radius:5px;background:transparent;color:var(--aurora-text-muted);font:inherit;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer}
 .viewtab[aria-pressed="true"]{background:color-mix(in srgb,var(--aurora-accent-primary) 13%,var(--aurora-control-surface));color:var(--aurora-text-primary);box-shadow:0 0 0 1px rgba(41,182,246,.18)}
@@ -84,6 +104,7 @@ details[open]>.row .chev{transform:rotate(90deg)}
 .kv-label,.meta-label{font-size:10px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--aurora-text-muted)}
 .meta-val{font-size:11px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 pre{margin:0;padding:8px 10px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:11px;line-height:1.55;color:var(--aurora-text-primary);white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:150px;border-radius:8px;background:color-mix(in srgb,var(--aurora-page-bg) 55%,var(--aurora-control-surface));border:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg))}
+mark{border-radius:3px;background:color-mix(in srgb,var(--aurora-accent-primary) 34%,transparent);color:var(--aurora-text-primary);padding:0 1px}
 .empty{margin:0;padding:14px 12px;font-size:12px;color:var(--aurora-text-muted);text-align:center}
 .histnote{display:flex;align-items:center;gap:7px;padding:7px 12px;font-size:11px;color:var(--aurora-text-muted);border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 30%,transparent)}
 .mrow{display:grid;grid-template-columns:14px minmax(0,1fr) 13px;align-items:center;gap:8px;padding:5px 12px;cursor:pointer;list-style:none}
@@ -117,6 +138,17 @@ details[open]>.mrow .chev{transform:rotate(90deg)}
 <span class="badge" id="state">read only</span>
 </div>
 <div class="summary" id="summaryStats" hidden></div>
+<div class="toolbar" id="toolbar" hidden>
+<div class="toolbar-group">
+<button type="button" class="iconbtn" data-row-mode="expand" aria-label="Expand all" title="Expand all"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m7 8 5-5 5 5"/><path d="m7 16 5 5 5-5"/></svg></button>
+<button type="button" class="iconbtn" data-row-mode="collapse" aria-label="Collapse all" title="Collapse all"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m7 14 5 5 5-5"/><path d="m7 10 5-5 5 5"/></svg></button>
+</div>
+<input class="search" id="resultSearch" type="search" autocomplete="off" spellcheck="false" placeholder="Find result">
+<span class="spacer"></span>
+<span class="toolmsg" id="toolmsg"></span>
+<button type="button" class="iconbtn" id="copyReplay" aria-label="Copy replay snippet" title="Copy replay snippet"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-2"/><path d="M8 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2"/><path d="M8 5h6"/><path d="m15 9 4 4-4 4"/><path d="M11 13h8"/></svg></button>
+<button type="button" class="iconbtn primary" id="saveSnippet" aria-label="Save snippet" title="Save snippet"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg></button>
+</div>
 <div id="content"><p class="empty">Run codemode to populate the inspector.</p></div>
 <div class="foot" id="foot" hidden>
 <span class="foot-label" id="footlabel">Session</span>
@@ -217,12 +249,23 @@ const foot=document.getElementById("foot");
 const chips=document.getElementById("chips");
 const footMeta=document.getElementById("footmeta");
 const summaryStats=document.getElementById("summaryStats");
+const widget=document.querySelector(".widget");
+const toolbar=document.getElementById("toolbar");
+const resultSearch=document.getElementById("resultSearch");
+const toolMsg=document.getElementById("toolmsg");
+const copyReplay=document.getElementById("copyReplay");
+const saveSnippetButton=document.getElementById("saveSnippet");
 // Widget state: the latest live execute trace plus the server-injected
 // bounded history snapshot. `selected` is "live" or a history entry seq.
 let live=null;
 let history=[];
 let selected="live";
 let resultView="pretty";
+let resultQuery="";
+let saveState={kind:"idle",message:""};
+let saveSeq=0;
+let resizeApp=null;
+let resizePending=false;
 // The LLM's tool-call arguments, delivered by the host (MCP Apps
 // ui/notifications/tool-input, or window.openai.toolInput). For codemode that
 // is { code: "async () => { … }" } — the snippet that drove the run.
@@ -233,6 +276,21 @@ let recognizedOnce=false;
 function applyTheme(theme){
   if(theme!=="light"&&theme!=="dark")return;
   document.documentElement.classList.toggle("light",theme==="light");
+}
+function scheduleResize(){
+  if(resizePending)return;
+  resizePending=true;
+  requestAnimationFrame(()=>{
+    resizePending=false;
+    const rect=widget?widget.getBoundingClientRect():document.body.getBoundingClientRect();
+    const width=Math.ceil(rect.width||document.documentElement.scrollWidth||window.innerWidth);
+    const height=Math.ceil(rect.height||document.body.scrollHeight||document.documentElement.scrollHeight);
+    document.documentElement.style.height=`${height}px`;
+    document.body.style.height=`${height}px`;
+    if(resizeApp&&typeof resizeApp.sendSizeChanged==="function"){
+      Promise.resolve(resizeApp.sendSizeChanged({width,height})).catch(()=>{});
+    }
+  });
 }
 const COPY_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 const CHECK_ICON='<svg class="ok-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
@@ -291,8 +349,164 @@ function json(value){try{return JSON.stringify(value,null,2)}catch{return String
 function rawJson(value){try{return JSON.stringify(value)}catch{return String(value)}}
 function num(value){return typeof value==="number"&&Number.isFinite(value)?value:0}
 function fmtMs(ms){const v=num(ms);return v>=1000?`${(v/1000).toFixed(2).replace(/0$/,"")} s`:`${v} ms`}
+function setToolMessage(message,kind=""){
+  toolMsg.textContent=message||"";
+  toolMsg.className=["toolmsg",kind].filter(Boolean).join(" ");
+}
+function copyText(text,button){
+  const done=()=>{
+    if(button){
+      const previous=button.innerHTML;
+      button.innerHTML=CHECK_ICON;
+      setTimeout(()=>{button.innerHTML=previous;},1200);
+    }
+    setToolMessage("Copied","ok");
+    setTimeout(()=>setToolMessage(saveState.message,saveState.kind==="error"?"err":saveState.kind==="saved"?"ok":""),1400);
+  };
+  const fallback=()=>{
+    const area=document.createElement("textarea");
+    area.value=text;
+    area.setAttribute("readonly","");
+    area.style.position="fixed";
+    area.style.opacity="0";
+    document.body.appendChild(area);
+    area.select();
+    try{document.execCommand("copy");done();}catch(_){}
+    area.remove();
+    return Promise.resolve();
+  };
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    return navigator.clipboard.writeText(text).then(done).catch(fallback);
+  }
+  return fallback();
+}
+function codeBlockHtml(html,text){
+  return `<div class="codewrap"><pre>${html}</pre><button type="button" class="copybtn" aria-label="Copy" title="Copy">${COPY_ICON}</button></div>`;
+}
+function searchCount(text,query){
+  if(!query)return 0;
+  const needle=query.toLowerCase();
+  let count=0;
+  let index=0;
+  const hay=String(text).toLowerCase();
+  while((index=hay.indexOf(needle,index))!==-1){count++;index+=needle.length||1;}
+  return count;
+}
+function highlightText(text,query){
+  const source=String(text);
+  if(!query)return esc(source);
+  const needle=query.toLowerCase();
+  const lower=source.toLowerCase();
+  const out=[];
+  let start=0;
+  let index=0;
+  while((index=lower.indexOf(needle,start))!==-1){
+    out.push(esc(source.slice(start,index)));
+    out.push(`<mark>${esc(source.slice(index,index+query.length))}</mark>`);
+    start=index+query.length;
+  }
+  out.push(esc(source.slice(start)));
+  return out.join("");
+}
+function currentRun(){
+  return selected==="live"?live:history.find(e=>e.seq===selected)||null;
+}
+function replayExpression(call){
+  const f=callFields(call||{});
+  const id=typeof call.id==="string"?call.id:`${f.upstream}::${f.tool}`;
+  const params=call&&call.params&&typeof call.params==="object"&&!Array.isArray(call.params)?call.params:{};
+  return `callTool(${JSON.stringify(id)}, ${json(params)})`;
+}
+function copyReplaySnippet(source){
+  if(source&&Array.isArray(source.calls)){
+    const original=selected==="live"?toolInputSnippet():null;
+    if(original)return original;
+    const calls=source.calls;
+    if(calls.length===1)return `async () => {\n  return await ${replayExpression(calls[0])};\n}`;
+    return `async () => {\n  return await Promise.all([\n${calls.map(call=>`    ${replayExpression(call)}`).join(",\n")}\n  ]);\n}`;
+  }
+  return `await ${replayExpression(source)};`;
+}
+function defaultSnippetName(run){
+  const first=Array.isArray(run&&run.calls)?run.calls[0]:null;
+  const action=first?callActionLabel(first):"";
+  const f=first?callFields(first):{upstream:"codemode",tool:"run"};
+  return `${f.upstream}-${action||f.tool}`.toLowerCase().replace(/[^a-z0-9_-]+/g,"-").replace(/^-+|-+$/g,"").slice(0,64)||"codemode-snippet";
+}
+function snippetSaveArguments(run,name,description){
+  if(run&&typeof run.execution_id==="string"&&run.execution_id.length){
+    return{action:"snippets.promote",params:{execution_id:run.execution_id,name,description:description||undefined,force:false}};
+  }
+  return{action:"snippets.create",params:{name,description:description||undefined,body:toolInputSnippet()||copyReplaySnippet(run),force:false}};
+}
+function promoteSnippetCommand(args){
+  return `Tool: snippets\nArguments:\n${json(args)}`;
+}
+async function callSnippetsTool(args){
+  if(resizeApp&&typeof resizeApp.callServerTool==="function"){
+    return await resizeApp.callServerTool({name:"snippets",arguments:args});
+  }
+  const openai=window.openai;
+  if(openai&&typeof openai.callTool==="function"){
+    try{return await openai.callTool({name:"snippets",arguments:args});}
+    catch(err){
+      if(!shouldRetryLegacyToolCall(err))throw err;
+      return await openai.callTool("snippets",args);
+    }
+  }
+  throw new Error("server tool bridge unavailable");
+}
+function shouldRetryLegacyToolCall(err){
+  if(err instanceof TypeError)return true;
+  const message=String((err&&err.message)||"");
+  return /callTool/i.test(message)&&/(signature|expected.*string|argument shape)/i.test(message);
+}
+async function saveSnippet(){
+  if(saveState.kind==="saving")return;
+  const run=currentRun();
+  if(!run)return;
+  const fallback=defaultSnippetName(run);
+  const name=(window.prompt&&window.prompt("Snippet name",fallback)||"").trim();
+  if(!name)return;
+  const description=window.prompt&&window.prompt("Snippet description","Saved from Code Mode inspector");
+  const args=snippetSaveArguments(run,name,description||"");
+  const seq=++saveSeq;
+  saveState={kind:"saving",message:"Saving..."};
+  setToolMessage(saveState.message);
+  paintToolbar(run);
+  try{
+    await callSnippetsTool(args);
+    if(seq!==saveSeq)return;
+    saveState={kind:"saved",message:"Saved snippet"};
+    setToolMessage(saveState.message,"ok");
+  }catch(_){
+    if(seq!==saveSeq)return;
+    await copyText(promoteSnippetCommand(args),saveSnippetButton);
+    saveState={kind:"error",message:"Copied save command"};
+    setToolMessage(saveState.message,"err");
+  }finally{
+    if(seq===saveSeq)paintToolbar(currentRun());
+  }
+}
 let expandedRows=null;
 function rowKey(...parts){return parts.map(part=>String(part??"")).join(":");}
+function stableRowHash(value){
+  const text=String(value??"");
+  let hash=2166136261;
+  for(let i=0;i<text.length;i++){hash^=text.charCodeAt(i);hash=Math.imul(hash,16777619);}
+  return (hash>>>0).toString(16);
+}
+function callRowKey(call){
+  const f=callFields(call);
+  return rowKey(
+    "call",
+    typeof call.id==="string"?call.id:`${f.upstream}::${f.tool}`,
+    callActionLabel(call),
+    typeof call.start_ms==="number"?call.start_ms:"",
+    typeof call.elapsed_ms==="number"?call.elapsed_ms:"",
+    stableRowHash(json(call.params||{}))
+  );
+}
 function snapshotExpandedRows(){
   const rows=content.querySelectorAll("details[data-row-key]");
   if(!rows.length)return expandedRows;
@@ -319,6 +533,80 @@ function callFields(call){
     upstream:typeof call.namespace==="string"?call.namespace:(typeof call.upstream==="string"?call.upstream:fromId.upstream),
     tool:typeof call.tool==="string"?call.tool:fromId.tool,
   };
+}
+function callActionLabel(call){
+  const params=call&&call.params;
+  if(!params||typeof params!=="object"||Array.isArray(params))return "";
+  if(typeof params.action==="string"&&params.action.trim().length)return params.action.trim();
+  for(const key of ["subaction","operation","command"]){
+    const value=params[key];
+    if(typeof value==="string"&&value.trim().length)return value.trim();
+  }
+  return "";
+}
+function actionDescription(call){
+  for(const key of ["action_description","actionDescription","description","summary"]){
+    const value=call&&call[key];
+    if(typeof value==="string"&&value.trim().length)return value.trim();
+  }
+  const params=call&&call.params;
+  if(params&&typeof params==="object"&&!Array.isArray(params)){
+    for(const key of ["action_description","actionDescription","description"]){
+      const value=params[key];
+      if(typeof value==="string"&&value.trim().length)return value.trim();
+    }
+  }
+  return "";
+}
+function callInvocationMode(call){
+  for(const key of ["invocation_mode","invocationMode","via"]){
+    const value=call&&call[key];
+    if(typeof value==="string"&&value.trim().length)return value.trim();
+  }
+  return callActionLabel(call)?"action dispatch":"direct tool";
+}
+function emptyReason(t){
+  if(!t||!Object.prototype.hasOwnProperty.call(t,"result"))return "";
+  const result=t.result;
+  if(Array.isArray(result)&&result.length===0)return "The tool returned an empty array. Check filters, query text, auth scope, or whether the upstream simply had no matching records.";
+  if(result&&typeof result==="object"&&!Array.isArray(result)&&Object.keys(result).length===0)return "The tool returned an empty object. The call succeeded, but there were no fields to inspect.";
+  const d=discoveryResult(t);
+  if(d&&d.total===0)return d.hint||"No catalog matches were returned for this search.";
+  return "";
+}
+function truncationNotice(t){
+  const shaping=t&&t.result_shaping;
+  if(shaping&&shaping.truncated===true){
+    const original=shaping.original_size_bytes?`${shaping.original_size_bytes} B original`:"original result";
+    const kept=shaping.shaped_size_bytes?`${shaping.shaped_size_bytes} B kept`:"truncated";
+    return `Result was truncated (${original}, ${kept}). Return a smaller projection or write the full payload to an artifact.`;
+  }
+  const result=t&&t.result;
+  if(result&&typeof result==="object"&&result.truncated===true){
+    return `Result was truncated before display${result.original_size?` (${result.original_size} B original)`:""}. Narrow the query or return a smaller object.`;
+  }
+  if(t&&t.result_shape&&t.result_shape.truncated===true)return "Result shape metadata reports truncation.";
+  return "";
+}
+function historyDelta(run){
+  if(!run)return "";
+  const seq=selected==="live"?(liveHistoryEntry()||{}).seq:run.seq;
+  const previous=seq!==undefined
+    ?history.filter(entry=>typeof entry.seq==="number"&&entry.seq<seq).slice(-1)[0]
+    :history.slice(-1)[0];
+  if(!previous)return "";
+  const parts=[];
+  const callDelta=num((run.calls||[]).length)-num((previous.calls||[]).length);
+  if(callDelta)parts.push(`${callDelta>0?"+":""}${callDelta} calls`);
+  if(typeof run.elapsed_ms==="number"&&typeof previous.elapsed_ms==="number"){
+    const delta=run.elapsed_ms-previous.elapsed_ms;
+    if(delta)parts.push(`${delta>0?"+":""}${fmtMs(delta)}`);
+  }
+  if(run.ok!==undefined&&previous.ok!==undefined&&run.ok!==previous.ok)parts.push(`${previous.ok?"ok":"failed"} -> ${run.ok?"ok":"failed"}`);
+  const shape=(run.result_shape&&run.result_shape.type)||(run.result_type);
+  const prevShape=(previous.result_shape&&previous.result_shape.type)||(previous.result_type);
+  if(shape&&prevShape&&shape!==prevShape)parts.push(`${prevShape} -> ${shape}`);
+  return parts.length?`Delta ${parts.join(" · ")}`:"";
 }
 function shapeDetail(s){if(!s||!s.type)return"";const parts=[s.type];if(s.type==="object"&&s.key_count!=null)parts.push(`${s.key_count} key${s.key_count===1?"":"s"}`);if(s.type==="array"&&s.length!=null)parts.push(`${s.length} item${s.length===1?"":"s"}`);if(s.type==="string"&&s.length!=null)parts.push(`${s.length} chars`);if(s.size_bytes!=null)parts.push(`${s.size_bytes} B`);let label=parts.join(" · ");if(s.type==="object"&&Array.isArray(s.keys)&&s.keys.length)label+=` — keys: ${s.keys.join(", ")}`;if(s.type==="array"&&Array.isArray(s.item_types)&&s.item_types.length)label+=` — items: ${s.item_types.join(", ")}`;return label;}
 const WRENCH='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>';
@@ -387,6 +675,9 @@ function discoveryRows(d){
 }
 function callRow(call,timing,autoOpen,key){
   const f=callFields(call);
+  const action=callActionLabel(call);
+  const description=actionDescription(call);
+  const invocation=callInvocationMode(call);
   const ok=call.ok===true;
   const elapsed=num(call.elapsed_ms);
   const id=typeof call.id==="string"?call.id:`${f.upstream}::${f.tool}`;
@@ -402,11 +693,14 @@ function callRow(call,timing,autoOpen,key){
   const left=timing.hasOffsets?(num(call.start_ms)/timing.span)*100:0;
   const width=Math.min(Math.max((elapsed/timing.span)*100,4),100-left);
   const errBadge=!ok&&call.error_kind?`<span class="row-error">${esc(call.error_kind)}</span>`:"";
-  const summary=`${status}<span class="name"><span class="up">${esc(f.upstream)}</span><span class="tool">${esc(f.tool)}</span>${errBadge}</span><span class="track"><span class="bar${ok?"":" err"}" style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%"></span></span><span class="ms">${esc(fmtMs(call.elapsed_ms))}</span>${copyButton("Copy tool id",id)}`;
+  const actionLabel=action?`<span class="action-label">${esc(action)}</span>`:"";
+  const actionDesc=description?`<span class="action-desc">${esc(description)}</span>`:"";
+  const rowActions=`<span class="row-actions">${copyButton("Copy replay snippet",copyReplaySnippet(call))}${copyButton("Copy tool id",id)}</span>`;
+  const summary=`${status}<span class="name"><span class="up">${esc(f.upstream)}</span><span class="tool">${esc(f.tool)}</span>${actionLabel}${actionDesc}${errBadge}</span><span class="track"><span class="bar${ok?"":" err"}" style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%"></span></span><span class="ms">${esc(fmtMs(call.elapsed_ms))}</span>${rowActions}`;
   const err=!ok&&call.error_kind?`<div class="errline">${esc(call.error_kind)}</div>`:"";
+  const meta=`<div class="call-meta"><span class="meta-pill">Invocation ${esc(invocation)}</span><span class="meta-pill">Resolved ${esc(id)}</span>${action?`<span class="meta-pill">Action ${esc(action)}</span>`:""}</div>`;
   const params=call.params!==undefined&&call.params!==null?`<div class="kv-label">Redacted params</div>${codeBlock(json(call.params))}`:"";
-  if(!err&&!params)return `<div class="${callClass}"><div class="${rowClass}">${summary}<span class="chev"></span></div></div>`;
-  return `<details class="${callClass}"${autoOpen?" open":""} data-row-key="${esc(key)}"><summary class="${rowClass}">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${params}</div></details>`;
+  return `<details class="${callClass}"${autoOpen?" open":""} data-row-key="${esc(key)}"><summary class="${rowClass}">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${meta}${params}</div></details>`;
 }
 const TERMINAL_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>';
 function inputRow(){
@@ -426,10 +720,18 @@ function resultRow(t){
   const detail=shapeDetail(t.result_shape);
   const doc=describeMarkdown(t);
   const truncated=t.result_shape&&t.result_shape.truncated===true?'<span class="trunc">truncated</span>':"";
-  const pretty=doc!==null?`<div class="md">${mdHtml(doc)}</div>`:codeBlock(json(t.result));
+  const prettyText=doc!==null?doc:json(t.result);
+  const rawText=rawJson(t.result);
+  const matches=searchCount(prettyText,resultQuery);
+  const searchNote=resultQuery?`<div class="notice">${matches?`${matches} result match${matches===1?"":"es"} for "${esc(resultQuery)}"`:`No result matches for "${esc(resultQuery)}"`}</div>`:"";
+  const empty=emptyReason(t);
+  const emptyNote=empty?`<div class="notice empty-reason">${esc(empty)}</div>`:"";
+  const trunc=truncationNotice(t);
+  const truncNote=trunc?`<div class="notice warn truncationNotice">${esc(trunc)}</div>`:"";
+  const pretty=doc!==null?`<div class="md">${mdHtml(doc)}</div>`:codeBlockHtml(highlightText(prettyText,resultQuery),prettyText);
   const shape=`<div class="md"><p>${inlineMd(detail||"No shape metadata.")}</p></div>${codeBlock(json(t.result_shape||{}))}`;
-  const body=`<div class="viewbar">${viewTab("pretty","Pretty")}${viewTab("raw","Raw")}${viewTab("shape","Shape")}</div>${viewPanel("pretty",pretty)}${viewPanel("raw",codeBlock(rawJson(t.result)))}${viewPanel("shape",shape)}`;
-  return `<details class="call" data-row-key="result"><summary class="row wide"><span class="st info">${RETURN_ICON}</span><span class="meta-label">Result</span><span class="meta-val">${esc(detail)}${truncated}</span>${copyButton("Copy result",rawJson(t.result))}<span class="chev">${CHEV}</span></summary><div class="sub">${body}</div></details>`;
+  const body=`${truncNote}${emptyNote}${searchNote}<div class="viewbar">${viewTab("pretty","Pretty")}${viewTab("raw","Raw")}${viewTab("shape","Shape")}</div>${viewPanel("pretty",pretty)}${viewPanel("raw",codeBlockHtml(highlightText(rawText,resultQuery),rawText))}${viewPanel("shape",shape)}`;
+  return `<details class="call"${resultQuery?" open":""} data-row-key="result"><summary class="row wide"><span class="st info">${RETURN_ICON}</span><span class="meta-label">Result</span><span class="meta-val">${esc(detail)}${truncated}</span><button type="button" class="iconbtn rowcopy" data-copy-result="raw" aria-label="Copy result" title="Copy result">${COPY_ICON}</button><span class="chev">${CHEV}</span></summary><div class="sub">${body}</div></details>`;
 }
 const FILE_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M2 15h10"/><path d="m9 18 3-3-3-3"/></svg>';
 function artifactsRow(t){
@@ -461,12 +763,11 @@ function paintFoot(current){
     parts.push(`<button type="button" class="runchip${selected==="live"?" sel":""}" data-target="live"><span class="dot ${ok?"ok":"err"}"></span><span>Run live</span><span class="runchip-meta">${ok?"success":"failed"}</span></button>`);
   }
   const meta=[];
-  if(current&&(current.input_tokens!==undefined||current.output_tokens!==undefined)){
-    meta.push(`${num(current.input_tokens)} in · ${num(current.output_tokens)} out`);
-  }
   if(selected==="live"&&live&&num(live.logs_count)>0){
     meta.push(`${num(live.logs_count)} log${num(live.logs_count)===1?"":"s"}`);
   }
+  const delta=historyDelta(current);
+  if(delta)meta.push(delta);
   // A single run has nothing to switch between — the chip strip only earns
   // its place once history gives it a second entry.
   const showChips=parts.length>1;
@@ -475,8 +776,32 @@ function paintFoot(current){
   footMeta.textContent=meta.join(" · ");
   foot.hidden=!showChips&&meta.length===0;
 }
+function paintToolbar(run){
+  toolbar.hidden=!run;
+  if(!run){
+    resultSearch.value="";
+    resultQuery="";
+    setToolMessage("");
+    return;
+  }
+  if(document.activeElement!==resultSearch)resultSearch.value=resultQuery;
+  copyReplay.disabled=!Array.isArray(run.calls)||run.calls.length===0;
+  saveSnippetButton.disabled=saveState.kind==="saving"||(!run.execution_id&&!toolInputSnippet());
+  setToolMessage(saveState.message,saveState.kind==="error"?"err":saveState.kind==="saved"?"ok":"");
+}
+function setAllRows(open){
+  content.querySelectorAll("details[data-row-key]").forEach(row=>{row.open=open;});
+  expandedRows=open
+    ?new Set(Array.from(content.querySelectorAll("details[data-row-key]")).map(row=>row.dataset.rowKey).filter(Boolean))
+    :new Set();
+  scheduleResize();
+}
 function paint(){
-  const openRows=snapshotExpandedRows();
+  let openRows=snapshotExpandedRows();
+  if(resultQuery){
+    openRows=new Set(openRows||[]);
+    openRows.add("result");
+  }
   const entry=selected==="live"?null:history.find(e=>e.seq===selected);
   const t=selected==="live"?live:null;
   const run=t||entry||null;
@@ -488,6 +813,8 @@ function paint(){
     headElapsed.hidden=true;
     content.innerHTML='<p class="empty">Run codemode to populate the inspector.</p>';
     paintFoot(null);
+    paintToolbar(null);
+    scheduleResize();
     return;
   }
   const calls=Array.isArray(run.calls)?run.calls:[];
@@ -513,7 +840,7 @@ function paint(){
   const maxElapsed=Math.max(0,...calls.map(c=>num(c.elapsed_ms)));
   const timing={span:span,hasOffsets:hasOffsets,maxElapsed:maxElapsed};
   const firstFailed=calls.findIndex(c=>c.ok!==true);
-  const callRows=calls.map((c,i)=>callRow(c,timing,i===firstFailed,rowKey("call",i,callFields(c).upstream,callFields(c).tool))).join("");
+  const callRows=calls.map((c,i)=>callRow(c,timing,i===firstFailed,callRowKey(c))).join("");
   let html=section("Calls",callRows||'<p class="empty">No calls were made.</p>',`${calls.length} total`);
   if(discovery)html+=section("Catalog",discoveryRows(discovery),`${discovery.hits.length} shown`);
   if(t)html+=section("Request",inputRow());
@@ -523,20 +850,46 @@ function paint(){
   content.innerHTML=html;
   restoreExpandedRows(openRows);
   paintFoot(run);
+  paintToolbar(run);
+  scheduleResize();
 }
+content.addEventListener("toggle",()=>scheduleResize(),true);
+resultSearch.addEventListener("input",()=>{
+  resultQuery=resultSearch.value.trim();
+  paint();
+});
+toolbar.addEventListener("click",(event)=>{
+  const rowMode=event.target.closest("[data-row-mode]");
+  if(rowMode){
+    event.preventDefault();
+    setAllRows(rowMode.dataset.rowMode==="expand");
+    return;
+  }
+  const run=currentRun();
+  if(event.target.closest("#copyReplay")){
+    event.preventDefault();
+    if(run)void copyText(copyReplaySnippet(run),copyReplay);
+    return;
+  }
+  if(event.target.closest("#saveSnippet")){
+    event.preventDefault();
+    void saveSnippet();
+  }
+});
 content.addEventListener("click",(event)=>{
+  const resultCopy=event.target.closest("[data-copy-result]");
+  if(resultCopy){
+    event.preventDefault();
+    event.stopPropagation();
+    const run=currentRun();
+    if(run&&Object.prototype.hasOwnProperty.call(run,"result"))void copyText(rawJson(run.result),resultCopy);
+    return;
+  }
   const rowCopy=event.target.closest("[data-copy-value]");
   if(rowCopy){
     event.preventDefault();
     event.stopPropagation();
-    const text=rowCopy.dataset.copyValue||"";
-    const done=()=>{
-      rowCopy.innerHTML=CHECK_ICON;
-      setTimeout(()=>{rowCopy.innerHTML=COPY_ICON;},1200);
-    };
-    if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).then(done).catch(()=>{});
-    }
+    void copyText(rowCopy.dataset.copyValue||"",rowCopy);
     return;
   }
   const view=event.target.closest("button[data-view]");
@@ -550,15 +903,8 @@ content.addEventListener("click",(event)=>{
   const button=event.target.closest(".copybtn");
   if(!button)return;
   const pre=button.parentElement&&button.parentElement.querySelector("pre");
-  if(!pre)return;
-  const text=pre.textContent||"";
-  const done=()=>{
-    button.innerHTML=CHECK_ICON;
-    setTimeout(()=>{button.innerHTML=COPY_ICON;},1200);
-  };
-  if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(text).then(done).catch(()=>{});
-  }
+  const text=button.dataset.copyText||(pre&&pre.textContent)||"";
+  if(text)void copyText(text,button);
 });
 chips.addEventListener("click",(event)=>{
   const button=event.target.closest("button[data-target]");
@@ -582,6 +928,8 @@ function render(trace){
   headSub.textContent="";headStatus.innerHTML="";headElapsed.hidden=true;
   content.innerHTML=`<pre class="dump">${esc(json(t))}</pre>`;
   paintFoot(null);
+  paintToolbar(null);
+  scheduleResize();
   return false;
 }
 // Seed from the server-injected snapshot first — the bounded history renders
@@ -637,7 +985,9 @@ if (window.openai) {
   }
 } else {
   // MCP Apps bridge (Claude): live codemode traces arrive via ontoolresult.
-  const app = new App({ name: "LabCodeModeInspector", version: "1.0.0" }, {});
+  const app = new App({ name: "LabCodeModeInspector", version: "1.0.0" }, {}, { autoResize: false });
+  resizeApp=app;
+  scheduleResize();
   app.onhostcontextchanged = (ctx) => { if (ctx && ctx.theme) applyTheme(ctx.theme); };
   let hydrated = false;
   const setState = (label, connected) => {
@@ -676,6 +1026,7 @@ if (window.openai) {
       const ctx = app.getHostContext && app.getHostContext();
       if (ctx && ctx.theme) applyTheme(ctx.theme);
       if (!hydrated) setState("connected", true);
+      scheduleResize();
     })
     .catch(() => { if (!hydrated) setState("read only", false); });
 }

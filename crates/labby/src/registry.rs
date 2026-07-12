@@ -288,6 +288,7 @@ const ALWAYS_VISIBLE_SERVICES: &[&str] = &[
     "gateway",
     "help",
     "completions",
+    "server_logs",
     "snippets",
 ];
 
@@ -443,6 +444,19 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
         crate::dispatch::snippets::ACTIONS,
         dispatch_fn!(crate::dispatch::snippets::dispatch),
     ));
+
+    {
+        let meta = crate::dispatch::server_logs::META;
+        reg.register(RegisteredService {
+            name: meta.name,
+            description: meta.description,
+            category: category_slug(meta.category),
+            kind: registered_service_kind(meta.name, meta.category),
+            status: "available",
+            actions: crate::dispatch::server_logs::ACTIONS,
+            dispatch: dispatch_fn!(crate::dispatch::server_logs::dispatch),
+        });
+    }
 
     #[cfg(feature = "lab-admin")]
     if !apply_runtime_conditions || lab_admin_enabled() {
@@ -689,6 +703,7 @@ mod tests {
             #[cfg(feature = "gateway")]
             s.insert("snippets");
             s.insert(crate::dispatch::doctor::META.name); // always-on
+            s.insert(crate::dispatch::server_logs::META.name); // always-on
             s.insert(crate::dispatch::setup::META.name); // always-on
             #[cfg(feature = "fs")]
             s.insert("fs");

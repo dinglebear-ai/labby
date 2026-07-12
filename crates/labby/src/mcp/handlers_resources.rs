@@ -22,7 +22,10 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
 
-use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
+pub(crate) use crate::app_assets::{
+    SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
+};
+use crate::mcp::catalog::{CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
@@ -42,7 +45,6 @@ pub(crate) const CODE_MODE_APP_URI: &str = "ui://lab/code-mode/codemode";
 pub(crate) const CODE_MODE_HISTORY_APP_URI: &str = "ui://lab/code-mode/history";
 /// OpenAI Apps skybridge variants — same HTML, served under the skybridge MIME.
 pub(crate) const CODE_MODE_APP_SKYBRIDGE_URI: &str = "ui://lab/code-mode/codemode.skybridge";
-
 /// Host runtime a Code Mode widget resource targets. The runtime is the single
 /// discriminant: it derives the served MIME, whether the resource is listed, and
 /// which tool `_meta` key the resource URI is exposed under — so those
@@ -104,6 +106,29 @@ pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[CodeModeAppResourceDescri
 ];
 
 const CODE_MODE_APP_FALLBACK_HTML: &str = include_str!("assets/code_mode_app.html");
+const SERVER_LOGS_APP_FALLBACK_HTML: &str = crate::app_assets::SERVER_LOGS_APP_HTML;
+
+pub(crate) struct ServerLogsAppResourceDescriptor {
+    pub(crate) uri: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) runtime: CodeModeRuntime,
+    pub(crate) tool_name: Option<&'static str>,
+}
+
+pub(crate) const SERVER_LOGS_APP_RESOURCE_DESCRIPTORS: &[ServerLogsAppResourceDescriptor] = &[
+    ServerLogsAppResourceDescriptor {
+        uri: SERVER_LOGS_APP_URI,
+        name: "server-logs/viewer",
+        runtime: CodeModeRuntime::McpApp,
+        tool_name: Some(SERVER_LOGS_TOOL_NAME),
+    },
+    ServerLogsAppResourceDescriptor {
+        uri: SERVER_LOGS_APP_SKYBRIDGE_URI,
+        name: "server-logs/viewer.skybridge",
+        runtime: CodeModeRuntime::Skybridge,
+        tool_name: Some(SERVER_LOGS_TOOL_NAME),
+    },
+];
 
 /// FNV-1a over the bundled widget HTML, evaluated at compile time. Changes iff
 /// the HTML bytes change, so it is a stable per-build cache-bust key.
@@ -130,10 +155,20 @@ const fn fnv1a_64(bytes: &[u8]) -> u64 {
 static CODE_MODE_APP_VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!("{:016x}", fnv1a_64(CODE_MODE_APP_FALLBACK_HTML.as_bytes()))
 });
+static SERVER_LOGS_APP_VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "{:016x}",
+        fnv1a_64(SERVER_LOGS_APP_FALLBACK_HTML.as_bytes())
+    )
+});
 
 /// Append the cache-bust token to a base Code Mode widget URI.
 fn versioned_app_uri(base: &str) -> String {
     format!("{base}?v={}", *CODE_MODE_APP_VERSION)
+}
+
+fn versioned_server_logs_app_uri(base: &str) -> String {
+    format!("{base}?v={}", *SERVER_LOGS_APP_VERSION)
 }
 
 /// Strip the `?v=<hash>` cache-bust suffix so a versioned URI matches its base
@@ -200,6 +235,19 @@ impl LabMcpServer {
             )
         {
             for resource in code_mode_app_resources() {
+                resources.accept(resource);
+                if resources.finished() {
+                    break;
+                }
+            }
+        }
+
+        if !resources.finished()
+            && server_logs_app_resources_visible(auth)
+            && self.route_scope.allows_service(SERVER_LOGS_TOOL_NAME)
+            && self.service_visible_on_mcp(SERVER_LOGS_TOOL_NAME).await
+        {
+            for resource in server_logs_app_resources() {
                 resources.accept(resource);
                 if resources.finished() {
                     break;
@@ -356,6 +404,11 @@ impl LabMcpServer {
         if uri.starts_with(CODE_MODE_APP_URI_PREFIX) {
             return self
                 .read_code_mode_app_resource_impl(uri, &subject, start, &context)
+                .await;
+        }
+        if uri.starts_with(SERVER_LOGS_APP_URI_PREFIX) {
+            return self
+                .read_server_logs_app_resource_impl(uri, &subject, start, &context)
                 .await;
         }
         // Any other `ui://` is an upstream MCP Apps (mcp-ui) widget resource
@@ -669,6 +722,87 @@ impl LabMcpServer {
                 .with_meta(code_mode_app_resource_meta(uri)),
         ]))
     }
+
+    async fn read_server_logs_app_resource_impl(
+        &self,
+        uri: &str,
+        subject: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        if !self.route_scope.allows_service(SERVER_LOGS_TOOL_NAME)
+            || !self.service_visible_on_mcp(SERVER_LOGS_TOOL_NAME).await
+        {
+            return Err(ErrorData::resource_not_found(
+                format!("unknown UI resource: {uri}"),
+                None,
+            ));
+        }
+        let auth = auth_context_from_extensions(&context.extensions);
+        if !server_logs_app_resources_visible(auth) {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                subject,
+                elapsed_ms,
+                kind = "forbidden",
+                resource_uri = uri,
+                "server logs app resource denied by scope"
+            );
+            self.emit_dispatch_notification(
+                context,
+                "lab",
+                "read_resource",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind: "forbidden",
+                },
+            )
+            .await;
+            return Err(ErrorData::invalid_params(
+                "Server log app resources require scope: lab:admin",
+                Some(json!({
+                    "kind": "forbidden",
+                    "required_scopes": ["lab:admin"],
+                })),
+            ));
+        }
+
+        let html = server_logs_app_html(uri)
+            .map_err(|message| ErrorData::resource_not_found(message, None))?;
+        let runtime = server_logs_app_runtime_for_uri(uri);
+        let mime_type = runtime.mime();
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            elapsed_ms,
+            resource_uri = uri,
+            mime_type,
+            html_bytes = html.len(),
+            versioned = uri.contains("?v="),
+            "server logs app resource read ok"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "read_resource",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(html, uri.to_string())
+                .with_mime_type(mime_type)
+                .with_meta(server_logs_app_resource_meta(uri)),
+        ]))
+    }
 }
 
 fn code_mode_app_html(uri: &str, history: Option<&Value>) -> Result<String, String> {
@@ -699,6 +833,28 @@ fn code_mode_app_resource(descriptor: &CodeModeAppResourceDescriptor) -> Resourc
         .with_meta(code_mode_app_resource_meta(&uri))
 }
 
+fn server_logs_app_html(uri: &str) -> Result<String, String> {
+    let base = strip_app_version(uri);
+    if !SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
+        .iter()
+        .any(|descriptor| descriptor.uri == base)
+    {
+        return Err(format!("unknown UI resource: {uri}"));
+    }
+    Ok(SERVER_LOGS_APP_FALLBACK_HTML.replace(
+        r#"<script src="/apps/assets/labby-app-host.js"></script>"#,
+        &format!("<script>{}</script>", crate::app_assets::LABBY_APP_HOST_JS),
+    ))
+}
+
+fn server_logs_app_resource(descriptor: &ServerLogsAppResourceDescriptor) -> Resource {
+    let uri = versioned_server_logs_app_uri(descriptor.uri);
+    Resource::new(uri.clone(), descriptor.name.to_string())
+        .with_description("Admin MCP App for Labby server process logs")
+        .with_mime_type(descriptor.runtime.mime())
+        .with_meta(server_logs_app_resource_meta(&uri))
+}
+
 /// Host runtime a Code Mode app URI targets. Callers must pass a table URI; an
 /// un-tabled URI is a programming error (the runtime selects MIME/listed-ness
 /// and binding, so a silent wrong default would mis-bind the widget) — assert in
@@ -724,6 +880,27 @@ fn code_mode_app_runtime_for_uri(uri: &str) -> CodeModeRuntime {
         )
 }
 
+fn server_logs_app_runtime_for_uri(uri: &str) -> CodeModeRuntime {
+    let base = strip_app_version(uri);
+    SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.uri == base)
+        .map_or_else(
+            || {
+                debug_assert!(
+                    false,
+                    "server_logs_app_runtime_for_uri called with un-tabled URI: {uri}"
+                );
+                tracing::warn!(
+                    resource_uri = uri,
+                    "unknown server logs URI; defaulting to MCP Apps runtime"
+                );
+                CodeModeRuntime::McpApp
+            },
+            |descriptor| descriptor.runtime,
+        )
+}
+
 fn code_mode_app_resources_visible(
     exposes_synthetic_tools: bool,
     auth: Option<&crate::api::oauth::AuthContext>,
@@ -731,11 +908,25 @@ fn code_mode_app_resources_visible(
     exposes_synthetic_tools && code_mode_read_scope_allowed(auth)
 }
 
+pub(crate) fn server_logs_app_resources_visible(
+    auth: Option<&crate::api::oauth::AuthContext>,
+) -> bool {
+    auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"))
+}
+
 fn code_mode_app_resources() -> Vec<Resource> {
     CODE_MODE_APP_RESOURCE_DESCRIPTORS
         .iter()
         .filter(|descriptor| descriptor.runtime.listed())
         .map(code_mode_app_resource)
+        .collect()
+}
+
+fn server_logs_app_resources() -> Vec<Resource> {
+    SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
+        .iter()
+        .filter(|descriptor| descriptor.runtime.listed())
+        .map(server_logs_app_resource)
         .collect()
 }
 
@@ -754,11 +945,28 @@ pub(crate) fn code_mode_app_skybridge_uri_for_tool(tool_name: &str) -> Option<St
     code_mode_app_uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
 }
 
+/// MCP Apps widget URI for the server log viewer tool.
+pub(crate) fn server_logs_app_resource_uri_for_tool(tool_name: &str) -> Option<String> {
+    server_logs_app_uri_for_tool(CodeModeRuntime::McpApp, tool_name)
+}
+
+/// OpenAI Apps skybridge widget URI for the server log viewer tool.
+pub(crate) fn server_logs_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
+    server_logs_app_uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
+}
+
 fn code_mode_app_uri_for_tool(runtime: CodeModeRuntime, tool_name: &str) -> Option<String> {
     CODE_MODE_APP_RESOURCE_DESCRIPTORS
         .iter()
         .find(|descriptor| descriptor.runtime == runtime && descriptor.tool_name == Some(tool_name))
         .map(|descriptor| versioned_app_uri(descriptor.uri))
+}
+
+fn server_logs_app_uri_for_tool(runtime: CodeModeRuntime, tool_name: &str) -> Option<String> {
+    SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.runtime == runtime && descriptor.tool_name == Some(tool_name))
+        .map(|descriptor| versioned_server_logs_app_uri(descriptor.uri))
 }
 
 pub(crate) fn code_mode_app_resource_meta(uri: &str) -> Meta {
@@ -786,6 +994,31 @@ pub(crate) fn code_mode_app_resource_meta(uri: &str) -> Meta {
             json!(
                 "Live Code Mode call trace — upstream tool calls, catalog search matches, and recent gateway history."
             ),
+        );
+    }
+    Meta(meta)
+}
+
+pub(crate) fn server_logs_app_resource_meta(uri: &str) -> Meta {
+    let runtime = server_logs_app_runtime_for_uri(uri);
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "ui".to_string(),
+        json!({
+            "resourceUri": uri,
+            "mimeTypes": [runtime.mime()],
+            "csp": {
+                "connectDomains": [],
+                "resourceDomains": [],
+                "frameDomains": [],
+            },
+            "prefersBorder": false,
+        }),
+    );
+    if runtime == CodeModeRuntime::Skybridge {
+        meta.insert(
+            "openai/widgetDescription".to_string(),
+            json!("Admin viewer for Labby's rolling server process logs with level, service, action, kind, and text filters."),
         );
     }
     Meta(meta)
@@ -978,6 +1211,117 @@ mod tests {
             code_mode_uris.iter().all(|uri| uri.contains("?v=")),
             "advertised Code Mode URIs must carry a cache-bust token: {code_mode_uris:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn list_resources_only_lists_server_logs_app_for_admin_scope() {
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            code_mode_server().await,
+            transport,
+            None,
+        );
+
+        let denied = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+            .await
+            .expect("list resources without admin scope");
+        assert!(
+            denied
+                .resources
+                .iter()
+                .all(|resource| !resource.uri.starts_with(SERVER_LOGS_APP_URI_PREFIX)),
+            "listed server logs UI resources without admin scope"
+        );
+
+        let allowed = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+            .await
+            .expect("list resources with admin scope");
+        let server_logs_uris = allowed
+            .resources
+            .iter()
+            .filter(|resource| resource.uri.starts_with(SERVER_LOGS_APP_URI_PREFIX))
+            .map(|resource| resource.uri.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            server_logs_uris
+                .iter()
+                .map(|uri| strip_app_version(uri))
+                .collect::<Vec<_>>(),
+            vec![SERVER_LOGS_APP_URI]
+        );
+        assert!(
+            server_logs_uris.iter().all(|uri| uri.contains("?v=")),
+            "advertised server logs URI must carry a cache-bust token: {server_logs_uris:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_server_logs_app_resource_requires_admin_scope() {
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            code_mode_server().await,
+            transport,
+            None,
+        );
+
+        let err = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(SERVER_LOGS_APP_URI),
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .expect_err("server logs app resource must require admin");
+        assert_eq!(
+            err.data.as_ref().expect("error data")["kind"],
+            json!("forbidden")
+        );
+
+        let ok = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(SERVER_LOGS_APP_URI),
+                scoped_context(running.peer().clone(), &["lab:admin"]),
+            )
+            .await
+            .expect("server logs app resource with admin scope");
+        let ResourceContents::TextResourceContents { text, .. } = &ok.contents[0] else {
+            panic!("expected text resource");
+        };
+        assert!(text.contains("Server logs"));
+        assert!(text.contains("server_logs.query"));
+    }
+
+    #[test]
+    fn server_logs_app_html_exposes_log_viewer_affordances() {
+        let html = server_logs_app_html(SERVER_LOGS_APP_URI).expect("server logs resource");
+
+        for expected in [
+            "server_logs.query",
+            "/v1/server-logs/query",
+            "html.browser",
+            "LabbyAppHost",
+            "savedViews",
+            "persistSavedViews",
+            "requestSeq",
+            "drillLinks",
+            "Level",
+            "Service",
+            "Action",
+            "Kind",
+            "Search",
+            "normalizeOutput",
+            "requestWidgetResize",
+        ] {
+            assert!(
+                html.contains(expected),
+                "server logs app must include marker `{expected}`"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1654,6 +1998,24 @@ mod tests {
     }
 
     #[test]
+    fn code_mode_app_html_reports_content_sized_height() {
+        let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
+
+        assert!(
+            html.contains("function scheduleResize"),
+            "inline app should explicitly measure its rendered widget height"
+        );
+        assert!(
+            html.contains("sendSizeChanged"),
+            "inline app should notify MCP Apps hosts when content height changes"
+        );
+        assert!(
+            html.contains("autoResize: false"),
+            "document-root auto-resize can over-report empty iframe space below the widget"
+        );
+    }
+
+    #[test]
     fn code_mode_app_html_exposes_debugger_ui_affordances() {
         let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
 
@@ -1674,6 +2036,46 @@ mod tests {
             assert!(
                 html.contains(expected),
                 "inline app must include debugger UI affordance marker `{expected}`"
+            );
+        }
+    }
+
+    #[test]
+    fn code_mode_app_html_surfaces_action_dispatched_calls() {
+        let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
+
+        assert!(
+            html.contains("function callActionLabel"),
+            "inline app must derive a readable action label from call params"
+        );
+        assert!(
+            html.contains("params.action"),
+            "action-dispatched one-tool servers should show params.action"
+        );
+        assert!(
+            html.contains("action-label"),
+            "call rows should render the derived action label separately from the tool id"
+        );
+    }
+
+    #[test]
+    fn code_mode_app_html_exposes_inspector_power_tools() {
+        let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
+
+        for expected in [
+            "copyReplaySnippet",
+            "saveSnippet",
+            "resultSearch",
+            "setAllRows",
+            "actionDescription",
+            "callInvocationMode",
+            "emptyReason",
+            "truncationNotice",
+            "historyDelta",
+        ] {
+            assert!(
+                html.contains(expected),
+                "inline app must include inspector power-tool marker `{expected}`"
             );
         }
     }

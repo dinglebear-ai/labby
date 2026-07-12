@@ -20,6 +20,7 @@ pub mod doctor;
 pub mod gateway;
 #[cfg(feature = "gateway")]
 pub mod palette;
+pub mod server_logs;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;

@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Labby Server Logs</title>
+<style>
+:root{color-scheme:dark;--bg:#07131c;--panel:#13293a;--panel2:#173245;--control:#0c1a24;--border:#1d3d4e;--border2:#24536c;--text:#e6f4fb;--muted:#a7bcc9;--accent:#29b6f6;--accent2:#67cbfa;--ok:#7dd3c7;--warn:#c6a36b;--err:#c78490;--hover:#17364b;font-family:Inter,"Segoe UI",system-ui,sans-serif;color:var(--text)}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;padding:0;width:100%;height:auto;min-height:0;overflow:hidden;background:transparent}
+html.browser,html.browser body{height:100%;min-height:100%;overflow:auto;background:var(--bg)}
+html.browser body{padding:16px}
+html.browser .widget{max-width:1280px;margin:0 auto}
+html.browser #rows{max-height:calc(100vh - 224px)}
+.widget{width:100%;max-width:none;margin:0;overflow:hidden;border-radius:10px;border:1px solid color-mix(in srgb,var(--border) 45%,var(--bg));background:linear-gradient(180deg,var(--panel2),var(--panel));box-shadow:0 12px 24px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.05)}
+.head,.toolbar,.chrome,.foot{display:flex;align-items:center;gap:8px;padding:8px 10px;background:color-mix(in srgb,var(--bg) 18%,transparent)}
+.head{border-bottom:1px solid color-mix(in srgb,var(--border) 52%,transparent)}
+.title{font-size:12.5px;font-weight:750;white-space:nowrap}
+.sub,.msg,.meta{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spacer{flex:1}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--muted);box-shadow:0 0 4px currentColor;flex:none}
+.dot.ok{background:var(--ok);color:var(--ok)}
+.dot.err{background:var(--err);color:var(--err)}
+.toolbar{flex-wrap:wrap;border-bottom:1px solid color-mix(in srgb,var(--border) 35%,transparent);padding:7px 10px}
+.chrome{padding:6px 10px;border-bottom:1px solid color-mix(in srgb,var(--border) 35%,transparent);overflow-x:auto;scrollbar-width:none}
+.control,.select{height:26px;border:1px solid color-mix(in srgb,var(--border) 65%,transparent);border-radius:6px;background:color-mix(in srgb,var(--bg) 38%,var(--control));color:var(--text);font:inherit;font-size:11px;outline:none}
+.control{padding:0 8px;min-width:110px;flex:1}
+.control.short{max-width:120px;flex:0 1 90px}
+.select{padding:0 7px;max-width:96px}
+.select.view{max-width:150px}
+.control:focus,.select:focus{border-color:color-mix(in srgb,var(--accent) 60%,var(--border2));box-shadow:0 0 0 1px rgba(41,182,246,.22)}
+.iconbtn{display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer}
+.iconbtn:hover{color:var(--text);border-color:var(--border2)}
+.iconbtn.primary{color:var(--accent2);border-color:color-mix(in srgb,var(--accent) 22%,transparent)}
+.toggle{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:11px;white-space:nowrap}
+.toggle input{accent-color:var(--accent)}
+.stats{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,var(--border) 35%,transparent);overflow-x:auto;scrollbar-width:none}
+.stat{display:inline-flex;align-items:baseline;gap:4px;padding:3px 7px;border-radius:6px;background:color-mix(in srgb,var(--control) 78%,transparent);border:1px solid color-mix(in srgb,var(--border) 52%,transparent);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sl{font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.sv{font-size:11px;font-weight:700}
+#rows{max-height:420px;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
+.empty{margin:0;padding:16px 12px;text-align:center;color:var(--muted);font-size:12px}
+details{border-top:1px solid color-mix(in srgb,var(--border) 27%,transparent)}
+details:first-child{border-top:none}
+summary{display:grid;grid-template-columns:54px 78px minmax(0,1fr) 92px 13px;align-items:center;gap:8px;padding:6px 10px;list-style:none;cursor:pointer}
+summary::-webkit-details-marker{display:none}
+summary:hover{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+details[open] .chev{transform:rotate(90deg)}
+.lvl{font-size:9.5px;font-weight:850;letter-spacing:.08em;text-transform:uppercase}
+.lvl.ERROR{color:var(--err)}.lvl.WARN{color:var(--warn)}.lvl.INFO{color:var(--ok)}.lvl.DEBUG,.lvl.TRACE{color:var(--accent2)}
+.time,.service,.file{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.message{font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chev{color:var(--muted);transition:transform .15s ease-out}
+.detail{display:grid;gap:7px;padding:2px 12px 9px 140px}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:999px;background:color-mix(in srgb,var(--bg) 42%,transparent);border:1px solid color-mix(in srgb,var(--border) 46%,transparent);font-size:10px;color:var(--muted)}
+.chip.link{color:var(--accent2);text-decoration:none}
+.chip.link:hover{border-color:color-mix(in srgb,var(--accent) 55%,var(--border2));color:var(--text)}
+pre{margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--border) 50%,var(--bg));background:color-mix(in srgb,var(--bg) 55%,var(--control));font-family:"JetBrains Mono",ui-monospace,monospace;font-size:10.5px;line-height:1.5;color:var(--text)}
+mark{border-radius:3px;background:color-mix(in srgb,var(--accent) 34%,transparent);color:var(--text);padding:0 1px}
+.foot{border-top:1px solid color-mix(in srgb,var(--border) 45%,transparent);padding:6px 10px}
+</style>
+</head>
+<body>
+<main class="widget">
+  <div class="head">
+    <span class="dot" id="dot"></span>
+    <span class="title">Server logs</span>
+    <span class="sub" id="sub">waiting</span>
+    <span class="spacer"></span>
+    <span class="msg" id="msg"></span>
+  </div>
+  <div class="toolbar">
+    <select class="select" id="level" aria-label="Level">
+      <option value="">Level</option>
+      <option>ERROR</option>
+      <option>WARN</option>
+      <option>INFO</option>
+      <option>DEBUG</option>
+      <option>TRACE</option>
+    </select>
+    <input class="control short" id="service" placeholder="Service" autocomplete="off" spellcheck="false">
+    <input class="control short" id="action" placeholder="Action" autocomplete="off" spellcheck="false">
+    <input class="control short" id="kind" placeholder="Kind" autocomplete="off" spellcheck="false">
+    <input class="control" id="query" placeholder="Search" autocomplete="off" spellcheck="false">
+    <select class="select view" id="views" aria-label="Saved view">
+      <option value="">Views</option>
+    </select>
+    <button type="button" class="iconbtn" id="saveView" aria-label="Save view" title="Save view">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
+    </button>
+    <button type="button" class="iconbtn" id="deleteView" aria-label="Delete view" title="Delete view">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>
+    </button>
+    <button type="button" class="iconbtn primary" id="reload" aria-label="Reload" title="Reload">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    </button>
+    <label class="toggle"><input id="auto" type="checkbox">Live</label>
+  </div>
+  <div class="chrome">
+    <span class="stat"><span class="sl">Mode</span><span class="sv" id="modePill">...</span></span>
+    <span class="stat"><span class="sl">Scope</span><span class="sv" id="scopePill">lab:admin</span></span>
+    <span class="stat"><span class="sl">Refresh</span><span class="sv" id="refreshPill">idle</span></span>
+    <span class="stat"><span class="sl">Updated</span><span class="sv" id="updatedPill">never</span></span>
+  </div>
+  <div class="stats" id="stats" hidden></div>
+  <div id="rows"><p class="empty">No log data.</p></div>
+  <div class="foot"><span class="meta" id="foot"></span></div>
+</main>
+<script src="/apps/assets/labby-app-host.js"></script>
+<script>
+(() => {
+"use strict";
+const rows=document.getElementById("rows");
+const stats=document.getElementById("stats");
+const sub=document.getElementById("sub");
+const msg=document.getElementById("msg");
+const dot=document.getElementById("dot");
+const foot=document.getElementById("foot");
+const modePill=document.getElementById("modePill");
+const scopePill=document.getElementById("scopePill");
+const refreshPill=document.getElementById("refreshPill");
+const updatedPill=document.getElementById("updatedPill");
+const level=document.getElementById("level");
+const service=document.getElementById("service");
+const action=document.getElementById("action");
+const kind=document.getElementById("kind");
+const query=document.getElementById("query");
+const views=document.getElementById("views");
+const saveView=document.getElementById("saveView");
+const deleteView=document.getElementById("deleteView");
+const auto=document.getElementById("auto");
+const reload=document.getElementById("reload");
+const widget=document.querySelector(".widget");
+const host=window.LabbyAppHost;
+const bridge=host.mode()==="chatgpt";
+const savedViewsKey="labby.serverLogs.savedViews";
+const filterStateKey="serverLogsFilters";
+let current=null;
+let timer=null;
+let resizePending=false;
+let requestSeq=0;
+let savedViewCache=null;
+let openLogRows=new Set();
+if(!bridge)document.documentElement.classList.add("browser");
+modePill.textContent=bridge?"chatgpt":"browser";
+scopePill.textContent="lab:admin";
+function esc(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
+function json(value){try{return JSON.stringify(value,null,2)}catch{return String(value)}}
+function stableHash(value){
+  const text=String(value??"");
+  let hash=2166136261;
+  for(let i=0;i<text.length;i++){hash^=text.charCodeAt(i);hash=Math.imul(hash,16777619);}
+  return (hash>>>0).toString(16);
+}
+function logEntryKey(entry){
+  const fields=entry&&entry.fields&&typeof entry.fields==="object"?entry.fields:{};
+  return stableHash([
+    entry&&entry.timestamp,
+    entry&&entry.level,
+    entry&&entry.service,
+    entry&&entry.action,
+    entry&&entry.kind,
+    entry&&entry.file,
+    entry&&entry.message,
+    fields.request_id||fields.requestId||"",
+    fields.trace_id||fields.traceId||fields.trace||""
+  ].join("\u001f"));
+}
+function snapshotOpenLogRows(){
+  const keys=new Set();
+  rows.querySelectorAll("details[data-row-key]").forEach(row=>{
+    const key=row.dataset.rowKey;
+    if(key&&row.open)keys.add(key);
+  });
+  openLogRows=keys;
+  return keys;
+}
+function restoreOpenLogRows(keys){
+  rows.querySelectorAll("details[data-row-key]").forEach(row=>{
+    const key=row.dataset.rowKey;
+    if(key)row.open=keys.has(key);
+  });
+  openLogRows=keys;
+}
+function scheduleResize(){
+  if(resizePending)return;
+  resizePending=true;
+  requestAnimationFrame(()=>{
+    resizePending=false;
+    const rect=widget.getBoundingClientRect();
+    const height=Math.ceil(rect.height);
+    document.documentElement.style.height=`${height}px`;
+    document.body.style.height=`${height}px`;
+    const openai=window.openai;
+    if(openai&&typeof openai.requestWidgetResize==="function"){
+      try{openai.requestWidgetResize({height,width:Math.ceil(rect.width)});}catch(_){}
+    }
+  });
+}
+function normalizeOutput(value){
+  if(!value)return null;
+  if(value.structuredContent)return normalizeOutput(value.structuredContent);
+  if(value.data&&value.data.kind==="server_logs")return value.data;
+  if(value.kind==="server_logs")return value;
+  if(Array.isArray(value.content)&&value.content[0]&&typeof value.content[0].text==="string"){
+    try{return normalizeOutput(JSON.parse(value.content[0].text));}catch(_){}
+  }
+  if(value.ok===true&&value.data)return normalizeOutput(value.data);
+  return null;
+}
+function filters(){
+  return {
+    limit: 250,
+    level: level.value || undefined,
+    service: service.value.trim() || undefined,
+    action: action.value.trim() || undefined,
+    kind: kind.value.trim() || undefined,
+    query: query.value.trim() || undefined
+  };
+}
+function applyFilters(next){
+  if(!next)return;
+  if(Object.prototype.hasOwnProperty.call(next,"level"))level.value=next.level||"";
+  if(Object.prototype.hasOwnProperty.call(next,"service"))service.value=next.service||"";
+  if(Object.prototype.hasOwnProperty.call(next,"action"))action.value=next.action||"";
+  if(Object.prototype.hasOwnProperty.call(next,"kind"))kind.value=next.kind||"";
+  if(Object.prototype.hasOwnProperty.call(next,"query"))query.value=next.query||"";
+}
+function initialFilters(){
+  const params=new URLSearchParams(location.search);
+  const fromUrl={level:params.get("level")||"",service:params.get("service")||"",action:params.get("action")||"",kind:params.get("kind")||"",query:params.get("query")||""};
+  if(Object.values(fromUrl).some(Boolean))return fromUrl;
+  if(bridge&&window.openai&&window.openai.widgetState&&window.openai.widgetState[filterStateKey])return window.openai.widgetState[filterStateKey];
+  return host.readState(filterStateKey);
+}
+function persistFilters(){
+  const currentFilters=filters();
+  if(bridge&&window.openai&&typeof window.openai.setWidgetState==="function"){
+    try{window.openai.setWidgetState({[filterStateKey]:currentFilters});}catch(_){}
+  }else if(!bridge){
+    const params=new URLSearchParams();
+    for(const [key,value] of Object.entries(currentFilters)){
+      if(!["limit"].includes(key)&&value)params.set(key,value);
+    }
+    const qs=params.toString();
+    const next=`${location.pathname}${qs?`?${qs}`:""}`;
+    history.replaceState(null,"",next);
+  }
+  host.writeState(filterStateKey,currentFilters);
+}
+function savedViews(){
+  if(savedViewCache&&typeof savedViewCache==="object")return {...savedViewCache};
+  const value=host.readState(savedViewsKey);
+  savedViewCache=value&&typeof value==="object"&&!Array.isArray(value)?{...value}:{};
+  return {...savedViewCache};
+}
+function persistSavedViews(next){
+  savedViewCache=next&&typeof next==="object"&&!Array.isArray(next)?{...next}:{};
+  host.writeState(savedViewsKey,savedViewCache);
+}
+function renderSavedViews(selected=""){
+  const all=savedViews();
+  const names=Object.keys(all).sort((a,b)=>a.localeCompare(b));
+  views.innerHTML='<option value="">Views</option>'+names.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join("");
+  views.value=selected;
+}
+function stat(label,value){return `<span class="stat"><span class="sl">${esc(label)}</span><span class="sv">${esc(value)}</span></span>`}
+function highlight(text){
+  const q=query.value.trim();
+  const s=String(text??"");
+  if(!q)return esc(s);
+  const lower=s.toLowerCase();
+  const needle=q.toLowerCase();
+  let out="",start=0,index=0;
+  while((index=lower.indexOf(needle,start))!==-1){
+    out+=esc(s.slice(start,index))+`<mark>${esc(s.slice(index,index+q.length))}</mark>`;
+    start=index+q.length;
+  }
+  return out+esc(s.slice(start));
+}
+function drillUrl(params){
+  const search=new URLSearchParams();
+  for(const [key,value] of Object.entries(params)){
+    if(value)search.set(key,String(value));
+  }
+  return `/apps/server-logs?${search}`;
+}
+function drillLinks(entry){
+  const fields=entry.fields||{};
+  const links=[];
+  const requestId=fields.request_id||fields.requestId;
+  const traceId=fields.trace_id||fields.traceId||fields.trace;
+  if(requestId)links.push(["request",drillUrl({query:requestId})]);
+  if(traceId)links.push(["trace",drillUrl({query:traceId})]);
+  if(entry.service)links.push(["service",drillUrl({service:entry.service})]);
+  if(entry.action)links.push(["action",drillUrl({action:entry.action})]);
+  return links.map(([label,href])=>`<a class="chip link" href="${esc(href)}">${esc(label)}</a>`).join("");
+}
+function render(data){
+  current=data;
+  if(!data){
+    dot.className="dot";
+    sub.textContent="waiting";
+    stats.hidden=true;
+    rows.innerHTML='<p class="empty">No log data.</p>';
+    foot.textContent="";
+    scheduleResize();
+    return;
+  }
+  dot.className="dot ok";
+  const entries=Array.isArray(data.entries)?data.entries:[];
+  sub.textContent=`${entries.length} shown`;
+  stats.hidden=false;
+  stats.innerHTML=[
+    stat("Matched",data.matched??entries.length),
+    stat("Scanned",data.scanned_lines??0),
+    stat("Files",(data.files||[]).length),
+    stat("Bytes",data.scanned_bytes??0),
+    data.truncated?stat("Truncated","yes"):""
+  ].filter(Boolean).join("");
+	  if(!entries.length){
+	    rows.innerHTML='<p class="empty">No matching entries.</p>';
+	    openLogRows=new Set();
+	  }else{
+	    const openRows=snapshotOpenLogRows();
+	    rows.innerHTML=entries.map((entry,index)=>{
+	      const lvl=entry.level||"";
+	      const message=entry.message||"(no message)";
+	      const svc=entry.service||entry.target||"";
+	      const meta=[entry.action,entry.kind,entry.target].filter(Boolean).join(" · ");
+	      return `<details data-row="${index}" data-row-key="${esc(logEntryKey(entry))}"><summary><span class="lvl ${esc(lvl)}">${esc(lvl||"LOG")}</span><span class="time">${esc(entry.timestamp||"")}</span><span class="message">${highlight(message)}</span><span class="service">${esc(svc)}</span><span class="chev">›</span></summary><div class="detail"><div class="chips">${entry.file?`<span class="chip">${esc(entry.file)}</span>`:""}${meta?`<span class="chip">${esc(meta)}</span>`:""}${drillLinks(entry)}</div><pre>${highlight(json(entry.fields||{}))}</pre></div></details>`;
+	    }).join("");
+	    restoreOpenLogRows(openRows);
+	  }
+  foot.textContent=[data.log_dir,`max ${data.max_scan_bytes||0} B`,data.malformed_lines?`${data.malformed_lines} malformed`:""].filter(Boolean).join(" · ");
+  updatedPill.textContent=new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+  scheduleResize();
+}
+async function callServerLogs(){
+  return await host.callAction("server_logs","server_logs.query",filters(),{route:"/v1/server-logs/query"});
+}
+async function refresh(){
+  const seq=++requestSeq;
+  persistFilters();
+  msg.textContent="Loading...";
+  refreshPill.textContent="loading";
+  try{
+    const result=normalizeOutput(await callServerLogs());
+    if(seq!==requestSeq)return;
+    if(result){
+      msg.textContent="";
+      refreshPill.textContent=auto.checked?"live":"idle";
+      render(result);
+    }else{
+      msg.textContent="No data";
+      refreshPill.textContent="empty";
+      dot.className="dot err";
+    }
+  }catch(err){
+    if(seq!==requestSeq)return;
+    msg.textContent=(err&&err.message)||"Failed";
+    refreshPill.textContent="error";
+    dot.className="dot err";
+    scheduleResize();
+  }
+}
+function installAuto(){
+  if(timer){clearInterval(timer);timer=null;}
+  if(auto.checked)timer=setInterval(refresh,5000);
+}
+reload.addEventListener("click",()=>void refresh());
+auto.addEventListener("change",installAuto);
+views.addEventListener("change",()=>{
+  const selected=views.value;
+  if(!selected)return;
+  const all=savedViews();
+  applyFilters(all[selected]);
+  void refresh();
+});
+saveView.addEventListener("click",()=>{
+  const base=query.value.trim()||service.value.trim()||action.value.trim()||level.value||"view";
+  const name=window.prompt("Save view as",base);
+  if(!name||!name.trim())return;
+  const all=savedViews();
+  all[name.trim()]=filters();
+  persistSavedViews(all);
+  renderSavedViews(name.trim());
+});
+deleteView.addEventListener("click",()=>{
+  const selected=views.value;
+  if(!selected)return;
+  const all=savedViews();
+  delete all[selected];
+  persistSavedViews(all);
+  renderSavedViews("");
+});
+for(const input of [level,service,action,kind,query]){
+  input.addEventListener("change",()=>void refresh());
+  input.addEventListener("keydown",event=>{if(event.key==="Enter")void refresh();});
+}
+rows.addEventListener("toggle",scheduleResize,true);
+window.addEventListener("openai:set_globals",event=>{
+  const globals=event&&event.detail&&event.detail.globals;
+  if(globals&&Object.prototype.hasOwnProperty.call(globals,"toolOutput")){
+    render(normalizeOutput(globals.toolOutput));
+  }
+});
+applyFilters(initialFilters());
+renderSavedViews("");
+if(window.openai&&window.openai.toolOutput)render(normalizeOutput(window.openai.toolOutput));
+else {
+  render(null);
+  if(!bridge)void refresh();
+}
+})();
+</script>
+</body>
+</html>

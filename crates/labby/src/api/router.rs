@@ -11,7 +11,7 @@ use axum::{
     extract::{ConnectInfo, Query, State},
     http::{HeaderName, HeaderValue, Method, Request, StatusCode, header},
     middleware::Next,
-    response::IntoResponse,
+    response::{Html, IntoResponse},
     routing::{get, post},
 };
 use subtle::ConstantTimeEq;
@@ -1133,11 +1133,13 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
             )
             .route(
                 "/docs",
-                get(|| async { axum::response::Html(include_str!("openapi_docs.html")) }),
+                get(|| async { Html(include_str!("openapi_docs.html")) }),
             );
     }
 
     v1 = v1
+        .route("/apps/manifest", get(apps_manifest))
+        .nest("/server-logs", services::server_logs::routes(state.clone()))
         // Unauthenticated route groups are gated by host_validation_layer —
         // non-loopback Host headers are rejected before reaching the dispatcher
         // (DNS rebinding mitigation for the v1 wizard, lab-bg3e.3.3).
@@ -1376,6 +1378,58 @@ async fn labby_discovery(State(state): State<AppState>) -> axum::response::Respo
     response
 }
 
+async fn apps_manifest(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let manifest =
+        crate::app_manifest::manifest_for_registry(&state.registry).map_err(|error| {
+            ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: format!(
+                    "app `{}` references missing action `{}/{}`",
+                    error.app_slug, error.service, error.action
+                ),
+            }
+        })?;
+    let value = serde_json::to_value(manifest).map_err(|error| ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: format!("failed to serialize app manifest: {error}"),
+    })?;
+    Ok(Json(value))
+}
+
+async fn apps_launcher_page() -> axum::response::Response {
+    let mut response = Html(crate::app_assets::APPS_LAUNCHER_HTML).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+}
+
+async fn server_logs_app_page() -> axum::response::Response {
+    let mut response = Html(crate::app_assets::SERVER_LOGS_APP_HTML).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+}
+
+async fn labby_app_host_js() -> axum::response::Response {
+    let mut response = (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=300"),
+        ],
+        crate::app_assets::LABBY_APP_HOST_JS,
+    )
+        .into_response();
+    response.headers_mut().insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn build_router(
     mut state: AppState,
@@ -1552,6 +1606,22 @@ pub fn build_router(
         dev_routes
     };
     router = router.merge(dev_routes);
+
+    let asset_routes =
+        Router::new().route("/apps/assets/labby-app-host.js", get(labby_app_host_js));
+    router = router.merge(asset_routes);
+
+    let app_routes = Router::new()
+        .route("/apps", get(apps_launcher_page))
+        .route("/apps/", get(apps_launcher_page))
+        .route("/apps/server-logs", get(server_logs_app_page))
+        .route("/apps/server-logs/", get(server_logs_app_page));
+    let app_routes = if needs_auth {
+        app_routes.route_layer(make_auth_layer(true))
+    } else {
+        app_routes
+    };
+    router = router.merge(app_routes);
 
     // Static-file fallback for the Next.js SPA. Protected MCP virtual-host
     // proxying is mounted as an inner middleware below so intercepted responses
@@ -1823,6 +1893,191 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn server_logs_app_route_requires_auth_when_configured() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/apps/server-logs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn server_logs_app_route_serves_browser_html_with_auth() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/apps/server-logs")
+                    .header(header::AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.contains("text/html"));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("Server logs"));
+        assert!(text.contains("/v1/server-logs/query"));
+        assert!(text.contains("html.browser"));
+        assert!(text.contains("LabbyAppHost"));
+        assert!(text.contains("savedViews"));
+        assert!(text.contains("drillLinks"));
+    }
+
+    #[tokio::test]
+    async fn server_logs_query_requires_admin_auth_context_even_without_global_auth() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, None, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/server-logs/query")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn server_logs_canonical_action_route_dispatches_with_auth() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/server-logs")
+                    .header(header::AUTHORIZATION, "Bearer secret-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"help","params":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["service"], "server_logs");
+        assert!(json["actions"].as_array().is_some_and(|actions| {
+            actions
+                .iter()
+                .any(|action| action["name"] == "server_logs.query")
+        }));
+    }
+
+    #[tokio::test]
+    async fn apps_launcher_and_bridge_asset_are_served() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
+        let launcher = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/apps")
+                    .header(header::AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(launcher.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(launcher.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("Labby Apps"));
+        assert!(text.contains("/v1/apps/manifest"));
+        assert!(text.contains("/apps/assets/labby-app-host.js"));
+
+        let bridge = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/apps/assets/labby-app-host.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bridge.status(), StatusCode::OK);
+        let content_type = bridge
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.contains("text/javascript"));
+        let body = axum::body::to_bytes(bridge.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let js = String::from_utf8(body.to_vec()).unwrap();
+        assert!(js.contains("LabbyAppHost"));
+        assert!(js.contains("callAction"));
+        assert!(text.contains("appPath"));
+    }
+
+    #[tokio::test]
+    async fn apps_manifest_endpoint_derives_action_spec_metadata() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/apps/manifest")
+                    .header(header::AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let app = manifest["apps"]
+            .as_array()
+            .and_then(|apps| apps.iter().find(|app| app["slug"] == "server-logs"))
+            .expect("server logs app manifest entry");
+        assert_eq!(app["kind"], "browse");
+        assert_eq!(app["browser_path"], "/apps/server-logs");
+        assert_eq!(app["required_scopes"], serde_json::json!(["lab:admin"]));
+        assert_eq!(app["primary_action"]["service"], "server_logs");
+        assert_eq!(app["primary_action"]["action"], "server_logs.query");
     }
 
     #[tokio::test]

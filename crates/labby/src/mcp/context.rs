@@ -176,7 +176,7 @@ pub(crate) fn builtin_action_requires_admin(
     // Catalog-driven metadata is the single source of truth for admin gating.
     if matches!(
         entry.name,
-        "gateway" | "marketplace" | "setup" | "snippets" | "stash"
+        "gateway" | "marketplace" | "setup" | "server_logs" | "snippets" | "stash"
     ) {
         // The universal built-ins are never admin-gated, whether the caller
         // passes them bare (`help`) or service-prefixed (`gateway.help`).  The

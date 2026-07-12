@@ -80,6 +80,9 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `lab_admin` | `help` | false | false |  | `Catalog` | cli, mcp |
 | `lab_admin` | `onboarding.audit` | false | false | `services*: string[]` | `AuditReport` | cli, mcp |
 | `lab_admin` | `schema` | false | false | `action*: string` | `Schema` | cli, mcp |
+| `server_logs` | `help` | false | false |  | `Catalog` | cli, mcp, api |
+| `server_logs` | `schema` | false | false | `action*: string` | `Schema` | cli, mcp, api |
+| `server_logs` | `server_logs.query` | false | false | `limit: integer`<br>`level: string`<br>`target: string`<br>`service: string`<br>`action: string`<br>`kind: string`<br>`query: string`<br>`file: string`<br>`max_scan_bytes: integer` | `ServerLogsQueryResult` | cli, mcp, api |
 | `setup` | `bootstrap` | false | false |  | `BootstrapOutcome` | cli, mcp, api, web |
 | `setup` | `check` | false | false |  | `SetupReport` | cli, mcp, api, web |
 | `setup` | `draft.commit` | false | true | `force: boolean` | `CommitOutcome` | cli, mcp, api, web |

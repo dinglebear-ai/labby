@@ -10,6 +10,7 @@ pub mod lab_admin;
 pub mod path_safety;
 pub mod redact;
 pub mod security;
+pub mod server_logs;
 pub mod setup;
 #[cfg(feature = "gateway")]
 pub mod snippets;

@@ -1714,6 +1714,98 @@
       ]
     },
     {
+      "name": "server_logs",
+      "description": "View and filter Labby's own rolling server process logs",
+      "category": "bootstrap",
+      "status": "available",
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "help",
+          "description": "Show this action catalog",
+          "destructive": false,
+          "params": [],
+          "returns": "Catalog"
+        },
+        {
+          "name": "schema",
+          "description": "Return the parameter schema for a named action",
+          "destructive": false,
+          "params": [
+            {
+              "name": "action",
+              "ty": "string",
+              "required": true,
+              "description": "Action name to describe"
+            }
+          ],
+          "returns": "Schema"
+        },
+        {
+          "name": "server_logs.query",
+          "description": "Read and filter Labby's rolling JSON server process logs",
+          "destructive": false,
+          "params": [
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Maximum matching entries to return, newest first after filtering"
+            },
+            {
+              "name": "level",
+              "ty": "string",
+              "required": false,
+              "description": "Exact tracing level filter, such as INFO, WARN, or ERROR"
+            },
+            {
+              "name": "target",
+              "ty": "string",
+              "required": false,
+              "description": "Substring filter for the tracing target/module"
+            },
+            {
+              "name": "service",
+              "ty": "string",
+              "required": false,
+              "description": "Exact or substring filter for the structured service field"
+            },
+            {
+              "name": "action",
+              "ty": "string",
+              "required": false,
+              "description": "Exact or substring filter for the structured action field"
+            },
+            {
+              "name": "kind",
+              "ty": "string",
+              "required": false,
+              "description": "Exact or substring filter for the structured kind/error field"
+            },
+            {
+              "name": "query",
+              "ty": "string",
+              "required": false,
+              "description": "Case-insensitive text search across message, target, and fields"
+            },
+            {
+              "name": "file",
+              "ty": "string",
+              "required": false,
+              "description": "Substring filter for a retained log filename"
+            },
+            {
+              "name": "max_scan_bytes",
+              "ty": "integer",
+              "required": false,
+              "description": "Bounded byte budget scanned across newest retained log files"
+            }
+          ],
+          "returns": "ServerLogsQueryResult"
+        }
+      ]
+    },
+    {
       "name": "lab_admin",
       "description": "Internal onboarding audit tool",
       "category": "bootstrap",

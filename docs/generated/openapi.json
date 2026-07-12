@@ -322,6 +322,72 @@
         ]
       }
     },
+    "/v1/server_logs": {
+      "post": {
+        "tags": [
+          "server_logs"
+        ],
+        "summary": "Dispatch action to server_logs",
+        "description": "Execute an action on the server_logs service. Use `action: \"help\"` to list available actions.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful action response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (unknown action, confirmation required)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnknownAction"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error (missing or invalid param)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMissingParam"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/setup": {
       "post": {
         "tags": [
@@ -1372,6 +1438,49 @@
         ],
         "properties": {
           "action": {
+            "type": "string"
+          }
+        }
+      },
+      "Server_logsSchemaParams": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          }
+        }
+      },
+      "Server_logsServer_logsQueryParams": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "max_scan_bytes": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "target": {
             "type": "string"
           }
         }

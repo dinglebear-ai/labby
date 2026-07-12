@@ -11,6 +11,8 @@ use crate::mcp::prompts::list_all as list_builtin_prompts;
 
 /// Primary Cloudflare-style Code Mode tool name.
 pub(crate) const CODE_MODE_TOOL_NAME: &str = "codemode";
+/// Lab-owned server process log viewer tool name.
+pub(crate) const SERVER_LOGS_TOOL_NAME: &str = "server_logs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodeModeVisibility {
