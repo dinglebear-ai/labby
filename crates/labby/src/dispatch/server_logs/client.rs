@@ -100,11 +100,10 @@ fn looks_like_lab_log(path: &Path) -> bool {
     name.starts_with("lab") && name.ends_with(".log")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn log_files_skip_symlinked_lab_logs() {
         let dir = tempfile::tempdir().expect("tempdir");
