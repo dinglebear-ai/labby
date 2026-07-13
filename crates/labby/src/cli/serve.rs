@@ -382,6 +382,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let public_relay_store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
         crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
     );
+    let public_relay_registry_path = public_relay_store.path().to_path_buf();
     match crate::oauth::public_relay::PublicRelayRegistryManager::load(public_relay_store).await {
         Ok(manager) => {
             tracing::info!(
@@ -396,10 +397,13 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             state = state.with_public_relay_manager(manager);
         }
         Err(error) => {
+            crate::oauth::public_relay::set_public_relay_manager(None);
             tracing::warn!(
                 subsystem = "startup",
                 phase = "oauth.public_relay.disabled",
+                registry_path = %public_relay_registry_path.display(),
                 kind = error.kind(),
+                error = %error,
                 "public oauth callback relay disabled because registry failed to load"
             );
         }

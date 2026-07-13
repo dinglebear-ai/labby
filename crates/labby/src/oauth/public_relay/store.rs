@@ -124,6 +124,11 @@ fn load_snapshot_sync(path: &Path) -> Result<PublicRelaySnapshot, PublicRelayErr
     let raw = fs::read_to_string(path)
         .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?;
     let report = PublicRelayRegistryStore::parse_standalone_registry(&raw)?;
+    if let Some(summary) = report.quarantine_summary() {
+        return Err(PublicRelayError::InvalidTarget(format!(
+            "registry contains invalid entries: {summary}"
+        )));
+    }
     let entries = report
         .entries
         .into_iter()
@@ -137,13 +142,7 @@ fn save_entries_sync(
     entries: Vec<PublicRelayEntry>,
 ) -> Result<RegistryWriteOutcome, PublicRelayError> {
     let report = import_entries(entries)?;
-    if !report.quarantined.is_empty() {
-        let reason = report
-            .quarantined
-            .iter()
-            .map(|entry| format!("{}: {}", entry.machine_id, entry.reason))
-            .collect::<Vec<_>>()
-            .join("; ");
+    if let Some(reason) = report.quarantine_summary() {
         return Err(PublicRelayError::InvalidTarget(reason));
     }
 
@@ -295,5 +294,28 @@ mod tests {
                 .is_some_and(|path| path.exists())
         );
         assert!(fs::read_to_string(&path).unwrap().contains("\"version\""));
+    }
+
+    #[tokio::test]
+    async fn public_relay_store_rejects_quarantined_persisted_registry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("registry.json");
+        fs::write(
+            &path,
+            r#"{
+                "dookie": "http://100.88.16.79:38935/callback/dookie",
+                "bad": "http://127.0.0.1:38935/callback/bad"
+            }"#,
+        )
+        .expect("write registry");
+        let store = PublicRelayRegistryStore::new(path);
+
+        let error = store
+            .load_snapshot()
+            .await
+            .expect_err("invalid persisted entries must fail closed");
+
+        assert_eq!(error.kind(), "relay_invalid_target");
+        assert!(error.to_string().contains("bad"));
     }
 }

@@ -79,7 +79,13 @@ pub async fn dispatch_with_clients(
     action: &str,
     params: Value,
 ) -> Result<Value, ToolError> {
-    dispatch_with_clients_and_relay(clients, None, action, params).await
+    dispatch_with_clients_and_relay(
+        clients,
+        crate::oauth::public_relay::current_public_relay_manager(),
+        action,
+        params,
+    )
+    .await
 }
 
 pub async fn dispatch_with_clients_and_relay(
@@ -88,8 +94,6 @@ pub async fn dispatch_with_clients_and_relay(
     action: &str,
     params: Value,
 ) -> Result<Value, ToolError> {
-    let public_relay =
-        public_relay.or_else(crate::oauth::public_relay::current_public_relay_manager);
     let start = std::time::Instant::now();
     tracing::info!(
         surface = "dispatch",

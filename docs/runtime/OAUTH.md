@@ -177,7 +177,9 @@ labby oauth relay-registry remove --machine dookie
 CLI registry mutations write the sidecar file and report
 `restart_required: true`; restart `labby serve` to refresh a running server's
 in-memory snapshot. The authenticated admin API updates the live snapshot and
-the sidecar together.
+the sidecar together. Registry imports are all-or-nothing: any quarantined
+machine or invalid target rejects the import without replacing the active
+registry.
 
 For the production cutover and rollback procedure, see
 [CALLBACK_RELAY.md](../deploy/CALLBACK_RELAY.md).

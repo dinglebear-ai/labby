@@ -1,6 +1,7 @@
 use axum::body::Bytes;
 use axum::http::{HeaderMap, Method, StatusCode};
 use bytes::BytesMut;
+use std::error::Error as _;
 
 use super::policy::{
     PUBLIC_CONNECT_TIMEOUT, PUBLIC_READ_TIMEOUT, PUBLIC_RESPONSE_LIMIT_BYTES, PUBLIC_TOTAL_TIMEOUT,
@@ -46,7 +47,8 @@ impl PublicRelayForwarder {
         &self,
         request: ForwardRequest,
     ) -> Result<ForwardResponse, PublicRelayError> {
-        let mut url = request.target.url.clone();
+        let target_label = request.target.redacted_label();
+        let mut url = request.target.url().clone();
         if !request.suffix_path.is_empty() {
             let mut path = url.path().trim_end_matches('/').to_string();
             if !path.ends_with('/') {
@@ -65,24 +67,19 @@ impl PublicRelayForwarder {
             builder = builder.body(request.body);
         }
 
-        let mut response = builder.send().await.map_err(|error| {
-            if error.is_timeout() {
-                PublicRelayError::UpstreamTimeout
-            } else {
-                PublicRelayError::UpstreamError
-            }
-        })?;
+        let mut response = builder
+            .send()
+            .await
+            .map_err(|error| map_forward_error("send", &target_label, error))?;
         let status = StatusCode::from_u16(response.status().as_u16())
             .map_err(|_| PublicRelayError::UpstreamError)?;
         let headers = filter_public_response_headers(response.headers());
         let mut out = BytesMut::new();
-        while let Some(chunk) = response.chunk().await.map_err(|error| {
-            if error.is_timeout() {
-                PublicRelayError::UpstreamTimeout
-            } else {
-                PublicRelayError::UpstreamError
-            }
-        })? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| map_forward_error("read_body", &target_label, error))?
+        {
             if out.len() + chunk.len() > PUBLIC_RESPONSE_LIMIT_BYTES {
                 return Err(PublicRelayError::ResponseTooLarge);
             }
@@ -93,6 +90,51 @@ impl PublicRelayForwarder {
             headers,
             body: out.freeze(),
         })
+    }
+}
+
+fn map_forward_error(
+    stage: &'static str,
+    target_label: &str,
+    error: reqwest::Error,
+) -> PublicRelayError {
+    let mapped = if error.is_timeout() {
+        PublicRelayError::UpstreamTimeout
+    } else {
+        PublicRelayError::UpstreamError
+    };
+    tracing::warn!(
+        surface = "api",
+        service = "oauth_relay",
+        action = "callback.forward",
+        stage,
+        target = target_label,
+        kind = mapped.kind(),
+        source = %reqwest_source_without_url(&error),
+        "public oauth callback relay upstream failure"
+    );
+    mapped
+}
+
+fn reqwest_source_without_url(error: &reqwest::Error) -> String {
+    let mut parts = Vec::new();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        parts.push(cause.to_string());
+        source = cause.source();
+    }
+    if parts.is_empty() {
+        if error.is_timeout() {
+            "timeout".to_string()
+        } else if error.is_connect() {
+            "connect error".to_string()
+        } else if error.is_body() {
+            "body error".to_string()
+        } else {
+            "request error".to_string()
+        }
+    } else {
+        parts.join(": ")
     }
 }
 
@@ -225,12 +267,11 @@ mod tests {
             )
             .unwrap()
         });
-        let mut target = target;
-        target
-            .url
-            .set_host(Some(&upstream.addr.ip().to_string()))
-            .unwrap();
-        target.url.set_port(Some(upstream.addr.port())).unwrap();
+        let mut url = target.url().clone();
+        url.set_host(Some(&upstream.addr.ip().to_string())).unwrap();
+        url.set_port(Some(upstream.addr.port())).unwrap();
+        let target =
+            RelayTarget::from_validated_parts_for_tests(MachineId::parse("dookie").unwrap(), url);
         forwarder
             .forward(ForwardRequest {
                 method: Method::POST,

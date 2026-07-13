@@ -127,6 +127,7 @@ async fn run_relay_registry(args: RelayRegistryArgs, format: OutputFormat) -> Re
                 .with_context(|| format!("read relay registry import file {}", file.display()))?;
             let report = PublicRelayRegistryStore::parse_standalone_registry(&raw)
                 .context("parse relay registry import")?;
+            report.ensure_complete_import()?;
             let store = default_store();
             let outcome = store
                 .save_entries(report.entries.clone())

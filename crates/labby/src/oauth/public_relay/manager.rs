@@ -28,9 +28,13 @@ static PUBLIC_RELAY_MANAGER: OnceLock<StdRwLock<Option<Arc<PublicRelayRegistryMa
     OnceLock::new();
 
 pub fn install_public_relay_manager(manager: Arc<PublicRelayRegistryManager>) {
+    set_public_relay_manager(Some(manager));
+}
+
+pub fn set_public_relay_manager(manager: Option<Arc<PublicRelayRegistryManager>>) {
     let lock = PUBLIC_RELAY_MANAGER.get_or_init(|| StdRwLock::new(None));
     let mut guard = lock.write().expect("public relay manager lock poisoned");
-    *guard = Some(manager);
+    *guard = manager;
 }
 
 pub fn current_public_relay_manager() -> Option<Arc<PublicRelayRegistryManager>> {
@@ -109,6 +113,7 @@ impl PublicRelayRegistryManager {
         &self,
         report: ImportReport,
     ) -> Result<RegistryWriteOutcome, PublicRelayError> {
+        report.ensure_complete_import()?;
         let _mutation = self.mutation_lock.lock().await;
         let outcome = self.store.save_entries(report.entries).await?;
         self.reload().await?;

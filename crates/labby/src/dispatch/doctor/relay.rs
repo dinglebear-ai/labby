@@ -86,8 +86,8 @@ pub async fn check_public_relay(
 }
 
 async fn probe_target(target: &RelayTarget) -> Finding {
-    let check = format!("target:{}", target.machine_id);
-    let Some(host) = target.url.host_str() else {
+    let check = format!("target:{}", target.machine_id());
+    let Some(host) = target.host_str() else {
         return Finding {
             service: "oauth_relay".into(),
             check,
@@ -95,7 +95,7 @@ async fn probe_target(target: &RelayTarget) -> Finding {
             message: "target host missing".into(),
         };
     };
-    let Some(port) = target.url.port_or_known_default() else {
+    let Some(port) = target.port_or_known_default() else {
         return Finding {
             service: "oauth_relay".into(),
             check,
@@ -129,6 +129,9 @@ async fn probe_target(target: &RelayTarget) -> Finding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static LAB_HOME_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[tokio::test]
     async fn relay_health_reports_loaded_empty_registry_without_target_probe() {
@@ -140,5 +143,51 @@ mod tests {
 
         assert_eq!(report.findings[0].check, "registry:loaded");
         assert!(matches!(report.findings[0].severity, Severity::Warn));
+    }
+
+    #[tokio::test]
+    async fn relay_health_reports_disabled_targets_when_probe_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
+        store
+            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry {
+                machine_id: crate::oauth::public_relay::MachineId::parse("dookie").unwrap(),
+                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
+                description: None,
+                disabled: true,
+            }])
+            .await
+            .unwrap();
+        let manager = PublicRelayRegistryManager::load(store).await.unwrap();
+
+        let report = check_public_relay(Some(Arc::new(manager)), true).await;
+
+        let target = report
+            .findings
+            .iter()
+            .find(|finding| finding.check == "target:dookie")
+            .unwrap();
+        assert!(matches!(target.severity, Severity::Warn));
+        assert!(target.message.contains("machine is disabled"));
+    }
+
+    #[tokio::test]
+    async fn relay_health_reports_corrupt_registry_when_manager_missing() {
+        let _guard = LAB_HOME_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        crate::dispatch::helpers::set_test_lab_home(Some(dir.path().to_path_buf()));
+        let path = PublicRelayRegistryStore::default_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{not valid json").unwrap();
+
+        let report = check_public_relay(None, false).await;
+        crate::dispatch::helpers::set_test_lab_home(None);
+
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.check == "registry:corrupt")
+            .unwrap();
+        assert!(matches!(finding.severity, Severity::Fail));
     }
 }

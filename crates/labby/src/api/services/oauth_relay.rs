@@ -576,6 +576,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_relay_admin_rejects_partial_import_without_replacing_registry() {
+        let (_dir, state) = test_state().await;
+        let manager = state.public_relay.as_ref().unwrap().clone();
+        manager
+            .upsert(PublicRelayEntry {
+                machine_id: MachineId::parse("squirts").unwrap(),
+                target_url: "http://100.75.111.118:38935/callback/squirts".into(),
+                description: None,
+                disabled: false,
+            })
+            .await
+            .unwrap();
+        let body = json!({
+            "dookie": "http://100.88.16.79:38935/callback/dookie",
+            "bad": "http://127.0.0.1:38935/callback/bad"
+        });
+        let response = admin_routes(state.clone())
+            .layer(Extension(admin_auth_context()))
+            .with_state(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            manager
+                .entry(&MachineId::parse("squirts").unwrap())
+                .await
+                .is_some()
+        );
+        assert!(
+            manager
+                .entry(&MachineId::parse("dookie").unwrap())
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_relay_admin_mutation_flow_updates_live_registry() {
+        let (_dir, state) = test_state().await;
+        let app = admin_routes(state.clone())
+            .layer(Extension(admin_auth_context()))
+            .with_state(state.clone());
+
+        let create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/machines")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"machine_id":"dookie","target_url":"http://100.88.16.79:38935/callback/dookie"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::OK);
+
+        let read = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/machines/dookie")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.status(), StatusCode::OK);
+
+        let disable = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/machines/dookie/disable")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disable.status(), StatusCode::OK);
+
+        let callback_while_disabled = public_routes(state.clone())
+            .with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/callback/dookie")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(callback_while_disabled.status(), StatusCode::NOT_FOUND);
+
+        let enable = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/machines/dookie/enable")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(enable.status(), StatusCode::OK);
+
+        let remove = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/machines/dookie")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(remove.status(), StatusCode::OK);
+
+        let remove_unknown = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/machines/dookie")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(remove_unknown.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn public_callback_bypasses_bearer_auth_and_protected_intercept() {
         let state = AppState::new();
         let app =
@@ -647,6 +794,89 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn public_callback_maps_unknown_disabled_and_large_query_failures() {
+        let (_dir, state) = test_state().await;
+        let manager = state.public_relay.as_ref().unwrap().clone();
+        manager
+            .upsert(PublicRelayEntry {
+                machine_id: MachineId::parse("dookie").unwrap(),
+                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
+                description: None,
+                disabled: true,
+            })
+            .await
+            .unwrap();
+        let app = public_routes(state.clone()).with_state(state);
+
+        let unknown = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/callback/squirts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+        let disabled = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/callback/dookie")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disabled.status(), StatusCode::NOT_FOUND);
+
+        let large_query = "a".repeat(PUBLIC_QUERY_LIMIT_BYTES + 1);
+        let too_large = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/callback/dookie?{large_query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn public_callback_returns_429_when_machine_forward_permits_are_exhausted() {
+        let (_dir, state) = test_state().await;
+        let manager = state.public_relay.as_ref().unwrap().clone();
+        let machine = MachineId::parse("dookie").unwrap();
+        manager
+            .upsert(PublicRelayEntry {
+                machine_id: machine.clone(),
+                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
+                description: None,
+                disabled: false,
+            })
+            .await
+            .unwrap();
+        let _permit_one = manager.acquire_forward_permit(&machine).await.unwrap();
+        let _permit_two = manager.acquire_forward_permit(&machine).await.unwrap();
+        let app = public_routes(state.clone()).with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/callback/dookie")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[test]

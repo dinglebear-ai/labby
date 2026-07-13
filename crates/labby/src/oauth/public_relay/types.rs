@@ -129,8 +129,8 @@ impl PublicRelayEntry {
 
 #[derive(Debug, Clone)]
 pub struct RelayTarget {
-    pub machine_id: MachineId,
-    pub url: Url,
+    machine_id: MachineId,
+    url: Url,
 }
 
 impl RelayTarget {
@@ -175,12 +175,33 @@ impl RelayTarget {
         Ok(Self { machine_id, url })
     }
 
+    pub fn machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    pub fn host_str(&self) -> Option<&str> {
+        self.url.host_str()
+    }
+
+    pub fn port_or_known_default(&self) -> Option<u16> {
+        self.url.port_or_known_default()
+    }
+
     pub fn redacted_label(&self) -> String {
         format!(
             "{}@{}",
             self.machine_id,
             self.url.host_str().unwrap_or("unknown")
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_validated_parts_for_tests(machine_id: MachineId, url: Url) -> Self {
+        Self { machine_id, url }
     }
 }
 
@@ -214,6 +235,33 @@ impl ImportReport {
             quarantined: Vec::new(),
             entries: Vec::new(),
         }
+    }
+
+    pub fn quarantine_summary(&self) -> Option<String> {
+        if self.quarantined.is_empty() {
+            return None;
+        }
+        Some(
+            self.quarantined
+                .iter()
+                .map(|entry| format!("{}: {}", entry.machine_id, entry.reason))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+
+    pub fn ensure_complete_import(&self) -> Result<(), PublicRelayError> {
+        if let Some(summary) = self.quarantine_summary() {
+            return Err(PublicRelayError::InvalidTarget(format!(
+                "registry import contains invalid entries: {summary}"
+            )));
+        }
+        if self.entries.is_empty() {
+            return Err(PublicRelayError::InvalidTarget(
+                "registry import contains no valid relay machines".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -277,7 +325,7 @@ mod tests {
         let target =
             RelayTarget::parse(machine, "http://100.88.16.79:38935/callback/dookie").unwrap();
         assert_eq!(
-            target.url.as_str(),
+            target.url().as_str(),
             "http://100.88.16.79:38935/callback/dookie"
         );
     }

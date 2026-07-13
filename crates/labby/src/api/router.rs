@@ -2354,6 +2354,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_relay_admin_routes_are_enforced_by_full_router() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
+            dir.path().join("relay.json"),
+        );
+        let manager = Arc::new(
+            crate::oauth::public_relay::PublicRelayRegistryManager::load(store)
+                .await
+                .unwrap(),
+        );
+
+        let bearer_app = build_router_with_bearer(
+            AppState::new().with_public_relay_manager(Arc::clone(&manager)),
+            Some("secret-token".into()),
+            None,
+        );
+        let unauthenticated = bearer_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/oauth/relay/machines")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let static_bearer = bearer_app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/oauth/relay/machines")
+                    .header(header::AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(static_bearer.status(), StatusCode::OK);
+
+        let auth_state = test_lab_auth_state().await;
+        let read_only_token =
+            issue_test_token(&auth_state, "https://lab.example.com/mcp", "lab:read");
+        let oauth_app = build_router(
+            AppState::new().with_public_relay_manager(manager),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let read_only = oauth_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/oauth/relay/machines")
+                    .header(header::AUTHORIZATION, format!("Bearer {read_only_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_only.status(), StatusCode::FORBIDDEN);
+
+        let browser_auth = test_lab_auth_state().await;
+        let session = seed_browser_session(&browser_auth).await;
+        let browser_app = build_router(AppState::new(), None, Some(browser_auth), None, &[]);
+        let missing_csrf = browser_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/oauth/relay/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(
+                        header::COOKIE,
+                        format!(
+                            "{}={}",
+                            labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                            session.session_id
+                        ),
+                    )
+                    .body(Body::from(
+                        r#"{"dookie":"http://100.88.16.79:38935/callback/dookie"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_csrf.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn doctor_admin_actions_are_enforced_by_api_dispatch_gate() {
+        let auth_state = test_lab_auth_state().await;
+        let read_only_token =
+            issue_test_token(&auth_state, "https://lab.example.com/mcp", "lab:read");
+        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/doctor")
+                    .header(header::HOST, "localhost")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {read_only_token}"))
+                    .body(Body::from(
+                        r#"{"action":"oauth.relay.check","params":{"probe_targets":true}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn static_bearer_bind_attaches_actor_key_when_deriver_is_configured() {
         let deriver =
             crate::observability::activity::ActorKeyDeriver::from_secret("test-secret").unwrap();
@@ -2922,6 +3042,48 @@ mod tests {
             response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
             "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/telemetry\", scope=\"mcp:read mcp:write\""
         );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn public_callback_route_bypasses_matching_protected_route_intercept() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                tempdir.path().join("gateway.toml"),
+                crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+            ),
+        );
+        let config = protected_route_config(
+            "callback",
+            "callback.tootie.tv",
+            "/callback",
+            "http://10.0.0.2:3100",
+        );
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager);
+        let auth_state = test_lab_auth_state().await;
+        let app = build_router(state, None, Some(auth_state), None, &[]);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/callback/dookie?code=abc&state=secret-state")
+                    .header(header::HOST, "callback.tootie.tv")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(response.headers().get(header::WWW_AUTHENTICATE).is_none());
     }
 
     #[cfg(feature = "gateway")]

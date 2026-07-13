@@ -245,6 +245,18 @@ mod tests {
     }
 
     #[test]
+    fn public_relay_kinds_map_to_expected_statuses() {
+        assert_eq!(
+            status_for("relay_invalid_target"),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            status_for("relay_registry_unavailable"),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
     fn content_too_large_maps_to_413() {
         // Decompression-bomb / oversized-archive guard (Sec/Test-M3).
         let response = ApiError(ToolError::Sdk {

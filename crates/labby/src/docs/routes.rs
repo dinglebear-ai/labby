@@ -489,4 +489,33 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn public_relay_routes_have_expected_auth_docs() {
+        let routes = build_route_docs(&[]);
+        let callback = routes
+            .iter()
+            .find(|route| route.method == "GET" && route.path == "/callback/{machine_id}")
+            .unwrap();
+        assert_eq!(callback.handler_group, "oauth_relay");
+        assert!(!callback.auth_required);
+        assert!(!callback.session_cookie_allowed);
+        assert!(!callback.csrf_required);
+
+        let admin = routes
+            .iter()
+            .find(|route| route.method == "POST" && route.path == "/v1/oauth/relay/import")
+            .unwrap();
+        assert_eq!(admin.handler_group, "oauth_relay");
+        assert!(admin.auth_required);
+        assert!(admin.session_cookie_allowed);
+        assert!(admin.csrf_required);
+        assert!(
+            admin
+                .runtime_condition
+                .as_deref()
+                .unwrap_or("")
+                .contains("lab:admin")
+        );
+    }
 }

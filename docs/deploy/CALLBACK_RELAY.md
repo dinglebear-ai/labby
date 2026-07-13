@@ -46,6 +46,10 @@ Import it into Labby's sidecar registry:
 labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
 ```
 
+The import is all-or-nothing. If any machine id or target URL is quarantined,
+fix the exported file and rerun the import; Labby will not partially replace the
+active registry.
+
 Restart Labby after CLI-side registry import so the running server refreshes
 its in-memory snapshot.
 
