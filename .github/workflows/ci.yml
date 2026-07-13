@@ -265,8 +265,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo check -p labby --no-default-features --features ${{ matrix.slice }} --all-targets --locked
-      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         if: matrix.slice == 'gateway'
+        with:
+          install_args: cargo:cargo-nextest
       - name: Run gateway-slice test suite
         if: matrix.slice == 'gateway'
         run: cargo nextest run -p labby --no-default-features --features gateway --locked
@@ -331,7 +333,9 @@ jobs:
           path: apps/gateway-admin/out
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
-      - uses: taiki-e/install-action@9cfa436698ecd30b7b47d715cbb8241e4624245a
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: just
       - run: just docs-check
 
   clippy:
@@ -418,7 +422,9 @@ jobs:
           path: apps/gateway-admin/out
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
-      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: cargo:cargo-nextest
       - name: Install sccache
         uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
       - name: Resolve persistent sccache dir under this runner's $HOME
@@ -497,7 +503,9 @@ jobs:
           path: apps/gateway-admin/out
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
-      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: cargo:cargo-nextest
       - run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()

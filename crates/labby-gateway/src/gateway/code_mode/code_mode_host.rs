@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::gateway::manager::GatewayManager;
-use crate::upstream::types::UpstreamRuntimeOwner;
+use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
 
@@ -103,7 +103,24 @@ impl CodeModeHost for GatewayManager {
             });
         }
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
-        self.execute_upstream_tool(upstream, tool, params).await
+        let tool_ui = extract_tool_ui_link(&upstream_tool);
+        let mut outcome = self.execute_upstream_tool(upstream, tool, params).await?;
+        if outcome.ui.is_none()
+            && let Some(ui) = tool_ui
+        {
+            let resource_uri = ui_resource_uri(&ui.ui_meta).unwrap_or("<unknown>");
+            tracing::info!(
+                surface = "dispatch",
+                service = "code_mode",
+                action = "mcp_app.capture",
+                upstream,
+                tool,
+                resource_uri,
+                "captured upstream MCP App widget link from tool metadata"
+            );
+            outcome.ui = Some(ui);
+        }
+        Ok(outcome)
     }
 
     /// Buffer one `codemode.step` boundary for the run's `execution_id`.
@@ -527,6 +544,15 @@ fn extract_ui_link(result: &CallToolResult) -> Option<UiLink> {
     })
 }
 
+fn extract_tool_ui_link(tool: &UpstreamTool) -> Option<UiLink> {
+    let meta = tool.tool.meta.as_ref()?;
+    let ui = meta.0.get("ui")?;
+    ui.get("resourceUri")?.as_str()?;
+    Some(UiLink {
+        ui_meta: ui.clone(),
+    })
+}
+
 fn ui_resource_uri(ui_meta: &Value) -> Option<&str> {
     ui_meta.get("resourceUri").and_then(Value::as_str)
 }
@@ -650,6 +676,7 @@ mod tests {
     use super::*;
     use crate::gateway::runtime::GatewayRuntimeHandle;
     use labby_codemode::ExecCtx;
+    use rmcp::model::Meta;
 
     /// Build a `GatewayManager` wired to a fresh temp `StepJournalStore`. The
     /// tempdir is intentionally leaked so the DB file outlives the store's open
@@ -691,6 +718,40 @@ mod tests {
         }
         let (manager, cfg_dir) = manager_with_store(store).await;
         (manager, cfg_dir, db_dir)
+    }
+
+    #[test]
+    fn extract_tool_ui_link_preserves_tool_metadata_resource() {
+        let mut tool = rmcp::model::Tool::new(
+            "open_quick_shell".to_string(),
+            "Open quick shell",
+            Arc::new(Map::new()),
+        );
+        tool.meta = Some(Meta(Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({
+                "resourceUri": "ui://quick-shell/component.html",
+                "preferredSize": { "height": 520 }
+            }),
+        )])));
+        let upstream_tool = UpstreamTool {
+            tool,
+            input_schema: None,
+            output_schema: None,
+            upstream_name: Arc::from("quick-shell"),
+            destructive: false,
+        };
+
+        let ui = extract_tool_ui_link(&upstream_tool).expect("tool UI metadata");
+
+        assert_eq!(
+            ui.ui_meta["resourceUri"],
+            serde_json::json!("ui://quick-shell/component.html")
+        );
+        assert_eq!(
+            ui.ui_meta["preferredSize"]["height"],
+            serde_json::json!(520)
+        );
     }
 
     #[tokio::test]

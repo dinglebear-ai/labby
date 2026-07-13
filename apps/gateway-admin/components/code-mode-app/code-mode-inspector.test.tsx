@@ -55,6 +55,33 @@ test('renders execute call rows with expandable redacted params', async () => {
   await unmount()
 })
 
+test('renders upstream MCP UI resources on call rows', async () => {
+  installTestDom()
+  const { container, unmount } = await renderClient(
+    <CodeModeInspector
+      initialTrace={{
+        kind: 'code_mode_execute_trace',
+        call_count: 1,
+        calls: [
+          {
+            id: 'quick-shell::run_command',
+            namespace: 'quick-shell',
+            tool: 'run_command',
+            ok: true,
+            elapsed_ms: 18,
+            ui: { resourceUri: 'ui://quick-shell/app.html' },
+          },
+        ],
+        result_shape: { type: 'undefined' },
+      }}
+    />,
+  )
+
+  assert.match(container.textContent ?? '', /MCP UI/)
+  assert.match(container.textContent ?? '', /ui:\/\/quick-shell\/app\.html/)
+  await unmount()
+})
+
 test('renders the result disclosure with shape summary and expandable value', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(

@@ -264,7 +264,7 @@ web-watch:
     set -euo pipefail
     if ! command -v watchexec >/dev/null 2>&1; then
         echo "error: watchexec is required for web-watch" >&2
-        echo "install: cargo install watchexec-cli" >&2
+        echo "install: mise install watchexec" >&2
         exit 1
     fi
     echo "Building apps/gateway-admin once, then watching for changes..."

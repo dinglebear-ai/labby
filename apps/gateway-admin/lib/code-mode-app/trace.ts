@@ -59,6 +59,12 @@ export interface CodeModeCallTrace {
   start_ms?: number
   params?: unknown
   error_kind?: string
+  ui?: CodeModeCallUi
+}
+
+export interface CodeModeCallUi {
+  resourceUri: string
+  [key: string]: unknown
 }
 
 export interface ResultShape {
@@ -267,7 +273,15 @@ function parseCallTrace(value: unknown): CodeModeCallTrace | null {
     start_ms: optionalNumber(value.start_ms),
     params: value.params,
     error_kind: optionalString(value.error_kind),
+    ui: parseCallUi(value.ui),
   }
+}
+
+function parseCallUi(value: unknown): CodeModeCallUi | undefined {
+  if (!isRecord(value)) return undefined
+  const resourceUri = optionalString(value.resourceUri)
+  if (!resourceUri) return undefined
+  return { ...value, resourceUri }
 }
 
 function splitCallId(id: string): { upstream: string; tool: string } {

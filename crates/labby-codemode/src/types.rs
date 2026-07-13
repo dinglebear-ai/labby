@@ -351,12 +351,15 @@ pub struct CodeModeExecutedCall {
     /// never be stored in this public trace type.
     pub params: Option<Value>,
     pub error_kind: Option<String>,
+    /// Captured MCP Apps (mcp-ui) widget link for this specific tool call.
+    /// Stored as metadata only; the call result payload stays out of the trace.
+    pub ui: Option<UiLink>,
 }
 
 impl Serialize for CodeModeExecutedCall {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let (namespace, tool) = split_code_mode_call_id(&self.id);
-        let mut state = serializer.serialize_struct("CodeModeExecutedCall", 8)?;
+        let mut state = serializer.serialize_struct("CodeModeExecutedCall", 9)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("namespace", namespace)?;
         state.serialize_field("tool", tool)?;
@@ -370,6 +373,9 @@ impl Serialize for CodeModeExecutedCall {
         }
         if let Some(error_kind) = &self.error_kind {
             state.serialize_field("error_kind", error_kind)?;
+        }
+        if let Some(ui) = &self.ui {
+            state.serialize_field("ui", &ui.ui_meta)?;
         }
         state.end()
     }

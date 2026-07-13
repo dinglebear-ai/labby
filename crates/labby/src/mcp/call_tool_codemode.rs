@@ -475,16 +475,10 @@ impl LabMcpServer {
             .await;
         response.execution_id = Some(execution_id.clone());
 
-        // Mirror the upstream's `_meta.ui` verbatim onto the codemode result so
-        // the host renders the native mcp-ui widget (last-wins). The widget
-        // itself is driven by the `ui://` resource read, not by inline content,
-        // so the Code Mode trace content is left intact.
-        let ui_meta = response.ui.as_ref().map(|ui| {
-            let mut map = serde_json::Map::new();
-            map.insert("ui".to_string(), ui.ui_meta.clone());
-            Meta(map)
-        });
-        let mirrored_resource_uri = response.ui.as_ref().and_then(|ui| {
+        // Keep Code Mode's own MCP App as the top-level output template. Any
+        // upstream widget-bearing calls are carried per-call in the structured
+        // trace so the inspector can show them without displacing itself.
+        let captured_resource_uri = response.ui.as_ref().and_then(|ui| {
             ui.ui_meta
                 .get("resourceUri")
                 .and_then(|value| value.as_str())
@@ -494,13 +488,13 @@ impl LabMcpServer {
                 surface = "mcp",
                 service = CODE_MODE_SERVICE,
                 code_mode_tool = %service,
-                action = "mcp_app.mirror",
+                action = "mcp_app.capture",
                 subject,
                 actor_key,
                 actor_label = subject,
                 agent_kind = "agent",
-                resource_uri = mirrored_resource_uri.unwrap_or("<unknown>"),
-                "mirroring upstream MCP App widget metadata onto codemode result"
+                resource_uri = captured_resource_uri.unwrap_or("<unknown>"),
+                "captured upstream MCP App widget metadata in codemode trace"
             );
         }
         let output = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
@@ -598,10 +592,10 @@ impl LabMcpServer {
             output_tokens,
             trace_has_result,
             trace_result_type,
-            mirrored_ui_resource_uri = mirrored_resource_uri.unwrap_or("<none>"),
+            captured_ui_resource_uri = captured_resource_uri.unwrap_or("<none>"),
             "gateway codemode ok"
         );
-        Ok(call_result_with_structured(output, structured, ui_meta))
+        Ok(call_result_with_structured(output, structured, None))
     }
 }
 

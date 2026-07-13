@@ -6,7 +6,7 @@
 //! catalog mutator after a tools probe; it is `pub(super)` because `probe.rs`
 //! (`reprobe_upstream`) calls it across the module boundary (see plan §3.0/§2.1).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -24,6 +24,7 @@ use super::helpers::{
     DISCOVERY_TIMEOUT, cached_upstream_tool, upstream_name_is_uri_safe, upstream_target_redacted,
     upstream_transport,
 };
+use super::tools::tool_has_mcp_app_ui_resource;
 use super::validate::validate_upstream_config;
 
 /// Validate an upstream config entry and, if valid, return the catalog entry
@@ -111,12 +112,16 @@ impl UpstreamPool {
             return Ok(false);
         }
         if self.has_healthy_tools_for_upstream(&config.name).await {
+            self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                .await;
             return Ok(false);
         }
 
         let connect_lock = self.lazy_connect_lock(&config.name).await;
         let _connect_guard = connect_lock.lock().await;
         if self.has_healthy_tools_for_upstream(&config.name).await {
+            self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
+                .await;
             return Ok(false);
         }
 
@@ -177,6 +182,9 @@ impl UpstreamPool {
         self.replace_catalog_tools(config, tools).await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
+        if config.proxy_resources {
+            self.refresh_resource_cache_for_upstream(&config.name).await;
+        }
         tracing::info!(
             surface = "dispatch",
             service = "upstream.pool",
@@ -232,6 +240,9 @@ impl UpstreamPool {
         self.replace_catalog_tools(config, tools).await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
+        if config.proxy_resources {
+            self.refresh_resource_cache_for_upstream(&config.name).await;
+        }
         Ok(true)
     }
 
@@ -321,6 +332,34 @@ impl UpstreamPool {
             entry.exposure_policy = exposure_policy;
         }
     }
+
+    async fn refresh_ui_resource_cache_for_healthy_upstream_if_needed(
+        &self,
+        config: &UpstreamConfig,
+    ) {
+        if !config.proxy_resources {
+            return;
+        }
+        let should_refresh = {
+            let catalog = self.catalog.read().await;
+            catalog.get(&config.name).is_some_and(|entry| {
+                entry.resource_uris.is_empty()
+                    && entry.tool_health.is_routable()
+                    && entry.tools.values().any(|tool| {
+                        entry.exposure_policy.matches(tool.tool.name.as_ref())
+                            && tool_has_mcp_app_ui_resource(tool)
+                    })
+            })
+        };
+        if should_refresh {
+            self.refresh_resource_cache_for_upstream(&config.name).await;
+        }
+    }
+
+    async fn refresh_resource_cache_for_upstream(&self, upstream_name: &str) {
+        let allowed = BTreeSet::from([upstream_name.to_string()]);
+        self.list_upstream_resources_allowed(Some(&allowed)).await;
+    }
 }
 
 #[cfg(test)]
@@ -330,7 +369,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use rmcp::model::Meta;
+    use rmcp::{RoleClient, ServiceExt};
+
     use super::super::testsupport::*;
+    use super::super::{
+        UpstreamConnection, UpstreamRuntimeMetadata, helpers::IN_PROCESS_PEER_BUFFER_BYTES,
+    };
     use super::*;
 
     #[tokio::test]
@@ -482,5 +527,101 @@ mod tests {
             *pool.resource_upstreams.read().await,
             vec!["alpha".to_string(), "beta".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_tools_for_upstream_refreshes_resource_cache() {
+        let pool = UpstreamPool::new();
+        let mut alpha = named_test_upstream_config("alpha");
+        alpha.proxy_resources = true;
+        pool.seed_lazy_upstreams(std::slice::from_ref(&alpha)).await;
+
+        let connection = Arc::new(Mutex::new(Some(static_catalog_connection().await)));
+        let connector: TestUpstreamConnector = Arc::new(move |_config| {
+            let connection = Arc::clone(&connection);
+            Box::pin(async move {
+                let connection = connection
+                    .lock()
+                    .await
+                    .take()
+                    .expect("connector called once");
+                Ok((Some(connection), vec![test_tool("ping")]))
+            })
+        });
+
+        pool.ensure_tools_for_upstream_with_connector(&alpha, None, connector)
+            .await
+            .expect("lazy connect succeeds");
+
+        assert_eq!(
+            pool.cached_upstream_resource_uris().await,
+            vec![(
+                "alpha".to_string(),
+                vec![
+                    "file:///tmp/upstream-one".to_string(),
+                    "file:///tmp/upstream-two".to_string(),
+                ],
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_tools_for_upstream_refreshes_stale_ui_resource_cache() {
+        let pool = UpstreamPool::new();
+        let mut alpha = named_test_upstream_config("alpha");
+        alpha.proxy_resources = true;
+        pool.seed_lazy_upstreams(std::slice::from_ref(&alpha)).await;
+
+        let connection = static_catalog_connection().await;
+        pool.connections
+            .write()
+            .await
+            .insert("alpha".to_string(), connection);
+        let mut ui_tool = test_tool("quick_shell_ui");
+        ui_tool.meta = Some(Meta(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({ "resourceUri": "ui://quick-shell/component.html" }),
+        )])));
+        pool.install_test_tools_for_upstream(&alpha, vec![ui_tool])
+            .await
+            .expect("tools install");
+        assert!(pool.cached_upstream_resource_uris().await.is_empty());
+
+        pool.ensure_tools_for_upstream(&alpha, None, None)
+            .await
+            .expect("stale cache refresh succeeds");
+
+        assert_eq!(
+            pool.cached_upstream_resource_uris().await,
+            vec![(
+                "alpha".to_string(),
+                vec![
+                    "file:///tmp/upstream-one".to_string(),
+                    "file:///tmp/upstream-two".to_string(),
+                ],
+            )]
+        );
+    }
+
+    async fn static_catalog_connection() -> UpstreamConnection {
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = StaticCatalogServer::default()
+                .serve(server_transport)
+                .await
+                .expect("static catalog server starts");
+            running.waiting().await.expect("static catalog server runs");
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("static catalog client starts");
+        let peer = client_service.peer().clone();
+        UpstreamConnection::new(
+            client_service,
+            Some(server_task),
+            peer,
+            UpstreamRuntimeMetadata::default(),
+        )
     }
 }

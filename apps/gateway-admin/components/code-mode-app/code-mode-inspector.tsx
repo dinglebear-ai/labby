@@ -17,6 +17,7 @@ import {
 import { AURORA_BADGE_LABEL } from '@/components/aurora/tokens'
 import {
   type CodeModeArtifactReceipt,
+  type CodeModeCallUi,
   type CodeModeCallTrace,
   type CodeModeExecuteTrace,
   type CodeModeHistoryEntry,
@@ -76,12 +77,22 @@ declare global {
       ) => {
         ontoolresult?: (result: { structuredContent?: unknown; structured_content?: unknown }) => void
         ontoolinput?: (params: { arguments?: Record<string, unknown> }) => void
+        readServerResource?: ResourceReader
         connect: () => Promise<unknown>
         close?: () => Promise<unknown> | void
       }
     }
   }
 }
+
+type ResourceReader = (params: { uri: string }) => Promise<{
+  contents?: Array<{
+    text?: string
+    mimeType?: string
+    mime_type?: string
+    uri?: string
+  }>
+}>
 
 /**
  * The LLM's tool-call arguments, delivered by the host (MCP Apps
@@ -153,6 +164,7 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   const [toolInput, setToolInput] = useState<unknown>(null)
   const [bridgeWarning, setBridgeWarning] = useState<string | null>(null)
   const [bridgeState, setBridgeState] = useState<'connecting' | 'connected' | 'fallback'>('fallback')
+  const [resourceReader, setResourceReader] = useState<ResourceReader | null>(null)
 
   const acceptTrace = useCallback((raw: unknown): boolean => {
     const trace = parseCodeModeTrace(raw)
@@ -177,6 +189,9 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
       {},
       { autoResize: true },
     )
+    setResourceReader(() =>
+      typeof app.readServerResource === 'function' ? app.readServerResource.bind(app) : null,
+    )
     app.ontoolresult = (result) => {
       const payload = result.structuredContent ?? result.structured_content
       if (!acceptTrace(payload)) {
@@ -195,6 +210,7 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
       .catch(() => setBridgeState('fallback'))
 
     return () => {
+      setResourceReader(null)
       void app.close?.()
     }
   }, [acceptTrace])
@@ -317,7 +333,12 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
           // the iframe to the document height.
           <div className="aurora-scrollbar max-h-[300px] overflow-y-auto overscroll-contain">
             {calls.length > 0 ? (
-              <CallRows calls={calls} expanded={expanded} onToggle={toggle} />
+              <CallRows
+                calls={calls}
+                expanded={expanded}
+                onToggle={toggle}
+                resourceReader={resourceReader}
+              />
             ) : live && live.result !== undefined ? null : (
               <p className="px-3 py-3 text-xs text-aurora-text-muted">No calls were made.</p>
             )}
@@ -475,10 +496,12 @@ function CallRows({
   calls,
   expanded,
   onToggle,
+  resourceReader,
 }: {
   calls: CodeModeCallTrace[]
   expanded: Record<string, boolean>
   onToggle: (key: string) => void
+  resourceReader: ResourceReader | null
 }) {
   const maxElapsed = Math.max(...calls.map((call) => call.elapsed_ms), 1)
   // When start offsets are present (newer traces), bars form a true waterfall
@@ -567,9 +590,91 @@ function CallRows({
                 ) : null}
               </div>
             ) : null}
+            {call.ui ? <McpUiResourcePreview ui={call.ui} resourceReader={resourceReader} /> : null}
           </div>
         )
       })}
+    </div>
+  )
+}
+
+function McpUiResourcePreview({
+  ui,
+  resourceReader,
+}: {
+  ui: CodeModeCallUi
+  resourceReader: ResourceReader | null
+}) {
+  const [html, setHtml] = useState<string | null>(null)
+  const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'unavailable' | 'error'>(
+    resourceReader ? 'loading' : 'unavailable',
+  )
+
+  useEffect(() => {
+    if (!resourceReader) {
+      setHtml(null)
+      setState('unavailable')
+      return
+    }
+    let cancelled = false
+    setState('loading')
+    setHtml(null)
+    resourceReader({ uri: ui.resourceUri })
+      .then((result) => {
+        if (cancelled) return
+        const content = result.contents?.find((item) => {
+          const mime = item.mimeType ?? item.mime_type ?? ''
+          return typeof item.text === 'string' && (mime.includes('html') || item.uri === ui.resourceUri)
+        })
+        if (content?.text) {
+          setHtml(content.text)
+          setState('ready')
+        } else {
+          setState('unavailable')
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setState('error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [resourceReader, ui.resourceUri])
+
+  return (
+    <div
+      className="border-t px-3 py-2 pl-[34px]"
+      style={{
+        borderColor: HAIRLINE,
+        background: 'color-mix(in srgb, var(--aurora-accent-primary) 5%, transparent)',
+      }}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <FileBox className="size-3 shrink-0 text-aurora-accent-primary" strokeWidth={1.75} />
+        <span className={cn(AURORA_BADGE_LABEL, 'shrink-0 text-aurora-accent-strong')}>MCP UI</span>
+        <span className="min-w-0 truncate font-mono text-[11px] text-aurora-text-muted">
+          {ui.resourceUri}
+        </span>
+        {state === 'loading' ? (
+          <span className={cn(AURORA_BADGE_LABEL, 'ml-auto shrink-0 text-aurora-text-muted')}>
+            loading
+          </span>
+        ) : null}
+        {state === 'error' ? (
+          <span className={cn(AURORA_BADGE_LABEL, 'ml-auto shrink-0 text-aurora-warn')}>
+            unavailable
+          </span>
+        ) : null}
+      </div>
+      {html ? (
+        <iframe
+          title={`${ui.resourceUri} MCP UI`}
+          className="mt-2 h-48 w-full rounded border bg-white"
+          style={{ borderColor: HAIRLINE }}
+          sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+          srcDoc={html}
+        />
+      ) : null}
     </div>
   )
 }

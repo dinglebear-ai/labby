@@ -294,6 +294,7 @@ fn execute_trace_embeds_result_and_redacts_call_params() {
                 "token": "[redacted]"
             })),
             error_kind: None,
+            ui: None,
         }],
         logs: vec!["one".to_string()],
         artifacts: vec![],
