@@ -15,6 +15,7 @@
 # repo-local override prevents accidental cache-bypassing profile overrides.
 [build]
 incremental = false
+rustc-wrapper = "scripts/cargo-rustc-wrapper"
 
 [profile.dev]
 # The all-features labby test harness is large enough that LLVM can exhaust
