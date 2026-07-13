@@ -19,7 +19,8 @@ use crate::api::state::AppState;
 use crate::oauth::public_relay::{
     ForwardRequest, ImportReport, MachineId, MutationReport, PUBLIC_QUERY_LIMIT_BYTES,
     PUBLIC_REQUEST_BODY_LIMIT_BYTES, PublicRelayEntry, PublicRelayError, PublicRelayHealth,
-    PublicRelayRegistryManager, PublicRelayRegistryStore, suffix_after_machine,
+    PublicRelayRegistryManager, PublicRelayRegistryStore, RegistryWriteOutcome,
+    suffix_after_machine,
 };
 
 pub fn public_routes(_state: AppState) -> Router<AppState> {
@@ -300,10 +301,7 @@ async fn remove_machine(
         .remove(&machine_id)
         .await
         .map_err(|error| error.to_tool_error())?;
-    Ok(Json(MutationReport {
-        restart_required: false,
-        outcome,
-    }))
+    Ok(mutation_response(outcome))
 }
 
 async fn disable_machine(
@@ -367,10 +365,7 @@ async fn upsert_machine(
         .upsert(entry)
         .await
         .map_err(|error| error.to_tool_error())?;
-    Ok(Json(MutationReport {
-        restart_required: false,
-        outcome,
-    }))
+    Ok(mutation_response(outcome))
 }
 
 async fn set_machine_disabled(
@@ -395,10 +390,14 @@ async fn set_machine_disabled(
         .set_disabled(&machine_id, disabled)
         .await
         .map_err(|error| error.to_tool_error())?;
-    Ok(Json(MutationReport {
+    Ok(mutation_response(outcome))
+}
+
+fn mutation_response(outcome: RegistryWriteOutcome) -> Json<MutationReport> {
+    Json(MutationReport {
         restart_required: false,
         outcome,
-    }))
+    })
 }
 
 fn require_manager(state: &AppState) -> Result<Arc<PublicRelayRegistryManager>, ToolError> {

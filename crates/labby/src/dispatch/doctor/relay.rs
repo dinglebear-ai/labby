@@ -10,6 +10,7 @@ use crate::oauth::public_relay::{
 };
 
 const TARGET_PROBE_CONCURRENCY: usize = 8;
+const SERVICE: &str = "oauth_relay";
 
 pub async fn check_public_relay(
     manager: Option<Arc<PublicRelayRegistryManager>>,
@@ -20,7 +21,7 @@ pub async fn check_public_relay(
         Some(manager) => {
             let machines = manager.count().await;
             findings.push(Finding {
-                service: "oauth_relay".into(),
+                service: SERVICE.into(),
                 check: "registry:loaded".into(),
                 severity: if machines == 0 {
                     Severity::Warn
@@ -39,7 +40,7 @@ pub async fn check_public_relay(
                         match target {
                             Ok(target) => probe_target(&target).await,
                             Err(error) => Finding {
-                                service: "oauth_relay".into(),
+                                service: SERVICE.into(),
                                 check: format!("target:{machine}"),
                                 severity: Severity::Warn,
                                 message: error.to_string(),
@@ -56,7 +57,7 @@ pub async fn check_public_relay(
             let store = PublicRelayRegistryStore::new(PublicRelayRegistryStore::default_path());
             if !store.path().exists() {
                 findings.push(Finding {
-                    service: "oauth_relay".into(),
+                    service: SERVICE.into(),
                     check: "registry:missing".into(),
                     severity: Severity::Warn,
                     message: format!("{} not found", store.path().display()),
@@ -64,7 +65,7 @@ pub async fn check_public_relay(
             } else {
                 match store.load_snapshot().await {
                     Ok(snapshot) => findings.push(Finding {
-                        service: "oauth_relay".into(),
+                        service: SERVICE.into(),
                         check: "registry:loadable".into(),
                         severity: Severity::Warn,
                         message: format!(
@@ -73,7 +74,7 @@ pub async fn check_public_relay(
                         ),
                     }),
                     Err(error) => findings.push(Finding {
-                        service: "oauth_relay".into(),
+                        service: SERVICE.into(),
                         check: "registry:corrupt".into(),
                         severity: Severity::Fail,
                         message: error.to_string(),
@@ -89,7 +90,7 @@ async fn probe_target(target: &RelayTarget) -> Finding {
     let check = format!("target:{}", target.machine_id());
     let Some(host) = target.host_str() else {
         return Finding {
-            service: "oauth_relay".into(),
+            service: SERVICE.into(),
             check,
             severity: Severity::Fail,
             message: "target host missing".into(),
@@ -97,7 +98,7 @@ async fn probe_target(target: &RelayTarget) -> Finding {
     };
     let Some(port) = target.port_or_known_default() else {
         return Finding {
-            service: "oauth_relay".into(),
+            service: SERVICE.into(),
             check,
             severity: Severity::Fail,
             message: "target port missing".into(),
@@ -106,19 +107,19 @@ async fn probe_target(target: &RelayTarget) -> Finding {
     let addr = format!("{host}:{port}");
     match tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(&addr)).await {
         Ok(Ok(_)) => Finding {
-            service: "oauth_relay".into(),
+            service: SERVICE.into(),
             check,
             severity: Severity::Ok,
             message: format!("{} reachable", target.redacted_label()),
         },
         Ok(Err(error)) => Finding {
-            service: "oauth_relay".into(),
+            service: SERVICE.into(),
             check,
             severity: Severity::Fail,
             message: format!("{} unreachable: {error}", target.redacted_label()),
         },
         Err(_) => Finding {
-            service: "oauth_relay".into(),
+            service: SERVICE.into(),
             check,
             severity: Severity::Fail,
             message: format!("{} probe timed out", target.redacted_label()),

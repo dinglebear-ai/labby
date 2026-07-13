@@ -73,8 +73,8 @@ pub fn parse_registry_value(value: serde_json::Value) -> Result<ImportReport, Pu
 }
 
 fn import_map_entries(entries: BTreeMap<String, String>) -> Result<ImportReport, PublicRelayError> {
-    let mut report = ImportReport::empty();
     let mut parsed_entries = Vec::new();
+    let mut quarantined = Vec::new();
     for (machine_id, target_url) in entries {
         match MachineId::parse(&machine_id) {
             Ok(machine) => parsed_entries.push(PublicRelayEntry {
@@ -83,17 +83,16 @@ fn import_map_entries(entries: BTreeMap<String, String>) -> Result<ImportReport,
                 description: None,
                 disabled: false,
             }),
-            Err(error) => report.quarantined.push(QuarantinedEntry {
+            Err(error) => quarantined.push(QuarantinedEntry {
                 machine_id,
                 reason: error.to_string(),
             }),
         }
     }
 
-    let mut imported = import_entries(parsed_entries)?;
-    report.accepted.append(&mut imported.accepted);
-    report.quarantined.append(&mut imported.quarantined);
-    report.entries = imported.entries;
+    let mut report = import_entries(parsed_entries)?;
+    quarantined.extend(report.quarantined);
+    report.quarantined = quarantined;
     Ok(report)
 }
 

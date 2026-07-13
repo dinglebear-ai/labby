@@ -256,22 +256,13 @@ mod tests {
     ) -> Result<ForwardResponse, PublicRelayError> {
         let forwarder = PublicRelayForwarder::new().unwrap();
         let machine = MachineId::parse("dookie").unwrap();
-        let target = RelayTarget::parse(
-            machine,
-            &format!("http://{}:38935/callback/dookie", upstream.addr.ip()),
-        )
-        .unwrap_or_else(|_| {
-            RelayTarget::parse(
-                MachineId::parse("dookie").unwrap(),
-                "http://100.88.16.79:38935/callback/dookie",
-            )
-            .unwrap()
-        });
+        let target =
+            RelayTarget::parse(machine.clone(), "http://100.88.16.79:38935/callback/dookie")
+                .unwrap();
         let mut url = target.url().clone();
         url.set_host(Some(&upstream.addr.ip().to_string())).unwrap();
         url.set_port(Some(upstream.addr.port())).unwrap();
-        let target =
-            RelayTarget::from_validated_parts_for_tests(MachineId::parse("dookie").unwrap(), url);
+        let target = RelayTarget::from_validated_parts_for_tests(machine, url);
         forwarder
             .forward(ForwardRequest {
                 method: Method::POST,
