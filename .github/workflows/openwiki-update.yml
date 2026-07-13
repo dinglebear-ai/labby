@@ -24,7 +24,7 @@ jobs:
       - name: Set up OpenWiki
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
-          install_args: node@22 npm:openwiki
+          install_args: node@22 npm:openwiki@0.1.1
 
       - name: Preflight OpenWiki API
         env:
@@ -58,7 +58,7 @@ jobs:
           fi
 
       - name: Run OpenWiki
-        run: openwiki --update --print
+        run: mise exec node@22 npm:openwiki@0.1.1 -- openwiki --update --print
         env:
           OPENWIKI_PROVIDER: openai-compatible
           OPENAI_COMPATIBLE_API_KEY: ${{ secrets.OPENAI_COMPATIBLE_API_KEY }}
