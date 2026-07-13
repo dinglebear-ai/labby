@@ -119,8 +119,6 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     handler: H,
 ) -> Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>), StdioConnectError> {
-    #[cfg(unix)]
-    use process_wrap::tokio::{CommandWrap, ProcessGroup};
     use rmcp::transport::child_process::TokioChildProcess;
     use std::process::Stdio;
     use tokio::process::Command;
@@ -194,9 +192,8 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
 
     #[cfg(unix)]
     let (process, child_stderr) = {
-        let mut wrapped = CommandWrap::from(cmd);
-        wrapped.wrap(ProcessGroup::leader());
-        TokioChildProcess::builder(wrapped)
+        cmd.process_group(0);
+        TokioChildProcess::builder(cmd)
             .stderr(stderr_cfg())
             .spawn()
             .map_err(StdioConnectError::without_diagnostics)?
@@ -225,6 +222,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         surface = "dispatch", service = "upstream.pool",
         upstream = %config.name, transport = "stdio",
         action = "upstream.connect.start", command = %command, pid = ?pid,
+        env_key_count = config.env.len(),
         "upstream connect start",
     );
 
@@ -234,7 +232,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     // (npx → node, sh -c → python) that rmcp's per-PID TokioChildProcess Drop
     // would otherwise miss.
     //
-    // Unix: `ProcessGroup::leader()` made the child its own group leader
+    // Unix: `process_group(0)` made the child its own group leader
     //   (pgid == pid). The guard SIGTERMs+SIGKILLs the group via `killpg`.
     //
     // Windows: `JobObjectGuard::arm` creates a Job Object, assigns the child

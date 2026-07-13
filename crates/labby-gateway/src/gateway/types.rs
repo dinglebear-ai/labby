@@ -47,6 +47,9 @@ pub struct GatewayConfigView {
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Number of configured child-process env keys. Values are never exposed.
+    #[serde(default)]
+    pub env_key_count: usize,
     #[serde(default)]
     pub bearer_token_env: Option<String>,
     #[serde(default)]
