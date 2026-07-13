@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 "use strict";
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const http = require("node:http");
 const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
@@ -20,7 +22,8 @@ function log(message) {
 
 function download(url, destination) {
   return new Promise((resolve, reject) => {
-    const request = https.get(url, (response) => {
+    const client = url.startsWith("http:") ? http : https;
+    const request = client.get(url, (response) => {
       if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
         response.resume();
         download(response.headers.location, destination).then(resolve, reject);
@@ -41,6 +44,48 @@ function download(url, destination) {
 
     request.on("error", reject);
   });
+}
+
+function sha256(file) {
+  const hash = crypto.createHash("sha256");
+  hash.update(fs.readFileSync(file));
+  return hash.digest("hex");
+}
+
+function checksumFromText(text, asset) {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  for (const line of lines) {
+    const parts = line.trim().split(/\s+/);
+    const hash = parts[0] && parts[0].toLowerCase();
+    const name = parts.slice(1).join(" ").replace(/^\*/, "");
+    if (/^[a-f0-9]{64}$/.test(hash) && (!asset || !name || path.basename(name) === asset)) {
+      return hash;
+    }
+  }
+  throw new Error("checksum file does not contain a SHA-256 entry for " + asset);
+}
+
+async function verifyChecksum(url, archive) {
+  const asset = path.basename(archive);
+  const sidecarFile = archive + ".sha256";
+  let expected;
+
+  try {
+    await download(url + ".sha256", sidecarFile);
+    expected = checksumFromText(fs.readFileSync(sidecarFile, "utf8"), asset);
+  } catch (sidecarError) {
+    const manifestUrl = url.replace(/\/[^/]+$/, "/SHA256SUMS");
+    const manifestFile = archive + ".SHA256SUMS";
+    await download(manifestUrl, manifestFile);
+    expected = checksumFromText(fs.readFileSync(manifestFile, "utf8"), asset);
+  }
+
+  const actual = sha256(archive);
+  if (actual !== expected) {
+    throw new Error("checksum mismatch for " + asset + ": expected " + expected + ", got " + actual);
+  }
+
+  log("verified checksum for " + asset);
 }
 
 function run(command, args, failureMessage) {
@@ -125,6 +170,7 @@ async function main() {
     const url = downloadUrl(target);
     log(`downloading ${url}`);
     await download(url, archive);
+    await verifyChecksum(url, archive);
     extract(archive, installRoot(), target.archiveType);
     fs.chmodSync(destination, 0o755);
     log(`installed ${destination}`);
