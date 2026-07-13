@@ -4,4 +4,6 @@
 # warns that package.json pnpm settings are no longer read. Palette is already
 # on pnpm-workspace.yaml, but this root config must keep gateway-admin safe too.
 [tools]
+just = "1.56.0"
+"cargo:cargo-nextest" = "0.9.140"
 pnpm = "9.15.9"
