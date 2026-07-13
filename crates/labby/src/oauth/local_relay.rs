@@ -73,7 +73,15 @@ pub async fn serve_local_relay(
     let state = RelayState {
         resolved_target: config.resolved_target,
         request_timeout: config.request_timeout,
-        client: reqwest::Client::new(),
+        client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(config.request_timeout)
+            .no_gzip()
+            .build()
+            .map_err(|source| OauthRelayError::ClientBuild {
+                detail: source.to_string(),
+            })?,
     };
 
     let app = Router::new()

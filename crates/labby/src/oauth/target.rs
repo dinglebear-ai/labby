@@ -123,7 +123,6 @@ const RESPONSE_HEADER_ALLOWLIST: &[&str] = &[
     "content-language",
     "content-type",
     "expires",
-    "location",
     "pragma",
 ];
 
@@ -309,7 +308,7 @@ mod tests {
         assert!(filtered.contains_key(CONTENT_TYPE));
         assert!(filtered.contains_key(header::CACHE_CONTROL));
         assert!(filtered.contains_key(header::EXPIRES));
-        assert!(filtered.contains_key(header::LOCATION));
+        assert!(!filtered.contains_key(header::LOCATION));
         assert!(filtered.contains_key(header::PRAGMA));
         assert!(!filtered.contains_key(SET_COOKIE));
     }

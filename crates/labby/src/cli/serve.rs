@@ -379,6 +379,29 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let mut state = AppState::from_registry(registry)
         .with_config(config.clone())
         .with_http_bind_host(host.clone());
+    let public_relay_store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
+        crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
+    );
+    match crate::oauth::public_relay::PublicRelayRegistryManager::load(public_relay_store).await {
+        Ok(manager) => {
+            tracing::info!(
+                subsystem = "startup",
+                phase = "oauth.public_relay.loaded",
+                registry_path = %manager.store().path().display(),
+                machine_count = manager.count().await,
+                "public oauth callback relay registry loaded"
+            );
+            state = state.with_public_relay_manager(Arc::new(manager));
+        }
+        Err(error) => {
+            tracing::warn!(
+                subsystem = "startup",
+                phase = "oauth.public_relay.disabled",
+                kind = error.kind(),
+                "public oauth callback relay disabled because registry failed to load"
+            );
+        }
+    }
     if auth_configured {
         match crate::observability::activity::ActorKeyDeriver::load_or_create() {
             Ok(deriver) => {

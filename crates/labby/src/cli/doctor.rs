@@ -4,6 +4,7 @@
 //!   labby doctor              — full audit (system + auth + all service probes)
 //!   labby doctor system       — local system checks only
 //!   labby doctor auth         — auth/OAuth configuration checks
+//!   labby doctor oauth-relay  — public OAuth callback relay registry checks
 //!   labby doctor service NAME — probe a single service
 //!   labby doctor services     — probe all configured services
 //!
@@ -30,6 +31,8 @@ pub struct DoctorArgs {
 pub enum DoctorCheck {
     /// Check auth/OAuth configuration (env vars, files, permissions)
     Auth,
+    /// Check public OAuth callback relay registry and optionally target sockets
+    OauthRelay(DoctorOauthRelayArgs),
     /// Check public Lab and protected MCP proxy endpoints from caller-visible URLs
     Proxy(DoctorProxyArgs),
     /// Run local system checks (env vars, Docker, disk, toolchain)
@@ -59,11 +62,19 @@ pub struct DoctorProxyArgs {
     pub backend_url: Option<String>,
 }
 
+#[derive(Debug, Args)]
+pub struct DoctorOauthRelayArgs {
+    /// Probe registered target sockets in addition to registry readiness
+    #[arg(long)]
+    pub probe_targets: bool,
+}
+
 /// Run the doctor subcommand.
 pub async fn run(args: DoctorArgs, format: OutputFormat) -> Result<ExitCode> {
     match args.check {
         None => run_full_audit(format).await,
         Some(DoctorCheck::Auth) => run_auth(format).await,
+        Some(DoctorCheck::OauthRelay(args)) => run_oauth_relay(args, format).await,
         Some(DoctorCheck::Proxy(args)) => run_proxy(args, format).await,
         Some(DoctorCheck::System) => run_system(format).await,
         Some(DoctorCheck::Service { name }) => run_service(name, format).await,
@@ -152,6 +163,35 @@ async fn run_auth(format: OutputFormat) -> Result<ExitCode> {
             last_group = group_label;
         }
         print_finding_indented(theme, f);
+    }
+    println!();
+
+    Ok(exit_code(&report))
+}
+
+async fn run_oauth_relay(args: DoctorOauthRelayArgs, format: OutputFormat) -> Result<ExitCode> {
+    let store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
+        crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
+    );
+    let manager = if store.path().exists() {
+        crate::oauth::public_relay::PublicRelayRegistryManager::load(store)
+            .await
+            .ok()
+            .map(Arc::new)
+    } else {
+        None
+    };
+    let report = crate::dispatch::doctor::check_public_relay(manager, args.probe_targets).await;
+
+    if format.is_json() {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(exit_code(&report));
+    }
+
+    let theme = CliTheme::from_context(format.render_context());
+    print_section(theme, "OAuth callback relay");
+    for finding in &report.findings {
+        print_finding_indented(theme, finding);
     }
     println!();
 
@@ -377,6 +417,10 @@ fn exit_code(report: &Report) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
+    use crate::cli::{Cli, Command};
+
     #[test]
     fn auth_checks_returns_findings() {
         let findings = crate::dispatch::doctor::run_auth_checks();
@@ -384,5 +428,18 @@ mod tests {
         assert!(findings.iter().any(|f| f.check == "auth:mode"));
         assert!(findings.iter().any(|f| f.check == "auth:bearer-token"));
         assert!(findings.iter().any(|f| f.check == "auth:public-url"));
+    }
+
+    #[test]
+    fn doctor_oauth_relay_cli_parses_probe_targets() {
+        let cli = Cli::try_parse_from(["lab", "doctor", "oauth-relay", "--probe-targets"])
+            .expect("oauth relay doctor command should parse");
+
+        match cli.command {
+            Command::Doctor(super::DoctorArgs {
+                check: Some(super::DoctorCheck::OauthRelay(args)),
+            }) => assert!(args.probe_targets),
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 }

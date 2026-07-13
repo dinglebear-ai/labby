@@ -104,4 +104,17 @@ pub const ACTIONS: &[ActionSpec] = &[
             },
         ],
     },
+    ActionSpec {
+        name: "oauth.relay.check",
+        description: "Check public OAuth callback relay registry readiness; optionally probe registered target sockets",
+        destructive: false,
+        requires_admin: true,
+        returns: "DoctorReport",
+        params: &[ParamSpec {
+            name: "probe_targets",
+            ty: "boolean",
+            required: false,
+            description: "When true, perform bounded TCP reachability probes for registered target hosts",
+        }],
+    },
 ];

@@ -853,6 +853,9 @@ async fn protected_mcp_intercept(
     request: Request<Body>,
     next: Next,
 ) -> Result<axum::response::Response, std::convert::Infallible> {
+    if is_public_relay_reserved_path(request.uri().path()) {
+        return Ok(next.run(request).await);
+    }
     let route = if let (Some(manager), Some(host)) =
         (state.gateway_manager.as_ref(), request_host(&request))
     {
@@ -873,6 +876,10 @@ async fn protected_mcp_intercept(
         return Ok(protected_mcp_route_entry(state, request, route).await);
     }
     Ok(next.run(request).await)
+}
+
+fn is_public_relay_reserved_path(path: &str) -> bool {
+    path == "/healthz" || path == "/callback" || path.starts_with("/callback/")
 }
 
 fn csrf_error_response(message: &str) -> axum::response::Response {
@@ -1065,6 +1072,12 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
     let mut v1 = Router::new();
     v1 = v1.route("/{service}/actions", get(service_actions));
     v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
+    if api_auth_configured {
+        v1 = v1.nest(
+            "/oauth/relay",
+            services::oauth_relay::admin_routes(state.clone()),
+        );
+    }
 
     #[cfg(feature = "gateway")]
     {
@@ -1551,6 +1564,7 @@ pub fn build_router(
         .route("/health", get(health::health))
         .route("/ready", get(health::ready))
         .route("/.well-known/labby.json", get(labby_discovery))
+        .merge(services::oauth_relay::public_routes(state.clone()))
         .merge(v1_protected);
     #[cfg(feature = "gateway")]
     {

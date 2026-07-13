@@ -42,7 +42,13 @@ async fn handle(
         req,
         ACTIONS,
         move |action, params| async move {
-            crate::dispatch::doctor::dispatch_with_clients(&clients, &action, params).await
+            crate::dispatch::doctor::dispatch_with_clients_and_relay(
+                &clients,
+                state.public_relay.clone(),
+                &action,
+                params,
+            )
+            .await
         },
     )
     .await

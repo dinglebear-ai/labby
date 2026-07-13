@@ -98,6 +98,22 @@ pub fn parse_proxy_check(params: &serde_json::Value) -> Result<ProxyCheckParams<
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RelayCheckParams {
+    pub probe_targets: bool,
+}
+
+pub fn parse_relay_check(params: &serde_json::Value) -> Result<RelayCheckParams, ToolError> {
+    let probe_targets = match params.get("probe_targets") {
+        None => false,
+        Some(value) => value.as_bool().ok_or_else(|| ToolError::InvalidParam {
+            message: "probe_targets must be a boolean".to_string(),
+            param: "probe_targets".to_string(),
+        })?,
+    };
+    Ok(RelayCheckParams { probe_targets })
+}
+
 fn validate_public_proxy_url(param: &str, parsed: &url::Url) -> Result<(), ToolError> {
     let Some(host) = parsed.host() else {
         return Err(ToolError::InvalidParam {

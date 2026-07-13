@@ -51,6 +51,8 @@ impl IntoResponse for ApiError {
             "missing_param" | "invalid_param" | "validation_failed" | "invalid_hint" => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
+            "relay_invalid_target" => StatusCode::UNPROCESSABLE_ENTITY,
+            "relay_registry_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
             "confirmation_required" => StatusCode::UNPROCESSABLE_ENTITY,
             "ssrf_blocked" | "no_remote_transport" => StatusCode::UNPROCESSABLE_ENTITY,
             // lab-zxx5.18 install hardening kinds. All user-caller errors with
