@@ -170,6 +170,7 @@ mod tests {
                 start_ms: None,
                 params: None,
                 error_kind: None,
+                ui: None,
             },
         )
     }

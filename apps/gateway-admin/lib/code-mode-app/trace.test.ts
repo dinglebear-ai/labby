@@ -33,6 +33,31 @@ test('parses execute traces with redacted params', () => {
   assert.equal(stringifyRedactedParams(calls[0].params).includes('[redacted]'), true)
 })
 
+test('parses per-call upstream MCP UI metadata', () => {
+  const trace = parseCodeModeTrace({
+    kind: 'code_mode_execute_trace',
+    call_count: 1,
+    calls: [
+      {
+        id: 'quick-shell::run_command',
+        namespace: 'quick-shell',
+        tool: 'run_command',
+        ok: true,
+        elapsed_ms: 18,
+        ui: {
+          resourceUri: 'ui://quick-shell/app.html',
+          preferredSize: { height: 420 },
+        },
+      },
+    ],
+  })
+
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  const call = trace?.kind === 'code_mode_execute_trace' ? trace.calls[0] : undefined
+  assert.equal(call?.ui?.resourceUri, 'ui://quick-shell/app.html')
+  assert.deepEqual(call?.ui?.preferredSize, { height: 420 })
+})
+
 test('derives upstream and tool from the call id when fields are absent', () => {
   // History entries (CodeModeExecutedCall) carry only `id`, never
   // namespace/tool — the parser must split `upstream::tool` itself.

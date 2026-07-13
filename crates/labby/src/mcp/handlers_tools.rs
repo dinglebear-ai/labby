@@ -462,7 +462,35 @@ fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
                     "call_count": { "type": "integer", "minimum": 0 },
                     "input_tokens": { "type": "integer", "minimum": 0 },
                     "output_tokens": { "type": "integer", "minimum": 0 },
-                    "calls": { "type": "array", "items": { "type": "object" } },
+                    "calls": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "namespace": { "type": "string" },
+                                "tool": { "type": "string" },
+                                "ok": { "type": "boolean" },
+                                "elapsed_ms": { "type": "integer", "minimum": 0 },
+                                "start_ms": { "type": "integer", "minimum": 0 },
+                                "params": {},
+                                "error_kind": { "type": "string" },
+                                "ui": {
+                                    "type": "object",
+                                    "properties": {
+                                        "resourceUri": {
+                                            "type": "string",
+                                            "description": "Native MCP UI resource URI returned by the upstream tool for this call."
+                                        }
+                                    },
+                                    "required": ["resourceUri"],
+                                    "additionalProperties": true
+                                }
+                            },
+                            "required": ["id", "namespace", "tool", "ok", "elapsed_ms"],
+                            "additionalProperties": true
+                        }
+                    },
                     "result": {},
                     "result_shape": { "type": "object" },
                     "result_shaping": { "type": "object" },

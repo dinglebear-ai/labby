@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::error::ToolError;
-use crate::host::{CodeModeHost, ExecCtx};
+use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome};
 use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
 
 use super::CodeModeBroker;
@@ -303,10 +303,10 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         scope: &ToolScope,
         ctx: ExecCtx,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<ToolCallOutcome, ToolError> {
         match tokio::time::timeout_at(
             deadline,
-            self.call_tool_id(id, params, caller, surface, scope, ctx),
+            self.call_tool_id_outcome(id, params, caller, surface, scope, ctx),
         )
         .await
         {
@@ -318,6 +318,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn call_tool_id(
         &self,
         id: &str,
@@ -327,6 +328,20 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         scope: &ToolScope,
         ctx: ExecCtx,
     ) -> Result<Value, ToolError> {
+        self.call_tool_id_outcome(id, params, caller, surface, scope, ctx)
+            .await
+            .map(|outcome| outcome.value)
+    }
+
+    pub(crate) async fn call_tool_id_outcome(
+        &self,
+        id: &str,
+        params: Value,
+        caller: CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+        ctx: ExecCtx,
+    ) -> Result<ToolCallOutcome, ToolError> {
         let parsed = CodeModeToolId::parse(id)?;
         let Some(host) = self.host else {
             return Err(ToolError::Sdk {
@@ -339,7 +354,8 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 if namespace == LAB_INTERNAL_NAMESPACE {
                     return self
                         .dispatch_internal_call(&tool, params, &caller, surface, scope)
-                        .await;
+                        .await
+                        .map(|value| ToolCallOutcome { value, ui: None });
                 }
                 if !scope.allows(&namespace, &tool) {
                     return Err(ToolError::Sdk {
@@ -359,7 +375,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     .await?;
                 if let Some(ui) = outcome.ui {
                     if let Ok(mut sink) = self.ui_capture.lock() {
-                        *sink = Some(ui);
+                        *sink = Some(ui.clone());
                     } else {
                         tracing::warn!(
                             surface = "dispatch",
@@ -369,8 +385,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             "failed to store captured MCP App widget link"
                         );
                     }
+                    return Ok(ToolCallOutcome {
+                        value: outcome.value,
+                        ui: Some(ui),
+                    });
                 }
-                Ok(outcome.value)
+                Ok(outcome)
             }
         }
     }

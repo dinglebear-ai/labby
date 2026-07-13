@@ -93,6 +93,10 @@ details[open]>.row .chev{transform:rotate(90deg)}
 .notice.empty-reason{border-color:color-mix(in srgb,var(--aurora-accent-primary) 32%,transparent)}
 .call-meta{display:flex;flex-wrap:wrap;gap:5px}
 .meta-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:999px;background:color-mix(in srgb,var(--aurora-page-bg) 42%,transparent);border:1px solid color-mix(in srgb,var(--aurora-border-default) 46%,transparent);font-size:10px;color:var(--aurora-text-muted)}
+.mcp-ui-strip{display:grid;gap:6px;padding:7px 12px 8px 34px;border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 30%,transparent);background:color-mix(in srgb,var(--aurora-accent-primary) 5%,transparent)}
+.mcp-ui-head{display:flex;align-items:center;gap:7px;min-width:0}
+.mcp-ui-uri{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px "JetBrains Mono",ui-monospace,monospace;color:var(--aurora-text-muted)}
+.mcp-ui-frame{width:100%;height:192px;border-radius:8px;border:1px solid color-mix(in srgb,var(--aurora-border-default) 42%,transparent);background:#fff}
 .iconbtn{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border-radius:5px;border:1px solid transparent;background:transparent;color:var(--aurora-text-muted);cursor:pointer}
 .iconbtn:hover{color:var(--aurora-text-primary);border-color:var(--aurora-border-strong)}
 .iconbtn.primary{color:var(--aurora-accent-strong);border-color:color-mix(in srgb,var(--aurora-accent-primary) 22%,transparent)}
@@ -268,6 +272,7 @@ let toolMessageToken=0;
 let toolMessageTimer=null;
 const copyButtonTimers=new WeakMap();
 let resizeApp=null;
+let resourceReader=null;
 let resizePending=false;
 // The LLM's tool-call arguments, delivered by the host (MCP Apps
 // ui/notifications/tool-input, or window.openai.toolInput). For codemode that
@@ -590,6 +595,45 @@ function callInvocationMode(call){
   }
   return callActionLabel(call)?"action dispatch":"direct tool";
 }
+function callUi(call){
+  const ui=call&&call.ui;
+  if(!ui||typeof ui!=="object"||Array.isArray(ui))return null;
+  return typeof ui.resourceUri==="string"&&ui.resourceUri.trim().length?ui:null;
+}
+function mcpUiStrip(ui){
+  if(!ui)return "";
+  return `<div class="mcp-ui-strip" data-mcp-ui-uri="${esc(ui.resourceUri)}"><div class="mcp-ui-head"><span class="st info">${FILE_ICON}</span><span class="badge">MCP UI</span><span class="mcp-ui-uri">${esc(ui.resourceUri)}</span></div></div>`;
+}
+function hydrateMcpUiResources(){
+  const nodes=content.querySelectorAll("[data-mcp-ui-uri]");
+  if(!nodes.length)return;
+  if(!resourceReader){scheduleResize();return;}
+  nodes.forEach(node=>{
+    if(node.dataset.loading==="true"||node.dataset.loaded==="true")return;
+    const uri=node.dataset.mcpUiUri;
+    if(!uri)return;
+    node.dataset.loading="true";
+    resourceReader({uri}).then(result=>{
+      const contents=Array.isArray(result&&result.contents)?result.contents:[];
+      const item=contents.find(c=>{
+        const mime=(c&&((c.mimeType||c.mime_type)||""))+"";
+        return c&&typeof c.text==="string"&&(mime.includes("html")||c.uri===uri);
+      });
+      if(item&&typeof item.text==="string"){
+        const frame=document.createElement("iframe");
+        frame.className="mcp-ui-frame";
+        frame.title=`${uri} MCP UI`;
+        frame.setAttribute("sandbox","allow-scripts allow-forms allow-popups allow-downloads");
+        frame.srcdoc=item.text;
+        node.appendChild(frame);
+        node.dataset.loaded="true";
+      }
+    }).catch(()=>{node.dataset.error="true";}).finally(()=>{
+      node.dataset.loading="false";
+      scheduleResize();
+    });
+  });
+}
 function emptyReason(t){
   if(!t||!Object.prototype.hasOwnProperty.call(t,"result"))return "";
   const result=t.result;
@@ -725,7 +769,8 @@ function callRow(call,timing,autoOpen,key){
   const err=!ok&&call.error_kind?`<div class="errline">${esc(call.error_kind)}</div>`:"";
   const meta=`<div class="call-meta"><span class="meta-pill">Invocation ${esc(invocation)}</span><span class="meta-pill">Resolved ${esc(id)}</span>${action?`<span class="meta-pill">Action ${esc(action)}</span>`:""}</div>`;
   const params=call.params!==undefined&&call.params!==null?`<div class="kv-label">Redacted params</div>${codeBlock(json(call.params))}`:"";
-  return `<details class="${callClass}"${autoOpen?" open":""} data-row-key="${esc(key)}"><summary class="${rowClass}">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${meta}${params}</div></details>`;
+  const ui=mcpUiStrip(callUi(call));
+  return `<details class="${callClass}"${autoOpen?" open":""} data-row-key="${esc(key)}"><summary class="${rowClass}">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${meta}${params}</div></details>${ui}`;
 }
 const TERMINAL_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>';
 function inputRow(){
@@ -874,6 +919,7 @@ function paint(){
   if(entry)html+=section("History",`<div class="histnote">${HISTORY_ICON}<span>Result not retained in history — params and call outcomes only.</span></div>`);
   content.innerHTML=html;
   restoreExpandedRows(openRows);
+  hydrateMcpUiResources();
   paintFoot(run);
   paintToolbar(run);
   scheduleResize();
@@ -1012,6 +1058,7 @@ if (window.openai) {
   // MCP Apps bridge (Claude): live codemode traces arrive via ontoolresult.
   const app = new App({ name: "LabCodeModeInspector", version: "1.0.0" }, {}, { autoResize: false });
   resizeApp=app;
+  resourceReader=typeof app.readServerResource==="function"?app.readServerResource.bind(app):null;
   scheduleResize();
   app.onhostcontextchanged = (ctx) => { if (ctx && ctx.theme) applyTheme(ctx.theme); };
   let hydrated = false;

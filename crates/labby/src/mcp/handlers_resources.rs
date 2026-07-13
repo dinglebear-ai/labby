@@ -1058,10 +1058,59 @@ fn build_app_resource_meta(
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use crate::dispatch::upstream::pool::{
+        InProcessConnector, InProcessRegistration, UpstreamConnection, UpstreamPool,
+    };
+    use crate::dispatch::upstream::types::UpstreamRuntimeMetadata;
+    use futures::future::BoxFuture;
+    use rmcp::model::{ListResourcesResult, ServerCapabilities, ServerInfo, Tool};
     use rmcp::service::{Peer, RequestContext};
+    use rmcp::{RoleClient, ServerHandler, ServiceExt};
     use serde_json::Value;
+    use std::collections::BTreeMap;
     use std::future::Future;
     use std::pin::Pin;
+    use std::sync::Arc;
+
+    const UPSTREAM_UI_URI: &str = "ui://quick-shell/app.html";
+    const UPSTREAM_UI_TOOL_NAME: &str = "quick_shell_ui";
+
+    struct UpstreamUiResourceServer;
+
+    impl ServerHandler for UpstreamUiResourceServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            Ok(ListResourcesResult::with_all_items(vec![
+                Resource::new(UPSTREAM_UI_URI, "quick-shell/app")
+                    .with_mime_type("text/html;profile=mcp-app"),
+            ]))
+        }
+
+        async fn read_resource(
+            &self,
+            params: ReadResourceRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ReadResourceResult, ErrorData> {
+            if params.uri != UPSTREAM_UI_URI {
+                return Err(ErrorData::resource_not_found(
+                    format!("unknown upstream UI resource: {}", params.uri),
+                    None,
+                ));
+            }
+
+            Ok(ReadResourceResult::new(vec![
+                ResourceContents::text("<main>quick shell widget</main>", params.uri)
+                    .with_mime_type("text/html;profile=mcp-app"),
+            ]))
+        }
+    }
 
     async fn code_mode_server() -> LabMcpServer {
         code_mode_server_with_scope(crate::mcp::route_scope::McpRouteScope::Root).await
@@ -1071,7 +1120,7 @@ mod tests {
         route_scope: crate::mcp::route_scope::McpRouteScope,
     ) -> LabMcpServer {
         let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
-        let manager = std::sync::Arc::new(
+        let manager = Arc::new(
             crate::dispatch::gateway::config_store::test_gateway_manager(
                 std::path::PathBuf::from("config.toml"),
                 runtime,
@@ -1090,12 +1139,12 @@ mod tests {
             )
             .await;
         LabMcpServer {
-            registry: std::sync::Arc::new(crate::registry::ToolRegistry::new()),
+            registry: Arc::new(crate::registry::ToolRegistry::new()),
             gateway_manager: Some(manager),
-            peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
                 crate::mcp::logging::logging_level_rank(LoggingLevel::Emergency),
             )),
             route_scope,
@@ -1108,8 +1157,133 @@ mod tests {
         route_scope: crate::mcp::route_scope::McpRouteScope,
     ) -> LabMcpServer {
         let mut server = code_mode_server_with_scope(route_scope).await;
-        server.registry = std::sync::Arc::new(crate::registry::build_default_registry());
+        server.registry = Arc::new(crate::registry::build_default_registry());
         server
+    }
+
+    async fn code_mode_server_with_upstream_ui_resource() -> LabMcpServer {
+        static ACTIONS: &[labby_primitives::action::ActionSpec] =
+            &[labby_primitives::action::ActionSpec {
+                name: "terminal.open",
+                description: "Open terminal",
+                destructive: false,
+                requires_admin: false,
+                params: &[],
+                returns: "object",
+            }];
+
+        let mut registry = crate::registry::ToolRegistry::new();
+        registry.register(crate::registry::RegisteredService {
+            name: "quick_shell",
+            description: "Quick shell",
+            category: "test",
+            kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+            status: "available",
+            actions: ACTIONS,
+            dispatch: noop_dispatch,
+        });
+
+        let connector: InProcessConnector = Arc::new(|service| {
+            let future: BoxFuture<'static, anyhow::Result<InProcessRegistration>> =
+                Box::pin(async move {
+                    let upstream_name: Arc<str> = Arc::from(service.service_name());
+                    let mut tool = Tool::new(
+                        UPSTREAM_UI_TOOL_NAME.to_string(),
+                        "Quick shell UI",
+                        Arc::new(serde_json::Map::new()),
+                    );
+                    tool.meta = Some(Meta(serde_json::Map::from_iter([(
+                        "ui".to_string(),
+                        json!({ "resourceUri": UPSTREAM_UI_URI }),
+                    )])));
+                    Ok(InProcessRegistration {
+                        connection: Some(upstream_ui_connection().await),
+                        tools: vec![tool],
+                        entry_name: Arc::clone(&upstream_name),
+                        upstream_name: upstream_name.to_string(),
+                    })
+                });
+            future
+        });
+
+        let pool = Arc::new(UpstreamPool::new().with_in_process_connector(connector));
+        pool.register_in_process_service_peers(&registry).await;
+        pool.list_upstream_resources().await;
+
+        let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+        runtime.swap(Some(pool)).await;
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                std::path::PathBuf::from("config.toml"),
+                runtime,
+            ),
+        );
+        manager
+            .seed_config_unchecked_for_tests(
+                crate::config::LabConfig {
+                    code_mode: crate::config::CodeModeConfig {
+                        enabled: true,
+                        ..crate::config::CodeModeConfig::default()
+                    },
+                    upstream: vec![crate::config::UpstreamConfig {
+                        enabled: true,
+                        name: "quick_shell".to_string(),
+                        url: None,
+                        bearer_token_env: None,
+                        command: Some("in-process".to_string()),
+                        args: Vec::new(),
+                        env: BTreeMap::new(),
+                        proxy_resources: true,
+                        proxy_prompts: false,
+                        expose_tools: None,
+                        expose_resources: None,
+                        expose_prompts: None,
+                        code_mode_hint: None,
+                        oauth: None,
+                        imported_from: None,
+                        priority: 1.0,
+                    }],
+                    ..crate::config::LabConfig::default()
+                }
+                .to_gateway_config(),
+            )
+            .await;
+
+        LabMcpServer {
+            registry: Arc::new(registry),
+            gateway_manager: Some(manager),
+            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            client_registry: Default::default(),
+            transport_label: "test",
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
+                crate::mcp::logging::logging_level_rank(LoggingLevel::Emergency),
+            )),
+            route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+            relay_session_id: 0,
+            code_mode_widget_callbacks_enabled_for_test: false,
+        }
+    }
+
+    async fn upstream_ui_connection() -> UpstreamConnection {
+        let (server_transport, client_transport) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = UpstreamUiResourceServer
+                .serve(server_transport)
+                .await
+                .expect("upstream UI server starts");
+            running.waiting().await.expect("upstream UI server runs");
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("upstream UI client starts");
+        let peer = client_service.peer().clone();
+        UpstreamConnection::new(
+            client_service,
+            Some(server_task),
+            peer,
+            UpstreamRuntimeMetadata::default(),
+        )
     }
 
     fn noop_dispatch(
@@ -1144,12 +1318,12 @@ mod tests {
             });
         }
         LabMcpServer {
-            registry: std::sync::Arc::new(registry),
+            registry: Arc::new(registry),
             gateway_manager: None,
-            peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
                 crate::mcp::logging::logging_level_rank(LoggingLevel::Emergency),
             )),
             route_scope: crate::mcp::route_scope::McpRouteScope::Root,
@@ -1241,6 +1415,102 @@ mod tests {
             code_mode_uris.iter().all(|uri| uri.contains("?v=")),
             "advertised Code Mode URIs must carry a cache-bust token: {code_mode_uris:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn code_mode_app_resource_does_not_shadow_upstream_mcp_ui_resources() {
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            code_mode_server_with_upstream_ui_resource().await,
+            transport,
+            None,
+        );
+        let context = scoped_context(running.peer().clone(), &["lab:read"]);
+
+        let tools = running
+            .service()
+            .list_tools_impl(None, context.clone())
+            .await
+            .expect("list tools");
+        let codemode_tool = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == CODE_MODE_TOOL_NAME)
+            .expect("Code Mode tool should be listed");
+        let upstream_ui_tool = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == UPSTREAM_UI_TOOL_NAME)
+            .expect("upstream UI tool should be listed");
+        assert!(
+            codemode_tool
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.0["ui"]["resourceUri"].as_str())
+                .is_some_and(|uri| uri.starts_with(CODE_MODE_APP_URI_PREFIX)),
+            "Code Mode tool must keep its local UI resource: {codemode_tool:?}"
+        );
+        assert_eq!(
+            upstream_ui_tool
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.0["ui"]["resourceUri"].as_str()),
+            Some(UPSTREAM_UI_URI),
+            "upstream UI tool must keep its native resource URI"
+        );
+
+        let resources = running
+            .service()
+            .list_resources_impl(None, context.clone())
+            .await
+            .expect("list resources");
+        let uris = resources
+            .resources
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            uris.iter()
+                .any(|uri| strip_app_version(uri) == CODE_MODE_APP_URI),
+            "Code Mode app resource should be listed alongside upstream UI resources: {uris:?}"
+        );
+        assert!(
+            uris.contains(&UPSTREAM_UI_URI),
+            "upstream MCP UI resource should remain listed with its native URI: {uris:?}"
+        );
+
+        let code_mode_read = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(CODE_MODE_APP_URI),
+                context.clone(),
+            )
+            .await
+            .expect("read Code Mode UI resource");
+        let ResourceContents::TextResourceContents {
+            text: code_mode_html,
+            ..
+        } = &code_mode_read.contents[0]
+        else {
+            panic!("expected Code Mode text resource");
+        };
+        assert!(code_mode_html.contains("Lab Code Mode Inspector"));
+
+        let upstream_read = running
+            .service()
+            .read_resource_impl(ReadResourceRequestParams::new(UPSTREAM_UI_URI), context)
+            .await
+            .expect("read upstream UI resource");
+        let ResourceContents::TextResourceContents {
+            uri,
+            text: upstream_html,
+            ..
+        } = &upstream_read.contents[0]
+        else {
+            panic!("expected upstream text resource");
+        };
+        assert_eq!(uri, UPSTREAM_UI_URI);
+        assert!(upstream_html.contains("quick shell widget"));
     }
 
     #[tokio::test]
@@ -1979,6 +2249,7 @@ mod tests {
                     "tool": "search_issues",
                     "ok": true,
                     "elapsed_ms": 12,
+                    "ui": {"resourceUri": "ui://github/search.html"},
                     "result_shape": {"type": "array", "length": 3},
                 }],
             })),
@@ -1987,6 +2258,9 @@ mod tests {
 
         assert!(html.contains("call.ok"));
         assert!(html.contains("call.error_kind"));
+        assert!(html.contains("call.ui"));
+        assert!(html.contains("resourceUri"));
+        assert!(html.contains("MCP UI"));
         assert!(html.contains("s.length"));
         assert!(
             html.contains("call.namespace"),

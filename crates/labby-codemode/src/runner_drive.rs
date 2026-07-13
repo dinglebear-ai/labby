@@ -19,7 +19,7 @@ use ulid::Ulid;
 
 use crate::error::ToolError;
 use crate::git::provider::dispatch_git_method;
-use crate::host::{CodeModeHost, ExecCtx, StepDecision};
+use crate::host::{CodeModeHost, ExecCtx, StepDecision, ToolCallOutcome};
 use crate::local_provider::{LocalProviderCall, LocalProviderName};
 use crate::state::provider::dispatch_state_method;
 use crate::state::quota::StateWorkspaceLimits;
@@ -59,7 +59,7 @@ type ToolCallFut<'a> = std::pin::Pin<
                     u64,
                     String,
                     Option<Value>,
-                    Result<Value, ToolError>,
+                    Result<ToolCallOutcome, ToolError>,
                     u128,
                     u128,
                 ),
@@ -785,7 +785,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                         seq,
                         id,
                         redacted_params,
-                        Ok(value),
+                        Ok(ToolCallOutcome { value, ui: None }),
                         call_start.elapsed().as_millis(),
                         start_ms,
                     );
@@ -837,7 +837,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             seq,
             id,
             redacted_params,
-            dispatched,
+            dispatched.map(|value| ToolCallOutcome { value, ui: None }),
             call_start.elapsed().as_millis(),
             start_ms,
         )
@@ -898,7 +898,17 @@ fn enqueue_internal_call_over_ceiling(
 ) {
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     pending_tool_calls.push(Box::pin(async move {
-        (seq, id, redacted_params, Ok(json!({ "ranked": [] })), 0, 0)
+        (
+            seq,
+            id,
+            redacted_params,
+            Ok(ToolCallOutcome {
+                value: json!({ "ranked": [] }),
+                ui: None,
+            }),
+            0,
+            0,
+        )
     }));
 }
 
@@ -980,6 +990,7 @@ async fn reject_tool_call_over_budget(
             start_ms: None,
             params: None,
             error_kind: Some("call_budget_exceeded".to_string()),
+            ui: None,
         },
     ));
     Ok(())
@@ -1312,7 +1323,7 @@ async fn handle_completed_tool_call(
         u64,
         String,
         Option<Value>,
-        Result<Value, ToolError>,
+        Result<ToolCallOutcome, ToolError>,
         u128,
         u128,
     )>,
@@ -1331,8 +1342,11 @@ async fn handle_completed_tool_call(
     // promise settles normally.
     let is_internal = id.starts_with("__lab_internal::");
     match result {
-        Ok(result) => {
-            let serialized_len = serde_json::to_vec(&result).map(|v| v.len()).unwrap_or(0);
+        Ok(outcome) => {
+            let serialized_len = serde_json::to_vec(&outcome.value)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let ui = outcome.ui;
             if serialized_len > state.calltool_result_max_bytes {
                 let max = state.calltool_result_max_bytes;
                 write_runner_input_by_deadline(
@@ -1360,6 +1374,7 @@ async fn handle_completed_tool_call(
                             start_ms: Some(start_ms),
                             params,
                             error_kind: Some("result_too_large".to_string()),
+                            ui,
                         },
                     ));
                 }
@@ -1375,12 +1390,16 @@ async fn handle_completed_tool_call(
                         start_ms: Some(start_ms),
                         params,
                         error_kind: None,
+                        ui,
                     },
                 ));
             }
             write_runner_input_by_deadline(
                 stdin,
-                &CodeModeRunnerInput::ToolResult { seq, result },
+                &CodeModeRunnerInput::ToolResult {
+                    seq,
+                    result: outcome.value,
+                },
                 deadline,
                 child,
                 child_pid,
@@ -1430,6 +1449,7 @@ async fn handle_completed_tool_call(
                         start_ms: Some(start_ms),
                         params,
                         error_kind: Some(kind),
+                        ui: None,
                     },
                 ));
             }
@@ -1535,6 +1555,7 @@ fn artifact_call(
             start_ms: None,
             params,
             error_kind,
+            ui: None,
         },
     )
 }

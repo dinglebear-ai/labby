@@ -80,6 +80,7 @@ pub fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
                 "start_ms": call.start_ms,
                 "params": call.params,
                 "error_kind": call.error_kind,
+                "ui": call.ui.as_ref().map(|ui| &ui.ui_meta),
             })
         })
         .collect::<Vec<_>>();
@@ -330,6 +331,7 @@ fn is_base64ish_char(ch: char) -> bool {
 mod tests {
     use super::*;
     use crate::artifacts::CodeModeArtifactReceipt;
+    use crate::types::{CodeModeExecutedCall, UiLink};
     use serde_json::json;
 
     #[test]
@@ -448,5 +450,40 @@ mod tests {
         assert_eq!(trace["artifacts"][0]["path"], json!("reports/result.md"));
         assert_eq!(trace["artifacts"][0]["bytes"], json!(42));
         assert!(trace["artifacts"][0].get("absolute_path").is_none());
+    }
+
+    #[test]
+    fn execute_trace_preserves_per_call_mcp_ui_resource() {
+        let trace = code_mode_execute_trace(&CodeModeExecutionResponse {
+            execution_id: None,
+            result: None,
+            result_shaping: None,
+            ui: None,
+            calls: vec![CodeModeExecutedCall {
+                id: "quick-shell::run_command".to_string(),
+                ok: true,
+                elapsed_ms: 12,
+                start_ms: Some(4),
+                params: None,
+                error_kind: None,
+                ui: Some(UiLink {
+                    ui_meta: json!({
+                        "resourceUri": "ui://quick-shell/app.html",
+                        "preferredSize": { "height": 420 },
+                    }),
+                }),
+            }],
+            logs: Vec::new(),
+            artifacts: Vec::new(),
+        });
+
+        assert_eq!(
+            trace["calls"][0]["ui"]["resourceUri"],
+            json!("ui://quick-shell/app.html")
+        );
+        assert_eq!(
+            trace["calls"][0]["ui"]["preferredSize"]["height"],
+            json!(420)
+        );
     }
 }
