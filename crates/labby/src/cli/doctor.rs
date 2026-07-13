@@ -90,9 +90,11 @@ async fn run_full_audit(format: OutputFormat) -> Result<ExitCode> {
     use tokio::sync::mpsc;
     let clients = Arc::new(ServiceClients::from_env());
     let (tx, mut rx) = mpsc::channel(64);
+    let public_relay = load_optional_public_relay_manager().await;
 
     tokio::spawn(async move {
-        crate::dispatch::doctor::service::stream_audit_full(clients, tx).await;
+        crate::dispatch::doctor::service::stream_audit_full_with_relay(clients, public_relay, tx)
+            .await;
     });
 
     let mut findings: Vec<Finding> = Vec::new();
@@ -170,17 +172,7 @@ async fn run_auth(format: OutputFormat) -> Result<ExitCode> {
 }
 
 async fn run_oauth_relay(args: DoctorOauthRelayArgs, format: OutputFormat) -> Result<ExitCode> {
-    let store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
-        crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
-    );
-    let manager = if store.path().exists() {
-        crate::oauth::public_relay::PublicRelayRegistryManager::load(store)
-            .await
-            .ok()
-            .map(Arc::new)
-    } else {
-        None
-    };
+    let manager = load_optional_public_relay_manager().await;
     let report = crate::dispatch::doctor::check_public_relay(manager, args.probe_targets).await;
 
     if format.is_json() {
@@ -196,6 +188,21 @@ async fn run_oauth_relay(args: DoctorOauthRelayArgs, format: OutputFormat) -> Re
     println!();
 
     Ok(exit_code(&report))
+}
+
+async fn load_optional_public_relay_manager()
+-> Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>> {
+    let store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
+        crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
+    );
+    if store.path().exists() {
+        crate::oauth::public_relay::PublicRelayRegistryManager::load(store)
+            .await
+            .ok()
+            .map(Arc::new)
+    } else {
+        None
+    }
 }
 
 async fn run_proxy(args: DoctorProxyArgs, format: OutputFormat) -> Result<ExitCode> {

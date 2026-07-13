@@ -6,7 +6,7 @@ use axum::{
     Extension, Json, Router,
     body::{Body, Bytes},
     extract::{Path, State},
-    http::{HeaderMap, Method, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderName, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -97,6 +97,9 @@ async fn callback(
     {
         return public_error_response(PublicRelayError::BodyTooLarge);
     }
+    if content_length_exceeds_limit(&headers, PUBLIC_REQUEST_BODY_LIMIT_BYTES) {
+        return public_error_response(PublicRelayError::BodyTooLarge);
+    }
     let suffix_path = match suffix_after_machine(uri.path(), &machine_id) {
         Ok(suffix) => suffix,
         Err(error) => return public_error_response(error),
@@ -110,13 +113,13 @@ async fn callback(
         Ok(target) => target,
         Err(error) => return public_error_response(error),
     };
-    let _permit = match manager.acquire_forward_permit(&machine_id).await {
-        Ok(permit) => permit,
-        Err(error) => return public_error_response(error),
-    };
     let body = match axum::body::to_bytes(body, PUBLIC_REQUEST_BODY_LIMIT_BYTES).await {
         Ok(body) => body,
         Err(_) => return public_error_response(PublicRelayError::BodyTooLarge),
+    };
+    let _permit = match manager.acquire_forward_permit(&machine_id).await {
+        Ok(permit) => permit,
+        Err(error) => return public_error_response(error),
     };
 
     let result = state
@@ -165,7 +168,35 @@ fn build_forward_response(status: StatusCode, headers: &HeaderMap, body: Bytes) 
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = status;
     response.headers_mut().extend(headers.clone());
+    apply_public_callback_security_headers(response.headers_mut());
     response
+}
+
+fn content_length_exceeds_limit(headers: &HeaderMap, limit: usize) -> bool {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > limit)
+}
+
+fn apply_public_callback_security_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    headers.insert(header::PRAGMA, header::HeaderValue::from_static("no-cache"));
+    headers.insert(header::EXPIRES, header::HeaderValue::from_static("0"));
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        header::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        header::HeaderValue::from_static(
+            "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; worker-src 'none'",
+        ),
+    );
 }
 
 fn public_error_response(error: PublicRelayError) -> Response {
@@ -438,7 +469,7 @@ mod tests {
     use super::*;
     use axum::{
         body::Body,
-        http::{Request, header},
+        http::{HeaderValue, Request, header},
     };
     use tower::ServiceExt;
     use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -595,6 +626,67 @@ mod tests {
         assert_eq!(
             healthz.headers().get(header::CONTENT_TYPE).unwrap(),
             "application/json"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_callback_rejects_large_content_length_before_registry_lookup() {
+        let state = AppState::new();
+        let app =
+            crate::api::router::build_router_with_bearer(state, Some("secret-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/callback/dookie")
+                    .header(header::CONTENT_LENGTH, "65537")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn public_forwarded_success_forces_safe_cache_and_content_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("public"));
+        headers.insert(header::PRAGMA, HeaderValue::from_static("cache"));
+        headers.insert(
+            header::EXPIRES,
+            HeaderValue::from_static("Wed, 01 Jan 3000 00:00:00 GMT"),
+        );
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+
+        let response = build_forward_response(
+            StatusCode::OK,
+            &headers,
+            Bytes::from_static(b"<html></html>"),
+        );
+
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert_eq!(response.headers().get(header::PRAGMA).unwrap(), "no-cache");
+        assert_eq!(response.headers().get(header::EXPIRES).unwrap(), "0");
+        assert_eq!(
+            response
+                .headers()
+                .get(HeaderName::from_static("x-content-type-options"))
+                .unwrap(),
+            "nosniff"
+        );
+        assert!(
+            response
+                .headers()
+                .get(HeaderName::from_static("content-security-policy"))
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("default-src 'none'")
         );
     }
 

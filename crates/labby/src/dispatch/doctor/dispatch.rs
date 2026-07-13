@@ -51,7 +51,13 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
         }
         "oauth.relay.check" => {
             let p = parse_relay_check(&params)?;
-            return to_json(super::relay::check_public_relay(None, p.probe_targets).await);
+            return to_json(
+                super::relay::check_public_relay(
+                    crate::oauth::public_relay::current_public_relay_manager(),
+                    p.probe_targets,
+                )
+                .await,
+            );
         }
         a if !ACTIONS.iter().any(|s| s.name == a) => {
             return Err(ToolError::UnknownAction {
@@ -82,6 +88,8 @@ pub async fn dispatch_with_clients_and_relay(
     action: &str,
     params: Value,
 ) -> Result<Value, ToolError> {
+    let public_relay =
+        public_relay.or_else(crate::oauth::public_relay::current_public_relay_manager);
     let start = std::time::Instant::now();
     tracing::info!(
         surface = "dispatch",
@@ -130,18 +138,14 @@ pub async fn dispatch_with_clients_and_relay(
             // gateway.upstreams is included so the full audit surfaces pool state.
             let (tx, mut rx) = tokio::sync::mpsc::channel(64);
             let clients = clients.clone();
+            let public_relay = public_relay.clone();
             tokio::spawn(async move {
-                service::stream_audit_full(clients, tx).await;
+                service::stream_audit_full_with_relay(clients, public_relay, tx).await;
             });
             let mut findings = Vec::new();
             while let Some(f) = rx.recv().await {
                 findings.push(f);
             }
-            // Append gateway upstream findings to audit.full.
-            let gw_report = gateway::check_gateway_upstreams().await;
-            findings.extend(gw_report.findings);
-            let relay_report = super::relay::check_public_relay(public_relay.clone(), false).await;
-            findings.extend(relay_report.findings);
             to_json(Report { findings })
         }
         unknown => Err(ToolError::UnknownAction {

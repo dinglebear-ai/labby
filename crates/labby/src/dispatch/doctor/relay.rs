@@ -1,12 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::stream::{self, StreamExt};
 use tokio::net::TcpStream;
 
 use crate::dispatch::doctor::{Finding, Report, Severity};
 use crate::oauth::public_relay::{
     PublicRelayRegistryManager, PublicRelayRegistryStore, RelayTarget,
 };
+
+const TARGET_PROBE_CONCURRENCY: usize = 8;
 
 pub async fn check_public_relay(
     manager: Option<Arc<PublicRelayRegistryManager>>,
@@ -31,30 +34,22 @@ pub async fn check_public_relay(
                 },
             });
             if probe_targets {
-                for view in manager.list().await {
-                    let machine =
-                        match crate::oauth::public_relay::MachineId::parse(&view.machine_id) {
-                            Ok(machine) => machine,
-                            Err(error) => {
-                                findings.push(Finding {
-                                    service: "oauth_relay".into(),
-                                    check: format!("target:{}", view.machine_id),
-                                    severity: Severity::Fail,
-                                    message: error.to_string(),
-                                });
-                                continue;
-                            }
-                        };
-                    match manager.resolve(&machine).await {
-                        Ok(target) => findings.push(probe_target(&target).await),
-                        Err(error) => findings.push(Finding {
-                            service: "oauth_relay".into(),
-                            check: format!("target:{machine}"),
-                            severity: Severity::Warn,
-                            message: error.to_string(),
-                        }),
-                    }
-                }
+                let target_findings = stream::iter(manager.probe_targets().await)
+                    .map(|(machine, target)| async move {
+                        match target {
+                            Ok(target) => probe_target(&target).await,
+                            Err(error) => Finding {
+                                service: "oauth_relay".into(),
+                                check: format!("target:{machine}"),
+                                severity: Severity::Warn,
+                                message: error.to_string(),
+                            },
+                        }
+                    })
+                    .buffer_unordered(TARGET_PROBE_CONCURRENCY)
+                    .collect::<Vec<_>>()
+                    .await;
+                findings.extend(target_findings);
             }
         }
         None => {

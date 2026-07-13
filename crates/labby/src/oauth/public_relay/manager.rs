@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, RwLock as StdRwLock};
 
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
@@ -22,6 +22,23 @@ pub struct PublicRelayRegistryManager {
 pub struct PublicRelayForwardPermit {
     _global: OwnedSemaphorePermit,
     _machine: OwnedSemaphorePermit,
+}
+
+static PUBLIC_RELAY_MANAGER: OnceLock<StdRwLock<Option<Arc<PublicRelayRegistryManager>>>> =
+    OnceLock::new();
+
+pub fn install_public_relay_manager(manager: Arc<PublicRelayRegistryManager>) {
+    let lock = PUBLIC_RELAY_MANAGER.get_or_init(|| StdRwLock::new(None));
+    let mut guard = lock.write().expect("public relay manager lock poisoned");
+    *guard = Some(manager);
+}
+
+pub fn current_public_relay_manager() -> Option<Arc<PublicRelayRegistryManager>> {
+    PUBLIC_RELAY_MANAGER
+        .get_or_init(|| StdRwLock::new(None))
+        .read()
+        .expect("public relay manager lock poisoned")
+        .clone()
 }
 
 impl PublicRelayRegistryManager {
@@ -67,22 +84,25 @@ impl PublicRelayRegistryManager {
         self.snapshot.read().await.entries.get(machine_id).cloned()
     }
 
-    pub async fn count(&self) -> usize {
-        self.snapshot.read().await.entries.len()
+    pub async fn probe_targets(&self) -> Vec<(MachineId, Result<RelayTarget, PublicRelayError>)> {
+        let snapshot = self.snapshot.read().await;
+        snapshot
+            .entries
+            .values()
+            .map(|entry| {
+                let machine_id = entry.machine_id.clone();
+                let target = if entry.disabled {
+                    Err(PublicRelayError::DisabledMachine)
+                } else {
+                    entry.target()
+                };
+                (machine_id, target)
+            })
+            .collect()
     }
 
-    pub async fn replace_entries(
-        &self,
-        entries: Vec<PublicRelayEntry>,
-    ) -> Result<ImportReport, PublicRelayError> {
-        let _mutation = self.mutation_lock.lock().await;
-        let report = super::store::parse_registry_value(
-            serde_json::to_value(&entries)
-                .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?,
-        )?;
-        self.store.save_entries(report.entries.clone()).await?;
-        self.reload().await?;
-        Ok(report)
+    pub async fn count(&self) -> usize {
+        self.snapshot.read().await.entries.len()
     }
 
     pub async fn import_report(
@@ -241,18 +261,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_relay_manager_replace_entries_updates_live_snapshot() {
+    async fn public_relay_manager_import_report_updates_live_snapshot() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
         let manager = PublicRelayRegistryManager::load(store).await.unwrap();
-
-        manager
-            .replace_entries(vec![live_entry(
+        let report = super::super::store::parse_registry_value(
+            serde_json::to_value(vec![live_entry(
                 "tootie",
                 "http://100.120.242.29:38935/callback/tootie",
             )])
-            .await
-            .unwrap();
+            .unwrap(),
+        )
+        .unwrap();
+
+        manager.import_report(report).await.unwrap();
 
         assert_eq!(manager.count().await, 1);
         assert!(

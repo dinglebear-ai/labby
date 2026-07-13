@@ -7,7 +7,37 @@ use crate::app_manifest::{
 pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
     let mut routes = vec![
         public("GET", "/health", "health", "liveness probe"),
+        public(
+            "GET",
+            "/healthz",
+            "oauth_relay",
+            "public OAuth callback relay shallow health",
+        ),
         public("GET", "/ready", "health", "readiness probe"),
+        public(
+            "GET",
+            "/callback/{machine_id}",
+            "oauth_relay",
+            "public OAuth callback relay",
+        ),
+        public(
+            "POST",
+            "/callback/{machine_id}",
+            "oauth_relay",
+            "public OAuth callback relay",
+        ),
+        public(
+            "GET",
+            "/callback/{machine_id}/{suffix}",
+            "oauth_relay",
+            "public OAuth callback relay suffix path",
+        ),
+        public(
+            "POST",
+            "/callback/{machine_id}/{suffix}",
+            "oauth_relay",
+            "public OAuth callback relay suffix path",
+        ),
         public("POST", "/v1/nodes/hello", "nodes", "node self-registration"),
         public(
             "POST",
@@ -118,6 +148,46 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "marketplace action dispatch",
         ),
         host_validated_auth("POST", "/v1/doctor", "doctor", "doctor action dispatch"),
+        relay_admin(
+            "GET",
+            "/v1/oauth/relay/machines",
+            "list public OAuth callback relay machines",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/machines",
+            "register public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "GET",
+            "/v1/oauth/relay/machines/{machine_id}",
+            "get public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "PUT",
+            "/v1/oauth/relay/machines/{machine_id}",
+            "update public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "DELETE",
+            "/v1/oauth/relay/machines/{machine_id}",
+            "remove public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/machines/{machine_id}/disable",
+            "disable public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/machines/{machine_id}/enable",
+            "enable public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/import",
+            "import public OAuth callback relay registry",
+        ),
         host_validated_auth("POST", "/v1/setup", "setup", "setup action dispatch"),
         auth(
             "GET",
@@ -283,6 +353,15 @@ fn host_validated_auth(method: &str, path: &str, group: &str, notes: &str) -> Ro
     RouteDoc {
         host_validation: true,
         ..auth(method, path, group, notes)
+    }
+}
+
+fn relay_admin(method: &str, path: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        runtime_condition: Some(
+            "mounted only when /v1 auth is configured; handler requires lab:admin".to_string(),
+        ),
+        ..auth(method, path, "oauth_relay", notes)
     }
 }
 

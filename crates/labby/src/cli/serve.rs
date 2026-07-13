@@ -391,7 +391,9 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                 machine_count = manager.count().await,
                 "public oauth callback relay registry loaded"
             );
-            state = state.with_public_relay_manager(Arc::new(manager));
+            let manager = Arc::new(manager);
+            crate::oauth::public_relay::install_public_relay_manager(Arc::clone(&manager));
+            state = state.with_public_relay_manager(manager);
         }
         Err(error) => {
             tracing::warn!(

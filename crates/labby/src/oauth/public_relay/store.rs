@@ -53,13 +53,6 @@ impl PublicRelayRegistryStore {
             .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?
     }
 
-    pub async fn save_entries_blocking_safe(
-        &self,
-        entries: Vec<PublicRelayEntry>,
-    ) -> Result<RegistryWriteOutcome, PublicRelayError> {
-        self.save_entries(entries).await
-    }
-
     pub fn parse_standalone_registry(raw: &str) -> Result<ImportReport, PublicRelayError> {
         let value: serde_json::Value = serde_json::from_str(raw)
             .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?;
