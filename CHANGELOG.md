@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1](https://github.com/jmagar/labby/compare/v1.3.0...v1.3.1) (2026-07-13)
+
+
+### Fixed
+
+* respect dynamic cargo job allocation ([9df9d6d](https://github.com/jmagar/labby/commit/9df9d6d796c31881211e2b86bf632468edc0c498))
+* route rust builds through sccache wrapper ([2629696](https://github.com/jmagar/labby/commit/26296961e865214e56b831b7b1e72e3165fa44b4))
+
 ## [1.3.0](https://github.com/jmagar/labby/compare/v1.2.0...v1.3.0) (2026-07-12)
 
 
