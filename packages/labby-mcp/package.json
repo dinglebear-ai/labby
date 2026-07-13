@@ -6,7 +6,8 @@
   "homepage": "https://github.com/jmagar/labby#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jmagar/labby.git"
+    "url": "git+https://github.com/jmagar/labby.git",
+    "directory": "packages/labby-mcp"
   },
   "bugs": {
     "url": "https://github.com/jmagar/labby/issues"
@@ -20,12 +21,16 @@
     "bin/",
     "lib/",
     "scripts/",
-    "README.md"
+    "README.md",
+    "LICENSE*",
+    "package.json"
   ],
   "scripts": {
+    "prepack": "node scripts/sync-readme.js",
     "postinstall": "node scripts/install.js",
     "test": "node --test",
-    "check": "node --check bin/labby.js && node --check scripts/install.js && node --check lib/platform.js"
+    "check": "node --check bin/labby.js && node --check scripts/install.js && node --check lib/platform.js && node --check scripts/sync-readme.js && node --check scripts/check-package.js && node scripts/check-package.js",
+    "prepublishOnly": "node scripts/check-package.js --release"
   },
   "engines": {
     "node": ">=18"
@@ -35,6 +40,7 @@
     "lab",
     "mcp",
     "mcp-gateway",
+    "mcp-server",
     "model-context-protocol",
     "ai-agents",
     "homelab",
@@ -51,5 +57,9 @@
     "log-search",
     "local-first",
     "automation"
-  ]
+  ],
+  "author": {
+    "name": "dinglebear.ai",
+    "url": "https://dinglebear.ai"
+  }
 }
