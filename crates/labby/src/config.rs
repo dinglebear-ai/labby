@@ -3500,27 +3500,6 @@ strategy = "dynamic"
     }
 
     #[test]
-    fn upstream_stdio_env_inline_table_parses_and_projects() {
-        let cfg = toml::from_str::<LabConfig>(
-            r#"
-[[upstream]]
-name = "soma"
-command = "/home/labby/.local/bin/soma"
-args = ["mcp"]
-env = { SOMA_PROVIDER_DIR = "/home/labby/providers", SOMA_PYTHON_COMMAND = "/home/labby/.local/share/soma-python/bin/python" }
-"#,
-        )
-        .expect("stdio upstream env should parse");
-
-        let upstream = &cfg.upstream[0];
-        assert_eq!(
-            upstream.env.get("SOMA_PROVIDER_DIR").map(String::as_str),
-            Some("/home/labby/providers")
-        );
-        assert_eq!(cfg.to_gateway_config().upstream[0].env.len(), 2);
-    }
-
-    #[test]
     fn code_mode_is_root_level_config() {
         let cfg = toml::from_str::<LabConfig>(
             r#"

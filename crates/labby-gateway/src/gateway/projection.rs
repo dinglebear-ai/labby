@@ -38,7 +38,6 @@ pub(super) fn config_view(
         url: upstream.url.as_deref().map(redact_url),
         command: upstream.command.as_deref().map(redact_stdio_value),
         args: redact_stdio_args(&upstream.args),
-        env_key_count: upstream.env.len(),
         bearer_token_env: upstream.bearer_token_env.clone(),
         oauth_enabled: upstream.oauth.is_some(),
         proxy_resources: upstream.proxy_resources,

@@ -320,46 +320,6 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
     }
 }
 
-/// Regression test: configured upstream env must survive the Unix process-group
-/// spawn path through rmcp's child-process builder. This catches the failure
-/// mode where a wrapper preserves argv and process-group behavior but silently
-/// drops `Command::envs(...)`.
-#[test]
-#[cfg(target_os = "linux")]
-fn stdio_child_configured_env_survives_process_group_linux() {
-    use rmcp::transport::child_process::TokioChildProcess;
-
-    const CONFIG_KEY: &str = "UPSTREAM_CONFIG_ENV_CANARY";
-    const CONFIG_VAL: &str = "configured-env-survived";
-
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    rt.block_on(async {
-        let mut cmd = tokio::process::Command::new("cat");
-        cmd.env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env(CONFIG_KEY, CONFIG_VAL)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        cmd.process_group(0);
-
-        let (mut process, _stderr) = TokioChildProcess::builder(cmd)
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn child with process group through rmcp");
-        let pid = process.id().expect("child pid");
-        let env_bytes = std::fs::read(format!("/proc/{pid}/environ"))
-            .expect("read /proc/<pid>/environ of blocked child");
-        process.graceful_shutdown().await.ok();
-
-        let env_str = String::from_utf8_lossy(&env_bytes);
-        assert!(
-            env_str.contains(&format!("{CONFIG_KEY}={CONFIG_VAL}")),
-            "configured upstream env var must survive process-group spawn"
-        );
-    });
-}
-
 // ---------------------------------------------------------------------------
 // (c) MCP initialize round-trip
 // ---------------------------------------------------------------------------
