@@ -115,9 +115,7 @@ impl PublicRelayRegistryManager {
     ) -> Result<RegistryWriteOutcome, PublicRelayError> {
         report.ensure_complete_import()?;
         let _mutation = self.mutation_lock.lock().await;
-        let outcome = self.store.save_entries(report.entries).await?;
-        self.reload().await?;
-        Ok(outcome)
+        self.save_and_reload(report.entries).await
     }
 
     pub async fn upsert(
@@ -128,12 +126,7 @@ impl PublicRelayRegistryManager {
         entry.target()?;
         let mut entries = self.entries().await;
         entries.insert(entry.machine_id.clone(), entry);
-        let outcome = self
-            .store
-            .save_entries(entries.into_values().collect())
-            .await?;
-        self.reload().await?;
-        Ok(outcome)
+        self.save_and_reload(entries.into_values().collect()).await
     }
 
     pub async fn remove(
@@ -145,12 +138,7 @@ impl PublicRelayRegistryManager {
         if entries.remove(machine_id).is_none() {
             return Err(PublicRelayError::UnknownMachine);
         }
-        let outcome = self
-            .store
-            .save_entries(entries.into_values().collect())
-            .await?;
-        self.reload().await?;
-        Ok(outcome)
+        self.save_and_reload(entries.into_values().collect()).await
     }
 
     pub async fn set_disabled(
@@ -164,12 +152,7 @@ impl PublicRelayRegistryManager {
             .get_mut(machine_id)
             .ok_or(PublicRelayError::UnknownMachine)?;
         entry.disabled = disabled;
-        let outcome = self
-            .store
-            .save_entries(entries.into_values().collect())
-            .await?;
-        self.reload().await?;
-        Ok(outcome)
+        self.save_and_reload(entries.into_values().collect()).await
     }
 
     pub async fn acquire_forward_permit(
@@ -196,6 +179,15 @@ impl PublicRelayRegistryManager {
         *self.snapshot.write().await = snapshot;
         self.rebuild_machine_limits().await;
         Ok(())
+    }
+
+    async fn save_and_reload(
+        &self,
+        entries: Vec<PublicRelayEntry>,
+    ) -> Result<RegistryWriteOutcome, PublicRelayError> {
+        let outcome = self.store.save_entries(entries).await?;
+        self.reload().await?;
+        Ok(outcome)
     }
 
     async fn entries(&self) -> BTreeMap<MachineId, PublicRelayEntry> {
