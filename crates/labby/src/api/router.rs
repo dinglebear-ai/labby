@@ -879,7 +879,7 @@ async fn protected_mcp_intercept(
 }
 
 fn is_public_relay_reserved_path(path: &str) -> bool {
-    path == "/healthz" || path == "/callback" || path.starts_with("/callback/")
+    crate::oauth::public_relay::is_reserved_public_relay_path(path)
 }
 
 fn csrf_error_response(message: &str) -> axum::response::Response {

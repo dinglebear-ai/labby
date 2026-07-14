@@ -1,7 +1,10 @@
-use std::collections::BTreeSet;
 use std::time::Duration;
 
-use axum::http::{HeaderMap, HeaderName, header};
+use axum::http::HeaderMap;
+
+use crate::oauth::header_filter::{
+    REQUEST_HEADER_ALLOWLIST, RESPONSE_HEADER_ALLOWLIST, filter_headers,
+};
 
 use super::types::{MachineId, PublicRelayError};
 
@@ -25,14 +28,19 @@ pub fn validate_suffix_path(path: &str) -> Result<String, PublicRelayError> {
             "path is not a callback route".into(),
         ));
     }
-    let lower = path.to_ascii_lowercase();
-    if lower.contains("%2f")
-        || lower.contains("%5c")
-        || lower.contains("%2e")
-        || path.contains('\\')
-    {
+    // Reject any percent-encoding outright instead of pattern-matching known
+    // encoded traversal sequences (`%2e`, `%2f`, `%5c`, ...). A single-layer
+    // substring check like that is bypassable with double-encoding —
+    // `%252e%252e` never contains the literal substring `%2e`, so it slips
+    // past a `%2e`-only check even though a downstream single-decode turns
+    // it into `%2e%2e` (and, if decoded again, `..`). OAuth callback suffix
+    // segments never legitimately need percent-encoded characters (`code`
+    // and `state` live in the query string, not the path), so a blanket
+    // rejection closes the whole encoding-bypass class instead of chasing
+    // individual sequences.
+    if path.contains('%') || path.contains('\\') {
         return Err(PublicRelayError::InvalidSuffix(
-            "encoded slash, backslash, or dot segment is not allowed".into(),
+            "percent-encoded or backslash path segments are not allowed".into(),
         ));
     }
     if path
@@ -74,6 +82,21 @@ pub fn default_registry_path() -> std::path::PathBuf {
         .join("registry.json")
 }
 
+/// Paths reserved for the public OAuth callback relay surface: `/healthz`
+/// and `/callback`(`/*`). Case-insensitive.
+///
+/// Shared by two enforcement points that must never drift apart:
+/// - `api/router.rs::protected_mcp_intercept` uses it at request time to
+///   bypass the protected-MCP-route intercept for the relay's own routes.
+/// - `config.rs::validate_protected_public_path_for_startup` uses it at
+///   startup to reject an admin-configured protected route whose
+///   `public_path` would collide with (and be silently shadowed by) the
+///   relay.
+pub fn is_reserved_public_relay_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower == "/healthz" || lower == "/callback" || lower.starts_with("/callback/")
+}
+
 pub fn filter_public_request_headers(headers: &HeaderMap) -> HeaderMap {
     filter_headers(headers, REQUEST_HEADER_ALLOWLIST)
 }
@@ -82,70 +105,11 @@ pub fn filter_public_response_headers(headers: &HeaderMap) -> HeaderMap {
     filter_headers(headers, RESPONSE_HEADER_ALLOWLIST)
 }
 
-const REQUEST_HEADER_ALLOWLIST: &[&str] = &[
-    "accept",
-    "accept-language",
-    "content-type",
-    "origin",
-    "referer",
-    "user-agent",
-];
-
-const RESPONSE_HEADER_ALLOWLIST: &[&str] = &[
-    "cache-control",
-    "content-language",
-    "content-type",
-    "expires",
-    "pragma",
-];
-
-fn filter_headers(headers: &HeaderMap, allowlist: &[&str]) -> HeaderMap {
-    let connection_header_names = connection_header_names(headers);
-    headers
-        .iter()
-        .filter(|(name, _)| {
-            allowlist.contains(&name.as_str())
-                && !is_hop_by_hop_header(name)
-                && !connection_header_names.contains(name.as_str())
-        })
-        .fold(HeaderMap::new(), |mut filtered, (name, value)| {
-            filtered.append(name.clone(), value.clone());
-            filtered
-        })
-}
-
-fn connection_header_names(headers: &HeaderMap) -> BTreeSet<String> {
-    headers
-        .get_all(header::CONNECTION)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect()
-}
-
-fn is_hop_by_hop_header(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "connection"
-            | "content-length"
-            | "host"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use axum::http::header;
     use axum::http::header::{AUTHORIZATION, COOKIE, LOCATION, SET_COOKIE};
 
     #[test]
@@ -181,6 +145,12 @@ mod tests {
             "/callback/dookie/%2E/secret",
             "/callback/dookie/%2fsecret",
             "/callback/dookie/%5csecret",
+            // Double-encoded traversal: `%252e%252e` never contains the
+            // literal substring `%2e`, so a naive single-pattern check
+            // misses it even though a downstream single-decode turns it
+            // into `%2e%2e`. See PR #239 review comment 3579435900.
+            "/callback/dookie/%252e%252e/secret",
+            "/callback/dookie/%2561secret",
         ] {
             assert!(
                 validate_suffix_path(value).is_err(),

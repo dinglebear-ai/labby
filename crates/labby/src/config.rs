@@ -939,9 +939,7 @@ fn validate_protected_public_path_for_startup(
     let lower = path.to_ascii_lowercase();
     if lower.starts_with("/.well-known")
         || lower.starts_with("/v1")
-        || lower == "/healthz"
-        || lower == "/callback"
-        || lower.starts_with("/callback/")
+        || crate::oauth::public_relay::is_reserved_public_relay_path(path)
     {
         return invalid_protected_route(
             route,
