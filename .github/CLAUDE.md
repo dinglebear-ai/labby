@@ -29,6 +29,7 @@ their category is enabled:
 | Job | Category | Command |
 |-----|----------|---------|
 | secret-scan | always | `gitleaks/gitleaks-action@v3` — full-history secret scan (SAST) with existing historical findings baselined in `.gitleaksignore` |
+| unraid-plugin-check | always | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s `<MD5>` entities drift from `unraid/source/`. `release.yml`'s `release` job runs the same script with `--tag`/`--tarball` to also check `version` and the release-tarball checksum before publishing. |
 | actionlint | `workflow` | `go run github.com/rhysd/actionlint/cmd/actionlint@latest` |
 | frontend-assets | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin` |
 | check | `rust_compile` | `cargo check --workspace --all-features` |

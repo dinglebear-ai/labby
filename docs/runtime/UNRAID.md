@@ -63,13 +63,30 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
 
 The version entity and every `<MD5>` in `labby.plg` must match what's
 actually published, or Unraid's install/update either 404s or fails
-checksum verification. This is currently maintained by hand (see the epic
-tracked in beads, `lab-lzv4z`) — automating it via `.github/workflows/release.yml`
-(bumping `&version;`, recomputing the release-tarball MD5, and
-recomputing each `source/` file's MD5 on every tagged release) is tracked
-separately and not yet wired up. Until then, treat `unraid/labby.plg` as
-requiring a manual review pass whenever `unraid/source/` changes or a new
-release is cut.
+checksum verification. `scripts/ci/unraid-plugin-checksums.sh` is the single
+source of truth for this — it checks (default) or rewrites (`--fix`) every
+entity:
+
+```
+scripts/ci/unraid-plugin-checksums.sh                                   # check only
+scripts/ci/unraid-plugin-checksums.sh --fix                             # repair after editing unraid/source/
+scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also check version + release tarball MD5
+```
+
+- `ci.yml`'s always-on `unraid-plugin-check` job runs the no-args form on
+  every push/PR, so editing `unraid/source/` without running `--fix`
+  afterward fails CI immediately (this is exactly the failure mode that
+  motivated the script — see git history for the `Labby.page` checksum
+  drift caught and fixed during initial scaffolding).
+- `release.yml`'s `release` job runs the `--tag`/`--tarball` form against
+  the tag actually being released, before the GitHub Release is created —
+  mirroring the version-matches-tag verify pattern already used for
+  `packages/labby-mcp/package.json` and `server.json` in the same workflow.
+- Neither job auto-commits a fix; a mismatch fails the run and the fix must
+  be applied locally (`--fix`) and committed like any other change. This
+  was a deliberate choice over having CI push a bot commit back to `main`
+  mid-release, to match the rest of this workflow's existing convention and
+  avoid a new bot-identity/branch-protection interaction.
 
 ## Known gaps
 
