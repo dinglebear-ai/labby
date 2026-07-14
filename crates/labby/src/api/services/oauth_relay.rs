@@ -51,25 +51,24 @@ pub fn admin_routes(_state: AppState) -> Router<AppState> {
         .route("/import", post(import_registry))
 }
 
+/// Shallow health probe for the unauthenticated public callback surface.
+///
+/// Per `docs/runtime/OAUTH.md`, `/healthz` only reports process-alive,
+/// relay-enabled, and registry-loaded from the already-validated in-memory
+/// manager snapshot — it never touches disk. Deep persisted-vs-live
+/// staleness detection belongs to `labby doctor oauth-relay`
+/// (`crate::dispatch::doctor::relay::check_public_relay`), which is an
+/// authenticated/operator-triggered check, not a public unauthenticated one.
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     match state.public_relay.as_ref() {
         Some(manager) => {
             let machines = manager.count().await;
-            let (status, registry) = match manager.store().load_snapshot().await {
-                Ok(snapshot) if snapshot.entries.len() == machines => (StatusCode::OK, "loaded"),
-                Ok(_) => (StatusCode::OK, "stale"),
-                Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "corrupt"),
-            };
             (
-                status,
+                StatusCode::OK,
                 Json(PublicRelayHealth {
-                    status: if status == StatusCode::OK {
-                        "ok"
-                    } else {
-                        "unavailable"
-                    },
+                    status: "ok",
                     relay: "enabled",
-                    registry,
+                    registry: "loaded",
                     machines,
                 }),
             )
@@ -165,6 +164,25 @@ async fn callback(
             );
         }
     };
+    // Acquire the per-machine/global concurrency permit *before* buffering
+    // the request body: a request to an already-saturated machine should be
+    // rejected with 429 before doing any buffering work, not after. Since
+    // `/callback/*` is public and unauthenticated, buffering first would let
+    // requests to a saturated machine still pay the full body-read cost
+    // (up to `PUBLIC_REQUEST_BODY_LIMIT_BYTES`) before being turned away.
+    let _permit = match manager.acquire_forward_permit(&machine_id).await {
+        Ok(permit) => permit,
+        Err(error) => {
+            return public_error_response_logged(
+                error,
+                started,
+                Some(&machine_id),
+                machine_raw,
+                &method,
+                None,
+            );
+        }
+    };
     let body = match axum::body::to_bytes(body, PUBLIC_REQUEST_BODY_LIMIT_BYTES).await {
         Ok(body) => body,
         Err(error) => {
@@ -176,19 +194,6 @@ async fn callback(
                 machine_raw,
                 &method,
                 Some(error.to_string()),
-            );
-        }
-    };
-    let _permit = match manager.acquire_forward_permit(&machine_id).await {
-        Ok(permit) => permit,
-        Err(error) => {
-            return public_error_response_logged(
-                error,
-                started,
-                Some(&machine_id),
-                machine_raw,
-                &method,
-                None,
             );
         }
     };
@@ -285,6 +290,7 @@ fn public_error_status(error: &PublicRelayError) -> StatusCode {
         PublicRelayError::InvalidRegistryInput(_) => StatusCode::UNPROCESSABLE_ENTITY,
         PublicRelayError::InvalidTarget(_)
         | PublicRelayError::RegistryUnavailable(_)
+        | PublicRelayError::ForwarderInitFailed(_)
         | PublicRelayError::UpstreamError => StatusCode::BAD_GATEWAY,
     }
 }
@@ -368,9 +374,18 @@ async fn list_machines(
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    require_lab_admin("oauth.relay.list", request_id(&headers), auth.as_ref())?;
-    let manager = require_manager(&state)?;
-    Ok(Json(json!({ "machines": manager.list().await })))
+    let action = "oauth.relay.list";
+    let request_id = request_id(&headers);
+    require_lab_admin(action, request_id, auth.as_ref())?;
+    let started = Instant::now();
+    let result = admin_list_machines(&state).await;
+    log_admin_read(action, request_id, started, &result);
+    result.map(Json).map_err(ApiError)
+}
+
+async fn admin_list_machines(state: &AppState) -> Result<serde_json::Value, ToolError> {
+    let manager = require_manager(state)?;
+    Ok(json!({ "machines": manager.list().await }))
 }
 
 async fn get_machine(
@@ -379,9 +394,21 @@ async fn get_machine(
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    require_lab_admin("oauth.relay.get", request_id(&headers), auth.as_ref())?;
-    let manager = require_manager(&state)?;
-    let machine_id = MachineId::parse(&machine_id).map_err(|error| error.to_tool_error())?;
+    let action = "oauth.relay.get";
+    let request_id = request_id(&headers);
+    require_lab_admin(action, request_id, auth.as_ref())?;
+    let started = Instant::now();
+    let result = admin_get_machine(&state, &machine_id).await;
+    log_admin_read(action, request_id, started, &result);
+    result.map(Json).map_err(ApiError)
+}
+
+async fn admin_get_machine(
+    state: &AppState,
+    machine_id: &str,
+) -> Result<serde_json::Value, ToolError> {
+    let manager = require_manager(state)?;
+    let machine_id = MachineId::parse(machine_id).map_err(|error| error.to_tool_error())?;
     let entry = manager
         .entry(&machine_id)
         .await
@@ -389,9 +416,49 @@ async fn get_machine(
             sdk_kind: "not_found".into(),
             message: "relay machine is not registered".into(),
         })?;
-    Ok(Json(
-        json!({ "machine": crate::oauth::public_relay::PublicRelayMachineView::from_entry(&entry) }),
-    ))
+    Ok(json!({ "machine": crate::oauth::public_relay::PublicRelayMachineView::from_entry(&entry) }))
+}
+
+/// Standard dispatch log event for admin read endpoints (`list_machines`,
+/// `get_machine`). Mutations already get equivalent coverage from
+/// `audit_admin_mutation`; reads previously emitted nothing at the handler
+/// level, which is inconsistent with `docs/dev/OBSERVABILITY.md` (every
+/// user-visible action should emit one structured dispatch event).
+fn log_admin_read(
+    action: &'static str,
+    request_id: Option<&str>,
+    started: Instant,
+    result: &Result<serde_json::Value, ToolError>,
+) {
+    let elapsed_ms = started.elapsed().as_millis();
+    match result {
+        Ok(_) => tracing::info!(
+            surface = "api",
+            service = "oauth_relay",
+            action,
+            request_id,
+            elapsed_ms,
+            "oauth relay admin read complete"
+        ),
+        Err(error) if error.is_internal() => tracing::error!(
+            surface = "api",
+            service = "oauth_relay",
+            action,
+            request_id,
+            elapsed_ms,
+            kind = error.kind(),
+            "oauth relay admin read failed"
+        ),
+        Err(error) => tracing::warn!(
+            surface = "api",
+            service = "oauth_relay",
+            action,
+            request_id,
+            elapsed_ms,
+            kind = error.kind(),
+            "oauth relay admin read failed"
+        ),
+    }
 }
 
 async fn upsert_machine_without_path(
@@ -1038,7 +1105,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_healthz_reports_corrupt_persisted_registry() {
+    async fn public_healthz_stays_shallow_and_does_not_read_disk() {
+        // lab-k96pn: /healthz must report from the already-validated in-memory
+        // manager snapshot only. Corrupting the on-disk registry file must have
+        // no effect on the public health response — proving no disk I/O happens
+        // on this unauthenticated hot path.
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
@@ -1062,12 +1133,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["registry"], "corrupt");
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["registry"], "loaded");
+        assert_eq!(value["machines"], 1);
     }
 
     #[test]
@@ -1282,6 +1355,79 @@ mod tests {
         assert!(
             !logs.contains("http://100.88.16.79:38935/callback/dookie"),
             "{logs}"
+        );
+    }
+
+    // lab-uvscv: admin read endpoints (`list_machines`, `get_machine`) must
+    // emit a dispatch log event, matching mutation coverage from
+    // `audit_admin_mutation` and the observability contract that every
+    // user-visible action logs surface/service/action/elapsed_ms.
+    #[tokio::test(flavor = "current_thread")]
+    async fn oauth_relay_admin_reads_emit_dispatch_log_events() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let buf = crate::test_support::SharedBuf::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("labby=info"))
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_writer(buf.clone())
+                    .with_ansi(false)
+                    .without_time(),
+            );
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let (_dir, state) = test_state().await;
+        let manager = state.public_relay.as_ref().unwrap().clone();
+        manager
+            .upsert(PublicRelayEntry {
+                machine_id: MachineId::parse("dookie").unwrap(),
+                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
+                description: None,
+                disabled: false,
+            })
+            .await
+            .unwrap();
+        let app = admin_routes(state.clone())
+            .layer(Extension(admin_auth_context()))
+            .with_state(state);
+
+        let list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/machines")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+
+        let get = app
+            .oneshot(
+                Request::builder()
+                    .uri("/machines/dookie")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get.status(), StatusCode::OK);
+
+        drop(_guard);
+        let logs = crate::test_support::captured_logs(&buf);
+        assert!(
+            logs.contains("\"action\":\"oauth.relay.list\"")
+                && logs.contains("oauth relay admin read complete"),
+            "expected list_machines dispatch log, got: {logs}"
+        );
+        assert!(
+            logs.contains("\"action\":\"oauth.relay.get\"")
+                && logs.contains("oauth relay admin read complete"),
+            "expected get_machine dispatch log, got: {logs}"
         );
     }
 }
