@@ -383,30 +383,41 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
     );
     let public_relay_registry_path = public_relay_store.path().to_path_buf();
-    match crate::oauth::public_relay::PublicRelayRegistryManager::load(public_relay_store).await {
-        Ok(manager) => {
-            tracing::info!(
-                subsystem = "startup",
-                phase = "oauth.public_relay.loaded",
-                registry_path = %manager.store().path().display(),
-                machine_count = manager.count().await,
-                "public oauth callback relay registry loaded"
-            );
-            let manager = Arc::new(manager);
-            crate::oauth::public_relay::install_public_relay_manager(Arc::clone(&manager));
-            state = state.with_public_relay_manager(manager);
+    // The public relay is an optional feature. Only attempt to load — and
+    // only warn on failure — when the sidecar registry file actually
+    // exists; an absent file is the expected "not configured" state, not an
+    // error, and shouldn't spam startup logs on every unconfigured install.
+    // Matches the same `path().exists()` gate already used in
+    // `cli/doctor.rs::load_optional_public_relay_manager`.
+    if public_relay_store.path().exists() {
+        match crate::oauth::public_relay::PublicRelayRegistryManager::load(public_relay_store).await
+        {
+            Ok(manager) => {
+                tracing::info!(
+                    subsystem = "startup",
+                    phase = "oauth.public_relay.loaded",
+                    registry_path = %manager.store().path().display(),
+                    machine_count = manager.count().await,
+                    "public oauth callback relay registry loaded"
+                );
+                let manager = Arc::new(manager);
+                crate::oauth::public_relay::install_public_relay_manager(Arc::clone(&manager));
+                state = state.with_public_relay_manager(manager);
+            }
+            Err(error) => {
+                crate::oauth::public_relay::set_public_relay_manager(None);
+                tracing::warn!(
+                    subsystem = "startup",
+                    phase = "oauth.public_relay.disabled",
+                    registry_path = %public_relay_registry_path.display(),
+                    kind = error.kind(),
+                    error = %error,
+                    "public oauth callback relay disabled because registry failed to load"
+                );
+            }
         }
-        Err(error) => {
-            crate::oauth::public_relay::set_public_relay_manager(None);
-            tracing::warn!(
-                subsystem = "startup",
-                phase = "oauth.public_relay.disabled",
-                registry_path = %public_relay_registry_path.display(),
-                kind = error.kind(),
-                error = %error,
-                "public oauth callback relay disabled because registry failed to load"
-            );
-        }
+    } else {
+        crate::oauth::public_relay::set_public_relay_manager(None);
     }
     if auth_configured {
         match crate::observability::activity::ActorKeyDeriver::load_or_create() {
