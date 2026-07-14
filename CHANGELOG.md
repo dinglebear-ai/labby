@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0](https://github.com/jmagar/labby/compare/v1.3.1...v1.4.0) (2026-07-14)
+
+
+### Added
+
+* integrate public OAuth callback relay ([#239](https://github.com/jmagar/labby/issues/239)) ([3a47567](https://github.com/jmagar/labby/commit/3a47567805ae0e11079597e11bea68a3eac2a0c0))
+
+
+### Fixed
+
+* **ci:** install OpenWiki with npm ([aa7b6c2](https://github.com/jmagar/labby/commit/aa7b6c2453617bc2aea62569e44a012b96d59c23))
+* **ci:** repair main CI tool activation and Windows test cfg ([#237](https://github.com/jmagar/labby/issues/237)) ([038e262](https://github.com/jmagar/labby/commit/038e26296cdf104fea51f0a288eba40e1902fd36))
+* **ci:** run OpenWiki through mise exec ([e671e17](https://github.com/jmagar/labby/commit/e671e17e169eea4f376a5a9751a4fb2e9d156d66))
+
 ## [1.3.1](https://github.com/jmagar/labby/compare/v1.3.0...v1.3.1) (2026-07-13)
 
 
