@@ -109,6 +109,15 @@ impl PublicRelayRegistryManager {
         self.snapshot.read().await.entries.len()
     }
 
+    /// Clone of the current in-memory (live) snapshot.
+    ///
+    /// Used by content-based staleness checks (e.g. `doctor oauth-relay`) that
+    /// need to compare machine ids + target URLs against the persisted
+    /// registry, not just an entry count that can mask a same-count swap.
+    pub async fn snapshot(&self) -> PublicRelaySnapshot {
+        self.snapshot.read().await.clone()
+    }
+
     pub async fn import_report(
         &self,
         report: ImportReport,

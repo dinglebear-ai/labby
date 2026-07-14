@@ -63,6 +63,8 @@ pub enum PublicRelayError {
     InvalidTarget(String),
     #[error("registry unavailable: {0}")]
     RegistryUnavailable(String),
+    #[error("forwarder initialization failed: {0}")]
+    ForwarderInitFailed(String),
     #[error("machine is not registered")]
     UnknownMachine,
     #[error("machine is disabled")]
@@ -88,6 +90,7 @@ impl PublicRelayError {
             | Self::InvalidRequestBody(_) => "invalid_param",
             Self::InvalidTarget(_) => "relay_invalid_target",
             Self::RegistryUnavailable(_) => "relay_registry_unavailable",
+            Self::ForwarderInitFailed(_) => "relay_forwarder_init_failed",
             Self::UnknownMachine => "not_found",
             Self::DisabledMachine => "forbidden",
             Self::Overloaded => "queue_saturated",
@@ -118,7 +121,7 @@ impl PublicRelayError {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicRelayEntry {
     pub machine_id: MachineId,
     pub target_url: String,
@@ -222,7 +225,7 @@ fn is_tailscale_cgnat(ip: IpAddr) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PublicRelaySnapshot {
     pub entries: std::collections::BTreeMap<MachineId, PublicRelayEntry>,
 }
