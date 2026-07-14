@@ -1,0 +1,123 @@
+<?xml version="1.0" standalone="yes"?>
+<!DOCTYPE PLUGIN [
+  <!ENTITY name         "labby">
+  <!ENTITY author       "jmagar">
+  <!ENTITY version      "1.3.0">
+  <!ENTITY launch       "Settings/Labby">
+  <!ENTITY repoURL      "https://github.com/&author;/labby">
+  <!ENTITY rawURL       "&repoURL;/raw/main/unraid">
+  <!ENTITY pluginURL    "&rawURL;/labby.plg">
+  <!ENTITY srcURL       "&rawURL;/source/usr/local/emhttp/plugins/&name;">
+  <!ENTITY tarball      "lab-x86_64-unknown-linux-gnu.tar.gz">
+  <!ENTITY tarballURL   "&repoURL;/releases/download/v&version;/&tarball;">
+  <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
+  <!ENTITY cfgMD5       "b7105a15cf057f4aebf4418fd6855ef2">
+  <!ENTITY pageMD5      "9cfead28fca90262e168cd31df8540ef">
+  <!ENTITY rcMD5        "dbf4dd55b50df70e419587c17ae07eb7">
+  <!ENTITY preflightMD5 "c28ec9cc2b2749b79e65c1023fc43411">
+  <!ENTITY mountedMD5   "b7eddfd2888984c46f4c81a199693c5c">
+  <!ENTITY unmountingMD5 "7d6fd9c48a01192306d9f4dd4ee8c542">
+  <!ENTITY plugin       "/boot/config/plugins/&name;">
+  <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
+]>
+
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
+
+<CHANGES>
+###1.3.0
+- Initial Unraid plugin release. Runs the labby gateway release binary
+  (v1.3.0) natively via rc.d — no Docker, no systemd (Unraid doesn't run
+  one). State persists at /mnt/user/appdata/labby on the array; config at
+  /boot/config/plugins/labby/labby.cfg on flash, re-applied on every array
+  start. The Settings page shows rc.labby's live status and links out to
+  labby's own embedded admin UI rather than re-implementing a dashboard.
+</CHANGES>
+
+<!-- labby release binary, cached on flash so plugin reinstall/reboot replay
+     doesn't need network access every boot (same asset scripts/install.sh
+     already consumes for non-Unraid hosts) -->
+<FILE Name="&plugin;/&tarball;">
+<URL>&tarballURL;</URL>
+<MD5>&tarballMD5;</MD5>
+</FILE>
+
+<!-- companion scripts/page/config — source of truth is this repo's
+     unraid/source/ tree; the MD5s above are regenerated together with
+     &version; on every tagged release, so they never drift from what's
+     actually committed -->
+<FILE Name="&emhttp;/labby.cfg">
+<URL>&srcURL;/labby.cfg</URL>
+<MD5>&cfgMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/Labby.page">
+<URL>&srcURL;/Labby.page</URL>
+<MD5>&pageMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/scripts/rc.labby">
+<URL>&srcURL;/scripts/rc.labby</URL>
+<MD5>&rcMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/scripts/labby-preflight.sh">
+<URL>&srcURL;/scripts/labby-preflight.sh</URL>
+<MD5>&preflightMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/event/disks_mounted">
+<URL>&srcURL;/event/disks_mounted</URL>
+<MD5>&mountedMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/event/unmounting_disks">
+<URL>&srcURL;/event/unmounting_disks</URL>
+<MD5>&unmountingMD5;</MD5>
+</FILE>
+
+<!-- extract the binary, wire up permissions + rc.d symlink, seed default
+     config only if absent (never clobber user edits) -->
+<FILE Run="/bin/bash">
+<INLINE>
+mkdir -p "&emhttp;/bin"
+tar -xzf "&plugin;/&tarball;" -C "&emhttp;/bin" labby
+chmod +x "&emhttp;/bin/labby" "&emhttp;/scripts/rc.labby" "&emhttp;/scripts/labby-preflight.sh" "&emhttp;/event/disks_mounted" "&emhttp;/event/unmounting_disks"
+
+if [ ! -f "&plugin;/labby.cfg" ]; then
+  mkdir -p "&plugin;"
+  cp "&emhttp;/labby.cfg" "&plugin;/labby.cfg"
+fi
+
+ln -sf "&emhttp;/scripts/rc.labby" /etc/rc.d/rc.labby
+chmod +x /etc/rc.d/rc.labby
+</INLINE>
+</FILE>
+
+<!-- start now if array is already up and service enabled -->
+<FILE Run="/bin/bash">
+<INLINE>
+. "&plugin;/labby.cfg" 2>/dev/null
+if [ "${SERVICE:-disabled}" = "enabled" ] &amp;&amp; mountpoint -q /mnt/user 2>/dev/null; then
+  /etc/rc.d/rc.labby start
+fi
+echo ""
+echo "----------------------------------------------------"
+echo " Labby for Unraid &version; installed."
+echo " Configure: /boot/config/plugins/labby/labby.cfg"
+echo " Enable SERVICE=enabled, then start the array (or run"
+echo " /etc/rc.d/rc.labby start)."
+echo "----------------------------------------------------"
+</INLINE>
+</FILE>
+
+<!-- uninstall -->
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+/etc/rc.d/rc.labby stop 2>/dev/null
+rm -f /etc/rc.d/rc.labby
+rm -rf &emhttp;
+echo "Labby plugin removed. State in LABBY_DIR and /boot/config/plugins/labby was left intact."
+</INLINE>
+</FILE>
+
+</PLUGIN>

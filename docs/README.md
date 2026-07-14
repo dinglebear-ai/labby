@@ -21,6 +21,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [coverage/README.md](./coverage/README.md), [upstream-api/README.md](./upstream-api/README.md), [generated/README.md](./generated/README.md), and [features/README.md](./features/README.md) for directory-level indexes.
 - Use [MCPREGISTRY_METADATA.md](./services/MCPREGISTRY_METADATA.md) for the SDK/extracted-service Lab-owned registry metadata contract layered onto MCP Registry response `_meta`.
 - Use [DEVICE_RUNTIME.md](./runtime/DEVICE_RUNTIME.md) and [DEPLOY.md](./runtime/DEPLOY.md) for the master/non-master fleet runtime, device inventory, and deployment model.
+- Use [UNRAID.md](./runtime/UNRAID.md) for the native Unraid `.plg` plugin packaging (`unraid/`), an alternative to the Incus/Docker deployment targets.
 - Use [MONITORS.md](./services/MONITORS.md) for Claude Code monitor definitions (`plugins/monitors/monitors.json`) and the `labby deploy monitor` command.
 - See [UPSTREAM.md](./services/UPSTREAM.md) for upstream MCP gateway setup, configuration, tool merging, circuit breaker behavior, and resource proxying.
 - Consult [TRANSPORT.md](./surfaces/TRANSPORT.md) for stdio and streamable HTTP transport configuration, middleware stack, and session management.

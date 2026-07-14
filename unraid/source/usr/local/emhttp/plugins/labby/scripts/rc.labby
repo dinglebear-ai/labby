@@ -1,0 +1,97 @@
+#!/bin/bash
+# /etc/rc.d/rc.labby — Unraid-style service control for the labby gateway
+# binary. Backgrounds `labby serve` with persistent state on the array and
+# polls its own /ready endpoint, mirroring labby's systemd unit on other
+# Linux hosts (see crates/labby/src/dispatch/setup/host_service.rs upstream)
+# without depending on systemd, which Unraid does not run.
+
+EMHTTP="/usr/local/emhttp/plugins/labby"
+BIN="${EMHTTP}/bin/labby"
+CFG="/boot/config/plugins/labby/labby.cfg"
+[ -f "$CFG" ] && . "$CFG"
+
+LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
+HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
+HTTP_PORT="${HTTP_PORT:-8765}"
+
+PIDFILE="/var/run/labby.pid"
+LOG="/var/log/labby.log"
+
+# labby resolves its state dir (auth.db, registry.db, config.toml, the MCP
+# bearer token) from $HOME/XDG_*, same as the systemd unit — point those at
+# array-backed storage so they survive Unraid's RAM-boot reset instead of
+# landing in root's (also RAM-only) home directory.
+export HOME="$LABBY_DIR"
+export XDG_CACHE_HOME="$LABBY_DIR/.cache"
+export XDG_CONFIG_HOME="$LABBY_DIR/.config"
+export XDG_DATA_HOME="$LABBY_DIR/.local/share"
+export LABBY_MCP_HTTP_HOST="$HTTP_HOST"
+export LABBY_MCP_HTTP_PORT="$HTTP_PORT"
+
+ready() {
+    curl -fsS -m 2 "http://127.0.0.1:${HTTP_PORT}/ready" >/dev/null 2>&1
+}
+
+start() {
+    if ! "${EMHTTP}/scripts/labby-preflight.sh" >>"$LOG" 2>&1; then
+        echo "labby: preflight FAILED — see $LOG"
+        exit 1
+    fi
+    mkdir -p "$LABBY_DIR"
+
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && ready; then
+        echo "labby: already running"
+        return 0
+    fi
+
+    echo "labby: starting (state: ${LABBY_DIR}, http: ${HTTP_HOST}:${HTTP_PORT})"
+    setsid "$BIN" serve >>"$LOG" 2>&1 &
+    echo $! >"$PIDFILE"
+
+    for _ in $(seq 1 30); do
+        ready && {
+            echo "labby: ready"
+            return 0
+        }
+        sleep 0.5
+    done
+    echo "labby: did not become ready — check $LOG"
+    exit 1
+}
+
+stop() {
+    echo "labby: stopping"
+    if [ -f "$PIDFILE" ]; then
+        kill -SIGINT "$(cat "$PIDFILE")" 2>/dev/null
+        for _ in $(seq 1 20); do
+            kill -0 "$(cat "$PIDFILE")" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill -9 "$(cat "$PIDFILE")" 2>/dev/null
+    fi
+    rm -f "$PIDFILE"
+}
+
+status() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && ready; then
+        echo "labby: RUNNING (pid $(cat "$PIDFILE"), http://${HTTP_HOST}:${HTTP_PORT})"
+    else
+        echo "labby: STOPPED"
+    fi
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    status) status ;;
+    preflight) "${EMHTTP}/scripts/labby-preflight.sh" ;;
+    *)
+        echo "usage: $0 {start|stop|restart|status|preflight}"
+        exit 1
+        ;;
+esac

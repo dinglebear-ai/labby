@@ -1,0 +1,11 @@
+#!/bin/bash
+# Fires before the array is taken down. Stop labby cleanly first so its
+# state (auth.db, registry.db, config.toml under LABBY_DIR) isn't left
+# mid-write when the underlying array storage unmounts.
+CFG="/boot/config/plugins/labby/labby.cfg"
+[ -f "$CFG" ] || exit 0
+. "$CFG"
+[ "${SERVICE:-disabled}" = "enabled" ] || exit 0
+
+logger -t labby "array down: stopping labby"
+/etc/rc.d/rc.labby stop

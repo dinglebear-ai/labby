@@ -1,0 +1,71 @@
+Menu="Utilities"
+Title="Labby"
+Icon="labby.png"
+Tag="server"
+---
+<?PHP
+/* Settings/status page for the Labby gateway plugin. Labby ships its own
+ * full admin web UI (embedded in the release binary) — this page is a thin
+ * shell over `rc.labby status`/`start`/`stop` that links out to that UI
+ * rather than re-implementing a dashboard. Contrast with
+ * ~/workspace/incus-unraid's IncusSettings.page, which builds a full
+ * GraphQL/Vue settings app because incusd has no web UI of its own; labby
+ * doesn't have that problem.
+ */
+$cfgFile = "/boot/config/plugins/labby/labby.cfg";
+$cfg = [];
+if (file_exists($cfgFile)) {
+    foreach (file($cfgFile) as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#') {
+            continue;
+        }
+        // Values are never quote-escaped or contain '#', so it's safe to
+        // strip a trailing " # comment" (bash's `source` ignores these the
+        // same way; this regex has to do it explicitly).
+        $line = preg_replace('/\s+#.*$/', '', $line);
+        if (preg_match('/^([A-Z_]+)="?([^"]*?)"?$/', $line, $m)) {
+            $cfg[$m[1]] = $m[2];
+        }
+    }
+}
+$port = ($cfg['HTTP_PORT'] ?? '') !== '' ? $cfg['HTTP_PORT'] : '8765';
+$serviceEnabled = ($cfg['SERVICE'] ?? 'disabled') === 'enabled';
+
+if (isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 'stop'], true)) {
+    shell_exec('/etc/rc.d/rc.labby ' . escapeshellarg($_POST['labby_action']) . ' 2>&1');
+    header('Location: /Settings/Labby');
+    exit;
+}
+
+$status = trim((string) shell_exec('/etc/rc.d/rc.labby status 2>&1'));
+$running = strpos($status, 'RUNNING') !== false;
+?>
+<style>
+  .labby-status { padding: 8px 12px; border-radius: 4px; display: inline-block; margin-bottom: 12px; font-family: monospace; }
+  .labby-status.running { background: #1a3a1a; color: #7dd3c7; }
+  .labby-status.stopped { background: #3a1a1a; color: #c78490; }
+</style>
+
+<div class="labby-status <?= $running ? 'running' : 'stopped' ?>">
+  <?= htmlspecialchars($status, ENT_QUOTES) ?>
+</div>
+
+<?php if (!$serviceEnabled): ?>
+  <p><em>SERVICE=disabled in labby.cfg — labby will not autostart on the next array start until this is set to "enabled".</em></p>
+<?php endif; ?>
+
+<form method="post">
+  <input type="hidden" name="labby_action" value="<?= $running ? 'stop' : 'start' ?>">
+  <input type="submit" class="btn" value="<?= $running ? 'Stop Labby' : 'Start Labby' ?>">
+</form>
+
+<?php if ($running): ?>
+  <p>
+    <a href="http://<?= htmlspecialchars($_SERVER['SERVER_ADDR'] ?? $_SERVER['HTTP_HOST'], ENT_QUOTES) ?>:<?= htmlspecialchars($port, ENT_QUOTES) ?>/" target="_blank" rel="noopener" class="btn">
+      Open Labby Gateway &rarr;
+    </a>
+  </p>
+<?php endif; ?>
+
+<p>Configure: <code>/boot/config/plugins/labby/labby.cfg</code> (edit on flash or via SSH; re-applied on every array start).</p>

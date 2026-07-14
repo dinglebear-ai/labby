@@ -1,0 +1,10 @@
+#!/bin/bash
+# Fires when the array comes up. labby's state (LABBY_DIR) lives on the
+# array, so it can't start until now.
+CFG="/boot/config/plugins/labby/labby.cfg"
+[ -f "$CFG" ] || exit 0
+. "$CFG"
+[ "${SERVICE:-disabled}" = "enabled" ] || exit 0
+
+logger -t labby "array up: starting labby"
+/etc/rc.d/rc.labby start || logger -t labby "labby failed to start"
