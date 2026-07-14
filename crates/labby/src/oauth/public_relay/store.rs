@@ -67,9 +67,35 @@ pub fn parse_registry_value(value: serde_json::Value) -> Result<ImportReport, Pu
     if let Ok(entries) = serde_json::from_value::<Vec<PublicRelayEntry>>(value.clone()) {
         return import_entries(entries);
     }
+    if let Ok(entries) = serde_json::from_value::<BTreeMap<String, PublicRelayEntry>>(value.clone())
+    {
+        return import_object_entries(entries);
+    }
     let map = serde_json::from_value::<BTreeMap<String, String>>(value)
         .map_err(|error| PublicRelayError::InvalidRegistryInput(error.to_string()))?;
     import_map_entries(map)
+}
+
+fn import_object_entries(
+    entries: BTreeMap<String, PublicRelayEntry>,
+) -> Result<ImportReport, PublicRelayError> {
+    let mut parsed_entries = Vec::new();
+    let mut quarantined = Vec::new();
+    for (machine_id, entry) in entries {
+        if machine_id != entry.machine_id.as_str() {
+            quarantined.push(QuarantinedEntry {
+                machine_id,
+                reason: format!("entry machine_id is `{}`", entry.machine_id),
+            });
+            continue;
+        }
+        parsed_entries.push(entry);
+    }
+
+    let mut report = import_entries(parsed_entries)?;
+    quarantined.extend(report.quarantined);
+    report.quarantined = quarantined;
+    Ok(report)
 }
 
 fn import_map_entries(entries: BTreeMap<String, String>) -> Result<ImportReport, PublicRelayError> {
@@ -245,6 +271,41 @@ mod tests {
             .expect("registry should parse");
         assert_eq!(report.accepted.len(), 7);
         assert!(report.quarantined.is_empty());
+    }
+
+    #[test]
+    fn public_relay_store_imports_live_object_registry_json() {
+        let raw = r#"{
+            "dookie": {
+                "machine_id": "dookie",
+                "target_url": "http://100.88.16.79:38935/callback/dookie",
+                "description": "dookie codex callback tailscale"
+            },
+            "steamy-wsl": {
+                "machine_id": "steamy-wsl",
+                "target_url": "http://100.74.16.82:38935/callback/steamy-wsl",
+                "description": "steamy-wsl codex callback tailscale"
+            }
+        }"#;
+        let report = PublicRelayRegistryStore::parse_standalone_registry(raw)
+            .expect("object registry should parse");
+        assert_eq!(report.accepted, vec!["dookie", "steamy-wsl"]);
+        assert!(report.quarantined.is_empty());
+    }
+
+    #[test]
+    fn public_relay_store_quarantines_object_registry_key_mismatch() {
+        let raw = r#"{
+            "dookie": {
+                "machine_id": "tootie",
+                "target_url": "http://100.120.242.29:38935/callback/tootie"
+            }
+        }"#;
+        let report = PublicRelayRegistryStore::parse_standalone_registry(raw)
+            .expect("object registry should parse");
+        assert!(report.accepted.is_empty());
+        assert_eq!(report.quarantined.len(), 1);
+        assert_eq!(report.quarantined[0].machine_id, "dookie");
     }
 
     #[test]
