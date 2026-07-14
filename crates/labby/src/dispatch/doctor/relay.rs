@@ -6,8 +6,8 @@ use tokio::net::TcpStream;
 
 use crate::dispatch::doctor::{Finding, Report, Severity};
 use crate::oauth::public_relay::{
-    MachineId, PublicRelayRegistryManager, PublicRelayRegistryStore, PublicRelaySnapshot,
-    RelayTarget,
+    MAX_REGISTRY_BACKUPS, MachineId, PublicRelayRegistryManager, PublicRelayRegistryStore,
+    PublicRelaySnapshot, RelayTarget,
 };
 
 const TARGET_PROBE_CONCURRENCY: usize = 8;
@@ -71,6 +71,7 @@ pub async fn check_public_relay(
                     message: error.to_string(),
                 }),
             }
+            push_backup_accumulation_finding(&mut findings, manager.store());
             if probe_targets {
                 let probe_pass = stream::iter(manager.probe_targets().await)
                     .map(|(machine, target)| async move {
@@ -102,6 +103,7 @@ pub async fn check_public_relay(
         }
         None => {
             let store = PublicRelayRegistryStore::new(PublicRelayRegistryStore::default_path());
+            push_backup_accumulation_finding(&mut findings, &store);
             if !store.path().exists() {
                 findings.push(Finding {
                     service: SERVICE.into(),
@@ -131,6 +133,28 @@ pub async fn check_public_relay(
         }
     }
     Report { findings }
+}
+
+/// Warn if `<registry>.bak.*` sidecars have accumulated beyond
+/// `MAX_REGISTRY_BACKUPS`. `store.rs::prune_old_backups` runs after every
+/// save and logs (but does not fail the save on) listing/removal errors, so
+/// a persistently-failing prune is otherwise invisible to an operator —
+/// this is the one surface that would catch unbounded accumulation from
+/// that failure mode, since the cap is enforced by design and can only be
+/// exceeded if pruning is broken.
+fn push_backup_accumulation_finding(findings: &mut Vec<Finding>, store: &PublicRelayRegistryStore) {
+    let count = store.count_backups();
+    if count <= MAX_REGISTRY_BACKUPS {
+        return;
+    }
+    findings.push(Finding {
+        service: SERVICE.into(),
+        check: "registry:backup_accumulation".into(),
+        severity: Severity::Warn,
+        message: format!(
+            "found {count} relay registry backup file(s), expected at most {MAX_REGISTRY_BACKUPS}; backup pruning may be failing (see logs for `action = \"backup.prune\"` warnings)"
+        ),
+    });
 }
 
 /// Sorted, comma-joined machine id digest for a snapshot — used to make
@@ -216,12 +240,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
         store
-            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry {
-                machine_id: MachineId::parse("dookie").unwrap(),
-                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
-                description: None,
-                disabled: true,
-            }])
+            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry::new(
+                MachineId::parse("dookie").unwrap(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                true,
+            )])
             .await
             .unwrap();
         let manager = PublicRelayRegistryManager::load(store).await.unwrap();
@@ -263,12 +287,12 @@ mod tests {
         let path = dir.path().join("registry.json");
         let store = PublicRelayRegistryStore::new(path.clone());
         store
-            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry {
-                machine_id: MachineId::parse("dookie").unwrap(),
-                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
-                description: None,
-                disabled: false,
-            }])
+            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry::new(
+                MachineId::parse("dookie").unwrap(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                false,
+            )])
             .await
             .unwrap();
         let manager = PublicRelayRegistryManager::load(store).await.unwrap();
@@ -299,12 +323,12 @@ mod tests {
         let path = dir.path().join("registry.json");
         let store = PublicRelayRegistryStore::new(path.clone());
         store
-            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry {
-                machine_id: MachineId::parse("dookie").unwrap(),
-                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
-                description: None,
-                disabled: false,
-            }])
+            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry::new(
+                MachineId::parse("dookie").unwrap(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                false,
+            )])
             .await
             .unwrap();
         let manager = PublicRelayRegistryManager::load(store).await.unwrap();
@@ -339,5 +363,68 @@ mod tests {
         assert!(matches!(stale.severity, Severity::Warn));
         assert!(stale.message.contains("dookie"));
         assert!(stale.message.contains("tootie"));
+    }
+
+    #[tokio::test]
+    async fn relay_health_warns_when_backup_files_exceed_the_cap() {
+        // Backups are capped at `MAX_REGISTRY_BACKUPS` by design (pruned
+        // after every save), so more than that on disk can only mean
+        // pruning has been persistently failing -- this should be visible
+        // in `labby doctor oauth-relay`, not just in swallowed prune logs.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.json");
+        let store = PublicRelayRegistryStore::new(path.clone());
+        store
+            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry::new(
+                MachineId::parse("dookie").unwrap(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                false,
+            )])
+            .await
+            .unwrap();
+        let manager = PublicRelayRegistryManager::load(store).await.unwrap();
+
+        // Synthesize more backup sidecars than the cap allows.
+        for i in 0..(MAX_REGISTRY_BACKUPS + 3) {
+            std::fs::write(
+                dir.path().join(format!("registry.json.bak.synthetic-{i}")),
+                b"{}",
+            )
+            .unwrap();
+        }
+
+        let report = check_public_relay(Some(Arc::new(manager)), false).await;
+
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.check == "registry:backup_accumulation")
+            .unwrap_or_else(|| {
+                panic!("expected registry:backup_accumulation finding, got {report:?}")
+            });
+        assert!(matches!(finding.severity, Severity::Warn));
+        assert!(
+            finding
+                .message
+                .contains(&(MAX_REGISTRY_BACKUPS + 3).to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_health_does_not_warn_when_backup_count_is_within_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
+        let manager = PublicRelayRegistryManager::load(store).await.unwrap();
+
+        let report = check_public_relay(Some(Arc::new(manager)), false).await;
+
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.check != "registry:backup_accumulation"),
+            "unexpected backup_accumulation finding: {report:?}"
+        );
     }
 }

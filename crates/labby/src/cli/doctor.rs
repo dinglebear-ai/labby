@@ -195,13 +195,30 @@ async fn load_optional_public_relay_manager()
     let store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
         crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
     );
-    if store.path().exists() {
-        crate::oauth::public_relay::PublicRelayRegistryManager::load(store)
-            .await
-            .ok()
-            .map(Arc::new)
-    } else {
-        None
+    if !store.path().exists() {
+        return None;
+    }
+    let registry_path = store.path().to_path_buf();
+    match crate::oauth::public_relay::PublicRelayRegistryManager::load(store).await {
+        Ok(manager) => Some(Arc::new(manager)),
+        Err(error) => {
+            // This path is a best-effort optimization: `check_public_relay`'s
+            // `None` branch independently reloads the same file and
+            // re-surfaces the error as a finding, so a silent `None` here
+            // is not fatal. Still log it -- matches the pattern in
+            // `cli/serve.rs::run` for the identical load-at-startup case --
+            // so a load failure is visible even if a future caller of this
+            // helper doesn't have that fallback.
+            tracing::warn!(
+                subsystem = "doctor",
+                phase = "oauth.public_relay.load_failed",
+                registry_path = %registry_path.display(),
+                kind = error.kind(),
+                error = %error,
+                "doctor failed to load public oauth callback relay registry"
+            );
+            None
+        }
     }
 }
 
