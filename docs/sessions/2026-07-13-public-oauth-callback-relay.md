@@ -32,7 +32,7 @@ Implemented the public OAuth callback relay in Labby, opened PR #239, applied en
 - `Cargo Deny` failed because `spin 0.9.8` was yanked; `Cargo.lock` now resolves `spin 0.9.9`.
 - Windows CI failed because a Unix-only test left `use super::*` active on Windows; `crates/labby/src/dispatch/server_logs/client.rs` now gates the whole test module with `#[cfg(all(test, unix))]`.
 - Public relay suffixes had to reject encoded dot segments before and after URL construction; `crates/labby/src/oauth/public_relay/policy.rs` and `crates/labby/src/oauth/public_relay/forward.rs` now enforce that invariant.
-- Health checks based only on the live manager could miss a corrupted persisted registry; `/healthz` and doctor now inspect the persisted registry too.
+- Health checks based only on the live manager could miss a corrupted persisted registry; `labby doctor oauth-relay` now inspects the persisted registry too (`/healthz` stays intentionally shallow/in-memory-only).
 
 ## Technical Decisions
 
