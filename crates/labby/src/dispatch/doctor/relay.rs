@@ -6,11 +6,19 @@ use tokio::net::TcpStream;
 
 use crate::dispatch::doctor::{Finding, Report, Severity};
 use crate::oauth::public_relay::{
-    PublicRelayRegistryManager, PublicRelayRegistryStore, RelayTarget,
+    MachineId, PublicRelayRegistryManager, PublicRelayRegistryStore, PublicRelaySnapshot,
+    RelayTarget,
 };
 
 const TARGET_PROBE_CONCURRENCY: usize = 8;
 const SERVICE: &str = "oauth_relay";
+/// Aggregate bound on the whole target-probe pass. Each individual probe is
+/// already capped at 1s, but with `TARGET_PROBE_CONCURRENCY` concurrency the
+/// *pass* has no bound of its own — wall time otherwise grows linearly with
+/// registry size (`machine_count / TARGET_PROBE_CONCURRENCY` seconds). This
+/// keeps `oauth.relay.check --probe-targets` bounded for larger Tailscale
+/// deployments instead of hanging proportional to fleet size.
+const TARGET_PROBE_TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn check_public_relay(
     manager: Option<Arc<PublicRelayRegistryManager>>,
@@ -34,8 +42,9 @@ pub async fn check_public_relay(
                     format!("public relay registry loaded with {machines} machine(s)")
                 },
             });
+            let live_snapshot = manager.snapshot().await;
             match manager.store().load_snapshot().await {
-                Ok(snapshot) if snapshot.entries.len() == machines => findings.push(Finding {
+                Ok(snapshot) if snapshot == live_snapshot => findings.push(Finding {
                     service: SERVICE.into(),
                     check: "registry:persisted".into(),
                     severity: Severity::Ok,
@@ -49,8 +58,10 @@ pub async fn check_public_relay(
                     check: "registry:stale".into(),
                     severity: Severity::Warn,
                     message: format!(
-                        "live registry has {machines} machine(s), persisted registry has {}",
-                        snapshot.entries.len()
+                        "live registry has {machines} machine(s) ({}); persisted registry has {} ({})",
+                        describe_machine_ids(&live_snapshot),
+                        snapshot.entries.len(),
+                        describe_machine_ids(&snapshot),
                     ),
                 }),
                 Err(error) => findings.push(Finding {
@@ -61,7 +72,7 @@ pub async fn check_public_relay(
                 }),
             }
             if probe_targets {
-                let target_findings = stream::iter(manager.probe_targets().await)
+                let probe_pass = stream::iter(manager.probe_targets().await)
                     .map(|(machine, target)| async move {
                         match target {
                             Ok(target) => probe_target(&target).await,
@@ -74,9 +85,19 @@ pub async fn check_public_relay(
                         }
                     })
                     .buffer_unordered(TARGET_PROBE_CONCURRENCY)
-                    .collect::<Vec<_>>()
-                    .await;
-                findings.extend(target_findings);
+                    .collect::<Vec<_>>();
+                match tokio::time::timeout(TARGET_PROBE_TOTAL_TIMEOUT, probe_pass).await {
+                    Ok(target_findings) => findings.extend(target_findings),
+                    Err(_) => findings.push(Finding {
+                        service: SERVICE.into(),
+                        check: "targets:probe".into(),
+                        severity: Severity::Warn,
+                        message: format!(
+                            "target probing aborted after exceeding the {}s aggregate bound; registry may be too large for a single probe pass",
+                            TARGET_PROBE_TOTAL_TIMEOUT.as_secs()
+                        ),
+                    }),
+                }
             }
         }
         None => {
@@ -110,6 +131,24 @@ pub async fn check_public_relay(
         }
     }
     Report { findings }
+}
+
+/// Sorted, comma-joined machine id digest for a snapshot — used to make
+/// `registry:stale` findings actionable when live and persisted registries
+/// have the same entry *count* but different *content* (e.g. one machine
+/// swapped for another). `PublicRelaySnapshot::entries` is a `BTreeMap<MachineId, _>`
+/// so iteration order is already machine-id sorted.
+fn describe_machine_ids(snapshot: &PublicRelaySnapshot) -> String {
+    let ids: Vec<&str> = snapshot
+        .entries
+        .keys()
+        .map(MachineId::as_str)
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        "none".to_string()
+    } else {
+        ids.join(", ")
+    }
 }
 
 async fn probe_target(target: &RelayTarget) -> Finding {
@@ -178,7 +217,7 @@ mod tests {
         let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
         store
             .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry {
-                machine_id: crate::oauth::public_relay::MachineId::parse("dookie").unwrap(),
+                machine_id: MachineId::parse("dookie").unwrap(),
                 target_url: "http://100.88.16.79:38935/callback/dookie".into(),
                 description: None,
                 disabled: true,
@@ -225,7 +264,7 @@ mod tests {
         let store = PublicRelayRegistryStore::new(path.clone());
         store
             .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry {
-                machine_id: crate::oauth::public_relay::MachineId::parse("dookie").unwrap(),
+                machine_id: MachineId::parse("dookie").unwrap(),
                 target_url: "http://100.88.16.79:38935/callback/dookie".into(),
                 description: None,
                 disabled: false,
@@ -249,5 +288,56 @@ mod tests {
             .find(|finding| finding.check == "registry:corrupt")
             .unwrap();
         assert!(matches!(corrupt.severity, Severity::Fail));
+    }
+
+    #[tokio::test]
+    async fn relay_health_detects_equal_count_machine_swap_as_stale() {
+        // lab-s1wtg: comparing `entries.len()` alone can't see a same-count
+        // swap (one machine removed, a different one added). The persisted
+        // and live registries must be compared by content, not just count.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.json");
+        let store = PublicRelayRegistryStore::new(path.clone());
+        store
+            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry {
+                machine_id: MachineId::parse("dookie").unwrap(),
+                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
+                description: None,
+                disabled: false,
+            }])
+            .await
+            .unwrap();
+        let manager = PublicRelayRegistryManager::load(store).await.unwrap();
+        // Same entry count (1), different machine id entirely.
+        std::fs::write(
+            &path,
+            r#"{
+                "version": 1,
+                "entries": [
+                    {
+                        "machine_id": "tootie",
+                        "target_url": "http://100.120.242.29:38935/callback/tootie"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let report = check_public_relay(Some(Arc::new(manager)), false).await;
+
+        let loaded = report
+            .findings
+            .iter()
+            .find(|finding| finding.check == "registry:loaded")
+            .unwrap();
+        assert!(matches!(loaded.severity, Severity::Ok));
+        let stale = report
+            .findings
+            .iter()
+            .find(|finding| finding.check == "registry:stale")
+            .unwrap_or_else(|| panic!("expected registry:stale finding, got {report:?}"));
+        assert!(matches!(stale.severity, Severity::Warn));
+        assert!(stale.message.contains("dookie"));
+        assert!(stale.message.contains("tootie"));
     }
 }
