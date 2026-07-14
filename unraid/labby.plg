@@ -2,14 +2,23 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name         "labby">
   <!ENTITY author       "jmagar">
-  <!ENTITY version      "1.3.0">
+  <!-- Plugin package version (Unraid's install/update comparison field).
+       Bumped whenever unraid/ packaging itself changes — independent of
+       labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
+       doesn't require a new labby binary release. -->
+  <!ENTITY version      "1.3.0a">
+  <!-- The labby release tag this plugin currently bundles. Only this
+       entity (not the plugin version above) drives tarballURL/tarballMD5,
+       so bumping the plugin version alone never points at a release tag
+       whose binary asset doesn't exist. -->
+  <!ENTITY labbyVersion "1.3.0">
   <!ENTITY launch       "Settings/Labby">
   <!ENTITY repoURL      "https://github.com/&author;/labby">
   <!ENTITY rawURL       "&repoURL;/raw/main/unraid">
   <!ENTITY pluginURL    "&rawURL;/labby.plg">
   <!ENTITY srcURL       "&rawURL;/source/usr/local/emhttp/plugins/&name;">
   <!ENTITY tarball      "lab-x86_64-unknown-linux-gnu.tar.gz">
-  <!ENTITY tarballURL   "&repoURL;/releases/download/v&version;/&tarball;">
+  <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "1bb151dd5b7b091e9aed476421281769">
   <!ENTITY pageMD5      "591a52bd512539a4d9c9fb9605864bf9">
@@ -24,6 +33,22 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.0a
+- Fix: labby.cfg's HTTP_HOST defaulted to 0.0.0.0, which made rc.labby
+  start fail on every fresh install — labby's own serve.rs safety gate
+  (lab-319g) refuses to bind a non-loopback host without a bearer token
+  or OAuth already configured, and a fresh install has neither. Defaults
+  to 127.0.0.1 now, matching labby's own built-in default. Labby.page's
+  "Open Labby Gateway" link is now conditional on HTTP_HOST actually being
+  LAN-reachable, with an explanatory note otherwise.
+- Split the plugin's own version from the bundled labby release version
+  (new labbyVersion entity) so a packaging-only fix like this one doesn't
+  require pointing tarballURL at a labby release tag with no assets.
+- Validated end-to-end on real Unraid hardware: install, start, status,
+  /ready, stop, and uninstall (plugin remove labby.plg — note the
+  required .plg suffix, plugin remove labby alone silently no-ops) all
+  confirmed working via Unraid's own plugin manager, not a simulation.
+
 ###1.3.0
 - Initial Unraid plugin release. Runs the labby gateway release binary
   (v1.3.0) natively via rc.d — no Docker, no systemd (Unraid doesn't run

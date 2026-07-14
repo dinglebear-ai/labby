@@ -59,9 +59,23 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
   mount already uses). `rc.labby` exports `HOME`/`XDG_*` to point there
   instead of root's RAM-only `/root`.
 
+## Two version numbers, on purpose
+
+`labby.plg` tracks two independent versions:
+
+- `version` — the **plugin package's own version**, shown in Unraid's
+  Plugins page and used for its install/update comparison. Bumped whenever
+  `unraid/` packaging itself changes, even if labby's binary hasn't (e.g.
+  the `1.3.0a` bump that shipped the `HTTP_HOST` default fix below).
+- `labbyVersion` — the **labby release tag this plugin currently bundles**.
+  Only this entity drives `tarballURL`/`tarballMD5`. Keeping it separate
+  from `version` means a packaging-only fix never has to point at a labby
+  release tag whose binary asset doesn't exist (or force a new labby
+  release just to ship a plugin bugfix).
+
 ## Keeping the `.plg` in sync with releases
 
-The version entity and every `<MD5>` in `labby.plg` must match what's
+Every `<MD5>` in `labby.plg`, plus `labbyVersion`, must match what's
 actually published, or Unraid's install/update either 404s or fails
 checksum verification. `scripts/ci/unraid-plugin-checksums.sh` is the single
 source of truth for this — it checks (default) or rewrites (`--fix`) every
@@ -70,7 +84,7 @@ entity:
 ```
 scripts/ci/unraid-plugin-checksums.sh                                   # check only
 scripts/ci/unraid-plugin-checksums.sh --fix                             # repair after editing unraid/source/
-scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also check version + release tarball MD5
+scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also check labbyVersion + release tarball MD5
 ```
 
 - `ci.yml`'s always-on `unraid-plugin-check` job runs the no-args form on
@@ -82,11 +96,16 @@ scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also c
   the tag actually being released, before the GitHub Release is created —
   mirroring the version-matches-tag verify pattern already used for
   `packages/labby-mcp/package.json` and `server.json` in the same workflow.
+  It checks `labbyVersion` against the tag, not the plugin's own `version`.
 - Neither job auto-commits a fix; a mismatch fails the run and the fix must
   be applied locally (`--fix`) and committed like any other change. This
   was a deliberate choice over having CI push a bot commit back to `main`
   mid-release, to match the rest of this workflow's existing convention and
   avoid a new bot-identity/branch-protection interaction.
+- The `version` entity itself has no automated check — it's a plugin-package
+  concern bumped by hand, the same way `incus-unraid` hand-bumps its own
+  `.plg` version per content change, decoupled from any upstream Incus
+  version.
 
 ## Known gaps
 

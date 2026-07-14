@@ -83,7 +83,10 @@ check_or_fix mountedMD5 "$(md5_of "$src/event/disks_mounted")" "unraid/source/..
 check_or_fix unmountingMD5 "$(md5_of "$src/event/unmounting_disks")" "unraid/source/.../event/unmounting_disks"
 
 if [ -n "$tag" ]; then
-    check_or_fix version "${tag#v}" "release tag $tag"
+    # labbyVersion tracks the bundled labby release tag; the top-level
+    # 'version' entity is the plugin package's own version and is bumped
+    # independently (e.g. a packaging-only fix), so it is NOT checked here.
+    check_or_fix labbyVersion "${tag#v}" "release tag $tag"
 fi
 
 if [ -n "$tarball" ]; then
