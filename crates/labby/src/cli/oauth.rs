@@ -130,7 +130,7 @@ async fn run_relay_registry(args: RelayRegistryArgs, format: OutputFormat) -> Re
             report.ensure_complete_import()?;
             let store = default_store();
             let outcome = store
-                .save_entries(report.entries.clone())
+                .save_entries(report.entries)
                 .await
                 .context("write relay registry")?;
             crate::output::print(

@@ -17,13 +17,12 @@ impl MachineId {
         if trimmed != value || trimmed.is_empty() || trimmed.len() > 64 {
             return Err(PublicRelayError::InvalidMachineId(value.to_string()));
         }
+        // The alphanumeric/`-`/`_` charset also rejects `.`, so dot segments
+        // (`.`, `..`) can never pass this check.
         if !trimmed
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         {
-            return Err(PublicRelayError::InvalidMachineId(value.to_string()));
-        }
-        if trimmed == "." || trimmed == ".." {
             return Err(PublicRelayError::InvalidMachineId(value.to_string()));
         }
         Ok(Self(trimmed.to_string()))

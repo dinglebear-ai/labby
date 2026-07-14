@@ -17,6 +17,8 @@ pub struct PublicRelayRegistryStore {
     path: PathBuf,
 }
 
+const REGISTRY_FILE_VERSION: u16 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryFile {
     version: u16,
@@ -62,6 +64,12 @@ impl PublicRelayRegistryStore {
 
 pub fn parse_registry_value(value: serde_json::Value) -> Result<ImportReport, PublicRelayError> {
     if let Ok(file) = serde_json::from_value::<RegistryFile>(value.clone()) {
+        if file.version != REGISTRY_FILE_VERSION {
+            return Err(PublicRelayError::InvalidRegistryInput(format!(
+                "unsupported registry version {}; expected {REGISTRY_FILE_VERSION}",
+                file.version
+            )));
+        }
         return import_entries(file.entries);
     }
     if let Ok(entries) = serde_json::from_value::<Vec<PublicRelayEntry>>(value.clone()) {
@@ -129,6 +137,13 @@ fn import_entries(entries: Vec<PublicRelayEntry>) -> Result<ImportReport, Public
         let machine_id = entry.machine_id.to_string();
         match entry.target() {
             Ok(_) => {
+                if accepted.contains_key(&entry.machine_id) {
+                    report.quarantined.push(QuarantinedEntry {
+                        machine_id,
+                        reason: "duplicate machine_id".to_string(),
+                    });
+                    continue;
+                }
                 report.accepted.push(machine_id.clone());
                 accepted.insert(entry.machine_id.clone(), entry);
             }
@@ -182,7 +197,7 @@ fn save_entries_sync(
         None
     };
     let file = RegistryFile {
-        version: 1,
+        version: REGISTRY_FILE_VERSION,
         entries: report.entries,
     };
     let bytes = serde_json::to_vec_pretty(&file)
@@ -318,6 +333,47 @@ mod tests {
             PublicRelayRegistryStore::parse_standalone_registry(raw).expect("registry parses");
         assert_eq!(report.accepted, vec!["dookie"]);
         assert_eq!(report.quarantined.len(), 1);
+    }
+
+    #[test]
+    fn public_relay_store_quarantines_duplicate_machine_ids() {
+        let raw = r#"[
+            {
+                "machine_id": "dookie",
+                "target_url": "http://100.88.16.79:38935/callback/dookie"
+            },
+            {
+                "machine_id": "dookie",
+                "target_url": "http://100.88.16.79:38935/callback/dookie",
+                "description": "duplicate"
+            }
+        ]"#;
+        let report =
+            PublicRelayRegistryStore::parse_standalone_registry(raw).expect("registry parses");
+
+        assert_eq!(report.accepted, vec!["dookie"]);
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.quarantined.len(), 1);
+        assert_eq!(report.quarantined[0].machine_id, "dookie");
+        assert!(report.quarantined[0].reason.contains("duplicate"));
+    }
+
+    #[test]
+    fn public_relay_store_rejects_unsupported_registry_version() {
+        let raw = r#"{
+            "version": 2,
+            "entries": [
+                {
+                    "machine_id": "dookie",
+                    "target_url": "http://100.88.16.79:38935/callback/dookie"
+                }
+            ]
+        }"#;
+        let error = PublicRelayRegistryStore::parse_standalone_registry(raw)
+            .expect_err("future registry versions must be rejected");
+
+        assert_eq!(error.kind(), "invalid_param");
+        assert!(error.to_string().contains("unsupported registry version"));
     }
 
     #[test]

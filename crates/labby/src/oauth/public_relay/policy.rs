@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use axum::http::{HeaderMap, HeaderName, HeaderValue, header};
+use axum::http::{HeaderMap, HeaderName, header};
 
 use super::types::{MachineId, PublicRelayError};
 
@@ -109,13 +109,9 @@ fn filter_headers(headers: &HeaderMap, allowlist: &[&str]) -> HeaderMap {
                 && !connection_header_names.contains(name.as_str())
         })
         .fold(HeaderMap::new(), |mut filtered, (name, value)| {
-            filtered.append(name.clone(), copy_header_value(value));
+            filtered.append(name.clone(), value.clone());
             filtered
         })
-}
-
-fn copy_header_value(value: &HeaderValue) -> HeaderValue {
-    value.clone()
 }
 
 fn connection_header_names(headers: &HeaderMap) -> BTreeSet<String> {
@@ -149,6 +145,7 @@ fn is_hop_by_hop_header(name: &HeaderName) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
     use axum::http::header::{AUTHORIZATION, COOKIE, LOCATION, SET_COOKIE};
 
     #[test]
