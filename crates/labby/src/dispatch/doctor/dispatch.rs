@@ -49,16 +49,12 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
             let p = parse_proxy_check(&params)?;
             return to_json(proxy::check_proxy(p).await?);
         }
-        "oauth.relay.check" => {
-            let p = parse_relay_check(&params)?;
-            return to_json(
-                super::relay::check_public_relay(
-                    crate::oauth::public_relay::current_public_relay_manager(),
-                    p.probe_targets,
-                )
-                .await,
-            );
-        }
+        // "oauth.relay.check" intentionally has no early-return arm here:
+        // it falls through to `dispatch_with_clients_and_relay` below (which
+        // already handles it, passing the same `current_public_relay_manager()`
+        // value an early return here would have used) so the action gets
+        // the same "dispatch start"/"dispatch ok"/"dispatch warn" structured
+        // logging every other action gets, instead of silently bypassing it.
         a if !ACTIONS.iter().any(|s| s.name == a) => {
             return Err(ToolError::UnknownAction {
                 message: format!("unknown action `{action}` for service `doctor`"),
