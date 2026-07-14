@@ -172,13 +172,6 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .into_iter()
             .filter(|entry| discovery_entry_visible(entry, scope))
             .collect::<Vec<_>>();
-        let mut namespaces: Vec<String> = catalog
-            .iter()
-            .filter(|entry| entry.kind == CodeModeCatalogKind::Tool)
-            .map(|entry| entry.namespace.clone())
-            .collect();
-        namespaces.sort();
-        namespaces.dedup();
 
         let discovery_entries = catalog
             .iter()
@@ -196,12 +189,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .filter(|entry| entry.kind == CodeModeCatalogKind::Tool)
             .collect::<Vec<_>>();
         let namespace_js =
-            super::preamble::generate_js_proxy_from_catalog(&tool_entries, &namespaces).map_err(
-                |message| ToolError::Sdk {
+            super::preamble::generate_js_proxy_from_catalog(&tool_entries).map_err(|message| {
+                ToolError::Sdk {
                     sdk_kind: "invalid_param".to_string(),
                     message,
-                },
-            )?;
+                }
+            })?;
         let local_provider_js = if local_providers_allowed(caller, scope) {
             super::preamble::generate_local_provider_js()
         } else {

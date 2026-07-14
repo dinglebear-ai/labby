@@ -10,12 +10,28 @@ use std::path::{Path, PathBuf};
 
 use labby_codemode::snippet::store::{SnippetInfo, builtin_snippet_dir, list_snippets};
 use labby_codemode::{ToolDescriptor, ToolsRender, serialized_catalog_size};
+use sha2::{Digest, Sha256};
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{sanitize_schema, sanitize_tool_text};
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
+
+/// Hash of a tool's callable shape (description + input/output schema), so the
+/// catalog render cache invalidates on a schema/description change even when
+/// the upstream keeps the tool's name unchanged — a rename-only fingerprint
+/// would otherwise keep serving a stale `.dts` from `codemode.describe()`.
+fn tool_shape_digest(tool: &UpstreamTool) -> String {
+    let payload = serde_json::json!({
+        "description": tool.tool.description,
+        "input_schema": tool.input_schema,
+        "output_schema": tool.output_schema,
+    });
+    let serialized = serde_json::to_string(&payload).unwrap_or_default();
+    let digest = Sha256::digest(serialized.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 /// Build (or serve from cache) the Code Mode discovery catalog for the proxy.
 ///
@@ -67,7 +83,14 @@ async fn catalog_from_tools(
     let fingerprint = {
         let mut ids: Vec<String> = raw_tools
             .iter()
-            .map(|t| format!("{}::{}", t.upstream_name, t.tool.name))
+            .map(|t| {
+                format!(
+                    "{}::{}::{}",
+                    t.upstream_name,
+                    t.tool.name,
+                    tool_shape_digest(t)
+                )
+            })
             .collect();
         ids.sort_unstable();
         format!("tools:\n{}\n{snippet_fingerprint}", ids.join("\n"))

@@ -191,11 +191,6 @@ globalThis.codemode = globalThis.codemode || {{}};
 var codemode = globalThis.codemode;
 var __codemodeDiscovery = {json};
 var __codemodeTypes = {types_json};
-var __codemodeHelpers = ["search", "describe", "run", "step", "batch"];
-codemode.__meta__ = codemode.__meta__ || {{}};
-codemode.__meta__.helpers = function() {{
-  return Promise.resolve(__codemodeHelpers.slice());
-}};
 function __codemodeNormalize(value) {{
   return String(value == null ? "" : value)
     .toLowerCase()
@@ -212,7 +207,7 @@ codemode.search = async function(input) {{
     ? Math.max(1, Math.min(50, Number(input.limit)))
     : 50;
   var tokens = __codemodeTokens(query);
-  var __codemodeNoMatchHint = "No matches. Broaden or try synonyms, or call codemode.__meta__.upstreams() to list namespaces and search by upstream name.";
+  var __codemodeNoMatchHint = "No matches. Broaden the query or try synonyms.";
   if (!tokens.length) return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
 
   // --- lexical scoring (unchanged algorithm) ---
@@ -511,8 +506,7 @@ globalThis.openapi = {
 }
 
 /// Generate a JavaScript preamble string that defines the `codemode` proxy
-/// namespace, plus `codemode.__meta__.namespaces()` / `.helpers()` and a
-/// `__namespaces__` script-global, for use inside the sandbox.
+/// namespace for use inside the sandbox.
 ///
 /// The output is a JS snippet (not TypeScript) injected into the user code before
 /// being sent to the runner subprocess. It relies on `callTool` already being
@@ -522,10 +516,7 @@ globalThis.openapi = {
 /// concatenated in front of a trailing IIFE the IIFE's promise remains the
 /// `eval` completion value.
 ///
-pub(crate) fn generate_js_proxy_from_catalog(
-    tools: &[&ToolDescriptor],
-    namespaces: &[String],
-) -> Result<String, String> {
+pub(crate) fn generate_js_proxy_from_catalog(tools: &[&ToolDescriptor]) -> Result<String, String> {
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
@@ -593,19 +584,11 @@ pub(crate) fn generate_js_proxy_from_catalog(
         );
     }
 
-    let namespaces_json = serde_json::to_string(namespaces).unwrap_or_else(|_| "[]".to_string());
-
     Ok(format!(
         "// Code Mode proxy — auto-generated\n\
          globalThis.codemode = globalThis.codemode || {{}};\n\
          var codemode = globalThis.codemode;\n\
-         codemode.run = function(name, input) {{ return globalThis.__labRunSnippet(name, input == null ? {{}} : input); }};\n\
-         codemode.batch = async function(jobs) {{ if (!Array.isArray(jobs)) {{ throw new Error(\"codemode.batch requires an array of jobs\"); }} var settled = await Promise.allSettled(jobs.map(function(job) {{ return typeof job === \"function\" ? Promise.resolve().then(job) : job; }})); var ok = []; var failed = []; settled.forEach(function(result, index) {{ if (result.status === \"fulfilled\") {{ ok.push({{ i: index, value: result.value }}); }} else {{ var reason = result.reason; failed.push({{ i: index, error: String(reason && reason.message ? reason.message : reason) }}); }} }}); return {{ ok: ok, failed: failed, all_ok: failed.length === 0 }}; }};\n\
-         {parts}\
-         codemode.__meta__ = codemode.__meta__ || {{}};\n\
-         codemode.__meta__.namespaces = function() {{ return Promise.resolve({namespaces_json}); }};\n\
-         codemode.__meta__.helpers = codemode.__meta__.helpers || function() {{ return Promise.resolve([\"run\", \"batch\"]); }};\n\
-         var __namespaces__ = {namespaces_json};\n"
+         {parts}"
     ))
 }
 
@@ -646,9 +629,9 @@ mod tests {
     }
 
     /// Generate the runtime proxy from owned descriptors.
-    fn proxy(tools: &[ToolDescriptor], namespaces: &[String]) -> Result<String, String> {
+    fn proxy(tools: &[ToolDescriptor]) -> Result<String, String> {
         let refs: Vec<&ToolDescriptor> = tools.iter().collect();
-        generate_js_proxy_from_catalog(&refs, namespaces)
+        generate_js_proxy_from_catalog(&refs)
     }
 
     // ── tool_name_to_snake ────────────────────────────────────────────────────
@@ -734,8 +717,6 @@ mod tests {
         // codemode.batch is an isolation helper: mixed success/failure jobs
         // settle independently and return partitioned results.
         assert!(js.contains("codemode.batch = async function(jobs)"));
-        assert!(js.contains("codemode.__meta__.helpers"));
-        assert!(js.contains("\"batch\""));
         assert!(js.contains("Promise.allSettled"));
         assert!(js.contains("Promise.resolve().then(job)"));
         assert!(js.contains("ok.push({ i: index, value: result.value })"));
@@ -790,7 +771,8 @@ mod tests {
         let js = generate_discovery_js(&entries, 0.5).expect("js");
 
         assert!(js.contains("hint: __codemodeNoMatchHint"));
-        assert!(js.contains("codemode.__meta__.upstreams()"));
+        assert!(js.contains("Broaden the query or try synonyms."));
+        assert!(!js.contains("__meta__"));
         assert_eq!(js.matches("hint: __codemodeNoMatchHint").count(), 2);
     }
 
@@ -834,7 +816,7 @@ mod tests {
         // Tool with a slash in the name — previously caused a QuickJS syntax
         // error because the unquoted key was invalid.
         let tool = descriptor("github", "create/issue");
-        let js = proxy(&[tool], &["github".to_string()]).expect("proxy");
+        let js = proxy(&[tool]).expect("proxy");
 
         // PRESENCE: the namespace object must be present
         assert!(
@@ -861,7 +843,7 @@ mod tests {
     #[test]
     fn generate_js_proxy_emits_codemode_global_and_method() {
         let tool = descriptor("radarr", "movie.search");
-        let js = proxy(&[tool], &["radarr".to_string()]).expect("proxy");
+        let js = proxy(&[tool]).expect("proxy");
 
         // PRESENCE: preserves the platform-created codemode object
         assert!(
@@ -881,20 +863,6 @@ mod tests {
             js.contains("radarr::movie.search"),
             "method must route to dotted tool id"
         );
-        // PRESENCE: __meta__.namespaces reflects the namespace list, and
-        // helper metadata is available without replacing discovery metadata.
-        assert!(
-            js.contains("[\"radarr\"]"),
-            "namespaces list must be embedded"
-        );
-        assert!(
-            js.contains("codemode.__meta__.helpers"),
-            "helpers metadata must be embedded"
-        );
-        assert!(
-            js.contains("\"batch\""),
-            "batch helper must be visible in metadata"
-        );
         // PRESENCE: null-safe params guard (no nullish-coalescing dependency)
         assert!(
             js.contains("p == null ? {} : p"),
@@ -909,7 +877,7 @@ mod tests {
         for raw in ["search", "describe", "step", "batch"] {
             let namespace = namespace_segment(raw);
             let tool = descriptor(raw, "lookup");
-            let js = proxy(&[tool], &[raw.to_string()]).expect("proxy");
+            let js = proxy(&[tool]).expect("proxy");
 
             assert!(
                 js.contains(&format!("codemode[\"{namespace}\"]")),
@@ -932,7 +900,7 @@ mod tests {
         // via dot notation `codemode.arcane_mcp.tool(...)`; the callTool id keeps
         // the RAW namespace name so the host routes to the real source.
         let tool = descriptor("arcane-mcp", "arcane");
-        let js = proxy(&[tool], &["arcane-mcp".to_string()]).expect("proxy");
+        let js = proxy(&[tool]).expect("proxy");
 
         assert!(
             js.contains("codemode[\"arcane_mcp\"]"),
@@ -953,8 +921,8 @@ mod tests {
         let dotted = descriptor("demo", "movie.search");
         let underscored = descriptor("demo", "movie_search");
 
-        let err = proxy(&[dotted, underscored], &["demo".to_string()])
-            .expect_err("sanitized collisions must not be last-wins");
+        let err =
+            proxy(&[dotted, underscored]).expect_err("sanitized collisions must not be last-wins");
 
         assert!(err.contains("both sanitize to"));
     }
@@ -964,11 +932,8 @@ mod tests {
         let hyphenated = descriptor("foo-bar", "ping");
         let dotted = descriptor("foo.bar", "ping");
 
-        let err = proxy(
-            &[hyphenated, dotted],
-            &["foo-bar".to_string(), "foo.bar".to_string()],
-        )
-        .expect_err("final proxy collisions must not generate duplicate keys");
+        let err = proxy(&[hyphenated, dotted])
+            .expect_err("final proxy collisions must not generate duplicate keys");
 
         assert!(err.contains("both sanitize to"));
         assert!(err.contains("foo_bar"));
