@@ -115,8 +115,13 @@ impl AppState {
             registry: Arc::new(registry),
             clients,
             protected_mcp_http_client,
+            // `PublicRelayForwarder::new()` only fails on reqwest client
+            // build errors (e.g. TLS backend init failure), the same class
+            // of infallible-in-practice startup error already accepted for
+            // `protected_mcp_http_client` above via `.expect(...)`.
             public_relay_forwarder: Arc::new(
-                crate::oauth::public_relay::PublicRelayForwarder::default(),
+                crate::oauth::public_relay::PublicRelayForwarder::new()
+                    .expect("public relay forwarder configuration is valid"),
             ),
             public_relay: None,
             protected_mcp_router: None,

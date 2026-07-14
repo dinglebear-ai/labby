@@ -39,7 +39,7 @@ impl PublicRelayForwarder {
             .timeout(PUBLIC_TOTAL_TIMEOUT)
             .no_gzip()
             .build()
-            .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?;
+            .map_err(|error| PublicRelayError::ForwarderInitFailed(error.to_string()))?;
         Ok(Self { client })
     }
 
@@ -148,12 +148,6 @@ fn reqwest_source_without_url(error: &reqwest::Error) -> String {
         }
     } else {
         parts.join(": ")
-    }
-}
-
-impl Default for PublicRelayForwarder {
-    fn default() -> Self {
-        Self::new().expect("public relay forwarder configuration is valid")
     }
 }
 
