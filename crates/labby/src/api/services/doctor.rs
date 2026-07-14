@@ -42,7 +42,13 @@ async fn handle(
         req,
         ACTIONS,
         move |action, params| async move {
-            crate::dispatch::doctor::dispatch_with_clients(&clients, &action, params).await
+            crate::dispatch::doctor::dispatch_with_clients_and_relay(
+                &clients,
+                state.public_relay.clone(),
+                &action,
+                params,
+            )
+            .await
         },
     )
     .await
@@ -70,9 +76,11 @@ async fn stream_audit_full(
 
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::dispatch::doctor::Finding>(64);
     let clients = Arc::clone(&state.clients);
+    let public_relay = state.public_relay.clone();
 
     tokio::spawn(async move {
-        crate::dispatch::doctor::service::stream_audit_full(clients, tx).await;
+        crate::dispatch::doctor::service::stream_audit_full_with_relay(clients, public_relay, tx)
+            .await;
     });
 
     info!(

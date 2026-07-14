@@ -10,7 +10,7 @@ use crate::dispatch::helpers::{action_schema, help_payload, to_json};
 
 use super::catalog::ACTIONS;
 use super::gateway;
-use super::params::{parse_proxy_check, parse_service_probe};
+use super::params::{parse_proxy_check, parse_relay_check, parse_service_probe};
 use super::proxy;
 use super::service;
 use super::system;
@@ -49,6 +49,12 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
             let p = parse_proxy_check(&params)?;
             return to_json(proxy::check_proxy(p).await?);
         }
+        // "oauth.relay.check" intentionally has no early-return arm here:
+        // it falls through to `dispatch_with_clients_and_relay` below (which
+        // already handles it, passing the same `current_public_relay_manager()`
+        // value an early return here would have used) so the action gets
+        // the same "dispatch start"/"dispatch ok"/"dispatch warn" structured
+        // logging every other action gets, instead of silently bypassing it.
         a if !ACTIONS.iter().any(|s| s.name == a) => {
             return Err(ToolError::UnknownAction {
                 message: format!("unknown action `{action}` for service `doctor`"),
@@ -60,12 +66,27 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     }
     // Actions below require ServiceClients — build from env.
     let clients = Arc::new(ServiceClients::from_env());
-    dispatch_with_clients(&clients, action, params).await
+    dispatch_with_clients_and_relay(
+        &clients,
+        crate::oauth::public_relay::current_public_relay_manager(),
+        action,
+        params,
+    )
+    .await
 }
 
 /// API-path dispatch: uses pre-built `ServiceClients` from `AppState`.
 pub async fn dispatch_with_clients(
     clients: &Arc<ServiceClients>,
+    action: &str,
+    params: Value,
+) -> Result<Value, ToolError> {
+    dispatch_with_clients_and_relay(clients, None, action, params).await
+}
+
+pub async fn dispatch_with_clients_and_relay(
+    clients: &Arc<ServiceClients>,
+    public_relay: Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>>,
     action: &str,
     params: Value,
 ) -> Result<Value, ToolError> {
@@ -102,6 +123,10 @@ pub async fn dispatch_with_clients(
             let p = parse_proxy_check(&params)?;
             to_json(proxy::check_proxy(p).await?)
         }
+        "oauth.relay.check" => {
+            let p = parse_relay_check(&params)?;
+            to_json(super::relay::check_public_relay(public_relay.clone(), p.probe_targets).await)
+        }
         "service.probe" => {
             let p = parse_service_probe(&params)?;
             let finding = service::probe_service(clients, p.service, p.instance).await?;
@@ -113,16 +138,14 @@ pub async fn dispatch_with_clients(
             // gateway.upstreams is included so the full audit surfaces pool state.
             let (tx, mut rx) = tokio::sync::mpsc::channel(64);
             let clients = clients.clone();
+            let public_relay = public_relay.clone();
             tokio::spawn(async move {
-                service::stream_audit_full(clients, tx).await;
+                service::stream_audit_full_with_relay(clients, public_relay, tx).await;
             });
             let mut findings = Vec::new();
             while let Some(f) = rx.recv().await {
                 findings.push(f);
             }
-            // Append gateway upstream findings to audit.full.
-            let gw_report = gateway::check_gateway_upstreams().await;
-            findings.extend(gw_report.findings);
             to_json(Report { findings })
         }
         unknown => Err(ToolError::UnknownAction {

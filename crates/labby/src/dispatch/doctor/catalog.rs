@@ -104,4 +104,19 @@ pub const ACTIONS: &[ActionSpec] = &[
             },
         ],
     },
+    ActionSpec {
+        name: "oauth.relay.check",
+        description: "Check public OAuth callback relay registry readiness; optionally probe registered target sockets",
+        destructive: false,
+        // `requires_admin: true` is enforced at the API dispatch gate, not
+        // here -- see `api/router.rs::doctor_admin_actions_are_enforced_by_api_dispatch_gate`.
+        requires_admin: true,
+        returns: "DoctorReport",
+        params: &[ParamSpec {
+            name: "probe_targets",
+            ty: "boolean",
+            required: false,
+            description: "When true, perform bounded TCP reachability probes for registered target hosts",
+        }],
+    },
 ];

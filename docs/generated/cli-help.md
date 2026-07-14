@@ -149,12 +149,13 @@ Audit configured services and report problems
 Usage: doctor [OPTIONS] [COMMAND]
 
 Commands:
-  auth      Check auth/OAuth configuration (env vars, files, permissions)
-  proxy     Check public Lab and protected MCP proxy endpoints from caller-visible URLs
-  system    Run local system checks (env vars, Docker, disk, toolchain)
-  service   Probe a single configured service
-  services  Probe all configured services
-  help      Print this message or the help of the given subcommand(s)
+  auth         Check auth/OAuth configuration (env vars, files, permissions)
+  oauth-relay  Check public OAuth callback relay registry and optionally target sockets
+  proxy        Check public Lab and protected MCP proxy endpoints from caller-visible URLs
+  system       Run local system checks (env vars, Docker, disk, toolchain)
+  service      Probe a single configured service
+  services     Probe all configured services
+  help         Print this message or the help of the given subcommand(s)
 
 Options:
       --json
@@ -180,6 +181,30 @@ Usage: auth [OPTIONS]
 Options:
       --json
           Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby doctor oauth-relay`
+
+```text
+Check public OAuth callback relay registry and optionally target sockets
+
+Usage: oauth-relay [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --probe-targets
+          Probe registered target sockets in addition to registry readiness
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -3309,8 +3334,9 @@ Run local OAuth callback relay helpers
 Usage: oauth [OPTIONS] <COMMAND>
 
 Commands:
-  relay-local  Run a local OAuth callback relay that forwards to a machine or explicit target
-  help         Print this message or the help of the given subcommand(s)
+  relay-local     Run a local OAuth callback relay that forwards to a machine or explicit target
+  relay-registry  Manage the public OAuth callback relay sidecar registry
+  help            Print this message or the help of the given subcommand(s)
 
 Options:
       --json
@@ -3354,6 +3380,208 @@ Options:
 
   -h, --help
           Print help
+```
+
+## `labby oauth relay-registry`
+
+```text
+Manage the public OAuth callback relay sidecar registry
+
+Usage: relay-registry [OPTIONS] <COMMAND>
+
+Commands:
+  list      List registered public callback relay machines
+  import    Import a standalone callback-relay registry JSON file
+  register  Register or update a public callback relay machine
+  remove    Remove a public callback relay machine
+  disable   Disable a public callback relay machine without removing it
+  enable    Enable a public callback relay machine
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby oauth relay-registry list`
+
+```text
+List registered public callback relay machines
+
+Usage: list [OPTIONS]
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby oauth relay-registry import`
+
+```text
+Import a standalone callback-relay registry JSON file.
+
+Destructive: replaces the entire sidecar registry. Requires `-y` / `--yes` when stdin is not a TTY; otherwise prompts for confirmation.
+
+Usage: import [OPTIONS] --file <FILE>
+
+Options:
+      --file <FILE>
+
+
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -y, --yes
+          Skip confirmation for this destructive action
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `labby oauth relay-registry register`
+
+```text
+Register or update a public callback relay machine
+
+Usage: register [OPTIONS] --machine <MACHINE> --target-url <TARGET_URL>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --machine <MACHINE>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --target-url <TARGET_URL>
+
+
+      --description <DESCRIPTION>
+
+
+      --disabled
+
+
+  -h, --help
+          Print help
+```
+
+## `labby oauth relay-registry remove`
+
+```text
+Remove a public callback relay machine.
+
+Destructive: deletes the entry. Requires `-y` / `--yes` when stdin is not a TTY; otherwise prompts for confirmation.
+
+Usage: remove [OPTIONS] --machine <MACHINE>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --machine <MACHINE>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -y, --yes
+          Skip confirmation for this destructive action
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `labby oauth relay-registry disable`
+
+```text
+Disable a public callback relay machine without removing it
+
+Usage: disable [OPTIONS] --machine <MACHINE>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --machine <MACHINE>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby oauth relay-registry enable`
+
+```text
+Enable a public callback relay machine
+
+Usage: enable [OPTIONS] --machine <MACHINE>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --machine <MACHINE>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby oauth relay-registry help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
 ```
 
 ## `labby oauth help`

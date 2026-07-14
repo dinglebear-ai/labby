@@ -937,7 +937,10 @@ fn validate_protected_public_path_for_startup(
         );
     }
     let lower = path.to_ascii_lowercase();
-    if lower.starts_with("/.well-known") || lower.starts_with("/v1") {
+    if lower.starts_with("/.well-known")
+        || lower.starts_with("/v1")
+        || crate::oauth::public_relay::is_reserved_public_relay_path(path)
+    {
         return invalid_protected_route(
             route,
             "public_path",
@@ -3962,6 +3965,27 @@ backend_url = "http://10.0.0.2:3100/mcp"
         let err = cfg
             .validate()
             .expect_err("reserved protected route path must fail validation");
+
+        assert!(err.to_string().contains("public_path"));
+        assert!(err.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn config_validation_rejects_public_callback_relay_protected_route_path() {
+        let toml = r#"
+[[protected_mcp_routes]]
+name = "bad"
+public_host = "mcp.example.com"
+public_path = "/callback/dookie"
+backend_url = "http://10.0.0.2:3100/mcp"
+"#;
+
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+        cfg.normalize_protected_mcp_routes()
+            .expect("normalization should not hide validation failure");
+        let err = cfg
+            .validate()
+            .expect_err("callback relay protected route path must fail validation");
 
         assert!(err.to_string().contains("public_path"));
         assert!(err.to_string().contains("reserved"));

@@ -118,6 +118,72 @@ Important constraints:
 - it does not mint tokens, store PKCE state, or complete the OAuth exchange itself
 - the real client listener must already be running and reachable before the callback arrives
 
+## Public Callback Relay
+
+Labby can also serve the public Codex MCP OAuth callback relay at:
+
+```text
+https://callback.tootie.tv/callback/<machine>
+https://callback.tootie.tv/callback/<machine>/<suffix>
+```
+
+This is for remote, headless, or cross-namespace clients whose browser cannot
+reach the client's local loopback listener directly. Regular non-headless
+desktop clients should keep local loopback callbacks where possible.
+
+Client configuration example:
+
+```toml
+mcp_oauth_callback_url = "https://callback.tootie.tv/callback/dookie"
+```
+
+The public relay is transport-only. It forwards the final callback request to
+the registered machine target; Codex or the MCP client still owns PKCE, state
+validation, and token exchange.
+
+Public relay constraints:
+
+- public callback routes are unauthenticated: `GET|POST /callback/<machine>[/*suffix]`
+- admin mutation lives under authenticated `/v1/oauth/relay/*` and requires `lab:admin`
+- targets must be `http://<tailscale-ip>:38935/callback/<machine>` (host in the Tailscale CGNAT range `100.64.0.0/10`, e.g. `http://100.88.16.79:38935/callback/dookie`) with no userinfo, query, or fragment
+- query strings, request bodies, auth headers, cookies, `code`, `state`, and full target URLs are not logged
+- forwarding does not follow redirects and strips `Location` and `Set-Cookie`
+- `/healthz` is shallow: process alive, relay enabled, registry loaded
+- deep target reachability belongs in explicit doctor checks:
+
+```bash
+labby doctor oauth-relay --probe-targets --json
+```
+
+The registry is separate from `[oauth.machines]` and is stored at:
+
+```text
+~/.labby/oauth-public-relay/registry.json
+```
+
+Offline registry management:
+
+```bash
+labby oauth relay-registry list --json
+labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
+labby oauth relay-registry register \
+  --machine dookie \
+  --target-url http://100.88.16.79:38935/callback/dookie
+labby oauth relay-registry disable --machine dookie
+labby oauth relay-registry enable --machine dookie
+labby oauth relay-registry remove --machine dookie
+```
+
+CLI registry mutations write the sidecar file and report
+`restart_required: true`; restart `labby serve` to refresh a running server's
+in-memory snapshot. The authenticated admin API updates the live snapshot and
+the sidecar together. Registry imports are all-or-nothing: any quarantined
+machine or invalid target rejects the import without replacing the active
+registry.
+
+For the production cutover and rollback procedure, see
+[CALLBACK_RELAY.md](../deploy/CALLBACK_RELAY.md).
+
 ## Codex MCP OAuth Client Setup
 
 Codex desktop clients usually do not need callback relay settings. When the

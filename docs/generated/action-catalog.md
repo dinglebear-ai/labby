@@ -9,6 +9,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `doctor` | `audit.full` | false | false |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false |  | `DoctorReport` | cli, mcp, api |
 | `doctor` | `help` | false | false |  | `Catalog` | cli, mcp, api |
+| `doctor` | `oauth.relay.check` | false | false | `probe_targets: boolean` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `proxy.check` | false | false | `app_url*: string`<br>`mcp_url*: string`<br>`route*: string`<br>`backend_url: string` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `schema` | false | false | `action*: string` | `Schema` | cli, mcp, api |
 | `doctor` | `service.probe` | false | false | `service*: string`<br>`instance: string` | `Finding` | cli, mcp, api |

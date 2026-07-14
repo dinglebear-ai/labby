@@ -51,6 +51,9 @@ impl IntoResponse for ApiError {
             "missing_param" | "invalid_param" | "validation_failed" | "invalid_hint" => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
+            "relay_invalid_target" => StatusCode::UNPROCESSABLE_ENTITY,
+            "relay_registry_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+            "relay_forwarder_init_failed" => StatusCode::BAD_GATEWAY,
             "confirmation_required" => StatusCode::UNPROCESSABLE_ENTITY,
             "ssrf_blocked" | "no_remote_transport" => StatusCode::UNPROCESSABLE_ENTITY,
             // lab-zxx5.18 install hardening kinds. All user-caller errors with
@@ -238,6 +241,22 @@ mod tests {
         assert_eq!(status_for("provider_timeout"), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(
             status_for("invalid_provider_output"),
+            StatusCode::BAD_GATEWAY
+        );
+    }
+
+    #[test]
+    fn public_relay_kinds_map_to_expected_statuses() {
+        assert_eq!(
+            status_for("relay_invalid_target"),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            status_for("relay_registry_unavailable"),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status_for("relay_forwarder_init_failed"),
             StatusCode::BAD_GATEWAY
         );
     }

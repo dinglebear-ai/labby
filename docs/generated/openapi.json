@@ -701,6 +701,14 @@
           "params": {}
         }
       },
+      "DoctorOauthRelayCheckParams": {
+        "type": "object",
+        "properties": {
+          "probe_targets": {
+            "type": "boolean"
+          }
+        }
+      },
       "DoctorProxyCheckParams": {
         "type": "object",
         "required": [

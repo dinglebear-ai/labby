@@ -15,6 +15,7 @@ The docs are split by topic so contributors do not have to recover architecture,
 - Use [design/component-development.md](./design/component-development.md) and [design/design-system-contract.md](./design/design-system-contract.md) when building or revising Labby web UI components.
 - Use [CONFIG.md](./runtime/CONFIG.md), [INCUS.md](./runtime/INCUS.md), [HOST_GATEWAY.md](./runtime/HOST_GATEWAY.md), and [OPERATIONS.md](./OPERATIONS.md) for setup, recommended Incus deployment, gateway runtime choices, and operator workflows.
 - Refer to [OAUTH.md](./runtime/OAUTH.md) for bearer vs OAuth mode selection, Google-backed authorization flow, lab-issued JWT behavior, and callback-forwarding constraints.
+- Use [CALLBACK_RELAY.md](./deploy/CALLBACK_RELAY.md) for the public OAuth callback relay cutover and rollback runbook.
 - Use [GATEWAY.md](./services/GATEWAY.md) when managing upstream MCP gateways over CLI, MCP, `/v1/gateway`, or Gateway-managed OAuth protected MCP routes.
 - Use [acp/README.md](./acp/README.md) for ACP service architecture, the `acp` vs `chat` boundary, and gateway integration direction.
 - Use [acp/design.md](./acp/design.md) for ACP design details and [acp/research-findings.md](./acp/research-findings.md) for the supporting research notes.
@@ -97,6 +98,8 @@ The docs are split by topic so contributors do not have to recover architecture,
   RMCP SDK integration contract: transports, feature posture, handler patterns, auth ownership, and capability rules.
 - [OAUTH.md](./runtime/OAUTH.md)
   HTTP auth modes: static bearer compatibility, internal Google-backed OAuth, lab-issued JWTs, JWKS, RFC 9728 metadata, and redirect/callback forwarding rules.
+- [CALLBACK_RELAY.md](./deploy/CALLBACK_RELAY.md)
+  Public OAuth callback relay cutover, registry import, validation, and rollback.
 - [GATEWAY.md](./services/GATEWAY.md)
   Gateway control plane: CRUD, reload/test flows, runtime views, tool exposure policy, and Gateway-managed OAuth protected MCP routes.
 - [acp/README.md](./acp/README.md)
