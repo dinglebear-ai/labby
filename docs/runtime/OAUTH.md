@@ -145,7 +145,7 @@ Public relay constraints:
 
 - public callback routes are unauthenticated: `GET|POST /callback/<machine>[/*suffix]`
 - admin mutation lives under authenticated `/v1/oauth/relay/*` and requires `lab:admin`
-- targets must be `http://100.64.0.0/10:38935/callback/<machine>` with no userinfo, query, or fragment
+- targets must be `http://<tailscale-ip>:38935/callback/<machine>` (host in the Tailscale CGNAT range `100.64.0.0/10`, e.g. `http://100.88.16.79:38935/callback/dookie`) with no userinfo, query, or fragment
 - query strings, request bodies, auth headers, cookies, `code`, `state`, and full target URLs are not logged
 - forwarding does not follow redirects and strips `Location` and `Set-Cookie`
 - `/healthz` is shallow: process alive, relay enabled, registry loaded

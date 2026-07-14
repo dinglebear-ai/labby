@@ -17,12 +17,14 @@ Remote, headless, or cross-namespace clients may use:
 mcp_oauth_callback_url = "https://callback.tootie.tv/callback/<machine>"
 ```
 
-Valid Labby public relay targets are:
+Valid Labby public relay targets look like:
 
 ```text
-http://100.64.0.0/10:38935/callback/<machine>
+http://100.88.16.79:38935/callback/<machine>
 ```
 
+The host must be a concrete Tailscale CGNAT address in `100.64.0.0/10` (that
+range describes the *allowed network*, not a valid URL hostname on its own).
 Targets with HTTPS, non-38935 ports, userinfo, query strings, fragments,
 loopback, link-local, or non-Tailscale IPs are rejected.
 
