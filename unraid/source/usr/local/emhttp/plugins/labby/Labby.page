@@ -30,6 +30,8 @@ if (file_exists($cfgFile)) {
     }
 }
 $port = ($cfg['HTTP_PORT'] ?? '') !== '' ? $cfg['HTTP_PORT'] : '8765';
+$host = ($cfg['HTTP_HOST'] ?? '') !== '' ? $cfg['HTTP_HOST'] : '127.0.0.1';
+$lanReachable = !in_array($host, ['127.0.0.1', 'localhost'], true);
 $serviceEnabled = ($cfg['SERVICE'] ?? 'disabled') === 'enabled';
 
 if (isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 'stop'], true)) {
@@ -60,12 +62,14 @@ $running = strpos($status, 'RUNNING') !== false;
   <input type="submit" class="btn" value="<?= $running ? 'Stop Labby' : 'Start Labby' ?>">
 </form>
 
-<?php if ($running): ?>
+<?php if ($running && $lanReachable): ?>
   <p>
     <a href="http://<?= htmlspecialchars($_SERVER['SERVER_ADDR'] ?? $_SERVER['HTTP_HOST'], ENT_QUOTES) ?>:<?= htmlspecialchars($port, ENT_QUOTES) ?>/" target="_blank" rel="noopener" class="btn">
       Open Labby Gateway &rarr;
     </a>
   </p>
+<?php elseif ($running): ?>
+  <p><em>labby is bound to 127.0.0.1 (loopback-only, the safe default) — it isn't reachable from your browser at this address. Set HTTP_HOST=0.0.0.0 in labby.cfg to allow LAN access, but first provision a bearer token (see the comment above HTTP_HOST in labby.cfg) or labby will refuse to start.</em></p>
 <?php endif; ?>
 
 <p>Configure: <code>/boot/config/plugins/labby/labby.cfg</code> (edit on flash or via SSH; re-applied on every array start).</p>

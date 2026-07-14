@@ -11,8 +11,8 @@
   <!ENTITY tarball      "lab-x86_64-unknown-linux-gnu.tar.gz">
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&version;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
-  <!ENTITY cfgMD5       "b7105a15cf057f4aebf4418fd6855ef2">
-  <!ENTITY pageMD5      "9cfead28fca90262e168cd31df8540ef">
+  <!ENTITY cfgMD5       "1bb151dd5b7b091e9aed476421281769">
+  <!ENTITY pageMD5      "591a52bd512539a4d9c9fb9605864bf9">
   <!ENTITY rcMD5        "dbf4dd55b50df70e419587c17ae07eb7">
   <!ENTITY preflightMD5 "c28ec9cc2b2749b79e65c1023fc43411">
   <!ENTITY mountedMD5   "b7eddfd2888984c46f4c81a199693c5c">
