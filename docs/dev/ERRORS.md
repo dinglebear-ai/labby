@@ -67,6 +67,7 @@ Dispatch layers may add the following kinds on top of SDK errors:
 - `invalid_provider_output` — Gateway enrichment provider returned malformed, oversized, or unsafe output. HTTP 502.
 - `relay_invalid_target` — public OAuth callback relay registry input failed target validation (for example, non-HTTP scheme, unsafe host, wrong port, or callback path mismatch). HTTP 422.
 - `relay_registry_unavailable` — public OAuth callback relay registry storage or manager wiring is unavailable. HTTP 503.
+- `relay_forwarder_init_failed` — public OAuth callback relay's outbound HTTP client (`reqwest::Client`) failed to build for a forward attempt. This is a client-builder/startup-shaped failure, not a request-input problem. HTTP 502.
 - `path_traversal` — a path escapes its target root (contains `..`, is absolute, or canonicalizes outside the root). This is the **canonical** path-escape kind, emitted across the dispatch layer (`path_safety.rs`, `helpers::reject_path_traversal`, the Code Mode artifact containment check, and stash import/export) and by the ACP binary installer (`AcpInstallerError::PathTraversal` → `path_traversal`). HTTP 422. The older `path_traversal_rejected` spelling is retained only by the Fleet-WS marketplace installer (see below) for back-compat; new emitters must use `path_traversal`.
 - `symlink_rejected` — a symlink was encountered along a write/walk path where symlinks are disallowed. Emitted by the dispatch layer (stash save/import/export, Code Mode artifact containment) and the Fleet-WS marketplace installer. HTTP 422.
 
@@ -477,6 +478,7 @@ Default mapping expectations:
 - `oauth_unsupported_method` -> `502 Bad Gateway`
 - `relay_invalid_target` -> `422 Unprocessable Entity`
 - `relay_registry_unavailable` -> `503 Service Unavailable`
+- `relay_forwarder_init_failed` -> `502 Bad Gateway`
 - `internal_error` -> `500 Internal Server Error`
 
 ## Deploy Service Kinds
@@ -518,6 +520,7 @@ Important cases in this implementation:
 - master-only fleet query routes on a non-master device return `not_found`
 - invalid OAuth relay target input returns `relay_invalid_target`
 - missing or unwired public OAuth callback relay registry state returns `relay_registry_unavailable`
+- a failed outbound HTTP client build for the public OAuth callback relay's forwarder returns `relay_forwarder_init_failed`
 - missing fleet store wiring returns `internal_error`
 - failed master-bound HTTP uploads map through the normal transport-layer kinds rather than inventing device-local variants
 
