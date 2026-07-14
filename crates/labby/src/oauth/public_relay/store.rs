@@ -770,8 +770,15 @@ mod tests {
                 fs::write(&backup_path, b"{}").expect("write synthetic backup");
                 let mtime = SystemTime::UNIX_EPOCH
                     + std::time::Duration::from_secs(1_700_000_000 + i as u64);
-                File::open(&backup_path)
-                    .expect("open synthetic backup")
+                // `File::open` only requests read access. On Windows,
+                // `SetFileTime` (what `set_modified` calls under the hood)
+                // needs a handle opened with write access -- a read-only
+                // handle fails with `PermissionDenied`. Open for write
+                // explicitly so this works cross-platform.
+                OpenOptions::new()
+                    .write(true)
+                    .open(&backup_path)
+                    .expect("open synthetic backup for write")
                     .set_modified(mtime)
                     .expect("set synthetic mtime");
                 backups.push(backup_path);
