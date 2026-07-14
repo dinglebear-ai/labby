@@ -8,7 +8,7 @@ use url::Url;
 use crate::config::OauthMachineConfig;
 use crate::oauth::error::OauthRelayError;
 use crate::oauth::header_filter::{
-    REQUEST_HEADER_ALLOWLIST, RESPONSE_HEADER_ALLOWLIST, filter_headers,
+    LOCAL_RESPONSE_HEADER_ALLOWLIST, REQUEST_HEADER_ALLOWLIST, filter_headers,
 };
 
 /// A resolved forwarding target.
@@ -108,8 +108,12 @@ pub fn filter_hop_by_hop_request_headers(headers: &HeaderMap) -> HeaderMap {
 }
 
 /// Filter hop-by-hop headers from an upstream response before returning it.
+///
+/// Uses [`LOCAL_RESPONSE_HEADER_ALLOWLIST`], which (unlike the public
+/// relay's allowlist) preserves `Location` because the local relay only
+/// forwards to an operator-configured trusted target.
 pub fn filter_hop_by_hop_response_headers(headers: &HeaderMap) -> HeaderMap {
-    filter_headers(headers, RESPONSE_HEADER_ALLOWLIST)
+    filter_headers(headers, LOCAL_RESPONSE_HEADER_ALLOWLIST)
 }
 
 #[cfg(test)]
@@ -248,7 +252,11 @@ mod tests {
         assert!(filtered.contains_key(CONTENT_TYPE));
         assert!(filtered.contains_key(header::CACHE_CONTROL));
         assert!(filtered.contains_key(header::EXPIRES));
-        assert!(!filtered.contains_key(header::LOCATION));
+        // The local relay only forwards to an operator-configured trusted
+        // target, so unlike the public relay it preserves `Location` —
+        // dropping it would silently break local targets that respond to
+        // an OAuth callback with a redirect (e.g. to a success page).
+        assert!(filtered.contains_key(header::LOCATION));
         assert!(filtered.contains_key(header::PRAGMA));
         assert!(!filtered.contains_key(SET_COOKIE));
     }

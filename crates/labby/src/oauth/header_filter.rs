@@ -21,11 +21,36 @@ pub const REQUEST_HEADER_ALLOWLIST: &[&str] = &[
     "user-agent",
 ];
 
+/// Response headers relayed to the public internet-facing callback surface
+/// (`oauth/public_relay/policy.rs`). `location` is deliberately excluded here
+/// even though the local relay allows it (see [`LOCAL_RESPONSE_HEADER_ALLOWLIST`]):
+/// the public relay's machine registry can be mutated by any admin-scoped
+/// caller and its callback path is reachable from the open internet, so
+/// blindly relaying an upstream `Location` would let a compromised or
+/// misconfigured registry entry turn the relay into an open redirector.
 pub const RESPONSE_HEADER_ALLOWLIST: &[&str] = &[
     "cache-control",
     "content-language",
     "content-type",
     "expires",
+    "pragma",
+];
+
+/// Response headers relayed to the loopback-only local OAuth relay
+/// (`oauth/target.rs`). Unlike [`RESPONSE_HEADER_ALLOWLIST`], this includes
+/// `location`: the local relay only ever forwards to an operator-configured
+/// trusted target (`OauthMachineConfig::target_url` or an explicit CLI
+/// target), never to an admin-mutable registry reachable from the internet,
+/// so there is no open-redirect trust boundary to protect here. Dropping
+/// `Location` would silently break any local target that responds to an
+/// OAuth callback with a redirect (e.g. to a "success" page), which is a
+/// legitimate and expected pattern for a trusted loopback target.
+pub const LOCAL_RESPONSE_HEADER_ALLOWLIST: &[&str] = &[
+    "cache-control",
+    "content-language",
+    "content-type",
+    "expires",
+    "location",
     "pragma",
 ];
 
@@ -108,6 +133,23 @@ mod tests {
 
         assert!(filtered.contains_key(header::CONTENT_TYPE));
         assert!(!filtered.contains_key(LOCATION));
+        assert!(!filtered.contains_key(SET_COOKIE));
+    }
+
+    #[test]
+    fn local_response_filter_preserves_location_but_strips_set_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        headers.insert(
+            LOCATION,
+            HeaderValue::from_static("https://example.com/success"),
+        );
+        headers.insert(SET_COOKIE, HeaderValue::from_static("secret=1"));
+
+        let filtered = filter_headers(&headers, LOCAL_RESPONSE_HEADER_ALLOWLIST);
+
+        assert!(filtered.contains_key(header::CONTENT_TYPE));
+        assert!(filtered.contains_key(LOCATION));
         assert!(!filtered.contains_key(SET_COOKIE));
     }
 

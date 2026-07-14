@@ -448,6 +448,66 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn oauth_local_relay_forwards_upstream_redirect_location() {
+        // The local relay only forwards to an operator-configured trusted
+        // target, so it should preserve `Location` on 3xx responses (unlike
+        // the public relay, which strips it to prevent open redirects on a
+        // trust boundary open to the internet). See header_filter.rs for the
+        // policy rationale.
+        let upstream = spawn_upstream(UpstreamState {
+            seen_requests: Arc::new(Mutex::new(Vec::new())),
+            response_status: StatusCode::FOUND,
+            response_body: "",
+            response_headers: vec![(
+                header::LOCATION.as_str(),
+                "https://example.com/oauth/success",
+            )],
+            delay: Duration::from_millis(0),
+        })
+        .await;
+
+        let relay_addr = available_loopback_addr().await;
+        let relay = spawn_relay(LocalRelayConfig {
+            bind_addr: relay_addr,
+            resolved_target: resolve_explicit_target(
+                &format!("http://{}/callback/node-a", upstream.addr),
+                Some(relay_addr.port()),
+            )
+            .unwrap(),
+            request_timeout: Duration::from_millis(250),
+        })
+        .await;
+
+        // See api/state.rs::build_protected_mcp_http_client for why this
+        // call is needed under "rustls-no-provider" -- idempotent, safe
+        // to ignore Err.
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let response = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+            .get(format!(
+                "http://{}/callback/node-a?code=abc&state=xyz",
+                relay_addr
+            ))
+            .send()
+            .await
+            .expect("relay request should succeed");
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .map(|v| v.to_str().unwrap()),
+            Some("https://example.com/oauth/success")
+        );
+
+        relay.abort();
+        upstream.handle.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn oauth_local_relay_returns_bad_gateway_for_unreachable_target() {
         let upstream_addr = available_loopback_addr().await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
