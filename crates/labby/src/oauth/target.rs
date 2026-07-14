@@ -1,12 +1,15 @@
 //! Target resolution and forwarding helpers for the local OAuth relay.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use axum::http::{HeaderMap, HeaderName, HeaderValue};
+use axum::http::HeaderMap;
 use url::Url;
 
 use crate::config::OauthMachineConfig;
 use crate::oauth::error::OauthRelayError;
+use crate::oauth::header_filter::{
+    REQUEST_HEADER_ALLOWLIST, RESPONSE_HEADER_ALLOWLIST, filter_headers,
+};
 
 /// A resolved forwarding target.
 #[derive(Debug, Clone)]
@@ -109,73 +112,10 @@ pub fn filter_hop_by_hop_response_headers(headers: &HeaderMap) -> HeaderMap {
     filter_headers(headers, RESPONSE_HEADER_ALLOWLIST)
 }
 
-const REQUEST_HEADER_ALLOWLIST: &[&str] = &[
-    "accept",
-    "accept-language",
-    "content-type",
-    "origin",
-    "referer",
-    "user-agent",
-];
-
-const RESPONSE_HEADER_ALLOWLIST: &[&str] = &[
-    "cache-control",
-    "content-language",
-    "content-type",
-    "expires",
-    "pragma",
-];
-
-fn filter_headers(headers: &HeaderMap, allowlist: &[&str]) -> HeaderMap {
-    let connection_header_names = connection_header_names(headers);
-    headers
-        .iter()
-        .filter(|(name, _)| {
-            allowlist.contains(&name.as_str())
-                && !is_hop_by_hop_header(name)
-                && !connection_header_names.contains(name.as_str())
-        })
-        .fold(HeaderMap::new(), |mut filtered, (name, value)| {
-            filtered.append(name.clone(), copy_header_value(value));
-            filtered
-        })
-}
-
-fn copy_header_value(value: &HeaderValue) -> HeaderValue {
-    value.clone()
-}
-
-fn connection_header_names(headers: &HeaderMap) -> BTreeSet<String> {
-    headers
-        .get_all("connection")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
-        .collect()
-}
-
-fn is_hop_by_hop_header(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "connection"
-            | "content-length"
-            | "host"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
     use axum::http::header;
     use axum::http::header::{
         AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN, REFERER,
