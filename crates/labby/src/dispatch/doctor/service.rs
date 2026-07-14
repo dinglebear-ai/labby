@@ -126,6 +126,29 @@ pub async fn stream_audit_full(
     }
 }
 
+pub async fn stream_audit_full_with_relay(
+    clients: Arc<ServiceClients>,
+    public_relay: Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>>,
+    tx: tokio::sync::mpsc::Sender<Finding>,
+) {
+    stream_audit_full(clients, tx.clone()).await;
+
+    for finding in super::gateway::check_gateway_upstreams().await.findings {
+        if tx.send(finding).await.is_err() {
+            return;
+        }
+    }
+
+    for finding in super::relay::check_public_relay(public_relay, false)
+        .await
+        .findings
+    {
+        if tx.send(finding).await.is_err() {
+            return;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------

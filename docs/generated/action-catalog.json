@@ -55,6 +55,31 @@
   },
   {
     "service": "doctor",
+    "action": "oauth.relay.check",
+    "description": "Check public OAuth callback relay registry readiness; optionally probe registered target sockets",
+    "destructive": false,
+    "params": [
+      {
+        "name": "probe_targets",
+        "ty": "boolean",
+        "required": false,
+        "description": "When true, perform bounded TCP reachability probes for registered target hosts"
+      }
+    ],
+    "returns": "DoctorReport",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "doctor",
     "action": "proxy.check",
     "description": "Check public Lab and protected MCP proxy endpoints from caller-visible URLs. Probes: app health, protected-resource metadata, OAuth bearer challenge, wrong-path 404 behavior, and (when backend_url is provided) backend-leak redaction.",
     "destructive": false,

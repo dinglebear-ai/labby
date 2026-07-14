@@ -18,6 +18,8 @@ pub enum OauthRelayError {
         bind_addr: String,
         source: std::io::Error,
     },
+    #[error("failed to build oauth relay HTTP client: {detail}")]
+    ClientBuild { detail: String },
     #[error("oauth relay target `{target}` timed out after {timeout_ms}ms")]
     UpstreamTimeout { target: String, timeout_ms: u64 },
 }

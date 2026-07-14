@@ -28,6 +28,7 @@ pub struct ApiDispatchMeta<'a> {
     pub actor_label: Option<&'a str>,
     pub agent_kind: Option<&'a str>,
     pub ip: Option<String>,
+    pub is_lab_admin: Option<bool>,
 }
 
 pub fn dispatch_meta_from_headers<'a>(
@@ -41,6 +42,7 @@ pub fn dispatch_meta_from_headers<'a>(
         actor_label: None,
         agent_kind: auth.map(|ctx| if ctx.via_session { "device" } else { "agent" }),
         ip: peer_addr.map(|addr| addr.ip().to_string()),
+        is_lab_admin: auth.map(|ctx| ctx.scopes.iter().any(|scope| scope == "lab:admin")),
     }
 }
 
@@ -152,6 +154,32 @@ where
         }));
     };
     let is_destructive = spec.is_some_and(|s| s.destructive);
+    let requires_admin = spec.is_some_and(|s| s.requires_admin);
+    if requires_admin && meta.is_lab_admin != Some(true) {
+        let (kind, message) = if meta.is_lab_admin.is_some() {
+            (
+                "forbidden",
+                format!("action `{action}` requires lab:admin scope"),
+            )
+        } else {
+            (
+                "auth_failed",
+                format!("action `{action}` requires authentication"),
+            )
+        };
+        tracing::warn!(
+            surface = surface,
+            service,
+            action,
+            request_id,
+            kind,
+            "admin action rejected at API gate"
+        );
+        return Err(ApiError(ToolError::Sdk {
+            sdk_kind: kind.to_string(),
+            message,
+        }));
+    }
     let instance = params
         .get("instance")
         .and_then(Value::as_str)

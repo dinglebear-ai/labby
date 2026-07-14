@@ -139,6 +139,30 @@ replace those defaults with a narrower or broader list. Use `https://*` only
 when you intentionally trust any HTTPS DCR callback. Arbitrary non-loopback
 `http://` callbacks remain blocked.
 
+## Public OAuth Callback Relay
+
+Use Labby's public callback relay when a remote, headless, or cross-namespace
+MCP client needs a stable HTTPS callback:
+
+```toml
+mcp_oauth_callback_url = "https://callback.tootie.tv/callback/<machine>"
+```
+
+Regular desktop clients should keep local loopback callbacks. The public relay
+does not exchange tokens or own PKCE; it forwards the final callback to the
+machine target registered in `~/.labby/oauth-public-relay/registry.json`.
+
+Operational commands:
+
+```bash
+labby oauth relay-registry list --json
+labby oauth relay-registry import --file /tmp/callback-relay-registry.json --json
+curl -fsS --max-time 5 https://callback.tootie.tv/healthz
+```
+
+For the full cutover and rollback runbook, see
+[deploy/CALLBACK_RELAY.md](./deploy/CALLBACK_RELAY.md).
+
 ## Dev/Prod Container Drift
 
 The dev and prod Docker stacks intentionally differ in several places. This section documents

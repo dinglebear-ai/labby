@@ -112,7 +112,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Gateway(args) => gateway::run(args, format, &config).await,
         #[cfg(feature = "gateway")]
         Command::Snippets(args) => snippets::run(args, format, &config).await,
-        Command::Oauth(args) => oauth::run(args, &config).await,
+        Command::Oauth(args) => oauth::run(args, format, &config).await,
         #[cfg(feature = "gateway")]
         Command::Internal(args) => internal::run(args),
         // [lab-scaffold: cli-dispatch]

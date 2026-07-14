@@ -7,7 +7,37 @@ use crate::app_manifest::{
 pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
     let mut routes = vec![
         public("GET", "/health", "health", "liveness probe"),
+        public(
+            "GET",
+            "/healthz",
+            "oauth_relay",
+            "public OAuth callback relay shallow health",
+        ),
         public("GET", "/ready", "health", "readiness probe"),
+        public(
+            "GET",
+            "/callback/{machine_id}",
+            "oauth_relay",
+            "public OAuth callback relay",
+        ),
+        public(
+            "POST",
+            "/callback/{machine_id}",
+            "oauth_relay",
+            "public OAuth callback relay",
+        ),
+        public(
+            "GET",
+            "/callback/{machine_id}/{suffix}",
+            "oauth_relay",
+            "public OAuth callback relay suffix path",
+        ),
+        public(
+            "POST",
+            "/callback/{machine_id}/{suffix}",
+            "oauth_relay",
+            "public OAuth callback relay suffix path",
+        ),
         public("POST", "/v1/nodes/hello", "nodes", "node self-registration"),
         public(
             "POST",
@@ -118,6 +148,46 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "marketplace action dispatch",
         ),
         host_validated_auth("POST", "/v1/doctor", "doctor", "doctor action dispatch"),
+        relay_admin(
+            "GET",
+            "/v1/oauth/relay/machines",
+            "list public OAuth callback relay machines",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/machines",
+            "register public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "GET",
+            "/v1/oauth/relay/machines/{machine_id}",
+            "get public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "PUT",
+            "/v1/oauth/relay/machines/{machine_id}",
+            "update public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "DELETE",
+            "/v1/oauth/relay/machines/{machine_id}",
+            "remove public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/machines/{machine_id}/disable",
+            "disable public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/machines/{machine_id}/enable",
+            "enable public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/import",
+            "import public OAuth callback relay registry",
+        ),
         host_validated_auth("POST", "/v1/setup", "setup", "setup action dispatch"),
         auth(
             "GET",
@@ -286,6 +356,15 @@ fn host_validated_auth(method: &str, path: &str, group: &str, notes: &str) -> Ro
     }
 }
 
+fn relay_admin(method: &str, path: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        runtime_condition: Some(
+            "mounted only when /v1 auth is configured; handler requires lab:admin".to_string(),
+        ),
+        ..auth(method, path, "oauth_relay", notes)
+    }
+}
+
 fn bearer_only(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
     RouteDoc {
         bearer_only: true,
@@ -409,5 +488,34 @@ mod tests {
                 "missing documented route {method} {path}"
             );
         }
+    }
+
+    #[test]
+    fn public_relay_routes_have_expected_auth_docs() {
+        let routes = build_route_docs(&[]);
+        let callback = routes
+            .iter()
+            .find(|route| route.method == "GET" && route.path == "/callback/{machine_id}")
+            .unwrap();
+        assert_eq!(callback.handler_group, "oauth_relay");
+        assert!(!callback.auth_required);
+        assert!(!callback.session_cookie_allowed);
+        assert!(!callback.csrf_required);
+
+        let admin = routes
+            .iter()
+            .find(|route| route.method == "POST" && route.path == "/v1/oauth/relay/import")
+            .unwrap();
+        assert_eq!(admin.handler_group, "oauth_relay");
+        assert!(admin.auth_required);
+        assert!(admin.session_cookie_allowed);
+        assert!(admin.csrf_required);
+        assert!(
+            admin
+                .runtime_condition
+                .as_deref()
+                .unwrap_or("")
+                .contains("lab:admin")
+        );
     }
 }

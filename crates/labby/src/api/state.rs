@@ -27,6 +27,12 @@ pub struct AppState {
     pub clients: Arc<ServiceClients>,
     /// Shared HTTP client for protected MCP reverse proxy requests.
     pub protected_mcp_http_client: reqwest::Client,
+    /// Shared public OAuth callback relay forwarder.
+    pub public_relay_forwarder: Arc<crate::oauth::public_relay::PublicRelayForwarder>,
+    /// Live public OAuth callback relay registry manager.
+    ///
+    /// `None` means the public relay is not enabled for this process.
+    pub public_relay: Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>>,
     /// Router containing protected route scoped MCP services, mounted by
     /// host/path after protected route auth.
     pub protected_mcp_router: Option<Arc<axum::Router>>,
@@ -109,6 +115,15 @@ impl AppState {
             registry: Arc::new(registry),
             clients,
             protected_mcp_http_client,
+            // `PublicRelayForwarder::new()` only fails on reqwest client
+            // build errors (e.g. TLS backend init failure), the same class
+            // of infallible-in-practice startup error already accepted for
+            // `protected_mcp_http_client` above via `.expect(...)`.
+            public_relay_forwarder: Arc::new(
+                crate::oauth::public_relay::PublicRelayForwarder::new()
+                    .expect("public relay forwarder configuration is valid"),
+            ),
+            public_relay: None,
             protected_mcp_router: None,
             enabled_services: Arc::new(enabled_services),
             auth_config: None,
@@ -143,6 +158,15 @@ impl AppState {
     #[must_use]
     pub fn with_protected_mcp_router(mut self, router: axum::Router) -> Self {
         self.protected_mcp_router = Some(Arc::new(router));
+        self
+    }
+
+    #[must_use]
+    pub fn with_public_relay_manager(
+        mut self,
+        manager: Arc<crate::oauth::public_relay::PublicRelayRegistryManager>,
+    ) -> Self {
+        self.public_relay = Some(manager);
         self
     }
 
