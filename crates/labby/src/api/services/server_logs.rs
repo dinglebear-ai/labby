@@ -201,9 +201,24 @@ mod tests {
         )
         .expect("write log");
         let config_path = temp.path().join("config.toml");
+        #[derive(serde::Serialize)]
+        struct TestConfig {
+            log: TestLogConfig,
+        }
+
+        #[derive(serde::Serialize)]
+        struct TestLogConfig {
+            dir: String,
+        }
+
+        let config = TestConfig {
+            log: TestLogConfig {
+                dir: log_dir.to_string_lossy().into_owned(),
+            },
+        };
         std::fs::write(
             &config_path,
-            format!("[log]\ndir = \"{}\"\n", log_dir.display()),
+            toml::to_string(&config).expect("serialize config"),
         )
         .expect("write config");
         crate::config::set_test_config_toml_path(Some(config_path));
