@@ -3,26 +3,11 @@ unmaintained = "all"
 yanked = "deny"
 ignore = [
     # owner: jmagar
-    # reason: rand unsound when log+thread_rng features are used with a custom logger; we do not
-    #         use a custom global logger that intercepts rand's thread_rng path, so the unsound
-    #         codepath is unreachable in practice. No upstream patch available yet.
-    # re-review: 2026-09 — drop once rand ships a fix or we can upgrade the dep graph
-    { id = "RUSTSEC-2026-0097", reason = "rand: no patch available upstream yet; unsound path unreachable in our usage" },
-
-    # owner: jmagar
     # reason: RSA PKCS#1 v1.5 timing side-channel (CRT blinding omitted). Lab does not perform
     #         RSA signing or decryption at the TLS termination point — TLS is handled by SWAG/nginx
     #         upstream. The rsa crate is a transitive dep; no upstream patch available.
     # re-review: 2026-09 — drop once rsa upstream ships a fix or the dep is removed
     { id = "RUSTSEC-2023-0071", reason = "RSA timing side-channel; no upstream patch yet — TLS offloaded to SWAG, not in our hot path" },
-
-    # owner: jmagar
-    # reason: paste proc-macro crate unmaintained; pulled in by the boa crates
-    #         (boa_parser -> boa_ast -> boa_string 0.21.1) used by Code Mode's JS
-    #         tooling. paste is a proc-macro (compile-time only) with no runtime
-    #         presence in the shipped binary, so there is no runtime exposure.
-    # re-review: 2026-09 — drop once the boa crates upgrade off paste or Code Mode migrates
-    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained compile-time-only proc-macro from the boa_parser/boa_ast/boa_string chain; no runtime exposure" },
 ]
 
 [licenses]
@@ -68,10 +53,7 @@ reason = "Binary-only: lab-apis must stay pure. CLI parsing lives in `labby`."
 
 [[bans.deny]]
 name = "rmcp"
-# rmcp-openapi (Code Mode `openapi` provider spec parser) and its actix transport
-# dep both pull rmcp transitively; labby-openapi uses only rmcp-openapi's parse
-# surface, never rmcp directly.
-wrappers = ["labby", "labby-auth", "labby-gateway", "agent-client-protocol", "rmcp-openapi", "rmcp-actix-web"]
+wrappers = ["labby", "labby-auth", "labby-gateway"]
 reason = "Binary-only: lab-apis must stay pure. MCP server lives in `labby`."
 
 [[bans.deny]]
@@ -81,11 +63,7 @@ wrappers = [
     "labby-auth",
     "labby-codemode",
     "labby-gateway",
-    "agent-client-protocol",
-    "agent-client-protocol-schema",
     "javy",
-    "wasmprinter",
-    "wasmtime-environ",
 ]
 reason = "lab-apis uses `thiserror`. anyhow is for the binary only."
 
