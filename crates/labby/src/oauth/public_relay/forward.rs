@@ -77,8 +77,27 @@ impl PublicRelayForwarder {
             .send()
             .await
             .map_err(|error| map_forward_error("send", &target_label, error))?;
-        let status = StatusCode::from_u16(response.status().as_u16())
-            .map_err(|_| PublicRelayError::UpstreamError)?;
+        let status_code = response.status().as_u16();
+        let status = StatusCode::from_u16(status_code).map_err(|error| {
+            // Practically unreachable: `reqwest::StatusCode` and
+            // `axum::http::StatusCode` are both backed by the same `http`
+            // crate type, so a status the upstream returned should always
+            // convert. Still log it -- every other forward() failure branch
+            // routes through `map_forward_error`'s `tracing::warn!`, and a
+            // silent `UpstreamError` here would be the one asymmetric
+            // exception.
+            tracing::warn!(
+                surface = "api",
+                service = "oauth_relay",
+                action = "callback.forward",
+                stage = "status_code",
+                target = %target_label,
+                status_code,
+                error = %error,
+                "public oauth callback relay upstream returned an unconvertible status code"
+            );
+            PublicRelayError::UpstreamError
+        })?;
         let headers = filter_public_response_headers(response.headers());
         let mut out = BytesMut::new();
         while let Some(chunk) = response

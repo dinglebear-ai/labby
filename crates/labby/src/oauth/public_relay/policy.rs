@@ -148,7 +148,7 @@ mod tests {
             // Double-encoded traversal: `%252e%252e` never contains the
             // literal substring `%2e`, so a naive single-pattern check
             // misses it even though a downstream single-decode turns it
-            // into `%2e%2e`. See PR #239 review comment 3579435900.
+            // into `%2e%2e`.
             "/callback/dookie/%252e%252e/secret",
             "/callback/dookie/%2561secret",
         ] {
