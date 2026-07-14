@@ -75,6 +75,22 @@ Some MCP clients can pin the OAuth callback port but still redirect the browser 
 `labby oauth relay-local` on the browser machine to accept that loopback redirect and forward it to
 the actual listener.
 
+Codex has two distinct setup shapes:
+
+- normal desktop clients usually need only the MCP server entry and
+  `codex mcp login <server>`
+- remote, SSH, WSL/browser-split, container, or headless clients need a reachable
+  callback URL plus a fixed callback port, for example:
+
+```toml
+mcp_oauth_callback_port = 38935
+mcp_oauth_callback_url = "https://callback.example.com/callback/<machine>"
+```
+
+On headless Linux, add `mcp_oauth_credentials_store = "file"` if the default
+keyring-backed store stalls or cannot reach the user D-Bus session. This is a
+client-side Codex config setting, not a Labby server setting.
+
 Named-machine workflow:
 
 ```bash
