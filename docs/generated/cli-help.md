@@ -3436,7 +3436,9 @@ Options:
 ## `labby oauth relay-registry import`
 
 ```text
-Import a standalone callback-relay registry JSON file
+Import a standalone callback-relay registry JSON file.
+
+Destructive: replaces the entire sidecar registry. Requires `-y` / `--yes` when stdin is not a TTY; otherwise prompts for confirmation.
 
 Usage: import [OPTIONS] --file <FILE>
 
@@ -3453,8 +3455,11 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+  -y, --yes
+          Skip confirmation for this destructive action
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## `labby oauth relay-registry register`
@@ -3493,7 +3498,9 @@ Options:
 ## `labby oauth relay-registry remove`
 
 ```text
-Remove a public callback relay machine
+Remove a public callback relay machine.
+
+Destructive: deletes the entry. Requires `-y` / `--yes` when stdin is not a TTY; otherwise prompts for confirmation.
 
 Usage: remove [OPTIONS] --machine <MACHINE>
 
@@ -3510,8 +3517,11 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+  -y, --yes
+          Skip confirmation for this destructive action
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## `labby oauth relay-registry disable`
