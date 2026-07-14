@@ -184,6 +184,53 @@ registry.
 For the production cutover and rollback procedure, see
 [CALLBACK_RELAY.md](../deploy/CALLBACK_RELAY.md).
 
+## Codex MCP OAuth Client Setup
+
+Codex desktop clients usually do not need callback relay settings. When the
+browser and the `codex` process run on the same local machine, configure only the
+MCP server URL and run the native login flow:
+
+```toml
+[mcp_servers.labby]
+url = "https://labby.example.com/mcp"
+```
+
+```bash
+codex mcp login labby
+```
+
+Use callback override settings only when the browser cannot reach Codex's
+temporary local callback listener directly. Common examples are SSH sessions,
+remote dev boxes, WSL/browser splits, dev containers, and headless Linux hosts.
+In that shape, Codex still owns the PKCE state and token exchange; the relay only
+transports the final browser callback to the waiting Codex process.
+
+```toml
+mcp_oauth_callback_port = 38935
+mcp_oauth_callback_url = "https://callback.example.com/callback/<machine>"
+
+[mcp_servers.labby]
+url = "https://labby.example.com/mcp"
+```
+
+The public relay must also have a matching machine target that forwards to the
+exact callback path on the Codex host, for example:
+
+```text
+https://callback.example.com/callback/dookie
+  -> http://100.88.16.79:38935/callback/dookie
+```
+
+For Linux sessions without a usable desktop keyring or D-Bus session, prefer
+file-backed MCP OAuth credentials:
+
+```toml
+mcp_oauth_credentials_store = "file"
+```
+
+This is mainly a headless/SSH workaround. Do not force it for ordinary desktop
+clients where the platform credential store works.
+
 ## Node Runtime Relay Start
 
 The same local relay can be started remotely on a fleet node through:
