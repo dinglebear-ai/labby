@@ -248,12 +248,40 @@ fn build_forward_response(status: StatusCode, headers: &HeaderMap, body: Bytes) 
     response
 }
 
+/// Fails open (`false`) for a missing, non-UTF-8, or unparseable
+/// `Content-Length` -- not exploitable, since the real backstop is the
+/// `axum::body::to_bytes(body, LIMIT)` read cap applied regardless of this
+/// header. Still logs the malformed cases at debug so a client sending a
+/// garbage `Content-Length` leaves a trace instead of silently no-op'ing.
 fn content_length_exceeds_limit(headers: &HeaderMap, limit: usize) -> bool {
-    headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<usize>().ok())
-        .is_some_and(|length| length > limit)
+    let Some(value) = headers.get(header::CONTENT_LENGTH) else {
+        return false;
+    };
+    let value = match value.to_str() {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::debug!(
+                surface = "api",
+                service = "oauth_relay",
+                error = %error,
+                "content-length header is not valid UTF-8; treating as absent (fails open)"
+            );
+            return false;
+        }
+    };
+    match value.parse::<usize>() {
+        Ok(length) => length > limit,
+        Err(error) => {
+            tracing::debug!(
+                surface = "api",
+                service = "oauth_relay",
+                value,
+                error = %error,
+                "content-length header failed to parse as usize; treating as absent (fails open)"
+            );
+            false
+        }
+    }
 }
 
 fn apply_public_callback_security_headers(headers: &mut HeaderMap) {
@@ -304,10 +332,10 @@ fn public_error_response(error: PublicRelayError) -> Response {
         })),
     )
         .into_response();
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        header::HeaderValue::from_static("no-store"),
-    );
+    // Same header set as the success path (`build_forward_response`) --
+    // there's no reason a fixed, tiny JSON error body should skip the
+    // CSP/nosniff headers the success path gets.
+    apply_public_callback_security_headers(response.headers_mut());
     response
 }
 
@@ -594,12 +622,12 @@ async fn upsert_machine(
 ) -> Result<Json<MutationReport>, ToolError> {
     let manager = require_manager(&state)?;
     let machine_id = MachineId::parse(&machine_id).map_err(|error| error.to_tool_error())?;
-    let entry = PublicRelayEntry {
+    let entry = PublicRelayEntry::new(
         machine_id,
-        target_url: body.target_url,
-        description: body.description,
-        disabled: body.disabled.unwrap_or(false),
-    };
+        body.target_url,
+        body.description,
+        body.disabled.unwrap_or(false),
+    );
     let outcome = manager
         .upsert(entry)
         .await
@@ -758,7 +786,19 @@ fn require_lab_admin(
 }
 
 fn request_id(headers: &HeaderMap) -> Option<&str> {
-    headers.get("x-request-id").and_then(|v| v.to_str().ok())
+    let value = headers.get("x-request-id")?;
+    match value.to_str() {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::debug!(
+                surface = "api",
+                service = "oauth_relay",
+                error = %error,
+                "x-request-id header is not valid UTF-8; treating as absent"
+            );
+            None
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -888,12 +928,12 @@ mod tests {
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
-            .upsert(PublicRelayEntry {
-                machine_id: MachineId::parse("squirts").unwrap(),
-                target_url: "http://100.75.111.118:38935/callback/squirts".into(),
-                description: None,
-                disabled: false,
-            })
+            .upsert(PublicRelayEntry::new(
+                MachineId::parse("squirts").unwrap(),
+                "http://100.75.111.118:38935/callback/squirts",
+                None,
+                false,
+            ))
             .await
             .unwrap();
         let body = json!({
@@ -1113,12 +1153,12 @@ mod tests {
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
-            .upsert(PublicRelayEntry {
-                machine_id: MachineId::parse("dookie").unwrap(),
-                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
-                description: None,
-                disabled: false,
-            })
+            .upsert(PublicRelayEntry::new(
+                MachineId::parse("dookie").unwrap(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                false,
+            ))
             .await
             .unwrap();
         std::fs::write(manager.store().path(), "{not valid json").unwrap();
@@ -1188,12 +1228,12 @@ mod tests {
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
-            .upsert(PublicRelayEntry {
-                machine_id: MachineId::parse("dookie").unwrap(),
-                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
-                description: None,
-                disabled: true,
-            })
+            .upsert(PublicRelayEntry::new(
+                MachineId::parse("dookie").unwrap(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                true,
+            ))
             .await
             .unwrap();
         let app = public_routes(state.clone()).with_state(state);
@@ -1236,17 +1276,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_callback_rejects_chunked_body_without_content_length_via_streaming_backstop() {
+        // `public_callback_rejects_large_content_length_before_registry_lookup`
+        // only exercises the `Content-Length` header fast path. A client
+        // that streams a body without declaring `Content-Length` (chunked
+        // transfer, or any stream axum can't size up front) bypasses that
+        // header check entirely -- this test proves the real backstop,
+        // `axum::body::to_bytes(body, PUBLIC_REQUEST_BODY_LIMIT_BYTES)`,
+        // still catches it, and that `error_is_length_limit`'s error
+        // source-chain walk correctly recognizes the resulting
+        // `LengthLimitError` so it maps to `BodyTooLarge` (413) rather than
+        // falling through to the generic `InvalidRequestBody` (400) path.
+        let (_dir, state) = test_state().await;
+        let manager = state.public_relay.as_ref().unwrap().clone();
+        manager
+            .upsert(PublicRelayEntry::new(
+                MachineId::parse("dookie").unwrap(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                false,
+            ))
+            .await
+            .unwrap();
+        let app = public_routes(state.clone()).with_state(state);
+
+        let chunk = Bytes::from(vec![0u8; 4096]);
+        let chunk_count = PUBLIC_REQUEST_BODY_LIMIT_BYTES / 4096 + 4;
+        let body_stream = futures::stream::iter(
+            (0..chunk_count).map(move |_| Ok::<_, std::io::Error>(chunk.clone())),
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/callback/dookie")
+            .body(Body::from_stream(body_stream))
+            .unwrap();
+        assert!(
+            request.headers().get(header::CONTENT_LENGTH).is_none(),
+            "test body must stream without a Content-Length header"
+        );
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
     async fn public_callback_returns_429_when_machine_forward_permits_are_exhausted() {
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();
         let machine = MachineId::parse("dookie").unwrap();
         manager
-            .upsert(PublicRelayEntry {
-                machine_id: machine.clone(),
-                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
-                description: None,
-                disabled: false,
-            })
+            .upsert(PublicRelayEntry::new(
+                machine.clone(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                false,
+            ))
             .await
             .unwrap();
         let _permit_one = manager.acquire_forward_permit(&machine).await.unwrap();
@@ -1327,12 +1412,12 @@ mod tests {
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
-            .upsert(PublicRelayEntry {
-                machine_id: MachineId::parse("dookie").unwrap(),
-                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
-                description: None,
-                disabled: false,
-            })
+            .upsert(PublicRelayEntry::new(
+                MachineId::parse("dookie").unwrap(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                false,
+            ))
             .await
             .unwrap();
         let app =
@@ -1382,12 +1467,12 @@ mod tests {
         let (_dir, state) = test_state().await;
         let manager = state.public_relay.as_ref().unwrap().clone();
         manager
-            .upsert(PublicRelayEntry {
-                machine_id: MachineId::parse("dookie").unwrap(),
-                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
-                description: None,
-                disabled: false,
-            })
+            .upsert(PublicRelayEntry::new(
+                MachineId::parse("dookie").unwrap(),
+                "http://100.88.16.79:38935/callback/dookie",
+                None,
+                false,
+            ))
             .await
             .unwrap();
         let app = admin_routes(state.clone())

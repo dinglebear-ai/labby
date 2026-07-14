@@ -12,5 +12,6 @@ pub use manager::{
     install_public_relay_manager, set_public_relay_manager,
 };
 pub use policy::*;
+pub(crate) use store::MAX_REGISTRY_BACKUPS;
 pub use store::PublicRelayRegistryStore;
 pub use types::*;

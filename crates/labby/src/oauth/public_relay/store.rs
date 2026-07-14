@@ -23,7 +23,7 @@ const REGISTRY_FILE_VERSION: u16 = 1;
 /// Each mutating save writes a fresh timestamped backup before replacing
 /// the live file; without pruning, `~/.labby/oauth-public-relay/` grows one
 /// backup per mutation forever.
-const MAX_REGISTRY_BACKUPS: usize = 5;
+pub(crate) const MAX_REGISTRY_BACKUPS: usize = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryFile {
@@ -65,6 +65,20 @@ impl PublicRelayRegistryStore {
         let value: serde_json::Value = serde_json::from_str(raw)
             .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?;
         parse_registry_value(value)
+    }
+
+    /// Count `<path>.bak.*` sidecar files currently on disk for this store's
+    /// registry path.
+    ///
+    /// Backups are capped at [`MAX_REGISTRY_BACKUPS`] by design
+    /// (`prune_old_backups` runs after every save), so a count exceeding
+    /// that cap can only mean pruning has been persistently failing —
+    /// `labby doctor oauth-relay` uses this to surface that otherwise
+    /// invisible failure mode. Best-effort: returns 0 if the directory
+    /// can't be listed, matching `prune_old_backups`'s own fail-open
+    /// behavior for the same listing.
+    pub fn count_backups(&self) -> usize {
+        list_backup_paths(&self.path).len()
     }
 }
 
@@ -129,12 +143,9 @@ fn parse_object_shape(
     for (machine_id, value) in map {
         match value {
             serde_json::Value::String(target_url) => match MachineId::parse(&machine_id) {
-                Ok(machine) => parsed_entries.push(PublicRelayEntry {
-                    machine_id: machine,
-                    target_url,
-                    description: None,
-                    disabled: false,
-                }),
+                Ok(machine) => {
+                    parsed_entries.push(PublicRelayEntry::new(machine, target_url, None, false))
+                }
                 Err(error) => quarantined.push(QuarantinedEntry {
                     machine_id,
                     reason: error.to_string(),
@@ -351,34 +362,16 @@ fn open_backup_file(path: &Path) -> io::Result<File> {
     OpenOptions::new().write(true).create_new(true).open(path)
 }
 
-/// Best-effort prune of stale `<path>.bak.*` sidecars, keeping the `keep`
-/// most recently modified ones. Never fails the caller's save — pruning
-/// is hygiene, not correctness, so a listing/removal error here is logged
-/// and swallowed rather than propagated.
-fn prune_old_backups(path: &Path, keep: usize) {
-    let Some(parent) = path.parent() else {
-        return;
-    };
+/// Filter an already-opened directory listing down to `<path>.bak.*`
+/// sidecars, paired with their mtime. Shared by `prune_old_backups` (which
+/// needs the full list to decide what's stale) and
+/// `PublicRelayRegistryStore::count_backups` (which only needs the count).
+fn backup_entries_from_read_dir(path: &Path, read_dir: fs::ReadDir) -> Vec<(SystemTime, PathBuf)> {
+    let mut backups: Vec<(SystemTime, PathBuf)> = Vec::new();
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return;
+        return backups;
     };
     let prefix = format!("{file_name}.bak.");
-    let read_dir = match fs::read_dir(parent) {
-        Ok(read_dir) => read_dir,
-        Err(error) => {
-            tracing::warn!(
-                surface = "store",
-                service = "oauth_relay",
-                action = "backup.prune",
-                dir = %parent.display(),
-                error = %error,
-                "failed to list relay registry backup directory; skipping prune"
-            );
-            return;
-        }
-    };
-
-    let mut backups: Vec<(SystemTime, PathBuf)> = Vec::new();
     for entry in read_dir.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
@@ -393,6 +386,46 @@ fn prune_old_backups(path: &Path, keep: usize) {
             .unwrap_or(SystemTime::UNIX_EPOCH);
         backups.push((modified, entry.path()));
     }
+    backups
+}
+
+/// List `<path>.bak.*` sidecar files alongside `path`. Fails open (returns
+/// an empty list) if the directory can't be listed — used for read-only
+/// inspection (`count_backups`), where the caller doesn't need the log
+/// noise `prune_old_backups` emits for its own listing failure.
+fn list_backup_paths(path: &Path) -> Vec<(SystemTime, PathBuf)> {
+    let Some(parent) = path.parent() else {
+        return Vec::new();
+    };
+    let Ok(read_dir) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    backup_entries_from_read_dir(path, read_dir)
+}
+
+/// Best-effort prune of stale `<path>.bak.*` sidecars, keeping the `keep`
+/// most recently modified ones. Never fails the caller's save — pruning
+/// is hygiene, not correctness, so a listing/removal error here is logged
+/// and swallowed rather than propagated.
+fn prune_old_backups(path: &Path, keep: usize) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let read_dir = match fs::read_dir(parent) {
+        Ok(read_dir) => read_dir,
+        Err(error) => {
+            tracing::warn!(
+                surface = "store",
+                service = "oauth_relay",
+                action = "backup.prune",
+                dir = %parent.display(),
+                error = %error,
+                "failed to list relay registry backup directory; skipping prune"
+            );
+            return;
+        }
+    };
+    let mut backups = backup_entries_from_read_dir(path, read_dir);
 
     if backups.len() <= keep {
         return;
@@ -680,12 +713,12 @@ mod tests {
         // Seed the registry so subsequent saves have a pre-existing file to
         // back up. The first save (file did not exist yet) writes no backup.
         store
-            .save_entries(vec![PublicRelayEntry {
-                machine_id: MachineId::parse("seed").unwrap(),
-                target_url: "http://100.88.16.79:38935/callback/seed".into(),
-                description: None,
-                disabled: false,
-            }])
+            .save_entries(vec![PublicRelayEntry::new(
+                MachineId::parse("seed").unwrap(),
+                "http://100.88.16.79:38935/callback/seed",
+                None,
+                false,
+            )])
             .await
             .expect("seed save should succeed");
 
@@ -693,12 +726,12 @@ mod tests {
         for i in 0..=MAX_REGISTRY_BACKUPS {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
             store
-                .save_entries(vec![PublicRelayEntry {
-                    machine_id: MachineId::parse(&format!("m{i}")).unwrap(),
-                    target_url: format!("http://100.88.16.79:38935/callback/m{i}"),
-                    description: None,
-                    disabled: false,
-                }])
+                .save_entries(vec![PublicRelayEntry::new(
+                    MachineId::parse(&format!("m{i}")).unwrap(),
+                    format!("http://100.88.16.79:38935/callback/m{i}"),
+                    None,
+                    false,
+                )])
                 .await
                 .expect("save should succeed");
         }
@@ -715,6 +748,63 @@ mod tests {
             "expected pruning to keep exactly {MAX_REGISTRY_BACKUPS} backups, found {}",
             backups.len()
         );
+    }
+
+    #[test]
+    fn prune_old_backups_keeps_exactly_keep_most_recent_at_multiple_counts() {
+        // Precise, deterministic unit test of `prune_old_backups` directly
+        // (not through `save_entries`): synthetic backup files get explicit,
+        // distinct mtimes via `File::set_modified` instead of relying on
+        // `tokio::time::sleep` between real saves to establish ordering.
+        for total in [
+            MAX_REGISTRY_BACKUPS - 1,
+            MAX_REGISTRY_BACKUPS,
+            MAX_REGISTRY_BACKUPS + 1,
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("registry.json");
+
+            let mut backups = Vec::new();
+            for i in 0..total {
+                let backup_path = dir.path().join(format!("registry.json.bak.{i}"));
+                fs::write(&backup_path, b"{}").expect("write synthetic backup");
+                let mtime = SystemTime::UNIX_EPOCH
+                    + std::time::Duration::from_secs(1_700_000_000 + i as u64);
+                File::open(&backup_path)
+                    .expect("open synthetic backup")
+                    .set_modified(mtime)
+                    .expect("set synthetic mtime");
+                backups.push(backup_path);
+            }
+
+            prune_old_backups(&path, MAX_REGISTRY_BACKUPS);
+
+            let remaining: Vec<_> = fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".bak."))
+                .collect();
+
+            let expected_remaining = total.min(MAX_REGISTRY_BACKUPS);
+            assert_eq!(
+                remaining.len(),
+                expected_remaining,
+                "total={total}: expected {expected_remaining} backups to remain, found {}",
+                remaining.len()
+            );
+
+            // The newest `expected_remaining` backups (highest index / mtime)
+            // must be the ones that survive; older ones must be removed.
+            let survivor_cutoff = total.saturating_sub(expected_remaining);
+            for (i, backup_path) in backups.iter().enumerate() {
+                let should_survive = i >= survivor_cutoff;
+                assert_eq!(
+                    backup_path.exists(),
+                    should_survive,
+                    "total={total}, index={i}: expected exists={should_survive}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

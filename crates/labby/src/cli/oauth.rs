@@ -171,12 +171,12 @@ async fn run_relay_registry(args: RelayRegistryArgs, format: OutputFormat) -> Re
             disabled,
         } => {
             let manager = load_registry_manager().await?;
-            let entry = PublicRelayEntry {
-                machine_id: MachineId::parse(&machine).context("parse machine id")?,
+            let entry = PublicRelayEntry::new(
+                MachineId::parse(&machine).context("parse machine id")?,
                 target_url,
                 description,
                 disabled,
-            };
+            );
             let outcome = manager
                 .upsert(entry)
                 .await
@@ -507,5 +507,36 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn confirm_destructive_relay_action_with_yes_skips_the_prompt() {
+        // `yes=true` must return `Ok(())` immediately without consulting
+        // stdin/TTY state at all -- this is the fast, no-prompt path used by
+        // `-y`/`--yes` and any non-interactive automation.
+        let result = confirm_destructive_relay_action("relay-registry remove", "dookie", true);
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+    }
+
+    #[test]
+    fn confirm_destructive_relay_action_without_yes_bails_on_non_interactive_stdin() {
+        // cargo test's stdin is never a TTY, so `yes=false` must hit the
+        // non-interactive-stdin branch and bail with a message telling the
+        // caller to pass `-y`, rather than hanging on `Confirm::interact()`.
+        let result = confirm_destructive_relay_action("relay-registry import", "3 entries", false);
+        let error = result.expect_err("expected non-interactive stdin to bail");
+        let message = error.to_string();
+        assert!(
+            message.contains("-y") || message.contains("--yes"),
+            "expected message to mention -y/--yes, got: {message}"
+        );
+        assert!(
+            message.contains("relay-registry import"),
+            "expected message to mention the action, got: {message}"
+        );
+        assert!(
+            message.contains("3 entries"),
+            "expected message to mention the detail, got: {message}"
+        );
     }
 }

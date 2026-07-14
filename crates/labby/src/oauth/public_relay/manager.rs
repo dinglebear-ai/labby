@@ -33,7 +33,12 @@ pub fn install_public_relay_manager(manager: Arc<PublicRelayRegistryManager>) {
 
 pub fn set_public_relay_manager(manager: Option<Arc<PublicRelayRegistryManager>>) {
     let lock = PUBLIC_RELAY_MANAGER.get_or_init(|| StdRwLock::new(None));
-    let mut guard = lock.write().expect("public relay manager lock poisoned");
+    // Recover from poisoning instead of propagating it: a single panic
+    // anywhere else while this lock is held must not permanently brick
+    // every future `doctor` dispatch and relay lookup process-wide.
+    let mut guard = lock
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *guard = manager;
 }
 
@@ -41,7 +46,7 @@ pub fn current_public_relay_manager() -> Option<Arc<PublicRelayRegistryManager>>
     PUBLIC_RELAY_MANAGER
         .get_or_init(|| StdRwLock::new(None))
         .read()
-        .expect("public relay manager lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
 }
 
@@ -124,7 +129,7 @@ impl PublicRelayRegistryManager {
     ) -> Result<RegistryWriteOutcome, PublicRelayError> {
         report.ensure_complete_import()?;
         let _mutation = self.mutation_lock.lock().await;
-        self.save_and_install(report.entries).await
+        self.validate_and_install(report.entries).await
     }
 
     pub async fn upsert(
@@ -132,10 +137,10 @@ impl PublicRelayRegistryManager {
         entry: PublicRelayEntry,
     ) -> Result<RegistryWriteOutcome, PublicRelayError> {
         let _mutation = self.mutation_lock.lock().await;
-        entry.target()?;
         let mut entries = self.entries().await;
         entries.insert(entry.machine_id.clone(), entry);
-        self.save_and_install(entries.into_values().collect()).await
+        self.validate_and_install(entries.into_values().collect())
+            .await
     }
 
     pub async fn remove(
@@ -147,7 +152,8 @@ impl PublicRelayRegistryManager {
         if entries.remove(machine_id).is_none() {
             return Err(PublicRelayError::UnknownMachine);
         }
-        self.save_and_install(entries.into_values().collect()).await
+        self.validate_and_install(entries.into_values().collect())
+            .await
     }
 
     pub async fn set_disabled(
@@ -161,7 +167,8 @@ impl PublicRelayRegistryManager {
             .get_mut(machine_id)
             .ok_or(PublicRelayError::UnknownMachine)?;
         entry.disabled = disabled;
-        self.save_and_install(entries.into_values().collect()).await
+        self.validate_and_install(entries.into_values().collect())
+            .await
     }
 
     pub async fn acquire_forward_permit(
@@ -183,7 +190,14 @@ impl PublicRelayRegistryManager {
         })
     }
 
-    async fn save_and_install(
+    /// Single source of truth for validating and persisting a candidate
+    /// entry set. Every mutation method (`upsert`, `remove`, `set_disabled`,
+    /// `import_report`) builds its candidate `entries` and routes through
+    /// this one helper instead of validating (`entry.target()`) redundantly
+    /// itself -- so there is exactly one place that decides whether a
+    /// mutation is allowed to reach the live snapshot and the persisted
+    /// store.
+    async fn validate_and_install(
         &self,
         entries: Vec<PublicRelayEntry>,
     ) -> Result<RegistryWriteOutcome, PublicRelayError> {
@@ -243,12 +257,12 @@ mod tests {
     use super::*;
 
     fn live_entry(machine_id: &str, target_url: &str) -> PublicRelayEntry {
-        PublicRelayEntry {
-            machine_id: MachineId::parse(machine_id).unwrap(),
-            target_url: target_url.to_string(),
-            description: None,
-            disabled: false,
-        }
+        PublicRelayEntry::new(
+            MachineId::parse(machine_id).unwrap(),
+            target_url.to_string(),
+            None,
+            false,
+        )
     }
 
     #[tokio::test]
@@ -294,6 +308,120 @@ mod tests {
                 .resolve(&MachineId::parse("tootie").unwrap())
                 .await
                 .is_ok()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn public_relay_manager_mutation_lock_prevents_lost_updates_under_real_concurrency() {
+        // Each `upsert` does an internal read-modify-write of the full
+        // entry set (read current entries -> insert -> persist), guarded by
+        // `mutation_lock`. Without that lock actually serializing the whole
+        // read-modify-write span (not just the final write), N concurrent
+        // upserts of N distinct machines would race and lose updates: two
+        // upserts could both read the same starting snapshot, each add their
+        // own machine, and the second writer's save would clobber the
+        // first's addition. This test races real concurrent tasks (a
+        // multi-thread runtime, not pre-acquired permits or sequential
+        // `.await`s) to prove that doesn't happen.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
+        let manager = PublicRelayRegistryManager::load(store).await.unwrap();
+
+        const N: usize = 6;
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let manager = manager.clone();
+            handles.push(tokio::spawn(async move {
+                manager
+                    .upsert(live_entry(
+                        &format!("m{i}"),
+                        &format!("http://100.88.16.79:38935/callback/m{i}"),
+                    ))
+                    .await
+                    .expect("concurrent upsert should succeed")
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("upsert task should not panic");
+        }
+
+        assert_eq!(
+            manager.count().await,
+            N,
+            "expected all {N} concurrent upserts to land in the live snapshot with no lost updates"
+        );
+
+        // The persisted registry must match too -- not just the in-memory
+        // snapshot -- so a lost update can't hide behind a stale disk write.
+        let persisted = manager.store().load_snapshot().await.unwrap();
+        assert_eq!(
+            persisted.entries.len(),
+            N,
+            "expected all {N} concurrent upserts to be persisted to disk"
+        );
+        for i in 0..N {
+            let machine_id = MachineId::parse(&format!("m{i}")).unwrap();
+            assert!(
+                persisted.entries.contains_key(&machine_id),
+                "persisted registry missing m{i}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn public_relay_manager_concurrent_remove_and_upsert_do_not_lose_updates() {
+        // Mix mutation kinds (not just upsert) racing concurrently: upserts
+        // of new machines interleaved with a remove of a pre-seeded one, all
+        // going through the same `mutation_lock`-guarded read-modify-write.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = PublicRelayRegistryStore::new(dir.path().join("registry.json"));
+        store
+            .save_entries(vec![live_entry(
+                "seed",
+                "http://100.88.16.79:38935/callback/seed",
+            )])
+            .await
+            .unwrap();
+        let manager = PublicRelayRegistryManager::load(store).await.unwrap();
+
+        const N: usize = 6;
+        let mut handles = Vec::with_capacity(N + 1);
+        handles.push(tokio::spawn({
+            let manager = manager.clone();
+            async move {
+                manager
+                    .remove(&MachineId::parse("seed").unwrap())
+                    .await
+                    .expect("remove should succeed");
+            }
+        }));
+        for i in 0..N {
+            let manager = manager.clone();
+            handles.push(tokio::spawn(async move {
+                manager
+                    .upsert(live_entry(
+                        &format!("c{i}"),
+                        &format!("http://100.88.16.79:38935/callback/c{i}"),
+                    ))
+                    .await
+                    .expect("concurrent upsert should succeed");
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("mutation task should not panic");
+        }
+
+        assert_eq!(
+            manager.count().await,
+            N,
+            "expected the seed machine removed and all {N} concurrent upserts present, no lost updates"
+        );
+        assert!(
+            manager
+                .resolve(&MachineId::parse("seed").unwrap())
+                .await
+                .is_err(),
+            "seed machine should have been removed"
         );
     }
 }

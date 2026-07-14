@@ -102,16 +102,38 @@ impl PublicRelayError {
     }
 
     pub fn to_tool_error(&self) -> ToolError {
-        ToolError::Sdk {
-            sdk_kind: self.kind().to_string(),
-            message: self.to_string(),
+        match self {
+            Self::InvalidMachineId(_) => ToolError::InvalidParam {
+                message: self.to_string(),
+                param: "machine_id".to_string(),
+            },
+            Self::InvalidSuffix(_) => ToolError::InvalidParam {
+                message: self.to_string(),
+                param: "suffix".to_string(),
+            },
+            Self::InvalidRegistryInput(_) => ToolError::InvalidParam {
+                message: self.to_string(),
+                param: "registry".to_string(),
+            },
+            Self::InvalidRequestBody(_) => ToolError::InvalidParam {
+                message: self.to_string(),
+                param: "body".to_string(),
+            },
+            _ => ToolError::Sdk {
+                sdk_kind: self.kind().to_string(),
+                message: self.to_string(),
+            },
         }
     }
 
     pub fn public_message(&self) -> &'static str {
         match self {
             Self::Overloaded => "relay busy; retry later",
-            Self::BodyTooLarge => "callback request too large",
+            // Shared by both the oversized-query-string and oversized-body
+            // rejection paths (`api/services/oauth_relay.rs::callback`), so
+            // the wording deliberately doesn't say "body" -- it isn't always
+            // the body that was too large.
+            Self::BodyTooLarge => "callback request too large (query or body)",
             Self::InvalidRequestBody(_) => "callback request invalid",
             Self::ResponseTooLarge => "callback response too large",
             Self::UpstreamTimeout => "callback target timed out",
@@ -124,7 +146,16 @@ impl PublicRelayError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicRelayEntry {
     pub machine_id: MachineId,
-    pub target_url: String,
+    // Private: unvalidated raw input. Callers must go through `target_url()`
+    // to read it and `PublicRelayRegistryManager`'s private
+    // `validate_and_install` helper to mutate the live registry with it --
+    // never construct/mutate this field directly outside this module, so
+    // there is exactly one place that decides whether an entry's target is
+    // well-formed before it reaches the live snapshot. Deliberately still a
+    // raw `String` rather than a validated `RelayTarget`: `store.rs`'s
+    // import path must be able to hold an individually-invalid entry just
+    // long enough to quarantine it, without failing the whole import.
+    target_url: String,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -132,6 +163,24 @@ pub struct PublicRelayEntry {
 }
 
 impl PublicRelayEntry {
+    pub fn new(
+        machine_id: MachineId,
+        target_url: impl Into<String>,
+        description: Option<String>,
+        disabled: bool,
+    ) -> Self {
+        Self {
+            machine_id,
+            target_url: target_url.into(),
+            description,
+            disabled,
+        }
+    }
+
+    pub fn target_url(&self) -> &str {
+        &self.target_url
+    }
+
     pub fn target(&self) -> Result<RelayTarget, PublicRelayError> {
         RelayTarget::parse(self.machine_id.clone(), &self.target_url)
     }
@@ -215,6 +264,14 @@ impl RelayTarget {
     }
 }
 
+/// Returns true if `ip` falls inside Tailscale's IPv4 CGNAT range
+/// (`100.64.0.0/10`, i.e. `100.64.0.0`-`100.127.255.255`).
+///
+/// IPv6 Tailscale CGNAT addresses (`fd7a:115c:a1e0::/48`) are deliberately
+/// out of scope for now and always fail closed (`IpAddr::V6(_) => false`).
+/// Do not "fix" this by relaxing the IPv6 arm without first deriving an
+/// equivalent IPv6 range check -- doing so naively (e.g. accepting all
+/// IPv6) would reopen the SSRF hole this function exists to close.
 fn is_tailscale_cgnat(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -359,5 +416,85 @@ mod tests {
                 "{value} should reject"
             );
         }
+    }
+
+    #[test]
+    fn invalid_param_errors_route_through_tool_error_invalid_param_with_param_field() {
+        let cases: Vec<(PublicRelayError, &str)> = vec![
+            (
+                PublicRelayError::InvalidMachineId("bad id".into()),
+                "machine_id",
+            ),
+            (
+                PublicRelayError::InvalidSuffix("bad suffix".into()),
+                "suffix",
+            ),
+            (
+                PublicRelayError::InvalidRegistryInput("bad registry".into()),
+                "registry",
+            ),
+            (
+                PublicRelayError::InvalidRequestBody("bad body".into()),
+                "body",
+            ),
+        ];
+
+        for (error, expected_param) in cases {
+            assert_eq!(error.kind(), "invalid_param");
+            let tool_error = error.to_tool_error();
+            let value = serde_json::to_value(&tool_error).expect("ToolError should serialize");
+            assert_eq!(value["kind"], "invalid_param");
+            assert_eq!(
+                value["param"], expected_param,
+                "expected param field for {error:?}"
+            );
+            assert!(value.get("message").is_some());
+        }
+    }
+
+    #[test]
+    fn non_invalid_param_errors_still_route_through_sdk_variant() {
+        let error = PublicRelayError::ForwarderInitFailed("client build failed".into());
+        let tool_error = error.to_tool_error();
+        let value = serde_json::to_value(&tool_error).expect("ToolError should serialize");
+        assert_eq!(value["kind"], "relay_forwarder_init_failed");
+        // The generic Sdk variant has no `param` field.
+        assert!(value.get("param").is_none());
+    }
+
+    #[test]
+    fn is_tailscale_cgnat_boundary_is_100_64_slash_10() {
+        // The (64..=127).contains(&octets[1]) check is the CGNAT boundary --
+        // exercise both edges on both sides.
+        assert!(!is_tailscale_cgnat("100.63.255.255".parse().unwrap()));
+        assert!(is_tailscale_cgnat("100.64.0.0".parse().unwrap()));
+        assert!(is_tailscale_cgnat("100.127.255.255".parse().unwrap()));
+        assert!(!is_tailscale_cgnat("100.128.0.0".parse().unwrap()));
+    }
+
+    #[test]
+    fn is_tailscale_cgnat_rejects_ipv6_literals() {
+        // IPv6 Tailscale CGNAT (fd7a:115c:a1e0::/48) is deliberately out of
+        // scope for now -- see the doc comment on `is_tailscale_cgnat`.
+        assert!(!is_tailscale_cgnat("fd7a:115c:a1e0::1".parse().unwrap()));
+        assert!(!is_tailscale_cgnat("::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn relay_target_rejects_non_ip_hostname() {
+        let machine = MachineId::parse("dookie").unwrap();
+        let error = RelayTarget::parse(machine, "http://dookie.example.com:38935/callback/dookie")
+            .expect_err("hostname target should reject");
+        assert!(matches!(error, PublicRelayError::InvalidTarget(_)));
+    }
+
+    #[test]
+    fn ensure_complete_import_rejects_empty_but_valid_registry() {
+        let report = ImportReport::empty();
+        let error = report
+            .ensure_complete_import()
+            .expect_err("empty import should be rejected");
+        assert!(matches!(error, PublicRelayError::InvalidTarget(_)));
+        assert!(error.to_string().contains("no valid relay machines"));
     }
 }
