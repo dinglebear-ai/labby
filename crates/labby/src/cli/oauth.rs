@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -5,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Args, Subcommand};
+use dialoguer::Confirm;
 use serde_json::json;
 
 use crate::config::LabConfig;
@@ -57,9 +59,15 @@ pub enum RelayRegistryCommand {
     /// List registered public callback relay machines.
     List,
     /// Import a standalone callback-relay registry JSON file.
+    ///
+    /// Destructive: replaces the entire sidecar registry. Requires `-y` /
+    /// `--yes` when stdin is not a TTY; otherwise prompts for confirmation.
     Import {
         #[arg(long)]
         file: PathBuf,
+        /// Skip confirmation for this destructive action.
+        #[arg(short = 'y', long, alias = "no-confirm")]
+        yes: bool,
     },
     /// Register or update a public callback relay machine.
     Register {
@@ -73,9 +81,15 @@ pub enum RelayRegistryCommand {
         disabled: bool,
     },
     /// Remove a public callback relay machine.
+    ///
+    /// Destructive: deletes the entry. Requires `-y` / `--yes` when stdin is
+    /// not a TTY; otherwise prompts for confirmation.
     Remove {
         #[arg(long)]
         machine: String,
+        /// Skip confirmation for this destructive action.
+        #[arg(short = 'y', long, alias = "no-confirm")]
+        yes: bool,
     },
     /// Disable a public callback relay machine without removing it.
     Disable {
@@ -121,13 +135,18 @@ async fn run_relay_registry(args: RelayRegistryArgs, format: OutputFormat) -> Re
             let manager = load_registry_manager().await?;
             crate::output::print(&json!({ "machines": manager.list().await }), format)?;
         }
-        RelayRegistryCommand::Import { file } => {
+        RelayRegistryCommand::Import { file, yes } => {
             let raw = tokio::fs::read_to_string(&file)
                 .await
                 .with_context(|| format!("read relay registry import file {}", file.display()))?;
             let report = PublicRelayRegistryStore::parse_standalone_registry(&raw)
                 .context("parse relay registry import")?;
             report.ensure_complete_import()?;
+            confirm_destructive_relay_action(
+                "relay-registry import",
+                "this replaces the entire public callback relay registry",
+                yes,
+            )?;
             let store = default_store();
             let outcome = store
                 .save_entries(report.entries)
@@ -170,7 +189,14 @@ async fn run_relay_registry(args: RelayRegistryArgs, format: OutputFormat) -> Re
                 format,
             )?;
         }
-        RelayRegistryCommand::Remove { machine } => {
+        RelayRegistryCommand::Remove { machine, yes } => {
+            confirm_destructive_relay_action(
+                "relay-registry remove",
+                &format!(
+                    "this removes machine `{machine}` from the public callback relay registry"
+                ),
+                yes,
+            )?;
             let manager = load_registry_manager().await?;
             let machine = MachineId::parse(&machine).context("parse machine id")?;
             let outcome = manager
@@ -225,6 +251,46 @@ async fn load_registry_manager() -> Result<PublicRelayRegistryManager> {
 
 fn default_store() -> PublicRelayRegistryStore {
     PublicRelayRegistryStore::new(PublicRelayRegistryStore::default_path())
+}
+
+/// Confirm a destructive `relay-registry` mutation.
+///
+/// `relay-registry import` (whole-registry replace) and `remove` (entry
+/// delete) are hand-rolled CLI subcommands outside the `ActionSpec`-driven
+/// dispatch layer, so they don't get `run_confirmable_action_command`'s
+/// automatic destructive gate for free. This mirrors that gate directly:
+/// `-y`/`--yes` skips the prompt, a non-TTY stdin without `-y` refuses with a
+/// clear message, and an interactive TTY prompts for confirmation.
+fn confirm_destructive_relay_action(action: &str, detail: &str, yes: bool) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        tracing::warn!(
+            surface = "cli",
+            service = "oauth_relay",
+            action,
+            "destructive action blocked: non-interactive stdin, pass -y"
+        );
+        anyhow::bail!("pass -y / --yes to confirm destructive action `{action}` ({detail})");
+    }
+    let confirmed = Confirm::new()
+        .with_prompt(format!(
+            "oauth {action} is destructive ({detail}). Continue?"
+        ))
+        .default(false)
+        .interact()
+        .map_err(|e| anyhow::anyhow!("failed to read confirmation: {e}"))?;
+    if !confirmed {
+        tracing::info!(
+            surface = "cli",
+            service = "oauth_relay",
+            action,
+            "destructive action aborted by user"
+        );
+        anyhow::bail!("aborted by user");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -347,10 +413,64 @@ mod tests {
             crate::cli::Command::Oauth(OauthArgs {
                 command:
                     OauthCommand::RelayRegistry(RelayRegistryArgs {
-                        command: RelayRegistryCommand::Import { file },
+                        command: RelayRegistryCommand::Import { file, yes },
                     }),
             }) => {
                 assert_eq!(file, PathBuf::from("/tmp/registry.json"));
+                assert!(!yes, "--yes should default to false");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oauth_relay_registry_cli_parses_import_yes_flag() {
+        let cli = Cli::try_parse_from([
+            "lab",
+            "oauth",
+            "relay-registry",
+            "import",
+            "--file",
+            "/tmp/registry.json",
+            "--yes",
+        ])
+        .expect("relay registry import with --yes should parse");
+
+        match cli.command {
+            crate::cli::Command::Oauth(OauthArgs {
+                command:
+                    OauthCommand::RelayRegistry(RelayRegistryArgs {
+                        command: RelayRegistryCommand::Import { yes, .. },
+                    }),
+            }) => {
+                assert!(yes);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oauth_relay_registry_cli_parses_remove_yes_flag() {
+        let cli = Cli::try_parse_from([
+            "lab",
+            "oauth",
+            "relay-registry",
+            "remove",
+            "--machine",
+            "dookie",
+            "-y",
+        ])
+        .expect("relay registry remove with -y should parse");
+
+        match cli.command {
+            crate::cli::Command::Oauth(OauthArgs {
+                command:
+                    OauthCommand::RelayRegistry(RelayRegistryArgs {
+                        command: RelayRegistryCommand::Remove { machine, yes },
+                    }),
+            }) => {
+                assert_eq!(machine, "dookie");
+                assert!(yes);
             }
             other => panic!("unexpected command: {other:?}"),
         }
