@@ -49,13 +49,19 @@ impl PublicRelayForwarder {
     ) -> Result<ForwardResponse, PublicRelayError> {
         let target_label = request.target.redacted_label();
         let mut url = request.target.url().clone();
+        let base_path = url.path().trim_end_matches('/').to_string();
         if !request.suffix_path.is_empty() {
-            let mut path = url.path().trim_end_matches('/').to_string();
+            let mut path = base_path.clone();
             if !path.ends_with('/') {
                 path.push('/');
             }
             path.push_str(request.suffix_path.trim_matches('/'));
             url.set_path(&path);
+        }
+        if !path_is_under_base(url.path(), &base_path) {
+            return Err(PublicRelayError::InvalidSuffix(
+                "normalized path escapes machine callback route".into(),
+            ));
         }
         url.set_query(request.query.as_deref().filter(|query| !query.is_empty()));
 
@@ -91,6 +97,13 @@ impl PublicRelayForwarder {
             body: out.freeze(),
         })
     }
+}
+
+fn path_is_under_base(path: &str, base: &str) -> bool {
+    path == base
+        || path
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn map_forward_error(
@@ -166,6 +179,9 @@ mod tests {
     #[derive(Clone)]
     struct UpstreamState {
         seen_headers: Arc<Mutex<HeaderMap>>,
+        seen_method: Arc<Mutex<Option<Method>>>,
+        seen_uri: Arc<Mutex<Option<Uri>>>,
+        seen_body: Arc<Mutex<Bytes>>,
         status: StatusCode,
         headers: HeaderMap,
         body: Bytes,
@@ -185,6 +201,39 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status, StatusCode::FOUND);
+        upstream.handle.abort();
+    }
+
+    #[tokio::test]
+    async fn public_forwarder_preserves_suffix_query_and_body() {
+        let upstream =
+            spawn_upstream(StatusCode::OK, HeaderMap::new(), Bytes::from_static(b"ok")).await;
+
+        forward_to_with_parts(
+            &upstream,
+            "extra/path".into(),
+            Some("code=abc&state=xyz".into()),
+            HeaderMap::new(),
+            Bytes::from_static(b"callback-body"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*upstream.seen_method.lock().unwrap(), Some(Method::POST));
+        assert_eq!(
+            upstream
+                .seen_uri
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .to_string(),
+            "/callback/dookie/extra/path?code=abc&state=xyz"
+        );
+        assert_eq!(
+            upstream.seen_body.lock().unwrap().as_ref(),
+            b"callback-body"
+        );
         upstream.handle.abort();
     }
 
@@ -249,8 +298,45 @@ mod tests {
         upstream.handle.abort();
     }
 
+    #[tokio::test]
+    async fn public_forwarder_rejects_normalized_suffix_escape() {
+        let upstream =
+            spawn_upstream(StatusCode::OK, HeaderMap::new(), Bytes::from_static(b"ok")).await;
+        let forwarder = PublicRelayForwarder::new().unwrap();
+        let machine = MachineId::parse("dookie").unwrap();
+        let mut url = url::Url::parse("http://100.88.16.79:38935/callback/dookie").unwrap();
+        url.set_host(Some(&upstream.addr.ip().to_string())).unwrap();
+        url.set_port(Some(upstream.addr.port())).unwrap();
+        let target = RelayTarget::from_validated_parts_for_tests(machine, url);
+
+        let error = forwarder
+            .forward(ForwardRequest {
+                method: Method::GET,
+                target,
+                suffix_path: "%2e%2e/%2e%2e/secret".into(),
+                query: None,
+                headers: HeaderMap::new(),
+                body: Bytes::new(),
+            })
+            .await
+            .expect_err("normalized suffix should not escape callback base");
+
+        assert!(matches!(error, PublicRelayError::InvalidSuffix(_)));
+        upstream.handle.abort();
+    }
+
     async fn forward_to(
         upstream: &UpstreamHandle,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> Result<ForwardResponse, PublicRelayError> {
+        forward_to_with_parts(upstream, String::new(), None, headers, body).await
+    }
+
+    async fn forward_to_with_parts(
+        upstream: &UpstreamHandle,
+        suffix_path: String,
+        query: Option<String>,
         headers: HeaderMap,
         body: Bytes,
     ) -> Result<ForwardResponse, PublicRelayError> {
@@ -267,8 +353,8 @@ mod tests {
             .forward(ForwardRequest {
                 method: Method::POST,
                 target,
-                suffix_path: String::new(),
-                query: None,
+                suffix_path,
+                query,
                 headers,
                 body,
             })
@@ -279,8 +365,14 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let seen_headers = Arc::new(Mutex::new(HeaderMap::new()));
+        let seen_method = Arc::new(Mutex::new(None));
+        let seen_uri = Arc::new(Mutex::new(None));
+        let seen_body = Arc::new(Mutex::new(Bytes::new()));
         let state = UpstreamState {
             seen_headers: seen_headers.clone(),
+            seen_method: seen_method.clone(),
+            seen_uri: seen_uri.clone(),
+            seen_body: seen_body.clone(),
             status,
             headers,
             body,
@@ -295,18 +387,23 @@ mod tests {
             addr,
             handle,
             seen_headers,
+            seen_method,
+            seen_uri,
+            seen_body,
         }
     }
 
     async fn upstream_handler(
         State(state): State<UpstreamState>,
-        _method: Method,
-        _uri: Uri,
+        method: Method,
+        uri: Uri,
         headers: HeaderMap,
         body: Bytes,
     ) -> impl IntoResponse {
-        drop(body);
+        *state.seen_method.lock().unwrap() = Some(method);
+        *state.seen_uri.lock().unwrap() = Some(uri);
         *state.seen_headers.lock().unwrap() = headers;
+        *state.seen_body.lock().unwrap() = body;
         (state.status, state.headers, state.body)
     }
 
@@ -314,5 +411,8 @@ mod tests {
         addr: SocketAddr,
         handle: JoinHandle<()>,
         seen_headers: Arc<Mutex<HeaderMap>>,
+        seen_method: Arc<Mutex<Option<Method>>>,
+        seen_uri: Arc<Mutex<Option<Uri>>>,
+        seen_body: Arc<Mutex<Bytes>>,
     }
 }

@@ -115,7 +115,7 @@ impl PublicRelayRegistryManager {
     ) -> Result<RegistryWriteOutcome, PublicRelayError> {
         report.ensure_complete_import()?;
         let _mutation = self.mutation_lock.lock().await;
-        self.save_and_reload(report.entries).await
+        self.save_and_install(report.entries).await
     }
 
     pub async fn upsert(
@@ -126,7 +126,7 @@ impl PublicRelayRegistryManager {
         entry.target()?;
         let mut entries = self.entries().await;
         entries.insert(entry.machine_id.clone(), entry);
-        self.save_and_reload(entries.into_values().collect()).await
+        self.save_and_install(entries.into_values().collect()).await
     }
 
     pub async fn remove(
@@ -138,7 +138,7 @@ impl PublicRelayRegistryManager {
         if entries.remove(machine_id).is_none() {
             return Err(PublicRelayError::UnknownMachine);
         }
-        self.save_and_reload(entries.into_values().collect()).await
+        self.save_and_install(entries.into_values().collect()).await
     }
 
     pub async fn set_disabled(
@@ -152,7 +152,7 @@ impl PublicRelayRegistryManager {
             .get_mut(machine_id)
             .ok_or(PublicRelayError::UnknownMachine)?;
         entry.disabled = disabled;
-        self.save_and_reload(entries.into_values().collect()).await
+        self.save_and_install(entries.into_values().collect()).await
     }
 
     pub async fn acquire_forward_permit(
@@ -174,19 +174,14 @@ impl PublicRelayRegistryManager {
         })
     }
 
-    async fn reload(&self) -> Result<(), PublicRelayError> {
-        let snapshot = self.store.load_snapshot().await?;
-        *self.snapshot.write().await = snapshot;
-        self.rebuild_machine_limits().await;
-        Ok(())
-    }
-
-    async fn save_and_reload(
+    async fn save_and_install(
         &self,
         entries: Vec<PublicRelayEntry>,
     ) -> Result<RegistryWriteOutcome, PublicRelayError> {
+        let snapshot = snapshot_from_entries(entries.clone())?;
         let outcome = self.store.save_entries(entries).await?;
-        self.reload().await?;
+        *self.snapshot.write().await = snapshot;
+        self.rebuild_machine_limits().await;
         Ok(outcome)
     }
 
@@ -221,6 +216,17 @@ impl PublicRelayRegistryManager {
                 .or_insert_with(|| Arc::new(Semaphore::new(PUBLIC_PER_MACHINE_CONCURRENCY)));
         }
     }
+}
+
+fn snapshot_from_entries(
+    entries: Vec<PublicRelayEntry>,
+) -> Result<PublicRelaySnapshot, PublicRelayError> {
+    let mut snapshot = PublicRelaySnapshot::default();
+    for entry in entries {
+        entry.target()?;
+        snapshot.entries.insert(entry.machine_id.clone(), entry);
+    }
+    Ok(snapshot)
 }
 
 #[cfg(test)]

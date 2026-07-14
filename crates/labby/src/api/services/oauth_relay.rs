@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -54,12 +55,21 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     match state.public_relay.as_ref() {
         Some(manager) => {
             let machines = manager.count().await;
+            let (status, registry) = match manager.store().load_snapshot().await {
+                Ok(snapshot) if snapshot.entries.len() == machines => (StatusCode::OK, "loaded"),
+                Ok(_) => (StatusCode::OK, "stale"),
+                Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "corrupt"),
+            };
             (
-                StatusCode::OK,
+                status,
                 Json(PublicRelayHealth {
-                    status: "ok",
+                    status: if status == StatusCode::OK {
+                        "ok"
+                    } else {
+                        "unavailable"
+                    },
                     relay: "enabled",
-                    registry: "loaded",
+                    registry,
                     machines,
                 }),
             )
@@ -90,37 +100,97 @@ async fn callback(
     let machine_raw = params.get("machine_id").map(String::as_str).unwrap_or("");
     let machine_id = match MachineId::parse(machine_raw) {
         Ok(machine_id) => machine_id,
-        Err(error) => return public_error_response(error),
+        Err(error) => {
+            return public_error_response_logged(error, started, None, machine_raw, &method, None);
+        }
     };
     if uri
         .query()
         .is_some_and(|query| query.len() > PUBLIC_QUERY_LIMIT_BYTES)
     {
-        return public_error_response(PublicRelayError::BodyTooLarge);
+        return public_error_response_logged(
+            PublicRelayError::BodyTooLarge,
+            started,
+            Some(&machine_id),
+            machine_raw,
+            &method,
+            None,
+        );
     }
     if content_length_exceeds_limit(&headers, PUBLIC_REQUEST_BODY_LIMIT_BYTES) {
-        return public_error_response(PublicRelayError::BodyTooLarge);
+        return public_error_response_logged(
+            PublicRelayError::BodyTooLarge,
+            started,
+            Some(&machine_id),
+            machine_raw,
+            &method,
+            None,
+        );
     }
     let suffix_path = match suffix_after_machine(uri.path(), &machine_id) {
         Ok(suffix) => suffix,
-        Err(error) => return public_error_response(error),
+        Err(error) => {
+            return public_error_response_logged(
+                error,
+                started,
+                Some(&machine_id),
+                machine_raw,
+                &method,
+                None,
+            );
+        }
     };
     let Some(manager) = state.public_relay.clone() else {
-        return public_error_response(PublicRelayError::RegistryUnavailable(
-            "public relay registry manager is not loaded".into(),
-        ));
+        return public_error_response_logged(
+            PublicRelayError::RegistryUnavailable(
+                "public relay registry manager is not loaded".into(),
+            ),
+            started,
+            Some(&machine_id),
+            machine_raw,
+            &method,
+            None,
+        );
     };
     let target = match manager.resolve(&machine_id).await {
         Ok(target) => target,
-        Err(error) => return public_error_response(error),
+        Err(error) => {
+            return public_error_response_logged(
+                error,
+                started,
+                Some(&machine_id),
+                machine_raw,
+                &method,
+                None,
+            );
+        }
     };
     let body = match axum::body::to_bytes(body, PUBLIC_REQUEST_BODY_LIMIT_BYTES).await {
         Ok(body) => body,
-        Err(_) => return public_error_response(PublicRelayError::BodyTooLarge),
+        Err(error) => {
+            let relay_error = body_read_error_to_public(&error);
+            return public_error_response_logged(
+                relay_error,
+                started,
+                Some(&machine_id),
+                machine_raw,
+                &method,
+                Some(error.to_string()),
+            );
+        }
     };
     let _permit = match manager.acquire_forward_permit(&machine_id).await {
         Ok(permit) => permit,
-        Err(error) => return public_error_response(error),
+        Err(error) => {
+            return public_error_response_logged(
+                error,
+                started,
+                Some(&machine_id),
+                machine_raw,
+                &method,
+                None,
+            );
+        }
     };
 
     let result = state
@@ -200,21 +270,27 @@ fn apply_public_callback_security_headers(headers: &mut HeaderMap) {
     );
 }
 
-fn public_error_response(error: PublicRelayError) -> Response {
-    let status = match error {
+fn public_error_status(error: &PublicRelayError) -> StatusCode {
+    match error {
         PublicRelayError::BodyTooLarge | PublicRelayError::ResponseTooLarge => {
             StatusCode::PAYLOAD_TOO_LARGE
         }
+        PublicRelayError::InvalidRequestBody(_) => StatusCode::BAD_REQUEST,
         PublicRelayError::Overloaded => StatusCode::TOO_MANY_REQUESTS,
         PublicRelayError::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
         PublicRelayError::InvalidMachineId(_)
         | PublicRelayError::InvalidSuffix(_)
         | PublicRelayError::UnknownMachine
         | PublicRelayError::DisabledMachine => StatusCode::NOT_FOUND,
+        PublicRelayError::InvalidRegistryInput(_) => StatusCode::UNPROCESSABLE_ENTITY,
         PublicRelayError::InvalidTarget(_)
         | PublicRelayError::RegistryUnavailable(_)
         | PublicRelayError::UpstreamError => StatusCode::BAD_GATEWAY,
-    };
+    }
+}
+
+fn public_error_response(error: PublicRelayError) -> Response {
+    let status = public_error_status(&error);
     let mut response = (
         status,
         Json(json!({
@@ -227,6 +303,64 @@ fn public_error_response(error: PublicRelayError) -> Response {
         header::HeaderValue::from_static("no-store"),
     );
     response
+}
+
+fn public_error_response_logged(
+    error: PublicRelayError,
+    started: Instant,
+    machine_id: Option<&MachineId>,
+    machine_raw: &str,
+    method: &Method,
+    source: Option<String>,
+) -> Response {
+    let status = public_error_status(&error);
+    let machine_label = public_log_machine_label(machine_id, machine_raw);
+    tracing::warn!(
+        surface = "api",
+        service = "oauth_relay",
+        action = "callback",
+        machine_id = machine_label.as_str(),
+        method = %method,
+        status = status.as_u16(),
+        kind = error.kind(),
+        source = source.as_deref(),
+        elapsed_ms = started.elapsed().as_millis(),
+        "public oauth callback relay rejected request"
+    );
+    public_error_response(error)
+}
+
+fn public_log_machine_label(machine_id: Option<&MachineId>, machine_raw: &str) -> String {
+    machine_id.map(ToString::to_string).unwrap_or_else(|| {
+        if machine_raw.is_empty() {
+            "<missing>"
+        } else {
+            "<invalid>"
+        }
+        .into()
+    })
+}
+
+fn body_read_error_to_public(error: &(dyn std::error::Error + 'static)) -> PublicRelayError {
+    if error_is_length_limit(error) {
+        PublicRelayError::BodyTooLarge
+    } else {
+        PublicRelayError::InvalidRequestBody(error.to_string())
+    }
+}
+
+fn error_is_length_limit(error: &(dyn std::error::Error + 'static)) -> bool {
+    if error.is::<http_body_util::LengthLimitError>() {
+        return true;
+    }
+    let mut current = error.source();
+    while let Some(source) = current {
+        if source.is::<http_body_util::LengthLimitError>() {
+            return true;
+        }
+        current = source.source();
+    }
+    false
 }
 
 async fn list_machines(
@@ -266,15 +400,27 @@ async fn upsert_machine_without_path(
     auth: Option<Extension<AuthContext>>,
     Json(body): Json<UpsertMachineRequest>,
 ) -> Result<Json<MutationReport>, ApiError> {
-    require_lab_admin("oauth.relay.upsert", request_id(&headers), auth.as_ref())?;
-    let machine_id = body
-        .machine_id
-        .clone()
-        .ok_or_else(|| ToolError::MissingParam {
-            message: "missing required parameter `machine_id`".into(),
-            param: "machine_id".into(),
-        })?;
-    upsert_machine(state, machine_id, body).await
+    let action = "oauth.relay.upsert";
+    let request_id = request_id(&headers);
+    require_lab_admin(action, request_id, auth.as_ref())?;
+    let machine_hint = body.machine_id.clone();
+    audit_admin_mutation(
+        action,
+        request_id,
+        auth.as_ref(),
+        machine_hint.clone(),
+        async move {
+            let machine_id = body
+                .machine_id
+                .clone()
+                .ok_or_else(|| ToolError::MissingParam {
+                    message: "missing required parameter `machine_id`".into(),
+                    param: "machine_id".into(),
+                })?;
+            upsert_machine(state, machine_id, body).await
+        },
+    )
+    .await
 }
 
 async fn upsert_machine_with_path(
@@ -284,8 +430,17 @@ async fn upsert_machine_with_path(
     auth: Option<Extension<AuthContext>>,
     Json(body): Json<UpsertMachineRequest>,
 ) -> Result<Json<MutationReport>, ApiError> {
-    require_lab_admin("oauth.relay.upsert", request_id(&headers), auth.as_ref())?;
-    upsert_machine(state, machine_id, body).await
+    let action = "oauth.relay.upsert";
+    let request_id = request_id(&headers);
+    require_lab_admin(action, request_id, auth.as_ref())?;
+    audit_admin_mutation(
+        action,
+        request_id,
+        auth.as_ref(),
+        Some(machine_id.clone()),
+        async move { upsert_machine(state, machine_id, body).await },
+    )
+    .await
 }
 
 async fn remove_machine(
@@ -294,14 +449,26 @@ async fn remove_machine(
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
 ) -> Result<Json<MutationReport>, ApiError> {
-    require_lab_admin("oauth.relay.remove", request_id(&headers), auth.as_ref())?;
-    let manager = require_manager(&state)?;
-    let machine_id = MachineId::parse(&machine_id).map_err(|error| error.to_tool_error())?;
-    let outcome = manager
-        .remove(&machine_id)
-        .await
-        .map_err(|error| error.to_tool_error())?;
-    Ok(mutation_response(outcome))
+    let action = "oauth.relay.remove";
+    let request_id = request_id(&headers);
+    require_lab_admin(action, request_id, auth.as_ref())?;
+    audit_admin_mutation(
+        action,
+        request_id,
+        auth.as_ref(),
+        Some(machine_id.clone()),
+        async move {
+            let manager = require_manager(&state)?;
+            let machine_id =
+                MachineId::parse(&machine_id).map_err(|error| error.to_tool_error())?;
+            let outcome = manager
+                .remove(&machine_id)
+                .await
+                .map_err(|error| error.to_tool_error())?;
+            Ok(mutation_response(outcome))
+        },
+    )
+    .await
 }
 
 async fn disable_machine(
@@ -328,31 +495,36 @@ async fn import_registry(
     auth: Option<Extension<AuthContext>>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    require_lab_admin("oauth.relay.import", request_id(&headers), auth.as_ref())?;
-    let manager = require_manager(&state)?;
-    let report = crate::oauth::public_relay::store::parse_registry_value(body)
-        .map_err(|error| error.to_tool_error())?;
-    let output_report = ImportReport {
-        accepted: report.accepted.clone(),
-        quarantined: report.quarantined.clone(),
-        entries: Vec::new(),
-    };
-    let outcome = manager
-        .import_report(report)
-        .await
-        .map_err(|error| error.to_tool_error())?;
-    Ok(Json(json!({
-        "report": output_report,
-        "restart_required": false,
-        "outcome": outcome,
-    })))
+    let action = "oauth.relay.import";
+    let request_id = request_id(&headers);
+    require_lab_admin(action, request_id, auth.as_ref())?;
+    audit_admin_mutation(action, request_id, auth.as_ref(), None, async move {
+        let manager = require_manager(&state)?;
+        let report = crate::oauth::public_relay::store::parse_registry_value(body)
+            .map_err(|error| error.to_tool_error())?;
+        let output_report = ImportReport {
+            accepted: report.accepted.clone(),
+            quarantined: report.quarantined.clone(),
+            entries: Vec::new(),
+        };
+        let outcome = manager
+            .import_report(report)
+            .await
+            .map_err(|error| error.to_tool_error())?;
+        Ok(Json(json!({
+            "report": output_report,
+            "restart_required": false,
+            "outcome": outcome,
+        })))
+    })
+    .await
 }
 
 async fn upsert_machine(
     state: AppState,
     machine_id: String,
     body: UpsertMachineRequest,
-) -> Result<Json<MutationReport>, ApiError> {
+) -> Result<Json<MutationReport>, ToolError> {
     let manager = require_manager(&state)?;
     let machine_id = MachineId::parse(&machine_id).map_err(|error| error.to_tool_error())?;
     let entry = PublicRelayEntry {
@@ -375,22 +547,92 @@ async fn set_machine_disabled(
     machine_id: String,
     disabled: bool,
 ) -> Result<Json<MutationReport>, ApiError> {
-    require_lab_admin(
-        if disabled {
-            "oauth.relay.disable"
-        } else {
-            "oauth.relay.enable"
-        },
-        request_id(&headers),
+    let action = if disabled {
+        "oauth.relay.disable"
+    } else {
+        "oauth.relay.enable"
+    };
+    let request_id = request_id(&headers);
+    require_lab_admin(action, request_id, auth.as_ref())?;
+    audit_admin_mutation(
+        action,
+        request_id,
         auth.as_ref(),
-    )?;
-    let manager = require_manager(&state)?;
-    let machine_id = MachineId::parse(&machine_id).map_err(|error| error.to_tool_error())?;
-    let outcome = manager
-        .set_disabled(&machine_id, disabled)
-        .await
-        .map_err(|error| error.to_tool_error())?;
-    Ok(mutation_response(outcome))
+        Some(machine_id.clone()),
+        async move {
+            let manager = require_manager(&state)?;
+            let machine_id =
+                MachineId::parse(&machine_id).map_err(|error| error.to_tool_error())?;
+            let outcome = manager
+                .set_disabled(&machine_id, disabled)
+                .await
+                .map_err(|error| error.to_tool_error())?;
+            Ok(mutation_response(outcome))
+        },
+    )
+    .await
+}
+
+async fn audit_admin_mutation<T, F>(
+    action: &'static str,
+    request_id: Option<&str>,
+    auth: Option<&Extension<AuthContext>>,
+    machine_id: Option<String>,
+    operation: F,
+) -> Result<T, ApiError>
+where
+    F: Future<Output = Result<T, ToolError>>,
+{
+    let actor_key = auth
+        .and_then(|Extension(ctx)| ctx.actor_key.as_deref())
+        .map(str::to_owned);
+    let started = Instant::now();
+    tracing::info!(
+        surface = "api",
+        service = "oauth_relay",
+        action,
+        request_id,
+        actor_key = actor_key.as_deref(),
+        machine_id = machine_id.as_deref(),
+        "oauth relay admin mutation start"
+    );
+    let result = operation.await;
+    let elapsed_ms = started.elapsed().as_millis();
+    match &result {
+        Ok(_) => tracing::info!(
+            surface = "api",
+            service = "oauth_relay",
+            action,
+            request_id,
+            actor_key = actor_key.as_deref(),
+            machine_id = machine_id.as_deref(),
+            elapsed_ms,
+            "oauth relay admin mutation complete"
+        ),
+        Err(error) if error.is_internal() => tracing::error!(
+            surface = "api",
+            service = "oauth_relay",
+            action,
+            request_id,
+            actor_key = actor_key.as_deref(),
+            machine_id = machine_id.as_deref(),
+            elapsed_ms,
+            kind = error.kind(),
+            "oauth relay admin mutation failed"
+        ),
+        Err(error) => tracing::warn!(
+            surface = "api",
+            service = "oauth_relay",
+            action,
+            request_id,
+            actor_key = actor_key.as_deref(),
+            machine_id = machine_id.as_deref(),
+            elapsed_ms,
+            kind = error.kind(),
+            "oauth relay admin mutation failed"
+        ),
+    }
+    result.map_err(ApiError)
 }
 
 fn mutation_response(outcome: RegistryWriteOutcome) -> Json<MutationReport> {
@@ -621,6 +863,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_relay_admin_rejects_invalid_import_schema_as_caller_error() {
+        let (_dir, state) = test_state().await;
+        let response = admin_routes(state.clone())
+            .layer(Extension(admin_auth_context()))
+            .with_state(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"entries":"not-an-array"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
     async fn oauth_relay_admin_mutation_flow_updates_live_registry() {
         let (_dir, state) = test_state().await;
         let app = admin_routes(state.clone())
@@ -738,7 +1000,7 @@ mod tests {
             .unwrap();
 
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_ne!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
@@ -772,6 +1034,59 @@ mod tests {
         assert_eq!(
             healthz.headers().get(header::CONTENT_TYPE).unwrap(),
             "application/json"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_healthz_reports_corrupt_persisted_registry() {
+        let (_dir, state) = test_state().await;
+        let manager = state.public_relay.as_ref().unwrap().clone();
+        manager
+            .upsert(PublicRelayEntry {
+                machine_id: MachineId::parse("dookie").unwrap(),
+                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
+                description: None,
+                disabled: false,
+            })
+            .await
+            .unwrap();
+        std::fs::write(manager.store().path(), "{not valid json").unwrap();
+        let response = public_routes(state.clone())
+            .with_state(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["registry"], "corrupt");
+    }
+
+    #[test]
+    fn public_callback_error_status_mapping_is_explicit() {
+        assert_eq!(
+            public_error_status(&PublicRelayError::ResponseTooLarge),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            public_error_status(&PublicRelayError::UpstreamTimeout),
+            StatusCode::GATEWAY_TIMEOUT
+        );
+        assert_eq!(
+            public_error_status(&PublicRelayError::UpstreamError),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(
+            public_error_status(&PublicRelayError::RegistryUnavailable("missing".into())),
+            StatusCode::BAD_GATEWAY
         );
     }
 

@@ -26,9 +26,13 @@ pub fn validate_suffix_path(path: &str) -> Result<String, PublicRelayError> {
         ));
     }
     let lower = path.to_ascii_lowercase();
-    if lower.contains("%2f") || lower.contains("%5c") || path.contains('\\') {
+    if lower.contains("%2f")
+        || lower.contains("%5c")
+        || lower.contains("%2e")
+        || path.contains('\\')
+    {
         return Err(PublicRelayError::InvalidSuffix(
-            "encoded slash or backslash is not allowed".into(),
+            "encoded slash, backslash, or dot segment is not allowed".into(),
         ));
     }
     if path
@@ -176,6 +180,8 @@ mod tests {
         for value in [
             "/callback2/x",
             "/callback/dookie/../x",
+            "/callback/dookie/%2e%2e/secret",
+            "/callback/dookie/%2E/secret",
             "/callback/dookie/%2fsecret",
             "/callback/dookie/%5csecret",
         ] {

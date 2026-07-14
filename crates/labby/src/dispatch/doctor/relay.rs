@@ -34,6 +34,32 @@ pub async fn check_public_relay(
                     format!("public relay registry loaded with {machines} machine(s)")
                 },
             });
+            match manager.store().load_snapshot().await {
+                Ok(snapshot) if snapshot.entries.len() == machines => findings.push(Finding {
+                    service: SERVICE.into(),
+                    check: "registry:persisted".into(),
+                    severity: Severity::Ok,
+                    message: format!(
+                        "persisted registry is loadable with {} machine(s)",
+                        snapshot.entries.len()
+                    ),
+                }),
+                Ok(snapshot) => findings.push(Finding {
+                    service: SERVICE.into(),
+                    check: "registry:stale".into(),
+                    severity: Severity::Warn,
+                    message: format!(
+                        "live registry has {machines} machine(s), persisted registry has {}",
+                        snapshot.entries.len()
+                    ),
+                }),
+                Err(error) => findings.push(Finding {
+                    service: SERVICE.into(),
+                    check: "registry:corrupt".into(),
+                    severity: Severity::Fail,
+                    message: error.to_string(),
+                }),
+            }
             if probe_targets {
                 let target_findings = stream::iter(manager.probe_targets().await)
                     .map(|(machine, target)| async move {
@@ -190,5 +216,38 @@ mod tests {
             .find(|finding| finding.check == "registry:corrupt")
             .unwrap();
         assert!(matches!(finding.severity, Severity::Fail));
+    }
+
+    #[tokio::test]
+    async fn relay_health_reports_corrupt_registry_when_live_manager_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.json");
+        let store = PublicRelayRegistryStore::new(path.clone());
+        store
+            .save_entries(vec![crate::oauth::public_relay::PublicRelayEntry {
+                machine_id: crate::oauth::public_relay::MachineId::parse("dookie").unwrap(),
+                target_url: "http://100.88.16.79:38935/callback/dookie".into(),
+                description: None,
+                disabled: false,
+            }])
+            .await
+            .unwrap();
+        let manager = PublicRelayRegistryManager::load(store).await.unwrap();
+        std::fs::write(&path, "{not valid json").unwrap();
+
+        let report = check_public_relay(Some(Arc::new(manager)), false).await;
+
+        let loaded = report
+            .findings
+            .iter()
+            .find(|finding| finding.check == "registry:loaded")
+            .unwrap();
+        assert!(matches!(loaded.severity, Severity::Ok));
+        let corrupt = report
+            .findings
+            .iter()
+            .find(|finding| finding.check == "registry:corrupt")
+            .unwrap();
+        assert!(matches!(corrupt.severity, Severity::Fail));
     }
 }

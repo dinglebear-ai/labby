@@ -68,7 +68,7 @@ pub fn parse_registry_value(value: serde_json::Value) -> Result<ImportReport, Pu
         return import_entries(entries);
     }
     let map = serde_json::from_value::<BTreeMap<String, String>>(value)
-        .map_err(|error| PublicRelayError::RegistryUnavailable(error.to_string()))?;
+        .map_err(|error| PublicRelayError::InvalidRegistryInput(error.to_string()))?;
     import_map_entries(map)
 }
 

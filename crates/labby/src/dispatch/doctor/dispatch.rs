@@ -70,7 +70,13 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     }
     // Actions below require ServiceClients — build from env.
     let clients = Arc::new(ServiceClients::from_env());
-    dispatch_with_clients(&clients, action, params).await
+    dispatch_with_clients_and_relay(
+        &clients,
+        crate::oauth::public_relay::current_public_relay_manager(),
+        action,
+        params,
+    )
+    .await
 }
 
 /// API-path dispatch: uses pre-built `ServiceClients` from `AppState`.
@@ -79,13 +85,7 @@ pub async fn dispatch_with_clients(
     action: &str,
     params: Value,
 ) -> Result<Value, ToolError> {
-    dispatch_with_clients_and_relay(
-        clients,
-        crate::oauth::public_relay::current_public_relay_manager(),
-        action,
-        params,
-    )
-    .await
+    dispatch_with_clients_and_relay(clients, None, action, params).await
 }
 
 pub async fn dispatch_with_clients_and_relay(

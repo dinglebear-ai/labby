@@ -56,6 +56,10 @@ pub enum PublicRelayError {
     InvalidMachineId(String),
     #[error("invalid callback suffix: {0}")]
     InvalidSuffix(String),
+    #[error("invalid registry input: {0}")]
+    InvalidRegistryInput(String),
+    #[error("invalid callback request body: {0}")]
+    InvalidRequestBody(String),
     #[error("invalid target: {0}")]
     InvalidTarget(String),
     #[error("registry unavailable: {0}")]
@@ -79,7 +83,10 @@ pub enum PublicRelayError {
 impl PublicRelayError {
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::InvalidMachineId(_) | Self::InvalidSuffix(_) => "invalid_param",
+            Self::InvalidMachineId(_)
+            | Self::InvalidSuffix(_)
+            | Self::InvalidRegistryInput(_)
+            | Self::InvalidRequestBody(_) => "invalid_param",
             Self::InvalidTarget(_) => "relay_invalid_target",
             Self::RegistryUnavailable(_) => "relay_registry_unavailable",
             Self::UnknownMachine => "not_found",
@@ -103,6 +110,7 @@ impl PublicRelayError {
         match self {
             Self::Overloaded => "relay busy; retry later",
             Self::BodyTooLarge => "callback request too large",
+            Self::InvalidRequestBody(_) => "callback request invalid",
             Self::ResponseTooLarge => "callback response too large",
             Self::UpstreamTimeout => "callback target timed out",
             Self::UpstreamError => "callback target unavailable",
