@@ -42,11 +42,34 @@ start() {
         echo "labby: preflight FAILED — see $LOG"
         exit 1
     fi
+    # Guards the manual-start path (Settings > Labby, SSH) the same way
+    # event/disks_mounted and the plugin's own postinstall script already
+    # guard the automatic paths. Without this, starting before the array is
+    # up would mkdir LABBY_DIR on Unraid's RAM-only root filesystem and
+    # labby would write auth.db/registry.db/config.toml there — lost on
+    # reboot, or silently shadowed once the real array share mounts.
+    if ! mountpoint -q /mnt/user; then
+        echo "labby: /mnt/user is not mounted — start the array first (LABBY_DIR state would otherwise land on RAM-only storage and be lost)"
+        exit 1
+    fi
     mkdir -p "$LABBY_DIR"
 
-    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && ready; then
-        echo "labby: already running"
-        return 0
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        if ready; then
+            echo "labby: already running"
+            return 0
+        fi
+        # A live process exists but isn't answering on the currently
+        # configured HTTP_HOST/HTTP_PORT (e.g. changed in the settings form
+        # without a restart). Stop it first — spawning a second `labby
+        # serve` here would leave two processes writing to the same
+        # LABBY_DIR SQLite state concurrently, and overwriting PIDFILE below
+        # would orphan the old process forever.
+        echo "labby: a live labby process isn't answering on ${HTTP_HOST}:${HTTP_PORT} (settings changed since it started?) — stopping it first"
+        if ! stop; then
+            echo "labby: could not stop the existing process — refusing to start a second one"
+            exit 1
+        fi
     fi
 
     echo "labby: starting (state: ${LABBY_DIR}, http: ${HTTP_HOST}:${HTTP_PORT})"

@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.0c">
+  <!ENTITY version      "1.3.0d">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -22,7 +22,7 @@
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "1bb151dd5b7b091e9aed476421281769">
   <!ENTITY pageMD5      "bafb51a8156ba5216a1b39be02f498ab">
-  <!ENTITY rcMD5        "ff33e9576d90e5094ae047855fb90a15">
+  <!ENTITY rcMD5        "35e83bc87809d89985effffe55303db0">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
   <!ENTITY mountedMD5   "c564b0387a4f115ad7c4721445fc9549">
   <!ENTITY unmountingMD5 "7ccbac8d7d2b1b933f7806b4e3c21711">
@@ -33,6 +33,21 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.0d
+- rc.labby's manual `start` path (Settings &gt; Labby, SSH) now refuses to
+  run before /mnt/user is mounted, matching the guard the automatic
+  disks_mounted/postinstall paths already had — starting before the array
+  is up previously created LABBY_DIR on Unraid's RAM-only root filesystem,
+  losing auth/config state on reboot or hiding it once the real array
+  share mounted.
+- `start` no longer spawns a second labby process when a live pid exists
+  but doesn't answer on the currently configured HTTP_HOST/HTTP_PORT (e.g.
+  changed in the settings form without a restart) — it now stops the
+  existing process first, matching the same concurrent-writer protection
+  already applied to the `restart` case. Verified with a scripted
+  simulation of both the unmounted-array refusal and the stale-process
+  handover.
+
 ###1.3.0c
 - rc.labby's stop() now fails loudly (non-zero exit, pidfile kept) instead of
   silently succeeding when a process survives SIGKILL (e.g. stuck in
