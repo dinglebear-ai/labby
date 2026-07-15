@@ -10,12 +10,28 @@ use std::path::{Path, PathBuf};
 
 use labby_codemode::snippet::store::{SnippetInfo, builtin_snippet_dir, list_snippets};
 use labby_codemode::{ToolDescriptor, ToolsRender, serialized_catalog_size};
+use sha2::{Digest, Sha256};
 
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{sanitize_schema, sanitize_tool_text};
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
+
+/// Hash of a tool's callable shape (description + input/output schema), so the
+/// catalog render cache invalidates on a schema/description change even when
+/// the upstream keeps the tool's name unchanged — a rename-only fingerprint
+/// would otherwise keep serving a stale `.dts` from `codemode.describe()`.
+fn tool_shape_digest(tool: &UpstreamTool) -> String {
+    let payload = serde_json::json!({
+        "description": tool.tool.description,
+        "input_schema": tool.input_schema,
+        "output_schema": tool.output_schema,
+    });
+    let serialized = serde_json::to_string(&payload).unwrap_or_default();
+    let digest = Sha256::digest(serialized.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 /// Build (or serve from cache) the Code Mode discovery catalog for the proxy.
 ///
@@ -67,7 +83,14 @@ async fn catalog_from_tools(
     let fingerprint = {
         let mut ids: Vec<String> = raw_tools
             .iter()
-            .map(|t| format!("{}::{}", t.upstream_name, t.tool.name))
+            .map(|t| {
+                format!(
+                    "{}::{}::{}",
+                    t.upstream_name,
+                    t.tool.name,
+                    tool_shape_digest(t)
+                )
+            })
             .collect();
         ids.sort_unstable();
         format!("tools:\n{}\n{snippet_fingerprint}", ids.join("\n"))
@@ -139,12 +162,18 @@ async fn catalog_from_tools(
         sdk_kind: "internal_error".to_string(),
         message: format!("failed to serialize Code Mode discovery catalog: {err}"),
     })?;
+    // Wrap ONCE here — every consumer below (the stored cache entry, the
+    // returned render, and any later `describe_types` re-fetch of this same
+    // fingerprint) shares this allocation via a cheap Arc clone instead of a
+    // deep copy of the whole catalog.
+    let entries: std::sync::Arc<[ToolDescriptor]> = std::sync::Arc::from(entries);
+    let catalog_json: std::sync::Arc<str> = std::sync::Arc::from(catalog_json);
 
     manager
         .store_catalog_render_cache(super::CatalogRenderCache {
             fingerprint: fingerprint.clone(),
-            entries: entries.clone(),
-            catalog_json: catalog_json.clone(),
+            entries: std::sync::Arc::clone(&entries),
+            catalog_json: std::sync::Arc::clone(&catalog_json),
             serialized_size,
         })
         .await;

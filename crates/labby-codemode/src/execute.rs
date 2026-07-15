@@ -1,11 +1,12 @@
 //! `CodeModeBroker::execute` and the host-brokered tool-call path.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::error::ToolError;
-use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome};
+use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome, ToolsRender};
 use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
 
 use super::CodeModeBroker;
@@ -47,7 +48,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         config: CodeModeConfig,
         scope: ToolScope,
-        execution_id: Option<std::sync::Arc<str>>,
+        execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         Ok(self
             .execute_with_raw_response(code, caller, surface, config, scope, execution_id)
@@ -62,7 +63,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         config: CodeModeConfig,
         scope: ToolScope,
-        execution_id: Option<std::sync::Arc<str>>,
+        execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
         // `codemode` is exposed only when the host's Code Mode surface is
         // enabled; the surface handler gates on that before reaching here.
@@ -169,16 +170,10 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .await?;
         let catalog = render
             .entries
-            .into_iter()
-            .filter(|entry| discovery_entry_visible(entry, scope))
-            .collect::<Vec<_>>();
-        let mut namespaces: Vec<String> = catalog
             .iter()
-            .filter(|entry| entry.kind == CodeModeCatalogKind::Tool)
-            .map(|entry| entry.namespace.clone())
-            .collect();
-        namespaces.sort();
-        namespaces.dedup();
+            .filter(|entry| discovery_entry_visible(entry, scope))
+            .cloned()
+            .collect::<Vec<_>>();
 
         let discovery_entries = catalog
             .iter()
@@ -196,12 +191,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .filter(|entry| entry.kind == CodeModeCatalogKind::Tool)
             .collect::<Vec<_>>();
         let namespace_js =
-            super::preamble::generate_js_proxy_from_catalog(&tool_entries, &namespaces).map_err(
-                |message| ToolError::Sdk {
+            super::preamble::generate_js_proxy_from_catalog(&tool_entries).map_err(|message| {
+                ToolError::Sdk {
                     sdk_kind: "invalid_param".to_string(),
                     message,
-                },
-            )?;
+                }
+            })?;
         let local_provider_js = if local_providers_allowed(caller, scope) {
             super::preamble::generate_local_provider_js()
         } else {
@@ -232,7 +227,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         max_log_bytes: usize,
         trace_params: bool,
         scope: ToolScope,
-        execution_id: Option<std::sync::Arc<str>>,
+        execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Cloudflare-parity: no typed TypeScript preamble is injected. The
         // sandbox exposes only `callTool(id, params)`; the agent uses tool ids
@@ -441,6 +436,63 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     .map(|(id, score)| serde_json::json!({ "id": id, "score": score }))
                     .collect();
                 Ok(serde_json::json!({ "ranked": ranked_json }))
+            }
+            "describe_types" => {
+                let id = params
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty());
+                let Some(id) = id else {
+                    return Err(ToolError::MissingParam {
+                        message: "describe_types requires a non-empty `id`".to_string(),
+                        param: "id".to_string(),
+                    });
+                };
+                // Re-fetches the same catalog render `build_code_mode_proxy` already
+                // pulled for this execution — same caller/surface/scope, so on the
+                // common path (tool set unchanged since execution start) this hits
+                // the manager's `CatalogRenderCache` fingerprint and returns the
+                // already-computed `.dts` rather than regenerating it. Not a
+                // guarantee: any surface/scope can reach this cache (see
+                // `CatalogRenderCache`'s doc comment in `labby-gateway`), and a
+                // concurrent execution with a different tool set can evict the
+                // single slot between this call and the one `build_code_mode_proxy`
+                // made — in that case this re-runs the live catalog build instead.
+                // The sandbox only ever asks for the ONE id it already resolved via
+                // the (already-embedded, schema-free) discovery index, so this
+                // stays a single lookup per `codemode.describe()` call either way —
+                // never a bulk catalog dump into the sandbox.
+                let (include_snippets, use_cache) = discovery_render_params(caller, surface, scope);
+                let render = host
+                    .list_tools(caller, surface, scope, include_snippets, use_cache)
+                    .await
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(
+                            surface = "dispatch",
+                            service = "code_mode",
+                            action = "describe_types",
+                            kind = err.kind(),
+                            error = %err,
+                            "describe_types: list_tools failed; degrading to no type info"
+                        );
+                        ToolsRender::empty()
+                    });
+                // `list_tools` only filters on the caller's allowed namespaces;
+                // the finer-grained per-tool grant (`scope.allows`) is applied by
+                // `discovery_entry_visible` at the point the sandbox's own
+                // discovery index is built (`build_code_mode_proxy`). Re-apply it
+                // here too — otherwise a tool-scoped caller could fetch type info
+                // for a sibling tool in the same namespace it cannot call, since
+                // this reserved-namespace call is reachable directly from sandbox
+                // JS via `callTool(id, params)`, not only through
+                // `codemode.describe()`'s own already-scoped matching.
+                let dts = render
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == id && discovery_entry_visible(entry, scope))
+                    .map(|entry| entry.dts.clone())
+                    .filter(|dts| !dts.is_empty());
+                Ok(serde_json::json!({ "dts": dts }))
             }
             _ => Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
@@ -707,6 +759,302 @@ mod tests {
             MAX_SEMANTIC_QUERY_BYTES - MAX_SEMANTIC_QUERY_BYTES % 4
         );
         assert!(clamped.chars().all(|c| c == '\u{1F982}'));
+    }
+
+    /// A `CodeModeHost` with a configurable tool set, so `describe_types` (and
+    /// any future test needing real catalog entries) has something to look up.
+    /// `NoopHost` always returns an empty catalog, which can't exercise this.
+    ///
+    /// Serializes and Arc-wraps the catalog ONCE in `new()`, matching
+    /// `CatalogRenderCache`'s real shape — `list_tools()` here is a refcount
+    /// bump per call, not a re-serialize, so a benchmark against this fixture
+    /// reflects the real cost of repeated `describe_types` dispatch, not an
+    /// artifact of a naive test double.
+    ///
+    /// `list_tools` filters by namespace (`scope.allowed_namespaces()`) but
+    /// deliberately NOT by `scope.tools` — matching real production, where
+    /// `code_mode_catalog_tools_allowed` only ever applies namespace-level
+    /// filtering. Per-tool filtering is the caller's responsibility
+    /// (`discovery_entry_visible`); a fixture that also filtered by tool would
+    /// hide exactly the class of bug this is meant to catch.
+    struct FixtureHost {
+        pool: crate::pool::RunnerPool,
+        entries: Arc<[ToolDescriptor]>,
+        catalog_json: Arc<str>,
+        fail_list_tools: bool,
+    }
+
+    impl FixtureHost {
+        fn new(entries: Vec<ToolDescriptor>) -> Self {
+            let catalog_json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
+            Self {
+                pool: crate::pool::RunnerPool::from_env()
+                    .expect("test process must expose current executable"),
+                entries: Arc::from(entries),
+                catalog_json: Arc::from(catalog_json),
+                fail_list_tools: false,
+            }
+        }
+
+        /// A fixture whose `list_tools` always returns `Err`, for exercising
+        /// fail-open degradation paths.
+        fn failing() -> Self {
+            Self {
+                fail_list_tools: true,
+                ..Self::new(Vec::new())
+            }
+        }
+    }
+
+    impl CodeModeHost for FixtureHost {
+        async fn list_tools(
+            &self,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            scope: &ToolScope,
+            _include_snippets: bool,
+            _use_cache: bool,
+        ) -> Result<ToolsRender, ToolError> {
+            if self.fail_list_tools {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "upstream_connect_error".to_string(),
+                    message: "FixtureHost: simulated list_tools failure".to_string(),
+                });
+            }
+            let entries = match scope.allowed_namespaces() {
+                Some(allowed) => Arc::from(
+                    self.entries
+                        .iter()
+                        .filter(|entry| allowed.contains(&entry.namespace))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ),
+                None => Arc::clone(&self.entries),
+            };
+            Ok(ToolsRender {
+                fingerprint: "fixture".to_string(),
+                entries,
+                catalog_json: Arc::clone(&self.catalog_json),
+                serialized_size: self.catalog_json.len(),
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _id: &str,
+            _params: Value,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+            _ctx: ExecCtx,
+        ) -> Result<ToolCallOutcome, ToolError> {
+            Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: "FixtureHost does not dispatch real tool calls".to_string(),
+            })
+        }
+
+        async fn resolve_snippet(
+            &self,
+            _name: &str,
+            _input: Value,
+        ) -> Result<crate::host::ResolvedSnippet, ToolError> {
+            Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "FixtureHost exposes no snippets".to_string(),
+            })
+        }
+
+        async fn semantic_rank(
+            &self,
+            _query: String,
+            _top_k: usize,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Vec<(String, f32)>, ToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn config(&self) -> CodeModeConfig {
+            CodeModeConfig::default()
+        }
+
+        fn runner_pool(&self) -> &crate::pool::RunnerPool {
+            &self.pool
+        }
+
+        fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+            labby_openapi::OpenApiRegistry::default()
+        }
+
+        fn openapi_http_client(&self) -> reqwest::Client {
+            labby_openapi::http::build_dispatch_client().expect("test dispatch client")
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_call_describe_types_returns_dts_for_matching_id() {
+        let github_tool = ToolDescriptor::tool(
+            "github",
+            "list_tags",
+            "List repository tags",
+            Some(json!({"type": "object", "properties": {"owner": {"type": "string"}}})),
+            None,
+        );
+        let expected_dts = github_tool.dts.clone();
+        assert!(
+            !expected_dts.is_empty(),
+            "fixture tool must have a generated .dts to assert against"
+        );
+        let host = FixtureHost::new(vec![github_tool]);
+        let broker = CodeModeBroker::new(Some(&host));
+
+        let result = broker
+            .call_tool_id(
+                "__lab_internal::describe_types",
+                json!({ "id": "github::list_tags" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect("describe_types must succeed for a known id");
+
+        assert_eq!(result, json!({ "dts": expected_dts }));
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_call_describe_types_returns_null_for_unknown_id() {
+        let host = FixtureHost::new(vec![ToolDescriptor::tool(
+            "github",
+            "list_tags",
+            "List repository tags",
+            None,
+            None,
+        )]);
+        let broker = CodeModeBroker::new(Some(&host));
+
+        let result = broker
+            .call_tool_id(
+                "__lab_internal::describe_types",
+                json!({ "id": "radarr::movie_search" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect("an unknown id must fail open, not error");
+
+        assert_eq!(result, json!({ "dts": null }));
+    }
+
+    /// Regression test for a real cross-scope disclosure bug: `describe_types`
+    /// originally looked up `id` over the unfiltered render, so a tool-scoped
+    /// caller could fetch a sibling tool's `.dts` by calling
+    /// `callTool("__lab_internal::describe_types", {id})` directly — bypassing
+    /// `codemode.describe()`'s own already-scoped local matching entirely,
+    /// since `__lab_internal::*` dispatch is never subject to `scope.allows()`.
+    /// A tools-only `ToolScope` (`namespaces: None`) means `list_tools` applies
+    /// no namespace filtering at all (see `FixtureHost::list_tools`, matching
+    /// real production), so both tools are present in the render and only the
+    /// `describe_types` handler's own `discovery_entry_visible` filter can
+    /// exclude the out-of-scope one.
+    #[tokio::test]
+    async fn dispatch_internal_call_describe_types_excludes_out_of_scope_sibling_tool() {
+        let host = FixtureHost::new(vec![
+            ToolDescriptor::tool(
+                "github",
+                "allowed_tool",
+                "An allowed tool",
+                Some(json!({"type": "object"})),
+                None,
+            ),
+            ToolDescriptor::tool(
+                "github",
+                "forbidden_tool",
+                "A forbidden tool",
+                Some(json!({"type": "object"})),
+                None,
+            ),
+        ]);
+        let broker = CodeModeBroker::new(Some(&host));
+        let scope = ToolScope::new(vec![], vec!["github::allowed_tool".to_string()]);
+
+        let allowed = broker
+            .call_tool_id(
+                "__lab_internal::describe_types",
+                json!({ "id": "github::allowed_tool" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("in-scope tool must still resolve");
+        assert_ne!(
+            allowed,
+            json!({ "dts": null }),
+            "the in-scope tool must still return real type info"
+        );
+
+        let forbidden = broker
+            .call_tool_id(
+                "__lab_internal::describe_types",
+                json!({ "id": "github::forbidden_tool" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &scope,
+                ExecCtx::none(),
+            )
+            .await
+            .expect("an out-of-scope id must fail open, not error");
+        assert_eq!(
+            forbidden,
+            json!({ "dts": null }),
+            "a tool outside scope.tools must never disclose its .dts, even though it \
+             shares a namespace with an allowed tool and is present in the unfiltered render"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_call_describe_types_missing_id_is_missing_param() {
+        let host = NoopHost::default();
+        let broker = CodeModeBroker::new(Some(&host));
+
+        let err = broker
+            .call_tool_id(
+                "__lab_internal::describe_types",
+                json!({}),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect_err("a missing id must be a caller error, not folded into \"unknown id\"");
+        assert_eq!(err.kind(), "missing_param");
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_call_describe_types_degrades_on_host_error() {
+        let host = FixtureHost::failing();
+        let broker = CodeModeBroker::new(Some(&host));
+
+        let result = broker
+            .call_tool_id(
+                "__lab_internal::describe_types",
+                json!({ "id": "github::list_tags" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect("a host list_tools failure must fail open, not propagate as an error");
+        assert_eq!(result, json!({ "dts": null }));
     }
 
     #[tokio::test]
