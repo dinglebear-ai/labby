@@ -180,6 +180,38 @@ scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also c
   `.plg` version per content change, decoupled from any upstream Incus
   version.
 
+### Required step: tag every commit that touches `labby.plg` or `unraid/source/`
+
+`srcURL` (companion-file downloads: `labby.cfg`, `Labby.page`, `rc.labby`,
+`labby-preflight.sh`, both event hooks) is pinned to an immutable tag —
+`unraid-v&version;` — not to `main`. This is deliberate: every file under
+`srcURL` is MD5-verified against a value baked into whatever `version` is
+cached on flash, and Unraid's classic `.plg` model re-downloads and
+re-verifies every `<FILE>` on **every boot**, since `/usr/local/emhttp` is
+tmpfs and gets wiped on reboot. If `srcURL` pointed at `main` (as it did
+before `1.3.0e`), any later commit touching these files — even for a
+totally unrelated packaging round — would break every already-installed
+copy's next boot with an MD5 mismatch, without `version` ever having
+changed for that install. `pluginURL` (the manifest URL Unraid's plugin
+manager polls to detect updates) deliberately stays on `main` — that one
+must always resolve to the latest content, or update detection would freeze.
+
+After committing any change to `labby.plg` or `unraid/source/`:
+
+```
+git tag unraid-v<version>   # e.g. unraid-v1.3.0e, matching the version entity
+git push origin unraid-v<version>
+```
+
+This has no automated check — the tag legitimately can't exist until after
+the commit it points at is pushed, so `scripts/ci/unraid-plugin-checksums.sh`
+cannot verify it in the same CI run. Forgetting this step doesn't break the
+commit you just made (fresh installs and installs already on `main`'s
+current state at push time still resolve `srcURL` correctly), but it does
+mean the NEXT commit that touches these files will retroactively break any
+install that adopted the untagged version — tag every round, not just when
+something feels risky.
+
 ## Known gaps
 
 - No `labby.png` icon asset yet — `Icon="server"` (a bare FontAwesome name)

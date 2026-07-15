@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.0d">
+  <!ENTITY version      "1.3.0e">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -14,9 +14,29 @@
   <!ENTITY labbyVersion "1.3.0">
   <!ENTITY launch       "Settings/Labby">
   <!ENTITY repoURL      "https://github.com/&author;/labby">
+  <!-- Update-check URL. This MUST stay pointed at `main` (the moving
+       branch) — Unraid's plugin manager fetches this URL to see whether a
+       newer &version; is available, so pinning it would freeze update
+       detection forever. Unlike srcURL below, pluginURL's content is never
+       MD5-verified against a baked-in value, so a moving target is safe
+       here. -->
   <!ENTITY rawURL       "&repoURL;/raw/main/unraid">
   <!ENTITY pluginURL    "&rawURL;/labby.plg">
-  <!ENTITY srcURL       "&rawURL;/source/usr/local/emhttp/plugins/&name;">
+  <!-- Companion-file download ref. Unlike pluginURL above, every file under
+       srcURL IS MD5-verified against a value baked into whatever &version;
+       is currently cached on flash — and Unraid's classic .plg model
+       re-downloads + re-verifies every <FILE> on EVERY BOOT, since
+       /usr/local/emhttp is tmpfs and gets wiped on reboot. Pointing srcURL
+       at `main` (a moving branch) meant any later commit touching these
+       files would break every already-installed copy's next boot (MD5
+       mismatch -> Unraid refuses to recreate the plugin directory) without
+       ever bumping &version;. srcRef pins to an immutable tag instead — a
+       tag named unraid-v&version; must be created and pushed pointing at
+       this exact commit right after committing any change here or under
+       unraid/source/. See "Keeping the .plg in sync" in
+       docs/runtime/UNRAID.md. -->
+  <!ENTITY srcRef       "unraid-v&version;">
+  <!ENTITY srcURL       "&repoURL;/raw/&srcRef;/unraid/source/usr/local/emhttp/plugins/&name;">
   <!ENTITY tarball      "lab-x86_64-unknown-linux-gnu.tar.gz">
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
@@ -33,6 +53,24 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.0e
+- srcURL (companion-file downloads: labby.cfg/Labby.page/rc.labby/
+  labby-preflight.sh/event hooks) no longer points at `main`. Every one of
+  those files is MD5-verified against a value baked into whatever &version;
+  is cached on flash, and Unraid re-downloads + re-verifies every FILE entry
+  on EVERY BOOT (/usr/local/emhttp is tmpfs). Pointing at a moving branch meant
+  any later commit touching these files — even for an unrelated packaging
+  round — would break every already-installed copy's next boot with an MD5
+  mismatch, without ever bumping &version;. srcURL now pins to an immutable
+  tag (unraid-v&version;) created and pushed alongside each commit that
+  touches labby.plg or unraid/source/. pluginURL intentionally still points
+  at `main` — that one drives update *detection* and must stay on the
+  moving branch.
+- The postinstall script now calls `rc.labby restart` instead of `start`.
+  On a plugin update where labby was already healthy, `start` treated the
+  live old process as "already running" and left the freshly unpacked
+  binary sitting unused until a manual restart or array cycle.
+
 ###1.3.0d
 - rc.labby's manual `start` path (Settings &gt; Labby, SSH) now refuses to
   run before /mnt/user is mounted, matching the guard the automatic
@@ -187,14 +225,21 @@ chmod +x /etc/rc.d/rc.labby
 </INLINE>
 </FILE>
 
-<!-- start now if array is already up and service enabled -->
+<!-- (re)start now if array is already up and service enabled. Always
+     `restart`, not `start` — on a plugin UPDATE (not a fresh install) the
+     binary above was just unpacked over the old one, but rc.labby's start()
+     treats an already-healthy pid as "already running" and does nothing,
+     so a `labbyVersion` bump would sit unpacked on disk while the OLD
+     process kept serving until a manual restart or array cycle. restart()
+     is a no-op-safe superset on a fresh install (stop() returns 0
+     immediately when no pidfile exists). -->
 <FILE Run="/bin/bash">
 <INLINE>
 . "&plugin;/labby.cfg" 2>/dev/null
 if [ "${SERVICE:-disabled}" = "enabled" ] &amp;&amp; mountpoint -q /mnt/user 2>/dev/null; then
-  if ! /etc/rc.d/rc.labby start; then
+  if ! /etc/rc.d/rc.labby restart; then
     echo ""
-    echo "WARNING: labby failed to start — see /var/log/labby.log"
+    echo "WARNING: labby failed to restart — see /var/log/labby.log"
   fi
 fi
 echo ""
