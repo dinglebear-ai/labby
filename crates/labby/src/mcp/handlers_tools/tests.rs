@@ -26,7 +26,10 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, atomic::AtomicU8};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, AtomicUsize, Ordering},
+};
 
 const TEST_ACTIONS_ONE: &[ActionSpec] = &[
     ActionSpec {
@@ -66,11 +69,32 @@ const TEST_ACTIONS_TWO: &[ActionSpec] = &[
     },
 ];
 
+static DESTRUCTIVE_DISPATCH_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+const DESTRUCTIVE_ACTIONS: &[ActionSpec] = &[ActionSpec {
+    name: "danger.delete",
+    description: "Delete danger",
+    destructive: true,
+    requires_admin: false,
+    params: &[],
+    returns: "object",
+}];
+
 fn noop_dispatch(
     _action: String,
     _params: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> {
     Box::pin(async { Ok(Value::Null) })
+}
+
+fn destructive_counting_dispatch(
+    _action: String,
+    _params: Value,
+) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> {
+    Box::pin(async {
+        DESTRUCTIVE_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+        Ok(serde_json::json!({"ok": true}))
+    })
 }
 
 fn completion_test_registry() -> ToolRegistry {
@@ -92,6 +116,20 @@ fn completion_test_registry() -> ToolRegistry {
         status: "available",
         actions: TEST_ACTIONS_TWO,
         dispatch: noop_dispatch,
+    });
+    registry
+}
+
+fn destructive_test_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredService {
+        name: "danger",
+        description: "Danger",
+        category: "test",
+        kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+        status: "available",
+        actions: DESTRUCTIVE_ACTIONS,
+        dispatch: destructive_counting_dispatch,
     });
     registry
 }
@@ -367,6 +405,50 @@ async fn call_tool_server_logs_requires_admin_scope() {
     let text = result.content[0].as_text().expect("text").text.as_str();
     assert!(text.contains("\"kind\":\"forbidden\""));
     assert!(text.contains("lab:admin"));
+}
+
+#[tokio::test]
+async fn call_tool_runs_destructive_builtin_when_elicitation_is_not_supported() {
+    DESTRUCTIVE_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    let server = test_server(
+        destructive_test_registry(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "danger-only",
+            std::iter::empty::<&str>(),
+            ["danger"],
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("danger").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("danger.delete".to_string()),
+            ),
+            ("params".to_string(), serde_json::json!({})),
+        ])),
+        request_context_with_peer(running.peer().clone()),
+    ))
+    .await
+    .expect("call tool result");
+
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "unexpected destructive gate: {}",
+        result.content[0].as_text().expect("text").text.as_str()
+    );
+    assert_eq!(
+        DESTRUCTIVE_DISPATCH_COUNT.load(Ordering::SeqCst),
+        1,
+        "MCP clients without elicitation support must not hit a fake destructive gate"
+    );
 }
 
 #[test]
@@ -1750,7 +1832,7 @@ async fn list_tools_rejects_invalid_cursor() {
 }
 
 #[tokio::test]
-async fn call_tool_blocks_destructive_mcp_app_sibling_callbacks() {
+async fn call_tool_allows_destructive_mcp_app_sibling_callbacks_without_elicitation() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let ui_tool = fixture_upstream_tool(
         &upstream_name,
@@ -1798,17 +1880,14 @@ async fn call_tool_blocks_destructive_mcp_app_sibling_callbacks() {
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
     assert!(
-        text.contains("\"kind\":\"confirmation_required\""),
-        "{text}"
+        text.contains("upstream_error"),
+        "destructive sibling callback should reach normal upstream routing when elicitation is unavailable, got {text}"
     );
-    assert!(
-        text.contains("not callable via the widget callback bypass"),
-        "{text}"
-    );
+    assert!(!text.contains("confirm:true") && !text.contains("confirm\":true"));
 }
 
 #[tokio::test]
-async fn call_tool_blocks_destructive_direct_mcp_app_callbacks() {
+async fn call_tool_allows_destructive_direct_mcp_app_callbacks_without_elicitation() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let mut ui_tool = fixture_upstream_tool(
         &upstream_name,
@@ -1835,11 +1914,15 @@ async fn call_tool_blocks_destructive_direct_mcp_app_callbacks() {
 
     let text = call_tool_error_text(server, "youtube_delete_ui").await;
     let envelope: Value = serde_json::from_str(&text).expect("error envelope");
-    assert_eq!(envelope["error"]["kind"], "confirmation_required");
+    assert_eq!(envelope["error"]["kind"], "upstream_error");
+    assert!(
+        !text.contains("confirm:true") && !text.contains("confirm\":true"),
+        "destructive widget callbacks must not suggest confirm bypasses: {text}"
+    );
 }
 
 #[tokio::test]
-async fn call_tool_blocks_destructive_legacy_widget_callbacks() {
+async fn call_tool_allows_destructive_legacy_widget_callbacks_without_elicitation() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let mut delete_tool = fixture_upstream_tool(&upstream_name, "youtube_delete", None);
     delete_tool.destructive = true;
@@ -1880,7 +1963,7 @@ async fn call_tool_blocks_destructive_legacy_widget_callbacks() {
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
     let envelope: Value = serde_json::from_str(text).expect("error envelope");
-    assert_eq!(envelope["error"]["kind"], "confirmation_required");
+    assert_eq!(envelope["error"]["kind"], "upstream_error");
 }
 
 #[tokio::test]
@@ -2169,9 +2252,9 @@ async fn call_tool_rejects_ambiguous_non_destructive_mcp_app_sibling_callbacks()
 }
 
 #[tokio::test]
-async fn call_tool_blocks_destructive_mcp_app_sibling_callback() {
-    // A destructive sibling of a UI tool must be refused with
-    // `confirmation_required` — the callback bypass has no confirmation channel.
+async fn call_tool_allows_destructive_mcp_app_sibling_callback_without_elicitation() {
+    // If the client cannot do elicitation, Labby must not invent a second
+    // destructive gate for MCP App callbacks.
     let upstream_name: Arc<str> = Arc::from("apps");
     let ui_tool = fixture_upstream_tool(
         &upstream_name,
@@ -2217,13 +2300,14 @@ async fn call_tool_blocks_destructive_mcp_app_sibling_callback() {
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
     assert!(
-        text.contains("confirmation_required"),
-        "destructive sibling callback must be gated, got {text}"
+        text.contains("upstream_error"),
+        "destructive sibling callback should reach upstream routing, got {text}"
     );
     assert!(
-        !text.contains("upstream_error"),
-        "destructive sibling callback must not reach the upstream proxy, got {text}"
+        !text.contains("confirmation_required"),
+        "destructive sibling callback must not hit a fake confirmation gate, got {text}"
     );
+    assert!(!text.contains("confirm:true") && !text.contains("confirm\":true"));
 }
 
 #[tokio::test]

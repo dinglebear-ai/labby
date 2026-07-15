@@ -372,8 +372,10 @@ Representative destructive actions include:
 ## Elicitation Policy
 
 MCP destructive calls require explicit confirmation. The server first uses MCP
-elicitation when the client supports it. If elicitation is unavailable, callers
-must pass `params.confirm: true`; otherwise the dispatcher returns
+elicitation when the client supports it. If elicitation is unavailable, the MCP
+dispatcher executes normally and does not require or inspect `params.confirm`,
+headers, or CLI-style confirmation flags. If a client advertises elicitation and
+then declines, cancels, fails, or times out the prompt, the dispatcher returns
 `confirmation_required`.
 
 Destructive elicitation waits are bounded. The default deadline is 120 seconds;
@@ -433,7 +435,7 @@ The `setup` Bootstrap service exposes two settings actions for reading and updat
 - `setup({ "action": "settings.state" })` — returns the current non-secret settings including the service runtime policy state, config file path, and surface configuration (MCP transport, auth mode, etc.). No secrets are returned; the response is safe to display verbatim.
 - `setup({ "action": "settings.update", "params": { "services": { "built_in_upstream_apis_enabled": false } } })` — writes the updated setting to `config.toml` (preserves comments and unknown keys) and applies the new policy to gateway discovery immediately. Returns the new settings state with `changed` and `restart_required` fields.
 
-`settings.update` is marked `destructive: true` and requires `"confirm": true` in params (HTTP) or MCP elicitation (stdio). Changes to `built_in_upstream_apis_enabled` take effect for gateway discovery immediately but require a `labby serve` restart for HTTP route mounting to reflect the new policy.
+`settings.update` is marked `destructive: true`. MCP confirms through elicitation when the client supports it; clients without elicitation run without a `confirm` parameter gate. Changes to `built_in_upstream_apis_enabled` take effect for gateway discovery immediately but require a `labby serve` restart for HTTP route mounting to reflect the new policy.
 
 ## Upstream Tool Merging
 
@@ -457,7 +459,7 @@ Artifact actions:
 - `artifact.merge.suggest` returns `MergeSuggestResult`
 - `artifact.config.set` returns `ConfigSetResult`
 
-Destructive artifact actions use the shared `ActionSpec.destructive` gate. MCP clients confirm through elicitation, CLI callers use `-y` / `--yes`, and HTTP callers include `params.confirm: true`; the confirmation key is stripped before marketplace parsers and domain handlers run.
+Destructive artifact actions use the shared `ActionSpec.destructive` metadata. MCP clients confirm through elicitation when available; clients without elicitation run without a fake parameter gate. CLI callers use `-y` / `--yes`, and HTTP callers include `params.confirm: true`; the confirmation key is stripped before marketplace parsers and domain handlers run.
 
 `artifact.fork` accepts required `params.plugin_id` and optional `params.artifacts`. When `artifacts` is omitted, the action targets a plugin-level fork; otherwise each value must be a relative artifact path.
 
