@@ -7,9 +7,9 @@
 # host itself.
 set -o pipefail
 
-EMHTTP="/usr/local/emhttp/plugins/labby"
-BIN="${EMHTTP}/bin/labby"
-CFG="/boot/config/plugins/labby/labby.cfg"
+EMHTTP="${EMHTTP:-/usr/local/emhttp/plugins/labby}"
+BIN="${BIN:-${EMHTTP}/bin/labby}"
+CFG="${CFG:-/boot/config/plugins/labby/labby.cfg}"
 # shellcheck disable=SC1090
 [ -f "$CFG" ] && . "$CFG"
 
@@ -24,12 +24,12 @@ HTTP_HOST="${HTTP_HOST:-127.0.0.1}"
 HTTP_PORT="${HTTP_PORT:-8765}"
 INCUS_CONTAINER_NAME="${INCUS_CONTAINER_NAME:-labby-gateway}"
 INCUS_BRIDGE_NAME="${INCUS_BRIDGE_NAME:-labbybr0}"
-INCUS="/usr/local/incus/bin/incus"
+INCUS="${INCUS:-/usr/local/incus/bin/incus}"
 TIMEOUT="${TIMEOUT:-/usr/bin/timeout}"
 PRIVATE_EGRESS_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10"
 
-PIDFILE="/var/run/labby.pid"
-LOG="/var/log/labby.log"
+PIDFILE="${PIDFILE:-/var/run/labby.pid}"
+LOG="${LOG:-/var/log/labby.log}"
 
 # labby resolves its state dir (auth.db, registry.db, config.toml, the MCP
 # bearer token) from $HOME/XDG_*, same as the systemd unit — point those at
@@ -101,10 +101,11 @@ incus_env_or_fail() {
 
 incus_state() {
     local info
+    local state
 
     info="$(bounded 15 "$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>&1)" || {
         case "$info" in
-            *"Instance not found"* | *"not found"*)
+            *"Instance not found"*)
                 printf 'MISSING\n'
                 return 0
                 ;;
@@ -114,7 +115,12 @@ incus_state() {
                 ;;
         esac
     }
-    printf '%s\n' "$info" | awk -F': ' '$1 == "Status" { print toupper($2); exit }'
+    state="$(printf '%s\n' "$info" | awk -F': ' '$1 == "Status" { print toupper($2); exit }')"
+    if [ -z "$state" ]; then
+        echo "labby: Incus state response for ${INCUS_CONTAINER_NAME} did not include a Status line: ${info}" >&2
+        return 1
+    fi
+    printf '%s\n' "$state"
 }
 
 incus_ready() {
@@ -361,8 +367,11 @@ case "$1" in
             *) unsupported_runtime_mode ;;
         esac
         ;;
+    cleanup-firewall)
+        cleanup_incus_egress_rules
+        ;;
     *)
-        echo "usage: $0 {start|stop|restart|status|preflight}"
+        echo "usage: $0 {start|stop|restart|status|preflight|cleanup-firewall}"
         exit 1
         ;;
 esac

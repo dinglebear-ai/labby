@@ -42,13 +42,13 @@
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "5bd58428c9b019cba193ed90efdac0c8">
   <!ENTITY pageMD5      "e7db5c3480924f137a65cd0acee96730">
-  <!ENTITY rcMD5        "bc11c953dc7391fef2fb12e8f037f1bc">
+  <!ENTITY rcMD5        "b74e805719eb8ac169c4808900c4a1eb">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
   <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
   <!ENTITY incusProfileMD5 "d81420479adfa138a0ba9568da0fa6a0">
-  <!ENTITY incusEnvMD5     "d721d37675ddb6f514db146c276d1b96">
-  <!ENTITY incusInitMD5    "3fa3670082ea4c923f9a2c93dafa4eec">
+  <!ENTITY incusEnvMD5     "e4d6dbc277bb84b40e65d2f77f5b217f">
+  <!ENTITY incusInitMD5    "b0c68f4bc824ec5c49c6018eb0038189">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
@@ -317,14 +317,7 @@ if ! /etc/rc.d/rc.labby stop; then
   exit 1
 fi
 . "&plugin;/labby.cfg" 2>/dev/null
-INCUS_BRIDGE_NAME="${INCUS_BRIDGE_NAME:-labbybr0}"
-if command -v iptables >/dev/null 2>/dev/null; then
-  for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
-    while iptables -C FORWARD -i "$INCUS_BRIDGE_NAME" -d "$cidr" -j REJECT >/dev/null 2>/dev/null; do
-      iptables -D FORWARD -i "$INCUS_BRIDGE_NAME" -d "$cidr" -j REJECT >/dev/null 2>/dev/null || break
-    done
-  done
-fi
+/etc/rc.d/rc.labby cleanup-firewall
 rm -f /etc/rc.d/rc.labby
 rm -rf &emhttp;
 echo "Labby plugin removed. State in LABBY_DIR and /boot/config/plugins/labby was left intact."

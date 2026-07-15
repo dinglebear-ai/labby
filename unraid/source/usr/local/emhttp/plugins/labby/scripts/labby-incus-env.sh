@@ -3,7 +3,7 @@
 # RUNTIME_MODE="incus". Points the `incus` client at incus-unraid's
 # private-prefixed daemon, not a system-wide Incus install.
 
-INCUS_PREFIX="/usr/local/incus"
+INCUS_PREFIX="${INCUS_PREFIX:-/usr/local/incus}"
 
 if [ ! -x "${INCUS_PREFIX}/bin/incus" ]; then
     echo "labby-incus-env: ${INCUS_PREFIX}/bin/incus not found - install the incus-unraid plugin first" >&2

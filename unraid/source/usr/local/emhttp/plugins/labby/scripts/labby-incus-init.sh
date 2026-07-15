@@ -503,15 +503,15 @@ clear_stored_ts_authkey() {
         rm -f "$backup_tmp" "$tmp"
         fail "failed to prepare redacted backup for ${CFG}"
     fi
+    if ! cp -p "$backup_tmp" "$tmp"; then
+        rm -f "$backup_tmp" "$tmp"
+        fail "failed to prepare redacted ${CFG}"
+    fi
     if ! mv -f "$backup_tmp" "$backup"; then
         rm -f "$backup_tmp" "$tmp"
         fail "failed to write redacted backup ${backup}"
     fi
 
-    if ! redact_ts_authkey_to "$tmp"; then
-        rm -f "$tmp"
-        fail "failed to prepare redacted ${CFG}"
-    fi
     if ! mv -f "$tmp" "$CFG"; then
         rm -f "$tmp"
         fail "failed to atomically clear INCUS_TS_AUTHKEY from ${CFG}"
@@ -650,4 +650,6 @@ main() {
     log "labby gateway ready inside ${INCUS_CONTAINER_NAME}"
 }
 
-main "$@"
+if [ "${LABBY_INCUS_INIT_LIBRARY:-0}" != "1" ]; then
+    main "$@"
+fi
