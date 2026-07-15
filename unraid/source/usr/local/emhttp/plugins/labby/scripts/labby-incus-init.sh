@@ -380,7 +380,7 @@ ensure_container_running() {
         log "launching ${INCUS_CONTAINER_NAME} from ${IMAGE_ALIAS}"
         run_timeout 300 "$INCUS" launch --profile default --profile "$PROFILE_NAME" -- "local:${IMAGE_ALIAS}" "$INCUS_CONTAINER_NAME" \
             || fail "failed to launch ${INCUS_CONTAINER_NAME}"
-        run_timeout 30 "$INCUS" config set -- "$INCUS_CONTAINER_NAME" user.labby.image_version "$INCUS_IMAGE_VERSION" \
+        run_timeout 30 "$INCUS" config set -- "$INCUS_CONTAINER_NAME" "user.labby.image_version=${INCUS_IMAGE_VERSION}" \
             || fail "failed to annotate ${INCUS_CONTAINER_NAME} with image version"
         return 0
     fi
