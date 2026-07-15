@@ -436,8 +436,13 @@ tailscale_has_ip() {
 
 redact_ts_authkey_to() {
     local dest="$1"
+    local mode=""
+    local owner=""
+    local group=""
 
-    cp -p "$CFG" "$dest" || return 1
+    mode="$(stat -c '%a' "$CFG" 2>/dev/null || true)"
+    owner="$(stat -c '%u' "$CFG" 2>/dev/null || true)"
+    group="$(stat -c '%g' "$CFG" 2>/dev/null || true)"
     awk '
         /^INCUS_TS_AUTHKEY=/ {
             comment = ""
@@ -458,6 +463,10 @@ redact_ts_authkey_to() {
             }
         }
     ' "$CFG" > "$dest"
+    [ -n "$mode" ] && chmod "$mode" "$dest" 2>/dev/null || true
+    if [ -n "$owner" ] && [ -n "$group" ]; then
+        chown "$owner:$group" "$dest" 2>/dev/null || true
+    fi
 }
 
 clear_stored_ts_authkey() {
