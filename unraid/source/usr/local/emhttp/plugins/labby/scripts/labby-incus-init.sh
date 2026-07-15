@@ -130,6 +130,53 @@ EOF
     done
 }
 
+ipv4_to_int() {
+    local ip="$1"
+    local o1 o2 o3 o4
+
+    IFS=. read -r o1 o2 o3 o4 <<EOF
+$ip
+EOF
+    printf '%u\n' "$(( (o1 << 24) + (o2 << 16) + (o3 << 8) + o4 ))"
+}
+
+cidr_range() {
+    local cidr="$1"
+    local ip="${cidr%/*}"
+    local prefix="${cidr#*/}"
+    local ip_int mask start size end
+
+    case "$cidr" in
+        */*) ;;
+        *) prefix=32 ;;
+    esac
+
+    ip_int="$(ipv4_to_int "$ip")"
+    if [ "$prefix" -eq 0 ]; then
+        mask=0
+    else
+        mask=$(( (0xffffffff << (32 - prefix)) & 0xffffffff ))
+    fi
+    start=$(( ip_int & mask ))
+    size=$(( 1 << (32 - prefix) ))
+    end=$(( start + size - 1 ))
+    printf '%s %s\n' "$start" "$end"
+}
+
+cidrs_overlap() {
+    local left="$1"
+    local right="$2"
+    local left_start left_end right_start right_end
+
+    read -r left_start left_end <<EOF
+$(cidr_range "$left")
+EOF
+    read -r right_start right_end <<EOF
+$(cidr_range "$right")
+EOF
+    [ "$left_start" -le "$right_end" ] && [ "$right_start" -le "$left_end" ]
+}
+
 validate_inputs() {
     validate_dns_label "$INCUS_CONTAINER_NAME" \
         || fail "INCUS_CONTAINER_NAME must be a DNS label: ${INCUS_CONTAINER_NAME}"
@@ -191,14 +238,28 @@ ensure_storage_pool() {
 }
 
 validate_bridge_subnet_collision() {
-    local bridge_ip
-    local routes
+    local route
+    local dest
 
-    bridge_ip="${INCUS_BRIDGE_SUBNET%/*}"
-    routes="$(ip -4 route show match "$bridge_ip" 2>/dev/null | grep -v '^default ' || true)"
-    if [ -n "$routes" ] && ! printf '%s\n' "$routes" | grep -q "dev ${INCUS_BRIDGE_NAME}\\b"; then
-        fail "INCUS_BRIDGE_SUBNET ${INCUS_BRIDGE_SUBNET} collides with existing route(s): ${routes}"
-    fi
+    while IFS= read -r route; do
+        dest="$(printf '%s\n' "$route" |
+            awk '
+                $1 == "default" { next }
+                $1 ~ /^[0-9.]+(\/[0-9]+)?$/ { print $1; next }
+                $2 ~ /^[0-9.]+(\/[0-9]+)?$/ { print $2; next }
+            ')"
+        [ -n "$dest" ] || continue
+        case "$dest" in
+            */*) ;;
+            *) dest="${dest}/32" ;;
+        esac
+        if cidrs_overlap "$INCUS_BRIDGE_SUBNET" "$dest" &&
+            ! printf '%s\n' "$route" | grep -q "dev ${INCUS_BRIDGE_NAME}\\b"; then
+            fail "INCUS_BRIDGE_SUBNET ${INCUS_BRIDGE_SUBNET} collides with existing route: ${route}"
+        fi
+    done <<EOF
+$(ip -4 route show 2>/dev/null || true)
+EOF
 }
 
 network_managed() {
@@ -377,12 +438,28 @@ ensure_image_imported() {
 }
 
 instance_exists() {
-    run_timeout 15 "$INCUS" info -- "$INCUS_CONTAINER_NAME" >/dev/null 2>&1
+    local info
+
+    info="$(run_timeout 15 "$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>&1)" && return 0
+    case "$info" in
+        *"Instance not found"*) return 1 ;;
+        *) fail "failed to query Incus instance ${INCUS_CONTAINER_NAME}: ${info}" ;;
+    esac
 }
 
 instance_state() {
-    run_timeout 15 "$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>/dev/null |
-        awk -F': ' '$1 == "Status" { print toupper($2); exit }'
+    local info
+    local state
+
+    info="$(run_timeout 15 "$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>&1)" || {
+        case "$info" in
+            *"Instance not found"*) return 1 ;;
+            *) fail "failed to query Incus instance ${INCUS_CONTAINER_NAME}: ${info}" ;;
+        esac
+    }
+    state="$(printf '%s\n' "$info" | awk -F': ' '$1 == "Status" { print toupper($2); exit }')"
+    [ -n "$state" ] || fail "Incus state response for ${INCUS_CONTAINER_NAME} did not include a Status line: ${info}"
+    printf '%s\n' "$state"
 }
 
 ensure_container_running() {

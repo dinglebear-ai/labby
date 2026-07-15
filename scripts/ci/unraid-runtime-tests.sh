@@ -80,6 +80,14 @@ case "$1" in
     *) exit 0 ;;
 esac
 EOF
+cat > "$tmp/bin/ip" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "-4" ] && [ "$2" = "route" ] && [ "$3" = "show" ]; then
+    cat "${IP_ROUTE_OUTPUT:?}"
+    exit 0
+fi
+exit 0
+EOF
 cat > "$tmp/bin/incus" <<'EOF'
 #!/usr/bin/env bash
 state_file="${INCUS_STATE_FILE:?}"
@@ -111,7 +119,7 @@ case "$1" in
     *) exit 0 ;;
 esac
 EOF
-chmod +x "$tmp/bin/timeout" "$tmp/bin/mountpoint" "$tmp/bin/curl" "$tmp/bin/iptables" "$tmp/bin/incus"
+chmod +x "$tmp/bin/timeout" "$tmp/bin/mountpoint" "$tmp/bin/curl" "$tmp/bin/iptables" "$tmp/bin/ip" "$tmp/bin/incus"
 
 cat > "$tmp/emhttp/bin/labby" <<'EOF'
 #!/usr/bin/env bash
@@ -143,6 +151,7 @@ run_rc() {
         PIDFILE="$tmp/pidfile" \
         LOG="$tmp/labby.log" \
         IPTABLES_LOG="$tmp/iptables.log" \
+        IP_ROUTE_OUTPUT="$tmp/ip-routes" \
         INCUS_STATE_FILE="$tmp/incus-state" \
         LABBY_FAKE_BIN_LOG="$tmp/fake-labby.log" \
         INIT_LOG="$tmp/init.log" \
@@ -215,6 +224,58 @@ test_incus_query_failure_is_not_stopped() {
     assert_file_contains "$tmp/query-fail.out" "failed to query Incus"
 }
 
+source_init_library() {
+    export EMHTTP="$repo_root/unraid/source/usr/local/emhttp/plugins/labby"
+    export CFG="$tmp/labby.cfg"
+    export INCUS_PREFIX="$tmp/incus-prefix"
+    export INCUS="$tmp/bin/incus"
+    export INCUS_STATE_FILE="$tmp/incus-state"
+    export IP_ROUTE_OUTPUT="$tmp/ip-routes"
+    export PATH="$tmp/bin:$PATH"
+    export LABBY_INCUS_INIT_LIBRARY=1
+    # shellcheck disable=SC1090
+    . "$incus_init_script"
+}
+
+test_incus_init_instance_query_failures_are_fatal() {
+    write_cfg incus
+    : > "$tmp/ip-routes"
+    printf 'query-fail\n' > "$tmp/incus-state"
+    set +e
+    (
+        set -euo pipefail
+        source_init_library
+        instance_exists
+    ) > "$tmp/instance-query-fail.out" 2>&1
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || fail "instance query failure returned success"
+    assert_file_contains "$tmp/instance-query-fail.out" "failed to query Incus instance"
+}
+
+test_bridge_collision_checks_whole_cidr() {
+    write_cfg incus
+    printf 'missing\n' > "$tmp/incus-state"
+    printf '10.99.99.128/25 dev br0\n' > "$tmp/ip-routes"
+    set +e
+    (
+        set -euo pipefail
+        source_init_library
+        validate_bridge_subnet_collision
+    ) > "$tmp/bridge-overlap.out" 2>&1
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || fail "overlapping route was not rejected"
+    assert_file_contains "$tmp/bridge-overlap.out" "collides with existing route"
+
+    printf '10.99.99.0/24 dev labbybr0\n' > "$tmp/ip-routes"
+    (
+        set -euo pipefail
+        source_init_library
+        validate_bridge_subnet_collision
+    )
+}
+
 test_tailscale_key_redaction_helpers() {
     php <<PHP
 <?php
@@ -249,12 +310,7 @@ LABBY_DIR="$tmp/labby-state"
 CFG
     (
         set -euo pipefail
-        export EMHTTP="$repo_root/unraid/source/usr/local/emhttp/plugins/labby"
-        export CFG="$tmp/labby.cfg"
-        export INCUS_PREFIX="$tmp/incus-prefix"
-        export LABBY_INCUS_INIT_LIBRARY=1
-        # shellcheck disable=SC1090
-        . "$incus_init_script"
+        source_init_library
         clear_stored_ts_authkey
     )
     assert_file_not_contains "$tmp/labby.cfg" "tskey-secret"
@@ -268,6 +324,8 @@ test_native_start_does_not_require_incus
 test_native_to_incus_stops_native_pid
 test_incus_to_native_stops_incus_first
 test_incus_query_failure_is_not_stopped
+test_incus_init_instance_query_failures_are_fatal
+test_bridge_collision_checks_whole_cidr
 test_tailscale_key_redaction_helpers
 
 echo "unraid runtime behavior tests OK"
