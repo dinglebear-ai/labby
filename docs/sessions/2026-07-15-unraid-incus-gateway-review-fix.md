@@ -4,8 +4,8 @@ repo: git@github.com:jmagar/labby.git
 branch: claude/gateway-unraid-plugin-454fe2
 head: a7a5c81517cef2aa96788edc27b60bd300aa7df2
 plan: docs/superpowers/plans/2026-07-15-unraid-incus-gateway.md
-working directory: /home/jmagar/workspace/lab/.claude/worktrees/gateway-unraid-plugin-454fe2
-worktree: /home/jmagar/workspace/lab/.claude/worktrees/gateway-unraid-plugin-454fe2
+working directory: <repo>/.claude/worktrees/gateway-unraid-plugin-454fe2
+worktree: <repo>/.claude/worktrees/gateway-unraid-plugin-454fe2
 pr: "#246 Add Incus gateway runtime mode to Unraid plugin (https://github.com/jmagar/labby/pull/246)"
 beads: no bead updates in this session
 ---
@@ -18,15 +18,15 @@ Switch to `claude/gateway-unraid-plugin-454fe2`, run `lavra:lavra-eng-review` on
 
 ## Session Overview
 
-The branch was reviewed, repaired, verified, pushed, and retagged. The final runtime commit `a7a5c815` closes the Incus/native handoff gaps found by the engineering review and PR review feedback, while keeping the Unraid plugin checksums and `unraid-v1.3.2` tag aligned.
+The branch was reviewed, repaired, verified, pushed, and retagged. The final runtime commit from that pass, `a7a5c815`, closed the Incus/native handoff gaps found by the engineering review and PR review feedback. Later native-controls fixes superseded that package tag with the current manifest version.
 
 ## Sequence of Events
 
-1. Switched into `/home/jmagar/workspace/lab/.claude/worktrees/gateway-unraid-plugin-454fe2` on `claude/gateway-unraid-plugin-454fe2`.
+1. Switched into `<repo>/.claude/worktrees/gateway-unraid-plugin-454fe2` on `claude/gateway-unraid-plugin-454fe2`.
 2. Reviewed the Unraid Incus gateway plan with `lavra:lavra-eng-review`.
 3. Updated `docs/superpowers/plans/2026-07-15-unraid-incus-gateway.md` so every accepted review finding had a corresponding implementation note.
 4. Implemented the runtime fixes across Unraid PHP, shell scripts, profile YAML, checksums, and focused tests.
-5. Ran local verification, committed `fix(unraid): close Incus runtime review gaps`, pushed the branch, and force-updated the annotated `unraid-v1.3.2` tag to the corrected source.
+5. Ran local verification, committed `fix(unraid): close Incus runtime review gaps`, pushed the branch, and force-updated the then-current annotated `unraid-v1.3.2` tag to the corrected source.
 6. Watched GitHub Actions run `29400005268` to success and confirmed PR #246 is merge-clean.
 
 ## Key Findings
@@ -39,7 +39,7 @@ The branch was reviewed, repaired, verified, pushed, and retagged. The final run
 
 ## Technical Decisions
 
-- Added a persistent `.labby-incus-runtime-created` marker under `LABBY_DIR` so native mode can remain dependency-free before Incus mode is ever used, then become conservative afterward.
+- Added a persistent `labby-incus-runtime-created` marker so native mode can remain dependency-free before Incus mode is ever used, then become conservative afterward. Later review fixes moved this marker to fixed plugin state so changing `LABBY_DIR` cannot hide it.
 - Kept the Incus profile update atomic by rendering storage and `eth0` bridge settings through one `incus profile edit`.
 - Required Incus instance names to start with a lowercase letter across the PHP UI, `rc.labby`, and `labby-incus-init.sh`.
 - Treated CodeRabbit's newest rate-limit walkthrough as non-actionable; the prior actionable CodeRabbit set was addressed by `a7a5c815`.
@@ -80,7 +80,7 @@ No bead activity observed in this session. A tracker search showed related histo
 
 ### Worktrees and Branches
 
-`git worktree list --porcelain` showed three intentional worktrees: main at `/home/jmagar/workspace/lab`, long-lived `marketplace-no-mcp` at `/home/jmagar/workspace/_no_mcp_worktrees/lab`, and the active PR worktree. `backup/gateway-unraid-plugin-454fe2-pre-rebase` is a backup branch and was left untouched.
+`git worktree list --porcelain` showed three intentional worktrees: the main checkout, the long-lived `marketplace-no-mcp` checkout, and the active PR worktree. `backup/gateway-unraid-plugin-454fe2-pre-rebase` is a backup branch and was left untouched.
 
 ### Stale Docs
 
@@ -138,7 +138,7 @@ No bead activity observed in this session. A tracker search showed related histo
 
 ## Risks and Rollback
 
-The largest risk is operational: hosts that previously started Incus mode and then lose Incus tooling will now fail closed instead of silently starting native mode. That is intentional to avoid two gateway runtimes touching the same state. Rollback is to revert `a7a5c815` and move the `unraid-v1.3.2` tag back to the prior known-good source, or to install/repair Incus tooling on the host and restart.
+The largest risk is operational: hosts that previously started Incus mode and then lose Incus tooling will now fail closed instead of silently starting native mode. That is intentional to avoid two gateway runtimes touching the same state. Rollback is to revert the relevant Unraid plugin fix commits and move the current `unraid-v*` plugin tag back to the prior known-good source, or to install/repair Incus tooling on the host and restart.
 
 ## Decisions Not Taken
 
@@ -152,7 +152,7 @@ The largest risk is operational: hosts that previously started Incus mode and th
 - CI run: https://github.com/jmagar/labby/actions/runs/29400005268
 - Plan: `docs/superpowers/plans/2026-07-15-unraid-incus-gateway.md`
 - Runtime docs: `docs/runtime/UNRAID.md`
-- Tag: `unraid-v1.3.2`
+- Historical tag for this pass: `unraid-v1.3.2` (superseded by later package-version bumps)
 
 ## Open Questions
 

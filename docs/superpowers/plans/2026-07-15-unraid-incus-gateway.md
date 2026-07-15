@@ -20,7 +20,7 @@
 
 ## Engineering Review Feedback Applied
 
-The Lavra engineering review found several plan-level regressions against the current PR #244 branch. These rules supersede any older inline snippets below:
+The Lavra engineering review found several plan-level regressions against the current PR #246 branch. These rules supersede any older inline snippets below:
 
 - **Preserve current native-mode hardening.** Do not paste a wholesale replacement for `rc.labby`. Refactor the current file in-place so the existing `/mnt/user` mount guard, stale-process handoff, confirmed-stop failure handling, pidfile preservation, and restart stop-gating remain intact.
 - **Preserve current atomic settings writes.** Do not replace `Labby.page`'s current temp-file + rename + user-visible error path with raw `file_put_contents()`. Extend the existing validation/save block only.
@@ -33,11 +33,11 @@ The Lavra engineering review found several plan-level regressions against the cu
 - **Do not delete unmanaged host interfaces.** If `labbybr0` exists but is not an Incus-managed bridge, fail with a clear error instead of deleting it. Subnet/bridge choices must be configurable or validated against collisions before create.
 - **Validate the full managed bridge posture.** Reusing an Incus-managed bridge is only safe if `ipv4.address`, `ipv4.nat`, `ipv6.address`, and `ipv6.nat` all match the intended posture (`INCUS_BRIDGE_SUBNET`, `true`, `none`, `false`). Drift must fail closed with a clear operator message.
 - **Render the profile in one edit.** The vendored profile YAML must include the `eth0` NIC device. Substitute both `pool:` and `network:` before one `incus profile edit`; do not remove/re-add the NIC with separate `profile device` calls.
-- **Keep native mode dependency-free, but fail closed after Incus mode existed.** Native mode must still start on hosts without Incus tooling. Once the Incus converger has created or observed the Labby container, write a marker under `LABBY_DIR`; if that marker exists and Incus tooling/env/state cannot prove the container is stopped, refuse to start native mode.
+- **Keep native mode dependency-free, but fail closed after Incus mode existed.** Native mode must still start on hosts without Incus tooling. Once the Incus converger has created or observed the Labby container, write a marker under fixed plugin state (not `LABBY_DIR`); if that marker exists and Incus tooling/env/state cannot prove the container is stopped, refuse to start native mode.
 - **Treat non-running Incus states explicitly.** Only `MISSING` and `STOPPED` are safe stopped states. `FROZEN`, `ERROR`, `STARTING`, `STOPPING`, malformed state responses, and query failures must not be reported as `STOPPED` or accepted as a clean mode handoff.
 - **Keep LAN reachability intentional.** Because stdio MCP servers execute community npm/uv code, broad LAN egress from the Incus bridge must be an explicit operator choice or constrained by firewall/ACL defaults. The implementation must document and verify the chosen default.
 - **Avoid warm-start reprovisioning.** If the container is already running and `/ready` succeeds, skip `labby setup --provision --yes`. If provisioning is needed, gate it with a sentinel covering image version, labby binary version, and config/provisioning schema.
-- **Fix stale plan/version assumptions.** Task 4 is a verification-only no-op, not a modifying task. Task 6 must read the current manifest version and bump to the next package version, preserving existing changelog entries. This implementation ultimately shipped the package bump as `1.3.2`.
+- **Fix stale plan/version assumptions.** Task 4 is a verification-only no-op, not a modifying task. Task 6 must read the current manifest version and bump to the next package version, preserving existing changelog entries. This implementation ultimately shipped the package bump as `1.3.6`.
 - **Out of scope for this plan unless already required by the active PR.** Reworking `/auth/session` admin semantics, snapshot-policy parity, rootless runtime profile support, Community Applications packaging, and full Incus image CI repair are follow-up work. The core implementation must still be gated on one known-good pinned image version and hash.
 
 ---
@@ -154,7 +154,7 @@ Before writing the script, apply the engineering-review corrections below to the
 - If the bridge is Incus-managed, verify the whole posture before reuse: `ipv4.address == INCUS_BRIDGE_SUBNET`, `ipv4.nat == true`, `ipv6.address == none`, and `ipv6.nat == false`.
 - Validate the chosen bridge subnet for collision before create, or make the subnet/operator egress policy explicit.
 - Render the profile from YAML in one `incus profile edit`: the YAML includes `eth0`, and the script substitutes both the storage pool and bridge network before applying it. Do not separately `profile device remove/add eth0`.
-- Write `${LABBY_DIR}/.labby-incus-runtime-created` once a Labby Incus container has been created or observed, so `rc.labby` can distinguish "native-only host with no Incus dependency" from "previous Incus runtime must be proven stopped."
+- Write `/boot/config/plugins/labby/labby-incus-runtime-created` once a Labby Incus container has been created or observed, so `rc.labby` can distinguish "native-only host with no Incus dependency" from "previous Incus runtime must be proven stopped" without depending on the mutable `LABBY_DIR`.
 - Do not install Tailscale with `curl | sh` at runtime. The baked image must already include Tailscale; if `INCUS_TS_AUTHKEY` is supplied and Tailscale is missing or `tailscale up` fails, fail visibly.
 - Consume `INCUS_TS_AUTHKEY` from a mode-0600 temp file, remove it after use, verify `tailscale ip -4` or `tailscale status --json`, then clear/redact the key from `labby.cfg`.
 - Use `--` before user-controlled Incus instance names wherever supported.
@@ -416,7 +416,7 @@ Expected: `RUNTIME_MODE=native INCUS_CONTAINER_NAME=labby-gateway INCUS_IMAGE_VE
 
 - [ ] **Step 3: Branch `rc.labby`**
 
-Read the current file (`unraid/source/usr/local/emhttp/plugins/labby/scripts/rc.labby`) and edit it in place. **Do not replace the whole body with the older skeleton below.** The current branch already contains PR #244 safety fixes; preserve them exactly while refactoring current `start`, `stop`, and `status` into `start_native`, `stop_native`, and `status_native`.
+Read the current file (`unraid/source/usr/local/emhttp/plugins/labby/scripts/rc.labby`) and edit it in place. **Do not replace the whole body with the older skeleton below.** The current branch already contains PR #246 safety fixes; preserve them exactly while refactoring current `start`, `stop`, and `status` into `start_native`, `stop_native`, and `status_native`.
 
 Apply these transformations:
 
@@ -425,7 +425,7 @@ Apply these transformations:
 - Keep the current native `/mnt/user` mount guard, stale-process handling, pidfile preservation, confirmed-stop failure behavior, and restart stop-gating.
 - Make `stop_incus` fail closed: run a bounded `incus stop`, poll the container state, and return non-zero if it is still `RUNNING`.
 - Treat only `MISSING` and `STOPPED` as stopped Incus states. Report and return non-zero for `FROZEN`, `ERROR`, transitional states, malformed state output, or query failures.
-- Keep native mode free of a hard Incus dependency when there is no evidence this plugin ever created an Incus runtime. Once `${LABBY_DIR}/.labby-incus-runtime-created` exists, a native start must prove the Incus runtime is `MISSING`/`STOPPED` or successfully stop it before spawning the native process.
+- Keep native mode free of a hard Incus dependency when there is no evidence this plugin ever created an Incus runtime. Once `/boot/config/plugins/labby/labby-incus-runtime-created` exists, a native start must prove the Incus runtime is `MISSING`/`STOPPED` or successfully stop it before spawning the native process.
 - Make `restart` call `stop_incus || exit 1` in Incus mode before attempting start.
 - Use `--` before `INCUS_CONTAINER_NAME` for `incus stop/start/exec/list` wherever the CLI accepts it.
 
@@ -998,10 +998,10 @@ chmod +x "&emhttp;/bin/labby" "&emhttp;/scripts/rc.labby" "&emhttp;/scripts/labb
 
 - [ ] **Step 5: Bump version and add a `CHANGES` entry**
 
-Read the current `<!ENTITY version "...">` first. Bump the package version to the next appropriate package version while preserving existing changelog entries. This implementation ultimately used `1.3.2`. Add a new entry at the top of `<CHANGES>` (before the current top entry):
+Read the current `<!ENTITY version "...">` first. Bump the package version to the next appropriate package version while preserving existing changelog entries. This implementation ultimately used `1.3.6`. Add a new entry at the top of `<CHANGES>` (before the current top entry):
 
 ```
-###1.3.2
+###1.3.6
 - Adds RUNTIME_MODE="incus": run the gateway inside an Incus system
   container (via ~/workspace/incus-unraid's private Incus daemon) instead
   of as a bare rc.d process, so stdio MCP servers actually work — Unraid's
@@ -1200,7 +1200,7 @@ scp labby-test-branch.plg tower:/tmp/labby.plg
 ssh tower "/usr/local/sbin/plugin install /tmp/labby.plg 2>&1 | tr '\r' '\n' | grep -v '^$' | grep -v '%\$'"
 ```
 
-Expected: the install log downloads and checksum-verifies all 9 companion files (6 existing + 3 new) plus the binary tarball, ending in `Labby for Unraid 1.3.2 installed.` Adjust the expected package version if Task 6 found a newer current manifest and bumped accordingly.
+Expected: the install log downloads and checksum-verifies all 9 companion files (6 existing + 3 new) plus the binary tarball, ending in `Labby for Unraid 1.3.6 installed.` Adjust the expected package version if Task 6 found a newer current manifest and bumped accordingly.
 
 - [ ] **Step 4: Switch to `RUNTIME_MODE="incus"` and enable the service**
 

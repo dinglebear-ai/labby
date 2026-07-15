@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.5">
+  <!ENTITY version      "1.3.6">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -41,14 +41,14 @@
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "5bd58428c9b019cba193ed90efdac0c8">
-  <!ENTITY pageMD5      "be0b018a14855f8b91f5da42a8d72b03">
-  <!ENTITY rcMD5        "fa4de40cbcbde13aad9e33dca5a3a2a3">
+  <!ENTITY pageMD5      "054649cb61d0e0bf2e71013d325a4283">
+  <!ENTITY rcMD5        "6aabfdaf80dbcaadf72a6d47d85916e6">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
   <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
   <!ENTITY incusProfileMD5 "0419cfb5166a433dfc8149cbefcc3e48">
   <!ENTITY incusEnvMD5     "e4d6dbc277bb84b40e65d2f77f5b217f">
-  <!ENTITY incusInitMD5    "dc9b24dc48b87bd2e0381427afb3b202">
+  <!ENTITY incusInitMD5    "f20df050b79c62ebef0c0c893457755d">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
@@ -56,6 +56,15 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.6
+- Closes native-control review findings: Incus mode now runs gateway
+  management commands inside the gateway container as the `labby` user,
+  bounds page-spawned CLI calls, rejects multi-action POSTs, adds native
+  stdio-upstream and stale-process cleanup controls, keeps Incus runtime
+  evidence under fixed plugin state, preserves LAN-egress firewall rules
+  on uncertain Incus failures, stops all active runtime footprints, and
+  moves one-shot Tailscale keys out of labby.cfg before consumption.
+
 ###1.3.5
 - Forces the native gateway-controls package over earlier 1.3.4 installs.
   Includes the native reload action, add-HTTP-upstream form, and upstream
@@ -219,8 +228,8 @@
   (v1.3.0) natively via rc.d — no Docker, no systemd (Unraid doesn't run
   one). State persists at /mnt/user/appdata/labby on the array; config at
   /boot/config/plugins/labby/labby.cfg on flash, re-applied on every array
-  start. The Settings page shows rc.labby's live status and native gateway
-  controls.
+  start. The Settings page shows rc.labby's live status and links out to
+  labby's own embedded admin UI rather than re-implementing a dashboard.
 </CHANGES>
 
 <!-- labby release binary, cached on flash so plugin reinstall/reboot replay

@@ -13,12 +13,14 @@ EMHTTP="${EMHTTP:-/usr/local/emhttp/plugins/labby}"
 . "${EMHTTP}/scripts/labby-incus-env.sh"
 
 CFG="${CFG:-/boot/config/plugins/labby/labby.cfg}"
+PLUGIN_STATE_DIR="$(dirname "$CFG")"
 LOG_TAG="labby-incus"
 INCUS="${INCUS:-/usr/local/incus/bin/incus}"
 READY_URL="http://127.0.0.1:8765/ready"
 PROVISION_SCHEMA_VERSION="1"
 PROVISION_SENTINEL="/var/lib/labby/provisioning-sentinel"
 TS_AUTHKEY_PATH="/run/labby-ts-authkey"
+TS_AUTHKEY_STORE="${PLUGIN_STATE_DIR}/incus-ts-authkey"
 IMAGE_PROP_VERSION="labby.image_version"
 IMAGE_PROP_SHA256="labby.image_sha256"
 PRIVATE_EGRESS_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10"
@@ -78,6 +80,9 @@ INCUS_BRIDGE_NAME="${INCUS_BRIDGE_NAME:-labbybr0}"
 INCUS_BRIDGE_SUBNET="${INCUS_BRIDGE_SUBNET:-10.99.99.1/24}"
 INCUS_EGRESS_POLICY="${INCUS_EGRESS_POLICY:-block-lan}"
 LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
+if [ -z "$INCUS_TS_AUTHKEY" ] && [ -f "$TS_AUTHKEY_STORE" ]; then
+    INCUS_TS_AUTHKEY="$(cat "$TS_AUTHKEY_STORE")"
+fi
 
 STORAGE_POOL_NAME="labby-dir"
 PROFILE_NAME="labby-gateway"
@@ -87,7 +92,7 @@ IMAGE_URL="https://github.com/jmagar/labby/releases/download/v${INCUS_IMAGE_VERS
 IMAGE_CACHE_DIR="${LABBY_DIR}/incus-images"
 IMAGE_CACHE_FILE="${IMAGE_CACHE_DIR}/labby-incus-${INCUS_IMAGE_VERSION}-x86_64-unknown-linux-gnu.tar.xz"
 IMAGE_SHA_CACHE_FILE="${IMAGE_CACHE_DIR}/labby-incus-${INCUS_IMAGE_VERSION}-x86_64-unknown-linux-gnu.tar.xz.sha256"
-INCUS_RUNTIME_MARKER="${LABBY_DIR}/.labby-incus-runtime-created"
+INCUS_RUNTIME_MARKER="${PLUGIN_STATE_DIR}/labby-incus-runtime-created"
 
 validate_dns_label() {
     [[ "$1" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
@@ -100,6 +105,10 @@ validate_safe_token() {
     esac
 }
 
+validate_tailscale_authkey() {
+    [[ "$1" =~ ^[A-Za-z0-9_-]{1,200}$ ]]
+}
+
 validate_sha256() {
     [[ "$1" =~ ^[a-f0-9]{64}$ ]]
 }
@@ -109,6 +118,11 @@ validate_version() {
 }
 
 validate_array_backed_labby_dir() {
+    case "$LABBY_DIR" in
+        *"/../"* | *"/./"* | */.. | */. | ../* | ./*)
+            fail "LABBY_DIR must not contain . or .. path segments, got: ${LABBY_DIR}"
+            ;;
+    esac
     case "$LABBY_DIR" in
         /mnt/user | /mnt/user/* | /mnt/cache | /mnt/cache/*) ;;
         /mnt/disk*)
@@ -191,6 +205,19 @@ EOF
     [ "$left_start" -le "$right_end" ] && [ "$right_start" -le "$left_end" ]
 }
 
+route_dev() {
+    awk '
+        {
+            for (i = 1; i < NF; i++) {
+                if ($i == "dev") {
+                    print $(i + 1)
+                    exit
+                }
+            }
+        }
+    '
+}
+
 validate_inputs() {
     validate_dns_label "$INCUS_CONTAINER_NAME" \
         || fail "INCUS_CONTAINER_NAME must be a DNS label: ${INCUS_CONTAINER_NAME}"
@@ -207,6 +234,10 @@ validate_inputs() {
         block-lan | allow-lan) ;;
         *) fail "INCUS_EGRESS_POLICY must be block-lan or allow-lan, got: ${INCUS_EGRESS_POLICY}" ;;
     esac
+    if [ -n "$INCUS_TS_AUTHKEY" ]; then
+        validate_tailscale_authkey "$INCUS_TS_AUTHKEY" \
+            || fail "INCUS_TS_AUTHKEY contains unsupported characters"
+    fi
 
     validate_array_backed_labby_dir
 
@@ -223,6 +254,15 @@ acquire_lock() {
     exec 200>"$lockfile"
     if ! flock -w 120 200; then
         fail "another labby-incus-init instance did not finish within 120s"
+    fi
+}
+
+acquire_config_lock() {
+    local lockfile="${CFG}.lock"
+
+    exec 201>"$lockfile"
+    if ! flock -w 30 201; then
+        fail "could not lock ${CFG}; another settings update may be running"
     fi
 }
 
@@ -256,6 +296,7 @@ ensure_storage_pool() {
 validate_bridge_subnet_collision() {
     local route
     local dest
+    local dev
 
     while IFS= read -r route; do
         dest="$(printf '%s\n' "$route" |
@@ -269,8 +310,9 @@ validate_bridge_subnet_collision() {
             */*) ;;
             *) dest="${dest}/32" ;;
         esac
+        dev="$(printf '%s\n' "$route" | route_dev)"
         if cidrs_overlap "$INCUS_BRIDGE_SUBNET" "$dest" &&
-            ! printf '%s\n' "$route" | grep -q "dev ${INCUS_BRIDGE_NAME}\\b"; then
+            [ "$dev" != "$INCUS_BRIDGE_NAME" ]; then
             fail "INCUS_BRIDGE_SUBNET ${INCUS_BRIDGE_SUBNET} collides with existing route: ${route}"
         fi
     done <<EOF
@@ -399,7 +441,7 @@ verify_image_file() {
 }
 
 mark_incus_runtime_created() {
-    mkdir -p "$LABBY_DIR"
+    mkdir -p "$PLUGIN_STATE_DIR"
     : > "$INCUS_RUNTIME_MARKER" \
         || fail "failed to write Incus runtime marker ${INCUS_RUNTIME_MARKER}"
 }
@@ -409,7 +451,7 @@ download_image_once() {
 
     rm -f "$tmp"
     log "downloading ${IMAGE_ASSET} for v${INCUS_IMAGE_VERSION}"
-    if ! curl -fsSL --connect-timeout 15 --max-time 600 --retry 2 --retry-delay 2 -o "$tmp" "$IMAGE_URL"; then
+    if ! curl -fsSL --connect-timeout 15 --max-time 600 -o "$tmp" "$IMAGE_URL"; then
         rm -f "$tmp"
         return 1
     fi
@@ -503,6 +545,7 @@ ensure_container_running() {
         log "launching ${INCUS_CONTAINER_NAME} from ${IMAGE_ALIAS}"
         run_timeout 300 "$INCUS" launch --profile "$PROFILE_NAME" -- "local:${IMAGE_ALIAS}" "$INCUS_CONTAINER_NAME" \
             || fail "failed to launch ${INCUS_CONTAINER_NAME}"
+        mark_incus_runtime_created
         run_timeout 30 "$INCUS" config set -- "$INCUS_CONTAINER_NAME" "user.labby.image_version=${INCUS_IMAGE_VERSION}" \
             || fail "failed to annotate ${INCUS_CONTAINER_NAME} with image version"
         run_timeout 30 "$INCUS" config set -- "$INCUS_CONTAINER_NAME" "user.labby.image_sha256=${INCUS_IMAGE_SHA256}" \
@@ -516,11 +559,17 @@ ensure_container_running() {
         || fail "existing Incus container ${INCUS_CONTAINER_NAME} was created for image version/SHA ${actual_version:-unknown}/${actual_sha256:-unknown}, not ${INCUS_IMAGE_VERSION}/${INCUS_IMAGE_SHA256}; delete/recreate it after backing up any needed state"
 
     state="$(instance_state)"
-    if [ "$state" != "RUNNING" ]; then
-        log "starting existing container ${INCUS_CONTAINER_NAME}"
-        run_timeout 120 "$INCUS" start -- "$INCUS_CONTAINER_NAME" \
-            || fail "failed to start ${INCUS_CONTAINER_NAME}"
-    fi
+    case "$state" in
+        RUNNING) ;;
+        STOPPED)
+            log "starting existing container ${INCUS_CONTAINER_NAME}"
+            run_timeout 120 "$INCUS" start -- "$INCUS_CONTAINER_NAME" \
+                || fail "failed to start ${INCUS_CONTAINER_NAME}"
+            ;;
+        *)
+            fail "existing Incus container ${INCUS_CONTAINER_NAME} is ${state}, not safely startable; resolve the Incus state before starting Labby"
+            ;;
+    esac
 }
 
 wait_for_network() {
@@ -604,6 +653,7 @@ clear_stored_ts_authkey() {
 
     [ -f "$CFG" ] || fail "${CFG} disappeared before INCUS_TS_AUTHKEY could be cleared"
     rm -f "$backup_tmp" "$tmp"
+    acquire_config_lock
 
     # Backup-first, but redact the one-shot secret in the backup too so an
     # attempted use does not leave the auth key behind in labby.cfg.bak.
@@ -624,8 +674,9 @@ clear_stored_ts_authkey() {
         rm -f "$tmp"
         fail "failed to atomically clear INCUS_TS_AUTHKEY from ${CFG}"
     fi
+    rm -f "$TS_AUTHKEY_STORE"
 
-    log "cleared INCUS_TS_AUTHKEY from ${CFG} after attempted Tailscale use"
+    log "cleared INCUS_TS_AUTHKEY from ${CFG} and ${TS_AUTHKEY_STORE} after attempted Tailscale use"
 }
 
 consume_tailscale_authkey() {
@@ -646,11 +697,13 @@ consume_tailscale_authkey() {
     if ! printf '%s' "$INCUS_TS_AUTHKEY" |
         run_timeout 30 "$INCUS" exec "$INCUS_CONTAINER_NAME" -- sh -c "umask 077; cat > ${TS_AUTHKEY_PATH} && chmod 0600 ${TS_AUTHKEY_PATH}"; then
         cleanup_ts_authkey
+        clear_stored_ts_authkey
         fail "failed to write mode-0600 Tailscale auth key inside ${INCUS_CONTAINER_NAME}"
     fi
 
     if ! incus_exec 10 sh -c "[ \"\$(stat -c %a ${TS_AUTHKEY_PATH})\" = 600 ]"; then
         cleanup_ts_authkey
+        clear_stored_ts_authkey
         fail "Tailscale auth key temp file was not mode 0600"
     fi
 
@@ -659,14 +712,13 @@ consume_tailscale_authkey() {
     status=$?
     set -e
     cleanup_ts_authkey
+    clear_stored_ts_authkey
     if [ "$status" -ne 0 ]; then
-        clear_stored_ts_authkey
         fail "tailscale up failed for ${INCUS_CONTAINER_NAME}; cleared stored one-shot INCUS_TS_AUTHKEY"
     fi
 
-    tailscale_has_ip || fail "tailscale did not report an IPv4 address after join"
+    tailscale_has_ip || fail "tailscale did not report an IPv4 address after join; cleared stored one-shot INCUS_TS_AUTHKEY"
     log "tailscale joined and ${TS_AUTHKEY_PATH} removed"
-    clear_stored_ts_authkey
 }
 
 container_labby_version() {

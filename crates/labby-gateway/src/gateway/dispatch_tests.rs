@@ -66,6 +66,8 @@ fn gateway_actions_include_management_surface() {
                 | "gateway.import_pending.reject"
                 | "gateway.import_tombstones.clear"
                 | "gateway.import_tombstones.restore"
+                | "gateway.remove"
+                | "gateway.mcp.cleanup"
         ) {
             continue;
         }
@@ -102,6 +104,20 @@ fn enrich_preview_is_destructive_because_external_providers_spawn() {
         .expect("gateway.enrich.preview action");
 
     assert!(spec.destructive);
+}
+
+#[test]
+fn gateway_remove_and_runtime_cleanup_are_destructive() {
+    for name in ["gateway.remove", "gateway.mcp.cleanup"] {
+        let spec = ACTIONS
+            .iter()
+            .find(|spec| spec.name == name)
+            .unwrap_or_else(|| panic!("{name} action"));
+        assert!(
+            spec.destructive,
+            "{name} deletes config or runtime processes"
+        );
+    }
 }
 
 #[tokio::test]

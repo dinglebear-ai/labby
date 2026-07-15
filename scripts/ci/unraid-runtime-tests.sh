@@ -29,13 +29,13 @@ fail() {
 assert_file_contains() {
     local file="$1"
     local pattern="$2"
-    grep -Fq "$pattern" "$file" || fail "expected $file to contain: $pattern"
+    grep -Fq -- "$pattern" "$file" || fail "expected $file to contain: $pattern"
 }
 
 assert_file_not_contains() {
     local file="$1"
     local pattern="$2"
-    ! grep -Fq "$pattern" "$file" || fail "did not expect $file to contain: $pattern"
+    ! grep -Fq -- "$pattern" "$file" || fail "did not expect $file to contain: $pattern"
 }
 
 write_cfg() {
@@ -117,8 +117,8 @@ case "$1" in
         [ "$state" = "running" ] && exit 0
         exit 1
         ;;
-    network)
-        case "$2" in
+	    network)
+	        case "$2" in
             show)
                 case "${INCUS_NETWORK_MANAGED:-true}" in
                     true) echo "managed: true" ;;
@@ -135,10 +135,22 @@ case "$1" in
                     *) exit 1 ;;
                 esac
                 ;;
-            create) exit 0 ;;
-        esac
-        ;;
-    *) exit 0 ;;
+	            create) exit 0 ;;
+	        esac
+	        ;;
+	    config)
+	        case "$2" in
+	            get)
+	                case "$5" in
+	                    user.labby.image_version) printf '1.2.0\n' ;;
+	                    user.labby.image_sha256) printf 'dfb57f59b52a84db5b14ac71588b676d7135d4b24916628006aaaed8f022c25d\n' ;;
+	                    *) exit 1 ;;
+	                esac
+	                ;;
+	            set) exit 0 ;;
+	        esac
+	        ;;
+	    *) exit 0 ;;
 esac
 EOF
 chmod +x "$tmp/bin/timeout" "$tmp/bin/mountpoint" "$tmp/bin/curl" "$tmp/bin/iptables" "$tmp/bin/ip" "$tmp/bin/incus"
@@ -210,7 +222,7 @@ test_native_start_does_not_require_incus() {
 
 test_native_start_ignores_unproven_incus_query_failure() {
     write_cfg native
-    rm -f "$tmp/labby-state/.labby-incus-runtime-created"
+    rm -f "$tmp/labby-incus-runtime-created" "$tmp/labby-state/.labby-incus-runtime-created"
     printf 'query-fail\n' > "$tmp/incus-state"
     run_rc start > "$tmp/native-query-fail.out"
     assert_file_contains "$tmp/native-query-fail.out" "no Labby Incus runtime marker exists"
@@ -220,15 +232,14 @@ test_native_start_ignores_unproven_incus_query_failure() {
 
 test_native_start_fails_closed_with_incus_marker_and_missing_cli() {
     write_cfg native
-    mkdir -p "$tmp/labby-state"
-    : > "$tmp/labby-state/.labby-incus-runtime-created"
+    : > "$tmp/labby-incus-runtime-created"
     mv "$tmp/bin/incus" "$tmp/bin/incus.real"
     if run_rc start > "$tmp/native-marker-missing-cli.out" 2>&1; then
         fail "native start succeeded even though an Incus runtime marker existed and the Incus CLI was missing"
     fi
     mv "$tmp/bin/incus.real" "$tmp/bin/incus"
     assert_file_contains "$tmp/native-marker-missing-cli.out" "Incus runtime marker exists"
-    rm -f "$tmp/labby-state/.labby-incus-runtime-created"
+    rm -f "$tmp/labby-incus-runtime-created"
 }
 
 test_native_to_incus_stops_native_pid() {
@@ -265,6 +276,29 @@ test_incus_query_failure_is_not_stopped() {
         fail "incus query failure returned success"
     fi
     assert_file_contains "$tmp/query-fail.out" "failed to query Incus"
+}
+
+test_incus_stop_without_marker_and_env_is_noop() {
+    write_cfg incus
+    rm -f "$tmp/labby-incus-runtime-created"
+    mv "$tmp/emhttp/scripts/labby-incus-env.sh" "$tmp/emhttp/scripts/labby-incus-env.sh.real"
+    run_rc stop > "$tmp/incus-no-marker-no-env.out"
+    mv "$tmp/emhttp/scripts/labby-incus-env.sh.real" "$tmp/emhttp/scripts/labby-incus-env.sh"
+    assert_file_contains "$tmp/incus-no-marker-no-env.out" "no Labby Incus runtime marker exists"
+}
+
+test_incus_stop_with_marker_retains_firewall_on_env_failure() {
+    write_cfg incus
+    : > "$tmp/labby-incus-runtime-created"
+    : > "$tmp/iptables.log"
+    mv "$tmp/emhttp/scripts/labby-incus-env.sh" "$tmp/emhttp/scripts/labby-incus-env.sh.real"
+    if run_rc stop > "$tmp/incus-marker-no-env.out" 2>&1; then
+        fail "incus stop with marker and missing env returned success"
+    fi
+    mv "$tmp/emhttp/scripts/labby-incus-env.sh.real" "$tmp/emhttp/scripts/labby-incus-env.sh"
+    assert_file_contains "$tmp/incus-marker-no-env.out" "retaining firewall rules"
+    assert_file_not_contains "$tmp/iptables.log" "-D FORWARD"
+    rm -f "$tmp/labby-incus-runtime-created"
 }
 
 test_incus_stop_rejects_unsafe_state() {
@@ -319,6 +353,20 @@ test_incus_init_instance_query_failures_are_fatal() {
     assert_file_contains "$tmp/instance-query-fail.out" "failed to query Incus instance"
 }
 
+test_incus_init_rejects_unsafe_existing_state() {
+    write_cfg incus
+    : > "$tmp/ip-routes"
+    printf 'frozen\n' > "$tmp/incus-state"
+    if (
+        set -euo pipefail
+        source_init_library
+        ensure_container_running
+    ) > "$tmp/unsafe-start.out" 2>&1; then
+        fail "ensure_container_running accepted unsafe FROZEN state"
+    fi
+    assert_file_contains "$tmp/unsafe-start.out" "not safely startable"
+}
+
 test_bridge_collision_checks_whole_cidr() {
     write_cfg incus
     printf 'missing\n' > "$tmp/incus-state"
@@ -339,6 +387,23 @@ test_bridge_collision_checks_whole_cidr() {
         set -euo pipefail
         source_init_library
         validate_bridge_subnet_collision
+    )
+
+    printf '10.99.99.0/24 dev labbyXbr0\n' > "$tmp/ip-routes"
+    if (
+        set -euo pipefail
+        source_init_library
+        INCUS_BRIDGE_NAME="labby.br0" validate_bridge_subnet_collision
+    ) > "$tmp/bridge-regex-overlap.out" 2>&1; then
+        fail "overlapping route on regex-similar device was not rejected"
+    fi
+    assert_file_contains "$tmp/bridge-regex-overlap.out" "collides with existing route"
+
+    printf '10.99.99.0/24 dev labby.br0\n' > "$tmp/ip-routes"
+    (
+        set -euo pipefail
+        source_init_library
+        INCUS_BRIDGE_NAME="labby.br0" validate_bridge_subnet_collision
     )
 }
 
@@ -397,8 +462,18 @@ test_labby_dir_validator_rejects_non_array_paths() {
     ) > "$tmp/labby-dir-diskfoo.out" 2>&1; then
         fail "LABBY_DIR validator accepted /mnt/disk1foo/labby"
     fi
+    if (
+        set -euo pipefail
+        source_init_library
+        # shellcheck disable=SC2030,SC2031
+        export LABBY_DIR="/mnt/user/../../boot/config/labby"
+        validate_array_backed_labby_dir
+    ) > "$tmp/labby-dir-traversal.out" 2>&1; then
+        fail "LABBY_DIR validator accepted traversal path"
+    fi
     assert_file_contains "$tmp/labby-dir-tmp.out" "got: /tmp/labby"
     assert_file_contains "$tmp/labby-dir-diskfoo.out" "got: /mnt/disk1foo/labby"
+    assert_file_contains "$tmp/labby-dir-traversal.out" "must not contain . or .."
 }
 
 test_profile_is_rendered_in_one_edit() {
@@ -423,6 +498,12 @@ eval(\$m[0]);
 \$out = labby_redact_ts_authkey(\$input);
 if (str_contains(\$out, 'tskey-secret') || !str_contains(\$out, 'INCUS_TS_AUTHKEY="" # secret comment')) {
     fwrite(STDERR, "Labby.page redaction helper did not redact as expected\n");
+    exit(1);
+}
+\$input = "INCUS_TS_AUTHKEY=tskey-unquoted # secret comment\nSERVICE=\"enabled\"\n";
+\$out = labby_redact_ts_authkey(\$input);
+if (str_contains(\$out, 'tskey-unquoted') || !str_contains(\$out, 'INCUS_TS_AUTHKEY="" # secret comment')) {
+    fwrite(STDERR, "Labby.page redaction helper did not redact unquoted keys as expected\n");
     exit(1);
 }
 if (!str_contains(\$page, 'INCUS_IMAGE_SHA256 is required when RUNTIME_MODE is incus.')) {
@@ -450,6 +531,7 @@ INCUS_BRIDGE_SUBNET="10.99.99.1/24"
 INCUS_EGRESS_POLICY="block-lan"
 LABBY_DIR="$tmp/labby-state"
 CFG
+    printf 'tskey-file-secret' > "$tmp/incus-ts-authkey"
     (
         set -euo pipefail
         source_init_library
@@ -457,6 +539,7 @@ CFG
     )
     assert_file_not_contains "$tmp/labby.cfg" "tskey-secret"
     assert_file_not_contains "$tmp/labby.cfg.bak" "tskey-secret"
+    [ ! -e "$tmp/incus-ts-authkey" ] || fail "incus-ts-authkey store was not removed"
     assert_file_contains "$tmp/labby.cfg" 'INCUS_TS_AUTHKEY=""'
     assert_file_contains "$tmp/labby.cfg.bak" 'INCUS_TS_AUTHKEY=""'
 }
@@ -466,9 +549,15 @@ test_page_exposes_native_gateway_controls() {
     assert_file_contains "$page_file" '_(Gateway controls)_:'
     assert_file_contains "$page_file" 'name="labby_gateway_action" value="reload"'
     assert_file_contains "$page_file" 'name="labby_gateway_add" value="1"'
+    assert_file_contains "$page_file" 'name="labby_gateway_add_stdio" value="1"'
     assert_file_contains "$page_file" 'name="labby_gateway_server_action" value="remove"'
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="enable"'
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="disable"'
+    assert_file_contains "$page_file" 'name="labby_mcp_action" value="cleanup_preview"'
+    assert_file_contains "$page_file" 'name="labby_mcp_action" value="cleanup"'
+    assert_file_contains "$page_file" "exec \"\$1\" --user labby"
+    assert_file_contains "$page_file" 'timeout'
+    assert_file_contains "$page_file" 'Submit one Labby action at a time.'
     assert_file_not_contains "$page_file" '<iframe'
     assert_file_not_contains "$page_file" 'Labby Gateway Admin'
     assert_file_not_contains "$page_file" 'Manage the gateway below'
@@ -483,9 +572,12 @@ test_native_start_fails_closed_with_incus_marker_and_missing_cli
 test_native_to_incus_stops_native_pid
 test_incus_to_native_stops_incus_first
 test_incus_query_failure_is_not_stopped
+test_incus_stop_without_marker_and_env_is_noop
+test_incus_stop_with_marker_retains_firewall_on_env_failure
 test_incus_stop_rejects_unsafe_state
 test_incus_status_preserves_stopped_and_unsafe_states
 test_incus_init_instance_query_failures_are_fatal
+test_incus_init_rejects_unsafe_existing_state
 test_bridge_collision_checks_whole_cidr
 test_managed_bridge_validates_full_posture
 test_labby_dir_validator_rejects_non_array_paths

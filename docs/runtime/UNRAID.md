@@ -141,6 +141,12 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
 - **Persistent config**: `/boot/config/plugins/labby/labby.cfg` (flash).
   Seeded once at install, never overwritten if already present. Edit
   `SERVICE=enabled` here to autostart on array start.
+- **One-shot Incus Tailscale key**:
+  `/boot/config/plugins/labby/incus-ts-authkey` (flash, best-effort
+  mode `0600`). The settings page writes it separately from the
+  bash-sourceable config; `labby-incus-init.sh` consumes it, deletes it,
+  and redacts any legacy `INCUS_TS_AUTHKEY` value from `labby.cfg` and
+  `labby.cfg.bak` after every attempted use.
 - **Runtime OS files**: `/usr/local/emhttp/plugins/labby/*` (RAM). Rebuilt
   fresh from the flash-cached tarball + `source/` files on every boot.
 - **Gateway state** (`auth.db`, `registry.db`, `config.toml`, the MCP
@@ -157,9 +163,13 @@ HTTP_PORT, RUNTIME_MODE, and the Incus-only image/network/Tailscale fields
 — everything in `labby.cfg`), built to look and behave like a
 first-party classic Unraid settings page rather than a custom-styled form.
 Gateway management is also native to the page: it exposes a reload action,
-an add-HTTP-upstream form, and a live upstream MCP runtime table with
-enable/disable/remove controls instead of embedding labby's separate admin web
-UI in an iframe.
+add-HTTP-upstream and add-stdio-upstream forms, and a live upstream MCP
+runtime table with enable/disable/remove and stale-process cleanup controls
+instead of embedding labby's separate admin web UI in an iframe. In native
+mode those actions run the host plugin binary against `LABBY_DIR`; in Incus
+mode the same actions execute `labby --json gateway ...` inside the gateway
+container as the `labby` user so they operate on the live container-owned
+gateway state.
 The markup conventions were reverse-engineered from a live Unraid 7.3.x
 install's own pages (`/usr/local/emhttp/webGui/DateTime.page`,
 `dynamix.my.servers/Connect.page`) and cross-checked against

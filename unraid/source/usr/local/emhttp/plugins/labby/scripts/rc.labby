@@ -12,6 +12,7 @@ BIN="${BIN:-${EMHTTP}/bin/labby}"
 CFG="${CFG:-/boot/config/plugins/labby/labby.cfg}"
 # shellcheck disable=SC1090
 [ -f "$CFG" ] && . "$CFG"
+PLUGIN_STATE_DIR="$(dirname "$CFG")"
 
 RUNTIME_MODE="${RUNTIME_MODE:-native}"
 LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
@@ -62,11 +63,11 @@ cleanup_incus_egress_rules() {
 }
 
 incus_runtime_marker() {
-    printf '%s\n' "${LABBY_DIR%/}/.labby-incus-runtime-created"
+    printf '%s\n' "${PLUGIN_STATE_DIR}/labby-incus-runtime-created"
 }
 
 incus_runtime_marker_exists() {
-    [ -f "$(incus_runtime_marker)" ]
+    [ -f "$(incus_runtime_marker)" ] || [ -f "${LABBY_DIR%/}/.labby-incus-runtime-created" ]
 }
 
 native_pid_alive() {
@@ -84,7 +85,6 @@ stop_incus_for_mode_switch() {
     local state
 
     if [ ! -x "$INCUS" ] || [ ! -f "${EMHTTP}/scripts/labby-incus-env.sh" ]; then
-        cleanup_incus_egress_rules
         if incus_runtime_marker_exists; then
             echo "labby: Incus runtime marker exists but Incus tooling is unavailable — refusing to start native mode until ${INCUS_CONTAINER_NAME} is confirmed stopped"
             return 1
@@ -93,7 +93,6 @@ stop_incus_for_mode_switch() {
     fi
 
     if ! incus_env_or_fail; then
-        cleanup_incus_egress_rules
         if incus_runtime_marker_exists; then
             echo "labby: Incus runtime marker exists but Incus environment could not be loaded — refusing to start native mode until ${INCUS_CONTAINER_NAME} is confirmed stopped"
             return 1
@@ -102,7 +101,6 @@ stop_incus_for_mode_switch() {
     fi
 
     if ! state="$(incus_state)"; then
-        cleanup_incus_egress_rules
         if incus_runtime_marker_exists; then
             echo "labby: Incus runtime marker exists but ${INCUS_CONTAINER_NAME} state could not be queried — refusing to start native mode"
             return 1
@@ -296,8 +294,12 @@ stop_incus() {
     local state
 
     incus_env_or_fail || {
-        cleanup_incus_egress_rules
-        return 1
+        if incus_runtime_marker_exists; then
+            echo "labby: Incus runtime marker exists but Incus environment could not be loaded — retaining firewall rules and refusing to claim stopped"
+            return 1
+        fi
+        echo "labby: Incus environment unavailable and no Labby Incus runtime marker exists; treating Incus stop as a no-op"
+        return 0
     }
 
     if ! state="$(incus_state)"; then
@@ -368,6 +370,20 @@ stop_incus() {
     return 1
 }
 
+stop_all_active() {
+    local status=0
+
+    if [ -f "$PIDFILE" ]; then
+        stop_native || status=1
+    fi
+
+    if [ "$RUNTIME_MODE" = "incus" ] || incus_runtime_marker_exists; then
+        stop_incus || status=1
+    fi
+
+    return "$status"
+}
+
 status_incus() {
     local state
 
@@ -407,8 +423,7 @@ case "$1" in
         ;;
     stop)
         case "$RUNTIME_MODE" in
-            native) stop_native ;;
-            incus) stop_incus ;;
+            native | incus) stop_all_active ;;
             *) unsupported_runtime_mode ;;
         esac
         ;;
@@ -418,12 +433,12 @@ case "$1" in
         # two processes writing to the same LABBY_DIR state concurrently.
         case "$RUNTIME_MODE" in
             native)
-                stop_native || exit 1
+                stop_all_active || exit 1
                 sleep 1
                 start_native
                 ;;
             incus)
-                stop_incus || exit 1
+                stop_all_active || exit 1
                 sleep 1
                 start_incus
                 ;;
