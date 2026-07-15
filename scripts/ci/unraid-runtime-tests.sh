@@ -461,6 +461,14 @@ CFG
     assert_file_contains "$tmp/labby.cfg.bak" 'INCUS_TS_AUTHKEY=""'
 }
 
+test_page_embeds_gateway_admin_ui() {
+    assert_file_contains "$page_file" '<iframe'
+    assert_file_contains "$page_file" 'title="Labby Gateway Admin"'
+    assert_file_contains "$page_file" 'Manage the gateway below'
+    assert_file_not_contains "$page_file" 'thin settings/status shell that links out'
+    assert_file_not_contains "$page_file" 'links out to labby'
+}
+
 test_env_sourcer_is_idempotent
 test_native_start_does_not_require_incus
 test_native_start_ignores_unproven_incus_query_failure
@@ -476,5 +484,6 @@ test_managed_bridge_validates_full_posture
 test_labby_dir_validator_rejects_non_array_paths
 test_profile_is_rendered_in_one_edit
 test_tailscale_key_redaction_helpers
+test_page_embeds_gateway_admin_ui
 
 echo "unraid runtime behavior tests OK"

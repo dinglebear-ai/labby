@@ -119,7 +119,7 @@ unraid/
   labby.plg                                    plugin manifest (installed via Unraid's Plugins tab)
   source/usr/local/emhttp/plugins/labby/
     labby.cfg                                  default config template (flash-persisted copy is the source of truth once installed)
-    Labby.page                                  status + settings form (SERVICE/LABBY_DIR/HTTP_HOST/HTTP_PORT/RUNTIME_MODE/INCUS_IMAGE_SHA256/...) — links out to labby's own admin UI rather than reimplementing one
+    Labby.page                                  status + settings form (SERVICE/LABBY_DIR/HTTP_HOST/HTTP_PORT/RUNTIME_MODE/INCUS_IMAGE_SHA256/...) — embeds labby's own admin UI when the gateway is browser-reachable
     scripts/rc.labby                            start/stop/restart/status, branches on RUNTIME_MODE between the native rc.d path and the Incus container path
     scripts/labby-preflight.sh                   read-only glibc/binary sanity check for native mode; rc.labby refuses to start if this fails
     scripts/labby-incus-env.sh                   points the Incus CLI at incus-unraid's private-prefixed daemon — incus mode only

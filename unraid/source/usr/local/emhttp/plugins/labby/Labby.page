@@ -5,9 +5,10 @@ Tag="server"
 ---
 <?PHP
 /* Settings/status page for the Labby gateway plugin. Labby ships its own
- * full admin web UI (embedded in the release binary) — this page is a thin
- * settings/status shell that links out to that UI rather than
- * re-implementing a dashboard. Contrast with ~/workspace/incus-unraid's
+ * full admin web UI (embedded in the release binary), and this page embeds
+ * that admin surface when the gateway is browser-reachable so operators can
+ * manage the gateway directly from Settings > Labby. Contrast with
+ * ~/workspace/incus-unraid's
  * IncusSettings.page, which builds a full GraphQL/Vue settings app because
  * incusd has no web UI of its own; labby doesn't have that problem.
  *
@@ -271,6 +272,9 @@ $healthy = $running && strpos($status, 'not ready') === false && strpos($status,
 $port = $cfg['HTTP_PORT'];
 $host = $cfg['HTTP_HOST'];
 $lanReachable = $host !== '127.0.0.1';
+$serverHost = $_SERVER['SERVER_ADDR'] ?? $_SERVER['HTTP_HOST'] ?? '127.0.0.1';
+$serverHost = preg_replace('/:\d+$/', '', $serverHost);
+$gatewayUrl = 'http://' . $serverHost . ':' . $port . '/';
 ?>
 <?php if ($settingsError !== null): ?>
 <div class="notice"><span class="red-text"><?= nl2br(htmlspecialchars($settingsError, ENT_QUOTES)) ?></span></div>
@@ -354,9 +358,15 @@ _(HTTP port)_:
 </form>
 
 <?php if ($running && $lanReachable): ?>
-<p>
-  <a href="http://<?= htmlspecialchars($_SERVER['SERVER_ADDR'] ?? $_SERVER['HTTP_HOST'], ENT_QUOTES) ?>:<?= htmlspecialchars($port, ENT_QUOTES) ?>/" target="_blank" rel="noopener">_(Open Labby Gateway)_ &rarr;</a>
-</p>
+_(Gateway admin)_:
+: <span>_(Manage the gateway below.)_ <a href="<?= htmlspecialchars($gatewayUrl, ENT_QUOTES) ?>" target="_blank" rel="noopener">_(Open in new tab)_ &rarr;</a></span>
+
+<iframe
+  title="Labby Gateway Admin"
+  src="<?= htmlspecialchars($gatewayUrl, ENT_QUOTES) ?>"
+  style="width:100%;min-height:760px;border:1px solid var(--border-color, #d8d8d8);border-radius:4px;background:#07131c;"
+  referrerpolicy="same-origin"
+></iframe>
 <?php elseif ($running): ?>
 <p><span class="orange-text">_(labby is bound to 127.0.0.1 — loopback only — so it isn't reachable from your browser at this address. Change HTTP host above to make it LAN-reachable.)_</span></p>
 <?php endif; ?>
