@@ -1,15 +1,18 @@
 #!/bin/bash
-# /etc/rc.d/rc.labby — Unraid-style service control for the labby gateway
-# binary. Backgrounds `labby serve` with persistent state on the array and
-# polls its own /ready endpoint, mirroring labby's systemd unit on other
-# Linux hosts (see crates/labby/src/dispatch/setup/host_service.rs upstream)
-# without depending on systemd, which Unraid does not run.
+# /etc/rc.d/rc.labby — Unraid-style service control for the labby gateway.
+# RUNTIME_MODE="native": backgrounds `labby serve` directly with persistent
+# state on the array, mirroring labby's systemd unit on other Linux hosts.
+# RUNTIME_MODE="incus": delegates lifecycle to an Incus system container so
+# stdio MCP servers have a real toolchain floor without running on the NAS
+# host itself.
 
 EMHTTP="/usr/local/emhttp/plugins/labby"
 BIN="${EMHTTP}/bin/labby"
 CFG="/boot/config/plugins/labby/labby.cfg"
+# shellcheck disable=SC1090
 [ -f "$CFG" ] && . "$CFG"
 
+RUNTIME_MODE="${RUNTIME_MODE:-native}"
 LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
 # 127.0.0.1 on purpose, matching labby.cfg's own default — see the comment
 # above HTTP_HOST there. This fallback only matters if labby.cfg is ever
@@ -18,6 +21,8 @@ LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
 # start failure that default was fixed to avoid.
 HTTP_HOST="${HTTP_HOST:-127.0.0.1}"
 HTTP_PORT="${HTTP_PORT:-8765}"
+INCUS_CONTAINER_NAME="${INCUS_CONTAINER_NAME:-labby-gateway}"
+INCUS="/usr/local/incus/bin/incus"
 
 PIDFILE="/var/run/labby.pid"
 LOG="/var/log/labby.log"
@@ -37,7 +42,35 @@ ready() {
     curl -fsS -m 2 "http://127.0.0.1:${HTTP_PORT}/ready" >/dev/null 2>&1
 }
 
-start() {
+validate_incus_container_name() {
+    [[ "$INCUS_CONTAINER_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
+}
+
+incus_env_or_fail() {
+    if [ ! -f "${EMHTTP}/scripts/labby-incus-env.sh" ]; then
+        echo "labby: ${EMHTTP}/scripts/labby-incus-env.sh not found — install the incus-unraid plugin first"
+        return 1
+    fi
+    if ! validate_incus_container_name; then
+        echo "labby: INCUS_CONTAINER_NAME must be a DNS label: ${INCUS_CONTAINER_NAME}"
+        return 1
+    fi
+    # shellcheck disable=SC1091
+    . "${EMHTTP}/scripts/labby-incus-env.sh" || return 1
+}
+
+incus_state() {
+    local info
+
+    info="$("$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>/dev/null)" || return 1
+    printf '%s\n' "$info" | awk -F': ' '$1 == "Status" { print toupper($2); exit }'
+}
+
+incus_ready() {
+    "$INCUS" exec "$INCUS_CONTAINER_NAME" -- curl -fsS -m 2 http://127.0.0.1:8765/ready >/dev/null 2>&1
+}
+
+start_native() {
     if ! "${EMHTTP}/scripts/labby-preflight.sh" >>"$LOG" 2>&1; then
         echo "labby: preflight FAILED — see $LOG"
         exit 1
@@ -66,7 +99,7 @@ start() {
         # LABBY_DIR SQLite state concurrently, and overwriting PIDFILE below
         # would orphan the old process forever.
         echo "labby: a live labby process isn't answering on ${HTTP_HOST}:${HTTP_PORT} (settings changed since it started?) — stopping it first"
-        if ! stop; then
+        if ! stop_native; then
             echo "labby: could not stop the existing process — refusing to start a second one"
             exit 1
         fi
@@ -87,7 +120,7 @@ start() {
     exit 1
 }
 
-stop() {
+stop_native() {
     echo "labby: stopping"
     if [ ! -f "$PIDFILE" ]; then
         return 0
@@ -118,7 +151,7 @@ stop() {
     rm -f "$PIDFILE"
 }
 
-status() {
+status_native() {
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && ready; then
         echo "labby: RUNNING (pid $(cat "$PIDFILE"), http://${HTTP_HOST}:${HTTP_PORT})"
     else
@@ -126,19 +159,123 @@ status() {
     fi
 }
 
+start_incus() {
+    incus_env_or_fail || return 1
+    if [ ! -x "${EMHTTP}/scripts/labby-incus-init.sh" ]; then
+        echo "labby: ${EMHTTP}/scripts/labby-incus-init.sh not found or not executable"
+        return 1
+    fi
+    "${EMHTTP}/scripts/labby-incus-init.sh" || {
+        echo "labby: Incus startup failed — see syslog and /var/log/labby.log"
+        return 1
+    }
+}
+
+stop_incus() {
+    local state
+
+    incus_env_or_fail || return 1
+
+    state="$(incus_state || true)"
+    if [ -z "$state" ]; then
+        echo "labby: Incus container ${INCUS_CONTAINER_NAME} not created yet"
+        return 0
+    fi
+    if [ "$state" != "RUNNING" ]; then
+        echo "labby: Incus container ${INCUS_CONTAINER_NAME} already ${state}"
+        return 0
+    fi
+
+    echo "labby: stopping Incus container ${INCUS_CONTAINER_NAME}"
+    if ! "$INCUS" stop --timeout 30 -- "$INCUS_CONTAINER_NAME" 2>/dev/null; then
+        state="$(incus_state || true)"
+        if [ -z "$state" ] || [ "$state" != "RUNNING" ]; then
+            return 0
+        fi
+        echo "labby: failed to request stop for Incus container ${INCUS_CONTAINER_NAME}"
+        return 1
+    fi
+
+    for _ in $(seq 1 20); do
+        state="$(incus_state || true)"
+        [ -z "$state" ] && return 0
+        [ "$state" != "RUNNING" ] && return 0
+        sleep 0.5
+    done
+
+    echo "labby: FAILED to stop Incus container ${INCUS_CONTAINER_NAME} (still RUNNING)"
+    return 1
+}
+
+status_incus() {
+    local state
+
+    incus_env_or_fail || return 1
+
+    state="$(incus_state || true)"
+    if [ -z "$state" ]; then
+        echo "labby: STOPPED (incus container ${INCUS_CONTAINER_NAME} not created yet)"
+    elif [ "$state" = "RUNNING" ] && incus_ready; then
+        echo "labby: RUNNING (incus container ${INCUS_CONTAINER_NAME}, ready)"
+    elif [ "$state" = "RUNNING" ]; then
+        echo "labby: RUNNING (incus container ${INCUS_CONTAINER_NAME}, not ready)"
+    else
+        echo "labby: STOPPED (incus container ${INCUS_CONTAINER_NAME} state: ${state})"
+    fi
+}
+
+unsupported_runtime_mode() {
+    echo "labby: unsupported RUNTIME_MODE=${RUNTIME_MODE} (expected native or incus)"
+    exit 1
+}
+
 case "$1" in
-    start) start ;;
-    stop) stop ;;
+    start)
+        case "$RUNTIME_MODE" in
+            native) start_native ;;
+            incus) start_incus ;;
+            *) unsupported_runtime_mode ;;
+        esac
+        ;;
+    stop)
+        case "$RUNTIME_MODE" in
+            native) stop_native ;;
+            incus) stop_incus ;;
+            *) unsupported_runtime_mode ;;
+        esac
+        ;;
     restart)
         # Do not start a new process on top of one stop() failed to reap —
         # that would either fail the port bind outright or, worse, leave
         # two processes writing to the same LABBY_DIR state concurrently.
-        stop || exit 1
-        sleep 1
-        start
+        case "$RUNTIME_MODE" in
+            native)
+                stop_native || exit 1
+                sleep 1
+                start_native
+                ;;
+            incus)
+                stop_incus || exit 1
+                sleep 1
+                start_incus
+                ;;
+            *) unsupported_runtime_mode ;;
+        esac
         ;;
-    status) status ;;
-    preflight) "${EMHTTP}/scripts/labby-preflight.sh" ;;
+    status)
+        case "$RUNTIME_MODE" in
+            native) status_native ;;
+            incus) status_incus ;;
+            *) unsupported_runtime_mode ;;
+        esac
+        ;;
+    preflight)
+        case "$RUNTIME_MODE" in
+            native) "${EMHTTP}/scripts/labby-preflight.sh" ;;
+            incus) : ;;
+            *) unsupported_runtime_mode ;;
+        esac
+        ;;
     *)
         echo "usage: $0 {start|stop|restart|status|preflight}"
         exit 1
