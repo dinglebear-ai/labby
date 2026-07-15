@@ -391,9 +391,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             // path below so their promise settles normally.
                             // They ARE metered separately: past
                             // `MAX_INTERNAL_CALLS_PER_RUN` each internal call
-                            // settles fail-open with the empty semantic
-                            // result so sandbox JS cannot loop them into
-                            // unbounded embedding-service round trips.
+                            // settles fail-open with an empty "nothing found"
+                            // result shaped for whichever internal tool it is
+                            // (see `enqueue_internal_call_over_ceiling`) so
+                            // sandbox JS cannot loop them into unbounded
+                            // host round trips.
                             let is_internal = id.starts_with("__lab_internal::");
                             if is_internal {
                                 state.internal_calls_enqueued =
@@ -897,13 +899,26 @@ fn enqueue_internal_call_over_ceiling(
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'_>>,
 ) {
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
+    // Shape-aware: each reserved internal tool has its own "nothing found"
+    // contract its sandbox-side caller already handles gracefully —
+    // `codemode.search`'s empty ranked list, `codemode.describe`'s null type
+    // body. Settling every over-ceiling call with `semantic_rank`'s shape
+    // would silently "work" for `describe_types` too today only by a JS
+    // truthiness coincidence (`{ranked: []}.dts` is `undefined`, same falsy
+    // outcome as `{dts: null}.dts`), not by design — keep this explicit so a
+    // future third internal tool doesn't inherit that accident.
+    let fail_open_value = if id == "__lab_internal::describe_types" {
+        json!({ "dts": null })
+    } else {
+        json!({ "ranked": [] })
+    };
     pending_tool_calls.push(Box::pin(async move {
         (
             seq,
             id,
             redacted_params,
             Ok(ToolCallOutcome {
-                value: json!({ "ranked": [] }),
+                value: fail_open_value,
                 ui: None,
             }),
             0,
@@ -1704,8 +1719,8 @@ sleep 3600
             ) -> Result<ToolsRender, ToolError> {
                 Ok(ToolsRender {
                     fingerprint: "counting".to_string(),
-                    entries: Vec::new(),
-                    catalog_json: "[]".to_string(),
+                    entries: Arc::from([]),
+                    catalog_json: Arc::from("[]"),
                     serialized_size: 2,
                 })
             }
@@ -1856,6 +1871,74 @@ sleep 3600
         );
     }
 
+    /// `enqueue_internal_call_over_ceiling`'s fail-open value must match the
+    /// specific internal tool being throttled, not a hardcoded shape borrowed
+    /// from `semantic_rank`. Before this was shape-aware, an over-ceiling
+    /// `describe_types` call settled with `{"ranked": []}` — which happened to
+    /// look like "no type info" to `codemode.describe()`'s JS
+    /// (`{"ranked": []}.dts` is `undefined`, same falsy outcome as
+    /// `{"dts": null}.dts`) only by coincidence, not by design. Regression:
+    /// drive more than `MAX_INTERNAL_CALLS_PER_RUN` `describe_types` calls and
+    /// assert every settled result (both under and over the ceiling) is
+    /// `{"dts": null}` and that `"ranked":[]` never appears in the wire trace.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn drive_runner_describe_types_over_ceiling_settles_with_dts_shape_not_ranked_shape() {
+        use crate::host::NoopHost;
+
+        let ceiling = MAX_INTERNAL_CALLS_PER_RUN;
+        let internal_total = ceiling + 2;
+        let capture = tempfile::NamedTempFile::new().expect("create capture file");
+        let capture_path = capture.path().display();
+        let script = format!(
+            r#"
+exec 3<&0
+cat <&3 >"{capture_path}" &
+i=1
+while [ "$i" -le {internal_total} ]; do
+  printf '{{"type":"tool_call","seq":%d,"id":"__lab_internal::describe_types","params":{{"id":"nonexistent::tool"}}}}\n' "$i"
+  i=$((i+1))
+done
+sleep 2
+printf '{{"type":"done"}}\n'
+sleep 3600
+"#
+        );
+        let host = NoopHost::default();
+        let broker = CodeModeBroker::new(Some(&host));
+        let mut runner = PooledRunner::spawn_stub_script(&script).expect("spawn script stub");
+        let outcome = broker
+            .drive_runner(&mut runner, &test_config(Duration::from_secs(30)))
+            .await;
+        match outcome {
+            DriveOutcome::Completed(_) => {}
+            DriveOutcome::ExecutionError(err) | DriveOutcome::RunnerUnhealthy(err) => {
+                panic!(
+                    "over-ceiling describe_types calls must fail open, got error kind `{}`",
+                    err.kind()
+                )
+            }
+        }
+        let mut contents = String::new();
+        for _ in 0..50 {
+            contents = std::fs::read_to_string(capture.path()).unwrap_or_default();
+            if contents.matches(r#""dts":null"#).count() >= internal_total {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            contents.matches(r#""dts":null"#).count(),
+            internal_total,
+            "every describe_types call — under and over the ceiling — must settle with \
+             the {{\"dts\": null}} shape, never {{\"ranked\": []}}"
+        );
+        assert!(
+            !contents.contains(r#""ranked":[]"#),
+            "over-ceiling describe_types calls must never settle with semantic_rank's shape"
+        );
+    }
+
     /// The parent-derived `step_ordinal` is a contiguous monotonic count of
     /// `step_begin` events (0, 1, …), independent of the runner `seq` spine:
     /// even with a `tool_call` interleaved (bumping seq) between two steps, the
@@ -1888,8 +1971,8 @@ sleep 3600
             ) -> Result<ToolsRender, ToolError> {
                 Ok(ToolsRender {
                     fingerprint: "recording".to_string(),
-                    entries: Vec::new(),
-                    catalog_json: "[]".to_string(),
+                    entries: Arc::from([]),
+                    catalog_json: Arc::from("[]"),
                     serialized_size: 2,
                 })
             }

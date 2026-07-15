@@ -173,29 +173,11 @@ pub(crate) fn generate_discovery_js(
 ) -> Result<String, String> {
     let json = serde_json::to_string(entries)
         .map_err(|err| format!("failed to serialize Code Mode discovery catalog: {err}"))?;
-    let types_map: serde_json::Map<String, serde_json::Value> = entries
-        .iter()
-        .filter(|entry| !entry.dts.is_empty())
-        .map(|entry| {
-            (
-                entry.id.clone(),
-                serde_json::Value::String(entry.dts.clone()),
-            )
-        })
-        .collect();
-    let types_json = serde_json::to_string(&serde_json::Value::Object(types_map))
-        .map_err(|err| format!("failed to serialize Code Mode type lookup: {err}"))?;
     Ok(format!(
         r##"
 globalThis.codemode = globalThis.codemode || {{}};
 var codemode = globalThis.codemode;
 var __codemodeDiscovery = {json};
-var __codemodeTypes = {types_json};
-var __codemodeHelpers = ["search", "describe", "run", "step", "batch"];
-codemode.__meta__ = codemode.__meta__ || {{}};
-codemode.__meta__.helpers = function() {{
-  return Promise.resolve(__codemodeHelpers.slice());
-}};
 function __codemodeNormalize(value) {{
   return String(value == null ? "" : value)
     .toLowerCase()
@@ -212,7 +194,7 @@ codemode.search = async function(input) {{
     ? Math.max(1, Math.min(50, Number(input.limit)))
     : 50;
   var tokens = __codemodeTokens(query);
-  var __codemodeNoMatchHint = "No matches. Broaden or try synonyms, or call codemode.__meta__.upstreams() to list namespaces and search by upstream name.";
+  var __codemodeNoMatchHint = "No matches. Broaden the query or try synonyms.";
   if (!tokens.length) return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
 
   // --- lexical scoring (unchanged algorithm) ---
@@ -345,7 +327,7 @@ codemode.search = async function(input) {{
   }});
   return {{ results: results, total: total, truncated: total > limit }};
 }};
-codemode.describe = function(target) {{
+codemode.describe = async function(target) {{
   var raw = String(target == null ? "" : target).trim();
   var exact = [];
   var bare = [];
@@ -400,17 +382,32 @@ codemode.describe = function(target) {{
     markdown = "# " + entry.name + "\n\nKind: snippet\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n\nRun: `codemode.run(" + JSON.stringify(entry.name) + ", input)`\n" + (inputLines ? "\nInputs:\n" + inputLines + "\n" : "\nInputs: none\n");
   }} else {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
-    var typeBody = __codemodeTypes[entry.id];
+    // Fetched from the host on demand rather than embedded in the sandbox
+    // preamble up front — the host already has this cached from the same
+    // catalog render this execution's discovery index was built from, so
+    // this is usually a cheap round trip, not a fresh computation (see the
+    // Rust-side `describe_types` dispatch comment for when it isn't). Caught,
+    // not propagated: the target is already fully resolved above (path/id/
+    // helper/signature), so a transient failure fetching the type body alone
+    // must not fail the whole `describe()` call — degrade to no type section
+    // instead, matching the host's own fail-open behavior for this lookup.
+    var typeBody = null;
+    try {{
+      var typeResponse = await callTool("__lab_internal::describe_types", {{ id: entry.id }});
+      typeBody = typeResponse && typeResponse.dts;
+    }} catch (e) {{
+      typeBody = null;
+    }}
     if (typeBody) {{
       markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
     }}
   }}
-  return Promise.resolve({{
+  return {{
     path: entry.path,
     id: entry.id,
     kind: entry.kind,
     markdown: markdown
-  }});
+  }};
 }};
 codemode.run = function(name, input) {{
   return globalThis.__labRunSnippet(name, input == null ? {{}} : input);
@@ -511,8 +508,7 @@ globalThis.openapi = {
 }
 
 /// Generate a JavaScript preamble string that defines the `codemode` proxy
-/// namespace, plus `codemode.__meta__.namespaces()` / `.helpers()` and a
-/// `__namespaces__` script-global, for use inside the sandbox.
+/// namespace for use inside the sandbox.
 ///
 /// The output is a JS snippet (not TypeScript) injected into the user code before
 /// being sent to the runner subprocess. It relies on `callTool` already being
@@ -522,10 +518,7 @@ globalThis.openapi = {
 /// concatenated in front of a trailing IIFE the IIFE's promise remains the
 /// `eval` completion value.
 ///
-pub(crate) fn generate_js_proxy_from_catalog(
-    tools: &[&ToolDescriptor],
-    namespaces: &[String],
-) -> Result<String, String> {
+pub(crate) fn generate_js_proxy_from_catalog(tools: &[&ToolDescriptor]) -> Result<String, String> {
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
@@ -593,19 +586,11 @@ pub(crate) fn generate_js_proxy_from_catalog(
         );
     }
 
-    let namespaces_json = serde_json::to_string(namespaces).unwrap_or_else(|_| "[]".to_string());
-
     Ok(format!(
         "// Code Mode proxy — auto-generated\n\
          globalThis.codemode = globalThis.codemode || {{}};\n\
          var codemode = globalThis.codemode;\n\
-         codemode.run = function(name, input) {{ return globalThis.__labRunSnippet(name, input == null ? {{}} : input); }};\n\
-         codemode.batch = async function(jobs) {{ if (!Array.isArray(jobs)) {{ throw new Error(\"codemode.batch requires an array of jobs\"); }} var settled = await Promise.allSettled(jobs.map(function(job) {{ return typeof job === \"function\" ? Promise.resolve().then(job) : job; }})); var ok = []; var failed = []; settled.forEach(function(result, index) {{ if (result.status === \"fulfilled\") {{ ok.push({{ i: index, value: result.value }}); }} else {{ var reason = result.reason; failed.push({{ i: index, error: String(reason && reason.message ? reason.message : reason) }}); }} }}); return {{ ok: ok, failed: failed, all_ok: failed.length === 0 }}; }};\n\
-         {parts}\
-         codemode.__meta__ = codemode.__meta__ || {{}};\n\
-         codemode.__meta__.namespaces = function() {{ return Promise.resolve({namespaces_json}); }};\n\
-         codemode.__meta__.helpers = codemode.__meta__.helpers || function() {{ return Promise.resolve([\"run\", \"batch\"]); }};\n\
-         var __namespaces__ = {namespaces_json};\n"
+         {parts}"
     ))
 }
 
@@ -646,9 +631,9 @@ mod tests {
     }
 
     /// Generate the runtime proxy from owned descriptors.
-    fn proxy(tools: &[ToolDescriptor], namespaces: &[String]) -> Result<String, String> {
+    fn proxy(tools: &[ToolDescriptor]) -> Result<String, String> {
         let refs: Vec<&ToolDescriptor> = tools.iter().collect();
-        generate_js_proxy_from_catalog(&refs, namespaces)
+        generate_js_proxy_from_catalog(&refs)
     }
 
     // ── tool_name_to_snake ────────────────────────────────────────────────────
@@ -711,7 +696,11 @@ mod tests {
         assert!(js.contains("codemode.describe"));
         assert!(!js.contains("schema"));
         assert!(!js.contains("output_schema"));
-        assert!(!js.contains("dts"));
+        // No embedded type-declaration lookup table — `.dts` appears only as a
+        // property name on the lazily-fetched `__lab_internal::describe_types`
+        // response (see `discovery_describe_fetches_tool_types_lazily`), never
+        // as pre-injected type content.
+        assert!(!js.contains("__codemodeTypes"));
     }
 
     #[test]
@@ -734,8 +723,6 @@ mod tests {
         // codemode.batch is an isolation helper: mixed success/failure jobs
         // settle independently and return partitioned results.
         assert!(js.contains("codemode.batch = async function(jobs)"));
-        assert!(js.contains("codemode.__meta__.helpers"));
-        assert!(js.contains("\"batch\""));
         assert!(js.contains("Promise.allSettled"));
         assert!(js.contains("Promise.resolve().then(job)"));
         assert!(js.contains("ok.push({ i: index, value: result.value })"));
@@ -744,20 +731,42 @@ mod tests {
     }
 
     #[test]
-    fn discovery_describe_surfaces_tool_type_body() {
+    fn discovery_describe_fetches_tool_types_lazily() {
+        // Regardless of how large `.dts` is on the source entry, NONE of it is
+        // embedded in the generated preamble — the tool-branch of
+        // `codemode.describe` fetches it from the host on demand instead.
         let mut entry = discovery_entry("github", "list_tags", "List repository tags");
         entry.dts =
             "type GithubListTagsInput = { owner: string; repo: string; perPage?: number };\n"
                 .to_string();
         let js = generate_discovery_js(&[entry], 0.5).expect("js");
 
-        assert!(js.contains("__codemodeTypes"));
-        assert!(js.contains("GithubListTagsInput"));
-        assert!(js.contains("github::list_tags"));
+        assert!(!js.contains("__codemodeTypes"));
+        assert!(!js.contains("GithubListTagsInput"));
+        assert!(!js.contains("perPage"));
+        assert!(js.contains("codemode.describe = async function(target)"));
+        assert!(
+            js.contains(r#"await callTool("__lab_internal::describe_types", { id: entry.id })"#)
+        );
+        assert!(js.contains("typeResponse.dts"));
         assert!(js.contains("```typescript"));
-        assert!(js.contains("owner"));
-        assert!(js.contains("repo"));
-        assert!(js.contains("perPage"));
+        // Regression guard: the describe_types round trip must stay inside a
+        // try block, and a rejection must be caught and degrade to no type
+        // body (`typeBody = null`), not propagate into a `describe()`
+        // rejection. String-matching, not behavioral, but it's the difference
+        // between "this test would catch someone deleting the try/catch" and
+        // "it wouldn't" — see the end-to-end test in
+        // `crates/labby/tests/code_mode_runner.rs` for the behavioral proof.
+        assert!(
+            js.contains(
+                "try {\n      var typeResponse = await callTool(\"__lab_internal::describe_types\""
+            ),
+            "the describe_types call must be the first statement inside a try block: {js}"
+        );
+        assert!(
+            js.contains("} catch (e) {\n      typeBody = null;"),
+            "a rejected describe_types call must be caught, not left to propagate: {js}"
+        );
     }
 
     #[test]
@@ -771,13 +780,14 @@ mod tests {
         entry.dts = "type GithubListTagsInput = { owner: string };\n".to_string();
         let js = generate_discovery_js(&[entry], 0.5).expect("js");
 
-        let discovery_slice = js
-            .split("var __codemodeTypes")
-            .next()
-            .expect("discovery array precedes type lookup");
-        assert!(!discovery_slice.contains("\"properties\""));
-        assert!(!discovery_slice.contains("\"required\""));
-        assert!(!js.contains("\"properties\""));
+        // Neither field is serialized onto the discovery entry (`#[serde(skip)]`)
+        // and types are never embedded anywhere now — assert JSON-schema-shaped
+        // key syntax (colon-suffixed, distinguishing it from unrelated JS
+        // identifiers/string literals like `push("required")`) is absent from
+        // the ENTIRE generated preamble, not just a slice of it.
+        assert!(!js.contains("\"properties\":"));
+        assert!(!js.contains("\"required\":"));
+        assert!(!js.contains("GithubListTagsInput"));
     }
 
     #[test]
@@ -790,7 +800,8 @@ mod tests {
         let js = generate_discovery_js(&entries, 0.5).expect("js");
 
         assert!(js.contains("hint: __codemodeNoMatchHint"));
-        assert!(js.contains("codemode.__meta__.upstreams()"));
+        assert!(js.contains("Broaden the query or try synonyms."));
+        assert!(!js.contains("__meta__"));
         assert_eq!(js.matches("hint: __codemodeNoMatchHint").count(), 2);
     }
 
@@ -834,7 +845,7 @@ mod tests {
         // Tool with a slash in the name — previously caused a QuickJS syntax
         // error because the unquoted key was invalid.
         let tool = descriptor("github", "create/issue");
-        let js = proxy(&[tool], &["github".to_string()]).expect("proxy");
+        let js = proxy(&[tool]).expect("proxy");
 
         // PRESENCE: the namespace object must be present
         assert!(
@@ -861,7 +872,7 @@ mod tests {
     #[test]
     fn generate_js_proxy_emits_codemode_global_and_method() {
         let tool = descriptor("radarr", "movie.search");
-        let js = proxy(&[tool], &["radarr".to_string()]).expect("proxy");
+        let js = proxy(&[tool]).expect("proxy");
 
         // PRESENCE: preserves the platform-created codemode object
         assert!(
@@ -881,20 +892,6 @@ mod tests {
             js.contains("radarr::movie.search"),
             "method must route to dotted tool id"
         );
-        // PRESENCE: __meta__.namespaces reflects the namespace list, and
-        // helper metadata is available without replacing discovery metadata.
-        assert!(
-            js.contains("[\"radarr\"]"),
-            "namespaces list must be embedded"
-        );
-        assert!(
-            js.contains("codemode.__meta__.helpers"),
-            "helpers metadata must be embedded"
-        );
-        assert!(
-            js.contains("\"batch\""),
-            "batch helper must be visible in metadata"
-        );
         // PRESENCE: null-safe params guard (no nullish-coalescing dependency)
         assert!(
             js.contains("p == null ? {} : p"),
@@ -909,7 +906,7 @@ mod tests {
         for raw in ["search", "describe", "step", "batch"] {
             let namespace = namespace_segment(raw);
             let tool = descriptor(raw, "lookup");
-            let js = proxy(&[tool], &[raw.to_string()]).expect("proxy");
+            let js = proxy(&[tool]).expect("proxy");
 
             assert!(
                 js.contains(&format!("codemode[\"{namespace}\"]")),
@@ -932,7 +929,7 @@ mod tests {
         // via dot notation `codemode.arcane_mcp.tool(...)`; the callTool id keeps
         // the RAW namespace name so the host routes to the real source.
         let tool = descriptor("arcane-mcp", "arcane");
-        let js = proxy(&[tool], &["arcane-mcp".to_string()]).expect("proxy");
+        let js = proxy(&[tool]).expect("proxy");
 
         assert!(
             js.contains("codemode[\"arcane_mcp\"]"),
@@ -953,8 +950,8 @@ mod tests {
         let dotted = descriptor("demo", "movie.search");
         let underscored = descriptor("demo", "movie_search");
 
-        let err = proxy(&[dotted, underscored], &["demo".to_string()])
-            .expect_err("sanitized collisions must not be last-wins");
+        let err =
+            proxy(&[dotted, underscored]).expect_err("sanitized collisions must not be last-wins");
 
         assert!(err.contains("both sanitize to"));
     }
@@ -964,11 +961,8 @@ mod tests {
         let hyphenated = descriptor("foo-bar", "ping");
         let dotted = descriptor("foo.bar", "ping");
 
-        let err = proxy(
-            &[hyphenated, dotted],
-            &["foo-bar".to_string(), "foo.bar".to_string()],
-        )
-        .expect_err("final proxy collisions must not generate duplicate keys");
+        let err = proxy(&[hyphenated, dotted])
+            .expect_err("final proxy collisions must not generate duplicate keys");
 
         assert!(err.contains("both sanitize to"));
         assert!(err.contains("foo_bar"));

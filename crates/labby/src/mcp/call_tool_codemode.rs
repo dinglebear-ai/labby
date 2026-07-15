@@ -78,8 +78,16 @@ the same callTool, named from the live catalog). Snippets are discoverable \
 through `codemode.search` and `codemode.describe`; run them with \
 `codemode.run(\"<snippet>\", input)`.
 
-`Promise.all([...])` dispatches `callTool` requests in parallel — batch independent \
-reads instead of awaiting serially.
+`codemode.batch(jobs)` runs independent calls concurrently and never rejects: \
+pass an array of thunks (`() => codemode.x.y(...)`) or already-started calls, and \
+it resolves to `{ ok: [{ i, value }], failed: [{ i, error }], all_ok }` once \
+every job has settled. Prefer it over `Promise.all([...])` for fan-out — \
+`Promise.all` rejects on the first failure and discards every other in-flight \
+result; `codemode.batch` never does.
+
+`codemode.step(name, fn)` wraps side-effectful or nondeterministic work (e.g. \
+anything not already a `callTool`/`codemode.<upstream>.<tool>` call) so it runs \
+once and replays its recorded result if the run resumes, instead of re-running it.
 
 ```ts
 // codemode.<upstream>.<tool>() helpers are auto-generated from the live catalog.
