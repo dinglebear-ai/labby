@@ -4,10 +4,10 @@ Icon="server"
 Tag="server"
 ---
 <?PHP
-/* Settings/status page for the Labby gateway plugin. Labby ships its own
- * full admin web UI (embedded in the release binary), and this page embeds
- * that admin surface when the gateway is browser-reachable so operators can
- * manage the gateway directly from Settings > Labby. Contrast with
+/* Settings/status page for the Labby gateway plugin. This page intentionally
+ * uses native classic Unraid controls rather than embedding labby's separate
+ * admin web UI, so operators can manage the gateway directly from
+ * Settings > Labby without an iframe. Contrast with
  * ~/workspace/incus-unraid's
  * IncusSettings.page, which builds a full GraphQL/Vue settings app because
  * incusd has no web UI of its own; labby doesn't have that problem.
@@ -118,6 +118,75 @@ function labby_redact_ts_authkey($content) {
     return preg_replace('/^(INCUS_TS_AUTHKEY=)"[^"]*"(.*)$/m', '$1""$2', $content);
 }
 
+function labby_cli_env($cfg) {
+    $dir = rtrim($cfg['LABBY_DIR'], '/');
+    return [
+        'HOME' => $dir,
+        'XDG_CACHE_HOME' => $dir . '/.cache',
+        'XDG_CONFIG_HOME' => $dir . '/.config',
+        'XDG_DATA_HOME' => $dir . '/.local/share',
+        'LABBY_MCP_HTTP_HOST' => $cfg['HTTP_HOST'],
+        'LABBY_MCP_HTTP_PORT' => $cfg['HTTP_PORT'],
+    ];
+}
+
+function labby_run_cli($cfg, $args, &$exitCode) {
+    $lines = [];
+    $parts = [];
+    foreach (labby_cli_env($cfg) as $key => $value) {
+        $parts[] = $key . '=' . escapeshellarg($value);
+    }
+    $parts[] = escapeshellarg('/usr/local/emhttp/plugins/labby/bin/labby');
+    $parts[] = '--json';
+    foreach ($args as $arg) {
+        $parts[] = escapeshellarg($arg);
+    }
+    exec(implode(' ', $parts) . ' 2>&1', $lines, $exitCode);
+    return implode("\n", $lines);
+}
+
+function labby_gateway_rows($cfg, &$error) {
+    $exitCode = 0;
+    $output = labby_run_cli($cfg, ['gateway', 'mcp', 'list'], $exitCode);
+    if ($exitCode !== 0) {
+        $error = $output === '' ? 'gateway mcp list failed without output' : $output;
+        return [];
+    }
+
+    $decoded = json_decode($output, true);
+    if (!is_array($decoded)) {
+        $error = 'gateway mcp list did not return a JSON array: ' . $output;
+        return [];
+    }
+
+    return $decoded;
+}
+
+function labby_upstream_status_class($row) {
+    if (empty($row['enabled'])) {
+        return 'orange-text';
+    }
+    return !empty($row['connected']) ? 'green-text' : 'red-text';
+}
+
+function labby_upstream_status_text($row) {
+    if (empty($row['enabled'])) {
+        return 'Disabled';
+    }
+    return !empty($row['connected']) ? 'Connected' : 'Disconnected';
+}
+
+function labby_count_summary($row) {
+    $tools = (int) ($row['exposed_tool_count'] ?? 0);
+    $resources = (int) ($row['exposed_resource_count'] ?? 0);
+    $prompts = (int) ($row['exposed_prompt_count'] ?? 0);
+    return "$tools tools / $resources resources / $prompts prompts";
+}
+
+function labby_validate_upstream_name($name) {
+    return preg_match('/^[A-Za-z0-9._-]{1,128}$/', $name);
+}
+
 function labby_is_ipv4_cidr($value) {
     if (!preg_match('/^([0-9]{1,3}\.){3}[0-9]{1,3}\/[0-9]{1,2}$/', $value)) {
         return false;
@@ -143,6 +212,7 @@ function labby_is_array_backed_path($value) {
 }
 
 $settingsError = null;
+$gatewayNotice = null;
 
 if (isset($_POST['labby_settings_save'])) {
     $newCfg = $cfg;
@@ -263,21 +333,52 @@ if (isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 
     $settingsError = "labby $requestedAction did not complete as expected:\n" . $actionOutput;
 }
 
+if (isset($_POST['labby_gateway_action'])) {
+    $gatewayAction = labby_post_string('labby_gateway_action');
+    if ($gatewayAction !== 'reload') {
+        $settingsError = 'Invalid gateway action.';
+    } else {
+        $gatewayOutput = labby_run_cli($cfg, ['gateway', 'reload'], $gatewayExitCode);
+        if ($gatewayExitCode === 0) {
+            $gatewayNotice = "Gateway reload completed.\n" . $gatewayOutput;
+        } else {
+            $settingsError = "gateway reload failed:\n" . $gatewayOutput;
+        }
+    }
+}
+
+if (isset($_POST['labby_mcp_action'])) {
+    $mcpAction = labby_post_string('labby_mcp_action');
+    $upstreamName = labby_post_string('upstream_name');
+    if (!in_array($mcpAction, ['enable', 'disable'], true)) {
+        $settingsError = 'Invalid MCP action.';
+    } elseif (!labby_validate_upstream_name($upstreamName)) {
+        $settingsError = 'Invalid upstream name.';
+    } else {
+        $gatewayOutput = labby_run_cli($cfg, ['gateway', 'mcp', $mcpAction, $upstreamName], $gatewayExitCode);
+        if ($gatewayExitCode === 0) {
+            $gatewayNotice = "Gateway MCP server $upstreamName $mcpAction completed.\n" . $gatewayOutput;
+        } else {
+            $settingsError = "gateway mcp $mcpAction $upstreamName failed:\n" . $gatewayOutput;
+        }
+    }
+}
+
 $status = trim((string) shell_exec('timeout 10 /etc/rc.d/rc.labby status 2>&1'));
 if ($status === '') {
     $status = 'labby: status unavailable (rc.labby status timed out or produced no output)';
 }
 $running = strpos($status, 'RUNNING') !== false;
 $healthy = $running && strpos($status, 'not ready') === false && strpos($status, 'ERROR') === false;
-$port = $cfg['HTTP_PORT'];
 $host = $cfg['HTTP_HOST'];
-$lanReachable = $host !== '127.0.0.1';
-$serverHost = $_SERVER['SERVER_ADDR'] ?? $_SERVER['HTTP_HOST'] ?? '127.0.0.1';
-$serverHost = preg_replace('/:\d+$/', '', $serverHost);
-$gatewayUrl = 'http://' . $serverHost . ':' . $port . '/';
+$gatewayRowsError = null;
+$gatewayRows = $running ? labby_gateway_rows($cfg, $gatewayRowsError) : [];
 ?>
 <?php if ($settingsError !== null): ?>
 <div class="notice"><span class="red-text"><?= nl2br(htmlspecialchars($settingsError, ENT_QUOTES)) ?></span></div>
+<?php endif; ?>
+<?php if ($gatewayNotice !== null): ?>
+<div class="notice"><span class="green-text"><?= nl2br(htmlspecialchars($gatewayNotice, ENT_QUOTES)) ?></span></div>
 <?php endif; ?>
 
 _(Status)_:
@@ -357,16 +458,66 @@ _(HTTP port)_:
 <input type="submit" value="<?= $running ? '_(Stop Labby)_' : '_(Start Labby)_' ?>">
 </form>
 
-<?php if ($running && $lanReachable): ?>
-_(Gateway admin)_:
-: <span>_(Manage the gateway below.)_ <a href="<?= htmlspecialchars($gatewayUrl, ENT_QUOTES) ?>" target="_blank" rel="noopener">_(Open in new tab)_ &rarr;</a></span>
+_(Gateway controls)_:
+: <form method="post" style="display:inline">
+  <input type="hidden" name="labby_gateway_action" value="reload">
+  <input type="submit" value="_(Reload gateway)_">
+  </form>
+<blockquote class="inline_help">_(Native Unraid controls for the running gateway. Reload reconciles the gateway config and refreshes upstream discovery without embedding the separate labby web UI.)_</blockquote>
 
-<iframe
-  title="Labby Gateway Admin"
-  src="<?= htmlspecialchars($gatewayUrl, ENT_QUOTES) ?>"
-  style="width:100%;min-height:760px;border:1px solid var(--border-color, #d8d8d8);border-radius:4px;background:#07131c;"
-  referrerpolicy="same-origin"
-></iframe>
-<?php elseif ($running): ?>
-<p><span class="orange-text">_(labby is bound to 127.0.0.1 — loopback only — so it isn't reachable from your browser at this address. Change HTTP host above to make it LAN-reachable.)_</span></p>
+<?php if (!$running): ?>
+<p><span class="orange-text">_(Start Labby to see live upstream MCP runtime state.)_</span></p>
+<?php elseif ($gatewayRowsError !== null): ?>
+<p><span class="red-text"><?= nl2br(htmlspecialchars($gatewayRowsError, ENT_QUOTES)) ?></span></p>
+<?php elseif (empty($gatewayRows)): ?>
+<p><span class="orange-text">_(No upstream MCP servers are configured.)_</span></p>
+<?php else: ?>
+<table>
+<thead>
+<tr>
+  <th>_(Server)_</th>
+  <th>_(Status)_</th>
+  <th>_(Transport)_</th>
+  <th>_(Capabilities)_</th>
+  <th>_(Runtime)_</th>
+  <th>_(Action)_</th>
+</tr>
+</thead>
+<tbody>
+<?php foreach ($gatewayRows as $row): ?>
+<?php
+    $name = (string) ($row['name'] ?? '');
+    $enabled = !empty($row['enabled']);
+    $transport = (string) ($row['transport'] ?? 'unknown');
+    $target = (string) ($row['target'] ?? '');
+    $pid = $row['pid'] ?? null;
+    $stale = (int) ($row['likely_stale_count'] ?? 0);
+?>
+<tr>
+  <td><?= htmlspecialchars($name, ENT_QUOTES) ?></td>
+  <td><span class="<?= labby_upstream_status_class($row) ?>"><?= htmlspecialchars(labby_upstream_status_text($row), ENT_QUOTES) ?></span></td>
+  <td><?= htmlspecialchars($transport . ($target !== '' ? " — $target" : ''), ENT_QUOTES) ?></td>
+  <td><?= htmlspecialchars(labby_count_summary($row), ENT_QUOTES) ?></td>
+  <td><?= $pid === null ? '_(No process)_' : 'PID ' . htmlspecialchars((string) $pid, ENT_QUOTES) ?><?= $stale > 0 ? ' / ' . htmlspecialchars((string) $stale, ENT_QUOTES) . ' _(stale)_' : '' ?></td>
+  <td>
+    <?php if ($name !== ''): ?>
+    <?php if ($enabled): ?>
+    <form method="post" style="display:inline">
+      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+      <input type="hidden" name="labby_mcp_action" value="disable">
+      <input type="submit" value="_(Disable)_">
+    </form>
+    <?php else: ?>
+    <form method="post" style="display:inline">
+      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+      <input type="hidden" name="labby_mcp_action" value="enable">
+      <input type="submit" value="_(Enable)_">
+    </form>
+    <?php endif; ?>
+    <?php endif; ?>
+  </td>
+</tr>
+<?php endforeach; ?>
+</tbody>
+</table>
 <?php endif; ?>

@@ -461,10 +461,15 @@ CFG
     assert_file_contains "$tmp/labby.cfg.bak" 'INCUS_TS_AUTHKEY=""'
 }
 
-test_page_embeds_gateway_admin_ui() {
-    assert_file_contains "$page_file" '<iframe'
-    assert_file_contains "$page_file" 'title="Labby Gateway Admin"'
-    assert_file_contains "$page_file" 'Manage the gateway below'
+test_page_exposes_native_gateway_controls() {
+    assert_file_contains "$page_file" 'function labby_gateway_rows'
+    assert_file_contains "$page_file" '_(Gateway controls)_:'
+    assert_file_contains "$page_file" 'name="labby_gateway_action" value="reload"'
+    assert_file_contains "$page_file" 'name="labby_mcp_action" value="enable"'
+    assert_file_contains "$page_file" 'name="labby_mcp_action" value="disable"'
+    assert_file_not_contains "$page_file" '<iframe'
+    assert_file_not_contains "$page_file" 'Labby Gateway Admin'
+    assert_file_not_contains "$page_file" 'Manage the gateway below'
     assert_file_not_contains "$page_file" 'thin settings/status shell that links out'
     assert_file_not_contains "$page_file" 'links out to labby'
 }
@@ -484,6 +489,6 @@ test_managed_bridge_validates_full_posture
 test_labby_dir_validator_rejects_non_array_paths
 test_profile_is_rendered_in_one_edit
 test_tailscale_key_redaction_helpers
-test_page_embeds_gateway_admin_ui
+test_page_exposes_native_gateway_controls
 
 echo "unraid runtime behavior tests OK"

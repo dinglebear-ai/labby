@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.3">
+  <!ENTITY version      "1.3.4">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -41,7 +41,7 @@
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "5bd58428c9b019cba193ed90efdac0c8">
-  <!ENTITY pageMD5      "8b870b429657a8fa20baf1d224682b5f">
+  <!ENTITY pageMD5      "cc5a1ab534b1ccd6c1f8f00da6e81a1c">
   <!ENTITY rcMD5        "fa4de40cbcbde13aad9e33dca5a3a2a3">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
   <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">
@@ -56,6 +56,12 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.4
+- Replaces the Settings > Labby iframe embed with native classic Unraid
+  gateway controls. The page now renders a native reload action plus an
+  upstream MCP runtime table with enable/disable controls; no embedded
+  admin-web iframe is used.
+
 ###1.3.3
 - Embeds the Labby gateway admin UI directly in Settings > Labby when the
   gateway is browser-reachable, while keeping a new-tab link as a fallback.
@@ -208,8 +214,8 @@
   (v1.3.0) natively via rc.d — no Docker, no systemd (Unraid doesn't run
   one). State persists at /mnt/user/appdata/labby on the array; config at
   /boot/config/plugins/labby/labby.cfg on flash, re-applied on every array
-  start. The Settings page shows rc.labby's live status and links out to
-  labby's own embedded admin UI rather than re-implementing a dashboard.
+  start. The Settings page shows rc.labby's live status and native gateway
+  controls.
 </CHANGES>
 
 <!-- labby release binary, cached on flash so plugin reinstall/reboot replay

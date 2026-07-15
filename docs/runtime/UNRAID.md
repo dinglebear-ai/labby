@@ -119,7 +119,7 @@ unraid/
   labby.plg                                    plugin manifest (installed via Unraid's Plugins tab)
   source/usr/local/emhttp/plugins/labby/
     labby.cfg                                  default config template (flash-persisted copy is the source of truth once installed)
-    Labby.page                                  status + settings form (SERVICE/LABBY_DIR/HTTP_HOST/HTTP_PORT/RUNTIME_MODE/INCUS_IMAGE_SHA256/...) — embeds labby's own admin UI when the gateway is browser-reachable
+    Labby.page                                  status + settings form (SERVICE/LABBY_DIR/HTTP_HOST/HTTP_PORT/RUNTIME_MODE/INCUS_IMAGE_SHA256/...) plus native gateway reload/upstream controls
     scripts/rc.labby                            start/stop/restart/status, branches on RUNTIME_MODE between the native rc.d path and the Incus container path
     scripts/labby-preflight.sh                   read-only glibc/binary sanity check for native mode; rc.labby refuses to start if this fails
     scripts/labby-incus-env.sh                   points the Incus CLI at incus-unraid's private-prefixed daemon — incus mode only
@@ -156,6 +156,9 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
 HTTP_PORT, RUNTIME_MODE, and the Incus-only image/network/Tailscale fields
 — everything in `labby.cfg`), built to look and behave like a
 first-party classic Unraid settings page rather than a custom-styled form.
+Gateway management is also native to the page: it exposes a reload action and
+a live upstream MCP runtime table with enable/disable controls instead of
+embedding labby's separate admin web UI in an iframe.
 The markup conventions were reverse-engineered from a live Unraid 7.3.x
 install's own pages (`/usr/local/emhttp/webGui/DateTime.page`,
 `dynamix.my.servers/Connect.page`) and cross-checked against
