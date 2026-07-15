@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.0f">
+  <!ENTITY version      "1.3.2">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -40,12 +40,15 @@
   <!ENTITY tarball      "lab-x86_64-unknown-linux-gnu.tar.gz">
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
-  <!ENTITY cfgMD5       "1bb151dd5b7b091e9aed476421281769">
-  <!ENTITY pageMD5      "9b7137d5368309fb4700409481486585">
-  <!ENTITY rcMD5        "35e83bc87809d89985effffe55303db0">
+  <!ENTITY cfgMD5       "ce501d2aa15557a6e9e00408bea22b08">
+  <!ENTITY pageMD5      "875f22545b08fcdf70b3c314b4225cc8">
+  <!ENTITY rcMD5        "34ee0c711345d005d47a2b65a513a496">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
   <!ENTITY mountedMD5   "c564b0387a4f115ad7c4721445fc9549">
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
+  <!ENTITY incusProfileMD5 "d81420479adfa138a0ba9568da0fa6a0">
+  <!ENTITY incusEnvMD5     "3ca02c54bbb520102ca55d800ec9dc9e">
+  <!ENTITY incusInitMD5    "34486e05ab91029587163f4bf448bf26">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
@@ -53,7 +56,21 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
-###1.3.0f
+###1.3.2
+- Adds RUNTIME_MODE="incus": run the gateway inside an Incus system
+  container (via ~/workspace/incus-unraid's private Incus daemon) instead
+  of as a bare rc.d process, so stdio MCP servers actually work — Unraid's
+  bare host ships neither npx/Node nor uv/Python, which the previous
+  native-only mode had no way around. Requires the incus-unraid plugin
+  already installed. RUNTIME_MODE="native" remains the default; existing
+  installs are unaffected until this is explicitly changed in Settings.
+  The Incus image version and SHA256 pin are configured independently from
+  the plugin package version; cached image bytes are verified before import.
+  See docs/runtime/UNRAID.md for the full architecture and known gaps
+  (the referenced labby-incus-*.tar.xz release asset publishing has a
+  known CI gap — see the tracked bead referenced there).
+
+###1.3.1
 - Labby.page's start/stop action handler now checks rc.labby's actual exit
   code (via PHP exec()'s $return_var) instead of re-deriving success from
   `rc.labby status`. status only reports RUNNING when the pid is both alive
@@ -192,7 +209,7 @@
 <MD5>&tarballMD5;</MD5>
 </FILE>
 
-<!-- companion scripts/page/config — source of truth is this repo's
+<!-- companion scripts/page/config/incus files — source of truth is this repo's
      unraid/source/ tree. scripts/ci/unraid-plugin-checksums.sh keeps the
      MD5s below in sync with those files (checked on every push/PR via
      ci.yml's always-on job, repairable with its fix flag); unrelated to
@@ -227,13 +244,28 @@
 <MD5>&unmountingMD5;</MD5>
 </FILE>
 
+<FILE Name="&emhttp;/incus/labby-gateway-profile.yaml">
+<URL>&srcURL;/incus/labby-gateway-profile.yaml</URL>
+<MD5>&incusProfileMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/scripts/labby-incus-env.sh">
+<URL>&srcURL;/scripts/labby-incus-env.sh</URL>
+<MD5>&incusEnvMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/scripts/labby-incus-init.sh">
+<URL>&srcURL;/scripts/labby-incus-init.sh</URL>
+<MD5>&incusInitMD5;</MD5>
+</FILE>
+
 <!-- extract the binary, wire up permissions + rc.d symlink, seed default
      config only if absent (never clobber user edits) -->
 <FILE Run="/bin/bash">
 <INLINE>
 mkdir -p "&emhttp;/bin"
 tar -xzf "&plugin;/&tarball;" -C "&emhttp;/bin" labby
-chmod +x "&emhttp;/bin/labby" "&emhttp;/scripts/rc.labby" "&emhttp;/scripts/labby-preflight.sh" "&emhttp;/event/disks_mounted" "&emhttp;/event/unmounting_disks"
+chmod +x "&emhttp;/bin/labby" "&emhttp;/scripts/rc.labby" "&emhttp;/scripts/labby-preflight.sh" "&emhttp;/scripts/labby-incus-env.sh" "&emhttp;/scripts/labby-incus-init.sh" "&emhttp;/event/disks_mounted" "&emhttp;/event/unmounting_disks"
 
 if [ ! -f "&plugin;/labby.cfg" ]; then
   mkdir -p "&plugin;"
