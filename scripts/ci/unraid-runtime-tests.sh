@@ -465,6 +465,8 @@ test_page_exposes_native_gateway_controls() {
     assert_file_contains "$page_file" 'function labby_gateway_rows'
     assert_file_contains "$page_file" '_(Gateway controls)_:'
     assert_file_contains "$page_file" 'name="labby_gateway_action" value="reload"'
+    assert_file_contains "$page_file" 'name="labby_gateway_add" value="1"'
+    assert_file_contains "$page_file" 'name="labby_gateway_server_action" value="remove"'
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="enable"'
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="disable"'
     assert_file_not_contains "$page_file" '<iframe'

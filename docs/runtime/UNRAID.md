@@ -156,9 +156,10 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
 HTTP_PORT, RUNTIME_MODE, and the Incus-only image/network/Tailscale fields
 — everything in `labby.cfg`), built to look and behave like a
 first-party classic Unraid settings page rather than a custom-styled form.
-Gateway management is also native to the page: it exposes a reload action and
-a live upstream MCP runtime table with enable/disable controls instead of
-embedding labby's separate admin web UI in an iframe.
+Gateway management is also native to the page: it exposes a reload action,
+an add-HTTP-upstream form, and a live upstream MCP runtime table with
+enable/disable/remove controls instead of embedding labby's separate admin web
+UI in an iframe.
 The markup conventions were reverse-engineered from a live Unraid 7.3.x
 install's own pages (`/usr/local/emhttp/webGui/DateTime.page`,
 `dynamix.my.servers/Connect.page`) and cross-checked against

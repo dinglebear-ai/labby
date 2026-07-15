@@ -187,6 +187,18 @@ function labby_validate_upstream_name($name) {
     return preg_match('/^[A-Za-z0-9._-]{1,128}$/', $name);
 }
 
+function labby_validate_http_url($url) {
+    $parts = parse_url($url);
+    return is_array($parts)
+        && isset($parts['scheme'], $parts['host'])
+        && in_array($parts['scheme'], ['http', 'https'], true)
+        && filter_var($url, FILTER_VALIDATE_URL) !== false;
+}
+
+function labby_validate_env_name($value) {
+    return $value === '' || preg_match('/^[A-Z][A-Z0-9_]{0,127}$/', $value);
+}
+
 function labby_is_ipv4_cidr($value) {
     if (!preg_match('/^([0-9]{1,3}\.){3}[0-9]{1,3}\/[0-9]{1,2}$/', $value)) {
         return false;
@@ -347,6 +359,49 @@ if (isset($_POST['labby_gateway_action'])) {
     }
 }
 
+if (isset($_POST['labby_gateway_add'])) {
+    $newUpstreamName = labby_post_string('new_upstream_name');
+    $newUpstreamUrl = labby_post_string('new_upstream_url');
+    $newBearerTokenEnv = labby_post_string('new_bearer_token_env');
+
+    if (!labby_validate_upstream_name($newUpstreamName)) {
+        $settingsError = 'Invalid upstream name.';
+    } elseif (!labby_validate_http_url($newUpstreamUrl)) {
+        $settingsError = 'MCP URL must be a valid http:// or https:// URL.';
+    } elseif (!labby_validate_env_name($newBearerTokenEnv)) {
+        $settingsError = 'Bearer token env must be an uppercase environment variable name, or blank.';
+    } else {
+        $args = ['gateway', 'add', '--name', $newUpstreamName, '--url', $newUpstreamUrl];
+        if ($newBearerTokenEnv !== '') {
+            $args[] = '--bearer-token-env';
+            $args[] = $newBearerTokenEnv;
+        }
+        $gatewayOutput = labby_run_cli($cfg, $args, $gatewayExitCode);
+        if ($gatewayExitCode === 0) {
+            $gatewayNotice = "Gateway MCP server $newUpstreamName added.\n" . $gatewayOutput;
+        } else {
+            $settingsError = "gateway add $newUpstreamName failed:\n" . $gatewayOutput;
+        }
+    }
+}
+
+if (isset($_POST['labby_gateway_server_action'])) {
+    $serverAction = labby_post_string('labby_gateway_server_action');
+    $upstreamName = labby_post_string('upstream_name');
+    if ($serverAction !== 'remove') {
+        $settingsError = 'Invalid gateway server action.';
+    } elseif (!labby_validate_upstream_name($upstreamName)) {
+        $settingsError = 'Invalid upstream name.';
+    } else {
+        $gatewayOutput = labby_run_cli($cfg, ['gateway', 'remove', $upstreamName], $gatewayExitCode);
+        if ($gatewayExitCode === 0) {
+            $gatewayNotice = "Gateway MCP server $upstreamName removed.\n" . $gatewayOutput;
+        } else {
+            $settingsError = "gateway remove $upstreamName failed:\n" . $gatewayOutput;
+        }
+    }
+}
+
 if (isset($_POST['labby_mcp_action'])) {
     $mcpAction = labby_post_string('labby_mcp_action');
     $upstreamName = labby_post_string('upstream_name');
@@ -465,6 +520,23 @@ _(Gateway controls)_:
   </form>
 <blockquote class="inline_help">_(Native Unraid controls for the running gateway. Reload reconciles the gateway config and refreshes upstream discovery without embedding the separate labby web UI.)_</blockquote>
 
+<form markdown="1" method="post">
+<input type="hidden" name="labby_gateway_add" value="1">
+
+_(Add HTTP MCP server)_:
+: <input type="text" name="new_upstream_name" value="" size="24" pattern="[A-Za-z0-9._-]{1,128}" placeholder="server-name" title="Letters, numbers, dot, underscore, and hyphen">
+
+_(MCP URL)_:
+: <input type="url" name="new_upstream_url" value="" size="48" placeholder="https://example.com/mcp">
+
+_(Bearer token env)_:
+: <input type="text" name="new_bearer_token_env" value="" size="28" pattern="([A-Z][A-Z0-9_]{0,127})?" placeholder="OPTIONAL_TOKEN_ENV">
+<blockquote class="inline_help">_(For HTTP/S MCP servers. The env name points at a token already available to labby; the secret value is never entered or stored on this page.)_</blockquote>
+
+&nbsp;
+: <input type="submit" value="_(Add upstream)_">
+</form>
+
 <?php if (!$running): ?>
 <p><span class="orange-text">_(Start Labby to see live upstream MCP runtime state.)_</span></p>
 <?php elseif ($gatewayRowsError !== null): ?>
@@ -514,6 +586,11 @@ _(Gateway controls)_:
       <input type="submit" value="_(Enable)_">
     </form>
     <?php endif; ?>
+    <form method="post" style="display:inline">
+      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+      <input type="hidden" name="labby_gateway_server_action" value="remove">
+      <input type="submit" value="_(Remove)_">
+    </form>
     <?php endif; ?>
   </td>
 </tr>
