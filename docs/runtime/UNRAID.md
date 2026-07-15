@@ -318,7 +318,7 @@ something feels risky.
   package, but the Incus path still depends on a known release-asset CI gap:
   only `v1.2.0` currently publishes the `labby-incus-*.tar.xz` image asset.
   Newer Incus images require fixing that CI path first, then bumping both
-  `INCUS_IMAGE_VERSION` and `INCUS_IMAGE_SHA256`.
+  `INCUS_IMAGE_VERSION` and `INCUS_IMAGE_SHA256`. Tracked as `lab-26zqj`.
 - `RUNTIME_MODE="incus"` has not yet been exercised across a real Unraid
   reboot or a real incus-unraid uninstall/reinstall cycle. The current
   implementation is designed for array-start/stop and plugin

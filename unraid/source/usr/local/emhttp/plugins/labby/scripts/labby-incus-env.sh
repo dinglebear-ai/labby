@@ -13,6 +13,17 @@ if [ ! -x "${INCUS_PREFIX}/bin/incus" ]; then
     exit 1
 fi
 
-export LD_LIBRARY_PATH="${INCUS_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-export PATH="${INCUS_PREFIX}/bin:${INCUS_PREFIX}/libexec/incus:${PATH}"
+case ":${LD_LIBRARY_PATH:-}:" in
+    *":${INCUS_PREFIX}/lib:"*) ;;
+    *) export LD_LIBRARY_PATH="${INCUS_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
+esac
+
+case ":${PATH}:" in
+    *":${INCUS_PREFIX}/libexec/incus:"*) ;;
+    *) export PATH="${INCUS_PREFIX}/libexec/incus:${PATH}" ;;
+esac
+case ":${PATH}:" in
+    *":${INCUS_PREFIX}/bin:"*) ;;
+    *) export PATH="${INCUS_PREFIX}/bin:${PATH}" ;;
+esac
 export INCUS_DIR="/mnt/user/appdata/incus"

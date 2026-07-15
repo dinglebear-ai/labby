@@ -4,7 +4,7 @@
 
 **Goal:** Make `RUNTIME_MODE="incus"` a selectable mode in the `labby` Unraid plugin that runs the gateway inside an Incus system container (using labby's own pre-baked `labby-incus` image) instead of as a bare rc.d process on the Unraid host — so stdio MCP servers actually work (Unraid ships neither `npx`/Node nor `uv`/Python), package caches don't get corrupted by Docker's overlay churn, and a gateway crash can't take the whole NAS down with it.
 
-**Architecture:** The existing native `.plg` (rc.d process, `unraid/labby.plg`) stays as `RUNTIME_MODE="native"`, the default, zero-dependency path. A new `RUNTIME_MODE="incus"` path depends on `~/workspace/incus-unraid` already being installed (it provides the private-prefixed Incus daemon on Unraid — this plan does not bundle a second copy). A new idempotent converger script, `labby-incus-init.sh`, run from the same `event/disks_mounted` hook, provisions a dedicated storage pool and NAT'd bridge (incus-unraid's own `default` profile has **no** network device — confirmed by reading its `incus-init.sh` preseed — and its `agentbr0` bridge is deliberately LAN-banned for agent jails, wrong security posture for a gateway that needs to be reachable), imports the pre-built `labby-incus` release image, launches the container, and runs labby's own already-documented `labby setup --provision --yes` inside it. `rc.labby` and the event hooks branch on `RUNTIME_MODE` to either manage the native process or delegate to `incus start/stop` + `incus exec`.
+**Architecture:** The existing native `.plg` (rc.d process, `unraid/labby.plg`) stays as `RUNTIME_MODE="native"`, the default, zero-dependency path. A new `RUNTIME_MODE="incus"` path depends on `~/workspace/incus-unraid` already being installed (it provides the private-prefixed Incus daemon on Unraid — this plan does not bundle a second copy). A new idempotent converger script, `labby-incus-init.sh`, run from the same `event/disks_mounted` hook, provisions a dedicated storage pool and a dedicated configurable Incus bridge (`INCUS_BRIDGE_NAME` / `INCUS_BRIDGE_SUBNET`) and applies `INCUS_EGRESS_POLICY`, defaulting to `block-lan`; `allow-lan` is an explicit operator opt-in. incus-unraid's own `default` profile has **no** network device — confirmed by reading its `incus-init.sh` preseed — and its `agentbr0` bridge is deliberately LAN-banned for agent jails, wrong security posture for a gateway that needs controlled gateway reachability. The converger imports the pre-built `labby-incus` release image, launches the container, and runs labby's own already-documented `labby setup --provision --yes` inside it. `rc.labby` and the event hooks branch on `RUNTIME_MODE` to either manage the native process or delegate to `incus start/stop` + `incus exec`.
 
 **Tech Stack:** POSIX/bash shell scripts (Unraid's userland is BusyBox/bash, no Python), the `incus` CLI (via incus-unraid's private prefix `/usr/local/incus`), classic Unraid `.page` PHP, XML `.plg` manifest.
 
@@ -27,12 +27,12 @@ The Lavra engineering review found several plan-level regressions against the cu
 - **Fail closed on Incus stop/restart.** `stop_incus` must not use `|| true` for the final outcome. It must issue a bounded stop, poll final state, return non-zero if the container is still running, and `restart` must abort if stop fails.
 - **Keep large artifacts off flash and validate cached images.** The Incus image cache must live under array-backed appdata, not `/boot/config/plugins/labby`. Cache filenames must include `INCUS_IMAGE_VERSION`, existing cached files must be verified before import, and corrupt/mismatched caches must be redownloaded or fail closed.
 - **Pin the image hash, not just the version.** Add `INCUS_IMAGE_SHA256` (or an equivalent `.plg` entity) tied to the configured `INCUS_IMAGE_VERSION`; verify against the pinned hash before `incus image import`. The release `.sha256` URL may be used only as an update aid, not as the trust root for runtime installs.
-- **Treat Tailscale auth as a one-shot secret.** `INCUS_TS_AUTHKEY` must be write-only in the settings UI (`type=password`, no value echo), written with mode `0600` for consumption, removed from the container after use, cleared or redacted from `labby.cfg` after successful join, and startup must fail visibly if a supplied key cannot join.
+- **Treat Tailscale auth as a one-shot secret.** `INCUS_TS_AUTHKEY` must be write-only in the settings UI (`type=password`, no value echo), written with mode `0600` for consumption, removed from the container after use, cleared or redacted from `labby.cfg` after attempted use, and startup must fail visibly if a supplied key cannot join.
 - **Use strict Incus instance-name validation.** Validate `INCUS_CONTAINER_NAME` as a DNS-label-style name, for example `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`, and pass user-controlled instance names after `--` wherever the Incus CLI supports it.
 - **Do not delete unmanaged host interfaces.** If `labbybr0` exists but is not an Incus-managed bridge, fail with a clear error instead of deleting it. Subnet/bridge choices must be configurable or validated against collisions before create.
 - **Keep LAN reachability intentional.** Because stdio MCP servers execute community npm/uv code, broad LAN egress from the Incus bridge must be an explicit operator choice or constrained by firewall/ACL defaults. The implementation must document and verify the chosen default.
 - **Avoid warm-start reprovisioning.** If the container is already running and `/ready` succeeds, skip `labby setup --provision --yes`. If provisioning is needed, gate it with a sentinel covering image version, labby binary version, and config/provisioning schema.
-- **Fix stale plan/version assumptions.** Task 4 is a verification-only no-op, not a modifying task. Task 6 must read the current manifest version and bump to the next package version (currently `1.3.0c` -> `1.3.0d`), preserving the existing changelog entry.
+- **Fix stale plan/version assumptions.** Task 4 is a verification-only no-op, not a modifying task. Task 6 must read the current manifest version and bump to the next package version, preserving existing changelog entries. This implementation ultimately shipped the package bump as `1.3.2`.
 - **Out of scope for this plan unless already required by the active PR.** Reworking `/auth/session` admin semantics, snapshot-policy parity, rootless runtime profile support, Community Applications packaging, and full Incus image CI repair are follow-up work. The core implementation must still be gated on one known-good pinned image version and hash.
 
 ---
@@ -224,7 +224,7 @@ if ! "$INCUS" storage show "$STORAGE_POOL_NAME" >/dev/null 2>&1; then
     "$INCUS" storage create "$STORAGE_POOL_NAME" dir source="$dir_source"
 fi
 
-# ---------- dedicated bridge (plain NAT, no LAN-ban — the gateway must be reachable) ----------
+# ---------- dedicated bridge and bridge-forwarded egress policy ----------
 if "$INCUS" network show "$BRIDGE_NAME" 2>/dev/null | grep -q '^managed: true'; then
     : # already a properly managed bridge
 else
@@ -372,7 +372,7 @@ RUNTIME_MODE="native"                 # native|incus
 INCUS_CONTAINER_NAME="labby-gateway"  # incus mode only
 INCUS_IMAGE_VERSION="1.2.0"           # incus mode only — a labby release tag that published labby-incus-*.tar.xz
 INCUS_IMAGE_SHA256=""                 # incus mode only — pinned sha256 for labby-incus-${INCUS_IMAGE_VERSION}-x86_64-unknown-linux-gnu.tar.xz
-INCUS_TS_AUTHKEY=""                   # incus mode only — write-only one-shot Tailscale auth key; clear/redact after successful join
+INCUS_TS_AUTHKEY=""                   # incus mode only — write-only one-shot Tailscale auth key; clear/redact after attempted use
 
 # ---- service ----
 SERVICE="disabled"                    # enabled|disabled — gate for array-start autostart
@@ -697,7 +697,7 @@ RUNTIME_MODE="{$cfg['RUNTIME_MODE']}"                 # native|incus
 INCUS_CONTAINER_NAME="{$cfg['INCUS_CONTAINER_NAME']}"  # incus mode only
 INCUS_IMAGE_VERSION="{$cfg['INCUS_IMAGE_VERSION']}"           # incus mode only — a labby release tag that published labby-incus-*.tar.xz
 INCUS_IMAGE_SHA256="{$cfg['INCUS_IMAGE_SHA256']}"       # incus mode only — pinned image sha256 for INCUS_IMAGE_VERSION
-INCUS_TS_AUTHKEY="{$cfg['INCUS_TS_AUTHKEY']}"                   # incus mode only — write-only one-shot Tailscale auth key; clear/redact after successful join
+INCUS_TS_AUTHKEY="{$cfg['INCUS_TS_AUTHKEY']}"                   # incus mode only — write-only one-shot Tailscale auth key; clear/redact after attempted use
 
 # ---- service ----
 SERVICE="{$cfg['SERVICE']}"                    # enabled|disabled — gate for array-start autostart
@@ -971,10 +971,10 @@ chmod +x "&emhttp;/bin/labby" "&emhttp;/scripts/rc.labby" "&emhttp;/scripts/labb
 
 - [ ] **Step 5: Bump version and add a `CHANGES` entry**
 
-Read the current `<!ENTITY version "...">` first. The branch already contains the PR #244 `1.3.0c` entry, so this plan should bump the package version to the next value (currently `1.3.0d`) while preserving the existing `1.3.0c` changelog. Add a new entry at the top of `<CHANGES>` (before the current top entry):
+Read the current `<!ENTITY version "...">` first. Bump the package version to the next appropriate package version while preserving existing changelog entries. This implementation ultimately used `1.3.2`. Add a new entry at the top of `<CHANGES>` (before the current top entry):
 
 ```
-###1.3.0d
+###1.3.2
 - Adds RUNTIME_MODE="incus": run the gateway inside an Incus system
   container (via ~/workspace/incus-unraid's private Incus daemon) instead
   of as a bare rc.d process, so stdio MCP servers actually work — Unraid's
@@ -984,6 +984,10 @@ Read the current `<!ENTITY version "...">` first. The branch already contains th
   installs are unaffected until this is explicitly changed in Settings.
   The Incus image is versioned and SHA256-pinned independently from the
   plugin package version; cached image bytes are verified before import.
+  Imported images and existing containers are checked against the configured
+  pin, first-time array autostart avoids heavy bootstrap work, stop/uninstall
+  removes host bridge egress rules, and runtime-mode switches stop the
+  previous runtime before starting the new one.
   See docs/runtime/UNRAID.md for the full architecture and known gaps
   (the referenced labby-incus-*.tar.xz release asset publishing has a
   known CI gap — see the tracked bead referenced there).
@@ -1003,7 +1007,7 @@ Expected: `--fix` reports the three `PLACEHOLDER` entities corrected to real MD5
 
 ```bash
 git add unraid/labby.plg scripts/ci/unraid-plugin-checksums.sh
-git commit -m "feat(unraid): wire labby-incus files into labby.plg, bump to 1.3.0d"
+git commit -m "feat(unraid): wire labby-incus files into labby.plg"
 ```
 
 ---
@@ -1049,10 +1053,11 @@ deliberately has no network device (confirmed by reading its
 `incus-init.sh` preseed — only its purpose-built, LAN-banned `agentbr0`
 bridge has one, and that ACL is the wrong security posture for a gateway
 that needs to be reachable), so `labby-incus-init.sh` provisions its own
-dedicated `labbybr0` bridge (plain NAT, no LAN-ban) and `labby-dir`
-storage pool, separate from anything incus-unraid manages for its own
-agent jails. It never touches incus-unraid's own pool, bridge, ACL, or
-profile.
+dedicated configurable Incus bridge (`INCUS_BRIDGE_NAME` / `INCUS_BRIDGE_SUBNET`)
+and applies `INCUS_EGRESS_POLICY`, defaulting to `block-lan`; `allow-lan` is an
+explicit operator opt-in. It also provisions the `labby-dir` storage pool,
+separate from anything incus-unraid manages for its own agent jails. It never
+touches incus-unraid's own pool, bridge, ACL, or profile.
 
 Reachability for `incus` mode is via Tailscale running *inside* the
 container (`INCUS_TS_AUTHKEY` as a write-only, one-shot Settings > Labby
@@ -1168,7 +1173,7 @@ scp labby-test-branch.plg tower:/tmp/labby.plg
 ssh tower "/usr/local/sbin/plugin install /tmp/labby.plg 2>&1 | tr '\r' '\n' | grep -v '^$' | grep -v '%\$'"
 ```
 
-Expected: the install log downloads and checksum-verifies all 9 companion files (6 existing + 3 new) plus the binary tarball, ending in `Labby for Unraid 1.3.0d installed.` Adjust the expected package version if Task 6 found a newer current manifest and bumped accordingly.
+Expected: the install log downloads and checksum-verifies all 9 companion files (6 existing + 3 new) plus the binary tarball, ending in `Labby for Unraid 1.3.2 installed.` Adjust the expected package version if Task 6 found a newer current manifest and bumped accordingly.
 
 - [ ] **Step 4: Switch to `RUNTIME_MODE="incus"` and enable the service**
 
@@ -1265,7 +1270,7 @@ bd create --title="labby-incus-*.tar.xz release asset not publishing since v1.2.
 
 **2. Placeholder scan** — the only literal `PLACEHOLDER` text is in Task 6 Step 3, and it is explicitly flagged as intentional (real values come from `--fix` in Step 6, not hand-computed) — this is the same pattern already used successfully for every other checksum entity in this plugin's history, not an unresolved plan gap.
 
-**3. Type/name consistency** — `INCUS_CONTAINER_NAME`, `INCUS_IMAGE_VERSION`, `INCUS_IMAGE_SHA256`, `INCUS_TS_AUTHKEY`, `RUNTIME_MODE` are spelled identically across Task 3 (`labby.cfg` template, `rc.labby`), Task 2 (`labby-incus-init.sh`), and Task 5 (`Labby.page` form field `name=` attributes and PHP `$_POST` keys) — checked field-by-field while writing this plan. `labbybr0`/`labby-dir`/`labby-gateway` (bridge/pool/profile names) are hardcoded identically in Task 2's script and Task 7's docs. `labby-incus-env.sh` and `labby-incus-init.sh` filenames match between Task 1 (creation), Task 3 (sourced by `rc.labby`), and Task 6 (`<FILE>` entries + checksum script).
+**3. Type/name consistency** — `INCUS_CONTAINER_NAME`, `INCUS_IMAGE_VERSION`, `INCUS_IMAGE_SHA256`, `INCUS_TS_AUTHKEY`, `RUNTIME_MODE`, `INCUS_BRIDGE_NAME`, `INCUS_BRIDGE_SUBNET`, and `INCUS_EGRESS_POLICY` are spelled identically across Task 3 (`labby.cfg` template, `rc.labby`), Task 2 (`labby-incus-init.sh`), and Task 5 (`Labby.page` form field `name=` attributes and PHP `$_POST` keys) — checked field-by-field while writing this plan. `labbybr0` is the default bridge name but configurable, while `labby-dir`/`labby-gateway` (pool/profile names) are fixed consistently in Task 2's script and Task 7's docs. `labby-incus-env.sh` and `labby-incus-init.sh` filenames match between Task 1 (creation), Task 3 (sourced by `rc.labby`), and Task 6 (`<FILE>` entries + checksum script).
 
 ---
 

@@ -100,7 +100,11 @@ validate_safe_token() {
 }
 
 validate_sha256() {
-    [[ "$1" =~ ^[A-Fa-f0-9]{64}$ ]]
+    [[ "$1" =~ ^[a-f0-9]{64}$ ]]
+}
+
+validate_version() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
 validate_ipv4_cidr() {
@@ -129,8 +133,8 @@ EOF
 validate_inputs() {
     validate_dns_label "$INCUS_CONTAINER_NAME" \
         || fail "INCUS_CONTAINER_NAME must be a DNS label: ${INCUS_CONTAINER_NAME}"
-    validate_safe_token "$INCUS_IMAGE_VERSION" \
-        || fail "INCUS_IMAGE_VERSION contains unsupported characters: ${INCUS_IMAGE_VERSION}"
+    validate_version "$INCUS_IMAGE_VERSION" \
+        || fail "INCUS_IMAGE_VERSION must be a plain X.Y.Z version number, got: ${INCUS_IMAGE_VERSION}"
     validate_sha256 "$INCUS_IMAGE_SHA256" \
         || fail "INCUS_IMAGE_SHA256 must be the pinned 64-character sha256 for v${INCUS_IMAGE_VERSION}"
     validate_safe_token "$INCUS_BRIDGE_NAME" \
@@ -152,21 +156,11 @@ validate_inputs() {
 
 acquire_lock() {
     local lockfile="/var/run/labby-incus-init.lock"
-    local i=0
 
     exec 200>"$lockfile"
-    flock -n 200 || {
-        log "another labby-incus-init instance is already running"
-        while [ "$i" -lt 120 ]; do
-            if instance_exists && container_ready; then
-                log "concurrent labby-incus-init reached readiness"
-                exit 0
-            fi
-            i=$((i + 1))
-            sleep 1
-        done
-        fail "another labby-incus-init instance is still running and ${INCUS_CONTAINER_NAME} is not ready after 120s"
-    }
+    if ! flock -w 120 200; then
+        fail "another labby-incus-init instance did not finish within 120s"
+    fi
 }
 
 wait_for_incus() {
@@ -476,7 +470,7 @@ redact_ts_authkey_to() {
                 comment = substr($0, RSTART)
             }
             if (comment == "") {
-                comment = "                   # incus mode only - write-only one-shot Tailscale auth key; clear/redact after successful join"
+                comment = "                   # incus mode only - write-only one-shot Tailscale auth key; clear/redact after attempted use"
             }
             print "INCUS_TS_AUTHKEY=\"\"" comment
             cleared = 1
@@ -485,7 +479,7 @@ redact_ts_authkey_to() {
         { print }
         END {
             if (!cleared) {
-                print "INCUS_TS_AUTHKEY=\"\"                   # incus mode only - write-only one-shot Tailscale auth key; clear/redact after successful join"
+                print "INCUS_TS_AUTHKEY=\"\"                   # incus mode only - write-only one-shot Tailscale auth key; clear/redact after attempted use"
             }
         }
     ' "$CFG" > "$dest"
@@ -503,8 +497,8 @@ clear_stored_ts_authkey() {
     [ -f "$CFG" ] || fail "${CFG} disappeared before INCUS_TS_AUTHKEY could be cleared"
     rm -f "$backup_tmp" "$tmp"
 
-    # Backup-first, but redact the one-shot secret in the backup too so a
-    # successful join does not leave the auth key behind in labby.cfg.bak.
+    # Backup-first, but redact the one-shot secret in the backup too so an
+    # attempted use does not leave the auth key behind in labby.cfg.bak.
     if ! redact_ts_authkey_to "$backup_tmp"; then
         rm -f "$backup_tmp" "$tmp"
         fail "failed to prepare redacted backup for ${CFG}"
@@ -523,7 +517,7 @@ clear_stored_ts_authkey() {
         fail "failed to atomically clear INCUS_TS_AUTHKEY from ${CFG}"
     fi
 
-    log "cleared INCUS_TS_AUTHKEY from ${CFG} after successful Tailscale join"
+    log "cleared INCUS_TS_AUTHKEY from ${CFG} after attempted Tailscale use"
 }
 
 consume_tailscale_authkey() {

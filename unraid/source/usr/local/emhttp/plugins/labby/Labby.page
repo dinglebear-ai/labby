@@ -82,12 +82,12 @@ RUNTIME_MODE="{$cfg['RUNTIME_MODE']}"                 # native|incus
 INCUS_CONTAINER_NAME="{$cfg['INCUS_CONTAINER_NAME']}"  # incus mode only
 INCUS_IMAGE_VERSION="{$cfg['INCUS_IMAGE_VERSION']}"           # incus mode only — a labby release tag that published labby-incus-*.tar.xz
 INCUS_IMAGE_SHA256="{$cfg['INCUS_IMAGE_SHA256']}"                 # incus mode only — pinned sha256 for labby-incus-\${INCUS_IMAGE_VERSION}-x86_64-unknown-linux-gnu.tar.xz
-INCUS_TS_AUTHKEY="{$cfg['INCUS_TS_AUTHKEY']}"                   # incus mode only — write-only one-shot Tailscale auth key; clear/redact after successful join
+INCUS_TS_AUTHKEY="{$cfg['INCUS_TS_AUTHKEY']}"                   # incus mode only — write-only one-shot Tailscale auth key; clear/redact after attempted use
 
 # ---- incus network ----
 INCUS_BRIDGE_NAME="{$cfg['INCUS_BRIDGE_NAME']}"          # incus mode only — dedicated Incus-managed bridge
 INCUS_BRIDGE_SUBNET="{$cfg['INCUS_BRIDGE_SUBNET']}"   # incus mode only — bridge IPv4 CIDR, checked for host route collisions
-INCUS_EGRESS_POLICY="{$cfg['INCUS_EGRESS_POLICY']}"       # incus mode only — block-lan|allow-lan
+INCUS_EGRESS_POLICY="{$cfg['INCUS_EGRESS_POLICY']}"       # incus mode only — bridge-forwarded private egress: block-lan|allow-lan
 
 # ---- service ----
 SERVICE="{$cfg['SERVICE']}"                    # enabled|disabled — gate for array-start autostart
@@ -111,6 +111,10 @@ CFG;
 function labby_post_string($key) {
     $value = $_POST[$key] ?? '';
     return is_string($value) ? $value : '';
+}
+
+function labby_redact_ts_authkey($content) {
+    return preg_replace('/^(INCUS_TS_AUTHKEY=)"[^"]*"(.*)$/m', '$1""$2', $content);
 }
 
 function labby_is_ipv4_cidr($value) {
@@ -158,6 +162,8 @@ if (isset($_POST['labby_settings_save'])) {
         $settingsError = 'INCUS_CONTAINER_NAME must be a DNS-label-style Incus instance name (lowercase letters, numbers, "-"; no leading or trailing "-").';
     } elseif (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/', $postedIncusImageVersion)) {
         $settingsError = 'INCUS_IMAGE_VERSION must be a plain X.Y.Z version number.';
+    } elseif ($postedRuntimeMode === 'incus' && $postedIncusImageSha256 === '') {
+        $settingsError = 'INCUS_IMAGE_SHA256 is required when RUNTIME_MODE is incus.';
     } elseif ($postedIncusImageSha256 !== '' && !preg_match('/^[a-f0-9]{64}$/', $postedIncusImageSha256)) {
         $settingsError = 'INCUS_IMAGE_SHA256 must be a lowercase 64-character hex SHA256 digest.';
     } elseif ($postedIncusTsAuthkey !== '' && !preg_match('/^[A-Za-z0-9_-]{1,200}$/', $postedIncusTsAuthkey)) {
@@ -205,13 +211,13 @@ if (isset($_POST['labby_settings_save'])) {
         $cfgDir = dirname($cfgFile);
         if (!is_dir($cfgDir) && !@mkdir($cfgDir, 0755, true) && !is_dir($cfgDir)) {
             $settingsError = "Could not create $cfgDir — check the flash device's permissions and free space.";
-        } elseif (file_exists($cfgFile) && !@copy($cfgFile, $cfgFile . '.bak')) {
+        } elseif (file_exists($cfgFile) && (($backupContents = @file_get_contents($cfgFile)) === false || @file_put_contents($cfgFile . '.bak', labby_redact_ts_authkey($backupContents)) === false)) {
             // Backup-first: preserve the previous config before it's
             // overwritten, so an operator who saves a bad value (e.g. the
             // wrong LABBY_DIR) can still recover the last-known-good file
             // from labby.cfg.bak — matching this repo's own config-mutation
-            // contract (CLAUDE.md), not just the atomic-write half of it.
-            // Fail closed rather than overwrite without a backup.
+            // contract (CLAUDE.md), not just the atomic-write half of it. The
+            // write-only Tailscale key is redacted from the backup too.
             $settingsError = "Could not back up $cfgFile before saving — check the flash device's permissions and free space.";
         } else {
             $tmpFile = $cfgFile . '.tmp.' . getmypid();
@@ -254,6 +260,7 @@ if ($status === '') {
     $status = 'labby: status unavailable (rc.labby status timed out or produced no output)';
 }
 $running = strpos($status, 'RUNNING') !== false;
+$healthy = $running && strpos($status, 'not ready') === false && strpos($status, 'ERROR') === false;
 $port = $cfg['HTTP_PORT'];
 $host = $cfg['HTTP_HOST'];
 $lanReachable = $host !== '127.0.0.1';
@@ -263,7 +270,7 @@ $lanReachable = $host !== '127.0.0.1';
 <?php endif; ?>
 
 _(Status)_:
-: <span class="<?= $running ? 'green-text' : 'red-text' ?>"><?= htmlspecialchars($status, ENT_QUOTES) ?></span>
+: <span class="<?= $healthy ? 'green-text' : 'red-text' ?>"><?= htmlspecialchars($status, ENT_QUOTES) ?></span>
 
 <form markdown="1" name="labby_settings" method="post">
 <input type="hidden" name="labby_settings_save" value="1">

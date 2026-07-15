@@ -61,6 +61,27 @@ cleanup_incus_egress_rules() {
     done
 }
 
+native_pid_alive() {
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+}
+
+stop_native_for_mode_switch() {
+    if native_pid_alive; then
+        echo "labby: stopping native runtime before starting Incus mode"
+        stop_native
+    fi
+}
+
+stop_incus_for_mode_switch() {
+    if [ ! -x "$INCUS" ] || [ ! -f "${EMHTTP}/scripts/labby-incus-env.sh" ]; then
+        cleanup_incus_egress_rules
+        return 0
+    fi
+
+    echo "labby: stopping Incus runtime before starting native mode"
+    stop_incus
+}
+
 validate_incus_container_name() {
     [[ "$INCUS_CONTAINER_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
@@ -81,7 +102,18 @@ incus_env_or_fail() {
 incus_state() {
     local info
 
-    info="$(bounded 15 "$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>/dev/null)" || return 1
+    info="$(bounded 15 "$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>&1)" || {
+        case "$info" in
+            *"Instance not found"* | *"not found"*)
+                printf 'MISSING\n'
+                return 0
+                ;;
+            *)
+                echo "labby: failed to query Incus state for ${INCUS_CONTAINER_NAME}: ${info}" >&2
+                return 1
+                ;;
+        esac
+    }
     printf '%s\n' "$info" | awk -F': ' '$1 == "Status" { print toupper($2); exit }'
 }
 
@@ -90,6 +122,11 @@ incus_ready() {
 }
 
 start_native() {
+    stop_incus_for_mode_switch || {
+        echo "labby: could not confirm the Incus runtime stopped — refusing to start native mode on top of it"
+        exit 1
+    }
+
     if ! "${EMHTTP}/scripts/labby-preflight.sh" >>"$LOG" 2>&1; then
         echo "labby: preflight FAILED — see $LOG"
         exit 1
@@ -181,6 +218,11 @@ status_native() {
 start_incus() {
     local init_status
 
+    stop_native_for_mode_switch || {
+        echo "labby: could not stop the native runtime — refusing to start Incus mode on top of it"
+        return 1
+    }
+
     incus_env_or_fail || return 1
     if [ ! -x "${EMHTTP}/scripts/labby-incus-init.sh" ]; then
         echo "labby: ${EMHTTP}/scripts/labby-incus-init.sh not found or not executable"
@@ -202,8 +244,11 @@ stop_incus() {
         return 1
     }
 
-    state="$(incus_state || true)"
-    if [ -z "$state" ]; then
+    if ! state="$(incus_state)"; then
+        echo "labby: failed to query Incus container ${INCUS_CONTAINER_NAME}; refusing to claim stopped"
+        return 1
+    fi
+    if [ "$state" = "MISSING" ]; then
         echo "labby: Incus container ${INCUS_CONTAINER_NAME} not created yet"
         cleanup_incus_egress_rules
         return 0
@@ -216,8 +261,11 @@ stop_incus() {
 
     echo "labby: stopping Incus container ${INCUS_CONTAINER_NAME}"
     if ! bounded 45 "$INCUS" stop --timeout 30 -- "$INCUS_CONTAINER_NAME" 2>/dev/null; then
-        state="$(incus_state || true)"
-        if [ -z "$state" ] || [ "$state" != "RUNNING" ]; then
+        if ! state="$(incus_state)"; then
+            echo "labby: failed to query Incus container ${INCUS_CONTAINER_NAME} after stop request"
+            return 1
+        fi
+        if [ "$state" = "MISSING" ] || [ "$state" != "RUNNING" ]; then
             cleanup_incus_egress_rules
             return 0
         fi
@@ -226,8 +274,11 @@ stop_incus() {
     fi
 
     for _ in $(seq 1 20); do
-        state="$(incus_state || true)"
-        if [ -z "$state" ] || [ "$state" != "RUNNING" ]; then
+        if ! state="$(incus_state)"; then
+            echo "labby: failed to query Incus container ${INCUS_CONTAINER_NAME} while waiting for stop"
+            return 1
+        fi
+        if [ "$state" = "MISSING" ] || [ "$state" != "RUNNING" ]; then
             cleanup_incus_egress_rules
             return 0
         fi
@@ -243,8 +294,11 @@ status_incus() {
 
     incus_env_or_fail || return 1
 
-    state="$(incus_state || true)"
-    if [ -z "$state" ]; then
+    if ! state="$(incus_state)"; then
+        echo "labby: ERROR (failed to query incus container ${INCUS_CONTAINER_NAME})"
+        return 1
+    fi
+    if [ "$state" = "MISSING" ]; then
         echo "labby: STOPPED (incus container ${INCUS_CONTAINER_NAME} not created yet)"
     elif [ "$state" = "RUNNING" ] && incus_ready; then
         echo "labby: RUNNING (incus container ${INCUS_CONTAINER_NAME}, ready)"
