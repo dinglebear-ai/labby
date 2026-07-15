@@ -6,6 +6,9 @@ config:
   security.privileged: "false"
 description: Labby gateway Incus profile
 devices:
+  eth0:
+    network: labbybr0
+    type: nic
   root:
     path: /
     pool: labby-zfs

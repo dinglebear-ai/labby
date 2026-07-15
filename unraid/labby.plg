@@ -41,14 +41,14 @@
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "5bd58428c9b019cba193ed90efdac0c8">
-  <!ENTITY pageMD5      "e7db5c3480924f137a65cd0acee96730">
-  <!ENTITY rcMD5        "b74e805719eb8ac169c4808900c4a1eb">
+  <!ENTITY pageMD5      "6a0a522046f75429eb19a658f233a0ab">
+  <!ENTITY rcMD5        "fa4de40cbcbde13aad9e33dca5a3a2a3">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
   <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
-  <!ENTITY incusProfileMD5 "d81420479adfa138a0ba9568da0fa6a0">
+  <!ENTITY incusProfileMD5 "0419cfb5166a433dfc8149cbefcc3e48">
   <!ENTITY incusEnvMD5     "e4d6dbc277bb84b40e65d2f77f5b217f">
-  <!ENTITY incusInitMD5    "2408267322f48f60bbd51fd6b43e7a5d">
+  <!ENTITY incusInitMD5    "dc9b24dc48b87bd2e0381427afb3b202">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>

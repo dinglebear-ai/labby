@@ -28,8 +28,13 @@ The Lavra engineering review found several plan-level regressions against the cu
 - **Keep large artifacts off flash and validate cached images.** The Incus image cache must live under array-backed appdata, not `/boot/config/plugins/labby`. Cache filenames must include `INCUS_IMAGE_VERSION`, existing cached files must be verified before import, and corrupt/mismatched caches must be redownloaded or fail closed.
 - **Pin the image hash, not just the version.** Add `INCUS_IMAGE_SHA256` (or an equivalent `.plg` entity) tied to the configured `INCUS_IMAGE_VERSION`; verify against the pinned hash before `incus image import`. The release `.sha256` URL may be used only as an update aid, not as the trust root for runtime installs.
 - **Treat Tailscale auth as a one-shot secret.** `INCUS_TS_AUTHKEY` must be write-only in the settings UI (`type=password`, no value echo), written with mode `0600` for consumption, removed from the container after use, cleared or redacted from `labby.cfg` after attempted use, and startup must fail visibly if a supplied key cannot join.
-- **Use strict Incus instance-name validation.** Validate `INCUS_CONTAINER_NAME` as a DNS-label-style name, for example `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`, and pass user-controlled instance names after `--` wherever the Incus CLI supports it.
+- **Use strict Incus instance-name validation.** Validate `INCUS_CONTAINER_NAME` as a DNS-label-style Incus instance name whose first character is a lowercase letter, for example `^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`, and pass user-controlled instance names after `--` wherever the Incus CLI supports it.
+- **Require persistent Unraid storage for state and image cache.** `LABBY_DIR` must be validated in both `Labby.page` and `labby-incus-init.sh` as an Unraid array/cache path (`/mnt/user`, `/mnt/cache`, or `/mnt/diskN`), not root, `/tmp`, `/run`, `/var/tmp`, or flash. The image cache remains under `${LABBY_DIR}/incus-images`.
 - **Do not delete unmanaged host interfaces.** If `labbybr0` exists but is not an Incus-managed bridge, fail with a clear error instead of deleting it. Subnet/bridge choices must be configurable or validated against collisions before create.
+- **Validate the full managed bridge posture.** Reusing an Incus-managed bridge is only safe if `ipv4.address`, `ipv4.nat`, `ipv6.address`, and `ipv6.nat` all match the intended posture (`INCUS_BRIDGE_SUBNET`, `true`, `none`, `false`). Drift must fail closed with a clear operator message.
+- **Render the profile in one edit.** The vendored profile YAML must include the `eth0` NIC device. Substitute both `pool:` and `network:` before one `incus profile edit`; do not remove/re-add the NIC with separate `profile device` calls.
+- **Keep native mode dependency-free, but fail closed after Incus mode existed.** Native mode must still start on hosts without Incus tooling. Once the Incus converger has created or observed the Labby container, write a marker under `LABBY_DIR`; if that marker exists and Incus tooling/env/state cannot prove the container is stopped, refuse to start native mode.
+- **Treat non-running Incus states explicitly.** Only `MISSING` and `STOPPED` are safe stopped states. `FROZEN`, `ERROR`, `STARTING`, `STOPPING`, malformed state responses, and query failures must not be reported as `STOPPED` or accepted as a clean mode handoff.
 - **Keep LAN reachability intentional.** Because stdio MCP servers execute community npm/uv code, broad LAN egress from the Incus bridge must be an explicit operator choice or constrained by firewall/ACL defaults. The implementation must document and verify the chosen default.
 - **Avoid warm-start reprovisioning.** If the container is already running and `/ready` succeeds, skip `labby setup --provision --yes`. If provisioning is needed, gate it with a sentinel covering image version, labby binary version, and config/provisioning schema.
 - **Fix stale plan/version assumptions.** Task 4 is a verification-only no-op, not a modifying task. Task 6 must read the current manifest version and bump to the next package version, preserving existing changelog entries. This implementation ultimately shipped the package bump as `1.3.2`.
@@ -46,7 +51,7 @@ The Lavra engineering review found several plan-level regressions against the cu
 
 **Interfaces:**
 - Produces: `labby-incus-env.sh`, when sourced, exports `PATH` (prepends `/usr/local/incus/bin:/usr/local/incus/libexec/incus`), `LD_LIBRARY_PATH` (prepends `/usr/local/incus/lib`), and `INCUS_DIR` (`/mnt/user/appdata/incus`, matching incus-unraid's own convention exactly — this is *not* configurable per-labby-instance, it must point at the same daemon incus-unraid manages). Consumed by Task 2's `labby-incus-init.sh` and Task 3's `rc.labby`.
-- Produces: `incus/labby-gateway-profile.yaml`, a byte-for-byte copy of `~/workspace/lab/config/incus/labby-gateway-profile.yaml` (the upstream lab repo's own canonical profile — copy it fresh at implementation time in case it has changed since this plan was written). Consumed by Task 2, which applies it as the Incus profile (with `pool:` substituted to `labby-dir` and a network device added via a separate `incus profile device add` call, since this YAML defines no network device on purpose — see Task 2 Step 6).
+- Produces: `incus/labby-gateway-profile.yaml`, a vendored copy of `~/workspace/lab/config/incus/labby-gateway-profile.yaml` with an `eth0` NIC device added for the Unraid-specific dedicated bridge. Consumed by Task 2, which applies it as the Incus profile after substituting both `pool:` to `labby-dir` and `network:` to the configured `INCUS_BRIDGE_NAME` in one profile edit.
 
 - [ ] **Step 1: Copy the canonical profile YAML**
 
@@ -68,6 +73,9 @@ config:
   security.privileged: "false"
 description: Labby gateway Incus profile
 devices:
+  eth0:
+    network: labbybr0
+    type: nic
   root:
     path: /
     pool: labby-zfs
@@ -136,13 +144,17 @@ git commit -m "feat(unraid): vendor labby's Incus profile and add a private-Incu
 Before writing the script, apply the engineering-review corrections below to the skeleton:
 
 - Cache images under array-backed appdata, for example `${LABBY_DIR:-/mnt/user/appdata/labby}/incus-images`, not under `/boot/config/plugins/labby`.
+- Validate `LABBY_DIR` before using it: accept only `/mnt/user`, `/mnt/cache`, or `/mnt/diskN` paths so gateway state and image bytes never land on Unraid's RAM root, `/tmp`, `/run`, `/var/tmp`, or flash.
 - Include `INCUS_IMAGE_VERSION` in both the image tarball and checksum cache filenames.
 - Require a pinned `INCUS_IMAGE_SHA256` value for the configured image version; always verify cached or freshly downloaded image bytes against that pinned value before import.
 - If a cached image fails verification, remove it and redownload once; if the redownload still fails, exit non-zero.
 - If the container is already running and `curl -fsS http://127.0.0.1:8765/ready` succeeds inside it, skip `labby setup --provision --yes`.
 - Use a provisioning sentinel so a stopped or not-ready container only reruns provisioning when the image version, labby binary version, or provisioning schema changes.
 - If `labbybr0` exists but is not an Incus-managed bridge, fail with a clear error; do not delete a host interface you did not create.
+- If the bridge is Incus-managed, verify the whole posture before reuse: `ipv4.address == INCUS_BRIDGE_SUBNET`, `ipv4.nat == true`, `ipv6.address == none`, and `ipv6.nat == false`.
 - Validate the chosen bridge subnet for collision before create, or make the subnet/operator egress policy explicit.
+- Render the profile from YAML in one `incus profile edit`: the YAML includes `eth0`, and the script substitutes both the storage pool and bridge network before applying it. Do not separately `profile device remove/add eth0`.
+- Write `${LABBY_DIR}/.labby-incus-runtime-created` once a Labby Incus container has been created or observed, so `rc.labby` can distinguish "native-only host with no Incus dependency" from "previous Incus runtime must be proven stopped."
 - Do not install Tailscale with `curl | sh` at runtime. The baked image must already include Tailscale; if `INCUS_TS_AUTHKEY` is supplied and Tailscale is missing or `tailscale up` fails, fail visibly.
 - Consume `INCUS_TS_AUTHKEY` from a mode-0600 temp file, remove it after use, verify `tailscale ip -4` or `tailscale status --json`, then clear/redact the key from `labby.cfg`.
 - Use `--` before user-controlled Incus instance names wherever supported.
@@ -226,7 +238,10 @@ fi
 
 # ---------- dedicated bridge and bridge-forwarded egress policy ----------
 if "$INCUS" network show "$BRIDGE_NAME" 2>/dev/null | grep -q '^managed: true'; then
-    : # already a properly managed bridge
+    [ "$("$INCUS" network get "$BRIDGE_NAME" ipv4.address)" = "$BRIDGE_SUBNET" ] || fail "${BRIDGE_NAME} ipv4.address drifted"
+    [ "$("$INCUS" network get "$BRIDGE_NAME" ipv4.nat)" = "true" ] || fail "${BRIDGE_NAME} ipv4.nat drifted"
+    [ "$("$INCUS" network get "$BRIDGE_NAME" ipv6.address)" = "none" ] || fail "${BRIDGE_NAME} ipv6.address drifted"
+    [ "$("$INCUS" network get "$BRIDGE_NAME" ipv6.nat)" = "false" ] || fail "${BRIDGE_NAME} ipv6.nat drifted"
 else
     if ip link show "$BRIDGE_NAME" >/dev/null 2>&1; then
         fail "${BRIDGE_NAME} already exists but is not Incus-managed; refusing to delete an unmanaged host interface"
@@ -237,18 +252,17 @@ else
         ipv6.address=none ipv6.nat=false
 fi
 
-# ---------- profile (vendored YAML, pool substituted, network device added) ----------
+# ---------- profile (vendored YAML, pool+network substituted in one edit) ----------
 PROFILE_SRC="${EMHTTP}/incus/labby-gateway-profile.yaml"
 [ -f "$PROFILE_SRC" ] || fail "${PROFILE_SRC} not found"
 if ! "$INCUS" profile show "$PROFILE_NAME" >/dev/null 2>&1; then
     log "creating profile ${PROFILE_NAME}"
     "$INCUS" profile create "$PROFILE_NAME"
 fi
-sed "s/^    pool: .*/    pool: ${STORAGE_POOL_NAME}/" "$PROFILE_SRC" | "$INCUS" profile edit "$PROFILE_NAME"
-if [ "$("$INCUS" profile device get "$PROFILE_NAME" eth0 network 2>/dev/null || true)" != "$BRIDGE_NAME" ]; then
-    "$INCUS" profile device remove "$PROFILE_NAME" eth0 >/dev/null 2>&1 || true
-    "$INCUS" profile device add "$PROFILE_NAME" eth0 nic network="$BRIDGE_NAME"
-fi
+sed \
+    -e "s/^    pool: .*/    pool: ${STORAGE_POOL_NAME}/" \
+    -e "s/^    network: .*/    network: ${BRIDGE_NAME}/" \
+    "$PROFILE_SRC" | "$INCUS" profile edit "$PROFILE_NAME"
 
 # ---------- image: download+cache under appdata, import into Incus ----------
 if ! "$INCUS" image info "$IMAGE_ALIAS" >/dev/null 2>&1; then
@@ -410,6 +424,8 @@ Apply these transformations:
 - Add `incus_env_or_fail`, `start_incus`, `stop_incus`, and `status_incus`.
 - Keep the current native `/mnt/user` mount guard, stale-process handling, pidfile preservation, confirmed-stop failure behavior, and restart stop-gating.
 - Make `stop_incus` fail closed: run a bounded `incus stop`, poll the container state, and return non-zero if it is still `RUNNING`.
+- Treat only `MISSING` and `STOPPED` as stopped Incus states. Report and return non-zero for `FROZEN`, `ERROR`, transitional states, malformed state output, or query failures.
+- Keep native mode free of a hard Incus dependency when there is no evidence this plugin ever created an Incus runtime. Once `${LABBY_DIR}/.labby-incus-runtime-created` exists, a native start must prove the Incus runtime is `MISSING`/`STOPPED` or successfully stop it before spawning the native process.
 - Make `restart` call `stop_incus || exit 1` in Incus mode before attempting start.
 - Use `--` before `INCUS_CONTAINER_NAME` for `incus stop/start/exec/list` wherever the CLI accepts it.
 
@@ -520,7 +536,11 @@ stop_incus() {
     /usr/local/incus/bin/incus stop --timeout 30 -- "$INCUS_CONTAINER_NAME" 2>/dev/null || return 1
     for _ in $(seq 1 20); do
         state="$(/usr/local/incus/bin/incus list "$INCUS_CONTAINER_NAME" -c s --format csv 2>/dev/null || true)"
-        [ "$state" != "RUNNING" ] && return 0
+        case "$state" in
+            "" | STOPPED) return 0 ;;
+            RUNNING) ;;
+            *) echo "labby: ${INCUS_CONTAINER_NAME} became ${state}, not safely stopped"; return 1 ;;
+        esac
         sleep 0.5
     done
     echo "labby: failed to stop ${INCUS_CONTAINER_NAME}"
@@ -532,10 +552,13 @@ status_incus() {
     state="$(/usr/local/incus/bin/incus list "$INCUS_CONTAINER_NAME" -c s --format csv 2>/dev/null || true)"
     if [ "$state" = "RUNNING" ] && /usr/local/incus/bin/incus exec "$INCUS_CONTAINER_NAME" -- curl -fsS -m 2 http://127.0.0.1:8765/ready >/dev/null 2>&1; then
         echo "labby: RUNNING (incus container ${INCUS_CONTAINER_NAME})"
-    elif [ -n "$state" ]; then
-        echo "labby: STOPPED (incus container ${INCUS_CONTAINER_NAME} state: ${state})"
-    else
+    elif [ "$state" = "STOPPED" ]; then
+        echo "labby: STOPPED (incus container ${INCUS_CONTAINER_NAME})"
+    elif [ -z "$state" ]; then
         echo "labby: STOPPED (incus container ${INCUS_CONTAINER_NAME} not created yet)"
+    else
+        echo "labby: ${state} (incus container ${INCUS_CONTAINER_NAME}; not safe to treat as stopped)"
+        return 1
     fi
 }
 
@@ -723,6 +746,8 @@ CFG;
 
 Do not replace the current save block wholesale. The branch already uses atomic temp-file + rename persistence and exposes write failures instead of silently redirecting; preserve that structure and add only the new Incus fields/validation inside it.
 
+Before the save block, add a small `labby_is_array_backed_path($value)` helper that accepts only `/mnt/user`, `/mnt/cache`, or `/mnt/diskN` paths. The save block below assumes that helper exists.
+
 Find:
 
 ```php
@@ -754,8 +779,8 @@ if (isset($_POST['labby_settings_save'])) {
     // value is a shell-injection vector, not just a bad config value.
     if (!in_array($postedRuntimeMode, ['native', 'incus'], true)) {
         $settingsError = 'Invalid RUNTIME_MODE value.';
-    } elseif (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/', $postedIncusContainerName)) {
-        $settingsError = 'INCUS_CONTAINER_NAME must be a DNS-label-style Incus instance name (lowercase letters, numbers, "-"; no leading or trailing "-").';
+    } elseif (!preg_match('/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/', $postedIncusContainerName)) {
+        $settingsError = 'INCUS_CONTAINER_NAME must be a DNS-label-style Incus instance name starting with a lowercase letter (then lowercase letters, numbers, "-"; no trailing "-").';
     } elseif (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/', $postedIncusImageVersion)) {
         $settingsError = 'INCUS_IMAGE_VERSION must be a plain X.Y.Z version number.';
     } elseif ($postedIncusImageSha256 !== '' && !preg_match('/^[a-f0-9]{64}$/', $postedIncusImageSha256)) {
@@ -770,6 +795,8 @@ if (isset($_POST['labby_settings_save'])) {
         $settingsError = 'HTTP_PORT must be a number between 1 and 65535.';
     } elseif (!preg_match('#^/[A-Za-z0-9_./-]+$#', $postedDir)) {
         $settingsError = 'LABBY_DIR must be an absolute path using only letters, numbers, "_", ".", "/", and "-".';
+    } elseif (!labby_is_array_backed_path($postedDir)) {
+        $settingsError = 'LABBY_DIR must live on Unraid array/cache storage such as /mnt/user/appdata/labby, /mnt/cache/appdata/labby, or /mnt/disk1/appdata/labby.';
     } else {
         $newCfg['RUNTIME_MODE'] = $postedRuntimeMode;
         $newCfg['INCUS_CONTAINER_NAME'] = $postedIncusContainerName;

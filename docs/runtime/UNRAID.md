@@ -114,7 +114,7 @@ asset has not published successfully since `v1.2.0` (`gh release view v1.3.0
 
 ## Layout
 
-```
+```text
 unraid/
   labby.plg                                    plugin manifest (installed via Unraid's Plugins tab)
   source/usr/local/emhttp/plugins/labby/

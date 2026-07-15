@@ -7,6 +7,7 @@ rc_script="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/scripts/rc.la
 incus_env_script="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/scripts/labby-incus-env.sh"
 incus_init_script="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/scripts/labby-incus-init.sh"
 page_file="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/Labby.page"
+profile_file="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/incus/labby-gateway-profile.yaml"
 
 tmp="$(mktemp -d)"
 cleanup() {
@@ -86,7 +87,7 @@ if [ "$1" = "-4" ] && [ "$2" = "route" ] && [ "$3" = "show" ]; then
     cat "${IP_ROUTE_OUTPUT:?}"
     exit 0
 fi
-exit 0
+exit 1
 EOF
 cat > "$tmp/bin/incus" <<'EOF'
 #!/usr/bin/env bash
@@ -115,6 +116,27 @@ case "$1" in
     exec)
         [ "$state" = "running" ] && exit 0
         exit 1
+        ;;
+    network)
+        case "$2" in
+            show)
+                case "${INCUS_NETWORK_MANAGED:-true}" in
+                    true) echo "managed: true" ;;
+                    false) echo "managed: false" ;;
+                    missing) exit 1 ;;
+                esac
+                ;;
+            get)
+                case "$4" in
+                    ipv4.address) printf '%s\n' "${INCUS_NETWORK_IPV4_ADDRESS:-10.99.99.1/24}" ;;
+                    ipv4.nat) printf '%s\n' "${INCUS_NETWORK_IPV4_NAT:-true}" ;;
+                    ipv6.address) printf '%s\n' "${INCUS_NETWORK_IPV6_ADDRESS:-none}" ;;
+                    ipv6.nat) printf '%s\n' "${INCUS_NETWORK_IPV6_NAT:-false}" ;;
+                    *) exit 1 ;;
+                esac
+                ;;
+            create) exit 0 ;;
+        esac
         ;;
     *) exit 0 ;;
 esac
@@ -186,6 +208,29 @@ test_native_start_does_not_require_incus() {
     mv "$tmp/bin/incus.real" "$tmp/bin/incus"
 }
 
+test_native_start_ignores_unproven_incus_query_failure() {
+    write_cfg native
+    rm -f "$tmp/labby-state/.labby-incus-runtime-created"
+    printf 'query-fail\n' > "$tmp/incus-state"
+    run_rc start > "$tmp/native-query-fail.out"
+    assert_file_contains "$tmp/native-query-fail.out" "no Labby Incus runtime marker exists"
+    assert_file_contains "$tmp/native-query-fail.out" "labby: ready"
+    run_rc stop >/dev/null
+}
+
+test_native_start_fails_closed_with_incus_marker_and_missing_cli() {
+    write_cfg native
+    mkdir -p "$tmp/labby-state"
+    : > "$tmp/labby-state/.labby-incus-runtime-created"
+    mv "$tmp/bin/incus" "$tmp/bin/incus.real"
+    if run_rc start > "$tmp/native-marker-missing-cli.out" 2>&1; then
+        fail "native start succeeded even though an Incus runtime marker existed and the Incus CLI was missing"
+    fi
+    mv "$tmp/bin/incus.real" "$tmp/bin/incus"
+    assert_file_contains "$tmp/native-marker-missing-cli.out" "Incus runtime marker exists"
+    rm -f "$tmp/labby-state/.labby-incus-runtime-created"
+}
+
 test_native_to_incus_stops_native_pid() {
     write_cfg incus
     printf 'missing\n' > "$tmp/incus-state"
@@ -216,12 +261,33 @@ test_incus_to_native_stops_incus_first() {
 test_incus_query_failure_is_not_stopped() {
     write_cfg incus
     printf 'query-fail\n' > "$tmp/incus-state"
-    set +e
-    run_rc stop > "$tmp/query-fail.out" 2>&1
-    status=$?
-    set -e
-    [ "$status" -ne 0 ] || fail "incus query failure returned success"
+    if run_rc stop > "$tmp/query-fail.out" 2>&1; then
+        fail "incus query failure returned success"
+    fi
     assert_file_contains "$tmp/query-fail.out" "failed to query Incus"
+}
+
+test_incus_stop_rejects_unsafe_state() {
+    write_cfg incus
+    printf 'frozen\n' > "$tmp/incus-state"
+    if run_rc stop > "$tmp/frozen-stop.out" 2>&1; then
+        fail "frozen Incus state returned stop success"
+    fi
+    assert_file_contains "$tmp/frozen-stop.out" "FROZEN"
+    assert_file_contains "$tmp/frozen-stop.out" "not safely stopped"
+}
+
+test_incus_status_preserves_stopped_and_unsafe_states() {
+    write_cfg incus
+    printf 'stopped\n' > "$tmp/incus-state"
+    run_rc status > "$tmp/stopped-status.out"
+    assert_file_contains "$tmp/stopped-status.out" "STOPPED (incus container labby-gateway)"
+
+    printf 'error\n' > "$tmp/incus-state"
+    if run_rc status > "$tmp/error-status.out" 2>&1; then
+        fail "ERROR Incus state returned status success"
+    fi
+    assert_file_contains "$tmp/error-status.out" "ERROR (incus container labby-gateway; not safe to treat as stopped)"
 }
 
 source_init_library() {
@@ -276,6 +342,74 @@ test_bridge_collision_checks_whole_cidr() {
     )
 }
 
+test_managed_bridge_validates_full_posture() {
+    write_cfg incus
+    : > "$tmp/ip-routes"
+    if (
+        set -euo pipefail
+        INCUS_NETWORK_IPV4_NAT=false
+        export INCUS_NETWORK_IPV4_NAT
+        source_init_library
+        ensure_bridge
+    ) > "$tmp/bridge-posture.out" 2>&1; then
+        fail "managed bridge with wrong ipv4.nat was accepted"
+    fi
+    assert_file_contains "$tmp/bridge-posture.out" "ipv4.nat=false, expected true"
+
+    (
+        set -euo pipefail
+        INCUS_NETWORK_IPV4_ADDRESS="10.99.99.1/24"
+        INCUS_NETWORK_IPV4_NAT=true
+        INCUS_NETWORK_IPV6_ADDRESS=none
+        INCUS_NETWORK_IPV6_NAT=false
+        export INCUS_NETWORK_IPV4_ADDRESS INCUS_NETWORK_IPV4_NAT INCUS_NETWORK_IPV6_ADDRESS INCUS_NETWORK_IPV6_NAT
+        source_init_library
+        ensure_bridge
+    )
+}
+
+test_labby_dir_validator_rejects_non_array_paths() {
+    write_cfg incus
+    # shellcheck disable=SC2030,SC2031
+    (
+        set -euo pipefail
+        source_init_library
+        export LABBY_DIR="/mnt/disk1/appdata/labby"
+        validate_array_backed_labby_dir
+        export LABBY_DIR="/mnt/cache/appdata/labby"
+        validate_array_backed_labby_dir
+    )
+    if (
+        set -euo pipefail
+        source_init_library
+        # shellcheck disable=SC2030,SC2031
+        export LABBY_DIR="/tmp/labby"
+        validate_array_backed_labby_dir
+    ) > "$tmp/labby-dir-tmp.out" 2>&1; then
+        fail "LABBY_DIR validator accepted /tmp/labby"
+    fi
+    if (
+        set -euo pipefail
+        source_init_library
+        # shellcheck disable=SC2030,SC2031
+        export LABBY_DIR="/mnt/disk1foo/labby"
+        validate_array_backed_labby_dir
+    ) > "$tmp/labby-dir-diskfoo.out" 2>&1; then
+        fail "LABBY_DIR validator accepted /mnt/disk1foo/labby"
+    fi
+    assert_file_contains "$tmp/labby-dir-tmp.out" "got: /tmp/labby"
+    assert_file_contains "$tmp/labby-dir-diskfoo.out" "got: /mnt/disk1foo/labby"
+}
+
+test_profile_is_rendered_in_one_edit() {
+    assert_file_contains "$profile_file" "  eth0:"
+    assert_file_contains "$profile_file" "    network: labbybr0"
+    ! grep -Fq "profile device add" "$incus_init_script" \
+        || fail "labby-incus-init.sh still adds eth0 outside profile edit"
+    ! grep -Fq "profile device remove" "$incus_init_script" \
+        || fail "labby-incus-init.sh still removes eth0 outside profile edit"
+}
+
 test_tailscale_key_redaction_helpers() {
     php <<PHP
 <?php
@@ -293,6 +427,14 @@ if (str_contains(\$out, 'tskey-secret') || !str_contains(\$out, 'INCUS_TS_AUTHKE
 }
 if (!str_contains(\$page, 'INCUS_IMAGE_SHA256 is required when RUNTIME_MODE is incus.')) {
     fwrite(STDERR, "Incus-mode SHA validation guard missing\n");
+    exit(1);
+}
+if (!str_contains(\$page, 'function labby_is_array_backed_path')) {
+    fwrite(STDERR, "LABBY_DIR array/cache path validation helper missing\n");
+    exit(1);
+}
+if (!str_contains(\$page, 'starting with a lowercase letter')) {
+    fwrite(STDERR, "Incus instance name lowercase-letter validation message missing\n");
     exit(1);
 }
 PHP
@@ -321,11 +463,18 @@ CFG
 
 test_env_sourcer_is_idempotent
 test_native_start_does_not_require_incus
+test_native_start_ignores_unproven_incus_query_failure
+test_native_start_fails_closed_with_incus_marker_and_missing_cli
 test_native_to_incus_stops_native_pid
 test_incus_to_native_stops_incus_first
 test_incus_query_failure_is_not_stopped
+test_incus_stop_rejects_unsafe_state
+test_incus_status_preserves_stopped_and_unsafe_states
 test_incus_init_instance_query_failures_are_fatal
 test_bridge_collision_checks_whole_cidr
+test_managed_bridge_validates_full_posture
+test_labby_dir_validator_rejects_non_array_paths
+test_profile_is_rendered_in_one_edit
 test_tailscale_key_redaction_helpers
 
 echo "unraid runtime behavior tests OK"

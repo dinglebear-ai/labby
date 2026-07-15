@@ -87,9 +87,10 @@ IMAGE_URL="https://github.com/jmagar/labby/releases/download/v${INCUS_IMAGE_VERS
 IMAGE_CACHE_DIR="${LABBY_DIR}/incus-images"
 IMAGE_CACHE_FILE="${IMAGE_CACHE_DIR}/labby-incus-${INCUS_IMAGE_VERSION}-x86_64-unknown-linux-gnu.tar.xz"
 IMAGE_SHA_CACHE_FILE="${IMAGE_CACHE_DIR}/labby-incus-${INCUS_IMAGE_VERSION}-x86_64-unknown-linux-gnu.tar.xz.sha256"
+INCUS_RUNTIME_MARKER="${LABBY_DIR}/.labby-incus-runtime-created"
 
 validate_dns_label() {
-    [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
+    [[ "$1" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
 validate_safe_token() {
@@ -105,6 +106,19 @@ validate_sha256() {
 
 validate_version() {
     [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+validate_array_backed_labby_dir() {
+    case "$LABBY_DIR" in
+        /mnt/user | /mnt/user/* | /mnt/cache | /mnt/cache/*) ;;
+        /mnt/disk*)
+            [[ "$LABBY_DIR" =~ ^/mnt/disk[0-9]+(/.*)?$ ]] \
+                || fail "LABBY_DIR must be on Unraid array/cache storage (/mnt/user, /mnt/cache, or /mnt/diskN), got: ${LABBY_DIR}"
+            ;;
+        *)
+            fail "LABBY_DIR must be on Unraid array/cache storage (/mnt/user, /mnt/cache, or /mnt/diskN), got: ${LABBY_DIR}"
+            ;;
+    esac
 }
 
 validate_ipv4_cidr() {
@@ -194,8 +208,10 @@ validate_inputs() {
         *) fail "INCUS_EGRESS_POLICY must be block-lan or allow-lan, got: ${INCUS_EGRESS_POLICY}" ;;
     esac
 
+    validate_array_backed_labby_dir
+
     case "$IMAGE_CACHE_DIR" in
-        /boot/* | /boot)
+        /boot/* | /boot | /tmp/* | /tmp | /run/* | /run | /var/tmp/* | /var/tmp)
             fail "Incus image cache would land on flash (${IMAGE_CACHE_DIR}); set LABBY_DIR to array-backed appdata"
             ;;
     esac
@@ -267,17 +283,31 @@ network_managed() {
         awk '$1 == "managed:" { print $2; exit }'
 }
 
+network_option() {
+    run_timeout 15 "$INCUS" network get "$INCUS_BRIDGE_NAME" "$1" 2>/dev/null || true
+}
+
+require_bridge_option() {
+    local key="$1"
+    local expected="$2"
+    local current
+
+    current="$(network_option "$key")"
+    [ "$current" = "$expected" ] \
+        || fail "${INCUS_BRIDGE_NAME} exists with ${key}=${current:-unset}, expected ${expected}"
+}
+
 ensure_bridge() {
     local managed
-    local current_addr
 
     validate_bridge_subnet_collision
 
     managed="$(network_managed || true)"
     if [ "$managed" = "true" ]; then
-        current_addr="$(run_timeout 15 "$INCUS" network get "$INCUS_BRIDGE_NAME" ipv4.address 2>/dev/null || true)"
-        [ "$current_addr" = "$INCUS_BRIDGE_SUBNET" ] \
-            || fail "${INCUS_BRIDGE_NAME} exists with ipv4.address=${current_addr}, expected ${INCUS_BRIDGE_SUBNET}"
+        require_bridge_option ipv4.address "$INCUS_BRIDGE_SUBNET"
+        require_bridge_option ipv4.nat true
+        require_bridge_option ipv6.address none
+        require_bridge_option ipv6.nat false
         return 0
     fi
 
@@ -338,7 +368,6 @@ apply_egress_policy() {
 
 ensure_profile() {
     local profile_src="${EMHTTP}/incus/labby-gateway-profile.yaml"
-    local current_network
 
     [ -f "$profile_src" ] || fail "${profile_src} not found"
 
@@ -348,16 +377,12 @@ ensure_profile() {
             || fail "failed to create Incus profile ${PROFILE_NAME}"
     fi
 
-    sed "s/^    pool: .*/    pool: ${STORAGE_POOL_NAME}/" "$profile_src" |
+    sed \
+        -e "s/^    pool: .*/    pool: ${STORAGE_POOL_NAME}/" \
+        -e "s/^    network: .*/    network: ${INCUS_BRIDGE_NAME}/" \
+        "$profile_src" |
         run_timeout 60 "$INCUS" profile edit "$PROFILE_NAME" \
         || fail "failed to update Incus profile ${PROFILE_NAME}"
-
-    current_network="$(run_timeout 15 "$INCUS" profile device get "$PROFILE_NAME" eth0 network 2>/dev/null || true)"
-    if [ "$current_network" != "$INCUS_BRIDGE_NAME" ]; then
-        run_timeout 20 "$INCUS" profile device remove "$PROFILE_NAME" eth0 >/dev/null 2>&1 || true
-        run_timeout 30 "$INCUS" profile device add "$PROFILE_NAME" eth0 nic network="$INCUS_BRIDGE_NAME" \
-            || fail "failed to attach ${INCUS_BRIDGE_NAME} to profile ${PROFILE_NAME}"
-    fi
 }
 
 write_checksum_cache() {
@@ -371,6 +396,12 @@ verify_image_file() {
     [ -f "$file" ] || return 1
     actual="$(sha256sum "$file" | awk '{ print $1 }')"
     [ "$actual" = "$INCUS_IMAGE_SHA256" ]
+}
+
+mark_incus_runtime_created() {
+    mkdir -p "$LABBY_DIR"
+    : > "$INCUS_RUNTIME_MARKER" \
+        || fail "failed to write Incus runtime marker ${INCUS_RUNTIME_MARKER}"
 }
 
 download_image_once() {
@@ -721,6 +752,7 @@ main() {
     apply_egress_policy
     ensure_profile
     ensure_container_running
+    mark_incus_runtime_created
     wait_for_network
     consume_tailscale_authkey
     converge_provisioning

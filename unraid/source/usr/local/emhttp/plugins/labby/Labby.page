@@ -136,6 +136,11 @@ function labby_is_ipv4_cidr($value) {
     return true;
 }
 
+function labby_is_array_backed_path($value) {
+    return preg_match('#^/mnt/(user|cache)(/.*)?$#', $value)
+        || preg_match('#^/mnt/disk[0-9]+(/.*)?$#', $value);
+}
+
 $settingsError = null;
 
 if (isset($_POST['labby_settings_save'])) {
@@ -158,8 +163,8 @@ if (isset($_POST['labby_settings_save'])) {
     // value is a shell-injection vector, not just a bad config value.
     if (!in_array($postedRuntimeMode, ['native', 'incus'], true)) {
         $settingsError = 'Invalid RUNTIME_MODE value.';
-    } elseif (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/', $postedIncusContainerName)) {
-        $settingsError = 'INCUS_CONTAINER_NAME must be a DNS-label-style Incus instance name (lowercase letters, numbers, "-"; no leading or trailing "-").';
+    } elseif (!preg_match('/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/', $postedIncusContainerName)) {
+        $settingsError = 'INCUS_CONTAINER_NAME must be a DNS-label-style Incus instance name starting with a lowercase letter (then lowercase letters, numbers, "-"; no trailing "-").';
     } elseif (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/', $postedIncusImageVersion)) {
         $settingsError = 'INCUS_IMAGE_VERSION must be a plain X.Y.Z version number.';
     } elseif ($postedRuntimeMode === 'incus' && $postedIncusImageSha256 === '') {
@@ -182,6 +187,8 @@ if (isset($_POST['labby_settings_save'])) {
         $settingsError = 'HTTP_PORT must be a number between 1 and 65535.';
     } elseif (!preg_match('#^/[A-Za-z0-9_./-]+$#', $postedDir)) {
         $settingsError = 'LABBY_DIR must be an absolute path using only letters, numbers, "_", ".", "/", and "-".';
+    } elseif (!labby_is_array_backed_path($postedDir)) {
+        $settingsError = 'LABBY_DIR must live on Unraid array/cache storage such as /mnt/user/appdata/labby, /mnt/cache/appdata/labby, or /mnt/disk1/appdata/labby.';
     } else {
         $newCfg['RUNTIME_MODE'] = $postedRuntimeMode;
         $newCfg['INCUS_CONTAINER_NAME'] = $postedIncusContainerName;
@@ -323,7 +330,7 @@ _(Service)_:
 <blockquote class="inline_help">_(Enable to autostart labby the next time the array starts. This does not start labby immediately — use the Start/Stop button below for that.)_</blockquote>
 
 _(Gateway state directory)_:
-: <input type="text" name="LABBY_DIR" value="<?= htmlspecialchars($cfg['LABBY_DIR'], ENT_QUOTES) ?>" size="40" pattern="/[A-Za-z0-9_./\-]+" title="An absolute path using only letters, numbers, _ . / -">
+: <input type="text" name="LABBY_DIR" value="<?= htmlspecialchars($cfg['LABBY_DIR'], ENT_QUOTES) ?>" size="40" pattern="/[A-Za-z0-9_./\-]+" title="Use /mnt/user, /mnt/cache, or /mnt/diskN storage; letters, numbers, _ . / - only">
 <blockquote class="inline_help">_(Must be on the array, not tmpfs — this is where labby stores its config, auth database, and MCP bearer token. Default: /mnt/user/appdata/labby.)_</blockquote>
 
 _(HTTP host)_:
