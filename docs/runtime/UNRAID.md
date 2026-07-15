@@ -55,29 +55,35 @@ incus-unraid's private prefix (`/usr/local/incus`) and daemon state
 
 The Incus container layout is intentionally separate from incus-unraid's own
 agent-jail defaults. `labby-incus-init.sh` creates a dedicated `labby-dir`
-storage pool and a dedicated bridge named by `INCUS_BRIDGE_NAME`
-(`labbybr0` by default). It never touches incus-unraid's `agentbr0`, its
-`default` profile, its storage pool, or its daemon lifecycle. The bridge CIDR
-comes from `INCUS_BRIDGE_SUBNET` (`10.99.99.1/24` by default) and is checked
-for host-route collisions before creation. If the bridge already exists but
-is not Incus-managed, startup fails closed instead of deleting or reusing an
-unmanaged host interface.
+storage pool, a dedicated `labby-gateway` profile, and a dedicated bridge named
+by `INCUS_BRIDGE_NAME` (`labbybr0` by default). It never touches
+incus-unraid's `agentbr0`, its default profile, its storage pool, or its daemon
+lifecycle, and the labby container launches with only the dedicated profile.
+The bridge CIDR comes from `INCUS_BRIDGE_SUBNET` (`10.99.99.1/24` by default)
+and is checked for host-route collisions before creation. If the bridge already
+exists but is not Incus-managed, startup fails closed instead of deleting or
+reusing an unmanaged host interface.
 
-Bridge egress is explicit. `INCUS_EGRESS_POLICY="block-lan"` is the default
-and installs verified `FORWARD` rejects for private IPv4 and Tailscale CGNAT
-ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
-`100.64.0.0/10`) so community stdio MCP server code inside the container
-cannot reach private LAN or tailnet destinations unless the operator opts in.
-Set `INCUS_EGRESS_POLICY="allow-lan"` to remove those reject rules and allow
-normal NAT egress from the container.
+Bridge egress is explicit but deliberately narrow. `INCUS_EGRESS_POLICY="block-lan"`
+is the default and installs verified host `FORWARD` rejects for traffic entering
+from the Incus bridge and targeting private IPv4/Cgnat ranges (`10.0.0.0/8`,
+`172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`). This blocks
+bridge-forwarded private destinations over `eth0`; it is **not** a full tailnet
+or in-container firewall policy. Tailscale traffic originates inside the
+container, so use a tagged Tailscale auth key and tailnet ACLs for tailnet
+egress control. Set `INCUS_EGRESS_POLICY="allow-lan"` to remove those reject
+rules and allow normal bridge-forwarded NAT egress from the container. The
+plugin also removes the rules it owns when Incus mode stops or the plugin is
+uninstalled.
 
 Reachability for `incus` mode is via Tailscale running inside the container,
 not host port forwarding. `INCUS_TS_AUTHKEY` is a write-only, one-shot
 Settings > Labby field: the value is never echoed back into the form, is
 written into the container only as a mode-0600 temporary file, is removed
 after `tailscale up`, and is cleared/redacted from both `labby.cfg` and
-`labby.cfg.bak` after a successful join. If a supplied key cannot join the
-tailnet, startup fails visibly.
+`labby.cfg.bak` after an attempted consumption. Leaving the password field
+blank when saving also clears any previously stored key, which is how to
+recover from an expired or failed preauth key.
 
 The Incus image pin is independent of the plugin package version and the
 bundled native `labbyVersion`. `INCUS_IMAGE_VERSION` defaults to `"1.2.0"`
@@ -93,8 +99,11 @@ dfb57f59b52a84db5b14ac71588b676d7135d4b24916628006aaaed8f022c25d
 `INCUS_IMAGE_VERSION` before `incus` mode can start. Cached image bytes live
 under `${LABBY_DIR}/incus-images`, include the image version in the filename,
 and are verified against the configured SHA256 before import; corrupt caches
-are removed and redownloaded once, then fail closed if verification still
-does not match.
+are removed and redownloaded once, then fail closed if verification still does
+not match. Imported Incus images and launched containers are stamped with the
+configured image version and SHA256; if an existing alias or container does not
+match the configured pin, startup fails with explicit delete/recreate guidance
+instead of silently reusing stale runtime bytes.
 
 Known release gap: the `labby-incus-x86_64-unknown-linux-gnu.tar.xz` release
 asset has not published successfully since `v1.2.0` (`gh release view v1.3.0

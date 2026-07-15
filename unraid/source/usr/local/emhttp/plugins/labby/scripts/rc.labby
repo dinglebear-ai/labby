@@ -5,6 +5,7 @@
 # RUNTIME_MODE="incus": delegates lifecycle to an Incus system container so
 # stdio MCP servers have a real toolchain floor without running on the NAS
 # host itself.
+set -o pipefail
 
 EMHTTP="/usr/local/emhttp/plugins/labby"
 BIN="${EMHTTP}/bin/labby"
@@ -22,7 +23,10 @@ LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
 HTTP_HOST="${HTTP_HOST:-127.0.0.1}"
 HTTP_PORT="${HTTP_PORT:-8765}"
 INCUS_CONTAINER_NAME="${INCUS_CONTAINER_NAME:-labby-gateway}"
+INCUS_BRIDGE_NAME="${INCUS_BRIDGE_NAME:-labbybr0}"
 INCUS="/usr/local/incus/bin/incus"
+TIMEOUT="${TIMEOUT:-/usr/bin/timeout}"
+PRIVATE_EGRESS_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10"
 
 PIDFILE="/var/run/labby.pid"
 LOG="/var/log/labby.log"
@@ -40,6 +44,21 @@ export LABBY_MCP_HTTP_PORT="$HTTP_PORT"
 
 ready() {
     curl -fsS -m 2 "http://127.0.0.1:${HTTP_PORT}/ready" >/dev/null 2>&1
+}
+
+bounded() {
+    "$TIMEOUT" "$@"
+}
+
+cleanup_incus_egress_rules() {
+    local cidr
+
+    command -v iptables >/dev/null 2>/dev/null || return 0
+    for cidr in $PRIVATE_EGRESS_CIDRS; do
+        while iptables -C FORWARD -i "$INCUS_BRIDGE_NAME" -d "$cidr" -j REJECT >/dev/null 2>/dev/null; do
+            iptables -D FORWARD -i "$INCUS_BRIDGE_NAME" -d "$cidr" -j REJECT >/dev/null 2>/dev/null || break
+        done
+    done
 }
 
 validate_incus_container_name() {
@@ -62,12 +81,12 @@ incus_env_or_fail() {
 incus_state() {
     local info
 
-    info="$("$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>/dev/null)" || return 1
+    info="$(bounded 15 "$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>/dev/null)" || return 1
     printf '%s\n' "$info" | awk -F': ' '$1 == "Status" { print toupper($2); exit }'
 }
 
 incus_ready() {
-    "$INCUS" exec "$INCUS_CONTAINER_NAME" -- curl -fsS -m 2 http://127.0.0.1:8765/ready >/dev/null 2>&1
+    bounded 10 "$INCUS" exec "$INCUS_CONTAINER_NAME" -- curl -fsS -m 2 http://127.0.0.1:8765/ready >/dev/null 2>&1
 }
 
 start_native() {
@@ -160,36 +179,46 @@ status_native() {
 }
 
 start_incus() {
+    local init_status
+
     incus_env_or_fail || return 1
     if [ ! -x "${EMHTTP}/scripts/labby-incus-init.sh" ]; then
         echo "labby: ${EMHTTP}/scripts/labby-incus-init.sh not found or not executable"
         return 1
     fi
-    "${EMHTTP}/scripts/labby-incus-init.sh" || {
-        echo "labby: Incus startup failed — see syslog and /var/log/labby.log"
+    LABBY_ARRAY_START="${LABBY_ARRAY_START:-0}" "${EMHTTP}/scripts/labby-incus-init.sh" 2>&1 | tee -a "$LOG"
+    init_status="${PIPESTATUS[0]}"
+    if [ "$init_status" -ne 0 ]; then
+        echo "labby: Incus startup failed — see $LOG and syslog tag labby-incus"
         return 1
-    }
+    fi
 }
 
 stop_incus() {
     local state
 
-    incus_env_or_fail || return 1
+    incus_env_or_fail || {
+        cleanup_incus_egress_rules
+        return 1
+    }
 
     state="$(incus_state || true)"
     if [ -z "$state" ]; then
         echo "labby: Incus container ${INCUS_CONTAINER_NAME} not created yet"
+        cleanup_incus_egress_rules
         return 0
     fi
     if [ "$state" != "RUNNING" ]; then
         echo "labby: Incus container ${INCUS_CONTAINER_NAME} already ${state}"
+        cleanup_incus_egress_rules
         return 0
     fi
 
     echo "labby: stopping Incus container ${INCUS_CONTAINER_NAME}"
-    if ! "$INCUS" stop --timeout 30 -- "$INCUS_CONTAINER_NAME" 2>/dev/null; then
+    if ! bounded 45 "$INCUS" stop --timeout 30 -- "$INCUS_CONTAINER_NAME" 2>/dev/null; then
         state="$(incus_state || true)"
         if [ -z "$state" ] || [ "$state" != "RUNNING" ]; then
+            cleanup_incus_egress_rules
             return 0
         fi
         echo "labby: failed to request stop for Incus container ${INCUS_CONTAINER_NAME}"
@@ -198,8 +227,10 @@ stop_incus() {
 
     for _ in $(seq 1 20); do
         state="$(incus_state || true)"
-        [ -z "$state" ] && return 0
-        [ "$state" != "RUNNING" ] && return 0
+        if [ -z "$state" ] || [ "$state" != "RUNNING" ]; then
+            cleanup_incus_egress_rules
+            return 0
+        fi
         sleep 0.5
     done
 

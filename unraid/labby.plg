@@ -40,15 +40,15 @@
   <!ENTITY tarball      "lab-x86_64-unknown-linux-gnu.tar.gz">
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
-  <!ENTITY cfgMD5       "ce501d2aa15557a6e9e00408bea22b08">
-  <!ENTITY pageMD5      "875f22545b08fcdf70b3c314b4225cc8">
-  <!ENTITY rcMD5        "34ee0c711345d005d47a2b65a513a496">
+  <!ENTITY cfgMD5       "5bd58428c9b019cba193ed90efdac0c8">
+  <!ENTITY pageMD5      "d7a4cb8e61ab886885806b8de5fd5189">
+  <!ENTITY rcMD5        "dbd45fb24e6790d4430f7147f97db2d9">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
-  <!ENTITY mountedMD5   "c564b0387a4f115ad7c4721445fc9549">
+  <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
   <!ENTITY incusProfileMD5 "d81420479adfa138a0ba9568da0fa6a0">
   <!ENTITY incusEnvMD5     "3ca02c54bbb520102ca55d800ec9dc9e">
-  <!ENTITY incusInitMD5    "34486e05ab91029587163f4bf448bf26">
+  <!ENTITY incusInitMD5    "3458dc17a23c9779263432b2942df7e4">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
@@ -66,6 +66,9 @@
   installs are unaffected until this is explicitly changed in Settings.
   The Incus image version and SHA256 pin are configured independently from
   the plugin package version; cached image bytes are verified before import.
+  Imported Incus images and existing containers are also checked against
+  the configured pin, first-time array autostart avoids heavy bootstrap
+  work, and stop/uninstall removes the host bridge egress rules it owns.
   See docs/runtime/UNRAID.md for the full architecture and known gaps
   (the referenced labby-incus-*.tar.xz release asset publishing has a
   known CI gap — see the tracked bead referenced there).
@@ -308,6 +311,15 @@ echo "----------------------------------------------------"
 <FILE Run="/bin/bash" Method="remove">
 <INLINE>
 /etc/rc.d/rc.labby stop 2>/dev/null
+. "&plugin;/labby.cfg" 2>/dev/null
+INCUS_BRIDGE_NAME="${INCUS_BRIDGE_NAME:-labbybr0}"
+if command -v iptables >/dev/null 2>/dev/null; then
+  for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
+    while iptables -C FORWARD -i "$INCUS_BRIDGE_NAME" -d "$cidr" -j REJECT >/dev/null 2>/dev/null; do
+      iptables -D FORWARD -i "$INCUS_BRIDGE_NAME" -d "$cidr" -j REJECT >/dev/null 2>/dev/null || break
+    done
+  done
+fi
 rm -f /etc/rc.d/rc.labby
 rm -rf &emhttp;
 echo "Labby plugin removed. State in LABBY_DIR and /boot/config/plugins/labby was left intact."

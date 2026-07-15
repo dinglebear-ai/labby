@@ -19,6 +19,9 @@ READY_URL="http://127.0.0.1:8765/ready"
 PROVISION_SCHEMA_VERSION="1"
 PROVISION_SENTINEL="/var/lib/labby/provisioning-sentinel"
 TS_AUTHKEY_PATH="/run/labby-ts-authkey"
+IMAGE_PROP_VERSION="labby.image_version"
+IMAGE_PROP_SHA256="labby.image_sha256"
+PRIVATE_EGRESS_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10"
 
 log() {
     logger -t "$LOG_TAG" "$*" 2>/dev/null || true
@@ -76,8 +79,8 @@ INCUS_BRIDGE_SUBNET="${INCUS_BRIDGE_SUBNET:-10.99.99.1/24}"
 INCUS_EGRESS_POLICY="${INCUS_EGRESS_POLICY:-block-lan}"
 LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
 
-STORAGE_POOL_NAME="${INCUS_STORAGE_POOL_NAME:-labby-dir}"
-PROFILE_NAME="${INCUS_PROFILE_NAME:-labby-gateway}"
+STORAGE_POOL_NAME="labby-dir"
+PROFILE_NAME="labby-gateway"
 IMAGE_ALIAS="labby-gateway-${INCUS_IMAGE_VERSION}"
 IMAGE_ASSET="labby-incus-x86_64-unknown-linux-gnu.tar.xz"
 IMAGE_URL="https://github.com/jmagar/labby/releases/download/v${INCUS_IMAGE_VERSION}/${IMAGE_ASSET}"
@@ -130,10 +133,6 @@ validate_inputs() {
         || fail "INCUS_IMAGE_VERSION contains unsupported characters: ${INCUS_IMAGE_VERSION}"
     validate_sha256 "$INCUS_IMAGE_SHA256" \
         || fail "INCUS_IMAGE_SHA256 must be the pinned 64-character sha256 for v${INCUS_IMAGE_VERSION}"
-    validate_safe_token "$STORAGE_POOL_NAME" \
-        || fail "INCUS_STORAGE_POOL_NAME contains unsupported characters: ${STORAGE_POOL_NAME}"
-    validate_safe_token "$PROFILE_NAME" \
-        || fail "INCUS_PROFILE_NAME contains unsupported characters: ${PROFILE_NAME}"
     validate_safe_token "$INCUS_BRIDGE_NAME" \
         || fail "INCUS_BRIDGE_NAME contains unsupported characters: ${INCUS_BRIDGE_NAME}"
     validate_ipv4_cidr "$INCUS_BRIDGE_SUBNET" \
@@ -153,22 +152,30 @@ validate_inputs() {
 
 acquire_lock() {
     local lockfile="/var/run/labby-incus-init.lock"
+    local i=0
 
     exec 200>"$lockfile"
     flock -n 200 || {
         log "another labby-incus-init instance is already running"
-        exit 0
+        while [ "$i" -lt 120 ]; do
+            if instance_exists && container_ready; then
+                log "concurrent labby-incus-init reached readiness"
+                exit 0
+            fi
+            i=$((i + 1))
+            sleep 1
+        done
+        fail "another labby-incus-init instance is still running and ${INCUS_CONTAINER_NAME} is not ready after 120s"
     }
 }
 
 wait_for_incus() {
-    local i=0
+    local deadline=$((SECONDS + 30))
 
-    while [ "$i" -lt 30 ]; do
-        if run_timeout 10 "$INCUS" info >/dev/null 2>&1; then
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if run_timeout 3 "$INCUS" info >/dev/null 2>&1; then
             return 0
         fi
-        i=$((i + 1))
         sleep 1
     done
 
@@ -259,17 +266,17 @@ apply_egress_policy() {
     case "$INCUS_EGRESS_POLICY" in
         allow-lan)
             require_command iptables
-            for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
+            for cidr in $PRIVATE_EGRESS_CIDRS; do
                 remove_iptables_rule "$cidr"
             done
-            log "egress policy allow-lan: ${INCUS_BRIDGE_NAME} NAT permits outbound LAN/WAN access by explicit operator config"
+            log "egress policy allow-lan: ${INCUS_BRIDGE_NAME} NAT permits bridge-forwarded private LAN access by explicit operator config"
             ;;
         block-lan)
             require_command iptables
-            for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
+            for cidr in $PRIVATE_EGRESS_CIDRS; do
                 ensure_iptables_rule "$cidr"
             done
-            log "egress policy block-lan: installed and verified FORWARD rejects for private/tailnet destination ranges"
+            log "egress policy block-lan: installed and verified FORWARD rejects for bridge-forwarded private destination ranges; use Tailscale ACLs for tailnet policy"
             ;;
     esac
 }
@@ -353,14 +360,26 @@ ensure_image_cache() {
 }
 
 ensure_image_imported() {
+    local actual_version
+    local actual_sha256
+
     if run_timeout 15 "$INCUS" image info -- "local:${IMAGE_ALIAS}" >/dev/null 2>&1; then
+        actual_version="$(run_timeout 15 "$INCUS" image get-property "local:${IMAGE_ALIAS}" "$IMAGE_PROP_VERSION" 2>/dev/null || true)"
+        actual_sha256="$(run_timeout 15 "$INCUS" image get-property "local:${IMAGE_ALIAS}" "$IMAGE_PROP_SHA256" 2>/dev/null || true)"
+        [ "$actual_version" = "$INCUS_IMAGE_VERSION" ] && [ "$actual_sha256" = "$INCUS_IMAGE_SHA256" ] \
+            || fail "existing Incus image alias ${IMAGE_ALIAS} is not stamped with the configured version/SHA256; delete it with 'incus image delete ${IMAGE_ALIAS}' and rerun so verified bytes are imported"
         return 0
     fi
 
     ensure_image_cache
     log "importing verified image cache as ${IMAGE_ALIAS}"
-    run_timeout 300 "$INCUS" image import --alias "$IMAGE_ALIAS" -- "$IMAGE_CACHE_FILE" \
+    run_timeout 300 "$INCUS" image import "$IMAGE_CACHE_FILE" --alias "$IMAGE_ALIAS" \
         || fail "failed to import Incus image ${IMAGE_CACHE_FILE}"
+    run_timeout 30 "$INCUS" image set-property "local:${IMAGE_ALIAS}" \
+        "${IMAGE_PROP_VERSION}=${INCUS_IMAGE_VERSION}" \
+        "${IMAGE_PROP_SHA256}=${INCUS_IMAGE_SHA256}" \
+        || fail "failed to stamp Incus image ${IMAGE_ALIAS} with version/SHA256 metadata"
+    ensure_image_imported
 }
 
 instance_exists() {
@@ -374,16 +393,25 @@ instance_state() {
 
 ensure_container_running() {
     local state
+    local actual_version
+    local actual_sha256
 
     if ! instance_exists; then
         ensure_image_imported
         log "launching ${INCUS_CONTAINER_NAME} from ${IMAGE_ALIAS}"
-        run_timeout 300 "$INCUS" launch --profile default --profile "$PROFILE_NAME" -- "local:${IMAGE_ALIAS}" "$INCUS_CONTAINER_NAME" \
+        run_timeout 300 "$INCUS" launch --profile "$PROFILE_NAME" -- "local:${IMAGE_ALIAS}" "$INCUS_CONTAINER_NAME" \
             || fail "failed to launch ${INCUS_CONTAINER_NAME}"
         run_timeout 30 "$INCUS" config set -- "$INCUS_CONTAINER_NAME" "user.labby.image_version=${INCUS_IMAGE_VERSION}" \
             || fail "failed to annotate ${INCUS_CONTAINER_NAME} with image version"
+        run_timeout 30 "$INCUS" config set -- "$INCUS_CONTAINER_NAME" "user.labby.image_sha256=${INCUS_IMAGE_SHA256}" \
+            || fail "failed to annotate ${INCUS_CONTAINER_NAME} with image sha256"
         return 0
     fi
+
+    actual_version="$(run_timeout 15 "$INCUS" config get -- "$INCUS_CONTAINER_NAME" user.labby.image_version 2>/dev/null || true)"
+    actual_sha256="$(run_timeout 15 "$INCUS" config get -- "$INCUS_CONTAINER_NAME" user.labby.image_sha256 2>/dev/null || true)"
+    [ "$actual_version" = "$INCUS_IMAGE_VERSION" ] && [ "$actual_sha256" = "$INCUS_IMAGE_SHA256" ] \
+        || fail "existing Incus container ${INCUS_CONTAINER_NAME} was created for image version/SHA ${actual_version:-unknown}/${actual_sha256:-unknown}, not ${INCUS_IMAGE_VERSION}/${INCUS_IMAGE_SHA256}; delete/recreate it after backing up any needed state"
 
     state="$(instance_state || true)"
     if [ "$state" != "RUNNING" ]; then
@@ -394,17 +422,16 @@ ensure_container_running() {
 }
 
 wait_for_network() {
-    local i=0
+    local deadline=$((SECONDS + 60))
 
-    while [ "$i" -lt 30 ]; do
-        if incus_exec 15 sh -c "ip -4 addr show dev eth0 | grep -q 'inet '" >/dev/null 2>&1; then
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if incus_exec 3 sh -c "ip -4 addr show dev eth0 | grep -q 'inet '" >/dev/null 2>&1; then
             return 0
         fi
-        i=$((i + 1))
         sleep 1
     done
 
-    fail "${INCUS_CONTAINER_NAME} did not acquire an IPv4 address on eth0 after 30s"
+    fail "${INCUS_CONTAINER_NAME} did not acquire an IPv4 address on eth0 after 60s"
 }
 
 container_ready() {
@@ -412,13 +439,12 @@ container_ready() {
 }
 
 wait_for_ready() {
-    local i=0
+    local deadline=$((SECONDS + 60))
 
-    while [ "$i" -lt 60 ]; do
+    while [ "$SECONDS" -lt "$deadline" ]; do
         if container_ready; then
             return 0
         fi
-        i=$((i + 1))
         sleep 1
     done
 
@@ -531,7 +557,10 @@ consume_tailscale_authkey() {
     status=$?
     set -e
     cleanup_ts_authkey
-    [ "$status" -eq 0 ] || fail "tailscale up failed for ${INCUS_CONTAINER_NAME}"
+    if [ "$status" -ne 0 ]; then
+        clear_stored_ts_authkey
+        fail "tailscale up failed for ${INCUS_CONTAINER_NAME}; cleared stored one-shot INCUS_TS_AUTHKEY"
+    fi
 
     tailscale_has_ip || fail "tailscale did not report an IPv4 address after join"
     log "tailscale joined and ${TS_AUTHKEY_PATH} removed"
@@ -547,6 +576,7 @@ desired_sentinel() {
     local labby_version="$1"
 
     printf 'image_version=%s\n' "$INCUS_IMAGE_VERSION"
+    printf 'image_sha256=%s\n' "$INCUS_IMAGE_SHA256"
     printf 'labby_version=%s\n' "$labby_version"
     printf 'provision_schema=%s\n' "$PROVISION_SCHEMA_VERSION"
 }
@@ -579,14 +609,19 @@ converge_provisioning() {
     labby_version="$(container_labby_version)"
     [ -n "$labby_version" ] || fail "could not determine baked labby binary version inside ${INCUS_CONTAINER_NAME}"
 
-    if container_ready; then
+    if container_ready && sentinel_matches "$labby_version"; then
         ensure_service_active
-        log "${INCUS_CONTAINER_NAME} is already running and ready; skipping labby setup --provision --yes"
+        log "${INCUS_CONTAINER_NAME} is already running, ready, and provision sentinel matches; skipping labby setup --provision --yes"
         return 0
     fi
 
+    if [ "${LABBY_ARRAY_START:-0}" = "1" ] && container_ready; then
+        ensure_service_active
+        fail "${INCUS_CONTAINER_NAME} is ready but provision sentinel drifted; use Settings > Labby Start/Restart or SSH rc.labby restart to reprovision outside the array-start hook"
+    fi
+
     if sentinel_matches "$labby_version"; then
-        log "provisioning sentinel matches image=${INCUS_IMAGE_VERSION}, labby=${labby_version}, schema=${PROVISION_SCHEMA_VERSION}; restarting service without reprovisioning"
+        log "provisioning sentinel matches image=${INCUS_IMAGE_VERSION}, sha256=${INCUS_IMAGE_SHA256}, labby=${labby_version}, schema=${PROVISION_SCHEMA_VERSION}; restarting service without reprovisioning"
         incus_exec 120 systemctl restart labby.service \
             || fail "labby.service restart failed inside ${INCUS_CONTAINER_NAME}"
     else
@@ -606,6 +641,10 @@ main() {
     validate_inputs
     acquire_lock
     wait_for_incus
+    if [ "${LABBY_ARRAY_START:-0}" = "1" ] && ! instance_exists; then
+        log "array-start autostart skipped first-time Incus bootstrap for ${INCUS_CONTAINER_NAME}; use Settings > Labby Start or /etc/rc.d/rc.labby start once to create it"
+        exit 0
+    fi
     ensure_storage_pool
     ensure_bridge
     apply_egress_policy

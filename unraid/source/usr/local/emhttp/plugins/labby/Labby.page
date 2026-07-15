@@ -181,9 +181,10 @@ if (isset($_POST['labby_settings_save'])) {
         $newCfg['INCUS_CONTAINER_NAME'] = $postedIncusContainerName;
         $newCfg['INCUS_IMAGE_VERSION'] = $postedIncusImageVersion;
         $newCfg['INCUS_IMAGE_SHA256'] = $postedIncusImageSha256;
-        if ($postedIncusTsAuthkey !== '') {
-            $newCfg['INCUS_TS_AUTHKEY'] = $postedIncusTsAuthkey;
-        }
+        // Write-only one-shot input: a non-empty value stores a new key for
+        // the next start, and an empty value clears any previously stored key
+        // that may have failed to join. The form never echoes the old value.
+        $newCfg['INCUS_TS_AUTHKEY'] = $postedIncusTsAuthkey;
         $newCfg['INCUS_BRIDGE_NAME'] = $postedIncusBridgeName;
         $newCfg['INCUS_BRIDGE_SUBNET'] = $postedIncusBridgeSubnet;
         $newCfg['INCUS_EGRESS_POLICY'] = $postedIncusEgressPolicy;
@@ -248,7 +249,10 @@ if (isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 
     $settingsError = "labby $requestedAction did not complete as expected:\n" . $actionOutput;
 }
 
-$status = trim((string) shell_exec('/etc/rc.d/rc.labby status 2>&1'));
+$status = trim((string) shell_exec('timeout 10 /etc/rc.d/rc.labby status 2>&1'));
+if ($status === '') {
+    $status = 'labby: status unavailable (rc.labby status timed out or produced no output)';
+}
 $running = strpos($status, 'RUNNING') !== false;
 $port = $cfg['HTTP_PORT'];
 $host = $cfg['HTTP_HOST'];
@@ -286,7 +290,7 @@ _(Incus image SHA256)_:
 
 _(Tailscale auth key)_:
 : <input type="password" name="INCUS_TS_AUTHKEY" value="" size="40" placeholder="tskey-auth-..." autocomplete="off">
-<blockquote class="inline_help">_(Optional write-only one-shot key so the container joins your tailnet on next start. The stored value is never echoed back into this form, is cleared/redacted from labby.cfg after successful use, and startup fails visibly if a supplied key cannot join.)_</blockquote>
+<blockquote class="inline_help">_(Optional write-only one-shot key so the container joins your tailnet on next start. The stored value is never echoed back into this form; leave this blank when saving to clear any previously stored key.)_</blockquote>
 
 _(Incus bridge name)_:
 : <input type="text" name="INCUS_BRIDGE_NAME" value="<?= htmlspecialchars($cfg['INCUS_BRIDGE_NAME'], ENT_QUOTES) ?>" size="20" pattern="[A-Za-z0-9._-]{1,32}" title="A safe Incus network name using only letters, numbers, . _ -">
@@ -297,10 +301,10 @@ _(Incus bridge subnet)_:
 
 _(Incus egress policy)_:
 : <select name="INCUS_EGRESS_POLICY">
-  <?= mk_option($cfg['INCUS_EGRESS_POLICY'], "block-lan", "Block private LAN/tailnet egress (default)") ?>
-  <?= mk_option($cfg['INCUS_EGRESS_POLICY'], "allow-lan", "Allow LAN/tailnet egress") ?>
+  <?= mk_option($cfg['INCUS_EGRESS_POLICY'], "block-lan", "Block bridge-direct private egress (default)") ?>
+  <?= mk_option($cfg['INCUS_EGRESS_POLICY'], "allow-lan", "Allow bridge-direct private egress") ?>
   </select>
-<blockquote class="inline_help">_(Block LAN keeps community stdio MCP servers inside the gateway container from reaching private network ranges unless you explicitly opt in.)_</blockquote>
+<blockquote class="inline_help">_(Block LAN installs host rules for traffic forwarded from the Incus bridge to private destination ranges. It is not a Tailscale ACL; use a tagged Tailscale auth key and tailnet policy for tailnet egress control.)_</blockquote>
 
 </div>
 
