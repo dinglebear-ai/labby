@@ -21,6 +21,11 @@ if [ -n "$GLIBC_VER" ]; then
     if [ "$MAJOR" -lt 2 ] || { [ "$MAJOR" -eq 2 ] && [ "$MINOR" -lt 39 ]; }; then
         fail "glibc $GLIBC_VER is older than the required 2.39 (labby needs a newer Unraid base)"
     fi
+else
+    # `ldd --version` output didn't match the expected format — skip the
+    # check rather than fail closed, but say so, since a silent skip here
+    # would otherwise look identical to "checked and it's fine" in the log.
+    echo "labby-preflight: could not parse glibc version from 'ldd --version' — skipping glibc check" >&2
 fi
 
 command -v curl >/dev/null 2>&1 || fail "curl not found on PATH (needed for readiness polling)"

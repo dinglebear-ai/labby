@@ -7,4 +7,7 @@ CFG="/boot/config/plugins/labby/labby.cfg"
 [ "${SERVICE:-disabled}" = "enabled" ] || exit 0
 
 logger -t labby "array up: starting labby"
-/etc/rc.d/rc.labby start || logger -t labby "labby failed to start"
+if ! /etc/rc.d/rc.labby start; then
+    logger -t labby "labby failed to start — see /var/log/labby.log"
+    exit 1
+fi

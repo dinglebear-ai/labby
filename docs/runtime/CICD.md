@@ -26,7 +26,7 @@ jobs when their changed-path category is enabled:
 | Check | Category | Command |
 |-------|----------|---------|
 | Secret scan | always | `gitleaks/gitleaks-action@v3` full-history scan with existing historical findings baselined in `.gitleaksignore` |
-| Unraid plugin checksums | always | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`; `release.yml` additionally checks the `version` entity and release-tarball `<MD5>` against the tag being released |
+| Unraid plugin checksums | always | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |

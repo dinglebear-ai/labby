@@ -108,17 +108,44 @@ if (isset($_POST['labby_settings_save'])) {
     }
 
     if ($settingsError === null) {
-        @mkdir(dirname($cfgFile), 0755, true);
-        file_put_contents($cfgFile, labby_cfg_template($newCfg));
-        header('Location: /Settings/Labby');
-        exit;
+        // Backup-first, atomic-write behavior per this repo's own config-
+        // mutation contract (CLAUDE.md) — a bare file_put_contents() whose
+        // return value is never checked can silently no-op (read-only
+        // flash, disk full) while this page still redirects as if the
+        // save succeeded, leaving the operator with no idea SERVICE never
+        // actually flipped to "enabled" until the next array start fails
+        // to bring labby up.
+        $cfgDir = dirname($cfgFile);
+        if (!is_dir($cfgDir) && !@mkdir($cfgDir, 0755, true) && !is_dir($cfgDir)) {
+            $settingsError = "Could not create $cfgDir — check the flash device's permissions and free space.";
+        } else {
+            $tmpFile = $cfgFile . '.tmp.' . getmypid();
+            $written = @file_put_contents($tmpFile, labby_cfg_template($newCfg));
+            if ($written === false || !@rename($tmpFile, $cfgFile)) {
+                @unlink($tmpFile);
+                $settingsError = "Could not write $cfgFile — check the flash device's permissions and free space.";
+            } else {
+                header('Location: /Settings/Labby');
+                exit;
+            }
+        }
     }
 }
 
 if (isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 'stop'], true)) {
-    shell_exec('/etc/rc.d/rc.labby ' . escapeshellarg($_POST['labby_action']) . ' 2>&1');
-    header('Location: /Settings/Labby');
-    exit;
+    $requestedAction = $_POST['labby_action'];
+    $actionOutput = trim((string) shell_exec('/etc/rc.d/rc.labby ' . escapeshellarg($requestedAction) . ' 2>&1'));
+    $postActionRunning = strpos((string) shell_exec('/etc/rc.d/rc.labby status 2>&1'), 'RUNNING') !== false;
+    $actionSucceeded = $requestedAction === 'start' ? $postActionRunning : !$postActionRunning;
+    if ($actionSucceeded) {
+        header('Location: /Settings/Labby');
+        exit;
+    }
+    // Do not redirect on failure — a bare redirect here would silently
+    // discard the one thing (rc.labby's own diagnostic output) that
+    // explains why start/stop didn't do what was requested, leaving the
+    // operator to SSH in and read /var/log/labby.log themselves.
+    $settingsError = "labby $requestedAction did not complete as expected:\n" . $actionOutput;
 }
 
 $status = trim((string) shell_exec('/etc/rc.d/rc.labby status 2>&1'));
@@ -128,7 +155,7 @@ $host = $cfg['HTTP_HOST'];
 $lanReachable = $host !== '127.0.0.1';
 ?>
 <?php if ($settingsError !== null): ?>
-<div class="notice"><span class="red-text"><?= htmlspecialchars($settingsError, ENT_QUOTES) ?></span></div>
+<div class="notice"><span class="red-text"><?= nl2br(htmlspecialchars($settingsError, ENT_QUOTES)) ?></span></div>
 <?php endif; ?>
 
 _(Status)_:
@@ -157,6 +184,7 @@ _(HTTP host)_:
 
 _(HTTP port)_:
 : <input type="text" name="HTTP_PORT" value="<?= htmlspecialchars($cfg['HTTP_PORT'], ENT_QUOTES) ?>" size="6" maxlength="5" pattern="[0-9]{1,5}" title="A port number between 1 and 65535">
+<blockquote class="inline_help">_(Takes effect on the next restart, like HTTP host — Apply alone does not restart a currently running labby.)_</blockquote>
 
 &nbsp;
 : <input type="submit" name="#apply" value="_(Apply)_">

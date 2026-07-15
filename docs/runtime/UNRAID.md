@@ -23,6 +23,10 @@ Empirically verified on real hardware (Unraid 7.3.1, glibc 2.43): the
 `ldd` resolves cleanly (libc, libgcc_s, libm only) and `labby serve` fully
 bootstraps. The binary's max required symbol version is `GLIBC_2.39`, well
 under Unraid's `2.43`. No musl/static build is needed for this to work.
+(This was a one-off binary-compatibility check on a production NAS, done
+before plugin development started. All later end-to-end plugin testing —
+install/start/stop/settings-form/OAuth-login flows — moved to a dedicated
+test box, `tower` (Unraid 7.3.2); see "Validated end-to-end" below.)
 
 ## Layout
 
@@ -149,16 +153,28 @@ scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also c
   afterward fails CI immediately (this is exactly the failure mode that
   motivated the script — see git history for the `Labby.page` checksum
   drift caught and fixed during initial scaffolding).
-- `release.yml`'s `release` job runs the `--tag`/`--tarball` form against
-  the tag actually being released, before the GitHub Release is created —
-  mirroring the version-matches-tag verify pattern already used for
-  `packages/labby-mcp/package.json` and `server.json` in the same workflow.
-  It checks `labbyVersion` against the tag, not the plugin's own `version`.
-- Neither job auto-commits a fix; a mismatch fails the run and the fix must
-  be applied locally (`--fix`) and committed like any other change. This
-  was a deliberate choice over having CI push a bot commit back to `main`
-  mid-release, to match the rest of this workflow's existing convention and
-  avoid a new bot-identity/branch-protection interaction.
+- The `--tag`/`--tarball` form is a **manual tool, not wired into any CI
+  job**. An earlier version of this PR ran it automatically from
+  `release.yml` against `${{ github.ref_name }}` (the tag currently being
+  released) — that was wrong on two counts, caught in review: `labbyVersion`
+  intentionally pins to a specific, already-published, manually-vetted
+  labby release (see "Two version numbers" above), not whatever tag is
+  currently being built, so comparing it to `github.ref_name` would fail on
+  every release where they legitimately differ (which is the normal case);
+  and even if they matched, a freshly-built release tarball's MD5 is not
+  reproducible build-to-build — GNU tar embeds each packaged file's mtime,
+  so byte-identical binary content still produces a different archive hash
+  on every CI run, making an automatic same-run comparison impossible to
+  ever pass. Run this form by hand instead, against a tarball downloaded
+  from the already-published release you're pointing `labbyVersion` at,
+  whenever you deliberately bump it:
+  ```
+  gh release download vX.Y.Z --repo jmagar/labby -p "lab-x86_64-unknown-linux-gnu.tar.gz"
+  scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball lab-x86_64-unknown-linux-gnu.tar.gz --fix
+  ```
+- The `unraid-plugin-check` CI job does not auto-commit a fix; a mismatch
+  fails the run and the fix must be applied locally (`--fix`) and committed
+  like any other change.
 - The `version` entity itself has no automated check — it's a plugin-package
   concern bumped by hand, the same way `incus-unraid` hand-bumps its own
   `.plg` version per content change, decoupled from any upstream Incus

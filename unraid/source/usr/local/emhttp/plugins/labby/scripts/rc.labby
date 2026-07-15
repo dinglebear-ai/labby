@@ -11,7 +11,12 @@ CFG="/boot/config/plugins/labby/labby.cfg"
 [ -f "$CFG" ] && . "$CFG"
 
 LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
-HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
+# 127.0.0.1 on purpose, matching labby.cfg's own default — see the comment
+# above HTTP_HOST there. This fallback only matters if labby.cfg is ever
+# missing the key entirely (corrupted flash, restored-from-backup edge
+# case); it must not silently reintroduce the 0.0.0.0-without-a-token
+# start failure that default was fixed to avoid.
+HTTP_HOST="${HTTP_HOST:-127.0.0.1}"
 HTTP_PORT="${HTTP_PORT:-8765}"
 
 PIDFILE="/var/run/labby.pid"
@@ -61,13 +66,31 @@ start() {
 
 stop() {
     echo "labby: stopping"
-    if [ -f "$PIDFILE" ]; then
-        kill -SIGINT "$(cat "$PIDFILE")" 2>/dev/null
-        for _ in $(seq 1 20); do
-            kill -0 "$(cat "$PIDFILE")" 2>/dev/null || break
+    if [ ! -f "$PIDFILE" ]; then
+        return 0
+    fi
+    pid="$(cat "$PIDFILE")"
+    kill -SIGINT "$pid" 2>/dev/null
+    for _ in $(seq 1 20); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.5
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null
+        for _ in $(seq 1 10); do
+            kill -0 "$pid" 2>/dev/null || break
             sleep 0.5
         done
-        kill -9 "$(cat "$PIDFILE")" 2>/dev/null
+    fi
+    if kill -0 "$pid" 2>/dev/null; then
+        # Still alive after SIGKILL (e.g. stuck in uninterruptible D-state).
+        # Do NOT remove the pidfile or claim success — a caller like
+        # event/unmounting_disks must not let the array unmount out from
+        # under a labby process that still holds open handles on
+        # LABBY_DIR's SQLite files (auth.db/registry.db), which would risk
+        # corrupting them.
+        echo "labby: FAILED to stop (pid $pid still alive after SIGKILL)"
+        return 1
     fi
     rm -f "$PIDFILE"
 }
@@ -84,7 +107,10 @@ case "$1" in
     start) start ;;
     stop) stop ;;
     restart)
-        stop
+        # Do not start a new process on top of one stop() failed to reap —
+        # that would either fail the port bind outright or, worse, leave
+        # two processes writing to the same LABBY_DIR state concurrently.
+        stop || exit 1
         sleep 1
         start
         ;;

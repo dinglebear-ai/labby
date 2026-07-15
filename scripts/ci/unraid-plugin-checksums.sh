@@ -1,18 +1,28 @@
 #!/usr/bin/env bash
-# Verifies (default) or rewrites (--fix) the version/checksum entities in
-# unraid/labby.plg against unraid/source/ and, if given, a built release
-# tarball. Mirrors the version-matches-tag verify pattern release.yml
-# already applies to packages/labby-mcp/package.json and server.json —
-# unraid/labby.plg drifting silently out of sync is the exact failure mode
-# this exists to catch (see docs/runtime/UNRAID.md).
+# Verifies (default) or rewrites (--fix) the checksum/labbyVersion entities
+# in unraid/labby.plg against unraid/source/ and, if given, a built release
+# tarball. unraid/labby.plg drifting silently out of sync with
+# unraid/source/ is the exact failure mode this exists to catch (see
+# docs/runtime/UNRAID.md).
 #
 # Usage:
 #   scripts/ci/unraid-plugin-checksums.sh [--fix] [--tag vX.Y.Z] [--tarball PATH]
 #
 # --tag and --tarball are optional: without them, only the six
 # unraid/source/ companion-file checksums are checked (cheap, safe to run
-# on every PR). Release CI additionally passes both so the tarball MD5 and
-# version entity are checked against the actual tag being released.
+# on every PR — this is what ci.yml's always-on unraid-plugin-check job
+# runs). --tag/--tarball are a MANUAL tool, not wired into any CI job:
+# `labbyVersion` intentionally references a specific, already-published
+# labby release the operator has vetted (see "Two version numbers, on
+# purpose" in docs/runtime/UNRAID.md) — it is not meant to track whatever
+# tag is currently being released, and a freshly-built release tarball's
+# MD5 is not reproducible build-to-build (GNU tar embeds file mtimes), so
+# there is no safe way to auto-verify tarballMD5 against a same-run build.
+# Run this form by hand, against a tarball downloaded from the
+# already-published release you are pointing labbyVersion at, whenever you
+# deliberately bump it — e.g.:
+#   gh release download vX.Y.Z --repo jmagar/labby -p "lab-x86_64-unknown-linux-gnu.tar.gz"
+#   scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball lab-x86_64-unknown-linux-gnu.tar.gz --fix
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

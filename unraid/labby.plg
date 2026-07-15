@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.0b">
+  <!ENTITY version      "1.3.0c">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -21,11 +21,11 @@
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "1bb151dd5b7b091e9aed476421281769">
-  <!ENTITY pageMD5      "ff06d0063f2ef3340205a43cb577913b">
-  <!ENTITY rcMD5        "dbf4dd55b50df70e419587c17ae07eb7">
-  <!ENTITY preflightMD5 "c28ec9cc2b2749b79e65c1023fc43411">
-  <!ENTITY mountedMD5   "b7eddfd2888984c46f4c81a199693c5c">
-  <!ENTITY unmountingMD5 "7d6fd9c48a01192306d9f4dd4ee8c542">
+  <!ENTITY pageMD5      "bafb51a8156ba5216a1b39be02f498ab">
+  <!ENTITY rcMD5        "ff33e9576d90e5094ae047855fb90a15">
+  <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
+  <!ENTITY mountedMD5   "c564b0387a4f115ad7c4721445fc9549">
+  <!ENTITY unmountingMD5 "7ccbac8d7d2b1b933f7806b4e3c21711">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
@@ -33,6 +33,31 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.0c
+- rc.labby's stop() now fails loudly (non-zero exit, pidfile kept) instead of
+  silently succeeding when a process survives SIGKILL (e.g. stuck in
+  uninterruptible D-state) — a caller like event/unmounting_disks must not
+  let the array unmount out from under a labby process still holding open
+  handles on LABBY_DIR's SQLite files, which risked corrupting them.
+  restart) no longer starts a fresh process on top of a stop() it couldn't
+  confirm. Both event/disks_mounted and event/unmounting_disks now check
+  rc.labby's exit code and exit non-zero themselves instead of discarding it.
+- Labby.page's settings-save now does a real atomic write (temp file +
+  rename, both return values checked) instead of an unchecked
+  file_put_contents() that could silently no-op on a read-only or full flash
+  device while still redirecting as if the save succeeded. The start/stop
+  action handler now captures and displays rc.labby's own diagnostic output
+  on failure instead of discarding it and redirecting as if it always
+  succeeded.
+- labby-preflight.sh now logs when it can't parse `ldd --version` output
+  instead of silently skipping the glibc check.
+- Removed release.yml's automatic tarballMD5 comparison against a
+  freshly-built-in-CI tarball — GNU tar embeds file mtimes, so a rebuilt
+  tarball's MD5 can never match a pre-committed value even when the binary
+  content is byte-identical, and would have blocked every future release.
+  scripts/ci/unraid-plugin-checksums.sh --tag/--tarball remains a manual,
+  post-release tool; see docs/runtime/UNRAID.md.
+
 ###1.3.0b
 - Labby.page is now a real settings form, not just a status/start-stop
   shell: SERVICE, LABBY_DIR, HTTP_HOST, and HTTP_PORT are all editable
@@ -95,9 +120,10 @@
 </FILE>
 
 <!-- companion scripts/page/config — source of truth is this repo's
-     unraid/source/ tree; the MD5s above are regenerated together with
-     &version; on every tagged release, so they never drift from what's
-     actually committed -->
+     unraid/source/ tree. scripts/ci/unraid-plugin-checksums.sh keeps the
+     MD5s below in sync with those files (checked on every push/PR via
+     ci.yml's always-on job, repairable with its fix flag); unrelated to
+     &version; or to any particular tagged release -->
 <FILE Name="&emhttp;/labby.cfg">
 <URL>&srcURL;/labby.cfg</URL>
 <MD5>&cfgMD5;</MD5>
@@ -151,7 +177,10 @@ chmod +x /etc/rc.d/rc.labby
 <INLINE>
 . "&plugin;/labby.cfg" 2>/dev/null
 if [ "${SERVICE:-disabled}" = "enabled" ] &amp;&amp; mountpoint -q /mnt/user 2>/dev/null; then
-  /etc/rc.d/rc.labby start
+  if ! /etc/rc.d/rc.labby start; then
+    echo ""
+    echo "WARNING: labby failed to start — see /var/log/labby.log"
+  fi
 fi
 echo ""
 echo "----------------------------------------------------"

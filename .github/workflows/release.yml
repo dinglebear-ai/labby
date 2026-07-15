@@ -252,12 +252,6 @@ jobs:
         with:
           pattern: lab-*
           merge-multiple: true
-      - name: Verify Unraid plugin version and checksums match this release
-        run: |
-          set -euo pipefail
-          scripts/ci/unraid-plugin-checksums.sh \
-            --tag "${{ github.ref_name }}" \
-            --tarball lab-x86_64-unknown-linux-gnu.tar.gz
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
