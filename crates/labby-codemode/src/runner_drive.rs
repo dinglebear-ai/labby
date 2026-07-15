@@ -391,9 +391,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             // path below so their promise settles normally.
                             // They ARE metered separately: past
                             // `MAX_INTERNAL_CALLS_PER_RUN` each internal call
-                            // settles fail-open with the empty semantic
-                            // result so sandbox JS cannot loop them into
-                            // unbounded embedding-service round trips.
+                            // settles fail-open with an empty "nothing found"
+                            // result shaped for whichever internal tool it is
+                            // (see `enqueue_internal_call_over_ceiling`) so
+                            // sandbox JS cannot loop them into unbounded
+                            // host round trips.
                             let is_internal = id.starts_with("__lab_internal::");
                             if is_internal {
                                 state.internal_calls_enqueued =

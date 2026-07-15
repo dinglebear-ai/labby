@@ -750,6 +750,23 @@ mod tests {
         );
         assert!(js.contains("typeResponse.dts"));
         assert!(js.contains("```typescript"));
+        // Regression guard: the describe_types round trip must stay inside a
+        // try block, and a rejection must be caught and degrade to no type
+        // body (`typeBody = null`), not propagate into a `describe()`
+        // rejection. String-matching, not behavioral, but it's the difference
+        // between "this test would catch someone deleting the try/catch" and
+        // "it wouldn't" — see the end-to-end test in
+        // `crates/labby/tests/code_mode_runner.rs` for the behavioral proof.
+        assert!(
+            js.contains(
+                "try {\n      var typeResponse = await callTool(\"__lab_internal::describe_types\""
+            ),
+            "the describe_types call must be the first statement inside a try block: {js}"
+        );
+        assert!(
+            js.contains("} catch (e) {\n      typeBody = null;"),
+            "a rejected describe_types call must be caught, not left to propagate: {js}"
+        );
     }
 
     #[test]

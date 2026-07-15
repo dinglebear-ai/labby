@@ -1150,11 +1150,11 @@ fn codemode_proxy_routes_through_call_tool() {
 /// neither of which exercises the actual `async function`/`await`/`try`-`catch`
 /// parse-and-run through a real runner subprocess. Mirrors the tool branch of
 /// `codemode.describe` (`generate_discovery_js`'s output) closely enough to
-/// prove two things the string-matching tests can't: (a) a successful
-/// `describe_types` round trip lands the type body in markdown, and (b) a
-/// REJECTED `describe_types` call is caught and `describe()` still resolves
-/// (never rejects) with markdown minus the type section — the specific
-/// behavior the try/catch fix added, not previously covered end-to-end.
+/// prove two things the string-matching tests can't, by calling `describe()`
+/// twice in one run: (a) a successful `describe_types` round trip lands the
+/// type body in markdown, and (b) a REJECTED `describe_types` call is caught
+/// and `describe()` still resolves (never rejects) with markdown minus the
+/// type section — the specific behavior the try/catch fix added.
 #[test]
 fn codemode_describe_degrades_gracefully_when_describe_types_call_fails() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
@@ -1196,8 +1196,9 @@ codemode.describe = async function(target) {
 };
 "##;
     let code = r#"async () => {
+        const succeeded = await codemode.describe("demo.ping");
         const failed = await codemode.describe("demo.ping");
-        return { failed };
+        return { succeeded, failed };
     }"#;
 
     writeln!(
@@ -1207,17 +1208,34 @@ codemode.describe = async function(target) {
     )
     .expect("write start");
 
-    let call = read_protocol_line(&mut stdout);
-    assert_eq!(call["type"], "tool_call");
-    assert_eq!(call["id"], "__lab_internal::describe_types");
-    assert_eq!(call["params"], json!({ "id": "demo::ping" }));
-    let seq = call["seq"].as_u64().expect("seq");
-    // Inject a real tool_error, not a fail-open ToolResult — this is the case
-    // the try/catch must handle: the host round trip genuinely rejected.
+    // First describe() call: reply with a real ToolResult carrying a dts —
+    // proves the happy path lands the type body in markdown.
+    let first_call = read_protocol_line(&mut stdout);
+    assert_eq!(first_call["type"], "tool_call");
+    assert_eq!(first_call["id"], "__lab_internal::describe_types");
+    assert_eq!(first_call["params"], json!({ "id": "demo::ping" }));
+    let first_seq = first_call["seq"].as_u64().expect("seq");
     writeln!(
         stdin,
         "{}",
-        json!({"type": "tool_error", "seq": seq, "kind": "server_error", "message": "host degraded"})
+        json!({
+            "type": "tool_result",
+            "seq": first_seq,
+            "result": {"dts": "type DemoPingInput = { x: number };\n"}
+        })
+    )
+    .expect("write tool_result");
+
+    // Second describe() call: reply with a real tool_error — this is the case
+    // the try/catch must handle: the host round trip genuinely rejected.
+    let second_call = read_protocol_line(&mut stdout);
+    assert_eq!(second_call["type"], "tool_call");
+    assert_eq!(second_call["id"], "__lab_internal::describe_types");
+    let second_seq = second_call["seq"].as_u64().expect("seq");
+    writeln!(
+        stdin,
+        "{}",
+        json!({"type": "tool_error", "seq": second_seq, "kind": "server_error", "message": "host degraded"})
     )
     .expect("write tool_error");
 
@@ -1228,16 +1246,26 @@ codemode.describe = async function(target) {
          propagate into a run failure: {done}"
     );
     let result = done_json_result(&done);
-    let markdown = result["failed"]["markdown"]
+
+    let succeeded_markdown = result["succeeded"]["markdown"]
         .as_str()
         .expect("markdown must be a string");
     assert!(
-        markdown.contains("# demo.ping"),
-        "the already-resolved path/description must survive a type-fetch failure: {markdown}"
+        succeeded_markdown.contains("Parameters (TypeScript)")
+            && succeeded_markdown.contains("DemoPingInput"),
+        "a successful describe_types round trip must land the type body in markdown: {succeeded_markdown}"
+    );
+
+    let failed_markdown = result["failed"]["markdown"]
+        .as_str()
+        .expect("markdown must be a string");
+    assert!(
+        failed_markdown.contains("# demo.ping"),
+        "the already-resolved path/description must survive a type-fetch failure: {failed_markdown}"
     );
     assert!(
-        !markdown.contains("Parameters (TypeScript)"),
-        "no type section must be appended when describe_types rejected: {markdown}"
+        !failed_markdown.contains("Parameters (TypeScript)"),
+        "no type section must be appended when describe_types rejected: {failed_markdown}"
     );
 
     drop(stdin);
