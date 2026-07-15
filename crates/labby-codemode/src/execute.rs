@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::error::ToolError;
-use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome};
+use crate::host::{CodeModeHost, ExecCtx, ToolCallOutcome, ToolsRender};
 use labby_runtime::{CodeModeConfig, CodeModeResultShapePolicy};
 
 use super::CodeModeBroker;
@@ -435,6 +435,34 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     .collect();
                 Ok(serde_json::json!({ "ranked": ranked_json }))
             }
+            "describe_types" => {
+                let id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+                // Re-fetches the same catalog render `build_code_mode_proxy` already
+                // pulled for this execution — same caller/surface/scope, so this
+                // hits the manager's `CatalogRenderCache` fingerprint and returns
+                // the already-computed `.dts` rather than regenerating it. The
+                // sandbox only ever asks for the ONE id it already resolved via the
+                // (already-embedded, schema-free) discovery index, so this stays a
+                // single cheap lookup per `codemode.describe()` call — never a bulk
+                // catalog dump into the sandbox.
+                let (include_snippets, use_cache) = discovery_render_params(caller, surface, scope);
+                let render = host
+                    .list_tools(caller, surface, scope, include_snippets, use_cache)
+                    .await
+                    .unwrap_or_else(|_| ToolsRender {
+                        fingerprint: String::new(),
+                        entries: Vec::new(),
+                        catalog_json: "[]".to_string(),
+                        serialized_size: 2,
+                    });
+                let dts = render
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .map(|entry| entry.dts.clone())
+                    .filter(|dts| !dts.is_empty());
+                Ok(serde_json::json!({ "dts": dts }))
+            }
             _ => Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: format!("unknown internal tool `{LAB_INTERNAL_NAMESPACE}::{tool}`"),
@@ -700,6 +728,155 @@ mod tests {
             MAX_SEMANTIC_QUERY_BYTES - MAX_SEMANTIC_QUERY_BYTES % 4
         );
         assert!(clamped.chars().all(|c| c == '\u{1F982}'));
+    }
+
+    /// A `CodeModeHost` with a configurable tool set, so `describe_types` (and
+    /// any future test needing real catalog entries) has something to look up.
+    /// `NoopHost` always returns an empty catalog, which can't exercise this.
+    struct FixtureHost {
+        pool: crate::pool::RunnerPool,
+        entries: Vec<ToolDescriptor>,
+    }
+
+    impl FixtureHost {
+        fn new(entries: Vec<ToolDescriptor>) -> Self {
+            Self {
+                pool: crate::pool::RunnerPool::from_env()
+                    .expect("test process must expose current executable"),
+                entries,
+            }
+        }
+    }
+
+    impl CodeModeHost for FixtureHost {
+        async fn list_tools(
+            &self,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+            _include_snippets: bool,
+            _use_cache: bool,
+        ) -> Result<ToolsRender, ToolError> {
+            let catalog_json =
+                serde_json::to_string(&self.entries).unwrap_or_else(|_| "[]".to_string());
+            Ok(ToolsRender {
+                fingerprint: "fixture".to_string(),
+                entries: self.entries.clone(),
+                serialized_size: catalog_json.len(),
+                catalog_json,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _id: &str,
+            _params: Value,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+            _ctx: ExecCtx,
+        ) -> Result<ToolCallOutcome, ToolError> {
+            Err(ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: "FixtureHost does not dispatch real tool calls".to_string(),
+            })
+        }
+
+        async fn resolve_snippet(
+            &self,
+            _name: &str,
+            _input: Value,
+        ) -> Result<crate::host::ResolvedSnippet, ToolError> {
+            Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "FixtureHost exposes no snippets".to_string(),
+            })
+        }
+
+        async fn semantic_rank(
+            &self,
+            _query: String,
+            _top_k: usize,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Vec<(String, f32)>, ToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn config(&self) -> CodeModeConfig {
+            CodeModeConfig::default()
+        }
+
+        fn runner_pool(&self) -> &crate::pool::RunnerPool {
+            &self.pool
+        }
+
+        fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+            labby_openapi::OpenApiRegistry::default()
+        }
+
+        fn openapi_http_client(&self) -> reqwest::Client {
+            labby_openapi::http::build_dispatch_client().expect("test dispatch client")
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_call_describe_types_returns_dts_for_matching_id() {
+        let github_tool = ToolDescriptor::tool(
+            "github",
+            "list_tags",
+            "List repository tags",
+            Some(json!({"type": "object", "properties": {"owner": {"type": "string"}}})),
+            None,
+        );
+        let expected_dts = github_tool.dts.clone();
+        assert!(
+            !expected_dts.is_empty(),
+            "fixture tool must have a generated .dts to assert against"
+        );
+        let host = FixtureHost::new(vec![github_tool]);
+        let broker = CodeModeBroker::new(Some(&host));
+
+        let result = broker
+            .call_tool_id(
+                "__lab_internal::describe_types",
+                json!({ "id": "github::list_tags" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect("describe_types must succeed for a known id");
+
+        assert_eq!(result, json!({ "dts": expected_dts }));
+    }
+
+    #[tokio::test]
+    async fn dispatch_internal_call_describe_types_returns_null_for_unknown_id() {
+        let host = FixtureHost::new(vec![ToolDescriptor::tool(
+            "github",
+            "list_tags",
+            "List repository tags",
+            None,
+            None,
+        )]);
+        let broker = CodeModeBroker::new(Some(&host));
+
+        let result = broker
+            .call_tool_id(
+                "__lab_internal::describe_types",
+                json!({ "id": "radarr::movie_search" }),
+                CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+                ExecCtx::none(),
+            )
+            .await
+            .expect("an unknown id must fail open, not error");
+
+        assert_eq!(result, json!({ "dts": null }));
     }
 
     #[tokio::test]
