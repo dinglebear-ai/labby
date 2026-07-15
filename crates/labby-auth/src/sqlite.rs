@@ -19,7 +19,7 @@ use crate::types::{
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
 /// Schema version for the `PRAGMA user_version` migration guard.
 /// Increment this whenever a migration step is added to `run_migrations`.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 use crate::util::{
     ensure_restrictive_permissions, fingerprint, now_unix, set_restrictive_permissions,
@@ -466,7 +466,7 @@ impl SqliteStore {
                 params![now, client_id],
                 |row| row.get::<_, i64>(0),
             )
-            .map(|count| count != 0)
+            .map(|exists: i64| exists != 0)
             .map_err(sqlite_error)
         })
         .await
@@ -1203,7 +1203,7 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
         );
         CREATE TABLE IF NOT EXISTS refresh_tokens (
             refresh_token_hash TEXT PRIMARY KEY,
-            client_id TEXT NOT NULL,
+            client_id TEXT NOT NULL REFERENCES registered_clients(client_id),
             subject TEXT NOT NULL,
             resource TEXT NOT NULL DEFAULT '',
             scope TEXT NOT NULL,
@@ -1394,6 +1394,58 @@ fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
         )
         .map_err(sqlite_error)?;
 
+        conn.execute_batch("PRAGMA user_version = 3;")
+            .map_err(sqlite_error)?;
+    }
+
+    if current_version < 4 {
+        // Step 4: add a FOREIGN KEY constraint on refresh_tokens.client_id ->
+        // registered_clients.client_id. SQLite has no ALTER TABLE ADD
+        // CONSTRAINT, so recreate the table with the constraint present and
+        // copy the existing rows across — SQLite's standard procedure for
+        // this. registered_clients is append-only (nothing in this crate
+        // ever deletes a row from it), so a legitimately-issued refresh
+        // token can never reference a client_id that later stops existing;
+        // this only guards against future code accidentally minting a
+        // token for an unregistered client_id, which the app-level
+        // find_client() check in authorize.rs is already supposed to
+        // prevent.
+        //
+        // PRAGMA foreign_keys must be toggled outside any transaction (it's
+        // a silent no-op if changed while one is open), so it's set before
+        // BEGIN and restored after COMMIT rather than inside the batch.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .map_err(sqlite_error)?;
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE refresh_tokens_new (
+                 refresh_token_hash TEXT PRIMARY KEY,
+                 client_id TEXT NOT NULL REFERENCES registered_clients(client_id),
+                 subject TEXT NOT NULL,
+                 resource TEXT NOT NULL DEFAULT '',
+                 scope TEXT NOT NULL,
+                 provider_refresh_token TEXT,
+                 created_at INTEGER NOT NULL,
+                 expires_at INTEGER NOT NULL
+             );
+             INSERT INTO refresh_tokens_new (
+                 refresh_token_hash, client_id, subject, resource, scope,
+                 provider_refresh_token, created_at, expires_at
+             )
+             SELECT
+                 refresh_token_hash, client_id, subject, resource, scope,
+                 provider_refresh_token, created_at, expires_at
+             FROM refresh_tokens;
+             DROP TABLE refresh_tokens;
+             ALTER TABLE refresh_tokens_new RENAME TO refresh_tokens;
+             CREATE INDEX IF NOT EXISTS idx_refresh_tokens_client_expiry \
+                 ON refresh_tokens(client_id, expires_at);
+             COMMIT;",
+        )
+        .map_err(sqlite_error)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(sqlite_error)?;
+
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(sqlite_error)?;
     }
@@ -1568,14 +1620,16 @@ fn row_to_upstream_oauth_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<Upst
 mod tests {
     use std::path::PathBuf;
 
+    use rusqlite::Connection;
+
     use crate::types::{
-        AllowedUserRow, AuthorizationCodeRow, BrowserSessionRow, RefreshTokenRow,
+        AllowedUserRow, AuthorizationCodeRow, BrowserSessionRow, RefreshTokenRow, RegisteredClient,
         UpstreamOauthCredentialRow, UpstreamOauthStateRow,
     };
 
     use crate::util::now_unix;
 
-    use super::{SQLITE_POOL_SIZE, SqliteStore};
+    use super::{SQLITE_POOL_SIZE, SqliteStore, hash_token};
 
     #[tokio::test]
     async fn sqlite_store_enables_wal_and_busy_timeout() {
@@ -1626,6 +1680,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_store_ignores_expired_refresh_token() {
         let store = temp_store().await;
+        register_test_client(&store, "client").await;
         store
             .upsert_refresh_token(RefreshTokenRow {
                 refresh_token: "refresh-token".to_string(),
@@ -1651,6 +1706,7 @@ mod tests {
     #[tokio::test]
     async fn has_refresh_token_for_client_reflects_unexpired_rows_only() {
         let store = temp_store().await;
+        register_test_client(&store, "client").await;
         assert!(!store.has_refresh_token_for_client("client").await.unwrap());
 
         let mut expired = sample_refresh_token("client", "expired-refresh");
@@ -1672,6 +1728,9 @@ mod tests {
     #[tokio::test]
     async fn has_refresh_token_for_client_does_not_leak_across_clients() {
         let store = temp_store().await;
+        // Only "codex-client" is registered — "claude-client" deliberately
+        // isn't, since it's only ever queried below, never inserted.
+        register_test_client(&store, "codex-client").await;
         store
             .upsert_refresh_token(sample_refresh_token("codex-client", "codex-refresh"))
             .await
@@ -1693,9 +1752,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_token_insert_fails_for_unregistered_client() {
+        let store = temp_store().await;
+        // Deliberately skip register_test_client — "ghost-client" was never
+        // registered, so the FOREIGN KEY constraint on
+        // refresh_tokens.client_id must reject this insert.
+        let err = store
+            .upsert_refresh_token(sample_refresh_token("ghost-client", "ghost-refresh"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("FOREIGN KEY"),
+            "expected a foreign key violation, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_migration_v4_preserves_existing_refresh_tokens() {
+        let path = temp_db_path();
+        // Hand-build a pre-v4 database: the v3 shape (refresh_tokens with no
+        // FOREIGN KEY on client_id), with a legitimate row already present,
+        // to prove the v3->v4 migration (which recreates the table to add
+        // the constraint) doesn't lose or corrupt existing data.
+        let raw_token = "pre-existing-refresh-token";
+        let token_hash = hash_token(raw_token);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE registered_clients (
+                    client_id TEXT PRIMARY KEY,
+                    redirect_uris TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE refresh_tokens (
+                    refresh_token_hash TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    resource TEXT NOT NULL DEFAULT '',
+                    scope TEXT NOT NULL,
+                    provider_refresh_token TEXT,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO registered_clients (client_id, redirect_uris, created_at) \
+                 VALUES ('client', '[\"http://127.0.0.1:7777/callback\"]', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO refresh_tokens (
+                    refresh_token_hash, client_id, subject, resource, scope,
+                    provider_refresh_token, created_at, expires_at
+                 ) VALUES (?1, 'client', 'google-user', 'https://lab.example.com/mcp', 'lab', NULL, ?2, ?3)",
+                rusqlite::params![token_hash, now_unix(), now_unix() + 3600],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA user_version = 3;").unwrap();
+        }
+        // SqliteStore::open validates restrictive permissions on an
+        // already-existing file; the raw Connection::open above created it
+        // with default (too-open) OS permissions.
+        crate::util::set_restrictive_permissions(&path).unwrap();
+
+        // Reopening through the real API runs migration v4 (table
+        // recreation with the FK added) against this hand-built database.
+        let store = SqliteStore::open(path).await.unwrap();
+        let found = store
+            .find_refresh_token(raw_token)
+            .await
+            .unwrap()
+            .expect("pre-existing refresh token must survive the v3->v4 migration");
+        assert_eq!(found.client_id, "client");
+
+        // The constraint is live post-migration: a fresh insert for an
+        // unregistered client still fails.
+        let err = store
+            .upsert_refresh_token(sample_refresh_token("still-unregistered", "new-refresh"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("FOREIGN KEY"));
+    }
+
+    #[tokio::test]
     async fn sqlite_store_cleanup_expired_removes_stale_rows() {
         let store = temp_store().await;
         let now = now_unix();
+        register_test_client(&store, "client").await;
 
         // Insert an expired auth code.
         let mut code = sample_code();
@@ -1795,6 +1940,20 @@ mod tests {
             created_at: now,
             expires_at: now + 300,
         }
+    }
+
+    /// Registers `client_id` in `registered_clients` so a subsequently
+    /// inserted `refresh_tokens` row satisfies the FOREIGN KEY constraint
+    /// on `refresh_tokens.client_id`.
+    async fn register_test_client(store: &SqliteStore, client_id: &str) {
+        store
+            .register_client(RegisteredClient {
+                client_id: client_id.to_string(),
+                redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
+                created_at: now_unix(),
+            })
+            .await
+            .unwrap();
     }
 
     fn sample_refresh_token(client_id: &str, refresh_token: &str) -> RefreshTokenRow {
