@@ -134,12 +134,6 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "Allow creating a user snippet that shadows a built-in snippet",
             },
-            ParamSpec {
-                name: "confirm",
-                ty: "boolean",
-                required: false,
-                description: "Required by headless MCP clients for destructive promotion",
-            },
         ],
     },
     ActionSpec {

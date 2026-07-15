@@ -29,11 +29,11 @@ The current implementation has moved several items in this comparison from
 - `execute` supports `upstreams` and `tools` capability filters. When present,
   they must be JSON string arrays; non-array values are ignored as absent filters,
   and empty strings are dropped.
-- Destructive upstream calls are host-gated. MCP `execute` can confirm the run
-  with top-level `confirm: true`. Execute-capable scopes (`lab` or `lab:admin`)
-  authorize Code Mode execution, but do not implicitly confirm destructive
-  upstream effects. Unconfirmed MCP destructive calls receive
-  `confirmation_required`. CLI execution permits destructive upstream calls.
+- MCP Code Mode execution remains scope-gated (`lab` or `lab:admin`), but there
+  is no top-level `confirm: true` destructive gate on the MCP path. When the
+  downstream client supports elicitation, destructive calls can be confirmed via
+  elicitation; clients without elicitation support execute without a parameter
+  confirmation shim. CLI execution permits destructive upstream calls.
 - The runner has a tagged base64 codec for JavaScript `ArrayBuffer` and typed
   array values crossing the parent/runner boundary. Mixed or binary MCP content
   blocks that are not unwrapped as structured/all-text content still remain JSON

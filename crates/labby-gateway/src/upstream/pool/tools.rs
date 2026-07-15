@@ -521,14 +521,18 @@ impl UpstreamPool {
     }
 }
 
-pub fn tool_has_mcp_app_ui_resource(tool: &UpstreamTool) -> bool {
+pub(super) fn tool_mcp_app_ui_resource_uri(tool: &UpstreamTool) -> Option<&str> {
     tool.tool
         .meta
         .as_ref()
         .and_then(|meta| meta.0.get("ui"))
         .and_then(|ui| ui.get("resourceUri"))
         .and_then(Value::as_str)
-        .is_some_and(|uri| uri.starts_with("ui://"))
+        .filter(|uri| uri.starts_with("ui://"))
+}
+
+pub fn tool_has_mcp_app_ui_resource(tool: &UpstreamTool) -> bool {
+    tool_mcp_app_ui_resource_uri(tool).is_some()
 }
 
 #[cfg(test)]

@@ -268,9 +268,10 @@ OpenAPI generator (`crates/lab/src/api/openapi.rs`) no longer injects a
 `confirm` schema property for destructive actions either.
 
 Confirmation remains a surface-specific concept elsewhere: MCP uses
-elicitation (`crates/lab/src/mcp/call_tool.rs` / `elicitation.rs`, including
-its own `confirm: true` non-elicitation fallback), and CLI requires
-`--yes`/`-y`. `ActionSpec.destructive` still drives both of those. The
+elicitation (`crates/lab/src/mcp/call_tool.rs` / `elicitation.rs`) when the
+client supports it, and clients without elicitation execute without a
+`confirm` fallback or any other parameter gate. CLI requires `--yes`/`-y`.
+`ActionSpec.destructive` still drives both of those surfaces. The
 `confirmation_required` kind itself is still valid and still emitted by
 unrelated flows (e.g. `setup.draft.commit` provisioning confirmation) — it is
 simply no longer part of the generic HTTP dispatch gate.
