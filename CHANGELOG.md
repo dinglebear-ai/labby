@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1](https://github.com/jmagar/labby/compare/v1.4.0...v1.4.1) (2026-07-15)
+
+
+### Fixed
+
+* **auth:** add FK constraint on refresh_tokens.client_id, fix EXISTS naming ([#243](https://github.com/jmagar/labby/issues/243)) ([e6edbe5](https://github.com/jmagar/labby/commit/e6edbe58759a814d29ca3c4e2830b1070974ed28))
+* **auth:** scope refresh-token existence check to the requesting client ([#242](https://github.com/jmagar/labby/issues/242)) ([84752e7](https://github.com/jmagar/labby/commit/84752e7ca39fe269f63fe62d0ef9e8bbf083a599))
+* **codemode:** remove dangling __meta__.upstreams() and duplicate helpers ([#240](https://github.com/jmagar/labby/issues/240)) ([cb7a4a5](https://github.com/jmagar/labby/commit/cb7a4a567c8dc7023dc8e9865b5148e4363e9c03))
+
 ## [1.4.0](https://github.com/jmagar/labby/compare/v1.3.1...v1.4.0) (2026-07-14)
 
 
