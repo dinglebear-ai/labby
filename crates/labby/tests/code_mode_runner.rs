@@ -1144,6 +1144,107 @@ fn codemode_proxy_routes_through_call_tool() {
     assert!(status.success(), "runner exited with {status}");
 }
 
+/// End-to-end regression for `codemode.describe()`'s host round trip through
+/// the real protocol — every other test for this shape only string-matches
+/// the generated JS source or calls the Rust dispatch function directly,
+/// neither of which exercises the actual `async function`/`await`/`try`-`catch`
+/// parse-and-run through a real runner subprocess. Mirrors the tool branch of
+/// `codemode.describe` (`generate_discovery_js`'s output) closely enough to
+/// prove two things the string-matching tests can't: (a) a successful
+/// `describe_types` round trip lands the type body in markdown, and (b) a
+/// REJECTED `describe_types` call is caught and `describe()` still resolves
+/// (never rejects) with markdown minus the type section — the specific
+/// behavior the try/catch fix added, not previously covered end-to-end.
+#[test]
+fn codemode_describe_degrades_gracefully_when_describe_types_call_fails() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["internal", "code-mode-runner"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn code mode runner");
+
+    let mut stdin = child.stdin.take().expect("runner stdin");
+    let stdout = child.stdout.take().expect("runner stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // Minimal mirror of `codemode.describe`'s tool branch (preamble.rs's
+    // `generate_discovery_js` output) — one hardcoded entry, the same
+    // try/catch shape around the `describe_types` round trip.
+    let proxy = r##"
+var codemode = {};
+codemode.describe = async function(target) {
+  var entry = {
+    path: "demo.ping", id: "demo::ping", helper: "codemode.demo.ping",
+    signature: "codemode.demo.ping(params): Promise<unknown>", description: "Demo tool"
+  };
+  var markdown = "# " + entry.path + "\n\n" + entry.description +
+    "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper +
+    "`\n- signature: `" + entry.signature + "`\n";
+  var typeBody = null;
+  try {
+    var typeResponse = await callTool("__lab_internal::describe_types", { id: entry.id });
+    typeBody = typeResponse && typeResponse.dts;
+  } catch (e) {
+    typeBody = null;
+  }
+  if (typeBody) {
+    markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
+  }
+  return { path: entry.path, id: entry.id, kind: "tool", markdown: markdown };
+};
+"##;
+    let code = r#"async () => {
+        const failed = await codemode.describe("demo.ping");
+        return { failed };
+    }"#;
+
+    writeln!(
+        stdin,
+        "{}",
+        json!({"type": "start", "code": code, "proxy": proxy})
+    )
+    .expect("write start");
+
+    let call = read_protocol_line(&mut stdout);
+    assert_eq!(call["type"], "tool_call");
+    assert_eq!(call["id"], "__lab_internal::describe_types");
+    assert_eq!(call["params"], json!({ "id": "demo::ping" }));
+    let seq = call["seq"].as_u64().expect("seq");
+    // Inject a real tool_error, not a fail-open ToolResult — this is the case
+    // the try/catch must handle: the host round trip genuinely rejected.
+    writeln!(
+        stdin,
+        "{}",
+        json!({"type": "tool_error", "seq": seq, "kind": "server_error", "message": "host degraded"})
+    )
+    .expect("write tool_error");
+
+    let done = read_protocol_line(&mut stdout);
+    assert_eq!(
+        done["type"], "done",
+        "describe() must still resolve — a describe_types rejection must not \
+         propagate into a run failure: {done}"
+    );
+    let result = done_json_result(&done);
+    let markdown = result["failed"]["markdown"]
+        .as_str()
+        .expect("markdown must be a string");
+    assert!(
+        markdown.contains("# demo.ping"),
+        "the already-resolved path/description must survive a type-fetch failure: {markdown}"
+    );
+    assert!(
+        !markdown.contains("Parameters (TypeScript)"),
+        "no type section must be appended when describe_types rejected: {markdown}"
+    );
+
+    drop(stdin);
+    let status = child.wait().expect("wait for runner");
+    assert!(status.success(), "runner exited with {status}");
+}
+
 /// FIX 1 (bead lab-vkwfa): an `export default async function` form, after
 /// `normalize_user_code`, must execute end-to-end. Non-vacuous: the raw form
 /// would fail because `export default` is not valid in a script wrapper;

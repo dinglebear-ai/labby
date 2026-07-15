@@ -61,22 +61,54 @@ pub use code_mode_host::JournalOwner;
 /// catalog sizes.
 ///
 /// This cache is a single slot (`Mutex<Option<CatalogRenderCache>>` on
-/// `GatewayManager`) with NO caller/scope component in its fingerprint. It is
-/// safe today only because it is reached exclusively through the unscoped CLI
-/// path (`code_mode_catalog_tools_cached`, gated by
-/// `surface == CodeModeSurface::Cli && scope.allowed_namespaces().is_none()` in
-/// `execute.rs`). Do not widen its call sites to scoped callers without adding
-/// a scope/`allowed_upstreams` component to the fingerprint first — otherwise a
-/// scoped caller could receive a different scope's cached catalog.
+/// `GatewayManager`) with NO caller/scope component in its fingerprint —
+/// **and every caller reaches it**, not only the unscoped CLI path.
+/// `catalog_from_tools` (`code_mode/search.rs`) reads/writes this cache
+/// unconditionally; `use_cache` only selects where `raw_tools` is sourced
+/// from (`code_mode_catalog_tools_cached` vs `code_mode_catalog_tools_allowed`),
+/// it does not gate access to this cache. (An earlier version of this comment
+/// claimed the cache was reached exclusively through the unscoped CLI path —
+/// that was never true; corrected once the `describe_types` internal call
+/// below made the cache's actual reach relevant to trace precisely.)
+///
+/// Sharing this single slot across every caller/scope is safe because the
+/// fingerprint is derived from the *content* of `raw_tools` (sorted
+/// `upstream::tool::shape_digest` triples), which itself already reflects
+/// whatever namespace filtering (`allowed_upstreams`, i.e.
+/// `scope.allowed_namespaces()`) produced that particular `raw_tools`. Two
+/// callers with different namespace grants almost always produce different
+/// `raw_tools` and thus different fingerprints — so in practice they don't
+/// share a cache hit at all; they just take turns evicting the single slot
+/// (a perf/thrash concern, not a leak). A genuine cache hit means the
+/// requesting caller's namespace-filtered tool set is byte-identical to what's
+/// cached, so serving the cached render is content-equivalent to rebuilding it.
+///
+/// What this fingerprint-content argument does **not** cover: the
+/// namespace-level filter (`allowed_upstreams`) is coarser than `ToolScope`'s
+/// full grant — it says nothing about the finer-grained per-tool `scope.tools`
+/// restriction (`ToolScope::allows`). `CatalogRenderCache.entries`/`ToolsRender.entries`
+/// can therefore always contain tools a caller's `scope.tools` should exclude,
+/// even on a correctly-scoped cache hit. The cache is not the security
+/// boundary — `discovery_entry_visible(entry, scope)` is. Every consumer of
+/// `.entries` (`build_code_mode_proxy`, `semantic_rank`'s host impl in
+/// `code_mode_host.rs`, and the `describe_types` internal call in
+/// `labby-codemode`'s `execute.rs`) MUST apply that filter itself before using
+/// an entry; nothing upstream of them enforces it. A new consumer that skips
+/// it is a real information-disclosure bug, not a style issue (this is
+/// exactly what `describe_types` shipped with initially and had to be fixed).
 pub(crate) struct CatalogRenderCache {
     /// Fingerprint of the healthy tool list when this cache was built.
     pub fingerprint: String,
-    /// Rendered catalog entries (includes `.signature` / `.dts`). `Arc`-wrapped
-    /// so a cache hit is a refcount bump, not a deep clone — `codemode.describe()`
-    /// now calls `list_tools()` again per invocation (see `labby-codemode`'s
-    /// `execute.rs` `describe_types` dispatch), so this is read far more than
-    /// once per execution.
-    pub entries: std::sync::Arc<Vec<ToolDescriptor>>,
+    /// Rendered catalog entries (includes `.signature` / `.dts`). A boxed
+    /// slice behind an `Arc`, not `Arc<Vec<_>>` — mirrors `catalog_json`
+    /// below and `ToolsRender.entries` in `labby-codemode`: nothing ever
+    /// mutates this in place, so there's no reason to carry `Vec`'s
+    /// spare-capacity bookkeeping. `Arc`-wrapped so a cache hit is a refcount
+    /// bump, not a deep clone — `codemode.describe()` now calls `list_tools()`
+    /// again per invocation (see `labby-codemode`'s `execute.rs`
+    /// `describe_types` dispatch), so this is read far more than once per
+    /// execution.
+    pub entries: std::sync::Arc<[ToolDescriptor]>,
     /// `serde_json::to_string(&entries)` — the `const tools = ...` payload.
     /// Same `Arc` rationale as `entries`.
     pub catalog_json: std::sync::Arc<str>,

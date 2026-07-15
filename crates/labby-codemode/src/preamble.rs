@@ -385,9 +385,19 @@ codemode.describe = async function(target) {{
     // Fetched from the host on demand rather than embedded in the sandbox
     // preamble up front — the host already has this cached from the same
     // catalog render this execution's discovery index was built from, so
-    // this is a cheap round trip, not a fresh computation.
-    var typeResponse = await callTool("__lab_internal::describe_types", {{ id: entry.id }});
-    var typeBody = typeResponse && typeResponse.dts;
+    // this is usually a cheap round trip, not a fresh computation (see the
+    // Rust-side `describe_types` dispatch comment for when it isn't). Caught,
+    // not propagated: the target is already fully resolved above (path/id/
+    // helper/signature), so a transient failure fetching the type body alone
+    // must not fail the whole `describe()` call — degrade to no type section
+    // instead, matching the host's own fail-open behavior for this lookup.
+    var typeBody = null;
+    try {{
+      var typeResponse = await callTool("__lab_internal::describe_types", {{ id: entry.id }});
+      typeBody = typeResponse && typeResponse.dts;
+    }} catch (e) {{
+      typeBody = null;
+    }}
     if (typeBody) {{
       markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
     }}

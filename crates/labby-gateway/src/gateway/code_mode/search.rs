@@ -166,7 +166,7 @@ async fn catalog_from_tools(
     // returned render, and any later `describe_types` re-fetch of this same
     // fingerprint) shares this allocation via a cheap Arc clone instead of a
     // deep copy of the whole catalog.
-    let entries = std::sync::Arc::new(entries);
+    let entries: std::sync::Arc<[ToolDescriptor]> = std::sync::Arc::from(entries);
     let catalog_json: std::sync::Arc<str> = std::sync::Arc::from(catalog_json);
 
     manager

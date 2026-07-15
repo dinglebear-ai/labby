@@ -654,7 +654,7 @@ impl GatewayManager {
         &self,
         fingerprint: &str,
     ) -> Option<(
-        Arc<Vec<crate::gateway::code_mode::ToolDescriptor>>,
+        Arc<[crate::gateway::code_mode::ToolDescriptor]>,
         Arc<str>,
         usize,
     )> {

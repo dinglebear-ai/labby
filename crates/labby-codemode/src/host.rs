@@ -37,12 +37,32 @@ pub struct ToolsRender {
     /// caches (e.g. embedding vectors) off this without recomputing it
     /// themselves.
     pub fingerprint: String,
-    /// The descriptors (tools + snippets) visible to this execution.
-    pub entries: Arc<Vec<ToolDescriptor>>,
+    /// The descriptors (tools + snippets) visible to this execution. A boxed
+    /// slice, not a `Vec`: nothing ever mutates this in place (the only way
+    /// to do so behind an `Arc` is `Arc::get_mut`/`Arc::make_mut`, and no
+    /// caller does), so there is no reason to carry `Vec`'s spare-capacity
+    /// bookkeeping — this mirrors `catalog_json: Arc<str>` below.
+    pub entries: Arc<[ToolDescriptor]>,
     /// `serde_json::to_string(&entries)` — the `const tools = ...` payload.
     pub catalog_json: Arc<str>,
     /// Serialized catalog size in bytes (for tracing).
     pub serialized_size: usize,
+}
+
+impl ToolsRender {
+    /// An empty render — the shared shape every "no catalog available"
+    /// fallback (a host with nothing configured, a fail-open degrade on a
+    /// host error) should construct, rather than each call site duplicating
+    /// the same four-field literal and risking drift between them.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            fingerprint: String::new(),
+            entries: Arc::from([]),
+            catalog_json: Arc::from("[]"),
+            serialized_size: 2,
+        }
+    }
 }
 
 /// A snippet resolved by the host: its canonical name plus the JS source and
@@ -281,7 +301,7 @@ impl CodeModeHost for NoopHost {
     ) -> Result<ToolsRender, ToolError> {
         Ok(ToolsRender {
             fingerprint: "noop".to_string(),
-            entries: Arc::new(Vec::new()),
+            entries: Arc::from([]),
             catalog_json: Arc::from("[]"),
             serialized_size: 2,
         })
