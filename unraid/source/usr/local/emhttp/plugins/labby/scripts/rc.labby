@@ -1,0 +1,146 @@
+#!/bin/bash
+# /etc/rc.d/rc.labby — Unraid-style service control for the labby gateway
+# binary. Backgrounds `labby serve` with persistent state on the array and
+# polls its own /ready endpoint, mirroring labby's systemd unit on other
+# Linux hosts (see crates/labby/src/dispatch/setup/host_service.rs upstream)
+# without depending on systemd, which Unraid does not run.
+
+EMHTTP="/usr/local/emhttp/plugins/labby"
+BIN="${EMHTTP}/bin/labby"
+CFG="/boot/config/plugins/labby/labby.cfg"
+[ -f "$CFG" ] && . "$CFG"
+
+LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
+# 127.0.0.1 on purpose, matching labby.cfg's own default — see the comment
+# above HTTP_HOST there. This fallback only matters if labby.cfg is ever
+# missing the key entirely (corrupted flash, restored-from-backup edge
+# case); it must not silently reintroduce the 0.0.0.0-without-a-token
+# start failure that default was fixed to avoid.
+HTTP_HOST="${HTTP_HOST:-127.0.0.1}"
+HTTP_PORT="${HTTP_PORT:-8765}"
+
+PIDFILE="/var/run/labby.pid"
+LOG="/var/log/labby.log"
+
+# labby resolves its state dir (auth.db, registry.db, config.toml, the MCP
+# bearer token) from $HOME/XDG_*, same as the systemd unit — point those at
+# array-backed storage so they survive Unraid's RAM-boot reset instead of
+# landing in root's (also RAM-only) home directory.
+export HOME="$LABBY_DIR"
+export XDG_CACHE_HOME="$LABBY_DIR/.cache"
+export XDG_CONFIG_HOME="$LABBY_DIR/.config"
+export XDG_DATA_HOME="$LABBY_DIR/.local/share"
+export LABBY_MCP_HTTP_HOST="$HTTP_HOST"
+export LABBY_MCP_HTTP_PORT="$HTTP_PORT"
+
+ready() {
+    curl -fsS -m 2 "http://127.0.0.1:${HTTP_PORT}/ready" >/dev/null 2>&1
+}
+
+start() {
+    if ! "${EMHTTP}/scripts/labby-preflight.sh" >>"$LOG" 2>&1; then
+        echo "labby: preflight FAILED — see $LOG"
+        exit 1
+    fi
+    # Guards the manual-start path (Settings > Labby, SSH) the same way
+    # event/disks_mounted and the plugin's own postinstall script already
+    # guard the automatic paths. Without this, starting before the array is
+    # up would mkdir LABBY_DIR on Unraid's RAM-only root filesystem and
+    # labby would write auth.db/registry.db/config.toml there — lost on
+    # reboot, or silently shadowed once the real array share mounts.
+    if ! mountpoint -q /mnt/user; then
+        echo "labby: /mnt/user is not mounted — start the array first (LABBY_DIR state would otherwise land on RAM-only storage and be lost)"
+        exit 1
+    fi
+    mkdir -p "$LABBY_DIR"
+
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        if ready; then
+            echo "labby: already running"
+            return 0
+        fi
+        # A live process exists but isn't answering on the currently
+        # configured HTTP_HOST/HTTP_PORT (e.g. changed in the settings form
+        # without a restart). Stop it first — spawning a second `labby
+        # serve` here would leave two processes writing to the same
+        # LABBY_DIR SQLite state concurrently, and overwriting PIDFILE below
+        # would orphan the old process forever.
+        echo "labby: a live labby process isn't answering on ${HTTP_HOST}:${HTTP_PORT} (settings changed since it started?) — stopping it first"
+        if ! stop; then
+            echo "labby: could not stop the existing process — refusing to start a second one"
+            exit 1
+        fi
+    fi
+
+    echo "labby: starting (state: ${LABBY_DIR}, http: ${HTTP_HOST}:${HTTP_PORT})"
+    setsid "$BIN" serve >>"$LOG" 2>&1 &
+    echo $! >"$PIDFILE"
+
+    for _ in $(seq 1 30); do
+        ready && {
+            echo "labby: ready"
+            return 0
+        }
+        sleep 0.5
+    done
+    echo "labby: did not become ready — check $LOG"
+    exit 1
+}
+
+stop() {
+    echo "labby: stopping"
+    if [ ! -f "$PIDFILE" ]; then
+        return 0
+    fi
+    pid="$(cat "$PIDFILE")"
+    kill -SIGINT "$pid" 2>/dev/null
+    for _ in $(seq 1 20); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.5
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null
+        for _ in $(seq 1 10); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+    fi
+    if kill -0 "$pid" 2>/dev/null; then
+        # Still alive after SIGKILL (e.g. stuck in uninterruptible D-state).
+        # Do NOT remove the pidfile or claim success — a caller like
+        # event/unmounting_disks must not let the array unmount out from
+        # under a labby process that still holds open handles on
+        # LABBY_DIR's SQLite files (auth.db/registry.db), which would risk
+        # corrupting them.
+        echo "labby: FAILED to stop (pid $pid still alive after SIGKILL)"
+        return 1
+    fi
+    rm -f "$PIDFILE"
+}
+
+status() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && ready; then
+        echo "labby: RUNNING (pid $(cat "$PIDFILE"), http://${HTTP_HOST}:${HTTP_PORT})"
+    else
+        echo "labby: STOPPED"
+    fi
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart)
+        # Do not start a new process on top of one stop() failed to reap —
+        # that would either fail the port bind outright or, worse, leave
+        # two processes writing to the same LABBY_DIR state concurrently.
+        stop || exit 1
+        sleep 1
+        start
+        ;;
+    status) status ;;
+    preflight) "${EMHTTP}/scripts/labby-preflight.sh" ;;
+    *)
+        echo "usage: $0 {start|stop|restart|status|preflight}"
+        exit 1
+        ;;
+esac

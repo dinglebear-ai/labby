@@ -103,6 +103,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_SUMMARY: "true"
 
+  unraid-plugin-check:
+    name: Unraid plugin checksums
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - run: scripts/ci/unraid-plugin-checksums.sh
+
   actionlint:
     name: Actionlint
     runs-on: ubuntu-latest
@@ -909,6 +918,7 @@ jobs:
     needs:
       - changes
       - secret-scan
+      - unraid-plugin-check
       - actionlint
       - frontend-assets
       - fmt
@@ -938,6 +948,7 @@ jobs:
           }
           require_success_or_skipped changes "${{ needs.changes.result }}"
           require_success_or_skipped secret-scan "${{ needs.secret-scan.result }}"
+          require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
           require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
           require_success_or_skipped fmt "${{ needs.fmt.result }}"

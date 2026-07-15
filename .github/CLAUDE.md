@@ -29,6 +29,7 @@ their category is enabled:
 | Job | Category | Command |
 |-----|----------|---------|
 | secret-scan | always | `gitleaks/gitleaks-action@v3` — full-history secret scan (SAST) with existing historical findings baselined in `.gitleaksignore` |
+| unraid-plugin-check | always | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form that additionally checks `labbyVersion` and the release-tarball checksum is a manual tool, not wired into any CI job — `labbyVersion` intentionally pins to a specific already-published release, not whatever tag is currently being built, and a freshly-built tarball's MD5 is not reproducible run-to-run (GNU tar embeds file mtimes), so there is no safe way to auto-verify it against a same-run build. |
 | actionlint | `workflow` | `go run github.com/rhysd/actionlint/cmd/actionlint@latest` |
 | frontend-assets | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin` |
 | check | `rust_compile` | `cargo check --workspace --all-features` |

@@ -602,6 +602,14 @@ fn resolve_web_ui_auth_disabled(
         return Ok(disabled);
     }
 
+    // This is `true` for the default bearer-only (no OAuth), embedded-web-UI
+    // deployment shape — e.g. the Unraid plugin's rc.labby-started `labby
+    // serve` before OAuth is set up. Since GET /auth/session is registered
+    // unconditionally (api/router.rs), that default makes auth_session()
+    // return a synthetic authenticated-admin session to unauthenticated
+    // callers reaching the HTTP port. No real /v1/* access is granted
+    // (gated separately by needs_auth), but it renders a misleading
+    // "logged in" UI shell. Tracked in lab-0bl3m; not changed here.
     Ok(web_assets_enabled && !oauth_enabled)
 }
 

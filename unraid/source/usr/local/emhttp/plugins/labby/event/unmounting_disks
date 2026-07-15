@@ -1,0 +1,20 @@
+#!/bin/bash
+# Fires before the array is taken down. Stop labby cleanly first so its
+# state (auth.db, registry.db, config.toml under LABBY_DIR) isn't left
+# mid-write when the underlying array storage unmounts.
+CFG="/boot/config/plugins/labby/labby.cfg"
+[ -f "$CFG" ] || exit 0
+. "$CFG"
+[ "${SERVICE:-disabled}" = "enabled" ] || exit 0
+
+logger -t labby "array down: stopping labby"
+if ! /etc/rc.d/rc.labby stop; then
+    # rc.labby's stop() only fails when it could not confirm the process
+    # actually exited (e.g. stuck in uninterruptible D-state after
+    # SIGKILL) — logging loudly here is the only signal an operator gets,
+    # since Unraid does not block the array unmount on this hook's exit
+    # code. A labby process still holding open handles on LABBY_DIR's
+    # SQLite files when the array unmounts risks corrupting them.
+    logger -t labby "WARNING: labby did not confirm stopping before array unmount — LABBY_DIR state may be at risk"
+    exit 1
+fi
