@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.0e">
+  <!ENTITY version      "1.3.0f">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -41,11 +41,11 @@
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "1bb151dd5b7b091e9aed476421281769">
-  <!ENTITY pageMD5      "bafb51a8156ba5216a1b39be02f498ab">
+  <!ENTITY pageMD5      "9b7137d5368309fb4700409481486585">
   <!ENTITY rcMD5        "35e83bc87809d89985effffe55303db0">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
   <!ENTITY mountedMD5   "c564b0387a4f115ad7c4721445fc9549">
-  <!ENTITY unmountingMD5 "7ccbac8d7d2b1b933f7806b4e3c21711">
+  <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
@@ -53,6 +53,26 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.0f
+- Labby.page's start/stop action handler now checks rc.labby's actual exit
+  code (via PHP exec()'s $return_var) instead of re-deriving success from
+  `rc.labby status`. status only reports RUNNING when the pid is both alive
+  AND answering /ready, so a stop() that fails because the pid survives
+  SIGKILL but stops answering /ready looked identical to a clean stop —
+  silently discarding exactly the "still holding LABBY_DIR's SQLite files
+  open" failure rc.labby's exit code exists to signal.
+- Labby.page's settings-save now backs up the previous labby.cfg to
+  labby.cfg.bak before the atomic rename, matching this repo's own
+  backup-first config-mutation contract — previously only the atomic-write
+  half was implemented, so a bad settings save had no recovery path.
+- event/unmounting_disks now always attempts to stop labby, instead of
+  gating on SERVICE=enabled. SERVICE only controls autostart on array
+  mount; an operator can start labby manually (Settings &gt; Labby, SSH)
+  while SERVICE=disabled, and the old gate let that manually started
+  process keep running straight through array unmount, still holding open
+  handles on LABBY_DIR's SQLite files. rc.labby stop is a safe no-op when
+  nothing is running.
+
 ###1.3.0e
 - srcURL (companion-file downloads: labby.cfg/Labby.page/rc.labby/
   labby-preflight.sh/event hooks) no longer points at `main`. Every one of

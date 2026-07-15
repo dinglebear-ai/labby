@@ -118,6 +118,14 @@ if (isset($_POST['labby_settings_save'])) {
         $cfgDir = dirname($cfgFile);
         if (!is_dir($cfgDir) && !@mkdir($cfgDir, 0755, true) && !is_dir($cfgDir)) {
             $settingsError = "Could not create $cfgDir — check the flash device's permissions and free space.";
+        } elseif (file_exists($cfgFile) && !@copy($cfgFile, $cfgFile . '.bak')) {
+            // Backup-first: preserve the previous config before it's
+            // overwritten, so an operator who saves a bad value (e.g. the
+            // wrong LABBY_DIR) can still recover the last-known-good file
+            // from labby.cfg.bak — matching this repo's own config-mutation
+            // contract (CLAUDE.md), not just the atomic-write half of it.
+            // Fail closed rather than overwrite without a backup.
+            $settingsError = "Could not back up $cfgFile before saving — check the flash device's permissions and free space.";
         } else {
             $tmpFile = $cfgFile . '.tmp.' . getmypid();
             $written = @file_put_contents($tmpFile, labby_cfg_template($newCfg));
@@ -134,17 +142,23 @@ if (isset($_POST['labby_settings_save'])) {
 
 if (isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 'stop'], true)) {
     $requestedAction = $_POST['labby_action'];
-    $actionOutput = trim((string) shell_exec('/etc/rc.d/rc.labby ' . escapeshellarg($requestedAction) . ' 2>&1'));
-    $postActionRunning = strpos((string) shell_exec('/etc/rc.d/rc.labby status 2>&1'), 'RUNNING') !== false;
-    $actionSucceeded = $requestedAction === 'start' ? $postActionRunning : !$postActionRunning;
-    if ($actionSucceeded) {
+    exec('/etc/rc.d/rc.labby ' . escapeshellarg($requestedAction) . ' 2>&1', $actionOutputLines, $actionExitCode);
+    $actionOutput = implode("\n", $actionOutputLines);
+    if ($actionExitCode === 0) {
         header('Location: /Settings/Labby');
         exit;
     }
     // Do not redirect on failure — a bare redirect here would silently
     // discard the one thing (rc.labby's own diagnostic output) that
     // explains why start/stop didn't do what was requested, leaving the
-    // operator to SSH in and read /var/log/labby.log themselves.
+    // operator to SSH in and read /var/log/labby.log themselves. Trust
+    // rc.labby's own exit code directly instead of re-deriving success from
+    // `status` — status only reports RUNNING when the pid is both alive AND
+    // answering /ready, so a stop() that fails because the pid survives
+    // SIGKILL but no longer answers /ready would look identical to a clean
+    // stop (status says STOPPED either way), silently discarding exactly
+    // the "still alive, still holding LABBY_DIR's SQLite files open"
+    // failure rc.labby's own exit code exists to signal.
     $settingsError = "labby $requestedAction did not complete as expected:\n" . $actionOutput;
 }
 
