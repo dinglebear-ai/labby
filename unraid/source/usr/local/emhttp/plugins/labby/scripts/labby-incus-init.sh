@@ -484,7 +484,7 @@ ensure_container_running() {
     [ "$actual_version" = "$INCUS_IMAGE_VERSION" ] && [ "$actual_sha256" = "$INCUS_IMAGE_SHA256" ] \
         || fail "existing Incus container ${INCUS_CONTAINER_NAME} was created for image version/SHA ${actual_version:-unknown}/${actual_sha256:-unknown}, not ${INCUS_IMAGE_VERSION}/${INCUS_IMAGE_SHA256}; delete/recreate it after backing up any needed state"
 
-    state="$(instance_state || true)"
+    state="$(instance_state)"
     if [ "$state" != "RUNNING" ]; then
         log "starting existing container ${INCUS_CONTAINER_NAME}"
         run_timeout 120 "$INCUS" start -- "$INCUS_CONTAINER_NAME" \
