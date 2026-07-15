@@ -434,11 +434,61 @@ tailscale_has_ip() {
     incus_exec 20 tailscale ip -4 >/dev/null 2>&1
 }
 
-note_tailscale_cfg_clear_required() {
-    # Task 3 owns atomic labby.cfg edits. This Task 2 slice only consumes the
-    # one-shot key inside the container, removes the temp file, and leaves this
-    # visible hook so the later settings-save path can clear/redact the field.
-    log "INCUS_TS_AUTHKEY remains in ${CFG}; Task 3 must clear/redact it after successful join"
+redact_ts_authkey_to() {
+    local dest="$1"
+
+    cp -p "$CFG" "$dest" || return 1
+    awk '
+        /^INCUS_TS_AUTHKEY=/ {
+            comment = ""
+            if (match($0, /[[:space:]]+#.*/)) {
+                comment = substr($0, RSTART)
+            }
+            if (comment == "") {
+                comment = "                   # incus mode only - write-only one-shot Tailscale auth key; clear/redact after successful join"
+            }
+            print "INCUS_TS_AUTHKEY=\"\"" comment
+            cleared = 1
+            next
+        }
+        { print }
+        END {
+            if (!cleared) {
+                print "INCUS_TS_AUTHKEY=\"\"                   # incus mode only - write-only one-shot Tailscale auth key; clear/redact after successful join"
+            }
+        }
+    ' "$CFG" > "$dest"
+}
+
+clear_stored_ts_authkey() {
+    local backup="${CFG}.bak"
+    local backup_tmp="${CFG}.bak.tmp.$$"
+    local tmp="${CFG}.tmp.$$"
+
+    [ -f "$CFG" ] || fail "${CFG} disappeared before INCUS_TS_AUTHKEY could be cleared"
+    rm -f "$backup_tmp" "$tmp"
+
+    # Backup-first, but redact the one-shot secret in the backup too so a
+    # successful join does not leave the auth key behind in labby.cfg.bak.
+    if ! redact_ts_authkey_to "$backup_tmp"; then
+        rm -f "$backup_tmp" "$tmp"
+        fail "failed to prepare redacted backup for ${CFG}"
+    fi
+    if ! mv -f "$backup_tmp" "$backup"; then
+        rm -f "$backup_tmp" "$tmp"
+        fail "failed to write redacted backup ${backup}"
+    fi
+
+    if ! redact_ts_authkey_to "$tmp"; then
+        rm -f "$tmp"
+        fail "failed to prepare redacted ${CFG}"
+    fi
+    if ! mv -f "$tmp" "$CFG"; then
+        rm -f "$tmp"
+        fail "failed to atomically clear INCUS_TS_AUTHKEY from ${CFG}"
+    fi
+
+    log "cleared INCUS_TS_AUTHKEY from ${CFG} after successful Tailscale join"
 }
 
 consume_tailscale_authkey() {
@@ -451,7 +501,7 @@ consume_tailscale_authkey() {
 
     if tailscale_has_ip; then
         log "tailscale already has an IPv4 address; not reusing supplied one-shot INCUS_TS_AUTHKEY"
-        note_tailscale_cfg_clear_required
+        clear_stored_ts_authkey
         return 0
     fi
 
@@ -476,7 +526,7 @@ consume_tailscale_authkey() {
 
     tailscale_has_ip || fail "tailscale did not report an IPv4 address after join"
     log "tailscale joined and ${TS_AUTHKEY_PATH} removed"
-    note_tailscale_cfg_clear_required
+    clear_stored_ts_authkey
 }
 
 container_labby_version() {

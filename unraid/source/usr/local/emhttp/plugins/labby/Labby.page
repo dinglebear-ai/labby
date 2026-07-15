@@ -49,6 +49,14 @@ if (file_exists($cfgFile)) {
         }
     }
 }
+$cfg['RUNTIME_MODE'] = $cfg['RUNTIME_MODE'] ?? 'native';
+$cfg['INCUS_CONTAINER_NAME'] = $cfg['INCUS_CONTAINER_NAME'] ?? 'labby-gateway';
+$cfg['INCUS_IMAGE_VERSION'] = $cfg['INCUS_IMAGE_VERSION'] ?? '1.2.0';
+$cfg['INCUS_IMAGE_SHA256'] = $cfg['INCUS_IMAGE_SHA256'] ?? '';
+$cfg['INCUS_TS_AUTHKEY'] = $cfg['INCUS_TS_AUTHKEY'] ?? '';
+$cfg['INCUS_BRIDGE_NAME'] = $cfg['INCUS_BRIDGE_NAME'] ?? 'labbybr0';
+$cfg['INCUS_BRIDGE_SUBNET'] = $cfg['INCUS_BRIDGE_SUBNET'] ?? '10.99.99.1/24';
+$cfg['INCUS_EGRESS_POLICY'] = $cfg['INCUS_EGRESS_POLICY'] ?? 'block-lan';
 $cfg['SERVICE'] = $cfg['SERVICE'] ?? 'disabled';
 $cfg['LABBY_DIR'] = $cfg['LABBY_DIR'] ?? '/mnt/user/appdata/labby';
 $cfg['HTTP_HOST'] = $cfg['HTTP_HOST'] ?? '127.0.0.1';
@@ -63,9 +71,27 @@ function labby_cfg_template($cfg) {
 # Re-applied on every array start; edits here survive plugin updates and
 # reboots (this file lives on flash, never overwritten if already present).
 
+# ---- runtime mode ----
+# native: run the labby binary directly via rc.d (no dependencies, but no
+#   stdio MCP server support — Unraid ships neither npx/Node nor uv/Python).
+# incus: run labby inside an Incus system container (requires the
+#   incus-unraid plugin already installed and its SERVICE=enabled) — gets
+#   a full toolchain floor (Node, uv-managed Python, Rust, Go) so stdio MCP
+#   servers actually work, plus crash isolation from the rest of the NAS.
+RUNTIME_MODE="{$cfg['RUNTIME_MODE']}"                 # native|incus
+INCUS_CONTAINER_NAME="{$cfg['INCUS_CONTAINER_NAME']}"  # incus mode only
+INCUS_IMAGE_VERSION="{$cfg['INCUS_IMAGE_VERSION']}"           # incus mode only — a labby release tag that published labby-incus-*.tar.xz
+INCUS_IMAGE_SHA256="{$cfg['INCUS_IMAGE_SHA256']}"                 # incus mode only — pinned sha256 for labby-incus-\${INCUS_IMAGE_VERSION}-x86_64-unknown-linux-gnu.tar.xz
+INCUS_TS_AUTHKEY="{$cfg['INCUS_TS_AUTHKEY']}"                   # incus mode only — write-only one-shot Tailscale auth key; clear/redact after successful join
+
+# ---- incus network ----
+INCUS_BRIDGE_NAME="{$cfg['INCUS_BRIDGE_NAME']}"          # incus mode only — dedicated Incus-managed bridge
+INCUS_BRIDGE_SUBNET="{$cfg['INCUS_BRIDGE_SUBNET']}"   # incus mode only — bridge IPv4 CIDR, checked for host route collisions
+INCUS_EGRESS_POLICY="{$cfg['INCUS_EGRESS_POLICY']}"       # incus mode only — block-lan|allow-lan
+
 # ---- service ----
 SERVICE="{$cfg['SERVICE']}"                    # enabled|disabled — gate for array-start autostart
-LABBY_DIR="{$cfg['LABBY_DIR']}"   # persistent gateway state (must be on the array, not tmpfs)
+LABBY_DIR="{$cfg['LABBY_DIR']}"   # persistent gateway state (must be on the array, not tmpfs); also stores the incus image cache
 
 # ---- network ----
 # 127.0.0.1 on purpose: labby refuses to bind a non-loopback host without a
@@ -74,25 +100,75 @@ LABBY_DIR="{$cfg['LABBY_DIR']}"   # persistent gateway state (must be on the arr
 # start fail every time). To reach labby from other hosts on your LAN, first
 # provision a token (`labby setup` locally against LABBY_DIR, or hand-write
 # LABBY_MCP_HTTP_TOKEN into LABBY_DIR/.labby/.env), THEN set this to 0.0.0.0.
+# native mode only — incus mode reachability is via Tailscale inside the
+# container, see docs/runtime/INCUS.md.
 HTTP_HOST="{$cfg['HTTP_HOST']}"                 # LABBY_MCP_HTTP_HOST
 HTTP_PORT="{$cfg['HTTP_PORT']}"                      # LABBY_MCP_HTTP_PORT
 
 CFG;
 }
 
+function labby_post_string($key) {
+    $value = $_POST[$key] ?? '';
+    return is_string($value) ? $value : '';
+}
+
+function labby_is_ipv4_cidr($value) {
+    if (!preg_match('/^([0-9]{1,3}\.){3}[0-9]{1,3}\/[0-9]{1,2}$/', $value)) {
+        return false;
+    }
+
+    [$ip, $prefix] = explode('/', $value, 2);
+    if ((int) $prefix < 1 || (int) $prefix > 30) {
+        return false;
+    }
+
+    foreach (explode('.', $ip) as $octet) {
+        if ((int) $octet < 0 || (int) $octet > 255) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 $settingsError = null;
 
 if (isset($_POST['labby_settings_save'])) {
     $newCfg = $cfg;
-    $postedService = $_POST['SERVICE'] ?? '';
-    $postedHost = $_POST['HTTP_HOST'] ?? '';
-    $postedPort = $_POST['HTTP_PORT'] ?? '';
-    $postedDir = $_POST['LABBY_DIR'] ?? '';
+    $postedRuntimeMode = labby_post_string('RUNTIME_MODE');
+    $postedIncusContainerName = labby_post_string('INCUS_CONTAINER_NAME');
+    $postedIncusImageVersion = labby_post_string('INCUS_IMAGE_VERSION');
+    $postedIncusImageSha256 = labby_post_string('INCUS_IMAGE_SHA256');
+    $postedIncusTsAuthkey = labby_post_string('INCUS_TS_AUTHKEY');
+    $postedIncusBridgeName = labby_post_string('INCUS_BRIDGE_NAME');
+    $postedIncusBridgeSubnet = labby_post_string('INCUS_BRIDGE_SUBNET');
+    $postedIncusEgressPolicy = labby_post_string('INCUS_EGRESS_POLICY');
+    $postedService = labby_post_string('SERVICE');
+    $postedHost = labby_post_string('HTTP_HOST');
+    $postedPort = labby_post_string('HTTP_PORT');
+    $postedDir = labby_post_string('LABBY_DIR');
 
     // Every field is checked against a strict allowlist — this file gets
     // bash-`source`d verbatim by rc.labby/event hooks, so an unvalidated
     // value is a shell-injection vector, not just a bad config value.
-    if (!in_array($postedService, ['enabled', 'disabled'], true)) {
+    if (!in_array($postedRuntimeMode, ['native', 'incus'], true)) {
+        $settingsError = 'Invalid RUNTIME_MODE value.';
+    } elseif (!preg_match('/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/', $postedIncusContainerName)) {
+        $settingsError = 'INCUS_CONTAINER_NAME must be a DNS-label-style Incus instance name (lowercase letters, numbers, "-"; no leading or trailing "-").';
+    } elseif (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/', $postedIncusImageVersion)) {
+        $settingsError = 'INCUS_IMAGE_VERSION must be a plain X.Y.Z version number.';
+    } elseif ($postedIncusImageSha256 !== '' && !preg_match('/^[a-f0-9]{64}$/', $postedIncusImageSha256)) {
+        $settingsError = 'INCUS_IMAGE_SHA256 must be a lowercase 64-character hex SHA256 digest.';
+    } elseif ($postedIncusTsAuthkey !== '' && !preg_match('/^[A-Za-z0-9_-]{1,200}$/', $postedIncusTsAuthkey)) {
+        $settingsError = 'INCUS_TS_AUTHKEY must be a plain Tailscale key (letters, numbers, "_", "-") or left empty.';
+    } elseif (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $postedIncusBridgeName)) {
+        $settingsError = 'INCUS_BRIDGE_NAME must use only letters, numbers, ".", "_", and "-".';
+    } elseif (!labby_is_ipv4_cidr($postedIncusBridgeSubnet)) {
+        $settingsError = 'INCUS_BRIDGE_SUBNET must be an IPv4 CIDR such as 10.99.99.1/24.';
+    } elseif (!in_array($postedIncusEgressPolicy, ['block-lan', 'allow-lan'], true)) {
+        $settingsError = 'INCUS_EGRESS_POLICY must be block-lan or allow-lan.';
+    } elseif (!in_array($postedService, ['enabled', 'disabled'], true)) {
         $settingsError = 'Invalid SERVICE value.';
     } elseif (!in_array($postedHost, ['127.0.0.1', '0.0.0.0'], true)) {
         $settingsError = 'Invalid HTTP_HOST value.';
@@ -101,6 +177,16 @@ if (isset($_POST['labby_settings_save'])) {
     } elseif (!preg_match('#^/[A-Za-z0-9_./-]+$#', $postedDir)) {
         $settingsError = 'LABBY_DIR must be an absolute path using only letters, numbers, "_", ".", "/", and "-".';
     } else {
+        $newCfg['RUNTIME_MODE'] = $postedRuntimeMode;
+        $newCfg['INCUS_CONTAINER_NAME'] = $postedIncusContainerName;
+        $newCfg['INCUS_IMAGE_VERSION'] = $postedIncusImageVersion;
+        $newCfg['INCUS_IMAGE_SHA256'] = $postedIncusImageSha256;
+        if ($postedIncusTsAuthkey !== '') {
+            $newCfg['INCUS_TS_AUTHKEY'] = $postedIncusTsAuthkey;
+        }
+        $newCfg['INCUS_BRIDGE_NAME'] = $postedIncusBridgeName;
+        $newCfg['INCUS_BRIDGE_SUBNET'] = $postedIncusBridgeSubnet;
+        $newCfg['INCUS_EGRESS_POLICY'] = $postedIncusEgressPolicy;
         $newCfg['SERVICE'] = $postedService;
         $newCfg['HTTP_HOST'] = $postedHost;
         $newCfg['HTTP_PORT'] = $postedPort;
@@ -177,6 +263,46 @@ _(Status)_:
 
 <form markdown="1" name="labby_settings" method="post">
 <input type="hidden" name="labby_settings_save" value="1">
+
+_(Runtime mode)_:
+: <select name="RUNTIME_MODE" onchange="document.getElementById('incus-fields').style.display = this.value === 'incus' ? '' : 'none'">
+  <?= mk_option($cfg['RUNTIME_MODE'], "native", "Native (rc.d process, no dependencies)") ?>
+  <?= mk_option($cfg['RUNTIME_MODE'], "incus", "Incus container (requires incus-unraid, full stdio MCP support)") ?>
+  </select>
+<blockquote class="inline_help">_(Native mode cannot run most stdio MCP servers — Unraid ships neither npx/Node nor uv/Python. Incus mode runs labby inside a full Ubuntu system container with that toolchain floor already baked in, isolated from the rest of the NAS. Switching modes takes effect on the next Start Labby / array start, not immediately.)_</blockquote>
+
+<div id="incus-fields" style="<?= $cfg['RUNTIME_MODE'] === 'incus' ? '' : 'display:none' ?>">
+
+_(Incus container name)_:
+: <input type="text" name="INCUS_CONTAINER_NAME" value="<?= htmlspecialchars($cfg['INCUS_CONTAINER_NAME'], ENT_QUOTES) ?>" size="30" pattern="[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" title="A DNS-label-style Incus instance name">
+
+_(Incus image version)_:
+: <input type="text" name="INCUS_IMAGE_VERSION" value="<?= htmlspecialchars($cfg['INCUS_IMAGE_VERSION'], ENT_QUOTES) ?>" size="10" pattern="[0-9]+\.[0-9]+\.[0-9]+" title="A plain X.Y.Z release version">
+<blockquote class="inline_help">_(A labby release tag that actually published labby-incus-x86_64-unknown-linux-gnu.tar.xz — check https://github.com/jmagar/labby/releases if this version 404s on Apply.)_</blockquote>
+
+_(Incus image SHA256)_:
+: <input type="text" name="INCUS_IMAGE_SHA256" value="<?= htmlspecialchars($cfg['INCUS_IMAGE_SHA256'], ENT_QUOTES) ?>" size="64" pattern="([a-f0-9]{64})?" title="A lowercase 64-character SHA256 digest, or empty">
+<blockquote class="inline_help">_(Pinned SHA256 for the configured labby-incus image. Runtime install verifies cached and downloaded image bytes against this value before import.)_</blockquote>
+
+_(Tailscale auth key)_:
+: <input type="password" name="INCUS_TS_AUTHKEY" value="" size="40" placeholder="tskey-auth-..." autocomplete="off">
+<blockquote class="inline_help">_(Optional write-only one-shot key so the container joins your tailnet on next start. The stored value is never echoed back into this form, is cleared/redacted from labby.cfg after successful use, and startup fails visibly if a supplied key cannot join.)_</blockquote>
+
+_(Incus bridge name)_:
+: <input type="text" name="INCUS_BRIDGE_NAME" value="<?= htmlspecialchars($cfg['INCUS_BRIDGE_NAME'], ENT_QUOTES) ?>" size="20" pattern="[A-Za-z0-9._-]{1,32}" title="A safe Incus network name using only letters, numbers, . _ -">
+
+_(Incus bridge subnet)_:
+: <input type="text" name="INCUS_BRIDGE_SUBNET" value="<?= htmlspecialchars($cfg['INCUS_BRIDGE_SUBNET'], ENT_QUOTES) ?>" size="18" pattern="([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}" title="An IPv4 CIDR such as 10.99.99.1/24">
+<blockquote class="inline_help">_(Dedicated NAT bridge CIDR for the container. labby-incus-init checks for host route collisions before creating or reusing the bridge.)_</blockquote>
+
+_(Incus egress policy)_:
+: <select name="INCUS_EGRESS_POLICY">
+  <?= mk_option($cfg['INCUS_EGRESS_POLICY'], "block-lan", "Block private LAN/tailnet egress (default)") ?>
+  <?= mk_option($cfg['INCUS_EGRESS_POLICY'], "allow-lan", "Allow LAN/tailnet egress") ?>
+  </select>
+<blockquote class="inline_help">_(Block LAN keeps community stdio MCP servers inside the gateway container from reaching private network ranges unless you explicitly opt in.)_</blockquote>
+
+</div>
 
 _(Service)_:
 : <select name="SERVICE">
