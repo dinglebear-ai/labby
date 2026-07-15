@@ -31,7 +31,7 @@ unraid/
   labby.plg                                    plugin manifest (installed via Unraid's Plugins tab)
   source/usr/local/emhttp/plugins/labby/
     labby.cfg                                  default config template (flash-persisted copy is the source of truth once installed)
-    Labby.page                                  thin status/control page — links out to labby's own admin UI, does not reimplement one
+    Labby.page                                  status + settings form (SERVICE/LABBY_DIR/HTTP_HOST/HTTP_PORT) — links out to labby's own admin UI rather than reimplementing one
     scripts/rc.labby                            start/stop/restart/status, mirrors the systemd unit in host_service.rs without depending on systemd
     scripts/labby-preflight.sh                   read-only glibc/binary sanity check; rc.labby refuses to start if this fails
     event/disks_mounted                          array-start hook — labby's state lives on the array, so it can't start before this fires
@@ -58,6 +58,63 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
   survives reboots — the same convention every Unraid Docker app's appdata
   mount already uses). `rc.labby` exports `HOME`/`XDG_*` to point there
   instead of root's RAM-only `/root`.
+
+## Settings page conventions
+
+`Labby.page` is a real settings form (SERVICE, LABBY_DIR, HTTP_HOST,
+HTTP_PORT — everything in `labby.cfg`), built to look and behave like a
+first-party classic Unraid settings page rather than a custom-styled form.
+The markup conventions were reverse-engineered from a live Unraid 7.3.x
+install's own pages (`/usr/local/emhttp/webGui/DateTime.page`,
+`dynamix.my.servers/Connect.page`) and cross-checked against
+`~/workspace/upstream/unraid-api` (which shares the same theme-token
+contract with the classic webGUI via `Theme--white/black/gray/azure`, even
+though its Tailwind/Vue tokens aren't directly usable from a classic
+`.page`):
+
+- **Fields**: the `_(Label)_:` / `: <input>` markdown definition-list idiom
+  on a `<form markdown="1">` — Unraid's own page renderer
+  (`PageBuilder.php`/`MainContent.php`) runs the whole page body through
+  `Markdown()`, which turns this into a real `<dl>`. No custom wrapper divs.
+- **Selects**: `mk_option($current, $value, $label)` (a core webGUI global,
+  loaded unconditionally via `webGui/template.php`) — used for every
+  enum-valued field (SERVICE, HTTP_HOST), matching how every real
+  first-party page handles booleans/enums (no switchbutton widget; that's
+  a real but unconfirmed-markup asset pulled from a separate `unraid/webgui`
+  repo at dev time, not worth the risk of hand-rolling incorrectly).
+- **Help text**: `<blockquote class="inline_help">` immediately after a
+  field's `dt`/`dd` — wired automatically to the toolbar's "?" help toggle
+  by core JS (`DefaultPageLayout.php`) that scans for this class, no extra
+  markup needed on the label side.
+- **Status color**: `.green-text`/`.red-text` (core classes backed by
+  `--green-800`/`--red-600`), not hand-rolled hex values.
+- **Buttons**: bare `<input type="submit">` — no `.btn`-style class exists
+  in any genuine first-party `.page`; the core stylesheet styles submit/
+  button inputs automatically.
+- **Icon**: `Icon="server"` — a bare, unprefixed FontAwesome name. Unraid's
+  icon resolver (`DefaultPageLayout.php`) auto-prepends `fa-` for any
+  `Icon=` value that isn't `icon-*` (Unraid's own reserved webfont family)
+  or a `.png` filename — this is the correct zero-asset choice until a real
+  `labby.png` exists under `source/.../icons/`.
+
+**Persistence stays custom, deliberately**: settings do *not* go through
+Unraid's generic `Dispatcher.php` (`POST /update.htm` with a `#cfg` field),
+even though that's the more "native" save mechanism for classic pages.
+`Dispatcher.php` requires an INI `[section]`-headed config file
+(`parse_ini_file($file, true)`), but `labby.cfg` is a flat, `[section]`-free
+`KEY="value"` file so `rc.labby`/the event hooks can keep bash-`source`-ing
+it unmodified. `Labby.page` POSTs back to itself instead and regenerates
+the whole file from a template, preserving the explanatory comments.
+
+Because `rc.labby` bash-sources `labby.cfg` verbatim, **every field is
+validated server-side against a strict allowlist before being written** —
+an unvalidated value containing a `"`, `$`, backtick, or newline would be
+interpreted as shell syntax the next time the file is sourced, not just a
+bad config value. SERVICE/HTTP_HOST are checked against an exact-match
+enum (not just constrained by the `<select>`, which a crafted raw POST can
+bypass), HTTP_PORT against a numeric 1–65535 range, and LABBY_DIR against
+a path-character allowlist (`^/[A-Za-z0-9_./-]+$`) with no shell
+metacharacters permitted at all.
 
 ## Two version numbers, on purpose
 
@@ -109,11 +166,19 @@ scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also c
 
 ## Known gaps
 
-- No `Icon="labby.png"` asset shipped yet (cosmetic only — Unraid falls
-  back to a default icon).
+- No `labby.png` icon asset yet — `Icon="server"` (a bare FontAwesome name)
+  is the interim zero-asset choice, not a broken/missing reference.
 - Not distributed via Community Applications; install via the Plugins tab's
   "Install Plugin" URL field pointed at the raw `labby.plg` URL.
-- Not yet validated end-to-end on real hardware through the Unraid Plugins
-  page (install/update/uninstall flow, array-start/stop hook behavior across
-  a real reboot) — only the underlying binary's runtime compatibility has
-  been verified so far.
+- Validated end-to-end on real hardware (tower, Unraid 7.3.2) via Unraid's
+  actual `plugin` command: fresh install (checksum-verified download of
+  every file), `rc.labby` start/status/ready/stop, `plugin remove
+  labby.plg` uninstall (state correctly preserved), a real version-bump
+  update cycle (`plugin check`/`plugin update`), the settings form's
+  save-and-regenerate path (including injection-resistance testing), and a
+  real Google OAuth login through the web UI (via a Tailscale Serve HTTPS
+  front). **Not yet tested**: the `event/disks_mounted` and
+  `event/unmounting_disks` hooks via a real array stop/start (only
+  `rc.labby start`/`stop` have been invoked directly), and reboot
+  persistence (the RAM-boot rebuild-from-flash-cache behavior has never
+  actually been observed across a real reboot).

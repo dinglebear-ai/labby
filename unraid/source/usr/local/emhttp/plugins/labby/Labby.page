@@ -1,16 +1,36 @@
 Menu="Utilities"
 Title="Labby"
-Icon="labby.png"
+Icon="server"
 Tag="server"
 ---
 <?PHP
 /* Settings/status page for the Labby gateway plugin. Labby ships its own
  * full admin web UI (embedded in the release binary) — this page is a thin
- * shell over `rc.labby status`/`start`/`stop` that links out to that UI
- * rather than re-implementing a dashboard. Contrast with
- * ~/workspace/incus-unraid's IncusSettings.page, which builds a full
- * GraphQL/Vue settings app because incusd has no web UI of its own; labby
- * doesn't have that problem.
+ * settings/status shell that links out to that UI rather than
+ * re-implementing a dashboard. Contrast with ~/workspace/incus-unraid's
+ * IncusSettings.page, which builds a full GraphQL/Vue settings app because
+ * incusd has no web UI of its own; labby doesn't have that problem.
+ *
+ * Markup follows the same conventions real first-party classic Unraid
+ * settings pages use (confirmed against /usr/local/emhttp/webGui/DateTime.page
+ * and dynamix.my.servers/Connect.page on a live 7.3.x install): a
+ * markdown="1" form using the "_(Label)_:" / ": <input>" definition-list
+ * idiom (Markdown() + parse_text() turn this into a real <dl> — see
+ * PageBuilder.php/MainContent.php), mk_option() for <select> options,
+ * <blockquote class="inline_help"> for the toolbar "?" help toggle, and
+ * .green-text/.red-text (core webGUI's own semantic color classes, backed
+ * by --green-800/--red-600) instead of hand-rolled status colors. No
+ * .btn-style classes are used — bare <input type="submit"> is the real
+ * first-party convention; the core stylesheet styles it automatically.
+ *
+ * labby.cfg stays a flat, bash-sourceable KEY="value" file (no [section]
+ * headers) so rc.labby/event hooks can keep using `. "$CFG"` unmodified —
+ * this intentionally does NOT go through Unraid's generic Dispatcher.php
+ * (which requires an INI [section] format). Because rc.labby bash-sources
+ * this file verbatim, every field written here MUST be validated against a
+ * strict allowlist before being persisted: an unvalidated value containing
+ * a `"`, `$`, backtick, or newline would be interpreted as shell syntax
+ * the next time the file is sourced, not just a config value.
  */
 $cfgFile = "/boot/config/plugins/labby/labby.cfg";
 $cfg = [];
@@ -29,10 +49,71 @@ if (file_exists($cfgFile)) {
         }
     }
 }
-$port = ($cfg['HTTP_PORT'] ?? '') !== '' ? $cfg['HTTP_PORT'] : '8765';
-$host = ($cfg['HTTP_HOST'] ?? '') !== '' ? $cfg['HTTP_HOST'] : '127.0.0.1';
-$lanReachable = !in_array($host, ['127.0.0.1', 'localhost'], true);
-$serviceEnabled = ($cfg['SERVICE'] ?? 'disabled') === 'enabled';
+$cfg['SERVICE'] = $cfg['SERVICE'] ?? 'disabled';
+$cfg['LABBY_DIR'] = $cfg['LABBY_DIR'] ?? '/mnt/user/appdata/labby';
+$cfg['HTTP_HOST'] = $cfg['HTTP_HOST'] ?? '127.0.0.1';
+$cfg['HTTP_PORT'] = $cfg['HTTP_PORT'] ?? '8765';
+
+function labby_cfg_template($cfg) {
+    return <<<CFG
+# /boot/config/plugins/labby/labby.cfg
+# Canonical Labby-for-Unraid config. Read by the array-start event hook AND
+# rc.labby on every start/restart. Values below are DEFAULTS — change freely,
+# either here, over SSH, or from Settings > Labby in the webGUI.
+# Re-applied on every array start; edits here survive plugin updates and
+# reboots (this file lives on flash, never overwritten if already present).
+
+# ---- service ----
+SERVICE="{$cfg['SERVICE']}"                    # enabled|disabled — gate for array-start autostart
+LABBY_DIR="{$cfg['LABBY_DIR']}"   # persistent gateway state (must be on the array, not tmpfs)
+
+# ---- network ----
+# 127.0.0.1 on purpose: labby refuses to bind a non-loopback host without a
+# bearer token or OAuth already configured (crates/labby/src/cli/serve.rs,
+# lab-319g — a fresh install has neither, so 0.0.0.0 here would make rc.labby
+# start fail every time). To reach labby from other hosts on your LAN, first
+# provision a token (`labby setup` locally against LABBY_DIR, or hand-write
+# LABBY_MCP_HTTP_TOKEN into LABBY_DIR/.labby/.env), THEN set this to 0.0.0.0.
+HTTP_HOST="{$cfg['HTTP_HOST']}"                 # LABBY_MCP_HTTP_HOST
+HTTP_PORT="{$cfg['HTTP_PORT']}"                      # LABBY_MCP_HTTP_PORT
+
+CFG;
+}
+
+$settingsError = null;
+
+if (isset($_POST['labby_settings_save'])) {
+    $newCfg = $cfg;
+    $postedService = $_POST['SERVICE'] ?? '';
+    $postedHost = $_POST['HTTP_HOST'] ?? '';
+    $postedPort = $_POST['HTTP_PORT'] ?? '';
+    $postedDir = $_POST['LABBY_DIR'] ?? '';
+
+    // Every field is checked against a strict allowlist — this file gets
+    // bash-`source`d verbatim by rc.labby/event hooks, so an unvalidated
+    // value is a shell-injection vector, not just a bad config value.
+    if (!in_array($postedService, ['enabled', 'disabled'], true)) {
+        $settingsError = 'Invalid SERVICE value.';
+    } elseif (!in_array($postedHost, ['127.0.0.1', '0.0.0.0'], true)) {
+        $settingsError = 'Invalid HTTP_HOST value.';
+    } elseif (!preg_match('/^[0-9]{1,5}$/', $postedPort) || (int) $postedPort < 1 || (int) $postedPort > 65535) {
+        $settingsError = 'HTTP_PORT must be a number between 1 and 65535.';
+    } elseif (!preg_match('#^/[A-Za-z0-9_./-]+$#', $postedDir)) {
+        $settingsError = 'LABBY_DIR must be an absolute path using only letters, numbers, "_", ".", "/", and "-".';
+    } else {
+        $newCfg['SERVICE'] = $postedService;
+        $newCfg['HTTP_HOST'] = $postedHost;
+        $newCfg['HTTP_PORT'] = $postedPort;
+        $newCfg['LABBY_DIR'] = $postedDir;
+    }
+
+    if ($settingsError === null) {
+        @mkdir(dirname($cfgFile), 0755, true);
+        file_put_contents($cfgFile, labby_cfg_template($newCfg));
+        header('Location: /Settings/Labby');
+        exit;
+    }
+}
 
 if (isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 'stop'], true)) {
     shell_exec('/etc/rc.d/rc.labby ' . escapeshellarg($_POST['labby_action']) . ' 2>&1');
@@ -42,34 +123,54 @@ if (isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 
 
 $status = trim((string) shell_exec('/etc/rc.d/rc.labby status 2>&1'));
 $running = strpos($status, 'RUNNING') !== false;
+$port = $cfg['HTTP_PORT'];
+$host = $cfg['HTTP_HOST'];
+$lanReachable = $host !== '127.0.0.1';
 ?>
-<style>
-  .labby-status { padding: 8px 12px; border-radius: 4px; display: inline-block; margin-bottom: 12px; font-family: monospace; }
-  .labby-status.running { background: #1a3a1a; color: #7dd3c7; }
-  .labby-status.stopped { background: #3a1a1a; color: #c78490; }
-</style>
-
-<div class="labby-status <?= $running ? 'running' : 'stopped' ?>">
-  <?= htmlspecialchars($status, ENT_QUOTES) ?>
-</div>
-
-<?php if (!$serviceEnabled): ?>
-  <p><em>SERVICE=disabled in labby.cfg — labby will not autostart on the next array start until this is set to "enabled".</em></p>
+<?php if ($settingsError !== null): ?>
+<div class="notice"><span class="red-text"><?= htmlspecialchars($settingsError, ENT_QUOTES) ?></span></div>
 <?php endif; ?>
 
+_(Status)_:
+: <span class="<?= $running ? 'green-text' : 'red-text' ?>"><?= htmlspecialchars($status, ENT_QUOTES) ?></span>
+
+<form markdown="1" name="labby_settings" method="post">
+<input type="hidden" name="labby_settings_save" value="1">
+
+_(Service)_:
+: <select name="SERVICE">
+  <?= mk_option($cfg['SERVICE'], "disabled", "Disabled") ?>
+  <?= mk_option($cfg['SERVICE'], "enabled", "Enabled") ?>
+  </select>
+<blockquote class="inline_help">_(Enable to autostart labby the next time the array starts. This does not start labby immediately — use the Start/Stop button below for that.)_</blockquote>
+
+_(Gateway state directory)_:
+: <input type="text" name="LABBY_DIR" value="<?= htmlspecialchars($cfg['LABBY_DIR'], ENT_QUOTES) ?>" size="40" pattern="/[A-Za-z0-9_./\-]+" title="An absolute path using only letters, numbers, _ . / -">
+<blockquote class="inline_help">_(Must be on the array, not tmpfs — this is where labby stores its config, auth database, and MCP bearer token. Default: /mnt/user/appdata/labby.)_</blockquote>
+
+_(HTTP host)_:
+: <select name="HTTP_HOST">
+  <?= mk_option($cfg['HTTP_HOST'], "127.0.0.1", "127.0.0.1 (loopback only, safe default)") ?>
+  <?= mk_option($cfg['HTTP_HOST'], "0.0.0.0", "0.0.0.0 (reachable from your LAN)") ?>
+  </select>
+<blockquote class="inline_help">_(labby refuses to bind 0.0.0.0 unless a bearer token or OAuth is already configured in LABBY_DIR/.labby/.env — set one up first, or labby will fail to start after you Apply this and restart it.)_</blockquote>
+
+_(HTTP port)_:
+: <input type="text" name="HTTP_PORT" value="<?= htmlspecialchars($cfg['HTTP_PORT'], ENT_QUOTES) ?>" size="6" maxlength="5" pattern="[0-9]{1,5}" title="A port number between 1 and 65535">
+
+&nbsp;
+: <input type="submit" name="#apply" value="_(Apply)_">
+</form>
+
 <form method="post">
-  <input type="hidden" name="labby_action" value="<?= $running ? 'stop' : 'start' ?>">
-  <input type="submit" class="btn" value="<?= $running ? 'Stop Labby' : 'Start Labby' ?>">
+<input type="hidden" name="labby_action" value="<?= $running ? 'stop' : 'start' ?>">
+<input type="submit" value="<?= $running ? '_(Stop Labby)_' : '_(Start Labby)_' ?>">
 </form>
 
 <?php if ($running && $lanReachable): ?>
-  <p>
-    <a href="http://<?= htmlspecialchars($_SERVER['SERVER_ADDR'] ?? $_SERVER['HTTP_HOST'], ENT_QUOTES) ?>:<?= htmlspecialchars($port, ENT_QUOTES) ?>/" target="_blank" rel="noopener" class="btn">
-      Open Labby Gateway &rarr;
-    </a>
-  </p>
+<p>
+  <a href="http://<?= htmlspecialchars($_SERVER['SERVER_ADDR'] ?? $_SERVER['HTTP_HOST'], ENT_QUOTES) ?>:<?= htmlspecialchars($port, ENT_QUOTES) ?>/" target="_blank" rel="noopener">_(Open Labby Gateway)_ &rarr;</a>
+</p>
 <?php elseif ($running): ?>
-  <p><em>labby is bound to 127.0.0.1 (loopback-only, the safe default) — it isn't reachable from your browser at this address. Set HTTP_HOST=0.0.0.0 in labby.cfg to allow LAN access, but first provision a bearer token (see the comment above HTTP_HOST in labby.cfg) or labby will refuse to start.</em></p>
+<p><span class="orange-text">_(labby is bound to 127.0.0.1 — loopback only — so it isn't reachable from your browser at this address. Change HTTP host above to make it LAN-reachable.)_</span></p>
 <?php endif; ?>
-
-<p>Configure: <code>/boot/config/plugins/labby/labby.cfg</code> (edit on flash or via SSH; re-applied on every array start).</p>
