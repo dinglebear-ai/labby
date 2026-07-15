@@ -1133,6 +1133,7 @@ pub struct AuthFileConfig {
 
 const DEFAULT_CLIENT_REDIRECT_URI_PATTERNS: &[&str] = &[
     "https://chatgpt.com/aip/plugin-callback",
+    "https://chat.openai.com/aip/plugin-callback",
     "https://chatgpt.com/connector/oauth/*",
     "https://chatgpt.com/connector_platform_oauth_redirect",
     "https://claude.ai/api/mcp/auth_callback",
@@ -3011,6 +3012,7 @@ future = "keep"
             resolved.allowed_client_redirect_uris,
             vec![
                 "https://chatgpt.com/aip/plugin-callback".to_string(),
+                "https://chat.openai.com/aip/plugin-callback".to_string(),
                 "https://chatgpt.com/connector/oauth/*".to_string(),
                 "https://chatgpt.com/connector_platform_oauth_redirect".to_string(),
                 "https://claude.ai/api/mcp/auth_callback".to_string(),
