@@ -67,9 +67,10 @@ proxy_resources = false
 ```
 
 Stdio upstreams execute a local child process on the host running `lab`.
-Gateway admin actions that test or reconcile stdio definitions are gated by the
-normal destructive confirmation — including `gateway.test`, which is marked
-destructive because probing a stdio gateway spawns its local command. See
+Gateway admin actions that test or reconcile stdio definitions are marked
+destructive — including `gateway.test`, because probing a stdio gateway spawns
+its local command. MCP clients confirm through elicitation when available;
+clients without elicitation run without a parameter gate. See
 [GATEWAY.md](./GATEWAY.md#stdio-gateways).
 
 ### Config Fields

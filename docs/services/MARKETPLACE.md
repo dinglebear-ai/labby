@@ -165,7 +165,7 @@ confirmation behavior.
 | Surface | Required confirmation |
 | --- | --- |
 | CLI | `-y` / `--yes` for destructive actions. |
-| MCP | Client elicitation accept, or `params.confirm: true` for clients without elicitation. |
+| MCP | Client elicitation accept when the client supports elicitation; otherwise no parameter gate is applied. |
 | HTTP | `params.confirm: true`; missing or false confirmation returns `kind: "confirmation_required"` with HTTP `422`. |
 
 The confirmation flag is handled by the shared dispatcher before Marketplace

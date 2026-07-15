@@ -156,9 +156,9 @@ The service library layer stays unaware of instance naming. Instance lookup is a
 
 OpenACP is registered as `openacp` and represents the upstream OpenACP daemon,
 not Lab's internal `acp` service. Its actions intentionally stay
-non-destructive in Lab's action catalog, so Lab CLI/MCP/API confirmation gates
-do not apply to prompt/session, config, topic, tunnel, notify, or restart
-actions.
+non-destructive in Lab's action catalog, so surface-specific destructive
+handling does not apply to prompt/session, config, topic, tunnel, notify, or
+restart actions.
 
 ## Adding a New Service
 

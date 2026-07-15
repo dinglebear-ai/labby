@@ -55,10 +55,13 @@ enum WidgetCallbackGate {
         /// candidates, which are already advertised in `list_tools`.
         requires_scope_check: bool,
     },
+    Destructive {
+        resolved: Box<PreResolvedUpstreamTool>,
+        requires_scope_check: bool,
+    },
     Ambiguous {
         valid: Vec<String>,
     },
-    Destructive,
 }
 
 fn route_scope_denied_result(service: &str, action: &str, message: String) -> CallToolResult {
@@ -235,19 +238,75 @@ impl LabMcpServer {
                 None
             };
             match widget_callback {
-                Some(WidgetCallbackGate::Destructive) => {
-                    let envelope = build_error(
-                        &service,
-                        &action,
-                        "confirmation_required",
-                        &format!(
-                            "destructive upstream tool `{service}` is not callable via the \
-                             widget callback bypass — use the `execute` tool with confirm:true"
-                        ),
-                    );
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )]));
+                Some(WidgetCallbackGate::Destructive {
+                    resolved,
+                    requires_scope_check,
+                }) => {
+                    if requires_scope_check
+                        && !tool_execute_scope_allowed(auth_context_from_extensions(
+                            &context.extensions,
+                        ))
+                    {
+                        let envelope = build_error_extra(
+                            &service,
+                            &action,
+                            "forbidden",
+                            "hidden-tool widget callbacks require one of scopes: lab, lab:admin",
+                            &serde_json::json!({
+                                "required_scopes": ["lab", "lab:admin"],
+                            }),
+                        );
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
+                            envelope.to_string(),
+                        )]));
+                    }
+                    match elicit_confirm(&context, &service, "call_tool").await {
+                        ConfirmOutcome::Confirmed => {
+                            resolved_upstream_tool = Some(*resolved);
+                        }
+                        ConfirmOutcome::Declined | ConfirmOutcome::Cancelled => {
+                            let envelope = build_error(
+                                &service,
+                                &action,
+                                "confirmation_required",
+                                &format!(
+                                    "destructive upstream tool `{service}` requires MCP elicitation confirmation"
+                                ),
+                            );
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                                envelope.to_string(),
+                            )]));
+                        }
+                        ConfirmOutcome::NotSupported => {
+                            resolved_upstream_tool = Some(*resolved);
+                        }
+                        ConfirmOutcome::Failed => {
+                            let envelope = build_error(
+                                &service,
+                                &action,
+                                "confirmation_required",
+                                &format!(
+                                    "destructive upstream tool `{service}` requires MCP elicitation confirmation; confirmation failed"
+                                ),
+                            );
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                                envelope.to_string(),
+                            )]));
+                        }
+                        ConfirmOutcome::TimedOut => {
+                            let envelope = build_error(
+                                &service,
+                                &action,
+                                "confirmation_required",
+                                &format!(
+                                    "destructive upstream tool `{service}` requires MCP elicitation confirmation; confirmation timed out"
+                                ),
+                            );
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                                envelope.to_string(),
+                            )]));
+                        }
+                    }
                 }
                 Some(WidgetCallbackGate::Ambiguous { valid }) => {
                     let envelope = build_error_extra(
@@ -326,8 +385,10 @@ impl LabMcpServer {
             )]));
         }
 
-        // Elicitation gate: if the action is destructive and the client supports
-        // elicitation, ask for confirmation before dispatching.
+        // Elicitation gate: if the client supports elicitation, destructive MCP
+        // confirmation must come from the elicitation response. If the client
+        // does not support elicitation, execute normally; request params are not
+        // an authorization signal on the MCP surface.
         if let Some(entry) = svc {
             let is_destructive = entry
                 .actions
@@ -348,23 +409,7 @@ impl LabMcpServer {
                         )]));
                     }
                     ConfirmOutcome::NotSupported => {
-                        // Client does not support elicitation — allow params["confirm"] == true
-                        // as a machine-to-machine bypass (mirrors HTTP's handle_action()).
-                        if params.get("confirm").and_then(Value::as_bool) != Some(true) {
-                            let envelope = build_error(
-                                &service,
-                                &action,
-                                "confirmation_required",
-                                &format!(
-                                    "action `{action}` is destructive — pass \
-                                 {{\"confirm\":true}} in params or use a client \
-                                 that supports MCP elicitation"
-                                ),
-                            );
-                            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                envelope.to_string(),
-                            )]));
-                        }
+                        // No fallback prompt, no `params.confirm`, no block.
                     }
                     ConfirmOutcome::Failed => {
                         let envelope = build_error(
@@ -618,21 +663,22 @@ fn classify_widget_callback_candidates(
             .collect();
         return Some(WidgetCallbackGate::Ambiguous { valid });
     }
-    if candidates
-        .iter()
-        .any(|(_, candidate)| candidate.destructive)
-    {
-        return Some(WidgetCallbackGate::Destructive);
+    let (upstream_name, tool) = candidates.into_iter().next().expect("checked len");
+    let resolved: Box<PreResolvedUpstreamTool> = PreResolvedUpstreamTool {
+        upstream_name,
+        tool,
+        route,
+    }
+    .into();
+    if resolved.tool.destructive {
+        return Some(WidgetCallbackGate::Destructive {
+            resolved,
+            requires_scope_check,
+        });
     }
 
-    let (upstream_name, tool) = candidates.into_iter().next().expect("checked len");
     Some(WidgetCallbackGate::Allowed {
-        resolved: PreResolvedUpstreamTool {
-            upstream_name,
-            tool,
-            route,
-        }
-        .into(),
+        resolved,
         requires_scope_check,
     })
 }

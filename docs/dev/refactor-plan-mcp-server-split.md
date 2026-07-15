@@ -136,7 +136,7 @@ async fn call_tool_upstream_impl(&self, service: &str, action: &str, raw_argumen
 4. **`action_allowed_on_mcp` gate** (1602) → `unknown_action` envelope. **Self-returns.**
 5. **`code_mode_visibility().hides_raw_tools()` gate** (1622) → `not_found` envelope. **Self-returns.**
 6. **admin-scope gate** `tool_execute_builtin_action_allowed` (1634) → `forbidden` envelope. **Self-returns.**
-7. **destructive elicitation gate** (1655) → `Confirmed` proceeds; `Declined`/`Cancelled`/`Failed` and `NotSupported`-without-`confirm` self-return `confirmation_required`. **Self-returns on refusal.**
+7. **destructive elicitation gate** (1655) → `Confirmed` proceeds; `Declined`/`Cancelled`/`Failed` self-return `confirmation_required`; `NotSupported` proceeds with no `confirm` fallback or parameter gate. **Self-returns on elicitation refusal only.**
 8. **dispatch-start log** (1718), then **builtin dispatch branch** (1731, when `svc.is_some()`): `inject_gateway_origin_param` for gateway, `(entry.dispatch)(…)`, `format_dispatch_result`, `emit_dispatch_notification`. **Self-returns.**
 9. **upstream tail** (1756–2134) → `call_tool_upstream_impl`. This is the fall-through path when `svc.is_none()`.
 

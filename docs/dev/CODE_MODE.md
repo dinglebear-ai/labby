@@ -239,9 +239,9 @@ directory and may contain anything the original Code Mode source contained.
 > process umask). If the original Code Mode source embedded a literal secret,
 > token, or captured credential, that value is now persisted in cleartext and
 > survives restarts until the snippet is removed. Promotion is `destructive: true`
-> (elicitation / `confirm:true` gated) precisely because it is a persistence
-> action — do not promote sources that carry inline secrets; pass them through
-> snippet `input`/params at run time instead.
+> (MCP elicitation when available; HTTP/CLI use their own confirmation surfaces)
+> precisely because it is a persistence action — do not promote sources that
+> carry inline secrets; pass them through snippet `input`/params at run time instead.
 
 ## Tool IDs and Helpers
 
