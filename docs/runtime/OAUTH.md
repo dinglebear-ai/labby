@@ -493,6 +493,205 @@ names.
 Full route configuration and curl verification examples live in
 [GATEWAY.md](../services/GATEWAY.md#gateway-managed-protected-mcp-routes).
 
+## Troubleshooting ChatGPT MCP Connectors
+
+Use this checklist when a ChatGPT custom MCP connector fails during dynamic
+client registration, OAuth, or the first MCP request after OAuth succeeds. The
+important split is **which layer returned the error**: edge proxy, Labby's auth
+server, Labby's protected-route auth, or the protected-route backend.
+
+### Dynamic client registration returns 403
+
+ChatGPT may show:
+
+```text
+Dynamic client registration failed: registration endpoint returned 403
+```
+
+First verify whether `POST /register` reached the origin. In an nginx/SWAG
+front end, look for ChatGPT/OpenAI user agents around the failure time:
+
+```bash
+grep -E 'POST /register|/\.well-known/oauth|GET /mcp|POST /mcp' \
+  /path/to/nginx/access.log | tail -n 80
+```
+
+Interpretation:
+
+- `GET /.well-known/oauth-protected-resource/<path>` and
+  `GET /.well-known/oauth-authorization-server` reach the origin, but
+  `POST /register` is absent: the edge proxy or WAF blocked DCR before Labby
+  saw it.
+- `POST /register` reaches the origin and returns 4xx: inspect Labby logs and
+  redirect allowlist config.
+- `POST /register` reaches the origin and returns 200: DCR itself is not the
+  current failure; continue to the OAuth/token/MCP checks below.
+
+When Cloudflare proxying is enabled, a WAF/bot rule can block ChatGPT's DCR
+POST while allowing metadata GETs. Confirm the origin path by bypassing
+Cloudflare with `--resolve`:
+
+```bash
+WAN_IP=203.0.113.10
+ISSUER=mcp.example.com
+
+curl --resolve "$ISSUER:443:$WAN_IP" \
+  -sS -D - "https://$ISSUER/.well-known/oauth-authorization-server" -o /tmp/as.json
+
+curl --resolve "$ISSUER:443:$WAN_IP" \
+  -sS -D - -X POST "https://$ISSUER/register" \
+  -H 'Content-Type: application/json' \
+  --data '{
+    "redirect_uris":["https://chatgpt.com/connector/oauth/<callback-id>"],
+    "client_name":"dcr-smoke",
+    "scope":"mcp:read mcp:write",
+    "grant_types":["authorization_code"],
+    "response_types":["code"],
+    "token_endpoint_auth_method":"none"
+  }'
+```
+
+Use the actual callback URI from the failed connector when reproducing a
+redirect-allowlist problem; the placeholder above is only the expected shape.
+
+If the direct-origin POST returns 200 but ChatGPT still gets 403, fix the edge
+configuration, not Labby. The simplest operational fix is to make the connector
+host DNS-only instead of Cloudflare-proxied. Alternatively, add a narrow WAF
+bypass for the OAuth/MCP paths used by MCP clients:
+
+- `/.well-known/oauth-protected-resource*`
+- `/.well-known/oauth-authorization-server*`
+- `/.well-known/openid-configuration`
+- `/register`
+- `/authorize`
+- `/token`
+- `/mcp`
+
+If Labby rejects the DCR POST itself, check the redirect URI ChatGPT registered
+and compare it with `LABBY_AUTH_ALLOWED_REDIRECT_URIS` or
+`[auth].allowed_client_redirect_uris`. Current ChatGPT custom connectors use
+callbacks shaped like:
+
+```text
+https://chatgpt.com/connector/oauth/<callback-id>
+```
+
+Older flows may use:
+
+```text
+https://chat.openai.com/aip/plugin-callback
+```
+
+When `LABBY_AUTH_ALLOWED_REDIRECT_URIS` is set explicitly, it replaces product
+defaults. Include both the current and legacy ChatGPT callback patterns if the
+deployment needs to support both.
+
+### OAuth completes, but ChatGPT says it cannot connect
+
+ChatGPT may complete the browser OAuth flow, then show:
+
+```text
+There was a problem connecting <name>. Try again later.
+```
+
+Check the request sequence at the origin:
+
+```bash
+grep -E 'POST /token|POST /mcp|/\.well-known/oauth' \
+  /path/to/nginx/access.log | tail -n 80
+```
+
+Common signatures:
+
+- `POST /token` returns 200, then `POST /mcp` returns 401:
+  token exchange worked; the failure is the first MCP request.
+- Labby logs `protected MCP route auth failed: missing bearer token`:
+  the client did not send a bearer token, or it did not discover the
+  route-specific metadata challenge correctly.
+- Labby logs `protected MCP route auth failed: JWT validation failed`:
+  the access token issuer or audience does not match the public route resource.
+- Labby logs `protected MCP route auth accepted`, then
+  `protected MCP route proxy finish ... status=401`:
+  Labby accepted ChatGPT's OAuth token, then proxied the request to a backend
+  that rejected the unauthenticated upstream request.
+
+The last case is easy to create accidentally when publishing a friendly root
+URL. This is wrong for a route that should expose Labby itself:
+
+```toml
+[[protected_mcp_routes]]
+name = "root"
+enabled = true
+public_host = "example.com"
+public_path = "/mcp"
+backend_url = "https://mcp.example.com/mcp"
+scopes = ["mcp:read", "mcp:write"]
+```
+
+That configuration validates the OAuth token for `https://example.com/mcp`,
+then forwards to another protected public MCP endpoint without an upstream
+credential. The backend returns 401.
+
+For a public route that should expose a scoped Labby gateway surface, use a
+`gateway_subset` target instead. Gateway subsets are mounted in-process after
+the public route's OAuth check, so there is no second public auth hop:
+
+```toml
+[[protected_mcp_routes]]
+name = "root"
+enabled = true
+public_host = "example.com"
+public_path = "/mcp"
+scopes = ["mcp:read", "mcp:write"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+upstreams = ["github", "quick-shell", "filesystem"]
+services = ["gateway"]
+expose_code_mode = true
+```
+
+Gateway-subset routes are mounted when `labby serve` starts. Editing a running
+route through the live gateway may return `restart_required`; update
+`config.toml` and restart the service:
+
+```bash
+systemctl restart labby.service
+labby gateway protected-route get root --json
+```
+
+After restart, verify the public challenge and route metadata:
+
+```bash
+curl -sS -D - -o /tmp/mcp-unauth-body https://example.com/mcp
+cat /tmp/mcp-unauth-body
+
+curl -sS https://example.com/.well-known/oauth-protected-resource/mcp
+```
+
+Expected properties:
+
+- `GET /mcp` without auth returns 401
+- `WWW-Authenticate` points to
+  `https://example.com/.well-known/oauth-protected-resource/mcp`
+- protected-resource metadata has
+  `"resource": "https://example.com/mcp"`
+- authorization server metadata points to the issuer configured by
+  `LABBY_PUBLIC_URL`
+
+After a real connector retry, Labby service logs should show the happy path:
+
+```text
+oauth token response minted access token
+protected MCP route auth accepted
+initializing HTTP MCP session handler ... route_scope=protected:<route-name>
+tool list ok
+```
+
+In Code Mode visibility, ChatGPT may only list one MCP tool, `codemode`, even
+when many upstreams are available. That is intentional: `codemode` exposes
+in-sandbox discovery and execution for the route-scoped upstream catalog.
+
 ## Auth Precedence
 
 When both static bearer and OAuth are configured, auth is checked in this order:
