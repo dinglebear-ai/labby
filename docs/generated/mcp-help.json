@@ -768,7 +768,7 @@
         {
           "name": "gateway.remove",
           "description": "Remove a gateway and reconcile runtime state",
-          "destructive": false,
+          "destructive": true,
           "params": [
             {
               "name": "name",
@@ -1020,7 +1020,7 @@
         {
           "name": "gateway.mcp.cleanup",
           "description": "Kill or preview running processes associated with one upstream MCP server",
-          "destructive": false,
+          "destructive": true,
           "params": [
             {
               "name": "name",

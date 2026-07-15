@@ -3,11 +3,12 @@
 # array, so it can't start until now.
 CFG="/boot/config/plugins/labby/labby.cfg"
 [ -f "$CFG" ] || exit 0
+# shellcheck disable=SC1090
 . "$CFG"
 [ "${SERVICE:-disabled}" = "enabled" ] || exit 0
 
 logger -t labby "array up: starting labby"
-if ! /etc/rc.d/rc.labby start; then
+if ! LABBY_ARRAY_START=1 /etc/rc.d/rc.labby start; then
     logger -t labby "labby failed to start — see /var/log/labby.log"
     exit 1
 fi

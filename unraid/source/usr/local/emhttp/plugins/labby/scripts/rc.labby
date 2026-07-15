@@ -1,15 +1,20 @@
 #!/bin/bash
-# /etc/rc.d/rc.labby — Unraid-style service control for the labby gateway
-# binary. Backgrounds `labby serve` with persistent state on the array and
-# polls its own /ready endpoint, mirroring labby's systemd unit on other
-# Linux hosts (see crates/labby/src/dispatch/setup/host_service.rs upstream)
-# without depending on systemd, which Unraid does not run.
+# /etc/rc.d/rc.labby — Unraid-style service control for the labby gateway.
+# RUNTIME_MODE="native": backgrounds `labby serve` directly with persistent
+# state on the array, mirroring labby's systemd unit on other Linux hosts.
+# RUNTIME_MODE="incus": delegates lifecycle to an Incus system container so
+# stdio MCP servers have a real toolchain floor without running on the NAS
+# host itself.
+set -o pipefail
 
-EMHTTP="/usr/local/emhttp/plugins/labby"
-BIN="${EMHTTP}/bin/labby"
-CFG="/boot/config/plugins/labby/labby.cfg"
+EMHTTP="${EMHTTP:-/usr/local/emhttp/plugins/labby}"
+BIN="${BIN:-${EMHTTP}/bin/labby}"
+CFG="${CFG:-/boot/config/plugins/labby/labby.cfg}"
+# shellcheck disable=SC1090
 [ -f "$CFG" ] && . "$CFG"
+PLUGIN_STATE_DIR="$(dirname "$CFG")"
 
+RUNTIME_MODE="${RUNTIME_MODE:-native}"
 LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
 # 127.0.0.1 on purpose, matching labby.cfg's own default — see the comment
 # above HTTP_HOST there. This fallback only matters if labby.cfg is ever
@@ -18,9 +23,14 @@ LABBY_DIR="${LABBY_DIR:-/mnt/user/appdata/labby}"
 # start failure that default was fixed to avoid.
 HTTP_HOST="${HTTP_HOST:-127.0.0.1}"
 HTTP_PORT="${HTTP_PORT:-8765}"
+INCUS_CONTAINER_NAME="${INCUS_CONTAINER_NAME:-labby-gateway}"
+INCUS_BRIDGE_NAME="${INCUS_BRIDGE_NAME:-labbybr0}"
+INCUS="${INCUS:-/usr/local/incus/bin/incus}"
+TIMEOUT="${TIMEOUT:-/usr/bin/timeout}"
+PRIVATE_EGRESS_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10"
 
-PIDFILE="/var/run/labby.pid"
-LOG="/var/log/labby.log"
+PIDFILE="${PIDFILE:-/var/run/labby.pid}"
+LOG="${LOG:-/var/log/labby.log}"
 
 # labby resolves its state dir (auth.db, registry.db, config.toml, the MCP
 # bearer token) from $HOME/XDG_*, same as the systemd unit — point those at
@@ -37,7 +47,140 @@ ready() {
     curl -fsS -m 2 "http://127.0.0.1:${HTTP_PORT}/ready" >/dev/null 2>&1
 }
 
-start() {
+bounded() {
+    "$TIMEOUT" "$@"
+}
+
+cleanup_incus_egress_rules() {
+    local cidr
+
+    command -v iptables >/dev/null 2>/dev/null || return 0
+    for cidr in $PRIVATE_EGRESS_CIDRS; do
+        while iptables -C FORWARD -i "$INCUS_BRIDGE_NAME" -d "$cidr" -j REJECT >/dev/null 2>/dev/null; do
+            iptables -D FORWARD -i "$INCUS_BRIDGE_NAME" -d "$cidr" -j REJECT >/dev/null 2>/dev/null || break
+        done
+    done
+}
+
+incus_runtime_marker() {
+    printf '%s\n' "${PLUGIN_STATE_DIR}/labby-incus-runtime-created"
+}
+
+incus_runtime_marker_exists() {
+    [ -f "$(incus_runtime_marker)" ] || [ -f "${LABBY_DIR%/}/.labby-incus-runtime-created" ]
+}
+
+native_pid_alive() {
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+}
+
+stop_native_for_mode_switch() {
+    if native_pid_alive; then
+        echo "labby: stopping native runtime before starting Incus mode"
+        stop_native
+    fi
+}
+
+stop_incus_for_mode_switch() {
+    local state
+
+    if [ ! -x "$INCUS" ] || [ ! -f "${EMHTTP}/scripts/labby-incus-env.sh" ]; then
+        if incus_runtime_marker_exists; then
+            echo "labby: Incus runtime marker exists but Incus tooling is unavailable — refusing to start native mode until ${INCUS_CONTAINER_NAME} is confirmed stopped"
+            return 1
+        fi
+        return 0
+    fi
+
+    if ! incus_env_or_fail; then
+        if incus_runtime_marker_exists; then
+            echo "labby: Incus runtime marker exists but Incus environment could not be loaded — refusing to start native mode until ${INCUS_CONTAINER_NAME} is confirmed stopped"
+            return 1
+        fi
+        return 0
+    fi
+
+    if ! state="$(incus_state)"; then
+        if incus_runtime_marker_exists; then
+            echo "labby: Incus runtime marker exists but ${INCUS_CONTAINER_NAME} state could not be queried — refusing to start native mode"
+            return 1
+        fi
+        echo "labby: could not query Incus state, but no Labby Incus runtime marker exists; continuing native start"
+        return 0
+    fi
+
+    case "$state" in
+        MISSING)
+            rm -f "$(incus_runtime_marker)"
+            cleanup_incus_egress_rules
+            return 0
+            ;;
+        STOPPED)
+            cleanup_incus_egress_rules
+            return 0
+            ;;
+        RUNNING) ;;
+        *)
+            echo "labby: Incus container ${INCUS_CONTAINER_NAME} is ${state}, not safely stopped — refusing to start native mode"
+            return 1
+            ;;
+    esac
+
+    echo "labby: stopping Incus runtime before starting native mode"
+    stop_incus
+}
+
+validate_incus_container_name() {
+    [[ "$INCUS_CONTAINER_NAME" =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
+}
+
+incus_env_or_fail() {
+    if [ ! -f "${EMHTTP}/scripts/labby-incus-env.sh" ]; then
+        echo "labby: ${EMHTTP}/scripts/labby-incus-env.sh not found — install the incus-unraid plugin first"
+        return 1
+    fi
+    if ! validate_incus_container_name; then
+        echo "labby: INCUS_CONTAINER_NAME must be a DNS label starting with a lowercase letter: ${INCUS_CONTAINER_NAME}"
+        return 1
+    fi
+    # shellcheck disable=SC1091
+    . "${EMHTTP}/scripts/labby-incus-env.sh" || return 1
+}
+
+incus_state() {
+    local info
+    local state
+
+    info="$(bounded 15 "$INCUS" info -- "$INCUS_CONTAINER_NAME" 2>&1)" || {
+        case "$info" in
+            *"Instance not found"*)
+                printf 'MISSING\n'
+                return 0
+                ;;
+            *)
+                echo "labby: failed to query Incus state for ${INCUS_CONTAINER_NAME}: ${info}" >&2
+                return 1
+                ;;
+        esac
+    }
+    state="$(printf '%s\n' "$info" | awk -F': ' '$1 == "Status" { print toupper($2); exit }')"
+    if [ -z "$state" ]; then
+        echo "labby: Incus state response for ${INCUS_CONTAINER_NAME} did not include a Status line: ${info}" >&2
+        return 1
+    fi
+    printf '%s\n' "$state"
+}
+
+incus_ready() {
+    bounded 10 "$INCUS" exec "$INCUS_CONTAINER_NAME" -- curl -fsS -m 2 http://127.0.0.1:8765/ready >/dev/null 2>&1
+}
+
+start_native() {
+    stop_incus_for_mode_switch || {
+        echo "labby: could not confirm the Incus runtime stopped — refusing to start native mode on top of it"
+        exit 1
+    }
+
     if ! "${EMHTTP}/scripts/labby-preflight.sh" >>"$LOG" 2>&1; then
         echo "labby: preflight FAILED — see $LOG"
         exit 1
@@ -66,7 +209,7 @@ start() {
         # LABBY_DIR SQLite state concurrently, and overwriting PIDFILE below
         # would orphan the old process forever.
         echo "labby: a live labby process isn't answering on ${HTTP_HOST}:${HTTP_PORT} (settings changed since it started?) — stopping it first"
-        if ! stop; then
+        if ! stop_native; then
             echo "labby: could not stop the existing process — refusing to start a second one"
             exit 1
         fi
@@ -87,7 +230,7 @@ start() {
     exit 1
 }
 
-stop() {
+stop_native() {
     echo "labby: stopping"
     if [ ! -f "$PIDFILE" ]; then
         return 0
@@ -118,7 +261,7 @@ stop() {
     rm -f "$PIDFILE"
 }
 
-status() {
+status_native() {
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && ready; then
         echo "labby: RUNNING (pid $(cat "$PIDFILE"), http://${HTTP_HOST}:${HTTP_PORT})"
     else
@@ -126,21 +269,201 @@ status() {
     fi
 }
 
+start_incus() {
+    local init_status
+
+    stop_native_for_mode_switch || {
+        echo "labby: could not stop the native runtime — refusing to start Incus mode on top of it"
+        return 1
+    }
+
+    incus_env_or_fail || return 1
+    if [ ! -x "${EMHTTP}/scripts/labby-incus-init.sh" ]; then
+        echo "labby: ${EMHTTP}/scripts/labby-incus-init.sh not found or not executable"
+        return 1
+    fi
+    LABBY_ARRAY_START="${LABBY_ARRAY_START:-0}" "${EMHTTP}/scripts/labby-incus-init.sh" 2>&1 | tee -a "$LOG"
+    init_status="${PIPESTATUS[0]}"
+    if [ "$init_status" -ne 0 ]; then
+        echo "labby: Incus startup failed — see $LOG and syslog tag labby-incus"
+        return 1
+    fi
+}
+
+stop_incus() {
+    local state
+
+    incus_env_or_fail || {
+        if incus_runtime_marker_exists; then
+            echo "labby: Incus runtime marker exists but Incus environment could not be loaded — retaining firewall rules and refusing to claim stopped"
+            return 1
+        fi
+        echo "labby: Incus environment unavailable and no Labby Incus runtime marker exists; treating Incus stop as a no-op"
+        return 0
+    }
+
+    if ! state="$(incus_state)"; then
+        echo "labby: failed to query Incus container ${INCUS_CONTAINER_NAME}; refusing to claim stopped"
+        return 1
+    fi
+    if [ "$state" = "MISSING" ]; then
+        echo "labby: Incus container ${INCUS_CONTAINER_NAME} not created yet"
+        rm -f "$(incus_runtime_marker)"
+        cleanup_incus_egress_rules
+        return 0
+    fi
+    if [ "$state" = "STOPPED" ]; then
+        echo "labby: Incus container ${INCUS_CONTAINER_NAME} already ${state}"
+        cleanup_incus_egress_rules
+        return 0
+    fi
+    if [ "$state" != "RUNNING" ]; then
+        echo "labby: Incus container ${INCUS_CONTAINER_NAME} is ${state}, not safely stopped — refusing to claim stopped"
+        return 1
+    fi
+
+    echo "labby: stopping Incus container ${INCUS_CONTAINER_NAME}"
+    if ! bounded 45 "$INCUS" stop --timeout 30 -- "$INCUS_CONTAINER_NAME" 2>/dev/null; then
+        if ! state="$(incus_state)"; then
+            echo "labby: failed to query Incus container ${INCUS_CONTAINER_NAME} after stop request"
+            return 1
+        fi
+        if [ "$state" = "MISSING" ]; then
+            rm -f "$(incus_runtime_marker)"
+            cleanup_incus_egress_rules
+            return 0
+        fi
+        if [ "$state" = "STOPPED" ]; then
+            cleanup_incus_egress_rules
+            return 0
+        fi
+        if [ "$state" != "RUNNING" ]; then
+            echo "labby: Incus container ${INCUS_CONTAINER_NAME} is ${state} after stop request, not safely stopped"
+            return 1
+        fi
+        echo "labby: failed to request stop for Incus container ${INCUS_CONTAINER_NAME}"
+        return 1
+    fi
+
+    for _ in $(seq 1 20); do
+        if ! state="$(incus_state)"; then
+            echo "labby: failed to query Incus container ${INCUS_CONTAINER_NAME} while waiting for stop"
+            return 1
+        fi
+        if [ "$state" = "MISSING" ]; then
+            rm -f "$(incus_runtime_marker)"
+            cleanup_incus_egress_rules
+            return 0
+        fi
+        if [ "$state" = "STOPPED" ]; then
+            cleanup_incus_egress_rules
+            return 0
+        fi
+        if [ "$state" != "RUNNING" ]; then
+            echo "labby: Incus container ${INCUS_CONTAINER_NAME} became ${state} while waiting for stop, not safely stopped"
+            return 1
+        fi
+        sleep 0.5
+    done
+
+    echo "labby: FAILED to stop Incus container ${INCUS_CONTAINER_NAME} (still RUNNING)"
+    return 1
+}
+
+stop_all_active() {
+    local status=0
+
+    if [ -f "$PIDFILE" ]; then
+        stop_native || status=1
+    fi
+
+    if [ "$RUNTIME_MODE" = "incus" ] || incus_runtime_marker_exists; then
+        stop_incus || status=1
+    fi
+
+    return "$status"
+}
+
+status_incus() {
+    local state
+
+    incus_env_or_fail || return 1
+
+    if ! state="$(incus_state)"; then
+        echo "labby: ERROR (failed to query incus container ${INCUS_CONTAINER_NAME})"
+        return 1
+    fi
+    if [ "$state" = "MISSING" ]; then
+        rm -f "$(incus_runtime_marker)"
+        echo "labby: STOPPED (incus container ${INCUS_CONTAINER_NAME} not created yet)"
+    elif [ "$state" = "STOPPED" ]; then
+        echo "labby: STOPPED (incus container ${INCUS_CONTAINER_NAME})"
+    elif [ "$state" = "RUNNING" ] && incus_ready; then
+        echo "labby: RUNNING (incus container ${INCUS_CONTAINER_NAME}, ready)"
+    elif [ "$state" = "RUNNING" ]; then
+        echo "labby: RUNNING (incus container ${INCUS_CONTAINER_NAME}, not ready)"
+    else
+        echo "labby: ${state} (incus container ${INCUS_CONTAINER_NAME}; not safe to treat as stopped)"
+        return 1
+    fi
+}
+
+unsupported_runtime_mode() {
+    echo "labby: unsupported RUNTIME_MODE=${RUNTIME_MODE} (expected native or incus)"
+    exit 1
+}
+
 case "$1" in
-    start) start ;;
-    stop) stop ;;
+    start)
+        case "$RUNTIME_MODE" in
+            native) start_native ;;
+            incus) start_incus ;;
+            *) unsupported_runtime_mode ;;
+        esac
+        ;;
+    stop)
+        case "$RUNTIME_MODE" in
+            native | incus) stop_all_active ;;
+            *) unsupported_runtime_mode ;;
+        esac
+        ;;
     restart)
         # Do not start a new process on top of one stop() failed to reap —
         # that would either fail the port bind outright or, worse, leave
         # two processes writing to the same LABBY_DIR state concurrently.
-        stop || exit 1
-        sleep 1
-        start
+        case "$RUNTIME_MODE" in
+            native)
+                stop_all_active || exit 1
+                sleep 1
+                start_native
+                ;;
+            incus)
+                stop_all_active || exit 1
+                sleep 1
+                start_incus
+                ;;
+            *) unsupported_runtime_mode ;;
+        esac
         ;;
-    status) status ;;
-    preflight) "${EMHTTP}/scripts/labby-preflight.sh" ;;
+    status)
+        case "$RUNTIME_MODE" in
+            native) status_native ;;
+            incus) status_incus ;;
+            *) unsupported_runtime_mode ;;
+        esac
+        ;;
+    preflight)
+        case "$RUNTIME_MODE" in
+            native) "${EMHTTP}/scripts/labby-preflight.sh" ;;
+            incus) : ;;
+            *) unsupported_runtime_mode ;;
+        esac
+        ;;
+    cleanup-firewall)
+        cleanup_incus_egress_rules
+        ;;
     *)
-        echo "usage: $0 {start|stop|restart|status|preflight}"
+        echo "usage: $0 {start|stop|restart|status|preflight|cleanup-firewall}"
         exit 1
         ;;
 esac
