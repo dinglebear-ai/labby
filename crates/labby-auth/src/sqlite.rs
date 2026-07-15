@@ -19,7 +19,7 @@ use crate::types::{
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
 /// Schema version for the `PRAGMA user_version` migration guard.
 /// Increment this whenever a migration step is added to `run_migrations`.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 use crate::util::{
     ensure_restrictive_permissions, fingerprint, now_unix, set_restrictive_permissions,
@@ -440,18 +440,23 @@ impl SqliteStore {
     }
 
     /// Whether the given local OAuth client already holds an unexpired `lab`
-    /// refresh token. Scoped per `client_id` rather than "any client,
-    /// anywhere" — Google only skips re-issuing a refresh token for a
-    /// (Google account, `LABBY_GOOGLE_CLIENT_ID`) pair it has already
-    /// consented to, and that consent state is shared across every local
-    /// DCR client. A global existence check therefore let an established
-    /// client's refresh token silently mask the fact that a brand-new
-    /// client (e.g. a fresh Claude.ai/ChatGPT connector registration) had
-    /// never completed a forced-consent round trip, so Google returned an
-    /// access token with no refresh token for that new client. Scoping by
-    /// `client_id` preserves the original UX intent — skip the extra
-    /// consent screen for a client that's authorized before — without
-    /// leaking one client's consent state into another's.
+    /// refresh token.
+    ///
+    /// Scoped per `client_id` rather than "any client, anywhere" — Google
+    /// only skips re-issuing a refresh token for a (Google account,
+    /// `LABBY_GOOGLE_CLIENT_ID`) pair it has already consented to, and that
+    /// consent state is shared across every local DCR client. A global
+    /// existence check therefore let an established client's refresh token
+    /// silently mask the fact that a brand-new client (e.g. a fresh
+    /// Claude.ai/ChatGPT connector registration) had never completed a
+    /// forced-consent round trip, so Google returned an access token with no
+    /// refresh token for that new client. Scoping by `client_id` preserves
+    /// the original UX intent — skip the extra consent screen for a client
+    /// that's authorized before — without leaking one client's consent
+    /// state into another's. Callers still need their own additional check
+    /// when more than one Google account is allowed to sign in, since two
+    /// different accounts sharing one `client_id` aren't distinguishable
+    /// from this method alone — see the call site in `authorize()`.
     pub async fn has_refresh_token_for_client(&self, client_id: &str) -> Result<bool, AuthError> {
         let now = now_unix();
         let client_id = client_id.to_string();
@@ -1372,6 +1377,23 @@ fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
         // complete their own callback with the correct client_id (lab-77y5.15).
         add_column_if_missing(conn, "upstream_oauth_state", "dynamic_client_id", "TEXT")?;
 
+        conn.execute_batch("PRAGMA user_version = 2;")
+            .map_err(sqlite_error)?;
+    }
+
+    if current_version < 3 {
+        // Step 3: index `refresh_tokens(client_id, expires_at)` — the columns
+        // `has_refresh_token_for_client` filters on. The table has no other
+        // index on either column (only `refresh_token_hash`, the PK), so this
+        // query was a full table scan; harmless at today's single-tenant row
+        // counts, but this now runs on every interactive `/authorize` request
+        // rather than as an occasional admin check, so it's worth having.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_client_expiry \
+             ON refresh_tokens(client_id, expires_at);",
+        )
+        .map_err(sqlite_error)?;
+
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(sqlite_error)?;
     }
@@ -1629,69 +1651,29 @@ mod tests {
     #[tokio::test]
     async fn has_refresh_token_for_client_reflects_unexpired_rows_only() {
         let store = temp_store().await;
-        assert!(
-            !store
-                .has_refresh_token_for_client("client")
-                .await
-                .unwrap()
-        );
+        assert!(!store.has_refresh_token_for_client("client").await.unwrap());
 
-        store
-            .upsert_refresh_token(RefreshTokenRow {
-                refresh_token: "expired-refresh".to_string(),
-                client_id: "client".to_string(),
-                subject: "google-user".to_string(),
-                resource: "https://lab.example.com/mcp".to_string(),
-                scope: "lab".to_string(),
-                provider_refresh_token: None,
-                created_at: now_unix() - 300,
-                expires_at: now_unix() - 1,
-            })
-            .await
-            .unwrap();
+        let mut expired = sample_refresh_token("client", "expired-refresh");
+        expired.created_at = now_unix() - 300;
+        expired.expires_at = now_unix() - 1;
+        store.upsert_refresh_token(expired).await.unwrap();
         assert!(
-            !store
-                .has_refresh_token_for_client("client")
-                .await
-                .unwrap(),
+            !store.has_refresh_token_for_client("client").await.unwrap(),
             "an expired-only store should not count as having a refresh token"
         );
 
         store
-            .upsert_refresh_token(RefreshTokenRow {
-                refresh_token: "live-refresh".to_string(),
-                client_id: "client".to_string(),
-                subject: "google-user".to_string(),
-                resource: "https://lab.example.com/mcp".to_string(),
-                scope: "lab".to_string(),
-                provider_refresh_token: None,
-                created_at: now_unix(),
-                expires_at: now_unix() + 3600,
-            })
+            .upsert_refresh_token(sample_refresh_token("client", "live-refresh"))
             .await
             .unwrap();
-        assert!(
-            store
-                .has_refresh_token_for_client("client")
-                .await
-                .unwrap()
-        );
+        assert!(store.has_refresh_token_for_client("client").await.unwrap());
     }
 
     #[tokio::test]
     async fn has_refresh_token_for_client_does_not_leak_across_clients() {
         let store = temp_store().await;
         store
-            .upsert_refresh_token(RefreshTokenRow {
-                refresh_token: "codex-refresh".to_string(),
-                client_id: "codex-client".to_string(),
-                subject: "google-user".to_string(),
-                resource: "https://lab.example.com/mcp".to_string(),
-                scope: "lab".to_string(),
-                provider_refresh_token: None,
-                created_at: now_unix(),
-                expires_at: now_unix() + 3600,
-            })
+            .upsert_refresh_token(sample_refresh_token("codex-client", "codex-refresh"))
             .await
             .unwrap();
 
@@ -1812,6 +1794,20 @@ mod tests {
             provider_refresh_token: Some("provider-refresh".to_string()),
             created_at: now,
             expires_at: now + 300,
+        }
+    }
+
+    fn sample_refresh_token(client_id: &str, refresh_token: &str) -> RefreshTokenRow {
+        let now = now_unix();
+        RefreshTokenRow {
+            refresh_token: refresh_token.to_string(),
+            client_id: client_id.to_string(),
+            subject: "google-user".to_string(),
+            resource: "https://lab.example.com/mcp".to_string(),
+            scope: "lab".to_string(),
+            provider_refresh_token: None,
+            created_at: now,
+            expires_at: now + 3600,
         }
     }
 

@@ -253,21 +253,24 @@ pub async fn authorize(
         })
         .await?;
 
-    // We don't know which Google subject is about to sign in until they come
-    // back from the consent screen, so use "has *this* local client already
-    // minted a refresh token before" as a single-tenant proxy for "already
-    // granted." Scoped per client_id (not gateway-wide) so an established
-    // client's refresh token can't mask a brand-new client's need to force
-    // consent — see has_refresh_token_for_client's doc comment. Forcing full
-    // re-consent on every DCR client's first attempt (Raycast, Warp, Claude,
-    // ChatGPT, etc.) adds an interactive round trip long enough for
-    // impatient clients to time out and retry before the human finishes
-    // clicking through it, so repeat authorizations from an already-seen
-    // client still skip it.
-    let force_consent = !state
-        .store
-        .has_refresh_token_for_client(&query.client_id)
-        .await?;
+    // See has_refresh_token_for_client's doc comment for the full rationale.
+    // Short version: skip forcing Google's consent screen only when we can be
+    // confident the account that's about to sign in already granted it. With
+    // exactly one allowed Google account, "this client already holds a
+    // refresh token" is that confidence signal. With more than one allowed
+    // account, per-client_id state can't distinguish *which* account is about
+    // to authenticate (a shared client credential used by two different
+    // admins would otherwise let admin A's consent silently cover admin B's
+    // first-ever login), so force consent unconditionally in that case.
+    let allowed_email_count = state.resolve_allowed_emails().await?.len();
+    let force_consent = if allowed_email_count > 1 {
+        true
+    } else {
+        !state
+            .store
+            .has_refresh_token_for_client(&query.client_id)
+            .await?
+    };
     let location = state.google.authorize_url(&AuthorizeUrlRequest {
         state: request_state,
         scope: scope.clone(),
@@ -283,6 +286,7 @@ pub async fn authorize(
         resource = %resource,
         scope = %scope,
         provider = "google",
+        force_consent,
         "oauth authorize request redirected to upstream provider"
     );
     debug!(
@@ -1371,6 +1375,115 @@ pub mod tests {
             .unwrap();
         assert!(location.contains("accounts.google.com"));
         assert!(!location.contains("prompt="));
+    }
+
+    #[tokio::test]
+    async fn authorize_forces_consent_for_a_new_client_even_when_another_client_has_a_refresh_token()
+     {
+        let state = test_auth_state_with_registered_client().await;
+        state
+            .store
+            .register_client(RegisteredClient {
+                client_id: "other-client".to_string(),
+                redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
+                created_at: now_unix(),
+            })
+            .await
+            .unwrap();
+        // Only "client" has ever completed consent; "other-client" has not.
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "existing-refresh".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-user".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: now_unix(),
+                expires_at: now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=other-client&redirect_uri=http://127.0.0.1:8888/callback&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(location.contains("accounts.google.com"));
+        assert!(
+            location.contains("prompt=consent"),
+            "a client that has never held a refresh token must still be forced through \
+             consent, even though another client's refresh token already exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_forces_consent_when_multiple_accounts_are_allowed_even_with_an_existing_refresh_token()
+     {
+        let state = test_auth_state_with_registered_client().await;
+        // A second allowed Google account, on top of the default admin_email —
+        // resolve_allowed_emails() now returns 2 entries.
+        state
+            .store
+            .add_allowed_user("second-admin@example.com", "admin", now_unix())
+            .await
+            .unwrap();
+        // "client" already holds a refresh token, which would normally skip
+        // consent — but it must not, because we can't tell in advance which of
+        // the two allowed accounts is about to sign in through it.
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "existing-refresh".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-user".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: now_unix(),
+                expires_at: now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(location.contains("accounts.google.com"));
+        assert!(
+            location.contains("prompt=consent"),
+            "with more than one allowed Google account, a client's existing refresh \
+             token must not be trusted to skip consent — it may belong to a different \
+             account than the one about to sign in"
+        );
     }
 
     #[tokio::test]
