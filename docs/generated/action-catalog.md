@@ -38,7 +38,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.import_tombstones.list` | false | false |  | `ImportTombstoneView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.import_tombstones.restore` | false | true | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.list` | false | false |  | `ServerView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.cleanup` | false | false | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.cleanup` | false | true | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.disable` | false | false | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.list` | false | false |  | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
@@ -55,7 +55,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.protected_route.update` | false | false | `name*: string`<br>`route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.public_urls.get` | false | false |  | `{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}` | cli, mcp, api, web |
 | `gateway` | `gateway.reload` | false | false |  | `GatewayCatalogDiff` | cli, mcp, api, web |
-| `gateway` | `gateway.remove` | false | false | `name*: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.remove` | false | true | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.schema` | false | false | `name*: string` | `GatewayServerSchema` | cli, mcp, api, web |
 | `gateway` | `gateway.server.get` | false | false | `id*: string` | `ServerView` | cli, mcp, api, web |
 | `gateway` | `gateway.servers` | false | false |  | `GatewayServersDoc` | cli, mcp, api, web |

@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.0e">
+  <!ENTITY version      "1.3.6">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -40,12 +40,15 @@
   <!ENTITY tarball      "lab-x86_64-unknown-linux-gnu.tar.gz">
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
-  <!ENTITY cfgMD5       "1bb151dd5b7b091e9aed476421281769">
-  <!ENTITY pageMD5      "bafb51a8156ba5216a1b39be02f498ab">
-  <!ENTITY rcMD5        "35e83bc87809d89985effffe55303db0">
+  <!ENTITY cfgMD5       "5bd58428c9b019cba193ed90efdac0c8">
+  <!ENTITY pageMD5      "054649cb61d0e0bf2e71013d325a4283">
+  <!ENTITY rcMD5        "6aabfdaf80dbcaadf72a6d47d85916e6">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
-  <!ENTITY mountedMD5   "c564b0387a4f115ad7c4721445fc9549">
-  <!ENTITY unmountingMD5 "7ccbac8d7d2b1b933f7806b4e3c21711">
+  <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">
+  <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
+  <!ENTITY incusProfileMD5 "0419cfb5166a433dfc8149cbefcc3e48">
+  <!ENTITY incusEnvMD5     "e4d6dbc277bb84b40e65d2f77f5b217f">
+  <!ENTITY incusInitMD5    "f20df050b79c62ebef0c0c893457755d">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
 ]>
@@ -53,6 +56,71 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.6
+- Closes native-control review findings: Incus mode now runs gateway
+  management commands inside the gateway container as the `labby` user,
+  bounds page-spawned CLI calls, rejects multi-action POSTs, adds native
+  stdio-upstream and stale-process cleanup controls, keeps Incus runtime
+  evidence under fixed plugin state, preserves LAN-egress firewall rules
+  on uncertain Incus failures, stops all active runtime footprints, and
+  moves one-shot Tailscale keys out of labby.cfg before consumption.
+
+###1.3.5
+- Forces the native gateway-controls package over earlier 1.3.4 installs.
+  Includes the native reload action, add-HTTP-upstream form, and upstream
+  MCP runtime table with enable/disable/remove controls.
+
+###1.3.4
+- Replaces the Settings > Labby iframe embed with native classic Unraid
+  gateway controls. The page now renders a native reload action plus an
+  add-HTTP-upstream form and an upstream MCP runtime table with
+  enable/disable/remove controls; no embedded admin-web iframe is used.
+
+###1.3.3
+- Embeds the Labby gateway admin UI directly in Settings > Labby when the
+  gateway is browser-reachable, while keeping a new-tab link as a fallback.
+  Operators can manage the gateway from the Unraid plugin page instead of
+  only jumping out to a separate page.
+
+###1.3.2
+- Adds RUNTIME_MODE="incus": run the gateway inside an Incus system
+  container (via ~/workspace/incus-unraid's private Incus daemon) instead
+  of as a bare rc.d process, so stdio MCP servers actually work — Unraid's
+  bare host ships neither npx/Node nor uv/Python, which the previous
+  native-only mode had no way around. Requires the incus-unraid plugin
+  already installed. RUNTIME_MODE="native" remains the default; existing
+  installs are unaffected until this is explicitly changed in Settings.
+  The Incus image version and SHA256 pin are configured independently from
+  the plugin package version; cached image bytes are verified before import.
+  Imported Incus images and existing containers are also checked against
+  the configured pin, first-time array autostart avoids heavy bootstrap
+  work, and stop/uninstall removes the host bridge egress rules it owns.
+  Switching runtime modes also stops the previous runtime before starting
+  the new one, so native and Incus gateways cannot accidentally overlap.
+  See docs/runtime/UNRAID.md for the full architecture and known gaps
+  (the referenced labby-incus-*.tar.xz release asset publishing has a
+  known CI gap — see the tracked bead referenced there).
+
+###1.3.1
+- Labby.page's start/stop action handler now checks rc.labby's actual exit
+  code (via PHP exec()'s $return_var) instead of re-deriving success from
+  `rc.labby status`. status only reports RUNNING when the pid is both alive
+  AND answering /ready, so a stop() that fails because the pid survives
+  SIGKILL but stops answering /ready looked identical to a clean stop —
+  silently discarding exactly the "still holding LABBY_DIR's SQLite files
+  open" failure rc.labby's exit code exists to signal.
+- Labby.page's settings-save now backs up the previous labby.cfg to
+  labby.cfg.bak before the atomic rename, matching this repo's own
+  backup-first config-mutation contract — previously only the atomic-write
+  half was implemented, so a bad settings save had no recovery path.
+- event/unmounting_disks now always attempts to stop labby, instead of
+  gating on SERVICE=enabled. SERVICE only controls autostart on array
+  mount; an operator can start labby manually (Settings &gt; Labby, SSH)
+  while SERVICE=disabled, and the old gate let that manually started
+  process keep running straight through array unmount, still holding open
+  handles on LABBY_DIR's SQLite files. rc.labby stop is a safe no-op when
+  nothing is running.
+
 ###1.3.0e
 - srcURL (companion-file downloads: labby.cfg/Labby.page/rc.labby/
   labby-preflight.sh/event hooks) no longer points at `main`. Every one of
@@ -172,7 +240,7 @@
 <MD5>&tarballMD5;</MD5>
 </FILE>
 
-<!-- companion scripts/page/config — source of truth is this repo's
+<!-- companion scripts/page/config/incus files — source of truth is this repo's
      unraid/source/ tree. scripts/ci/unraid-plugin-checksums.sh keeps the
      MD5s below in sync with those files (checked on every push/PR via
      ci.yml's always-on job, repairable with its fix flag); unrelated to
@@ -207,13 +275,28 @@
 <MD5>&unmountingMD5;</MD5>
 </FILE>
 
+<FILE Name="&emhttp;/incus/labby-gateway-profile.yaml">
+<URL>&srcURL;/incus/labby-gateway-profile.yaml</URL>
+<MD5>&incusProfileMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/scripts/labby-incus-env.sh">
+<URL>&srcURL;/scripts/labby-incus-env.sh</URL>
+<MD5>&incusEnvMD5;</MD5>
+</FILE>
+
+<FILE Name="&emhttp;/scripts/labby-incus-init.sh">
+<URL>&srcURL;/scripts/labby-incus-init.sh</URL>
+<MD5>&incusInitMD5;</MD5>
+</FILE>
+
 <!-- extract the binary, wire up permissions + rc.d symlink, seed default
      config only if absent (never clobber user edits) -->
 <FILE Run="/bin/bash">
 <INLINE>
 mkdir -p "&emhttp;/bin"
 tar -xzf "&plugin;/&tarball;" -C "&emhttp;/bin" labby
-chmod +x "&emhttp;/bin/labby" "&emhttp;/scripts/rc.labby" "&emhttp;/scripts/labby-preflight.sh" "&emhttp;/event/disks_mounted" "&emhttp;/event/unmounting_disks"
+chmod +x "&emhttp;/bin/labby" "&emhttp;/scripts/rc.labby" "&emhttp;/scripts/labby-preflight.sh" "&emhttp;/scripts/labby-incus-env.sh" "&emhttp;/scripts/labby-incus-init.sh" "&emhttp;/event/disks_mounted" "&emhttp;/event/unmounting_disks"
 
 if [ ! -f "&plugin;/labby.cfg" ]; then
   mkdir -p "&plugin;"
@@ -255,7 +338,12 @@ echo "----------------------------------------------------"
 <!-- uninstall -->
 <FILE Run="/bin/bash" Method="remove">
 <INLINE>
-/etc/rc.d/rc.labby stop 2>/dev/null
+if ! /etc/rc.d/rc.labby stop; then
+  echo "Labby plugin removal aborted: rc.labby stop failed. State and firewall rules were left intact."
+  exit 1
+fi
+. "&plugin;/labby.cfg" 2>/dev/null
+/etc/rc.d/rc.labby cleanup-firewall
 rm -f /etc/rc.d/rc.labby
 rm -rf &emhttp;
 echo "Labby plugin removed. State in LABBY_DIR and /boot/config/plugins/labby was left intact."

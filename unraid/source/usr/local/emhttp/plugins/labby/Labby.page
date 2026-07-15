@@ -4,10 +4,11 @@ Icon="server"
 Tag="server"
 ---
 <?PHP
-/* Settings/status page for the Labby gateway plugin. Labby ships its own
- * full admin web UI (embedded in the release binary) — this page is a thin
- * settings/status shell that links out to that UI rather than
- * re-implementing a dashboard. Contrast with ~/workspace/incus-unraid's
+/* Settings/status page for the Labby gateway plugin. This page intentionally
+ * uses native classic Unraid controls rather than embedding labby's separate
+ * admin web UI, so operators can manage the gateway directly from
+ * Settings > Labby without an iframe. Contrast with
+ * ~/workspace/incus-unraid's
  * IncusSettings.page, which builds a full GraphQL/Vue settings app because
  * incusd has no web UI of its own; labby doesn't have that problem.
  *
@@ -49,6 +50,14 @@ if (file_exists($cfgFile)) {
         }
     }
 }
+$cfg['RUNTIME_MODE'] = $cfg['RUNTIME_MODE'] ?? 'native';
+$cfg['INCUS_CONTAINER_NAME'] = $cfg['INCUS_CONTAINER_NAME'] ?? 'labby-gateway';
+$cfg['INCUS_IMAGE_VERSION'] = $cfg['INCUS_IMAGE_VERSION'] ?? '1.2.0';
+$cfg['INCUS_IMAGE_SHA256'] = $cfg['INCUS_IMAGE_SHA256'] ?? '';
+$cfg['INCUS_TS_AUTHKEY'] = $cfg['INCUS_TS_AUTHKEY'] ?? '';
+$cfg['INCUS_BRIDGE_NAME'] = $cfg['INCUS_BRIDGE_NAME'] ?? 'labbybr0';
+$cfg['INCUS_BRIDGE_SUBNET'] = $cfg['INCUS_BRIDGE_SUBNET'] ?? '10.99.99.1/24';
+$cfg['INCUS_EGRESS_POLICY'] = $cfg['INCUS_EGRESS_POLICY'] ?? 'block-lan';
 $cfg['SERVICE'] = $cfg['SERVICE'] ?? 'disabled';
 $cfg['LABBY_DIR'] = $cfg['LABBY_DIR'] ?? '/mnt/user/appdata/labby';
 $cfg['HTTP_HOST'] = $cfg['HTTP_HOST'] ?? '127.0.0.1';
@@ -63,9 +72,27 @@ function labby_cfg_template($cfg) {
 # Re-applied on every array start; edits here survive plugin updates and
 # reboots (this file lives on flash, never overwritten if already present).
 
+# ---- runtime mode ----
+# native: run the labby binary directly via rc.d (no dependencies, but no
+#   stdio MCP server support — Unraid ships neither npx/Node nor uv/Python).
+# incus: run labby inside an Incus system container (requires the
+#   incus-unraid plugin already installed and its SERVICE=enabled) — gets
+#   a full toolchain floor (Node, uv-managed Python, Rust, Go) so stdio MCP
+#   servers actually work, plus crash isolation from the rest of the NAS.
+RUNTIME_MODE="{$cfg['RUNTIME_MODE']}"                 # native|incus
+INCUS_CONTAINER_NAME="{$cfg['INCUS_CONTAINER_NAME']}"  # incus mode only
+INCUS_IMAGE_VERSION="{$cfg['INCUS_IMAGE_VERSION']}"           # incus mode only — a labby release tag that published labby-incus-*.tar.xz
+INCUS_IMAGE_SHA256="{$cfg['INCUS_IMAGE_SHA256']}"                 # incus mode only — pinned sha256 for labby-incus-\${INCUS_IMAGE_VERSION}-x86_64-unknown-linux-gnu.tar.xz
+INCUS_TS_AUTHKEY="{$cfg['INCUS_TS_AUTHKEY']}"                   # incus mode only — write-only one-shot Tailscale auth key; clear/redact after attempted use
+
+# ---- incus network ----
+INCUS_BRIDGE_NAME="{$cfg['INCUS_BRIDGE_NAME']}"          # incus mode only — dedicated Incus-managed bridge
+INCUS_BRIDGE_SUBNET="{$cfg['INCUS_BRIDGE_SUBNET']}"   # incus mode only — bridge IPv4 CIDR, checked for host route collisions
+INCUS_EGRESS_POLICY="{$cfg['INCUS_EGRESS_POLICY']}"       # incus mode only — bridge-forwarded private egress: block-lan|allow-lan
+
 # ---- service ----
 SERVICE="{$cfg['SERVICE']}"                    # enabled|disabled — gate for array-start autostart
-LABBY_DIR="{$cfg['LABBY_DIR']}"   # persistent gateway state (must be on the array, not tmpfs)
+LABBY_DIR="{$cfg['LABBY_DIR']}"   # persistent gateway state (must be on the array, not tmpfs); also stores the incus image cache
 
 # ---- network ----
 # 127.0.0.1 on purpose: labby refuses to bind a non-loopback host without a
@@ -74,25 +101,328 @@ LABBY_DIR="{$cfg['LABBY_DIR']}"   # persistent gateway state (must be on the arr
 # start fail every time). To reach labby from other hosts on your LAN, first
 # provision a token (`labby setup` locally against LABBY_DIR, or hand-write
 # LABBY_MCP_HTTP_TOKEN into LABBY_DIR/.labby/.env), THEN set this to 0.0.0.0.
+# native mode only — incus mode reachability is via Tailscale inside the
+# container, see docs/runtime/INCUS.md.
 HTTP_HOST="{$cfg['HTTP_HOST']}"                 # LABBY_MCP_HTTP_HOST
 HTTP_PORT="{$cfg['HTTP_PORT']}"                      # LABBY_MCP_HTTP_PORT
 
 CFG;
 }
 
-$settingsError = null;
+function labby_post_string($key) {
+    $value = $_POST[$key] ?? '';
+    return is_string($value) ? $value : '';
+}
 
-if (isset($_POST['labby_settings_save'])) {
+function labby_redact_ts_authkey($content) {
+    return preg_replace('/^(INCUS_TS_AUTHKEY=)(?:"[^"]*"|[^[:space:]#]*)(.*)$/m', '$1""$2', $content);
+}
+
+function labby_cli_env($cfg) {
+    $dir = rtrim($cfg['LABBY_DIR'], '/');
+    return [
+        'HOME' => $dir,
+        'XDG_CACHE_HOME' => $dir . '/.cache',
+        'XDG_CONFIG_HOME' => $dir . '/.config',
+        'XDG_DATA_HOME' => $dir . '/.local/share',
+        'LABBY_MCP_HTTP_HOST' => $cfg['HTTP_HOST'],
+        'LABBY_MCP_HTTP_PORT' => $cfg['HTTP_PORT'],
+    ];
+}
+
+function labby_shell_exec($parts, &$exitCode) {
+    $lines = [];
+    exec(implode(' ', $parts) . ' 2>&1', $lines, $exitCode);
+    return implode("\n", $lines);
+}
+
+function labby_run_cli($cfg, $args, &$exitCode, $timeoutSeconds = 20) {
+    $timeoutSeconds = max(1, min((int) $timeoutSeconds, 120));
+    if (($cfg['RUNTIME_MODE'] ?? 'native') === 'incus') {
+        $containerName = $cfg['INCUS_CONTAINER_NAME'] ?? '';
+        if (!labby_validate_incus_container_name($containerName)) {
+            $exitCode = 1;
+            return 'Invalid INCUS_CONTAINER_NAME; cannot execute gateway controls in Incus mode.';
+        }
+
+        $script = '. /usr/local/emhttp/plugins/labby/scripts/labby-incus-env.sh && exec "$INCUS" exec "$1" --user labby -- env HOME=/home/labby XDG_CACHE_HOME=/home/labby/.cache XDG_CONFIG_HOME=/home/labby/.config XDG_DATA_HOME=/home/labby/.local/share PATH=/home/labby/.local/bin:/usr/local/bin:/usr/bin:/bin labby --json "${@:2}"';
+        $parts = ['timeout', (string) $timeoutSeconds, 'bash', '-c', $script, 'labby-incus-cli', $containerName];
+        foreach ($args as $arg) {
+            $parts[] = $arg;
+        }
+        $escaped = array_map('escapeshellarg', $parts);
+        return labby_shell_exec($escaped, $exitCode);
+    }
+
+    $parts = [];
+    $parts[] = 'timeout';
+    $parts[] = (string) $timeoutSeconds;
+    $parts[] = 'env';
+    foreach (labby_cli_env($cfg) as $key => $value) {
+        $parts[] = $key . '=' . escapeshellarg($value);
+    }
+    $parts[] = escapeshellarg('/usr/local/emhttp/plugins/labby/bin/labby');
+    $parts[] = '--json';
+    foreach ($args as $arg) {
+        $parts[] = escapeshellarg($arg);
+    }
+    return labby_shell_exec($parts, $exitCode);
+}
+
+function labby_gateway_rows($cfg, &$error) {
+    $exitCode = 0;
+    $output = labby_run_cli($cfg, ['gateway', 'mcp', 'list'], $exitCode, 12);
+    if ($exitCode !== 0) {
+        $error = $output === '' ? 'gateway mcp list failed without output' : $output;
+        return [];
+    }
+
+    $decoded = json_decode($output, true);
+    if (!is_array($decoded)) {
+        $error = 'gateway mcp list did not return a JSON array: ' . $output;
+        return [];
+    }
+
+    return $decoded;
+}
+
+function labby_upstream_status_class($row) {
+    if (empty($row['enabled'])) {
+        return 'orange-text';
+    }
+    return !empty($row['connected']) ? 'green-text' : 'red-text';
+}
+
+function labby_upstream_status_text($row) {
+    if (empty($row['enabled'])) {
+        return 'Disabled';
+    }
+    return !empty($row['connected']) ? 'Connected' : 'Disconnected';
+}
+
+function labby_count_summary($row) {
+    $tools = (int) ($row['exposed_tool_count'] ?? 0);
+    $resources = (int) ($row['exposed_resource_count'] ?? 0);
+    $prompts = (int) ($row['exposed_prompt_count'] ?? 0);
+    return "$tools tools / $resources resources / $prompts prompts";
+}
+
+function labby_validate_upstream_name($name) {
+    return preg_match('/^[A-Za-z0-9._-]{1,128}$/', $name);
+}
+
+function labby_validate_incus_container_name($name) {
+    return preg_match('/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/', $name);
+}
+
+function labby_validate_http_url($url) {
+    if (strlen($url) > 2048) {
+        return false;
+    }
+    $parts = parse_url($url);
+    return is_array($parts)
+        && isset($parts['scheme'], $parts['host'])
+        && in_array($parts['scheme'], ['http', 'https'], true)
+        && filter_var($url, FILTER_VALIDATE_URL) !== false;
+}
+
+function labby_validate_stdio_command($value) {
+    return strlen($value) >= 1
+        && strlen($value) <= 256
+        && preg_match('/^[A-Za-z0-9_.\/:-]+$/', $value);
+}
+
+function labby_parse_stdio_args($value, &$error) {
+    $args = [];
+    $error = null;
+    foreach (preg_split('/\R/', $value) as $line) {
+        $arg = trim($line);
+        if ($arg === '') {
+            continue;
+        }
+        if (strlen($arg) > 512 || preg_match('/[\x00-\x1F\x7F]/', $arg)) {
+            $error = 'Each stdio argument must be a single printable line up to 512 characters.';
+            return [];
+        }
+        $args[] = $arg;
+    }
+    return $args;
+}
+
+function labby_validate_env_name($value) {
+    return $value === '' || preg_match('/^[A-Z][A-Z0-9_]{0,127}$/', $value);
+}
+
+function labby_is_ipv4_cidr($value) {
+    if (!preg_match('/^([0-9]{1,3}\.){3}[0-9]{1,3}\/[0-9]{1,2}$/', $value)) {
+        return false;
+    }
+
+    [$ip, $prefix] = explode('/', $value, 2);
+    if ((int) $prefix < 1 || (int) $prefix > 30) {
+        return false;
+    }
+
+    foreach (explode('.', $ip) as $octet) {
+        if ((int) $octet < 0 || (int) $octet > 255) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function labby_is_array_backed_path($value) {
+    if (preg_match('#(^|/)\.\.?(/|$)#', $value)) {
+        return false;
+    }
+    return preg_match('#^/mnt/(user|cache)(/.*)?$#', $value)
+        || preg_match('#^/mnt/disk[0-9]+(/.*)?$#', $value);
+}
+
+function labby_config_lock($cfgFile, &$error) {
+    $lock = @fopen($cfgFile . '.lock', 'c');
+    if ($lock === false) {
+        $error = "Could not open $cfgFile.lock — check the flash device's permissions and free space.";
+        return false;
+    }
+    if (!@flock($lock, LOCK_EX)) {
+        @fclose($lock);
+        $error = "Could not lock $cfgFile — another settings update may be running.";
+        return false;
+    }
+    return $lock;
+}
+
+function labby_config_unlock($lock) {
+    @flock($lock, LOCK_UN);
+    @fclose($lock);
+}
+
+function labby_write_atomic($path, $content, &$error) {
+    $tmpFile = $path . '.tmp.' . getmypid();
+    @unlink($tmpFile);
+    $written = @file_put_contents($tmpFile, $content);
+    @chmod($tmpFile, 0600);
+    if ($written === false || !@rename($tmpFile, $path)) {
+        @unlink($tmpFile);
+        $error = "Could not write $path — check the flash device's permissions and free space.";
+        return false;
+    }
+    @chmod($path, 0600);
+    return true;
+}
+
+function labby_ts_authkey_path($cfgFile) {
+    return dirname($cfgFile) . '/incus-ts-authkey';
+}
+
+function labby_write_ts_authkey($cfgFile, $value, &$error) {
+    $path = labby_ts_authkey_path($cfgFile);
+    if ($value === '') {
+        @unlink($path);
+        return true;
+    }
+    return labby_write_atomic($path, $value, $error);
+}
+
+function labby_mutation_count() {
+    $keys = [
+        'labby_settings_save',
+        'labby_action',
+        'labby_gateway_action',
+        'labby_gateway_add',
+        'labby_gateway_add_stdio',
+        'labby_gateway_server_action',
+        'labby_mcp_action',
+    ];
+    $count = 0;
+    foreach ($keys as $key) {
+        if (isset($_POST[$key])) {
+            $count++;
+        }
+    }
+    return $count;
+}
+
+function labby_incus_marker_exists($cfgFile, $cfg) {
+    $newMarker = dirname($cfgFile) . '/labby-incus-runtime-created';
+    $legacyMarker = rtrim($cfg['LABBY_DIR'] ?? '', '/') . '/.labby-incus-runtime-created';
+    return file_exists($newMarker) || ($legacyMarker !== '/.labby-incus-runtime-created' && file_exists($legacyMarker));
+}
+
+function labby_current_status() {
+    return trim((string) shell_exec('timeout 30 /etc/rc.d/rc.labby status 2>&1'));
+}
+
+function labby_format_cli_output($output) {
+    $decoded = json_decode($output, true);
+    if (!is_array($decoded)) {
+        return $output;
+    }
+    if (isset($decoded['kind']) || isset($decoded['message'])) {
+        $message = trim((string) ($decoded['message'] ?? ''));
+        $kind = trim((string) ($decoded['kind'] ?? ''));
+        $hint = trim((string) ($decoded['hint'] ?? ''));
+        $parts = [];
+        if ($kind !== '') {
+            $parts[] = $kind;
+        }
+        if ($message !== '') {
+            $parts[] = $message;
+        }
+        if ($hint !== '') {
+            $parts[] = 'Hint: ' . $hint;
+        }
+        return implode("\n", $parts);
+    }
+    return json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+}
+
+$settingsError = null;
+$gatewayNotice = null;
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && labby_mutation_count() > 1) {
+    $settingsError = 'Submit one Labby action at a time.';
+}
+
+if ($settingsError === null && isset($_POST['labby_settings_save'])) {
     $newCfg = $cfg;
-    $postedService = $_POST['SERVICE'] ?? '';
-    $postedHost = $_POST['HTTP_HOST'] ?? '';
-    $postedPort = $_POST['HTTP_PORT'] ?? '';
-    $postedDir = $_POST['LABBY_DIR'] ?? '';
+    $postedRuntimeMode = labby_post_string('RUNTIME_MODE');
+    $postedIncusContainerName = labby_post_string('INCUS_CONTAINER_NAME');
+    $postedIncusImageVersion = labby_post_string('INCUS_IMAGE_VERSION');
+    $postedIncusImageSha256 = labby_post_string('INCUS_IMAGE_SHA256');
+    $postedIncusTsAuthkey = labby_post_string('INCUS_TS_AUTHKEY');
+    $postedIncusBridgeName = labby_post_string('INCUS_BRIDGE_NAME');
+    $postedIncusBridgeSubnet = labby_post_string('INCUS_BRIDGE_SUBNET');
+    $postedIncusEgressPolicy = labby_post_string('INCUS_EGRESS_POLICY');
+    $postedService = labby_post_string('SERVICE');
+    $postedHost = labby_post_string('HTTP_HOST');
+    $postedPort = labby_post_string('HTTP_PORT');
+    $postedDir = labby_post_string('LABBY_DIR');
 
     // Every field is checked against a strict allowlist — this file gets
     // bash-`source`d verbatim by rc.labby/event hooks, so an unvalidated
     // value is a shell-injection vector, not just a bad config value.
-    if (!in_array($postedService, ['enabled', 'disabled'], true)) {
+    if (!in_array($postedRuntimeMode, ['native', 'incus'], true)) {
+        $settingsError = 'Invalid RUNTIME_MODE value.';
+    } elseif (!labby_validate_incus_container_name($postedIncusContainerName)) {
+        $settingsError = 'INCUS_CONTAINER_NAME must be a DNS-label-style Incus instance name starting with a lowercase letter (then lowercase letters, numbers, "-"; no trailing "-").';
+    } elseif (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/', $postedIncusImageVersion)) {
+        $settingsError = 'INCUS_IMAGE_VERSION must be a plain X.Y.Z version number.';
+    } elseif ($postedRuntimeMode === 'incus' && $postedIncusImageSha256 === '') {
+        $settingsError = 'INCUS_IMAGE_SHA256 is required when RUNTIME_MODE is incus.';
+    } elseif ($postedIncusImageSha256 !== '' && !preg_match('/^[a-f0-9]{64}$/', $postedIncusImageSha256)) {
+        $settingsError = 'INCUS_IMAGE_SHA256 must be a lowercase 64-character hex SHA256 digest.';
+    } elseif ($postedIncusTsAuthkey !== '' && !preg_match('/^[A-Za-z0-9_-]{1,200}$/', $postedIncusTsAuthkey)) {
+        $settingsError = 'INCUS_TS_AUTHKEY must be a plain Tailscale key (letters, numbers, "_", "-") or left empty.';
+    } elseif (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $postedIncusBridgeName)) {
+        $settingsError = 'INCUS_BRIDGE_NAME must use only letters, numbers, ".", "_", and "-".';
+    } elseif (!labby_is_ipv4_cidr($postedIncusBridgeSubnet)) {
+        $settingsError = 'INCUS_BRIDGE_SUBNET must be an IPv4 CIDR such as 10.99.99.1/24.';
+    } elseif (!in_array($postedIncusEgressPolicy, ['block-lan', 'allow-lan'], true)) {
+        $settingsError = 'INCUS_EGRESS_POLICY must be block-lan or allow-lan.';
+    } elseif (!in_array($postedService, ['enabled', 'disabled'], true)) {
         $settingsError = 'Invalid SERVICE value.';
     } elseif (!in_array($postedHost, ['127.0.0.1', '0.0.0.0'], true)) {
         $settingsError = 'Invalid HTTP_HOST value.';
@@ -100,7 +430,26 @@ if (isset($_POST['labby_settings_save'])) {
         $settingsError = 'HTTP_PORT must be a number between 1 and 65535.';
     } elseif (!preg_match('#^/[A-Za-z0-9_./-]+$#', $postedDir)) {
         $settingsError = 'LABBY_DIR must be an absolute path using only letters, numbers, "_", ".", "/", and "-".';
+    } elseif (!labby_is_array_backed_path($postedDir)) {
+        $settingsError = 'LABBY_DIR must live on Unraid array/cache storage such as /mnt/user/appdata/labby, /mnt/cache/appdata/labby, or /mnt/disk1/appdata/labby.';
+    } elseif (
+        $postedIncusContainerName !== ($cfg['INCUS_CONTAINER_NAME'] ?? 'labby-gateway')
+        && labby_incus_marker_exists($cfgFile, $cfg)
+        && strpos(labby_current_status(), 'STOPPED') === false
+    ) {
+        $settingsError = 'Stop the existing Incus gateway before changing INCUS_CONTAINER_NAME; otherwise the old container can be orphaned.';
     } else {
+        $newCfg['RUNTIME_MODE'] = $postedRuntimeMode;
+        $newCfg['INCUS_CONTAINER_NAME'] = $postedIncusContainerName;
+        $newCfg['INCUS_IMAGE_VERSION'] = $postedIncusImageVersion;
+        $newCfg['INCUS_IMAGE_SHA256'] = $postedIncusImageSha256;
+        // Write-only one-shot input: a non-empty value stores a new key for
+        // the next start, and an empty value clears any previously stored key
+        // that may have failed to join. The form never echoes the old value.
+        $newCfg['INCUS_TS_AUTHKEY'] = '';
+        $newCfg['INCUS_BRIDGE_NAME'] = $postedIncusBridgeName;
+        $newCfg['INCUS_BRIDGE_SUBNET'] = $postedIncusBridgeSubnet;
+        $newCfg['INCUS_EGRESS_POLICY'] = $postedIncusEgressPolicy;
         $newCfg['SERVICE'] = $postedService;
         $newCfg['HTTP_HOST'] = $postedHost;
         $newCfg['HTTP_PORT'] = $postedPort;
@@ -116,15 +465,27 @@ if (isset($_POST['labby_settings_save'])) {
         // actually flipped to "enabled" until the next array start fails
         // to bring labby up.
         $cfgDir = dirname($cfgFile);
+        $saved = false;
         if (!is_dir($cfgDir) && !@mkdir($cfgDir, 0755, true) && !is_dir($cfgDir)) {
             $settingsError = "Could not create $cfgDir — check the flash device's permissions and free space.";
         } else {
-            $tmpFile = $cfgFile . '.tmp.' . getmypid();
-            $written = @file_put_contents($tmpFile, labby_cfg_template($newCfg));
-            if ($written === false || !@rename($tmpFile, $cfgFile)) {
-                @unlink($tmpFile);
-                $settingsError = "Could not write $cfgFile — check the flash device's permissions and free space.";
-            } else {
+            $cfgLock = labby_config_lock($cfgFile, $settingsError);
+            if ($cfgLock !== false) {
+                if (file_exists($cfgFile)) {
+                    $backupContents = @file_get_contents($cfgFile);
+                    if ($backupContents === false || !labby_write_atomic($cfgFile . '.bak', labby_redact_ts_authkey($backupContents), $settingsError)) {
+                        $settingsError = $settingsError ?: "Could not back up $cfgFile before saving — check the flash device's permissions and free space.";
+                    }
+                }
+                if ($settingsError === null && !labby_write_ts_authkey($cfgFile, $postedIncusTsAuthkey, $settingsError)) {
+                    // Error already populated by helper.
+                }
+                if ($settingsError === null && labby_write_atomic($cfgFile, labby_cfg_template($newCfg), $settingsError)) {
+                    $saved = true;
+                }
+                labby_config_unlock($cfgLock);
+            }
+            if ($saved) {
                 header('Location: /Settings/Labby');
                 exit;
             }
@@ -132,37 +493,201 @@ if (isset($_POST['labby_settings_save'])) {
     }
 }
 
-if (isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 'stop'], true)) {
+if ($settingsError === null && isset($_POST['labby_action']) && in_array($_POST['labby_action'], ['start', 'stop'], true)) {
     $requestedAction = $_POST['labby_action'];
-    $actionOutput = trim((string) shell_exec('/etc/rc.d/rc.labby ' . escapeshellarg($requestedAction) . ' 2>&1'));
-    $postActionRunning = strpos((string) shell_exec('/etc/rc.d/rc.labby status 2>&1'), 'RUNNING') !== false;
-    $actionSucceeded = $requestedAction === 'start' ? $postActionRunning : !$postActionRunning;
-    if ($actionSucceeded) {
+    exec('/etc/rc.d/rc.labby ' . escapeshellarg($requestedAction) . ' 2>&1', $actionOutputLines, $actionExitCode);
+    $actionOutput = implode("\n", $actionOutputLines);
+    if ($actionExitCode === 0) {
         header('Location: /Settings/Labby');
         exit;
     }
     // Do not redirect on failure — a bare redirect here would silently
     // discard the one thing (rc.labby's own diagnostic output) that
     // explains why start/stop didn't do what was requested, leaving the
-    // operator to SSH in and read /var/log/labby.log themselves.
+    // operator to SSH in and read /var/log/labby.log themselves. Trust
+    // rc.labby's own exit code directly instead of re-deriving success from
+    // `status` — status only reports RUNNING when the pid is both alive AND
+    // answering /ready, so a stop() that fails because the pid survives
+    // SIGKILL but no longer answers /ready would look identical to a clean
+    // stop (status says STOPPED either way), silently discarding exactly
+    // the "still alive, still holding LABBY_DIR's SQLite files open"
+    // failure rc.labby's own exit code exists to signal.
     $settingsError = "labby $requestedAction did not complete as expected:\n" . $actionOutput;
 }
 
-$status = trim((string) shell_exec('/etc/rc.d/rc.labby status 2>&1'));
+if ($settingsError === null && isset($_POST['labby_gateway_action'])) {
+    $gatewayAction = labby_post_string('labby_gateway_action');
+    if ($gatewayAction !== 'reload') {
+        $settingsError = 'Invalid gateway action.';
+    } else {
+        $gatewayOutput = labby_run_cli($cfg, ['gateway', 'reload'], $gatewayExitCode, 30);
+        if ($gatewayExitCode === 0) {
+            $gatewayNotice = "Gateway reload completed.\n" . labby_format_cli_output($gatewayOutput);
+        } else {
+            $settingsError = "gateway reload failed:\n" . labby_format_cli_output($gatewayOutput);
+        }
+    }
+}
+
+if ($settingsError === null && isset($_POST['labby_gateway_add'])) {
+    $newUpstreamName = labby_post_string('new_upstream_name');
+    $newUpstreamUrl = labby_post_string('new_upstream_url');
+    $newBearerTokenEnv = labby_post_string('new_bearer_token_env');
+
+    if (!labby_validate_upstream_name($newUpstreamName)) {
+        $settingsError = 'Invalid upstream name.';
+    } elseif (!labby_validate_http_url($newUpstreamUrl)) {
+        $settingsError = 'MCP URL must be a valid http:// or https:// URL.';
+    } elseif (!labby_validate_env_name($newBearerTokenEnv)) {
+        $settingsError = 'Bearer token env must be an uppercase environment variable name, or blank.';
+    } else {
+        $args = ['gateway', 'add', '--name', $newUpstreamName, '--url', $newUpstreamUrl];
+        if ($newBearerTokenEnv !== '') {
+            $args[] = '--bearer-token-env';
+            $args[] = $newBearerTokenEnv;
+        }
+        $gatewayOutput = labby_run_cli($cfg, $args, $gatewayExitCode, 30);
+        if ($gatewayExitCode === 0) {
+            $gatewayNotice = "Gateway MCP server $newUpstreamName added.\n" . labby_format_cli_output($gatewayOutput);
+        } else {
+            $settingsError = "gateway add $newUpstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
+        }
+    }
+}
+
+if ($settingsError === null && isset($_POST['labby_gateway_add_stdio'])) {
+    $newUpstreamName = labby_post_string('new_stdio_name');
+    $newStdioCommand = labby_post_string('new_stdio_command');
+    $stdioArgsError = null;
+    $newStdioArgs = labby_parse_stdio_args(labby_post_string('new_stdio_args'), $stdioArgsError);
+
+    if (!labby_validate_upstream_name($newUpstreamName)) {
+        $settingsError = 'Invalid upstream name.';
+    } elseif (!labby_validate_stdio_command($newStdioCommand)) {
+        $settingsError = 'Stdio command must be a single command/path using letters, numbers, "_", ".", "/", ":", and "-". Put arguments in the Arguments field.';
+    } elseif ($stdioArgsError !== null) {
+        $settingsError = $stdioArgsError;
+    } else {
+        $args = ['gateway', 'add', '--name', $newUpstreamName, '--command', $newStdioCommand];
+        foreach ($newStdioArgs as $arg) {
+            $args[] = '--arg';
+            $args[] = $arg;
+        }
+        $gatewayOutput = labby_run_cli($cfg, $args, $gatewayExitCode, 30);
+        if ($gatewayExitCode === 0) {
+            $gatewayNotice = "Gateway stdio MCP server $newUpstreamName added.\n" . labby_format_cli_output($gatewayOutput);
+        } else {
+            $settingsError = "gateway add $newUpstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
+        }
+    }
+}
+
+if ($settingsError === null && isset($_POST['labby_gateway_server_action'])) {
+    $serverAction = labby_post_string('labby_gateway_server_action');
+    $upstreamName = labby_post_string('upstream_name');
+    if ($serverAction !== 'remove') {
+        $settingsError = 'Invalid gateway server action.';
+    } elseif (!labby_validate_upstream_name($upstreamName)) {
+        $settingsError = 'Invalid upstream name.';
+    } else {
+        $gatewayOutput = labby_run_cli($cfg, ['gateway', 'remove', $upstreamName], $gatewayExitCode, 30);
+        if ($gatewayExitCode === 0) {
+            $gatewayNotice = "Gateway MCP server $upstreamName removed.\n" . labby_format_cli_output($gatewayOutput);
+        } else {
+            $settingsError = "gateway remove $upstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
+        }
+    }
+}
+
+if ($settingsError === null && isset($_POST['labby_mcp_action'])) {
+    $mcpAction = labby_post_string('labby_mcp_action');
+    $upstreamName = labby_post_string('upstream_name');
+    if (!in_array($mcpAction, ['enable', 'disable', 'cleanup', 'cleanup_preview'], true)) {
+        $settingsError = 'Invalid MCP action.';
+    } elseif (!labby_validate_upstream_name($upstreamName)) {
+        $settingsError = 'Invalid upstream name.';
+    } else {
+        if ($mcpAction === 'cleanup' || $mcpAction === 'cleanup_preview') {
+            $args = ['gateway', 'mcp', 'cleanup', $upstreamName];
+            if ($mcpAction === 'cleanup_preview') {
+                $args[] = '--dry-run';
+            }
+        } elseif ($mcpAction === 'disable' && isset($_POST['cleanup'])) {
+            $args = ['gateway', 'mcp', 'disable', $upstreamName, '--cleanup'];
+        } else {
+            $args = ['gateway', 'mcp', $mcpAction, $upstreamName];
+        }
+        $gatewayOutput = labby_run_cli($cfg, $args, $gatewayExitCode, 30);
+        if ($gatewayExitCode === 0) {
+            $gatewayNotice = "Gateway MCP server $upstreamName $mcpAction completed.\n" . labby_format_cli_output($gatewayOutput);
+        } else {
+            $settingsError = "gateway mcp $mcpAction $upstreamName failed:\n" . labby_format_cli_output($gatewayOutput);
+        }
+    }
+}
+
+$status = labby_current_status();
+if ($status === '') {
+    $status = 'labby: status unavailable (rc.labby status timed out or produced no output)';
+}
 $running = strpos($status, 'RUNNING') !== false;
-$port = $cfg['HTTP_PORT'];
+$healthy = $running && strpos($status, 'not ready') === false && strpos($status, 'ERROR') === false;
 $host = $cfg['HTTP_HOST'];
-$lanReachable = $host !== '127.0.0.1';
+$gatewayRowsError = null;
+$gatewayRows = $running ? labby_gateway_rows($cfg, $gatewayRowsError) : [];
 ?>
 <?php if ($settingsError !== null): ?>
 <div class="notice"><span class="red-text"><?= nl2br(htmlspecialchars($settingsError, ENT_QUOTES)) ?></span></div>
 <?php endif; ?>
+<?php if ($gatewayNotice !== null): ?>
+<div class="notice"><span class="green-text"><?= nl2br(htmlspecialchars($gatewayNotice, ENT_QUOTES)) ?></span></div>
+<?php endif; ?>
 
 _(Status)_:
-: <span class="<?= $running ? 'green-text' : 'red-text' ?>"><?= htmlspecialchars($status, ENT_QUOTES) ?></span>
+: <span class="<?= $healthy ? 'green-text' : 'red-text' ?>"><?= htmlspecialchars($status, ENT_QUOTES) ?></span>
 
 <form markdown="1" name="labby_settings" method="post">
 <input type="hidden" name="labby_settings_save" value="1">
+
+_(Runtime mode)_:
+: <select name="RUNTIME_MODE" onchange="document.getElementById('incus-fields').style.display = this.value === 'incus' ? '' : 'none'">
+  <?= mk_option($cfg['RUNTIME_MODE'], "native", "Native (rc.d process, no dependencies)") ?>
+  <?= mk_option($cfg['RUNTIME_MODE'], "incus", "Incus container (requires incus-unraid, full stdio MCP support)") ?>
+  </select>
+<blockquote class="inline_help">_(Native mode cannot run most stdio MCP servers — Unraid ships neither npx/Node nor uv/Python. Incus mode runs labby inside a full Ubuntu system container with that toolchain floor already baked in, isolated from the rest of the NAS. Switching modes takes effect on the next Start Labby / array start, not immediately.)_</blockquote>
+
+<div id="incus-fields" style="<?= $cfg['RUNTIME_MODE'] === 'incus' ? '' : 'display:none' ?>">
+
+_(Incus container name)_:
+: <input type="text" name="INCUS_CONTAINER_NAME" value="<?= htmlspecialchars($cfg['INCUS_CONTAINER_NAME'], ENT_QUOTES) ?>" size="30" pattern="[a-z]([a-z0-9-]{0,61}[a-z0-9])?" title="A DNS-label-style Incus instance name">
+
+_(Incus image version)_:
+: <input type="text" name="INCUS_IMAGE_VERSION" value="<?= htmlspecialchars($cfg['INCUS_IMAGE_VERSION'], ENT_QUOTES) ?>" size="10" pattern="[0-9]+\.[0-9]+\.[0-9]+" title="A plain X.Y.Z release version">
+<blockquote class="inline_help">_(A labby release tag that actually published labby-incus-x86_64-unknown-linux-gnu.tar.xz — check https://github.com/jmagar/labby/releases if this version 404s on Apply.)_</blockquote>
+
+_(Incus image SHA256)_:
+: <input type="text" name="INCUS_IMAGE_SHA256" value="<?= htmlspecialchars($cfg['INCUS_IMAGE_SHA256'], ENT_QUOTES) ?>" size="64" pattern="([a-f0-9]{64})?" title="A lowercase 64-character SHA256 digest, or empty">
+<blockquote class="inline_help">_(Pinned SHA256 for the configured labby-incus image. Runtime install verifies cached and downloaded image bytes against this value before import.)_</blockquote>
+
+_(Tailscale auth key)_:
+: <input type="password" name="INCUS_TS_AUTHKEY" value="" size="40" placeholder="tskey-auth-..." autocomplete="off">
+<blockquote class="inline_help">_(Optional write-only one-shot key so the container joins your tailnet on next start. The stored value is never echoed back into this form; leave this blank when saving to clear any previously stored key.)_</blockquote>
+
+_(Incus bridge name)_:
+: <input type="text" name="INCUS_BRIDGE_NAME" value="<?= htmlspecialchars($cfg['INCUS_BRIDGE_NAME'], ENT_QUOTES) ?>" size="20" pattern="[A-Za-z0-9._-]{1,32}" title="A safe Incus network name using only letters, numbers, . _ -">
+
+_(Incus bridge subnet)_:
+: <input type="text" name="INCUS_BRIDGE_SUBNET" value="<?= htmlspecialchars($cfg['INCUS_BRIDGE_SUBNET'], ENT_QUOTES) ?>" size="18" pattern="([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}" title="An IPv4 CIDR such as 10.99.99.1/24">
+<blockquote class="inline_help">_(Dedicated NAT bridge CIDR for the container. labby-incus-init checks for host route collisions before creating or reusing the bridge.)_</blockquote>
+
+_(Incus egress policy)_:
+: <select name="INCUS_EGRESS_POLICY">
+  <?= mk_option($cfg['INCUS_EGRESS_POLICY'], "block-lan", "Block bridge-direct private egress (default)") ?>
+  <?= mk_option($cfg['INCUS_EGRESS_POLICY'], "allow-lan", "Allow bridge-direct private egress") ?>
+  </select>
+<blockquote class="inline_help">_(Block LAN installs host rules for traffic forwarded from the Incus bridge to private destination ranges. It is not a Tailscale ACL; use a tagged Tailscale auth key and tailnet policy for tailnet egress control.)_</blockquote>
+
+</div>
 
 _(Service)_:
 : <select name="SERVICE">
@@ -172,7 +697,7 @@ _(Service)_:
 <blockquote class="inline_help">_(Enable to autostart labby the next time the array starts. This does not start labby immediately — use the Start/Stop button below for that.)_</blockquote>
 
 _(Gateway state directory)_:
-: <input type="text" name="LABBY_DIR" value="<?= htmlspecialchars($cfg['LABBY_DIR'], ENT_QUOTES) ?>" size="40" pattern="/[A-Za-z0-9_./\-]+" title="An absolute path using only letters, numbers, _ . / -">
+: <input type="text" name="LABBY_DIR" value="<?= htmlspecialchars($cfg['LABBY_DIR'], ENT_QUOTES) ?>" size="40" pattern="/[A-Za-z0-9_./\-]+" title="Use /mnt/user, /mnt/cache, or /mnt/diskN storage; letters, numbers, _ . / - only">
 <blockquote class="inline_help">_(Must be on the array, not tmpfs — this is where labby stores its config, auth database, and MCP bearer token. Default: /mnt/user/appdata/labby.)_</blockquote>
 
 _(HTTP host)_:
@@ -195,10 +720,119 @@ _(HTTP port)_:
 <input type="submit" value="<?= $running ? '_(Stop Labby)_' : '_(Start Labby)_' ?>">
 </form>
 
-<?php if ($running && $lanReachable): ?>
-<p>
-  <a href="http://<?= htmlspecialchars($_SERVER['SERVER_ADDR'] ?? $_SERVER['HTTP_HOST'], ENT_QUOTES) ?>:<?= htmlspecialchars($port, ENT_QUOTES) ?>/" target="_blank" rel="noopener">_(Open Labby Gateway)_ &rarr;</a>
-</p>
-<?php elseif ($running): ?>
-<p><span class="orange-text">_(labby is bound to 127.0.0.1 — loopback only — so it isn't reachable from your browser at this address. Change HTTP host above to make it LAN-reachable.)_</span></p>
+<?php if (!$running): ?>
+<p><span class="orange-text">_(Start Labby to manage gateway MCP servers.)_</span></p>
+<?php else: ?>
+_(Gateway controls)_:
+: <form method="post" style="display:inline">
+  <input type="hidden" name="labby_gateway_action" value="reload">
+  <input type="submit" value="_(Reload gateway)_">
+  </form>
+<blockquote class="inline_help">_(Native Unraid controls for the running gateway. Reload reconciles the gateway config and refreshes upstream discovery without embedding the separate labby web UI.)_</blockquote>
+
+<form markdown="1" method="post">
+<input type="hidden" name="labby_gateway_add" value="1">
+
+_(Add HTTP MCP server)_:
+: <input type="text" name="new_upstream_name" value="" size="24" pattern="[A-Za-z0-9._-]{1,128}" placeholder="server-name" title="Letters, numbers, dot, underscore, and hyphen">
+
+_(MCP URL)_:
+: <input type="url" name="new_upstream_url" value="" size="48" placeholder="https://example.com/mcp">
+
+_(Bearer token env)_:
+: <input type="text" name="new_bearer_token_env" value="" size="28" pattern="([A-Z][A-Z0-9_]{0,127})?" placeholder="OPTIONAL_TOKEN_ENV">
+<blockquote class="inline_help">_(For HTTP/S MCP servers. The env name points at a token already available to labby; the secret value is never entered or stored on this page.)_</blockquote>
+
+&nbsp;
+: <input type="submit" value="_(Add upstream)_">
+</form>
+
+<form markdown="1" method="post">
+<input type="hidden" name="labby_gateway_add_stdio" value="1">
+
+_(Add stdio MCP server)_:
+: <input type="text" name="new_stdio_name" value="" size="24" pattern="[A-Za-z0-9._-]{1,128}" placeholder="server-name" title="Letters, numbers, dot, underscore, and hyphen">
+
+_(Command)_:
+: <input type="text" name="new_stdio_command" value="" size="48" placeholder="npx" title="Command or absolute path">
+
+_(Arguments)_:
+: <textarea name="new_stdio_args" rows="3" cols="52" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/mnt/user/share"></textarea>
+<blockquote class="inline_help">_(For local stdio MCP servers, especially in Incus mode. Put one argument per line. The command is stored as gateway config and executed by labby's normal MCP runtime.)_</blockquote>
+
+&nbsp;
+: <input type="submit" value="_(Add stdio upstream)_">
+</form>
+
+<?php if ($gatewayRowsError !== null): ?>
+<p><span class="red-text"><?= nl2br(htmlspecialchars($gatewayRowsError, ENT_QUOTES)) ?></span></p>
+<?php elseif (empty($gatewayRows)): ?>
+<p><span class="orange-text">_(No upstream MCP servers are configured.)_</span></p>
+<?php else: ?>
+<table>
+<thead>
+<tr>
+  <th>_(Server)_</th>
+  <th>_(Status)_</th>
+  <th>_(Transport)_</th>
+  <th>_(Capabilities)_</th>
+  <th>_(Runtime)_</th>
+  <th>_(Action)_</th>
+</tr>
+</thead>
+<tbody>
+<?php foreach ($gatewayRows as $row): ?>
+<?php
+    $name = (string) ($row['name'] ?? '');
+    $enabled = !empty($row['enabled']);
+    $transport = (string) ($row['transport'] ?? 'unknown');
+    $target = (string) ($row['target'] ?? '');
+    $pid = $row['pid'] ?? null;
+    $stale = (int) ($row['likely_stale_count'] ?? 0);
+?>
+<tr>
+  <td><?= htmlspecialchars($name, ENT_QUOTES) ?></td>
+  <td><span class="<?= labby_upstream_status_class($row) ?>"><?= htmlspecialchars(labby_upstream_status_text($row), ENT_QUOTES) ?></span></td>
+  <td><?= htmlspecialchars($transport . ($target !== '' ? " — $target" : ''), ENT_QUOTES) ?></td>
+  <td><?= htmlspecialchars(labby_count_summary($row), ENT_QUOTES) ?></td>
+  <td><?= $pid === null ? '_(No process)_' : 'PID ' . htmlspecialchars((string) $pid, ENT_QUOTES) ?><?= $stale > 0 ? ' / ' . htmlspecialchars((string) $stale, ENT_QUOTES) . ' _(stale)_' : '' ?></td>
+  <td>
+    <?php if ($name !== ''): ?>
+    <?php if ($enabled): ?>
+	    <form method="post" style="display:inline">
+	      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+	      <input type="hidden" name="labby_mcp_action" value="disable">
+	      <input type="submit" value="_(Disable)_">
+	    </form>
+    <?php else: ?>
+    <form method="post" style="display:inline">
+      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+      <input type="hidden" name="labby_mcp_action" value="enable">
+      <input type="submit" value="_(Enable)_">
+    </form>
+    <?php endif; ?>
+	    <form method="post" style="display:inline">
+	      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+	      <input type="hidden" name="labby_gateway_server_action" value="remove">
+	      <input type="submit" value="_(Remove)_" onclick="return confirm('Remove this upstream from the gateway?')">
+	    </form>
+	    <?php if ($stale > 0): ?>
+	    <form method="post" style="display:inline">
+	      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+	      <input type="hidden" name="labby_mcp_action" value="cleanup_preview">
+	      <input type="submit" value="_(Preview cleanup)_">
+	    </form>
+	    <form method="post" style="display:inline">
+	      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+	      <input type="hidden" name="labby_mcp_action" value="cleanup">
+	      <input type="submit" value="_(Cleanup)_" onclick="return confirm('Clean up stale runtime processes for this upstream?')">
+	    </form>
+	    <?php endif; ?>
+	    <?php endif; ?>
+	  </td>
+</tr>
+<?php endforeach; ?>
+</tbody>
+</table>
+<?php endif; ?>
 <?php endif; ?>

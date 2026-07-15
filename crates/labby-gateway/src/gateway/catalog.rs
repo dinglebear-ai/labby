@@ -746,7 +746,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.remove",
         description: "Remove a gateway and reconcile runtime state",
-        destructive: false,
+        destructive: true,
         requires_admin: true,
         returns: "GatewayView",
         params: &[NAME_PARAM],
@@ -976,7 +976,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "gateway.mcp.cleanup",
         description: "Kill or preview running processes associated with one upstream MCP server",
-        destructive: false,
+        destructive: true,
         requires_admin: true,
         returns: "GatewayCleanupView",
         params: &[
@@ -1009,30 +1009,31 @@ pub const ACTIONS: &[ActionSpec] = &[
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::ACTIONS;
 
     #[test]
-    fn gateway_actions_are_not_destructive_under_data_loss_definition() {
-        for spec in ACTIONS {
-            if matches!(
-                spec.name,
-                "gateway.code_mode.set"
-                    | "gateway.enrich.preview"
-                    | "gateway.enrich.apply"
-                    | "gateway.import"
-                    | "gateway.import_pending.approve"
-                    | "gateway.import_pending.reject"
-                    | "gateway.import_tombstones.clear"
-                    | "gateway.import_tombstones.restore"
-            ) {
-                continue;
-            }
-            assert!(
-                !spec.destructive,
-                "{} must not be destructive unless it risks permanent, hard-to-recreate data loss",
-                spec.name
-            );
-        }
+    fn gateway_destructive_actions_are_intentional() {
+        let expected = BTreeSet::from([
+            "gateway.code_mode.set",
+            "gateway.enrich.preview",
+            "gateway.enrich.apply",
+            "gateway.import",
+            "gateway.import_pending.approve",
+            "gateway.import_pending.reject",
+            "gateway.import_tombstones.clear",
+            "gateway.import_tombstones.restore",
+            "gateway.remove",
+            "gateway.mcp.cleanup",
+        ]);
+        let actual = ACTIONS
+            .iter()
+            .filter(|spec| spec.destructive)
+            .map(|spec| spec.name)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]

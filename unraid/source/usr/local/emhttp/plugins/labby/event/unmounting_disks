@@ -2,12 +2,16 @@
 # Fires before the array is taken down. Stop labby cleanly first so its
 # state (auth.db, registry.db, config.toml under LABBY_DIR) isn't left
 # mid-write when the underlying array storage unmounts.
-CFG="/boot/config/plugins/labby/labby.cfg"
-[ -f "$CFG" ] || exit 0
-. "$CFG"
-[ "${SERVICE:-disabled}" = "enabled" ] || exit 0
-
-logger -t labby "array down: stopping labby"
+#
+# Always attempted, regardless of SERVICE — SERVICE only gates AUTOSTART on
+# array-mount (see event/disks_mounted), it does not stop an operator from
+# manually starting labby (Settings > Labby, SSH) while SERVICE=disabled.
+# Gating this stop on SERVICE=enabled would let a manually started process
+# keep running straight through array unmount, still holding open handles
+# on LABBY_DIR's SQLite files. rc.labby stop is a safe no-op when nothing
+# is running (returns 0 immediately if no pidfile exists), so there's no
+# cost to calling it unconditionally.
+logger -t labby "array down: stopping labby (if running)"
 if ! /etc/rc.d/rc.labby stop; then
     # rc.labby's stop() only fails when it could not confirm the process
     # actually exited (e.g. stuck in uninterruptible D-state after

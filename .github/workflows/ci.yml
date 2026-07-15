@@ -111,6 +111,7 @@ jobs:
         with:
           persist-credentials: false
       - run: scripts/ci/unraid-plugin-checksums.sh
+      - run: scripts/ci/unraid-runtime-tests.sh
 
   actionlint:
     name: Actionlint

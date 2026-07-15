@@ -8,7 +8,7 @@
 # Usage:
 #   scripts/ci/unraid-plugin-checksums.sh [--fix] [--tag vX.Y.Z] [--tarball PATH]
 #
-# --tag and --tarball are optional: without them, only the six
+# --tag and --tarball are optional: without them, only the nine
 # unraid/source/ companion-file checksums are checked (cheap, safe to run
 # on every PR — this is what ci.yml's always-on unraid-plugin-check job
 # runs). --tag/--tarball are a MANUAL tool, not wired into any CI job:
@@ -91,6 +91,9 @@ check_or_fix rcMD5 "$(md5_of "$src/scripts/rc.labby")" "unraid/source/.../script
 check_or_fix preflightMD5 "$(md5_of "$src/scripts/labby-preflight.sh")" "unraid/source/.../scripts/labby-preflight.sh"
 check_or_fix mountedMD5 "$(md5_of "$src/event/disks_mounted")" "unraid/source/.../event/disks_mounted"
 check_or_fix unmountingMD5 "$(md5_of "$src/event/unmounting_disks")" "unraid/source/.../event/unmounting_disks"
+check_or_fix incusProfileMD5 "$(md5_of "$src/incus/labby-gateway-profile.yaml")" "unraid/source/.../incus/labby-gateway-profile.yaml"
+check_or_fix incusEnvMD5 "$(md5_of "$src/scripts/labby-incus-env.sh")" "unraid/source/.../scripts/labby-incus-env.sh"
+check_or_fix incusInitMD5 "$(md5_of "$src/scripts/labby-incus-init.sh")" "unraid/source/.../scripts/labby-incus-init.sh"
 
 if [ -n "$tag" ]; then
     # labbyVersion tracks the bundled labby release tag; the top-level

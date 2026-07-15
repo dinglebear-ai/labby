@@ -1,0 +1,17 @@
+config:
+  raw.apparmor: signal peer=@{profile_name}//&unconfined,
+  raw.lxc: |-
+    lxc.mount.entry = /dev/net/tun dev/net/tun none bind,create=file 0 0
+  security.nesting: "false"
+  security.privileged: "false"
+description: Labby gateway Incus profile
+devices:
+  eth0:
+    network: labbybr0
+    type: nic
+  root:
+    path: /
+    pool: labby-zfs
+    type: disk
+name: labby-gateway
+used_by: []

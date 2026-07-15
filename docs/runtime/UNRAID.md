@@ -1,11 +1,12 @@
 # Unraid Plugin
 
 `unraid/` packages labby as a classic Unraid webGUI plugin (`.plg`) — a
-native, rc.d-managed process on the Unraid host itself. No Docker, no
-systemd (Unraid does not run one). This is a separate deployment target from
-[INCUS.md](./INCUS.md) (recommended self-hosted gateway runtime) and the
-Docker Compose stack (`docker-compose.prod.yml`); pick whichever fits the
-host, they are not mutually exclusive.
+native, rc.d-managed process by default, with an optional Incus-backed mode
+for stdio MCP workloads. No Docker, no systemd on the host (Unraid does not
+run one). This is a separate deployment target from [INCUS.md](./INCUS.md)
+(recommended self-hosted gateway runtime) and the Docker Compose stack
+(`docker-compose.prod.yml`); pick whichever fits the host, they are not
+mutually exclusive.
 
 ## Why native instead of Docker
 
@@ -28,18 +29,104 @@ before plugin development started. All later end-to-end plugin testing —
 install/start/stop/settings-form/OAuth-login flows — moved to a dedicated
 test box, `tower` (Unraid 7.3.2); see "Validated end-to-end" below.)
 
+## Two runtime modes
+
+`labby.cfg`'s `RUNTIME_MODE` selects how the gateway actually runs:
+
+- **`native`** (default) — the bare rc.d process described above. It has no
+  dependency on Incus and is the lowest-risk install path, but it **cannot
+  run most stdio MCP servers**: Unraid's bare host ships neither `npx`/Node
+  nor `uv`/Python, which is what most community MCP servers are distributed
+  as. Use this mode for the core gateway API, registry, and Code Mode
+  surfaces that do not need a host toolchain.
+- **`incus`** — runs labby inside an Incus system container using labby's own
+  pre-built `labby-incus` release image. The image bakes in Node,
+  uv-managed Python, Rust, Go, the agent CLIs, and Tailscale; see
+  [INCUS.md](./INCUS.md) for the full toolchain floor. This is the
+  capability-complete mode for real stdio MCP server workloads.
+
+`incus` mode has a hard dependency: the `~/workspace/incus-unraid` plugin
+must already be installed, enabled (`SERVICE=enabled` in its own
+`incus.cfg`), and running after the array starts. This plugin does not bundle
+a second Incus daemon. `scripts/labby-incus-env.sh` points the Incus CLI at
+incus-unraid's private prefix (`/usr/local/incus`) and daemon state
+(`INCUS_DIR=/mnt/user/appdata/incus`), and every Incus operation in
+`scripts/labby-incus-init.sh` goes through that environment.
+
+The Incus container layout is intentionally separate from incus-unraid's own
+agent-jail defaults. `labby-incus-init.sh` creates a dedicated `labby-dir`
+storage pool, a dedicated `labby-gateway` profile, and a dedicated bridge named
+by `INCUS_BRIDGE_NAME` (`labbybr0` by default). It never touches
+incus-unraid's `agentbr0`, its default profile, its storage pool, or its daemon
+lifecycle, and the labby container launches with only the dedicated profile.
+The bridge CIDR comes from `INCUS_BRIDGE_SUBNET` (`10.99.99.1/24` by default)
+and is checked for host-route collisions before creation. If the bridge already
+exists but is not Incus-managed, startup fails closed instead of deleting or
+reusing an unmanaged host interface.
+
+Bridge egress is explicit but deliberately narrow. `INCUS_EGRESS_POLICY="block-lan"`
+is the default and installs verified host `FORWARD` rejects for traffic entering
+from the Incus bridge and targeting private IPv4/Cgnat ranges (`10.0.0.0/8`,
+`172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`). This blocks
+bridge-forwarded private destinations over `eth0`; it is **not** a full tailnet
+or in-container firewall policy. Tailscale traffic originates inside the
+container, so use a tagged Tailscale auth key and tailnet ACLs for tailnet
+egress control. Set `INCUS_EGRESS_POLICY="allow-lan"` to remove those reject
+rules and allow normal bridge-forwarded NAT egress from the container. The
+plugin also removes the rules it owns when Incus mode stops or the plugin is
+uninstalled.
+
+Reachability for `incus` mode is via Tailscale running inside the container,
+not host port forwarding. `INCUS_TS_AUTHKEY` is a write-only, one-shot
+Settings > Labby field: the value is never echoed back into the form, is
+written into the container only as a mode-0600 temporary file, is removed
+after `tailscale up`, and is cleared/redacted from both `labby.cfg` and
+`labby.cfg.bak` after an attempted consumption. Leaving the password field
+blank when saving also clears any previously stored key, which is how to
+recover from an expired or failed preauth key.
+
+The Incus image pin is independent of the plugin package version and the
+bundled native `labbyVersion`. `INCUS_IMAGE_VERSION` defaults to `"1.2.0"`
+because that tag currently publishes
+`labby-incus-x86_64-unknown-linux-gnu.tar.xz`; `v1.3.0` does not. The
+known-good `v1.2.0` SHA256 from the published `.sha256` asset is:
+
+```text
+dfb57f59b52a84db5b14ac71588b676d7135d4b24916628006aaaed8f022c25d
+```
+
+`INCUS_IMAGE_SHA256` must be set to the digest for the configured
+`INCUS_IMAGE_VERSION` before `incus` mode can start. Cached image bytes live
+under `${LABBY_DIR}/incus-images`, include the image version in the filename,
+and are verified against the configured SHA256 before import; corrupt caches
+are removed and redownloaded once, then fail closed if verification still does
+not match. Imported Incus images and launched containers are stamped with the
+configured image version and SHA256; if an existing alias or container does not
+match the configured pin, startup fails with explicit delete/recreate guidance
+instead of silently reusing stale runtime bytes.
+
+Known release gap: the `labby-incus-x86_64-unknown-linux-gnu.tar.xz` release
+asset has not published successfully since `v1.2.0` (`gh release view v1.3.0
+--repo jmagar/labby --json assets` shows only the plain binary archives and
+`SHA256SUMS`). Confirm the latest tag before assuming a newer
+`INCUS_IMAGE_VERSION` will work, and bump both `INCUS_IMAGE_VERSION` and
+`INCUS_IMAGE_SHA256` together once the release-asset CI gap is fixed.
+
 ## Layout
 
-```
+```text
 unraid/
   labby.plg                                    plugin manifest (installed via Unraid's Plugins tab)
   source/usr/local/emhttp/plugins/labby/
     labby.cfg                                  default config template (flash-persisted copy is the source of truth once installed)
-    Labby.page                                  status + settings form (SERVICE/LABBY_DIR/HTTP_HOST/HTTP_PORT) — links out to labby's own admin UI rather than reimplementing one
-    scripts/rc.labby                            start/stop/restart/status, mirrors the systemd unit in host_service.rs without depending on systemd
-    scripts/labby-preflight.sh                   read-only glibc/binary sanity check; rc.labby refuses to start if this fails
-    event/disks_mounted                          array-start hook — labby's state lives on the array, so it can't start before this fires
-    event/unmounting_disks                        array-stop hook — stops labby before the array (and LABBY_DIR) unmounts
+    Labby.page                                  status + settings form (SERVICE/LABBY_DIR/HTTP_HOST/HTTP_PORT/RUNTIME_MODE/INCUS_IMAGE_SHA256/...) plus native gateway reload/upstream controls
+    scripts/rc.labby                            start/stop/restart/status, branches on RUNTIME_MODE between the native rc.d path and the Incus container path
+    scripts/labby-preflight.sh                   read-only glibc/binary sanity check for native mode; rc.labby refuses to start if this fails
+    scripts/labby-incus-env.sh                   points the Incus CLI at incus-unraid's private-prefixed daemon — incus mode only
+    scripts/labby-incus-init.sh                  idempotent Incus-mode converger: storage pool, bridge, egress policy, profile, image import, container launch, in-container provisioning — incus mode only
+    incus/labby-gateway-profile.yaml             vendored copy of config/incus/labby-gateway-profile.yaml
+    event/disks_mounted                          array-start hook — calls rc.labby start, which is RUNTIME_MODE-aware
+    event/unmounting_disks                       array-stop hook — calls rc.labby stop, which is RUNTIME_MODE-aware
 ```
 
 `labby.plg` does not bundle a `.txz`/Slackware package the way
@@ -54,6 +141,12 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
 - **Persistent config**: `/boot/config/plugins/labby/labby.cfg` (flash).
   Seeded once at install, never overwritten if already present. Edit
   `SERVICE=enabled` here to autostart on array start.
+- **One-shot Incus Tailscale key**:
+  `/boot/config/plugins/labby/incus-ts-authkey` (flash, best-effort
+  mode `0600`). The settings page writes it separately from the
+  bash-sourceable config; `labby-incus-init.sh` consumes it, deletes it,
+  and redacts any legacy `INCUS_TS_AUTHKEY` value from `labby.cfg` and
+  `labby.cfg.bak` after every attempted use.
 - **Runtime OS files**: `/usr/local/emhttp/plugins/labby/*` (RAM). Rebuilt
   fresh from the flash-cached tarball + `source/` files on every boot.
 - **Gateway state** (`auth.db`, `registry.db`, `config.toml`, the MCP
@@ -66,8 +159,17 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
 ## Settings page conventions
 
 `Labby.page` is a real settings form (SERVICE, LABBY_DIR, HTTP_HOST,
-HTTP_PORT — everything in `labby.cfg`), built to look and behave like a
+HTTP_PORT, RUNTIME_MODE, and the Incus-only image/network/Tailscale fields
+— everything in `labby.cfg`), built to look and behave like a
 first-party classic Unraid settings page rather than a custom-styled form.
+Gateway management is also native to the page: it exposes a reload action,
+add-HTTP-upstream and add-stdio-upstream forms, and a live upstream MCP
+runtime table with enable/disable/remove and stale-process cleanup controls
+instead of embedding labby's separate admin web UI in an iframe. In native
+mode those actions run the host plugin binary against `LABBY_DIR`; in Incus
+mode the same actions execute `labby --json gateway ...` inside the gateway
+container as the `labby` user so they operate on the live container-owned
+gateway state.
 The markup conventions were reverse-engineered from a live Unraid 7.3.x
 install's own pages (`/usr/local/emhttp/webGui/DateTime.page`,
 `dynamix.my.servers/Connect.page`) and cross-checked against
@@ -82,7 +184,8 @@ though its Tailwind/Vue tokens aren't directly usable from a classic
   `Markdown()`, which turns this into a real `<dl>`. No custom wrapper divs.
 - **Selects**: `mk_option($current, $value, $label)` (a core webGUI global,
   loaded unconditionally via `webGui/template.php`) — used for every
-  enum-valued field (SERVICE, HTTP_HOST), matching how every real
+  enum-valued field (SERVICE, HTTP_HOST, RUNTIME_MODE,
+  INCUS_EGRESS_POLICY), matching how every real
   first-party page handles booleans/enums (no switchbutton widget; that's
   a real but unconfirmed-markup asset pulled from a separate `unraid/webgui`
   repo at dev time, not worth the risk of hand-rolling incorrectly).
@@ -116,9 +219,14 @@ an unvalidated value containing a `"`, `$`, backtick, or newline would be
 interpreted as shell syntax the next time the file is sourced, not just a
 bad config value. SERVICE/HTTP_HOST are checked against an exact-match
 enum (not just constrained by the `<select>`, which a crafted raw POST can
-bypass), HTTP_PORT against a numeric 1–65535 range, and LABBY_DIR against
-a path-character allowlist (`^/[A-Za-z0-9_./-]+$`) with no shell
-metacharacters permitted at all.
+bypass), RUNTIME_MODE and INCUS_EGRESS_POLICY against exact enums,
+INCUS_CONTAINER_NAME against a DNS-label pattern, INCUS_IMAGE_VERSION
+against plain `X.Y.Z`, INCUS_IMAGE_SHA256 against a lowercase 64-character
+hex digest when provided, INCUS_TS_AUTHKEY against a short token-safe
+character set, INCUS_BRIDGE_SUBNET against IPv4 CIDR syntax, HTTP_PORT
+against a numeric 1–65535 range, and LABBY_DIR against a path-character
+allowlist (`^/[A-Za-z0-9_./-]+$`) with no shell metacharacters permitted at
+all.
 
 ## Two version numbers, on purpose
 
@@ -183,7 +291,8 @@ scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also c
 ### Required step: tag every commit that touches `labby.plg` or `unraid/source/`
 
 `srcURL` (companion-file downloads: `labby.cfg`, `Labby.page`, `rc.labby`,
-`labby-preflight.sh`, both event hooks) is pinned to an immutable tag —
+`labby-preflight.sh`, `labby-incus-env.sh`, `labby-incus-init.sh`, the
+vendored Incus profile, and both event hooks) is pinned to an immutable tag —
 `unraid-v&version;` — not to `main`. This is deliberate: every file under
 `srcURL` is MD5-verified against a value baked into whatever `version` is
 cached on flash, and Unraid's classic `.plg` model re-downloads and
@@ -218,6 +327,17 @@ something feels risky.
   is the interim zero-asset choice, not a broken/missing reference.
 - Not distributed via Community Applications; install via the Plugins tab's
   "Install Plugin" URL field pointed at the raw `labby.plg` URL.
+- `RUNTIME_MODE="incus"` now has its architecture, image/version pinning,
+  Tailscale behavior, bridge, and egress defaults wired into the plugin
+  package, but the Incus path still depends on a known release-asset CI gap:
+  only `v1.2.0` currently publishes the `labby-incus-*.tar.xz` image asset.
+  Newer Incus images require fixing that CI path first, then bumping both
+  `INCUS_IMAGE_VERSION` and `INCUS_IMAGE_SHA256`. Tracked as `lab-26zqj`.
+- `RUNTIME_MODE="incus"` has not yet been exercised across a real Unraid
+  reboot or a real incus-unraid uninstall/reinstall cycle. The current
+  implementation is designed for array-start/stop and plugin
+  install/update/uninstall of the labby plugin itself; full lifecycle
+  validation is still pending.
 - Validated end-to-end on real hardware (tower, Unraid 7.3.2) via Unraid's
   actual `plugin` command: fresh install (checksum-verified download of
   every file), `rc.labby` start/status/ready/stop, `plugin remove
