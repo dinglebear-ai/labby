@@ -123,7 +123,7 @@ container that owns its own `/home/labby/.labby` state. For an existing single-u
 host setup, seed `/home/labby/.labby` once, fix any host-specific paths once, then
 preserve that container with Incus snapshots/backups.
 
-The web app also serves the installer at `https://labby.tootie.tv/install.sh`
+The web app also serves the installer at `https://labby.dinglebear.ai/install.sh`
 for convenience. The canonical pipe-to-shell source remains the GitHub-hosted
 script at
 `https://raw.githubusercontent.com/jmagar/labby/main/scripts/install.sh`.
@@ -163,7 +163,7 @@ just web-build
 cargo build --workspace --all-features --profile release-fast --bin labby
 target/release-fast/labby incus sync \
   --binary target/release-fast/labby \
-  --check-url https://labby.tootie.tv/gateways/
+  --check-url https://labby.dinglebear.ai/gateways/
 ```
 
 Pass `--no-web-assets` only for a binary-only deploy where the existing
