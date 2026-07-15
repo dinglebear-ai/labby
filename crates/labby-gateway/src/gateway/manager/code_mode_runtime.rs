@@ -645,20 +645,25 @@ impl GatewayManager {
     ///
     /// Returns `Some((entries, catalog_json, serialized_size))` on a hit,
     /// `None` on a miss (caller must rebuild and call `store_catalog_render_cache`).
+    /// `entries`/`catalog_json` are `Arc`-wrapped, so a hit clones cheaply
+    /// (refcount bump) regardless of how many times this is called for the
+    /// same fingerprint within one execution — see `CatalogRenderCache`'s doc
+    /// comment for why that matters now that `describe()` calls this per
+    /// invocation, not just once at execution start.
     pub(crate) async fn cached_catalog_render(
         &self,
         fingerprint: &str,
     ) -> Option<(
-        Vec<crate::gateway::code_mode::ToolDescriptor>,
-        String,
+        Arc<[crate::gateway::code_mode::ToolDescriptor]>,
+        Arc<str>,
         usize,
     )> {
         let guard = self.code_mode_catalog_render_cache.lock().await;
         guard.as_ref().and_then(|cache| {
             if cache.fingerprint == fingerprint {
                 Some((
-                    cache.entries.clone(),
-                    cache.catalog_json.clone(),
+                    Arc::clone(&cache.entries),
+                    Arc::clone(&cache.catalog_json),
                     cache.serialized_size,
                 ))
             } else {

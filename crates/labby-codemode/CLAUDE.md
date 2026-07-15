@@ -26,23 +26,65 @@ branches on the provider **before** the lock in `enqueue_local_provider_call`.
 No new files were added to `labby-codemode`; the spec-parsing / HTTP code all
 lives in `labby-openapi`.
 
-`codemode.search`/`codemode.describe` intentionally do **not** use this
-admin-only gate. They stay pure in-sandbox JS closures over a catalog that is
-already scope-filtered per-entry via `scope.allows()` before the discovery/proxy
-JS is generated (`execute.rs`'s `build_code_mode_proxy`), and remain available to
-any `can_execute()` caller, including route-scoped and tool-scoped ones. A prior
-investigation (bead `lab-5cgrz`) evaluated converting them to host-intercepted
-RPC pseudo-tools reusing the `local_provider.rs` pattern and rejected it: the
-claimed injection cost is negligible at current scale, the RPC path would likely
-be *slower* for repeated search/describe calls (it would serialize behind the
-global local-provider lock), and reusing `local_providers_allowed()` verbatim
-would wrongly restrict search/describe to admin-only. If this is ever revisited,
-re-derive the cost data first and solve, at minimum: the caller-gating mismatch
-above, the risk of double-fetching `CodeModeHost::list_tools()` per RPC call
-instead of once per execution, and the fact that `CatalogRenderCache`
-(`labby-gateway`) is a single-slot cache with no scope component in its
-fingerprint — safe today only because it is reached exclusively through the
-unscoped CLI path.
+`codemode.search`/`codemode.describe` intentionally do **not** use the
+`local_provider.rs`/`LOCAL_PROVIDER_LOCK` admin-only gate. `search()`'s matching
+stays a pure in-sandbox JS closure over a catalog that is already
+scope-filtered per-entry via `scope.allows()` before the discovery/proxy JS is
+generated (`execute.rs`'s `build_code_mode_proxy`), and remains available to any
+`can_execute()` caller, including route-scoped and tool-scoped ones.
+
+`codemode.describe()`'s target-matching (exact id/path/helper, bare-name,
+ambiguous-target resolution) also stays local JS, over the same scope-filtered
+`__codemodeDiscovery` index `search()` uses — but the resolved entry's `.dts`
+type body is fetched from the host via `callTool("__lab_internal::describe_types",
+{ id })` instead of being embedded in the sandbox preamble up front. This reuses
+the SAME reserved-namespace `tool_call` mechanism `semantic_rank` already used
+(dispatched in `execute.rs`'s `dispatch_internal_call`, never subject to
+`scope.allows()`, never gated by `local_providers_allowed()`) rather than the
+`local_provider.rs` pattern.
+
+A prior investigation (bead `lab-5cgrz`) evaluated converting `search`/`describe`
+to host-RPC via the `local_provider.rs` pattern specifically and rejected it: the
+claimed injection cost was negligible at then-current scale, that approach would
+have serialized repeated calls behind the global local-provider lock, and reusing
+`local_providers_allowed()` verbatim would have wrongly restricted them to
+admin-only. `describe()` alone was later revisited once catalog sizes grew large
+enough for the injection cost to matter (informally benchmarked with an ad-hoc
+`#[ignore]`d probe against a real `javy::Runtime`, not a checked-in regression
+test: roughly 3x smaller injected payload, roughly 1.8x faster parse at 4,000
+tools — re-measure before treating these numbers as current) — solving the
+concerns the bead flagged as prerequisites: the
+`__lab_internal::*` mechanism sidesteps both the lock-serialization and
+admin-only-gating objections by construction (it's a different mechanism, not a
+fix to the rejected one), and `ToolsRender`/`CatalogRenderCache`
+(`labby-codemode`/`labby-gateway`) now Arc-wrap `entries`/`catalog_json` so the
+double-fetch the bead warned about (`describe()` calls `list_tools()` per
+invocation, not once per execution) is a refcount bump, not a deep catalog
+clone. `search()` was left alone — its injection cost (index metadata only,
+never full types) is a fixed, small fraction of what `describe()` used to embed,
+so the bead's original "negligible at scale" conclusion still holds for it.
+
+`CatalogRenderCache` (`labby-gateway`) remains a single-slot cache with no scope
+component in its fingerprint, unchanged by the Arc-wrap — and **every** caller
+reaches it, not only the unscoped CLI path (an earlier version of this note
+claimed otherwise; that was never true — `catalog_from_tools` reads/writes this
+cache unconditionally, `use_cache` only selects where `raw_tools` is sourced
+from). That's safe in practice only because the fingerprint is derived from
+`raw_tools`' actual content, so a cache hit implies content equivalence
+regardless of who's asking. It does **not** make the cache scope-safe at the
+tool level: `CatalogRenderCache`/`ToolsRender.entries` is filtered by namespace
+(`allowed_upstreams`) at best, never by `ToolScope`'s finer-grained per-tool
+grant. `describe_types` originally skipped that per-tool filter and leaked
+`.dts` (parameter type signatures) for tools outside a caller's `scope.tools`
+grant to any caller who called `callTool("__lab_internal::describe_types", ...)`
+directly rather than through `codemode.describe()`'s own already-scoped
+matching — it now applies `discovery_entry_visible(entry, scope)` before
+returning a result, matching `semantic_rank`'s host-side filtering
+(`code_mode_host.rs`) and `build_code_mode_proxy`'s own filtering. See
+`crates/labby-gateway/src/gateway/code_mode.rs`'s `CatalogRenderCache` doc
+comment for the full fingerprint-safety argument. Any new `__lab_internal::*`
+handler that reads `.entries` must apply this same filter — nothing upstream
+of it enforces scope at the tool level.
 
 ---
 

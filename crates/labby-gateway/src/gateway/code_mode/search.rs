@@ -162,12 +162,18 @@ async fn catalog_from_tools(
         sdk_kind: "internal_error".to_string(),
         message: format!("failed to serialize Code Mode discovery catalog: {err}"),
     })?;
+    // Wrap ONCE here — every consumer below (the stored cache entry, the
+    // returned render, and any later `describe_types` re-fetch of this same
+    // fingerprint) shares this allocation via a cheap Arc clone instead of a
+    // deep copy of the whole catalog.
+    let entries: std::sync::Arc<[ToolDescriptor]> = std::sync::Arc::from(entries);
+    let catalog_json: std::sync::Arc<str> = std::sync::Arc::from(catalog_json);
 
     manager
         .store_catalog_render_cache(super::CatalogRenderCache {
             fingerprint: fingerprint.clone(),
-            entries: entries.clone(),
-            catalog_json: catalog_json.clone(),
+            entries: std::sync::Arc::clone(&entries),
+            catalog_json: std::sync::Arc::clone(&catalog_json),
             serialized_size,
         })
         .await;

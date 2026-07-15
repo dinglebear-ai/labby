@@ -173,24 +173,11 @@ pub(crate) fn generate_discovery_js(
 ) -> Result<String, String> {
     let json = serde_json::to_string(entries)
         .map_err(|err| format!("failed to serialize Code Mode discovery catalog: {err}"))?;
-    let types_map: serde_json::Map<String, serde_json::Value> = entries
-        .iter()
-        .filter(|entry| !entry.dts.is_empty())
-        .map(|entry| {
-            (
-                entry.id.clone(),
-                serde_json::Value::String(entry.dts.clone()),
-            )
-        })
-        .collect();
-    let types_json = serde_json::to_string(&serde_json::Value::Object(types_map))
-        .map_err(|err| format!("failed to serialize Code Mode type lookup: {err}"))?;
     Ok(format!(
         r##"
 globalThis.codemode = globalThis.codemode || {{}};
 var codemode = globalThis.codemode;
 var __codemodeDiscovery = {json};
-var __codemodeTypes = {types_json};
 function __codemodeNormalize(value) {{
   return String(value == null ? "" : value)
     .toLowerCase()
@@ -340,7 +327,7 @@ codemode.search = async function(input) {{
   }});
   return {{ results: results, total: total, truncated: total > limit }};
 }};
-codemode.describe = function(target) {{
+codemode.describe = async function(target) {{
   var raw = String(target == null ? "" : target).trim();
   var exact = [];
   var bare = [];
@@ -395,17 +382,32 @@ codemode.describe = function(target) {{
     markdown = "# " + entry.name + "\n\nKind: snippet\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n\nRun: `codemode.run(" + JSON.stringify(entry.name) + ", input)`\n" + (inputLines ? "\nInputs:\n" + inputLines + "\n" : "\nInputs: none\n");
   }} else {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
-    var typeBody = __codemodeTypes[entry.id];
+    // Fetched from the host on demand rather than embedded in the sandbox
+    // preamble up front — the host already has this cached from the same
+    // catalog render this execution's discovery index was built from, so
+    // this is usually a cheap round trip, not a fresh computation (see the
+    // Rust-side `describe_types` dispatch comment for when it isn't). Caught,
+    // not propagated: the target is already fully resolved above (path/id/
+    // helper/signature), so a transient failure fetching the type body alone
+    // must not fail the whole `describe()` call — degrade to no type section
+    // instead, matching the host's own fail-open behavior for this lookup.
+    var typeBody = null;
+    try {{
+      var typeResponse = await callTool("__lab_internal::describe_types", {{ id: entry.id }});
+      typeBody = typeResponse && typeResponse.dts;
+    }} catch (e) {{
+      typeBody = null;
+    }}
     if (typeBody) {{
       markdown += "\nParameters (TypeScript):\n\n```typescript\n" + typeBody + "```\n";
     }}
   }}
-  return Promise.resolve({{
+  return {{
     path: entry.path,
     id: entry.id,
     kind: entry.kind,
     markdown: markdown
-  }});
+  }};
 }};
 codemode.run = function(name, input) {{
   return globalThis.__labRunSnippet(name, input == null ? {{}} : input);
@@ -694,7 +696,11 @@ mod tests {
         assert!(js.contains("codemode.describe"));
         assert!(!js.contains("schema"));
         assert!(!js.contains("output_schema"));
-        assert!(!js.contains("dts"));
+        // No embedded type-declaration lookup table — `.dts` appears only as a
+        // property name on the lazily-fetched `__lab_internal::describe_types`
+        // response (see `discovery_describe_fetches_tool_types_lazily`), never
+        // as pre-injected type content.
+        assert!(!js.contains("__codemodeTypes"));
     }
 
     #[test]
@@ -725,20 +731,42 @@ mod tests {
     }
 
     #[test]
-    fn discovery_describe_surfaces_tool_type_body() {
+    fn discovery_describe_fetches_tool_types_lazily() {
+        // Regardless of how large `.dts` is on the source entry, NONE of it is
+        // embedded in the generated preamble — the tool-branch of
+        // `codemode.describe` fetches it from the host on demand instead.
         let mut entry = discovery_entry("github", "list_tags", "List repository tags");
         entry.dts =
             "type GithubListTagsInput = { owner: string; repo: string; perPage?: number };\n"
                 .to_string();
         let js = generate_discovery_js(&[entry], 0.5).expect("js");
 
-        assert!(js.contains("__codemodeTypes"));
-        assert!(js.contains("GithubListTagsInput"));
-        assert!(js.contains("github::list_tags"));
+        assert!(!js.contains("__codemodeTypes"));
+        assert!(!js.contains("GithubListTagsInput"));
+        assert!(!js.contains("perPage"));
+        assert!(js.contains("codemode.describe = async function(target)"));
+        assert!(
+            js.contains(r#"await callTool("__lab_internal::describe_types", { id: entry.id })"#)
+        );
+        assert!(js.contains("typeResponse.dts"));
         assert!(js.contains("```typescript"));
-        assert!(js.contains("owner"));
-        assert!(js.contains("repo"));
-        assert!(js.contains("perPage"));
+        // Regression guard: the describe_types round trip must stay inside a
+        // try block, and a rejection must be caught and degrade to no type
+        // body (`typeBody = null`), not propagate into a `describe()`
+        // rejection. String-matching, not behavioral, but it's the difference
+        // between "this test would catch someone deleting the try/catch" and
+        // "it wouldn't" — see the end-to-end test in
+        // `crates/labby/tests/code_mode_runner.rs` for the behavioral proof.
+        assert!(
+            js.contains(
+                "try {\n      var typeResponse = await callTool(\"__lab_internal::describe_types\""
+            ),
+            "the describe_types call must be the first statement inside a try block: {js}"
+        );
+        assert!(
+            js.contains("} catch (e) {\n      typeBody = null;"),
+            "a rejected describe_types call must be caught, not left to propagate: {js}"
+        );
     }
 
     #[test]
@@ -752,13 +780,14 @@ mod tests {
         entry.dts = "type GithubListTagsInput = { owner: string };\n".to_string();
         let js = generate_discovery_js(&[entry], 0.5).expect("js");
 
-        let discovery_slice = js
-            .split("var __codemodeTypes")
-            .next()
-            .expect("discovery array precedes type lookup");
-        assert!(!discovery_slice.contains("\"properties\""));
-        assert!(!discovery_slice.contains("\"required\""));
-        assert!(!js.contains("\"properties\""));
+        // Neither field is serialized onto the discovery entry (`#[serde(skip)]`)
+        // and types are never embedded anywhere now — assert JSON-schema-shaped
+        // key syntax (colon-suffixed, distinguishing it from unrelated JS
+        // identifiers/string literals like `push("required")`) is absent from
+        // the ENTIRE generated preamble, not just a slice of it.
+        assert!(!js.contains("\"properties\":"));
+        assert!(!js.contains("\"required\":"));
+        assert!(!js.contains("GithubListTagsInput"));
     }
 
     #[test]
