@@ -1561,6 +1561,28 @@ pub fn build_router(
     if let Some(mcp) = mcp_protected {
         router = router.merge(mcp);
     }
+    // /auth/session and /auth/logout are registered unconditionally — unlike
+    // the OAuth-specific routes below, their handlers (browser_session.rs)
+    // already have complete fallback logic for web_ui_auth_disabled, a valid
+    // static bearer token, and no auth configured at all (a clean
+    // `unauthenticated`/204 response, not an error). The gateway-admin
+    // frontend's loadBrowserSession() unconditionally fetches /auth/session
+    // on every page load regardless of which auth mode is configured; if
+    // this route only existed behind OAuth being set up, a pure-Bearer (or
+    // no-auth-configured) deployment would silently fall through to the
+    // Next.js SPA catch-all here, which returns HTML with 200 OK — the
+    // frontend's `response.json()` then throws and the UI shows a generic
+    // "Unable to reach the authentication service" error instead of a
+    // working (or cleanly unauthenticated) session. lab-cfl3v.
+    router = router
+        .route(
+            "/auth/session",
+            get(crate::api::browser_session::auth_session),
+        )
+        .route(
+            "/auth/logout",
+            post(crate::api::browser_session::auth_logout),
+        );
     if let Some(auth_state) = auth_state.as_ref() {
         let _ = auth_state;
         router = router
@@ -1580,14 +1602,6 @@ pub fn build_router(
             .route("/register", post(auth_register))
             .route("/authorize", get(auth_authorize))
             .route("/auth/login", get(auth_browser_login))
-            .route(
-                "/auth/session",
-                get(crate::api::browser_session::auth_session),
-            )
-            .route(
-                "/auth/logout",
-                post(crate::api::browser_session::auth_logout),
-            )
             .route("/auth/google/callback", get(auth_callback))
             .route("/native/callback", get(auth_native_callback))
             .route("/native/poll", get(auth_native_poll))
@@ -2588,6 +2602,76 @@ mod tests {
         assert_eq!(json["authenticated"], true);
         assert_eq!(json["user"]["sub"], "browser-user");
         assert_eq!(json["csrf_token"], "csrf-123");
+    }
+
+    // lab-cfl3v: /auth/session and /auth/logout must work without OAuth
+    // configured — a pure-Bearer (or no-auth-at-all) deployment previously
+    // had no backend route registered here at all, so requests silently fell
+    // through to the SPA catch-all (HTML, 200 OK) instead of these handlers'
+    // own already-correct fallback logic.
+    #[tokio::test]
+    async fn auth_session_returns_unauthenticated_without_any_auth_configured() {
+        let state = AppState::new();
+        let app = build_router(state, None, None, None, &[]);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/auth/session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["authenticated"], false);
+        assert_eq!(json["login_available"], false);
+    }
+
+    #[tokio::test]
+    async fn auth_session_returns_static_bearer_identity_without_oauth() {
+        let state = AppState::new();
+        let app = build_router(state, Some("secret-token".to_string()), None, None, &[]);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/auth/session")
+                    .header(header::AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["authenticated"], true);
+        assert_eq!(json["user"]["sub"], "static-bearer");
+        assert_eq!(json["is_admin"], true);
+    }
+
+    #[tokio::test]
+    async fn auth_logout_returns_no_content_without_any_auth_configured() {
+        let state = AppState::new();
+        let app = build_router(state, None, None, None, &[]);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/logout")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
