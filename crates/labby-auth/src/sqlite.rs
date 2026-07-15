@@ -439,17 +439,26 @@ impl SqliteStore {
         .await
     }
 
-    /// Whether any unexpired `lab` refresh token has ever been issued, for
-    /// any client. This is a single-tenant, admin-only gateway, so "someone
-    /// already completed the Google consent screen once" is a reasonable
-    /// proxy for "we don't need to force full re-consent again" without
-    /// having to know which subject is about to authenticate.
-    pub async fn has_any_refresh_token(&self) -> Result<bool, AuthError> {
+    /// Whether the given local OAuth client already holds an unexpired `lab`
+    /// refresh token. Scoped per `client_id` rather than "any client,
+    /// anywhere" — Google only skips re-issuing a refresh token for a
+    /// (Google account, `LABBY_GOOGLE_CLIENT_ID`) pair it has already
+    /// consented to, and that consent state is shared across every local
+    /// DCR client. A global existence check therefore let an established
+    /// client's refresh token silently mask the fact that a brand-new
+    /// client (e.g. a fresh Claude.ai/ChatGPT connector registration) had
+    /// never completed a forced-consent round trip, so Google returned an
+    /// access token with no refresh token for that new client. Scoping by
+    /// `client_id` preserves the original UX intent — skip the extra
+    /// consent screen for a client that's authorized before — without
+    /// leaking one client's consent state into another's.
+    pub async fn has_refresh_token_for_client(&self, client_id: &str) -> Result<bool, AuthError> {
         let now = now_unix();
+        let client_id = client_id.to_string();
         self.with_conn(move |conn| {
             conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM refresh_tokens WHERE expires_at > ?1)",
-                params![now],
+                "SELECT EXISTS(SELECT 1 FROM refresh_tokens WHERE expires_at > ?1 AND client_id = ?2)",
+                params![now, client_id],
                 |row| row.get::<_, i64>(0),
             )
             .map(|count| count != 0)
@@ -1618,9 +1627,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn has_any_refresh_token_reflects_unexpired_rows_only() {
+    async fn has_refresh_token_for_client_reflects_unexpired_rows_only() {
         let store = temp_store().await;
-        assert!(!store.has_any_refresh_token().await.unwrap());
+        assert!(
+            !store
+                .has_refresh_token_for_client("client")
+                .await
+                .unwrap()
+        );
 
         store
             .upsert_refresh_token(RefreshTokenRow {
@@ -1636,7 +1650,10 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            !store.has_any_refresh_token().await.unwrap(),
+            !store
+                .has_refresh_token_for_client("client")
+                .await
+                .unwrap(),
             "an expired-only store should not count as having a refresh token"
         );
 
@@ -1653,7 +1670,44 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(store.has_any_refresh_token().await.unwrap());
+        assert!(
+            store
+                .has_refresh_token_for_client("client")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn has_refresh_token_for_client_does_not_leak_across_clients() {
+        let store = temp_store().await;
+        store
+            .upsert_refresh_token(RefreshTokenRow {
+                refresh_token: "codex-refresh".to_string(),
+                client_id: "codex-client".to_string(),
+                subject: "google-user".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: now_unix(),
+                expires_at: now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .has_refresh_token_for_client("codex-client")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .has_refresh_token_for_client("claude-client")
+                .await
+                .unwrap(),
+            "a brand-new client must not inherit another client's refresh-token state"
+        );
     }
 
     #[tokio::test]

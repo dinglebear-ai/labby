@@ -254,12 +254,20 @@ pub async fn authorize(
         .await?;
 
     // We don't know which Google subject is about to sign in until they come
-    // back from the consent screen, so use "has this gateway ever minted a
-    // refresh token before" as a single-tenant proxy for "already granted."
-    // Forcing full re-consent on every DCR client attempt (Raycast, Warp,
-    // etc.) adds an interactive round trip long enough for impatient clients
-    // to time out and retry before the human finishes clicking through it.
-    let force_consent = !state.store.has_any_refresh_token().await?;
+    // back from the consent screen, so use "has *this* local client already
+    // minted a refresh token before" as a single-tenant proxy for "already
+    // granted." Scoped per client_id (not gateway-wide) so an established
+    // client's refresh token can't mask a brand-new client's need to force
+    // consent — see has_refresh_token_for_client's doc comment. Forcing full
+    // re-consent on every DCR client's first attempt (Raycast, Warp, Claude,
+    // ChatGPT, etc.) adds an interactive round trip long enough for
+    // impatient clients to time out and retry before the human finishes
+    // clicking through it, so repeat authorizations from an already-seen
+    // client still skip it.
+    let force_consent = !state
+        .store
+        .has_refresh_token_for_client(&query.client_id)
+        .await?;
     let location = state.google.authorize_url(&AuthorizeUrlRequest {
         state: request_state,
         scope: scope.clone(),
