@@ -40,10 +40,25 @@ pub use code_mode_host::JournalOwner;
 /// discovery/proxy JS strings themselves (`generate_discovery_js` /
 /// `generate_js_proxy_from_catalog`) — those are rebuilt from `entries` on
 /// every `codemode` execution regardless of cache hit/miss (see
-/// `crates/labby-codemode/src/execute.rs`'s `build_code_mode_proxy`). See bead
-/// `lab-5cgrz` for the investigation that confirmed this and evaluated (then
-/// rejected, at current scale) converting `search`/`describe` to host-RPC to
-/// close that gap.
+/// `crates/labby-codemode/src/execute.rs`'s `build_code_mode_proxy`).
+///
+/// Bead `lab-5cgrz` investigated converting `search`/`describe` to host-RPC
+/// and rejected it at the time: the injection cost was negligible at then-current
+/// scale, the evaluated approach (the `local_provider.rs`/`LOCAL_PROVIDER_LOCK`
+/// pattern) would have serialized repeated calls behind the global local-provider
+/// lock, and reusing `local_providers_allowed()` verbatim would have wrongly
+/// restricted `search`/`describe` to admin-only. `describe()` alone (not
+/// `search()`) was later revisited and converted to host-RPC once catalog sizes
+/// grew large enough for the injection cost to matter (benchmarked: ~3x smaller
+/// injected payload, ~1.8x faster parse at 4,000 tools) — using the
+/// `__lab_internal::*` reserved-namespace `tool_call` mechanism `semantic_rank`
+/// already used instead of the rejected `local_provider.rs` pattern, which
+/// avoids both structural objections above by construction. `entries`/
+/// `catalog_json` being `Arc`-wrapped (not `Vec`/`String`) is a direct
+/// consequence: `describe()` now calls `list_tools()` per invocation instead of
+/// once per execution, and cloning the whole catalog per call would otherwise
+/// make `describe()`-heavy scripts slower than before that change at large
+/// catalog sizes.
 ///
 /// This cache is a single slot (`Mutex<Option<CatalogRenderCache>>` on
 /// `GatewayManager`) with NO caller/scope component in its fingerprint. It is
@@ -56,10 +71,15 @@ pub use code_mode_host::JournalOwner;
 pub(crate) struct CatalogRenderCache {
     /// Fingerprint of the healthy tool list when this cache was built.
     pub fingerprint: String,
-    /// Rendered catalog entries (includes `.signature` / `.dts`).
-    pub entries: Vec<ToolDescriptor>,
+    /// Rendered catalog entries (includes `.signature` / `.dts`). `Arc`-wrapped
+    /// so a cache hit is a refcount bump, not a deep clone — `codemode.describe()`
+    /// now calls `list_tools()` again per invocation (see `labby-codemode`'s
+    /// `execute.rs` `describe_types` dispatch), so this is read far more than
+    /// once per execution.
+    pub entries: std::sync::Arc<Vec<ToolDescriptor>>,
     /// `serde_json::to_string(&entries)` — the `const tools = ...` payload.
-    pub catalog_json: String,
+    /// Same `Arc` rationale as `entries`.
+    pub catalog_json: std::sync::Arc<str>,
     /// Serialized catalog size in bytes (for the tracing log).
     pub serialized_size: usize,
 }

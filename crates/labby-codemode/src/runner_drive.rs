@@ -1704,8 +1704,8 @@ sleep 3600
             ) -> Result<ToolsRender, ToolError> {
                 Ok(ToolsRender {
                     fingerprint: "counting".to_string(),
-                    entries: Vec::new(),
-                    catalog_json: "[]".to_string(),
+                    entries: Arc::new(Vec::new()),
+                    catalog_json: Arc::from("[]"),
                     serialized_size: 2,
                 })
             }
@@ -1888,8 +1888,8 @@ sleep 3600
             ) -> Result<ToolsRender, ToolError> {
                 Ok(ToolsRender {
                     fingerprint: "recording".to_string(),
-                    entries: Vec::new(),
-                    catalog_json: "[]".to_string(),
+                    entries: Arc::new(Vec::new()),
+                    catalog_json: Arc::from("[]"),
                     serialized_size: 2,
                 })
             }

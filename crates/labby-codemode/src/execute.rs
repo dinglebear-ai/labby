@@ -1,5 +1,6 @@
 //! `CodeModeBroker::execute` and the host-brokered tool-call path.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -47,7 +48,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         config: CodeModeConfig,
         scope: ToolScope,
-        execution_id: Option<std::sync::Arc<str>>,
+        execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         Ok(self
             .execute_with_raw_response(code, caller, surface, config, scope, execution_id)
@@ -62,7 +63,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         config: CodeModeConfig,
         scope: ToolScope,
-        execution_id: Option<std::sync::Arc<str>>,
+        execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionOutcome, CodeModeExecutionError> {
         // `codemode` is exposed only when the host's Code Mode surface is
         // enabled; the surface handler gates on that before reaching here.
@@ -169,8 +170,9 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .await?;
         let catalog = render
             .entries
-            .into_iter()
+            .iter()
             .filter(|entry| discovery_entry_visible(entry, scope))
+            .cloned()
             .collect::<Vec<_>>();
 
         let discovery_entries = catalog
@@ -225,7 +227,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         max_log_bytes: usize,
         trace_params: bool,
         scope: ToolScope,
-        execution_id: Option<std::sync::Arc<str>>,
+        execution_id: Option<Arc<str>>,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Cloudflare-parity: no typed TypeScript preamble is injected. The
         // sandbox exposes only `callTool(id, params)`; the agent uses tool ids
@@ -451,8 +453,8 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     .await
                     .unwrap_or_else(|_| ToolsRender {
                         fingerprint: String::new(),
-                        entries: Vec::new(),
-                        catalog_json: "[]".to_string(),
+                        entries: Arc::new(Vec::new()),
+                        catalog_json: Arc::from("[]"),
                         serialized_size: 2,
                     });
                 let dts = render
@@ -733,17 +735,26 @@ mod tests {
     /// A `CodeModeHost` with a configurable tool set, so `describe_types` (and
     /// any future test needing real catalog entries) has something to look up.
     /// `NoopHost` always returns an empty catalog, which can't exercise this.
+    ///
+    /// Serializes and Arc-wraps the catalog ONCE in `new()`, matching
+    /// `CatalogRenderCache`'s real shape — `list_tools()` here is a refcount
+    /// bump per call, not a re-serialize, so a benchmark against this fixture
+    /// reflects the real cost of repeated `describe_types` dispatch, not an
+    /// artifact of a naive test double.
     struct FixtureHost {
         pool: crate::pool::RunnerPool,
-        entries: Vec<ToolDescriptor>,
+        entries: Arc<Vec<ToolDescriptor>>,
+        catalog_json: Arc<str>,
     }
 
     impl FixtureHost {
         fn new(entries: Vec<ToolDescriptor>) -> Self {
+            let catalog_json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
             Self {
                 pool: crate::pool::RunnerPool::from_env()
                     .expect("test process must expose current executable"),
-                entries,
+                entries: Arc::new(entries),
+                catalog_json: Arc::from(catalog_json),
             }
         }
     }
@@ -757,13 +768,11 @@ mod tests {
             _include_snippets: bool,
             _use_cache: bool,
         ) -> Result<ToolsRender, ToolError> {
-            let catalog_json =
-                serde_json::to_string(&self.entries).unwrap_or_else(|_| "[]".to_string());
             Ok(ToolsRender {
                 fingerprint: "fixture".to_string(),
-                entries: self.entries.clone(),
-                serialized_size: catalog_json.len(),
-                catalog_json,
+                entries: Arc::clone(&self.entries),
+                catalog_json: Arc::clone(&self.catalog_json),
+                serialized_size: self.catalog_json.len(),
             })
         }
 

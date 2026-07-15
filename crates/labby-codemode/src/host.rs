@@ -9,6 +9,8 @@
 //! `ToolDescriptor` inside its `CodeModeHost` impl, so the kernel never learns
 //! what backs the namespace.
 
+use std::sync::Arc;
+
 use serde_json::Value;
 
 use crate::error::ToolError;
@@ -22,6 +24,12 @@ use labby_runtime::CodeModeConfig;
 /// Hosts may serve this from a render cache keyed on a cheap fingerprint of
 /// their tool set; the kernel does not require caching and treats this purely
 /// as a projection.
+///
+/// `entries`/`catalog_json` are `Arc`-wrapped so a cache hit is a refcount
+/// bump, not a deep clone — `codemode.describe()` calls `list_tools()` again
+/// per invocation (see `execute.rs`'s `describe_types` dispatch), so a host
+/// whose cache stores owned `Vec`/`String` would re-pay a full catalog clone
+/// on every `describe()` call within one execution, not just once at start.
 #[derive(Debug, Clone)]
 pub struct ToolsRender {
     /// Fingerprint of the live tool set this render was built from (sorted
@@ -30,9 +38,9 @@ pub struct ToolsRender {
     /// themselves.
     pub fingerprint: String,
     /// The descriptors (tools + snippets) visible to this execution.
-    pub entries: Vec<ToolDescriptor>,
+    pub entries: Arc<Vec<ToolDescriptor>>,
     /// `serde_json::to_string(&entries)` — the `const tools = ...` payload.
-    pub catalog_json: String,
+    pub catalog_json: Arc<str>,
     /// Serialized catalog size in bytes (for tracing).
     pub serialized_size: usize,
 }
@@ -63,7 +71,7 @@ pub struct ToolCallOutcome {
 #[derive(Debug, Clone)]
 pub struct ExecCtx {
     pub seq: u64,
-    pub execution_id: Option<std::sync::Arc<str>>,
+    pub execution_id: Option<Arc<str>>,
     pub step_ordinal: Option<u64>,
 }
 
@@ -273,8 +281,8 @@ impl CodeModeHost for NoopHost {
     ) -> Result<ToolsRender, ToolError> {
         Ok(ToolsRender {
             fingerprint: "noop".to_string(),
-            entries: Vec::new(),
-            catalog_json: "[]".to_string(),
+            entries: Arc::new(Vec::new()),
+            catalog_json: Arc::from("[]"),
             serialized_size: 2,
         })
     }
@@ -349,7 +357,7 @@ mod tests {
     fn exec_ctx_carries_execution_id_and_ordinal() {
         let ctx = ExecCtx {
             seq: 7,
-            execution_id: Some(std::sync::Arc::from("exec_abc")),
+            execution_id: Some(Arc::from("exec_abc")),
             step_ordinal: Some(2),
         };
         assert_eq!(ctx.seq, 7);
