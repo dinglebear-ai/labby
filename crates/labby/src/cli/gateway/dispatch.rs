@@ -452,6 +452,8 @@ pub(super) async fn dispatch_command(
                             "until_unix": c.until_unix,
                             "upstream": c.upstream,
                             "limit": c.limit,
+                            "cursor": c.cursor,
+                            "include_total": c.include_total,
                             "offset": c.offset,
                         }),
                     ),
@@ -654,6 +656,8 @@ mod tests {
                 "until_unix": c.until_unix,
                 "upstream": c.upstream,
                 "limit": c.limit,
+                "cursor": c.cursor,
+                "include_total": c.include_total,
                 "offset": c.offset,
             }),
         }
@@ -711,6 +715,8 @@ mod tests {
                 "until_unix": null,
                 "upstream": null,
                 "limit": 50,
+                "cursor": null,
+                "include_total": false,
                 "offset": 10,
             })
         );
@@ -727,6 +733,34 @@ mod tests {
                 "until_unix": null,
                 "upstream": null,
                 "limit": null,
+                "cursor": null,
+                "include_total": false,
+                "offset": null,
+            })
+        );
+    }
+
+    #[test]
+    fn gateway_usage_calls_accepts_keyset_cursor() {
+        let usage = parsed_usage(&[
+            "lab",
+            "gateway",
+            "usage",
+            "calls",
+            "--cursor",
+            "123:45",
+            "--include-total",
+        ]);
+
+        assert_eq!(
+            usage_params(usage),
+            json!({
+                "since_unix": null,
+                "until_unix": null,
+                "upstream": null,
+                "limit": null,
+                "cursor": "123:45",
+                "include_total": true,
                 "offset": null,
             })
         );

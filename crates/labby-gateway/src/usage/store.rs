@@ -381,7 +381,7 @@ impl UsageStore {
 
             // Defense-in-depth: clamp here too, regardless of whether the
             // caller (`gateway/manager/usage.rs`) already clamped.
-            let limit = query.limit.min(super::query::MAX_CALLS_LIMIT);
+            let limit = query.limit.clamp(1, super::query::MAX_CALLS_LIMIT);
             bind.push(rusqlite::types::Value::Integer(
                 limit.saturating_add(1) as i64
             ));
@@ -679,6 +679,33 @@ mod tests {
             vec![2, 1]
         );
         assert!(next_cursor.is_some());
+    }
+
+    #[tokio::test]
+    async fn list_calls_clamps_zero_limit_to_one_row() {
+        use super::super::query::UsageCallsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        store.record_call(sample_record(1)).await.unwrap();
+        store.record_call(sample_record(2)).await.unwrap();
+
+        let (page, total, cursor) = store
+            .list_calls(UsageCallsQuery {
+                since_unix: None,
+                until_unix: None,
+                upstream: None,
+                allowed_upstreams: None,
+                limit: 0,
+                cursor: None,
+                include_total: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.len(), 1);
+        assert_eq!(total, None);
+        assert!(cursor.is_some());
     }
 
     #[tokio::test]

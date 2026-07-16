@@ -106,7 +106,7 @@ impl GatewayManager {
         let limit = params
             .limit
             .unwrap_or(DEFAULT_CALLS_LIMIT)
-            .min(MAX_CALLS_LIMIT);
+            .clamp(1, MAX_CALLS_LIMIT);
         let (rows, total_matching, next_cursor) = store
             .list_calls(UsageCallsQuery {
                 since_unix: params.since_unix,

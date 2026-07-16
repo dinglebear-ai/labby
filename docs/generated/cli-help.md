@@ -2997,8 +2997,14 @@ Options:
       --limit <LIMIT>
 
 
-      --offset <OFFSET>
+      --cursor <CURSOR>
+          Continue from the opaque cursor returned by the previous page
 
+      --include-total
+          Include the exact number of rows matching the filters
+
+      --offset <OFFSET>
+          Deprecated deep-offset pagination; use `--cursor` instead
 
   -h, --help
           Print help

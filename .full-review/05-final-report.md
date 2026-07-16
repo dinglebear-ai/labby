@@ -18,6 +18,16 @@ The review validated **49 unique issues** after cross-phase deduplication:
 
 The repository's normal baseline is strong but incomplete: `just lint` passed; 2,035/2,035 runnable Rust tests passed; Gateway Admin passed 336 unit and 2 installer tests. Those gates did not cover the highest-risk authorization, cancellation, secret, and publication boundaries found here.
 
+Remediation and PR validation subsequently surfaced ten additional delivery
+issues outside the original 49-finding snapshot. All were fixed before merge:
+same-resource MCP UI refreshes re-minimizing restored inspectors (React and
+embedded hosts), persisted iframe heights preventing shrink, Windows ACL
+hardening inheriting an incompatible PowerShell 7 module path, an unpinned
+cargo-deny CLI breaking its CI invocation, obsolete Node action runtimes, an
+invalid distrobuilder version probe, loopback reverse proxies satisfying the
+unauthenticated bootstrap capability, a zero-limit usage-page panic, and the
+CLI exposing offset pagination without the replacement cursor control.
+
 ## P0 — Immediate security remediation
 
 ### F-01 — Active and reusable credentials are published in the public repository

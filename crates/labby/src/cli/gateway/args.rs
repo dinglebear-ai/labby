@@ -80,6 +80,13 @@ pub struct GatewayUsageCallsArgs {
     pub upstream: Option<String>,
     #[arg(long)]
     pub limit: Option<usize>,
+    /// Continue from the opaque cursor returned by the previous page.
+    #[arg(long, conflicts_with = "offset")]
+    pub cursor: Option<String>,
+    /// Include the exact number of rows matching the filters.
+    #[arg(long)]
+    pub include_total: bool,
+    /// Deprecated deep-offset pagination; use `--cursor` instead.
     #[arg(long)]
     pub offset: Option<usize>,
 }

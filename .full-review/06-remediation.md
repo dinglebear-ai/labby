@@ -76,3 +76,15 @@ All 49 findings from `05-final-report.md` are required. Status is updated only a
 - Palette: renderer coverage/typecheck/build plus Tauri tests, build, and advisory policy passed.
 - Secret response: current documents were redacted, the stale host HMAC value was removed, and full-history scanning is constrained to 11 exact revoked fingerprints. Rewriting published Git history remains intentionally out of scope without separate destructive authorization.
 - External operator action: the MCP Registry DNS private key publisher was hardened and documented, but rotating the DNS key and unreadable GitHub secret requires Cloudflare/GitHub secret authority unavailable to this checkout.
+
+## Post-review delivery findings
+
+- [x] React and embedded MCP UI restore state survives same-resource refreshes.
+- [x] Embedded MCP UI height measurement can shrink after minimize/clear.
+- [x] Windows owner-only ACL hardening uses native Windows PowerShell with a clean module path.
+- [x] Palette advisory CI pins cargo-deny 0.20.2 and uses its verified CLI contract.
+- [x] Checkout, setup-node, and artifact actions use immutable Node 24-capable releases.
+- [x] Incus validation invokes the supported distrobuilder version flag.
+- [x] Setup bootstrap requires both a loopback peer and loopback Host capability.
+- [x] Usage pagination clamps a zero row limit before cursor derivation.
+- [x] Gateway CLI exposes cursor pagination and exact-total control.
