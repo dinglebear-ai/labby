@@ -113,13 +113,13 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 
 ## Release Process
 
-1. Release Please prepares the version/changelog PR but does not create a GitHub release.
-2. Merging that PR creates the stable `vX.Y.Z` tag and triggers release CI.
+1. Release Please prepares the version/changelog PR.
+2. Merging that PR creates the stable `vX.Y.Z` tag plus a private draft GitHub release and triggers release CI. Explicit tag creation is required because GitHub otherwise defers tags for draft releases.
 3. Preflight requires strict stable SemVer, ancestry from `origin/main`, and exact Cargo/npm/MCP/release-manifest version lockstep.
 4. Binary, Incus, and container candidates are built and smoke-tested as private workflow artifacts.
 5. The final gated job verifies checksums, emits an SPDX SBOM and GitHub provenance attestations, then publishes the exact tested image by digest and signs it keylessly with Cosign.
 6. The immutable image tag and compatibility `latest` tag advance together; failure deletes the new version and restores the previous `latest` digest.
-7. The draft GitHub release is made public last, after every required validation and attestation succeeds.
+7. The final job reuses the Release Please draft (or creates one for a manually pushed valid tag), uploads the verified assets, and makes it public last. Rollback deletes only releases and image versions created by that run; a pre-existing published release is never mutated.
 
 The npm and MCP registries do not support deleting an already-published
 version. If publication reaches one registry and then fails, rerun the same tag

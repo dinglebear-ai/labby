@@ -89,3 +89,5 @@ All 49 findings from `05-final-report.md` are required. Status is updated only a
 - [x] Local bootstrap capability propagates through the shared API admin gate for bootstrap only.
 - [x] Usage pagination clamps a zero row limit before cursor derivation.
 - [x] Gateway CLI exposes cursor pagination and exact-total control.
+- [x] Release rollback preserves pre-existing releases and image versions.
+- [x] Release Please creates the stable tag and private draft consumed by validated release CI.

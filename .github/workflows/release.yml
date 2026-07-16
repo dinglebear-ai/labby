@@ -286,7 +286,8 @@ jobs:
           output-file: labby.spdx.json
           upload-artifact: false
           upload-release-assets: false
-      - name: Create private draft release
+      - name: Prepare private draft release
+        id: draft-release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -302,10 +303,17 @@ jobs:
             labby.spdx.json
           )
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "::error::release $RELEASE_TAG already exists; refusing to mutate a published release"
-            exit 1
+            is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+            if [[ "$is_draft" != "true" ]]; then
+              echo "::error::release $RELEASE_TAG is already published; refusing to mutate it"
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            gh release create "$RELEASE_TAG" "${files[@]}" --draft --generate-notes
+            echo "created=true" >> "$GITHUB_OUTPUT"
           fi
-          gh release create "$RELEASE_TAG" "${files[@]}" --draft --generate-notes
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
@@ -326,7 +334,12 @@ jobs:
           set -euo pipefail
           echo "$GH_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           previous_latest="$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
+          previous_release="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
           printf '%s\n' "${previous_latest:-none}" > /tmp/labby-previous-latest-digest
+          if [[ "$previous_release" != sha256:* ]]; then
+            touch /tmp/labby-new-version-image
+          fi
+          touch /tmp/labby-image-publish-started
           docker load --input lab-container-image.tar
           docker tag lab:release-candidate "$IMAGE:$RELEASE_TAG"
           docker tag lab:release-candidate "$IMAGE:latest"
@@ -419,18 +432,23 @@ jobs:
       - name: Roll back partial publication
         if: failure()
         env:
+          DRAFT_CREATED: ${{ steps.draft-release.outputs.created }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
-          package="${GITHUB_REPOSITORY#*/}"
-          version_id="$(gh api --paginate "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions" \
-            --jq ".[] | select(.metadata.container.tags | index(\"$RELEASE_TAG\")) | .id" | head -1)"
-          if [[ -n "$version_id" ]]; then
-            gh api --method DELETE "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions/${version_id}" || true
+          if [[ "$DRAFT_CREATED" == "true" ]]; then
+            gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
+          fi
+          if [[ -f /tmp/labby-new-version-image ]]; then
+            package="${GITHUB_REPOSITORY#*/}"
+            version_id="$(gh api --paginate "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions" \
+              --jq ".[] | select(.metadata.container.tags | index(\"$RELEASE_TAG\")) | .id" | head -1)"
+            if [[ -n "$version_id" ]]; then
+              gh api --method DELETE "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions/${version_id}" || true
+            fi
           fi
           previous_latest="$(cat /tmp/labby-previous-latest-digest 2>/dev/null || printf none)"
-          if [[ "$previous_latest" == sha256:* ]]; then
+          if [[ -f /tmp/labby-image-publish-started && "$previous_latest" == sha256:* ]]; then
             docker buildx imagetools create \
               --tag "ghcr.io/${GITHUB_REPOSITORY}:latest" \
               "ghcr.io/${GITHUB_REPOSITORY}@${previous_latest}" || true

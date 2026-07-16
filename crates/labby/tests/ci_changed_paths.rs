@@ -304,7 +304,14 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
 
     let config = fs::read_to_string(repo_root().join("release-please-config.json"))
         .expect("read release-please config");
-    assert!(config.contains("\"skip-github-release\": true"));
+    assert!(!config.contains("\"skip-github-release\": true"));
+    assert!(config.contains("\"draft\": true"));
+    assert!(config.contains("\"force-tag-creation\": true"));
+
+    assert!(release.contains("--json isDraft --jq .isDraft"));
+    assert!(release.contains("gh release upload \"$RELEASE_TAG\" \"${files[@]}\" --clobber"));
+    assert!(release.contains("if [[ \"$DRAFT_CREATED\" == \"true\" ]]"));
+    assert!(release.contains("if [[ -f /tmp/labby-new-version-image ]]"));
 }
 
 #[test]
