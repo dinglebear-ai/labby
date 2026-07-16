@@ -69,7 +69,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/build-gateway-admin
       - name: Upload gateway-admin export
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out/
@@ -102,7 +102,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -163,7 +163,7 @@ jobs:
           }
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: lab-${{ matrix.target }}
           path: |
@@ -179,7 +179,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -201,7 +201,7 @@ jobs:
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
       - name: Upload tested container candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: lab-container-image
           path: /tmp/lab-container-image.tar
@@ -216,7 +216,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           name: lab-x86_64-unknown-linux-gnu
       - name: Install distrobuilder
@@ -249,7 +249,7 @@ jobs:
           SMOKE_PROFILE_NAME: labby-gateway-release-smoke
           SMOKE_BOOTSTRAP_PROFILE_NAME: labby-gateway-release-bootstrap-smoke
       - name: Upload Incus image artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: lab-incus-image
           path: |
@@ -271,7 +271,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           pattern: lab-*
           merge-multiple: true

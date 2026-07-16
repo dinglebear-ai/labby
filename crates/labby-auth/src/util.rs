@@ -72,6 +72,16 @@ pub(crate) fn set_restrictive_permissions(path: &Path) -> Result<(), AuthError> 
     harden_secret_file(path)
 }
 
+#[cfg(windows)]
+fn windows_powershell() -> std::path::PathBuf {
+    let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    std::path::PathBuf::from(system_root)
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
+}
+
 /// Apply the platform's owner-only file policy to a secret-bearing file.
 ///
 /// On Windows this replaces inherited and explicit ACEs with one FullControl
@@ -108,7 +118,7 @@ if ($rules[0].IdentityReference.Value -ne $verified.Owner -or
   throw 'secret file ACL is not an owner-only FullControl rule'
 }
 "#;
-    let output = std::process::Command::new("powershell.exe")
+    let output = std::process::Command::new(windows_powershell())
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -116,6 +126,10 @@ if ($rules[0].IdentityReference.Value -ne $verified.Owner -or
             "-Command",
             SCRIPT,
         ])
+        // A PowerShell 7 host can export an incompatible PSModulePath to this
+        // Windows PowerShell child. Let Windows PowerShell rebuild its native
+        // module path so Microsoft.PowerShell.Security can load reliably.
+        .env_remove("PSModulePath")
         .env("LABBY_SECRET_FILE_PATH", path)
         .output()
         .map_err(|error| {
@@ -266,7 +280,7 @@ if (-not $acl.AreAccessRulesProtected) { exit 2 }
 if (@($acl.Access).Count -ne 1) { exit 3 }
 if ($acl.Access[0].IdentityReference.Value -ne $acl.Owner) { exit 4 }
 "#;
-        let status = std::process::Command::new("powershell.exe")
+        let status = std::process::Command::new(windows_powershell())
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -274,6 +288,7 @@ if ($acl.Access[0].IdentityReference.Value -ne $acl.Owner) { exit 4 }
                 "-Command",
                 script,
             ])
+            .env_remove("PSModulePath")
             .env("LABBY_SECRET_FILE_PATH", &path)
             .status()
             .unwrap();
