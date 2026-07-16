@@ -96,16 +96,18 @@ pub fn action_catalog(actions: &[ActionDoc]) -> String {
     out.push_str(
         "This is a global inventory, not the active runtime exposure or authorization policy.\n\n",
     );
-    out.push_str("| Service | Action | Built-in | Destructive | Params | Returns | Surfaces |\n");
-    out.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str("| Service | Action | Built-in | Destructive | Admin | Required scopes | Params | Returns | Surfaces |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for action in actions {
         writeln!(
             out,
-            "| {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             code(&action.service),
             code(&action.action),
             action.builtin,
             action.destructive,
+            action.requires_admin,
+            cell(&action.required_scopes.join(", ")),
             params_cell(&action.params),
             code(&action.returns),
             cell(&surfaces(&action.surface_availability))

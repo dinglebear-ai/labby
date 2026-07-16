@@ -160,3 +160,20 @@ fn credentials_from_token_preserves_prior_refresh_token_when_omitted() {
         Some("new-refresh")
     );
 }
+
+#[test]
+fn refresh_generation_check_rejects_stale_access_token_snapshot() {
+    let original = creds("https://axon.example.com");
+    let mut replacement = creds("https://axon.example.com");
+    replacement.access_token = "new-login".into();
+
+    assert!(cache_matches_access(
+        &CredCache::Loaded(Some(original)),
+        Some("a")
+    ));
+    assert!(
+        !cache_matches_access(&CredCache::Loaded(Some(replacement)), Some("a")),
+        "a refresh based on an older token must not replace a newer login"
+    );
+    assert!(!cache_matches_access(&CredCache::Loaded(None), Some("a")));
+}

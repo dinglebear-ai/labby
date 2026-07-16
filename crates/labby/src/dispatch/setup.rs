@@ -24,7 +24,7 @@ mod token;
 mod types;
 
 pub use bootstrap::{BootstrapOutcome, bootstrap, bootstrap_action, should_bootstrap};
-pub use catalog::{ACTIONS, PLUGIN_LIFECYCLE_ACTIONS};
+pub use catalog::{ACTIONS, LOCAL_ONLY_ACTIONS, PLUGIN_LIFECYCLE_ACTIONS};
 pub use dispatch::dispatch;
 pub use types::{
     CommitOutcome, DraftEntry, SECRET_SENTINEL, SetupClient, SetupSnapshot, SetupState,

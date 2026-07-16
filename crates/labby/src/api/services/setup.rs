@@ -1,22 +1,24 @@
 //! HTTP route group for the `setup` Bootstrap orchestrator.
 //!
-//! Mounted at `/v1/setup` behind the host-validation Layer (Chunk E):
-//! requests with a non-loopback Host header are rejected with 421 before
-//! reaching the dispatcher.
+//! Mounted at `/v1/setup` behind the host-validation layer. Public hosts may
+//! be allowlisted for authenticated setup operations, but local-only actions
+//! require both a loopback socket peer and a loopback `Host` header.
 
 use std::net::SocketAddr;
 
 use axum::{
     Extension, Json, Router,
     extract::{ConnectInfo, State},
-    http::HeaderMap,
+    http::{HeaderMap, header::HOST},
     routing::post,
 };
 use serde_json::Value;
 
 use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
-use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
+use crate::api::services::helpers::{
+    ApiDispatchMeta, dispatch_meta_from_headers, handle_action_with_meta,
+};
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::setup::ACTIONS;
@@ -33,7 +35,15 @@ async fn handle(
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
-    require_setup_admin(&req.action, request_id, auth.as_ref())?;
+    let peer_addr = peer.as_ref().map(|Extension(ConnectInfo(addr))| *addr);
+    let has_local_capability = request_has_local_capability(peer_addr, &headers);
+    require_setup_admin(&req.action, request_id, auth.as_ref(), has_local_capability)?;
+    if local_only_action(&req.action) && !has_local_capability {
+        return Err(ApiError(ToolError::Sdk {
+            sdk_kind: "forbidden".into(),
+            message: format!("setup action `{}` is only available locally", req.action),
+        }));
+    }
     if plugin_lifecycle_action(&req.action) && !http_bind_is_loopback(&state) {
         tracing::info!(
             surface = "api",
@@ -47,14 +57,13 @@ async fn handle(
             message: "setup plugin lifecycle actions are only available over loopback HTTP".into(),
         }));
     }
+    let mut dispatch_meta =
+        dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0), peer_addr);
+    apply_local_bootstrap_capability(&mut dispatch_meta, &req.action, has_local_capability);
     handle_action_with_meta(
         "setup",
         "api",
-        dispatch_meta_from_headers(
-            &headers,
-            auth.as_ref().map(|value| &value.0),
-            peer.map(|Extension(ConnectInfo(addr))| addr),
-        ),
+        dispatch_meta,
         req,
         ACTIONS,
         |action, params| async move { crate::dispatch::setup::dispatch(&action, params).await },
@@ -82,8 +91,10 @@ fn require_setup_admin(
     action: &str,
     request_id: Option<&str>,
     auth: Option<&Extension<AuthContext>>,
+    has_local_capability: bool,
 ) -> Result<(), ToolError> {
-    if !setup_action_requires_admin(action) || has_admin_scope(auth) {
+    let local_first_run_capability = local_bootstrap_capability(action, has_local_capability);
+    if !setup_action_requires_admin(action) || has_admin_scope(auth) || local_first_run_capability {
         return Ok(());
     }
 
@@ -101,6 +112,23 @@ fn require_setup_admin(
     })
 }
 
+fn local_bootstrap_capability(action: &str, has_local_capability: bool) -> bool {
+    action.strip_prefix("setup.").unwrap_or(action) == "bootstrap" && has_local_capability
+}
+
+fn apply_local_bootstrap_capability(
+    dispatch_meta: &mut ApiDispatchMeta<'_>,
+    action: &str,
+    has_local_capability: bool,
+) {
+    if local_bootstrap_capability(action, has_local_capability) {
+        // The route-specific gate accepts this as the first-run capability.
+        // Carry that decision through the shared requires_admin gate for this
+        // action only; otherwise it would reject the same request a second time.
+        dispatch_meta.is_lab_admin = Some(true);
+    }
+}
+
 fn plugin_lifecycle_action(action: &str) -> bool {
     // Both the canonical dotted names AND the deprecated snake_case aliases
     // must be matched here. The gate is keyed on the action string the
@@ -114,6 +142,23 @@ fn plugin_lifecycle_action(action: &str) -> bool {
     // catalog, and dispatch routing share one source of truth instead of three
     // hand-synced literal lists.
     crate::dispatch::setup::PLUGIN_LIFECYCLE_ACTIONS.contains(&action)
+}
+
+fn local_only_action(action: &str) -> bool {
+    let bare = action.strip_prefix("setup.").unwrap_or(action);
+    crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&bare)
+}
+
+fn request_is_loopback(peer: Option<SocketAddr>) -> bool {
+    peer.is_some_and(|addr| addr.ip().is_loopback())
+}
+
+fn request_has_local_capability(peer: Option<SocketAddr>, headers: &HeaderMap) -> bool {
+    request_is_loopback(peer)
+        && headers
+            .get(HOST)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(crate::api::host_validation::is_loopback_host_value)
 }
 
 fn http_bind_is_loopback(state: &AppState) -> bool {
@@ -186,6 +231,19 @@ mod tests {
                 "{near_miss} is not a real lifecycle action and must not be gated"
             );
         }
+    }
+
+    #[test]
+    fn credential_bootstrap_and_connectivity_probe_are_local_only() {
+        assert!(local_only_action("bootstrap"));
+        assert!(local_only_action("setup.bootstrap"));
+        assert!(local_only_action("plugin_connectivity"));
+        assert!(!local_only_action("draft.commit"));
+
+        assert!(request_is_loopback(Some("127.0.0.1:1234".parse().unwrap())));
+        assert!(request_is_loopback(Some("[::1]:1234".parse().unwrap())));
+        assert!(!request_is_loopback(Some("10.0.0.5:1234".parse().unwrap())));
+        assert!(!request_is_loopback(None));
     }
 
     /// `host_is_loopback` is the predicate the `handle` gate uses to decide
@@ -273,8 +331,46 @@ mod tests {
             "settings.config.update",
             "settings.env.update",
         ] {
-            assert!(require_setup_admin(action, None, Some(&read_only)).is_err());
-            assert!(require_setup_admin(action, None, Some(&auth(&["lab:admin"]))).is_ok());
+            assert!(require_setup_admin(action, None, Some(&read_only), false).is_err());
+            assert!(require_setup_admin(action, None, Some(&auth(&["lab:admin"])), false).is_ok());
         }
+    }
+
+    #[test]
+    fn bootstrap_allows_unauthenticated_loopback_first_run_only() {
+        require_setup_admin("bootstrap", None, None, true).expect("local first-run capability");
+        assert_eq!(
+            require_setup_admin("bootstrap", None, None, false)
+                .expect_err("remote bootstrap denied")
+                .kind(),
+            "forbidden"
+        );
+        assert!(local_bootstrap_capability("bootstrap", true));
+        assert!(local_bootstrap_capability("setup.bootstrap", true));
+        assert!(!local_bootstrap_capability("bootstrap", false));
+        assert!(!local_bootstrap_capability("settings.update", true));
+
+        let mut local_bootstrap_meta = ApiDispatchMeta::default();
+        apply_local_bootstrap_capability(&mut local_bootstrap_meta, "bootstrap", true);
+        assert_eq!(local_bootstrap_meta.is_lab_admin, Some(true));
+
+        let mut remote_bootstrap_meta = ApiDispatchMeta::default();
+        apply_local_bootstrap_capability(&mut remote_bootstrap_meta, "bootstrap", false);
+        assert_eq!(remote_bootstrap_meta.is_lab_admin, None);
+
+        let mut local_settings_meta = ApiDispatchMeta::default();
+        apply_local_bootstrap_capability(&mut local_settings_meta, "settings.update", true);
+        assert_eq!(local_settings_meta.is_lab_admin, None);
+    }
+
+    #[test]
+    fn loopback_proxy_peer_with_public_host_has_no_local_capability() {
+        let peer = Some("127.0.0.1:1234".parse().unwrap());
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, "lab.example.com".parse().unwrap());
+        assert!(!request_has_local_capability(peer, &headers));
+
+        headers.insert(HOST, "localhost:8765".parse().unwrap());
+        assert!(request_has_local_capability(peer, &headers));
     }
 }

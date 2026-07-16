@@ -143,7 +143,10 @@ pub async fn uninstall_plugin(service: &str) -> Result<PluginMutationResult, Too
 }
 
 pub async fn services_status() -> Result<Vec<ServiceStatus>, ToolError> {
-    let installed = installed_plugins(false).await.unwrap_or_default();
+    // A failed Claude inventory is not equivalent to "no plugins installed".
+    // Preserve the typed command error so callers can render an explicit
+    // unknown/error state instead of a dangerously confident false negative.
+    let installed = installed_plugins(false).await?;
     let draft_entries = draft::read_entries(&super::client::draft_path());
     let draft_keys: HashSet<&str> = draft_entries
         .iter()
@@ -283,7 +286,15 @@ async fn run_claude(args: &[&str], failure_kind: &'static str) -> Result<Command
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "claude".to_string());
-    let mut command = Command::new(&claude_bin);
+    run_claude_with_bin(&claude_bin, args, failure_kind).await
+}
+
+async fn run_claude_with_bin(
+    claude_bin: &str,
+    args: &[&str],
+    failure_kind: &'static str,
+) -> Result<CommandOutput, ToolError> {
+    let mut command = Command::new(claude_bin);
     command.args(args).stdin(Stdio::null());
     let child = command.output();
     let output = match tokio::time::timeout(COMMAND_TIMEOUT, child).await {
@@ -464,6 +475,18 @@ pub fn services_status_json(statuses: Vec<ServiceStatus>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn injected_missing_claude_binary_preserves_unavailable_error() {
+        let err = run_claude_with_bin(
+            "/definitely/not/a/claude-binary",
+            &["plugin", "list", "--json"],
+            "plugin_list_failed",
+        )
+        .await
+        .expect_err("missing command must fail");
+        assert_eq!(err.kind(), "claude_cli_unavailable");
+    }
 
     #[test]
     fn package_segment_validation_rejects_injection_shapes() {

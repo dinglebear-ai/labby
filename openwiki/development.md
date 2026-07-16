@@ -269,11 +269,10 @@ Lab auto-generates several documentation artifacts:
 
 ```bash
 # Generate all docs
-cargo run --all-features -- docs generate
+cargo run --package labby --all-features -- docs generate
 
 # Generate specific docs
-cargo run --all-features -- docs routes
-cargo run --all-features -- docs actions
+cargo run --package labby --all-features -- docs check
 ```
 
 ### Manual Docs
@@ -294,17 +293,17 @@ cargo run --all-features -- docs actions
 
 **Enable debug logging**:
 ```bash
-LAB_LOG=labby=debug cargo run --all-features -- serve
+LABBY_LOG=labby=debug cargo run --package labby --all-features -- serve
 ```
 
 **JSON logs**:
 ```bash
-LAB_LOG_FORMAT=json cargo run --all-features -- serve
+LABBY_LOG_FORMAT=json cargo run --package labby --all-features -- serve
 ```
 
 **Trace logs**:
 ```bash
-LAB_LOG=labby=trace,rmcp=debug cargo run --all-features -- serve
+LABBY_LOG=labby=trace,rmcp=debug cargo run --package labby --all-features -- serve
 ```
 
 ### MCP Debugging
@@ -324,7 +323,7 @@ labby serve --host 127.0.0.1 --port 8765
 
 **Enable Code Mode tracing**:
 ```bash
-LAB_LOG=labby_codemode=debug cargo run --all-features -- snippets test <snippet_id>
+LABBY_LOG=labby_codemode=debug cargo run --package labby --all-features -- snippets test <snippet_id>
 ```
 
 ## Performance
@@ -461,7 +460,7 @@ Read the nested `CLAUDE.md` files when working in specific areas:
 - Check observability tests require strict log validation
 
 **Runtime issues**:
-- Enable debug logging: `LAB_LOG=labby=debug`
+- Enable debug logging: `LABBY_LOG=labby=debug`
 - Check config: `labby doctor`
 - Verify SQLite: `ls ~/.labby/store/labby.sqlite`
 
@@ -470,7 +469,7 @@ Read the nested `CLAUDE.md` files when working in specific areas:
 - **[Quickstart](quickstart.md)** - Project overview and quick start
 - **[Architecture](architecture.md)** - Crate structure and dependencies
 - **[Domain Concepts](domain.md)** - MCP gateway, Code Mode, dispatch patterns
-- **[docs/dev/CONVENTIONS.md](../docs/dev/CONVENTIONS.md)** - Code conventions and patterns
+- **[docs/CONVENTIONS.md](../docs/CONVENTIONS.md)** - Code conventions and patterns
 - **[docs/dev/SERVICE_ONBOARDING.md](../docs/dev/SERVICE_ONBOARDING.md)** - Adding new services
 - **[docs/dev/OBSERVABILITY.md](../docs/dev/OBSERVABILITY.md)** - Logging and tracing requirements
 - **[docs/dev/ERRORS.md](../docs/dev/ERRORS.md)** - Error handling and taxonomy

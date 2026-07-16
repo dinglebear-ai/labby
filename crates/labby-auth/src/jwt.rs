@@ -3,16 +3,16 @@ use std::path::Path;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ed25519_dalek::SigningKey;
+use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
-use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
-use rsa::rand_core::{TryCryptoRng, TryRng, UnwrapErr};
-use rsa::traits::PublicKeyParts;
-use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::AuthError;
-use crate::util::{ensure_restrictive_permissions, set_restrictive_permissions};
+use crate::util::{
+    ensure_restrictive_permissions, set_restrictive_permissions, write_secret_file_atomically,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccessClaims {
@@ -38,8 +38,8 @@ pub struct JwkKey {
     pub use_: String,
     pub alg: String,
     pub kid: String,
-    pub n: String,
-    pub e: String,
+    pub crv: String,
+    pub x: String,
 }
 
 #[derive(Clone)]
@@ -75,24 +75,30 @@ impl SigningKeys {
         }
 
         let private_key = if existed {
-            let pem = std::fs::read_to_string(path).map_err(|error| {
+            let key_bytes = std::fs::read(path).map_err(|error| {
                 AuthError::Storage(format!("read signing key `{}`: {error}", path.display()))
             })?;
-            RsaPrivateKey::from_pkcs8_pem(&pem)
-                .map_err(|error| AuthError::Storage(format!("parse signing key PEM: {error}")))?
+            match SigningKey::from_pkcs8_der(&key_bytes) {
+                Ok(key) => key,
+                Err(_) => {
+                    // Pre-Ed25519 releases stored an RSA PKCS#8 key at this
+                    // path. Quarantine any non-Ed25519 material and rotate to
+                    // a constant-time signing primitive; never silently reuse
+                    // the vulnerable signing path.
+                    let retired =
+                        path.with_extension(format!("retired-{}", crate::util::now_unix()));
+                    std::fs::rename(path, &retired).map_err(|error| {
+                        AuthError::Storage(format!(
+                            "retire legacy signing key `{}`: {error}",
+                            path.display()
+                        ))
+                    })?;
+                    set_restrictive_permissions(&retired)?;
+                    generate_signing_key(path)?
+                }
+            }
         } else {
-            let mut rng = UnwrapErr(SystemRng);
-            let key = RsaPrivateKey::new(&mut rng, 2048).map_err(|error| {
-                AuthError::Storage(format!("generate RSA signing key: {error}"))
-            })?;
-            let pem = key
-                .to_pkcs8_pem(LineEnding::LF)
-                .map_err(|error| AuthError::Storage(format!("encode signing key PEM: {error}")))?;
-            std::fs::write(path, pem.as_bytes()).map_err(|error| {
-                AuthError::Storage(format!("write signing key `{}`: {error}", path.display()))
-            })?;
-            set_restrictive_permissions(path)?;
-            key
+            generate_signing_key(path)?
         };
 
         ensure_restrictive_permissions(path)?;
@@ -100,7 +106,7 @@ impl SigningKeys {
     }
 
     pub fn issue_access_token(&self, claims: &AccessClaims) -> Result<String, AuthError> {
-        let mut header = Header::new(Algorithm::RS256);
+        let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(self.key_id.clone());
         encode(&header, &claims, &self.encoding_key)
             .map_err(|error| AuthError::Storage(format!("encode access token: {error}")))
@@ -120,7 +126,7 @@ impl SigningKeys {
         token: &str,
         expected_audience: &str,
     ) -> Result<AccessClaims, AuthError> {
-        let mut validation = Validation::new(Algorithm::RS256);
+        let mut validation = Validation::new(Algorithm::EdDSA);
         validation.set_audience(&[expected_audience]);
         decode::<AccessClaims>(token, &self.decoding_key, &validation)
             .map(|data| data.claims)
@@ -137,7 +143,7 @@ impl SigningKeys {
         expected_audience: &str,
         expected_issuer: &str,
     ) -> Result<AccessClaims, AuthError> {
-        let mut validation = Validation::new(Algorithm::RS256);
+        let mut validation = Validation::new(Algorithm::EdDSA);
         validation.set_audience(&[expected_audience]);
         validation.set_issuer(&[expected_issuer]);
         decode::<AccessClaims>(token, &self.decoding_key, &validation)
@@ -149,14 +155,11 @@ impl SigningKeys {
         &self.jwks
     }
 
-    fn from_private_key(private_key: &RsaPrivateKey) -> Result<Self, AuthError> {
-        let private_pem = private_key
-            .to_pkcs8_pem(LineEnding::LF)
-            .map_err(|error| AuthError::Storage(format!("encode signing key PEM: {error}")))?;
-        let public_key = RsaPublicKey::from(private_key);
-        let public_pem = public_key
-            .to_public_key_pem(LineEnding::LF)
-            .map_err(|error| AuthError::Storage(format!("encode public key PEM: {error}")))?;
+    fn from_private_key(private_key: &SigningKey) -> Result<Self, AuthError> {
+        let private_der = private_key
+            .to_pkcs8_der()
+            .map_err(|error| AuthError::Storage(format!("encode signing key DER: {error}")))?;
+        let public_key = private_key.verifying_key();
         let public_der = public_key
             .to_public_key_der()
             .map_err(|error| AuthError::Storage(format!("encode public key DER: {error}")))?;
@@ -165,63 +168,38 @@ impl SigningKeys {
 
         let jwks = JwksDocument {
             keys: vec![JwkKey {
-                kty: "RSA".to_string(),
+                kty: "OKP".to_string(),
                 use_: "sig".to_string(),
-                alg: "RS256".to_string(),
+                alg: "EdDSA".to_string(),
                 kid: key_id.clone(),
-                n: URL_SAFE_NO_PAD.encode(public_key.n_bytes()),
-                e: URL_SAFE_NO_PAD.encode(public_key.e_bytes()),
+                crv: "Ed25519".to_string(),
+                x: URL_SAFE_NO_PAD.encode(public_key.as_bytes()),
             }],
         };
 
         Ok(Self {
             key_id,
-            encoding_key: EncodingKey::from_rsa_pem(private_pem.as_bytes()).map_err(|error| {
-                AuthError::Storage(format!("load RSA encoding key from PEM: {error}"))
-            })?,
-            decoding_key: DecodingKey::from_rsa_pem(public_pem.as_bytes()).map_err(|error| {
-                AuthError::Storage(format!("load RSA decoding key from PEM: {error}"))
-            })?,
+            encoding_key: EncodingKey::from_ed_der(private_der.as_bytes()),
+            // jsonwebtoken's RustCrypto verifier consumes the raw 32-byte
+            // Ed25519 public point here (its from_ed_der name is historical).
+            decoding_key: DecodingKey::from_ed_der(public_key.as_bytes()),
             jwks,
         })
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct SystemRng;
-
-impl TryRng for SystemRng {
-    type Error = SystemRngError;
-
-    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-        let mut bytes = [0_u8; 4];
-        self.try_fill_bytes(&mut bytes)?;
-        Ok(u32::from_le_bytes(bytes))
-    }
-
-    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-        let mut bytes = [0_u8; 8];
-        self.try_fill_bytes(&mut bytes)?;
-        Ok(u64::from_le_bytes(bytes))
-    }
-
-    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
-        getrandom::fill(dst).map_err(SystemRngError)
-    }
+fn generate_signing_key(path: &Path) -> Result<SigningKey, AuthError> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| AuthError::Storage(format!("generate Ed25519 key material: {error}")))?;
+    let key = SigningKey::from_bytes(&bytes);
+    bytes.fill(0);
+    let der = key
+        .to_pkcs8_der()
+        .map_err(|error| AuthError::Storage(format!("encode signing key DER: {error}")))?;
+    write_secret_file_atomically(path, der.as_bytes())?;
+    Ok(key)
 }
-
-impl TryCryptoRng for SystemRng {}
-
-#[derive(Debug)]
-struct SystemRngError(getrandom::Error);
-
-impl fmt::Display for SystemRngError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::error::Error for SystemRngError {}
 
 #[cfg(test)]
 mod tests {

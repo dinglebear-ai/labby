@@ -208,26 +208,6 @@ impl GatewayManager {
         let old_pool = existing_pool;
         let before = snapshot_from_pool(old_pool.clone()).await;
         let old_pool_present = old_pool.is_some();
-        if let Some(old_pool) = old_pool {
-            tracing::info!(
-                surface = "dispatch",
-                service = "gateway",
-                action = "gateway.reload",
-                event = "old_pool.drain.start",
-                phase = "pool.drain.start",
-                "gateway old upstream pool drain start"
-            );
-            self.runtime.swap(None).await;
-            old_pool.drain_for_swap("gateway.reload.before_build").await;
-            tracing::info!(
-                surface = "dispatch",
-                service = "gateway",
-                action = "gateway.reload",
-                event = "old_pool.drain.finish",
-                phase = "pool.drain.finish",
-                "gateway old upstream pool drain finish"
-            );
-        }
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -332,6 +312,31 @@ impl GatewayManager {
             "gateway reconcile"
         );
         self.runtime.swap(fresh_pool).await;
+        // Keep the old pool serving throughout build/probe and publish the
+        // replacement before draining. A dropped/timeout-cancelled reload can
+        // therefore never leave `runtime` as None. Drain in an owned task so
+        // cancellation immediately after the atomic swap cannot leak children.
+        if let Some(old_pool) = old_pool {
+            tokio::spawn(async move {
+                tracing::info!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.reload",
+                    event = "old_pool.drain.start",
+                    phase = "pool.drain.start",
+                    "gateway old upstream pool drain start"
+                );
+                old_pool.drain_for_swap("gateway.reload.after_swap").await;
+                tracing::info!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.reload",
+                    event = "old_pool.drain.finish",
+                    phase = "pool.drain.finish",
+                    "gateway old upstream pool drain finish"
+                );
+            });
+        }
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
         *self.config.write().await = cfg;

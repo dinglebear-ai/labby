@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use dashmap::DashMap;
@@ -16,6 +17,8 @@ use crate::jwt::SigningKeys;
 use crate::sqlite::SqliteStore;
 
 const RATE_LIMIT_RETRY_AFTER_MS: u64 = 60_000;
+const RATE_LIMIT_MAX_IP_BUCKETS: usize = 4_096;
+const RATE_LIMIT_IDLE_TTL_SECS: u64 = 10 * 60;
 
 /// Per-request parameters for rate-limiting. Each bucket is independent.
 struct RateLimiterInner {
@@ -67,37 +70,100 @@ impl RateLimiterInner {
 #[derive(Clone)]
 struct PerIpRateLimiter {
     requests_per_minute: u32,
-    /// Per-IP buckets.  Entries accumulate over time; they are not evicted
-    /// (memory growth is bounded by the number of distinct client IPs).
-    buckets: Arc<DashMap<IpAddr, Mutex<RateLimiterInner>>>,
+    max_buckets: usize,
+    idle_ttl_secs: u64,
+    started_at: Instant,
+    buckets: Arc<DashMap<IpAddr, Arc<RateLimitBucket>>>,
+    maintenance_lock: Arc<std::sync::Mutex<()>>,
+}
+
+struct RateLimitBucket {
+    limiter: Mutex<RateLimiterInner>,
+    last_seen_secs: AtomicU64,
 }
 
 impl PerIpRateLimiter {
     fn new(requests_per_minute: u32) -> Self {
+        Self::new_with_limits(
+            requests_per_minute,
+            RATE_LIMIT_MAX_IP_BUCKETS,
+            RATE_LIMIT_IDLE_TTL_SECS,
+        )
+    }
+
+    fn new_with_limits(requests_per_minute: u32, max_buckets: usize, idle_ttl_secs: u64) -> Self {
         Self {
             requests_per_minute,
+            max_buckets: max_buckets.max(1),
+            idle_ttl_secs: idle_ttl_secs.max(1),
+            started_at: Instant::now(),
             buckets: Arc::new(DashMap::new()),
+            maintenance_lock: Arc::new(std::sync::Mutex::new(())),
         }
     }
 
     /// Try to consume one token for `ip`. Returns `true` if allowed.
     async fn try_acquire(&self, ip: IpAddr) -> bool {
-        // Fast path: bucket already exists.
-        if let Some(bucket) = self.buckets.get(&ip) {
-            return bucket.value().lock().await.try_acquire();
-        }
-        // Slow path: insert a new bucket and immediately try.
-        self.buckets
-            .entry(ip)
-            .or_insert_with(|| Mutex::new(RateLimiterInner::new(self.requests_per_minute)));
-        // Safe unwrap: we just inserted the entry above.
-        self.buckets
-            .get(&ip)
-            .expect("bucket just inserted")
-            .value()
-            .lock()
+        self.try_acquire_at(ip, self.started_at.elapsed().as_secs())
             .await
-            .try_acquire()
+    }
+
+    async fn try_acquire_at(&self, ip: IpAddr, now_secs: u64) -> bool {
+        // Fast path: bucket already exists.
+        if let Some(bucket_ref) = self.buckets.get(&ip) {
+            let bucket = Arc::clone(bucket_ref.value());
+            drop(bucket_ref);
+            bucket.last_seen_secs.store(now_secs, Ordering::Relaxed);
+            return bucket.limiter.lock().await.try_acquire();
+        }
+
+        // Serialize the slow path so concurrent new addresses cannot exceed
+        // the configured cap. Values are Arc-backed so no DashMap shard guard
+        // is held while awaiting the per-bucket Tokio mutex.
+        let bucket = {
+            let _maintenance = self
+                .maintenance_lock
+                .lock()
+                .expect("rate limiter maintenance lock");
+            if let Some(bucket) = self.buckets.get(&ip) {
+                Arc::clone(bucket.value())
+            } else {
+                self.evict_stale_and_lru(now_secs);
+                let bucket = Arc::new(RateLimitBucket {
+                    limiter: Mutex::new(RateLimiterInner::new(self.requests_per_minute)),
+                    last_seen_secs: AtomicU64::new(now_secs),
+                });
+                self.buckets.insert(ip, Arc::clone(&bucket));
+                bucket
+            }
+        };
+        bucket.last_seen_secs.store(now_secs, Ordering::Relaxed);
+        bucket.limiter.lock().await.try_acquire()
+    }
+
+    fn evict_stale_and_lru(&self, now_secs: u64) {
+        let stale_before = now_secs.saturating_sub(self.idle_ttl_secs);
+        self.buckets
+            .retain(|_, bucket| bucket.last_seen_secs.load(Ordering::Relaxed) >= stale_before);
+        while self.buckets.len() >= self.max_buckets {
+            let oldest = self
+                .buckets
+                .iter()
+                .min_by_key(|entry| entry.last_seen_secs.load(Ordering::Relaxed))
+                .map(|entry| *entry.key());
+            let Some(oldest) = oldest else { break };
+            self.buckets.remove(&oldest);
+        }
+    }
+
+    #[cfg(test)]
+    fn bucket_count(&self) -> usize {
+        self.buckets.len()
+    }
+
+    #[cfg(test)]
+    fn has_bucket(&self, ip: IpAddr) -> bool {
+        self.buckets.contains_key(&ip)
     }
 }
 
@@ -324,6 +390,41 @@ mod tests {
     use super::*;
     use crate::config::GoogleConfig;
     use crate::util::now_unix;
+
+    #[tokio::test]
+    async fn per_ip_rate_limiter_evicts_idle_and_lru_buckets_under_address_churn() {
+        let limiter = PerIpRateLimiter::new_with_limits(60, 3, 10);
+        for octet in 1..=3 {
+            assert!(
+                limiter
+                    .try_acquire_at(IpAddr::from([192, 0, 2, octet]), u64::from(octet))
+                    .await
+            );
+        }
+        // Refresh .1 so .2 is the least-recently-used live entry.
+        assert!(
+            limiter
+                .try_acquire_at(IpAddr::from([192, 0, 2, 1]), 4)
+                .await
+        );
+        assert!(
+            limiter
+                .try_acquire_at(IpAddr::from([192, 0, 2, 4]), 5)
+                .await
+        );
+        assert_eq!(limiter.bucket_count(), 3);
+        assert!(limiter.has_bucket(IpAddr::from([192, 0, 2, 1])));
+        assert!(!limiter.has_bucket(IpAddr::from([192, 0, 2, 2])));
+
+        // At t=20 all prior entries exceed the 10-second idle TTL. A new
+        // address must prune them rather than letting the map grow forever.
+        assert!(
+            limiter
+                .try_acquire_at(IpAddr::from([198, 51, 100, 1]), 20)
+                .await
+        );
+        assert_eq!(limiter.bucket_count(), 1);
+    }
 
     /// Builds a minimal `AuthState` for unit-testing `resolve_allowed_emails`.
     async fn resolve_state(admin_email: &str) -> AuthState {

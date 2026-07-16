@@ -29,7 +29,14 @@ pub struct UsageCallsQuery {
     /// See `UsageMetricsQuery::allowed_upstreams`.
     pub allowed_upstreams: Option<Vec<String>>,
     pub limit: usize,
-    pub offset: usize,
+    pub cursor: Option<UsageCursor>,
+    pub include_total: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageCursor {
+    pub ts_unix: i64,
+    pub id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +64,7 @@ pub struct UsageMetrics {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpstreamCallRecordView {
+    pub id: i64,
     pub ts_unix: i64,
     pub upstream: String,
     pub tool: String,

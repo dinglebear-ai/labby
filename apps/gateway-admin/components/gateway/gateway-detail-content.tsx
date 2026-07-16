@@ -1,5 +1,6 @@
 'use client'
 
+import dynamic from 'next/dynamic'
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
@@ -31,7 +32,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { TransportBadge } from './transport-badge'
 import { ToolExposureTable } from './tool-exposure-table'
 import { PrimitiveExposureTable } from './primitive-exposure-table'
-import { GatewayFormDialog } from './gateway-form-dialog'
+import type { GatewaySaveRollback } from './gateway-form-dialog'
 import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { useGateway, useGatewayMutations } from '@/lib/hooks/use-gateways'
@@ -40,11 +41,17 @@ import type { Gateway, CreateGatewayInput, UpdateGatewayInput } from '@/lib/type
 import {
   applyBulkExposureToDraft,
   buildExposurePolicyFromDraft,
-  createExposureDraftFromTools,
   getDraftExposureSummary,
 } from '@/lib/api/tool-exposure-draft'
 import { cn, getErrorMessage } from '@/lib/utils'
 import { buildGatewayClientConfig } from '@/lib/api/gateway-client-config'
+import { useStableToolExposure } from './use-stable-tool-exposure'
+import { GatewayEnabledSetting } from './gateway-enabled-setting'
+
+const GatewayFormDialog = dynamic(
+  () => import('./gateway-form-dialog').then((module) => module.GatewayFormDialog),
+  { ssr: false },
+)
 
 function SettingRow({
   title,
@@ -129,21 +136,11 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [testResult, setTestResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof testGateway>> } | null>(null)
   const [cleanupResult, setCleanupResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof cleanupGateway>> } | null>(null)
   const [hasMounted, setHasMounted] = useState(false)
-  const toolExposureSignature = useMemo(
-    () =>
-      (gateway?.discovery.tools ?? [])
-        .map((tool) => `${tool.name}:${tool.exposed ? '1' : '0'}`)
-        .join('|'),
-    [gateway?.discovery.tools],
-  )
-  const allToolNames = useMemo(
-    () => gateway?.discovery.tools.map((tool) => tool.name) ?? [],
-    [gateway?.discovery.tools],
-  )
-  const currentExposedToolNames = useMemo(
-    () => createExposureDraftFromTools(gateway?.discovery.tools ?? []),
-    [gateway?.discovery.tools],
-  )
+  const {
+    signature: toolExposureSignature,
+    allToolNames,
+    currentExposedToolNames,
+  } = useStableToolExposure(gateway?.discovery.tools ?? [])
   const isLabGateway = gateway?.source === 'in_process'
   const surfaceEntries = gateway?.surfaces
     ? ([
@@ -253,11 +250,19 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     }
   }
 
-  const handleSave = async (input: CreateGatewayInput | UpdateGatewayInput) => {
+  const handleSave = async (
+    input: CreateGatewayInput | UpdateGatewayInput,
+  ): Promise<GatewaySaveRollback | void> => {
     if (!gateway) return
+    const previous = gateway
     await updateGateway(gateway.id, input as UpdateGatewayInput)
-    toast.success('Server updated successfully')
-    setEditOpen(false)
+    return async () => {
+      await updateGateway(previous.id, {
+        name: previous.name,
+        transport: previous.transport,
+        config: previous.config,
+      })
+    }
   }
 
   const handleDelete = async () => {
@@ -271,22 +276,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     }
   }
 
-  const handleEnabledToggle = async (enabled: boolean) => {
+  const handleEnableGateway = async () => {
     if (!gateway) return
-    if (!enabled) {
-      try {
-        if (gateway.source === 'in_process') {
-          await disableVirtualServer(gateway.id)
-        } else {
-          await disableGateway(gateway.id)
-        }
-        toast.success('Server disabled. Catalog change sent and runtime cleanup requested.')
-      } catch (error) {
-        toast.error(getErrorMessage(error, 'Failed to update server state'))
-      }
-      return
-    }
-
     try {
       if (gateway.source === 'in_process') {
         await enableVirtualServer(gateway.id)
@@ -294,6 +285,21 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
         await enableGateway(gateway.id)
       }
       toast.success('Server enabled. Catalog change sent to clients.')
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to update server state'))
+    }
+  }
+
+  const handleDisableGateway = async () => {
+    if (!gateway || !(gateway.enabled ?? true)) return
+
+    try {
+      if (gateway.source === 'in_process') {
+        await disableVirtualServer(gateway.id)
+      } else {
+        await disableGateway(gateway.id)
+      }
+      toast.success('Server disabled. Catalog change sent and runtime cleanup requested.')
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to update server state'))
     }
@@ -895,11 +901,10 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     <h3 className="text-sm font-semibold text-aurora-text-primary">Server state</h3>
                   </div>
                   <div className="mt-4">
-                    <SettingRow
-                      title="Server enabled"
-                      description="Controls whether this server participates in the active catalog and serves tools, resources, and prompts."
-                      checked={gateway.enabled ?? true}
-                      onCheckedChange={handleEnabledToggle}
+                    <GatewayEnabledSetting
+                      enabled={gateway.enabled ?? true}
+                      onEnable={handleEnableGateway}
+                      onDisable={handleDisableGateway}
                     />
                   </div>
                 </div>
@@ -1159,12 +1164,14 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       </div>
 
       {/* Dialogs */}
-      <GatewayFormDialog
-        open={editOpen}
-        onOpenChange={setEditOpen}
-        gateway={gateway}
-        onSave={handleSave}
-      />
+      {editOpen && (
+        <GatewayFormDialog
+          open
+          onOpenChange={setEditOpen}
+          gateway={gateway}
+          onSave={handleSave}
+        />
+      )}
 
       <TestResultPanel
         result={testResult}

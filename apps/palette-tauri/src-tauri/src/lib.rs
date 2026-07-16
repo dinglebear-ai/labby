@@ -64,13 +64,19 @@ struct BlurDismiss(AtomicBool);
 /// changes the keybinding.
 struct ActiveShortcut(Mutex<Option<String>>);
 
+/// Process-local settings cache. Disk access happens once on a blocking worker
+/// and subsequent bridge commands read this cache without touching the UI
+/// thread or Tokio worker threads.
+#[derive(Default)]
+struct SettingsState(tokio::sync::RwLock<Option<LabbySettings>>);
+
 fn log_palette_warning(context: &str, err: impl Display) {
     warn(format!("{context}: {err}"));
 }
 
 #[tauri::command]
-fn load_palette_config(app: AppHandle) -> Result<LabbySettings, String> {
-    merged_settings(&app)
+async fn load_palette_config(app: AppHandle) -> Result<LabbySettings, String> {
+    merged_settings(&app).await
 }
 
 #[tauri::command]
@@ -79,17 +85,28 @@ fn load_palette_default_config() -> LabbySettings {
 }
 
 #[tauri::command]
-fn save_palette_settings(app: AppHandle, settings: LabbySettings) -> Result<LabbySettings, String> {
+async fn save_palette_settings(
+    app: AppHandle,
+    settings: LabbySettings,
+) -> Result<LabbySettings, String> {
     let settings = normalize_settings(settings);
     // 1. Persist palette-only preferences.
-    save_palette_prefs(&app, &settings)?;
-    // 2. Only mutate runtime state (shortcut) after the write succeeds.
+    save_palette_prefs(&app, &settings).await?;
+    // 2. Keep the cache consistent with the durable value before applying the
+    // fallible OS shortcut side effect.
+    *app.state::<SettingsState>().0.write().await = Some(settings.clone());
+    // 3. Only mutate runtime state (shortcut) after the write succeeds.
     update_shortcut(&app, &settings)?;
     Ok(settings)
 }
 
-fn save_palette_prefs(app: &AppHandle, settings: &LabbySettings) -> Result<(), String> {
-    write_settings(app, settings).map_err(|err| err.to_string())
+async fn save_palette_prefs(app: &AppHandle, settings: &LabbySettings) -> Result<(), String> {
+    let app = app.clone();
+    let settings = settings.clone();
+    persistence::run_blocking_io(move || {
+        write_settings(&app, &settings).map_err(|err| err.to_string())
+    })
+    .await
 }
 
 fn update_shortcut(app: &AppHandle, settings: &LabbySettings) -> Result<(), String> {
@@ -144,14 +161,26 @@ fn set_blur_dismiss(state: tauri::State<'_, BlurDismiss>, enabled: bool) {
     state.0.store(enabled, Ordering::Relaxed);
 }
 
-fn merged_settings(app: &AppHandle) -> Result<LabbySettings, String> {
+fn merged_settings_from_disk(app: &AppHandle) -> Result<LabbySettings, String> {
     let persisted = read_settings_result(app)?;
     let defaults = default_settings();
     Ok(merge_settings(persisted, defaults))
 }
 
+async fn merged_settings(app: &AppHandle) -> Result<LabbySettings, String> {
+    let state = app.state::<SettingsState>();
+    if let Some(settings) = state.0.read().await.clone() {
+        return Ok(settings);
+    }
+    let worker_app = app.clone();
+    let loaded =
+        persistence::run_blocking_io(move || merged_settings_from_disk(&worker_app)).await?;
+    let mut cache = state.0.write().await;
+    Ok(cache.get_or_insert_with(|| loaded.clone()).clone())
+}
+
 fn merged_settings_or_default(app: &AppHandle) -> LabbySettings {
-    match merged_settings(app) {
+    match merged_settings_from_disk(app) {
         Ok(settings) => settings,
         Err(err) => {
             warn(&err);
@@ -465,6 +494,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         ])
         .manage(BlurDismiss(AtomicBool::new(true)))
         .manage(ActiveShortcut(Mutex::new(None)))
+        .manage(SettingsState::default())
         .manage(bridge_client)
         .manage(oauth::OauthState::new())
         .setup(|app| {
@@ -472,6 +502,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 log_palette_warning("failed to install tray icon", err);
             }
             let settings = merged_settings_or_default(app.handle());
+            if let Ok(mut cache) = app.state::<SettingsState>().0.try_write() {
+                *cache = Some(settings.clone());
+            }
             register_configured_shortcut(app.handle(), &settings).map_err(anyhow::Error::msg)?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

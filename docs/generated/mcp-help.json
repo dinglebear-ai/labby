@@ -11,6 +11,8 @@
           "name": "help",
           "description": "Show this action catalog",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "Catalog"
         },
@@ -18,6 +20,8 @@
           "name": "schema",
           "description": "Return the parameter schema for a named action",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "action",
@@ -32,6 +36,10 @@
           "name": "gateway.list",
           "description": "List configured gateways",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "ServerView[]"
         },
@@ -39,6 +47,10 @@
           "name": "gateway.code_mode.get",
           "description": "Read gateway-wide Code Mode exposure and execution settings",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "CodeModeConfig"
         },
@@ -46,6 +58,10 @@
           "name": "gateway.code_mode.set",
           "description": "Configure gateway code execution limits",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "enabled",
@@ -108,6 +124,10 @@
           "name": "gateway.server.get",
           "description": "Get one unified server row by id",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "id",
@@ -122,6 +142,10 @@
           "name": "gateway.enrich.preview",
           "description": "Preview Code Mode upstream hint proposals from cached gateway metadata",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "upstreams",
@@ -160,6 +184,10 @@
           "name": "gateway.enrich.apply",
           "description": "Persist an operator-approved Code Mode upstream hint after hash validation",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "upstream",
@@ -186,6 +214,10 @@
           "name": "gateway.usage.metrics",
           "description": "Aggregate gateway upstream call telemetry: totals, error rate, top tools, top actors",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "since_unix",
@@ -212,6 +244,10 @@
           "name": "gateway.usage.calls",
           "description": "List raw gateway upstream call records, newest first",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "since_unix",
@@ -238,10 +274,16 @@
               "description": "Max rows to return, capped at 1000 (default 100)"
             },
             {
-              "name": "offset",
-              "ty": "integer",
+              "name": "cursor",
+              "ty": "string",
               "required": false,
-              "description": "Row offset for pagination"
+              "description": "Opaque keyset cursor returned by the previous page"
+            },
+            {
+              "name": "include_total",
+              "ty": "boolean",
+              "required": false,
+              "description": "Compute exact matching row count (default false)"
             }
           ],
           "returns": "GatewayUsageCallsView"
@@ -250,6 +292,10 @@
           "name": "gateway.supported_services",
           "description": "List metadata-backed Lab services that can be added as virtual servers",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "SupportedServiceView[]"
         },
@@ -257,6 +303,10 @@
           "name": "gateway.protected_route.list",
           "description": "List Gateway-managed public MCP routes protected by Lab OAuth",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "ProtectedMcpRouteConfig[]"
         },
@@ -264,6 +314,10 @@
           "name": "gateway.protected_route.get",
           "description": "Get one Gateway-managed protected MCP route",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -278,6 +332,10 @@
           "name": "gateway.protected_route.add",
           "description": "Add a Gateway-managed protected MCP route",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "route",
@@ -292,6 +350,10 @@
           "name": "gateway.protected_route.update",
           "description": "Replace a Gateway-managed protected MCP route",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -312,6 +374,10 @@
           "name": "gateway.protected_route.remove",
           "description": "Remove a Gateway-managed protected MCP route",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -326,6 +392,10 @@
           "name": "gateway.protected_route.test",
           "description": "Validate a proposed protected MCP route without saving it",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "route",
@@ -340,6 +410,10 @@
           "name": "gateway.virtual_server.enable",
           "description": "Enable a configured Lab-backed service as a virtual server",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "id",
@@ -354,6 +428,10 @@
           "name": "gateway.virtual_server.disable",
           "description": "Disable a Lab-backed virtual server without removing its config",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "id",
@@ -368,6 +446,10 @@
           "name": "gateway.virtual_server.remove",
           "description": "Remove a Lab-backed virtual server config entry",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "id",
@@ -382,6 +464,10 @@
           "name": "gateway.virtual_server.quarantine.list",
           "description": "List Lab-backed virtual servers quarantined during config migration",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "ServerView[]"
         },
@@ -389,6 +475,10 @@
           "name": "gateway.virtual_server.quarantine.restore",
           "description": "Restore a quarantined Lab-backed virtual server into the active gateway list",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "id",
@@ -403,6 +493,10 @@
           "name": "gateway.virtual_server.set_surface",
           "description": "Enable or disable one surface on a Lab-backed virtual server",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "id",
@@ -429,6 +523,10 @@
           "name": "gateway.virtual_server.get_mcp_policy",
           "description": "Read the MCP action allowlist for a Lab-backed virtual server",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "id",
@@ -443,6 +541,10 @@
           "name": "gateway.virtual_server.set_mcp_policy",
           "description": "Replace the MCP action allowlist for a Lab-backed virtual server",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "id",
@@ -463,6 +565,10 @@
           "name": "gateway.service_config.get",
           "description": "Read canonical config for one Lab-backed service",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "service",
@@ -477,6 +583,10 @@
           "name": "gateway.service_actions",
           "description": "List compiled action metadata for one Lab-backed service",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "service",
@@ -491,6 +601,10 @@
           "name": "gateway.service_config.set",
           "description": "Write canonical config for one Lab-backed service",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "service",
@@ -511,6 +625,10 @@
           "name": "gateway.get",
           "description": "Get one configured gateway",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -525,6 +643,10 @@
           "name": "gateway.client_config.get",
           "description": "Get the MCP client configuration JSON for one gateway",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -539,6 +661,10 @@
           "name": "gateway.test",
           "description": "Test a configured or proposed gateway without saving it (probing a stdio gateway runs its local command)",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -559,6 +685,10 @@
           "name": "gateway.discover",
           "description": "Scan the machine for MCP server configs from known editors and tools (cursor, claude-code, claude-desktop, codex, windsurf, opencode, vscode, gemini). Read-only — does not modify config.",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "clients",
@@ -579,6 +709,10 @@
           "name": "gateway.import",
           "description": "Import discovered MCP servers into the gateway config as disabled-by-default entries. Servers are marked with their discovery source.",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "all",
@@ -605,6 +739,10 @@
           "name": "gateway.import_pending.list",
           "description": "List MCP servers discovered but waiting for operator approval (gateway_import_mode=pending)",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "PendingImportView[]"
         },
@@ -612,6 +750,10 @@
           "name": "gateway.import_pending.approve",
           "description": "Approve a pending discovered server and add it to the gateway config as disabled-by-default",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -626,6 +768,10 @@
           "name": "gateway.import_pending.reject",
           "description": "Reject a pending discovered server and tombstone it so it never re-appears",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -640,6 +786,10 @@
           "name": "gateway.import_tombstones.list",
           "description": "List operator-deleted imported MCP servers that are suppressed from automatic re-import",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "ImportTombstoneView[]"
         },
@@ -647,6 +797,10 @@
           "name": "gateway.import_tombstones.clear",
           "description": "Clear one import tombstone so a previously deleted imported server can be imported again",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -685,6 +839,10 @@
           "name": "gateway.import_tombstones.restore",
           "description": "Atomically clear one import tombstone and restore the matching discovered server as disabled",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -723,6 +881,10 @@
           "name": "gateway.add",
           "description": "Add a gateway and reconcile runtime state",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "spec",
@@ -743,6 +905,10 @@
           "name": "gateway.update",
           "description": "Update a gateway and reconcile runtime state",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -769,6 +935,10 @@
           "name": "gateway.remove",
           "description": "Remove a gateway and reconcile runtime state",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -783,6 +953,10 @@
           "name": "gateway.reload",
           "description": "Reload gateways from config and reconcile runtime state",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "GatewayCatalogDiff"
         },
@@ -790,6 +964,10 @@
           "name": "gateway.status",
           "description": "Get current runtime gateway status",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -804,6 +982,10 @@
           "name": "gateway.discovered_tools",
           "description": "List discovered upstream tool metadata and exposure state for one gateway",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -818,6 +1000,10 @@
           "name": "gateway.discovered_resources",
           "description": "List discovered upstream resources for one gateway",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -832,6 +1018,10 @@
           "name": "gateway.discovered_prompts",
           "description": "List discovered upstream prompts for one gateway",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -846,6 +1036,10 @@
           "name": "gateway.servers",
           "description": "List upstream MCP servers connected to the gateway, with cached tool/prompt/resource counts and tools-capability health.",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "GatewayServersDoc"
         },
@@ -853,6 +1047,8 @@
           "name": "gateway.schema",
           "description": "Return the cached tool schemas (input_schema + meta) for one upstream MCP server, filtered by its exposure policy.",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -867,6 +1063,10 @@
           "name": "gateway.oauth.probe",
           "description": "Probe a URL for OAuth support via RFC 8414 AS metadata discovery. Rejects userinfo, query strings, and fragments. Registers a transient OAuth manager keyed by URL host, port, and path; it is persisted only after a successful callback updates gateway config.",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "url",
@@ -881,6 +1081,10 @@
           "name": "gateway.oauth.start",
           "description": "Start the upstream OAuth flow for the shared gateway credential and return the browser authorization URL",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "upstream",
@@ -901,6 +1105,10 @@
           "name": "gateway.oauth.status",
           "description": "Read upstream OAuth status for the shared gateway credential",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "upstream",
@@ -921,6 +1129,10 @@
           "name": "gateway.oauth.clear",
           "description": "Clear stored upstream OAuth credentials for the shared gateway credential",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "upstream",
@@ -941,6 +1153,10 @@
           "name": "gateway.oauth.wait",
           "description": "Poll gateway.oauth.status until the upstream is authenticated or timeout elapses. Returns {authenticated: bool, timed_out: bool}. Moves the --wait poll loop out of the CLI into shared dispatch (Q-H3).",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "upstream",
@@ -967,6 +1183,10 @@
           "name": "gateway.mcp.enable",
           "description": "Enable an upstream MCP server so new sessions discover and proxy it again",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -981,6 +1201,10 @@
           "name": "gateway.mcp.list",
           "description": "List upstream MCP runtime state, discovery counts, and likely stale process counts",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "GatewayMcpRuntimeView[]"
         },
@@ -988,6 +1212,10 @@
           "name": "gateway.clients.list",
           "description": "List inbound MCP clients/sessions currently connected to this gateway. Best-effort — reflects the most recently observed connect events, not a strict live liveness view",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "GatewayClientView[]"
         },
@@ -995,6 +1223,10 @@
           "name": "gateway.mcp.disable",
           "description": "Disable an upstream MCP server and optionally clean up running processes",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -1021,6 +1253,10 @@
           "name": "gateway.mcp.cleanup",
           "description": "Kill or preview running processes associated with one upstream MCP server",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -1047,6 +1283,10 @@
           "name": "gateway.public_urls.get",
           "description": "Read the resolved canonical public URL pair (app and MCP gateway). Merges LABBY_PUBLIC_URL / LABBY_MCP_GATEWAY_URL env vars over config.toml [public_urls] section and the legacy [auth].public_url field.",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}"
         }
@@ -1054,7 +1294,7 @@
     },
     {
       "name": "doctor",
-      "description": "Comprehensive health audit: env vars, system probes, and service reachability",
+      "description": "Comprehensive health audit: env vars, system, gateway, and OAuth relay checks",
       "category": "bootstrap",
       "status": "available",
       "requires_http_subject": false,
@@ -1063,6 +1303,8 @@
           "name": "help",
           "description": "Show this action catalog",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "Catalog"
         },
@@ -1070,6 +1312,8 @@
           "name": "schema",
           "description": "Return the parameter schema for a named action",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "action",
@@ -1084,33 +1328,17 @@
           "name": "system.checks",
           "description": "Run local system probes: env vars, Docker, disk, ports, config files",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "DoctorReport"
         },
         {
-          "name": "service.probe",
-          "description": "Probe a single named service via its health endpoint",
-          "destructive": false,
-          "params": [
-            {
-              "name": "service",
-              "ty": "string",
-              "required": true,
-              "description": "Service name to probe (e.g. \"radarr\", \"sonarr\")"
-            },
-            {
-              "name": "instance",
-              "ty": "string",
-              "required": false,
-              "description": "Named instance label for multi-instance services"
-            }
-          ],
-          "returns": "Finding"
-        },
-        {
           "name": "audit.full",
-          "description": "Probe all configured services plus system checks; streams results",
+          "description": "Run system, auth, gateway-upstream, and OAuth-relay checks; streams results",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "stream<Finding>"
         },
@@ -1118,6 +1346,8 @@
           "name": "auth.check",
           "description": "Check auth/OAuth configuration: env vars, file presence, and Unix file permissions",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "DoctorReport"
         },
@@ -1125,6 +1355,8 @@
           "name": "proxy.check",
           "description": "Check public Lab and protected MCP proxy endpoints from caller-visible URLs. Probes: app health, protected-resource metadata, OAuth bearer challenge, wrong-path 404 behavior, and (when backend_url is provided) backend-leak redaction.",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "app_url",
@@ -1157,6 +1389,10 @@
           "name": "oauth.relay.check",
           "description": "Check public OAuth callback relay registry readiness; optionally probe registered target sockets",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "probe_targets",
@@ -1180,6 +1416,8 @@
           "name": "help",
           "description": "Show this action catalog",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "Catalog"
         },
@@ -1187,6 +1425,8 @@
           "name": "schema",
           "description": "Return the parameter schema for a named action",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "action",
@@ -1201,13 +1441,21 @@
           "name": "state",
           "description": "First-run + draft snapshot for the wizard / settings UI",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "SetupSnapshot"
         },
         {
           "name": "bootstrap",
           "description": "Create ~/.labby/.env with a generated token + loopback defaults when absent (first-run)",
-          "destructive": false,
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "BootstrapOutcome"
         },
@@ -1215,6 +1463,8 @@
           "name": "schema.get",
           "description": "UiSchema projection for all (or filtered) services",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "services",
@@ -1229,13 +1479,21 @@
           "name": "draft.get",
           "description": "Read .env.draft with secret values masked to '***'",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "DraftEntry[]"
         },
         {
           "name": "draft.set",
           "description": "Write a key (or section) into .env.draft (validated server-side)",
-          "destructive": false,
+          "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "entries",
@@ -1256,6 +1514,10 @@
           "name": "draft.discard",
           "description": "Discard .env.draft without modifying .env",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "DraftDiscardOutcome"
         },
@@ -1263,6 +1525,10 @@
           "name": "draft.commit",
           "description": "Run audit and atomically merge .env.draft into .env",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "force",
@@ -1277,6 +1543,10 @@
           "name": "settings.state",
           "description": "Return section-scoped safe settings values and source metadata",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "section",
@@ -1291,6 +1561,8 @@
           "name": "settings.schema",
           "description": "Return the safe settings schema with risk and write-policy metadata",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "SettingsSchema"
         },
@@ -1298,6 +1570,8 @@
           "name": "settings.env_schema",
           "description": "Return generated and registry-derived environment variable inventory",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "EnvSettingSpec[]"
         },
@@ -1305,6 +1579,10 @@
           "name": "settings.advanced_state",
           "description": "Return redacted advanced settings state",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "SettingsState"
         },
@@ -1312,6 +1590,10 @@
           "name": "settings.update",
           "description": "Update non-secret operator settings with validation",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "services.built_in_upstream_apis_enabled",
@@ -1326,6 +1608,10 @@
           "name": "settings.config.update",
           "description": "Admin-only scalar config.toml settings update",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "entries",
@@ -1340,6 +1626,10 @@
           "name": "settings.env.update",
           "description": "Admin-only targeted .env settings update for known low-risk LABBY_* keys",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "entries",
@@ -1354,6 +1644,10 @@
           "name": "plugin_hook",
           "description": "Run binary-owned local setup checks for Claude plugin hooks; in repair mode also syncs CLAUDE_PLUGIN_OPTION_* and probes server connectivity",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "repair",
@@ -1368,6 +1662,10 @@
           "name": "plugin_sync",
           "description": "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "PluginSyncOutcome"
         },
@@ -1375,6 +1673,10 @@
           "name": "plugin_export",
           "description": "Read ~/.labby/.env and return current values keyed by userConfig field name",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "PluginExportOutcome"
         },
@@ -1382,6 +1684,10 @@
           "name": "plugin_connectivity",
           "description": "Validate connectivity to the lab MCP server at {server_url}/health",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "server_url",
@@ -1396,6 +1702,8 @@
           "name": "check",
           "description": "Check local Lab setup prerequisites without mutating the filesystem",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "SetupReport"
         },
@@ -1403,6 +1711,10 @@
           "name": "repair",
           "description": "Repair missing local Lab setup prerequisites without contacting external services",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "SetupReport"
         },
@@ -1410,6 +1722,10 @@
           "name": "plugins.installed",
           "description": "List installed Claude Code lab plugins",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "force",
@@ -1424,6 +1740,10 @@
           "name": "installed_plugins",
           "description": "Deprecated alias for `plugins.installed`",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "force",
@@ -1438,6 +1758,10 @@
           "name": "services.status",
           "description": "Join service configuration, draft, and Claude plugin state",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "ServiceStatus[]"
         },
@@ -1445,6 +1769,10 @@
           "name": "services_status",
           "description": "Deprecated alias for `services.status`",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [],
           "returns": "ServiceStatus[]"
         },
@@ -1452,6 +1780,10 @@
           "name": "plugin.install",
           "description": "Install the Claude Code plugin for one configured service",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "service",
@@ -1466,6 +1798,10 @@
           "name": "install_plugin",
           "description": "Deprecated alias for `plugin.install`",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "service",
@@ -1480,6 +1816,10 @@
           "name": "plugin.uninstall",
           "description": "Uninstall the Claude Code plugin for one service",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "service",
@@ -1494,6 +1834,10 @@
           "name": "uninstall_plugin",
           "description": "Deprecated alias for `plugin.uninstall`",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "service",
@@ -1508,6 +1852,10 @@
           "name": "finalize",
           "description": "Alias for draft.commit; same params, same returns",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "force",
@@ -1531,6 +1879,8 @@
           "name": "help",
           "description": "Show this action catalog",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "Catalog"
         },
@@ -1538,6 +1888,8 @@
           "name": "schema",
           "description": "Return the parameter schema for a named action",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "action",
@@ -1552,6 +1904,8 @@
           "name": "snippets.list",
           "description": "List built-in and user executable Code Mode snippets",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "SnippetList"
         },
@@ -1559,6 +1913,10 @@
           "name": "snippets.get",
           "description": "Return one snippet body and metadata",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -1573,6 +1931,10 @@
           "name": "snippets.exec",
           "description": "Execute a snippet through gateway Code Mode",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -1593,6 +1955,10 @@
           "name": "snippets.create",
           "description": "Create a user snippet under LABBY_HOME/snippets",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -1625,6 +1991,10 @@
           "name": "snippets.promote",
           "description": "Promote a successful live Code Mode execution into a user snippet",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "execution_id",
@@ -1655,12 +2025,6 @@
               "ty": "boolean",
               "required": false,
               "description": "Allow creating a user snippet that shadows a built-in snippet"
-            },
-            {
-              "name": "confirm",
-              "ty": "boolean",
-              "required": false,
-              "description": "Required by headless MCP clients for destructive promotion"
             }
           ],
           "returns": "SnippetPromotionResult"
@@ -1669,6 +2033,10 @@
           "name": "snippets.validate",
           "description": "Validate a snippet body or existing snippet without executing it",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -1689,6 +2057,10 @@
           "name": "snippets.remove",
           "description": "Remove a user snippet",
           "destructive": true,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -1703,6 +2075,10 @@
           "name": "snippets.test",
           "description": "Execute one snippet and report pass/fail",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "name",
@@ -1738,6 +2114,8 @@
           "name": "help",
           "description": "Show this action catalog",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "Catalog"
         },
@@ -1745,6 +2123,8 @@
           "name": "schema",
           "description": "Return the parameter schema for a named action",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "action",
@@ -1759,6 +2139,10 @@
           "name": "server_logs.query",
           "description": "Read and filter Labby's rolling JSON server process logs",
           "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
           "params": [
             {
               "name": "limit",
@@ -1830,6 +2214,8 @@
           "name": "help",
           "description": "Show this action catalog",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [],
           "returns": "Catalog"
         },
@@ -1837,6 +2223,8 @@
           "name": "schema",
           "description": "Return the parameter schema for a named action",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "action",
@@ -1851,6 +2239,8 @@
           "name": "onboarding.audit",
           "description": "Audit service onboarding against the current repo contract",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "services",
@@ -1874,6 +2264,8 @@
           "name": "fs.list",
           "description": "List immediate entries of a directory inside the configured workspace root",
           "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "path",

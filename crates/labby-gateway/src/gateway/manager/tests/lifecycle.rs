@@ -397,6 +397,59 @@ async fn reload_changed_upstream_rebuilds_pool_instead_of_reusing_stale_runtime(
 }
 
 #[tokio::test]
+async fn cancelled_reload_keeps_old_pool_available_while_replacement_probe_is_blocked() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    write_gateway_config(
+        &path,
+        &GatewayConfig {
+            upstream: vec![fixture_http_upstream("alpha")],
+            ..GatewayConfig::default()
+        },
+    )
+    .expect("write initial config");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager
+        .reload_with_origin(None, None)
+        .await
+        .expect("initial reload");
+    let old_pool = manager.current_pool().await.expect("old pool");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address");
+    let mut changed = fixture_http_upstream("alpha");
+    changed.url = Some(format!("http://{address}/mcp"));
+    write_gateway_config(
+        &path,
+        &GatewayConfig {
+            upstream: vec![changed],
+            ..GatewayConfig::default()
+        },
+    )
+    .expect("write changed config");
+
+    let reload_manager = manager.clone();
+    let reload = tokio::spawn(async move { reload_manager.reload_with_origin(None, None).await });
+    let (_socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .expect("replacement probe reached blocking server")
+        .expect("accepted");
+    reload.abort();
+    drop(reload.await);
+
+    let still_live = manager
+        .current_pool()
+        .await
+        .expect("runtime remains published");
+    assert!(
+        Arc::ptr_eq(&old_pool, &still_live),
+        "cancellation before replacement readiness must keep the old pool serving"
+    );
+}
+
+#[tokio::test]
 async fn reload_removed_upstream_rebuilds_pool_instead_of_reusing_stale_runtime() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");

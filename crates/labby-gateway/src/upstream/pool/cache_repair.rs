@@ -82,39 +82,21 @@ fn diagnostics_indicate_cache_poison(kind: RuntimeKind, diagnostics: &str) -> bo
 
 async fn repair_npm_cache() -> CacheRepairOutcome {
     let cache = npm_cache_dir();
-    if let Err(error) = ensure_writable_dir(&cache) {
-        return CacheRepairOutcome::Failed {
-            summary: format!("npm cache dir {} is not writable: {error}", cache.display()),
-        };
-    }
-
-    let mut actions = Vec::new();
-    match remove_children(&cache.join("_npx")) {
-        Ok(removed) if removed > 0 => actions.push(format!("removed {removed} _npx entries")),
-        Ok(_) => {}
-        Err(error) => {
-            return CacheRepairOutcome::Failed {
-                summary: format!("failed to clean npm _npx state: {error}"),
-            };
-        }
-    }
-
-    // npm stores registry packument metadata through the content-addressed cache
-    // index. Deleting only the index forces metadata revalidation while leaving
-    // content blobs available as orphaned cache entries for `npm cache verify`.
-    for relative in [["_cacache", "index-v5"], ["_cacache", "tmp"]] {
-        let path = relative
-            .iter()
-            .fold(cache.clone(), |acc, part| acc.join(part));
-        if path.exists() {
-            if let Err(error) = std::fs::remove_dir_all(&path) {
+    let cache_for_io = cache.clone();
+    let actions =
+        match tokio::task::spawn_blocking(move || repair_npm_filesystem(&cache_for_io)).await {
+            Ok(Ok(actions)) => actions,
+            Ok(Err(error)) => {
                 return CacheRepairOutcome::Failed {
-                    summary: format!("failed to remove {}: {error}", path.display()),
+                    summary: format!("failed to repair npm cache {}: {error}", cache.display()),
                 };
             }
-            actions.push(format!("removed {}", path.display()));
-        }
-    }
+            Err(error) => {
+                return CacheRepairOutcome::Failed {
+                    summary: format!("npm cache repair task failed: {error}"),
+                };
+            }
+        };
 
     drop(
         Command::new("npm")
@@ -133,25 +115,43 @@ async fn repair_npm_cache() -> CacheRepairOutcome {
     }
 }
 
-async fn repair_uv_cache() -> CacheRepairOutcome {
-    let cache = uv_cache_dir();
-    if let Err(error) = ensure_writable_dir(&cache) {
-        return CacheRepairOutcome::Failed {
-            summary: format!("uv cache dir {} is not writable: {error}", cache.display()),
-        };
+fn repair_npm_filesystem(cache: &Path) -> std::io::Result<Vec<String>> {
+    ensure_writable_dir(cache)?;
+    let mut actions = Vec::new();
+    match remove_children(&cache.join("_npx")) {
+        Ok(removed) if removed > 0 => actions.push(format!("removed {removed} _npx entries")),
+        Ok(_) => {}
+        Err(error) => return Err(error),
     }
-
-    let mut removed = 0usize;
-    for child in ["builds-v0", "environments-v2", "sdists-v9"] {
-        match remove_tmp_children(&cache.join(child)) {
-            Ok(count) => removed += count,
-            Err(error) => {
-                return CacheRepairOutcome::Failed {
-                    summary: format!("failed to clean uv temp state under {child}: {error}"),
-                };
-            }
+    for relative in [["_cacache", "index-v5"], ["_cacache", "tmp"]] {
+        let path = relative
+            .iter()
+            .fold(cache.to_path_buf(), |acc, part| acc.join(part));
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+            actions.push(format!("removed {}", path.display()));
         }
     }
+    Ok(actions)
+}
+
+async fn repair_uv_cache() -> CacheRepairOutcome {
+    let cache = uv_cache_dir();
+    let cache_for_io = cache.clone();
+    let removed =
+        match tokio::task::spawn_blocking(move || repair_uv_filesystem(&cache_for_io)).await {
+            Ok(Ok(removed)) => removed,
+            Ok(Err(error)) => {
+                return CacheRepairOutcome::Failed {
+                    summary: format!("failed to repair uv cache {}: {error}", cache.display()),
+                };
+            }
+            Err(error) => {
+                return CacheRepairOutcome::Failed {
+                    summary: format!("uv cache repair task failed: {error}"),
+                };
+            }
+        };
 
     let prune = Command::new("uv").arg("cache").arg("prune").output().await;
     let prune_ok = prune.as_ref().is_ok_and(|output| output.status.success());
@@ -170,6 +170,15 @@ async fn repair_uv_cache() -> CacheRepairOutcome {
             if prune_ok { "; pruned uv cache" } else { "" }
         ),
     }
+}
+
+fn repair_uv_filesystem(cache: &Path) -> std::io::Result<usize> {
+    ensure_writable_dir(cache)?;
+    let mut removed = 0usize;
+    for child in ["builds-v0", "environments-v2", "sdists-v9"] {
+        removed += remove_tmp_children(&cache.join(child))?;
+    }
+    Ok(removed)
 }
 
 fn npm_cache_dir() -> PathBuf {
@@ -307,5 +316,36 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(!builds.join(".tmpABC").exists());
         assert!(builds.join("real-build").exists());
+    }
+
+    #[test]
+    fn npm_filesystem_repair_isolated_helper_cleans_recursive_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache = temp.path();
+        for index in 0..128 {
+            let leaf = cache
+                .join("_npx")
+                .join(format!("run-{index}"))
+                .join("node_modules/pkg");
+            std::fs::create_dir_all(&leaf).expect("create nested cache fixture");
+            std::fs::write(leaf.join("index.js"), "x").expect("write fixture");
+        }
+        std::fs::create_dir_all(cache.join("_cacache/index-v5")).expect("index fixture");
+
+        let actions = repair_npm_filesystem(cache).expect("repair filesystem");
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.contains("128 _npx entries"))
+        );
+        assert!(!cache.join("_cacache/index-v5").exists());
+    }
+
+    #[test]
+    fn recursive_cache_repair_is_offloaded_from_async_workers() {
+        let source = include_str!("cache_repair.rs");
+        assert!(source.matches("tokio::task::spawn_blocking").count() >= 2);
+        assert!(source.contains("repair_npm_filesystem"));
+        assert!(source.contains("repair_uv_filesystem"));
     }
 }

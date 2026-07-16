@@ -48,7 +48,7 @@ or shell-facing UX.
 `labby-auth` is the auth middleware crate. It owns:
 
 - OAuth 2.0 authorization server (Google OIDC provider)
-- JWT signing and validation (RS256)
+- JWT signing and validation (Ed25519 / EdDSA; Google ID-token verification remains RS256)
 - SQLite-backed token and session storage
 - axum middleware and route handlers
 - upstream OAuth manager/cache/runtime helpers

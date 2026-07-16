@@ -17,7 +17,8 @@
 //! 8. Idempotence: running merge with the same inputs is a no-op (no backup,
 //!    no rewrite).
 //!
-//! On Unix the resulting file is chmod 0600.
+//! Secret files are owner-only: mode 0600 on Unix and a protected owner-only
+//! DACL on Windows.
 
 use std::collections::HashMap;
 use std::fs;
@@ -455,23 +456,32 @@ fn write_atomically(path: &Path, lines: &[String], parent: &Path) -> Result<(), 
     if let Ok(dir) = fs::File::open(parent) {
         dir.sync_all().ok();
     }
-    set_secure_perms(path);
+    set_secure_perms(path)?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn set_secure_perms(path: &Path) {
+fn set_secure_perms(path: &Path) -> Result<(), MergeError> {
     use std::os::unix::fs::PermissionsExt;
-    if let Ok(metadata) = fs::metadata(path) {
-        let mut perms = metadata.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(path, perms).ok();
-    }
+    let mut perms = fs::metadata(path)
+        .map_err(|error| MergeError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: WriteFailReason::from_io(&error),
+        })?
+        .permissions();
+    perms.set_mode(0o600);
+    fs::set_permissions(path, perms).map_err(|error| MergeError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: WriteFailReason::from_io(&error),
+    })
 }
 
-#[cfg(not(unix))]
-fn set_secure_perms(_path: &Path) {
-    // Windows ACL deferred (v2). See bg3e.3 known-limitation note.
+#[cfg(windows)]
+fn set_secure_perms(path: &Path) -> Result<(), MergeError> {
+    labby_auth::util::harden_secret_file(path).map_err(|error| MergeError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: WriteFailReason::Other(error.to_string()),
+    })
 }
 
 fn create_backup(path: &Path) -> Result<PathBuf, MergeError> {
@@ -487,7 +497,7 @@ fn create_backup(path: &Path) -> Result<PathBuf, MergeError> {
         path: backup.clone(),
         reason: WriteFailReason::from_io(&e),
     })?;
-    set_secure_perms(&backup);
+    set_secure_perms(&backup)?;
     Ok(backup)
 }
 
@@ -544,7 +554,7 @@ pub fn restore_backup(target: &Path, backup: &Path) -> Result<(), MergeError> {
         backup_path: backup.to_path_buf(),
         source: e,
     })?;
-    set_secure_perms(target);
+    set_secure_perms(target)?;
     Ok(())
 }
 

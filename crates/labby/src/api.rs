@@ -16,6 +16,15 @@ pub mod error;
 /// Router builder — composes all feature-gated route groups.
 pub mod router;
 
+/// Focused authentication helpers used by the top-level router middleware.
+mod router_middleware;
+
+/// Bounded filesystem-backed development mockup handlers.
+mod dev_mockup;
+
+/// Embedded app manifest and static asset routes.
+mod app_routes;
+
 /// Shared auth-route request-id and dispatch logging helpers.
 pub mod auth_helpers;
 

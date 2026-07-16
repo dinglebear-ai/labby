@@ -56,6 +56,12 @@ pub struct ActionEntry {
     /// Whether the action can cause permanent, hard-to-recreate data loss and
     /// therefore requires destructive-action confirmation.
     pub destructive: bool,
+    /// Whether this action requires an administrator authorization context.
+    #[serde(default)]
+    pub requires_admin: bool,
+    /// Additional OAuth scopes required by the action.
+    #[serde(default)]
+    pub required_scopes: Vec<String>,
     /// Declared parameters for this action. Empty when the action takes no params.
     pub params: Vec<ParamEntry>,
     /// Type-name hint for the return shape, e.g. `"Movie[]"`. Informational only.
@@ -96,6 +102,12 @@ pub fn build_catalog(registry: &ToolRegistry) -> Catalog {
                     name: a.name.into(),
                     description: a.description.into(),
                     destructive: a.destructive,
+                    requires_admin: a.requires_admin,
+                    required_scopes: if a.requires_admin {
+                        vec!["lab:admin".to_string()]
+                    } else {
+                        Vec::new()
+                    },
                     returns: a.returns.into(),
                     params: a
                         .params
@@ -146,6 +158,8 @@ mod tests {
                     name: "tool.call".to_string(),
                     description: "Call upstream tool".to_string(),
                     destructive: false,
+                    requires_admin: false,
+                    required_scopes: vec![],
                     params: vec![],
                     returns: String::new(),
                 }],

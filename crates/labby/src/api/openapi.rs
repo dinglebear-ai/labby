@@ -400,7 +400,7 @@ pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> 
                 .tag(svc)
                 .summary(Some(format!("Dispatch action to {svc}")))
                 .description(Some(format!(
-                    "Execute an action on the {svc} service. Use `action: \"help\"` to list available actions."
+                    "Execute an action on the {svc} service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope."
                 )))
                 .request_body(Some(
                     RequestBodyBuilder::new()
@@ -452,6 +452,20 @@ pub fn build_service_paths(service_names: &[String]) -> Vec<(String, PathItem)> 
                             "401",
                             ResponseBuilder::new()
                                 .description("Authentication failed")
+                                .content(
+                                    "application/json",
+                                    ContentBuilder::new()
+                                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
+                                            "#/components/schemas/ErrorSdk",
+                                        ))))
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                        .response(
+                            "403",
+                            ResponseBuilder::new()
+                                .description("Authenticated caller lacks the action's required `lab:admin` scope")
                                 .content(
                                     "application/json",
                                     ContentBuilder::new()

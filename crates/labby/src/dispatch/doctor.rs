@@ -1,8 +1,8 @@
 //! Shared dispatch layer for the `doctor` service.
 //!
 //! Doctor is a Bootstrap utility: no external service URL, no feature gate.
-//! `system.checks` reads local state; `service.probe` and `audit.full` use
-//! pre-built `ServiceClients`.
+//! `system.checks` reads local state; `audit.full` combines the checks that
+//! actually exist in the slim product (system, auth, gateway, and relay).
 
 mod catalog;
 mod client;
@@ -27,7 +27,7 @@ use labby_primitives::plugin::{Category, PluginMeta};
 pub const META: PluginMeta = PluginMeta {
     name: "doctor",
     display_name: "Doctor",
-    description: "Comprehensive health audit: env vars, system probes, and service reachability",
+    description: "Comprehensive health audit: env vars, system, gateway, and OAuth relay checks",
     category: Category::Bootstrap,
     docs_url: "https://github.com/jmagar/lab",
     required_env: &[],

@@ -1,5 +1,6 @@
 'use client'
 
+import dynamic from 'next/dynamic'
 import { useDeferredValue, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity,
@@ -44,7 +45,7 @@ import {
 } from './gateway-list-state'
 import { EmptyState } from './empty-state'
 import { GatewayFilters } from './gateway-filters'
-import { GatewayFormDialog } from './gateway-form-dialog'
+import type { GatewaySaveRollback } from './gateway-form-dialog'
 import { GatewayTable } from './gateway-table'
 import { GatewayTableSkeleton } from './table-skeleton'
 import { GatewayToolsTable } from './gateway-tools-table'
@@ -55,6 +56,10 @@ import { CodeModeHeaderToggle } from './code-mode-toggle'
 
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
+const GatewayFormDialog = dynamic(
+  () => import('./gateway-form-dialog').then((module) => module.GatewayFormDialog),
+  { ssr: false },
+)
 
 const DEFAULT_TOOL_FILTERS: ToolFilterState = {
   search: '',
@@ -467,16 +472,25 @@ export function GatewayListContent() {
     }
   }
 
-  const handleSave = async (input: CreateGatewayInput | UpdateGatewayInput) => {
+  const handleSave = async (
+    input: CreateGatewayInput | UpdateGatewayInput,
+  ): Promise<GatewaySaveRollback> => {
     if (editingGateway) {
+      const previous = editingGateway
       await updateGateway(editingGateway.id, input as UpdateGatewayInput)
-      toast.success('Server updated successfully')
+      return async () => {
+        await updateGateway(previous.id, {
+          name: previous.name,
+          transport: previous.transport,
+          config: previous.config,
+        })
+      }
     } else {
-      await createGateway(input as CreateGatewayInput)
-      toast.success('Server created successfully')
+      const created = await createGateway(input as CreateGatewayInput)
+      return async () => {
+        await removeGateway(created.id)
+      }
     }
-    setFormOpen(false)
-    setEditingGateway(null)
   }
 
   const activeSearch = showToolsView ? toolFilters.search : lastGatewayFilters.search
@@ -523,12 +537,14 @@ export function GatewayListContent() {
         onDelete={handleDelete}
       />
 
-      <GatewayFormDialog
-        open={formOpen}
-        onOpenChange={setFormOpen}
-        gateway={editingGateway}
-        onSave={handleSave}
-      />
+      {formOpen && (
+        <GatewayFormDialog
+          open
+          onOpenChange={setFormOpen}
+          gateway={editingGateway}
+          onSave={handleSave}
+        />
+      )}
 
       <TestResultPanel result={testResult} onClose={() => setTestResult(null)} />
       <CleanupResultPanel result={cleanupResult} onClose={() => setCleanupResult(null)} />

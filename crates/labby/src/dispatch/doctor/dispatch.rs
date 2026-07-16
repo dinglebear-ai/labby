@@ -10,7 +10,7 @@ use crate::dispatch::helpers::{action_schema, help_payload, to_json};
 
 use super::catalog::ACTIONS;
 use super::gateway;
-use super::params::{parse_proxy_check, parse_relay_check, parse_service_probe};
+use super::params::{parse_proxy_check, parse_relay_check};
 use super::proxy;
 use super::service;
 use super::system;
@@ -126,11 +126,6 @@ pub async fn dispatch_with_clients_and_relay(
         "oauth.relay.check" => {
             let p = parse_relay_check(&params)?;
             to_json(super::relay::check_public_relay(public_relay.clone(), p.probe_targets).await)
-        }
-        "service.probe" => {
-            let p = parse_service_probe(&params)?;
-            let finding = service::probe_service(clients, p.service, p.instance).await?;
-            to_json(finding)
         }
         "audit.full" => {
             // Non-streaming path: collect all findings and return at once.

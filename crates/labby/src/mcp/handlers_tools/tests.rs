@@ -335,15 +335,17 @@ fn scoped_context(
     let mut context =
         rmcp::service::RequestContext::new(rmcp::model::NumberOrString::Number(1), peer);
     let mut parts = axum::http::Request::new(()).into_parts().0;
-    parts.extensions.insert(crate::api::oauth::AuthContext {
-        sub: "reader".to_string(),
-        actor_key: None,
-        scopes: scopes.iter().map(|scope| scope.to_string()).collect(),
-        issuer: "https://lab.example.com".to_string(),
-        via_session: true,
-        csrf_token: None,
-        email: None,
-    });
+    parts
+        .extensions
+        .insert(labby_auth::auth_context::AuthContext {
+            sub: "reader".to_string(),
+            actor_key: None,
+            scopes: scopes.iter().map(|scope| scope.to_string()).collect(),
+            issuer: "https://lab.example.com".to_string(),
+            via_session: true,
+            csrf_token: None,
+            email: None,
+        });
     context.extensions.insert(parts);
     context
 }

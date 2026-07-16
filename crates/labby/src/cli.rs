@@ -183,14 +183,10 @@ mod tests {
     }
 
     #[test]
-    fn cli_doctor_accepts_services_subcommand() {
-        let cli = Cli::parse_from(["lab", "doctor", "services"]);
-        assert!(matches!(
-            cli.command,
-            Command::Doctor(doctor::DoctorArgs {
-                check: Some(doctor::DoctorCheck::Services)
-            })
-        ));
+    fn cli_doctor_rejects_removed_services_subcommand() {
+        let error = Cli::try_parse_from(["lab", "doctor", "services"])
+            .expect_err("the synthetic doctor services surface must stay removed");
+        assert!(error.to_string().contains("unrecognized subcommand"));
     }
 
     #[test]

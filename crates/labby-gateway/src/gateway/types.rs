@@ -298,7 +298,10 @@ pub struct GatewayUsageCallView {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GatewayUsageCallsView {
     pub calls: Vec<GatewayUsageCallView>,
-    pub total_matching: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_matching: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

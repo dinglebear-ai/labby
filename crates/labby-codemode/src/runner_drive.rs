@@ -44,6 +44,13 @@ use super::types::{
     CodeModeSurface, ToolScope,
 };
 
+mod artifacts;
+mod finalize;
+mod steps;
+use artifacts::{handle_artifact_write_event, handle_snippet_resolve_event};
+use finalize::{code_mode_timeout_error, finalize_done, sorted_calls};
+use steps::{handle_step_begin_event, handle_step_result_event};
+
 static LOCAL_PROVIDER_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 const ARTIFACT_WRITE_CALL_ID: &str = "code_mode::write_artifact";
@@ -122,6 +129,8 @@ struct DriveState {
     /// Maps a step's runner `seq` -> (step_ordinal, name), populated at
     /// step_begin and read at step_result (which reuses the step_begin seq).
     step_ordinals: std::collections::HashMap<u64, (u64, String)>,
+    /// Aggregate serialized bytes accepted from `step_result` values.
+    step_value_bytes: usize,
 }
 
 impl DriveState {
@@ -142,6 +151,7 @@ impl DriveState {
             calltool_result_max_bytes: calltool_result_max_bytes(),
             next_step_ordinal: 0,
             step_ordinals: std::collections::HashMap::new(),
+            step_value_bytes: 0,
         }
     }
 }
@@ -1011,294 +1021,6 @@ async fn reject_tool_call_over_budget(
     Ok(())
 }
 
-/// Handle an `ArtifactWrite` event from the runner.
-async fn handle_artifact_write_event(
-    seq: u64,
-    path: String,
-    content: String,
-    content_type: Option<String>,
-    stdin: &mut ChildStdin,
-    child: &mut tokio::process::Child,
-    child_pid: Option<u32>,
-    deadline: tokio::time::Instant,
-    cfg: &RunnerConfig,
-    state: &mut DriveState,
-) -> Result<(), CodeModeExecutionError> {
-    // Prune (lazy, once per run) and the write are host-side filesystem work;
-    // bound them by the run deadline just like tool calls so a hung or slow
-    // disk can't outlive `timeout_ms`.
-    let artifact_root = state.artifact_root.clone();
-    let artifact_max_bytes = state.artifact_max_bytes;
-    let trace_params = cfg.trace_params;
-    let artifact_op = async {
-        if !state.artifact_store_pruned {
-            super::artifacts::prune_artifact_runs(super::artifacts::artifact_retention_runs())
-                .await;
-            state.artifact_store_pruned = true;
-        }
-        handle_artifact_write(
-            stdin,
-            &artifact_root,
-            &mut state.artifacts,
-            &mut state.calls,
-            seq,
-            CodeModeArtifactWrite {
-                path,
-                content,
-                content_type,
-            },
-            trace_params,
-            artifact_max_bytes,
-        )
-        .await
-    };
-    match tokio::time::timeout_at(deadline, artifact_op).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => {
-            terminate_code_mode_runner(child, child_pid).await;
-            Err(err.into())
-        }
-        Err(_) => {
-            terminate_code_mode_runner(child, child_pid).await;
-            Err(code_mode_timeout_error(&state.calls))
-        }
-    }
-}
-
-async fn handle_snippet_resolve_event<H: CodeModeHost>(
-    broker: &CodeModeBroker<'_, H>,
-    seq: u64,
-    name: String,
-    input: Value,
-    stdin: &mut ChildStdin,
-    child: &mut tokio::process::Child,
-    child_pid: Option<u32>,
-    deadline: tokio::time::Instant,
-    cfg: &RunnerConfig,
-    state: &mut DriveState,
-) -> Result<(), CodeModeExecutionError> {
-    let op = resolve_snippet_for_runner(broker, &name, input, cfg, state);
-    match tokio::time::timeout_at(deadline, op).await {
-        Ok(Ok((code, input))) => {
-            write_runner_input_by_deadline(
-                stdin,
-                &CodeModeRunnerInput::SnippetResolved { seq, code, input },
-                deadline,
-                child,
-                child_pid,
-                &state.calls,
-            )
-            .await
-        }
-        Ok(Err(err)) => {
-            write_runner_input_by_deadline(
-                stdin,
-                &CodeModeRunnerInput::ToolError {
-                    seq,
-                    kind: err.kind().to_string(),
-                    message: err.user_message().to_string(),
-                },
-                deadline,
-                child,
-                child_pid,
-                &state.calls,
-            )
-            .await?;
-            Ok(())
-        }
-        Err(_) => {
-            terminate_code_mode_runner(child, child_pid).await;
-            Err(code_mode_timeout_error(&state.calls))
-        }
-    }
-}
-
-async fn resolve_snippet_for_runner<H: CodeModeHost>(
-    broker: &CodeModeBroker<'_, H>,
-    name: &str,
-    input: Value,
-    cfg: &RunnerConfig,
-    state: &mut DriveState,
-) -> Result<(String, Value), ToolError> {
-    if !cfg.caller.can_use_snippets() {
-        return Err(ToolError::Forbidden {
-            message: "codemode.run requires lab:admin or trusted-local Code Mode".to_string(),
-            required_scopes: vec!["lab:admin".to_string()],
-        });
-    }
-    if cfg.capability_filter.is_scoped() {
-        return Err(ToolError::Forbidden {
-            message: "codemode.run is not available on route-scoped Code Mode surfaces".to_string(),
-            required_scopes: vec!["lab:admin".to_string()],
-        });
-    }
-    let Some(host) = broker.host else {
-        return Err(ToolError::Sdk {
-            sdk_kind: "tool_source_unavailable".to_string(),
-            message: "codemode.run requires a live tool source".to_string(),
-        });
-    };
-    if state.snippet_resolves >= MAX_SNIPPET_RESOLVES_PER_RUN {
-        return Err(ToolError::Sdk {
-            sdk_kind: "snippet_resolve_limit".to_string(),
-            message: "snippet resolve limit exceeded".to_string(),
-        });
-    }
-
-    state.snippet_resolves = state.snippet_resolves.saturating_add(1);
-    let started = std::time::Instant::now();
-    let resolved = host.resolve_snippet(name, input).await?;
-    let (name, code, input) = (resolved.name, resolved.code, resolved.input);
-
-    state.snippet_resolved_bytes = state.snippet_resolved_bytes.saturating_add(code.len());
-    if state.snippet_resolved_bytes > MAX_SNIPPET_RESOLVED_BYTES_PER_RUN {
-        return Err(ToolError::Sdk {
-            sdk_kind: "snippet_budget_exceeded".to_string(),
-            message: "resolved snippet code budget exceeded".to_string(),
-        });
-    }
-    tracing::info!(
-        surface = "dispatch",
-        service = "code_mode",
-        action = "snippet.resolve",
-        snippet = %name,
-        elapsed_ms = started.elapsed().as_millis(),
-        "Code Mode snippet resolved"
-    );
-    Ok((code, input))
-}
-
-/// Handle a `StepBegin` event: the sandbox entered `codemode.step(name, fn)`.
-/// Ask the host (via its injected decider) whether to replay a journaled value
-/// or execute `fn`, and reply with a `StepDecision`. On the no-decider /
-/// standalone path the host's default `decide_step` returns `Execute`, so `fn`
-/// runs normally (behavior unchanged from before the primitive existed).
-///
-/// The step consumes a `seq` from the SAME shared `next_runner_seq` spine as
-/// tool calls; that seq is used for intra-run attribution only (the notebook
-/// projection maps a call into the step-cell whose `seq_base` span contains it).
-/// The durable journal key is the parent-derived `step_ordinal`, NOT the seq —
-/// cross-run replay (v2, epic lab-5dtw9) keys on `step_ordinal`, so the single
-/// seq spine is preserved and untouched here.
-#[allow(clippy::too_many_arguments)]
-async fn handle_step_begin_event<H: CodeModeHost>(
-    broker: &CodeModeBroker<'_, H>,
-    seq: u64,
-    name: String,
-    execution_id: Option<Arc<str>>,
-    stdin: &mut ChildStdin,
-    child: &mut tokio::process::Child,
-    child_pid: Option<u32>,
-    deadline: tokio::time::Instant,
-    state: &mut DriveState,
-) -> Result<(), CodeModeExecutionError> {
-    // Allocate the parent-derived journal ordinate (a monotonic count of
-    // step_begin events — the journal key, distinct from the runner `seq`
-    // spine) and remember it for the matching step_result, which reuses the
-    // step_begin seq.
-    let step_ordinal = state.next_step_ordinal;
-    state.next_step_ordinal += 1;
-    state
-        .step_ordinals
-        .insert(seq, (step_ordinal, name.clone()));
-    let ctx = ExecCtx {
-        seq,
-        execution_id,
-        step_ordinal: Some(step_ordinal),
-    };
-    let decision = match broker.host {
-        Some(host) => host.decide_step(ctx, &name).await,
-        None => StepDecision::Execute,
-    };
-    let reply = match decision {
-        StepDecision::Replay(value) => CodeModeRunnerInput::StepDecision {
-            seq,
-            replay: Some(value),
-        },
-        StepDecision::Execute => CodeModeRunnerInput::StepDecision { seq, replay: None },
-        StepDecision::Error { kind, message } => {
-            CodeModeRunnerInput::ToolError { seq, kind, message }
-        }
-    };
-    write_runner_input_by_deadline(stdin, &reply, deadline, child, child_pid, &state.calls).await
-}
-
-/// Handle a `StepResult` event: the step's `fn` ran (decision was execute) and
-/// the sandbox is journaling its value. Record it via the host, then ack with
-/// `StepRecorded` so the sandbox returns the value. On the no-decider path the
-/// host's default `record_step` is a no-op `Ok(())`.
-///
-/// A record failure (e.g. oversize value) fails the run closed — mirroring the
-/// tool-call record path in `code_mode_host.rs` — so a resume can never replay
-/// an unrecorded step value.
-#[allow(clippy::too_many_arguments)]
-async fn handle_step_result_event<H: CodeModeHost>(
-    broker: &CodeModeBroker<'_, H>,
-    seq: u64,
-    value: Value,
-    execution_id: Option<Arc<str>>,
-    stdin: &mut ChildStdin,
-    child: &mut tokio::process::Child,
-    child_pid: Option<u32>,
-    deadline: tokio::time::Instant,
-    state: &mut DriveState,
-) -> Result<(), CodeModeExecutionError> {
-    // Reuse the (step_ordinal, name) allocated at step_begin (same seq). Fall
-    // back defensively if the pairing is missing (should not happen — the
-    // runner always emits step_begin before step_result for a seq).
-    let (step_ordinal, name) = state
-        .step_ordinals
-        .get(&seq)
-        .cloned()
-        .unwrap_or((state.next_step_ordinal, String::new()));
-    let ctx = ExecCtx {
-        seq,
-        execution_id,
-        step_ordinal: Some(step_ordinal),
-    };
-    let record = match broker.host {
-        Some(host) => host.record_step(ctx, &name, &value).await,
-        None => Ok(()),
-    };
-    let reply = match record {
-        Ok(()) => CodeModeRunnerInput::StepRecorded { seq },
-        Err(err) => CodeModeRunnerInput::ToolError {
-            seq,
-            kind: err.kind().to_string(),
-            message: err.user_message().to_string(),
-        },
-    };
-    write_runner_input_by_deadline(stdin, &reply, deadline, child, child_pid, &state.calls).await
-}
-
-/// Assemble the `Done` response. The runner is long-lived (it loops after Done),
-/// so this does NOT wait on the child — the process parks for the next `Start`.
-/// Logs are merged by the caller from the per-execution stderr slice.
-///
-/// Cloudflare parity: pure computation (filter, sort, reduce over
-/// already-known data) is a valid Code Mode use case. Do not require at
-/// least one callTool.
-fn finalize_done(
-    result: super::protocol::CodeModeRunnerResult,
-    logs: Vec<String>,
-    state: &DriveState,
-) -> CodeModeExecutionResponse {
-    let mut sorted = state.calls.clone();
-    sorted.sort_by_key(|(seq, _)| *seq);
-    CodeModeExecutionResponse {
-        execution_id: None,
-        result: result.into_response_result(),
-        result_shaping: None,
-        // Widget capture and optional `__ui` unwrapping are applied later in
-        // `execute()`; the runner-level response always starts with `ui: None`.
-        ui: None,
-        calls: sorted.into_iter().map(|(_, call)| call).collect(),
-        // Caller merges the per-execution stderr slice into logs.
-        logs,
-        artifacts: state.artifacts.clone(),
-    }
-}
-
 /// Write a message back to the runner bounded by the execution deadline.
 ///
 /// `write_runner_input`'s bare `write_all` + `flush` can block indefinitely if
@@ -1471,108 +1193,6 @@ async fn handle_completed_tool_call(
         }
     }
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers (unchanged from original)
-// ---------------------------------------------------------------------------
-
-fn sorted_calls(calls: &[(u64, CodeModeExecutedCall)]) -> Vec<CodeModeExecutedCall> {
-    let mut calls = calls.to_vec();
-    calls.sort_by_key(|(seq, _)| *seq);
-    calls.into_iter().map(|(_, call)| call).collect()
-}
-
-/// The single source of the Code Mode deadline-timeout error, carrying the
-/// partial call trace. Used by both the runner-read and artifact-write timeout
-/// paths so the stable `timeout` kind/message lives in one place.
-fn code_mode_timeout_error(calls: &[(u64, CodeModeExecutedCall)]) -> CodeModeExecutionError {
-    CodeModeExecutionError::with_trace(
-        ToolError::Sdk {
-            sdk_kind: "timeout".to_string(),
-            message: "Code Mode execution timed out".to_string(),
-        },
-        sorted_calls(calls),
-    )
-}
-
-async fn handle_artifact_write(
-    stdin: &mut ChildStdin,
-    artifact_root: &Path,
-    artifacts: &mut Vec<CodeModeArtifactReceipt>,
-    calls: &mut Vec<(u64, CodeModeExecutedCall)>,
-    seq: u64,
-    request: CodeModeArtifactWrite,
-    trace_params: bool,
-    max_bytes: usize,
-) -> Result<(), ToolError> {
-    let started = std::time::Instant::now();
-    let redacted_params = artifact_trace_params(&request, trace_params);
-
-    match write_code_mode_artifact(artifact_root, &request, max_bytes).await {
-        Ok(receipt) => {
-            let result = json!(receipt);
-            artifacts.push(receipt);
-            calls.push(artifact_call(
-                seq,
-                true,
-                started.elapsed().as_millis(),
-                redacted_params,
-                None,
-            ));
-            write_runner_input(stdin, &CodeModeRunnerInput::ToolResult { seq, result }).await
-        }
-        Err(err) => {
-            let kind = err.kind().to_string();
-            calls.push(artifact_call(
-                seq,
-                false,
-                started.elapsed().as_millis(),
-                redacted_params,
-                Some(kind.clone()),
-            ));
-            write_runner_input(
-                stdin,
-                &CodeModeRunnerInput::ToolError {
-                    seq,
-                    kind,
-                    message: err.user_message().to_string(),
-                },
-            )
-            .await
-        }
-    }
-}
-
-fn artifact_trace_params(request: &CodeModeArtifactWrite, trace_params: bool) -> Option<Value> {
-    super::trace::redact_trace_params(
-        &json!({
-            "path": request.path.as_str(),
-            "content_type": request.content_type.as_deref(),
-        }),
-        trace_params,
-    )
-}
-
-fn artifact_call(
-    seq: u64,
-    ok: bool,
-    elapsed_ms: u128,
-    params: Option<Value>,
-    error_kind: Option<String>,
-) -> (u64, CodeModeExecutedCall) {
-    (
-        seq,
-        CodeModeExecutedCall {
-            id: ARTIFACT_WRITE_CALL_ID.to_string(),
-            ok,
-            elapsed_ms,
-            start_ms: None,
-            params,
-            error_kind,
-            ui: None,
-        },
-    )
 }
 
 #[cfg(test)]

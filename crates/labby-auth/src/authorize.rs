@@ -847,7 +847,7 @@ pub mod tests {
     use base64::Engine;
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use rsa::RsaPrivateKey;
-    use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
+    use rsa::pkcs8::{EncodePrivateKey, LineEnding};
     use rsa::traits::PublicKeyParts;
     use serde_json::json;
     use tower::util::ServiceExt;
@@ -2230,42 +2230,20 @@ pub mod tests {
     }
 
     fn test_rsa_key() -> RsaPrivateKey {
-        RsaPrivateKey::from_pkcs8_pem(TEST_RSA_KEY_PEM).unwrap()
+        use std::sync::OnceLock;
+
+        static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
+        KEY.get_or_init(|| {
+            let mut rng = rand::rng();
+            RsaPrivateKey::new(&mut rng, 2048).expect("generate Google RS256 fixture key")
+        })
+        .clone()
     }
 
     fn test_encoding_key() -> EncodingKey {
         let pem = test_rsa_key().to_pkcs8_pem(LineEnding::LF).unwrap();
         EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap()
     }
-
-    const TEST_RSA_KEY_PEM: &str = r"-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC/Wa3MQnrNbKu9
-H5+ZH30lrKV3+EJeuY0ofx3qMx73ax+ArHaPFHXq3PUAalSZ+UlBqRmX89DdzwWG
-l5hqt3wzGjGe49zxhY5+nUUPLtRiI4JH0iEH4Bg3W9e9gWAAPjVemuYmZ57R9XOd
-O1l0aI20mZiy4jeEN7Ls40I/pwyTcB22krOeHz13E1NzG+uDQnaMZkOKomRdTkKr
-tiSETBcpacpIdyLtdc9lHR4LbcZtBH3aMosjmgae3uvQyks6ntj0UQZaKNYqNwNE
-+GSOqQdtJeoWhps1IYjhc9wcfrlL69nn5U4FXwCcPzGOKXCOW45/BB4nr2WF2Bkq
-N7iytDv/AgMBAAECggEABt1BtdUgsKPYWVV8FTMi+yoBWZdnUhyX6r78pL0mvDt0
-itok+qcCP+WjSFuII2nk7d0SFPhjIsHdceGYTyO76d1jsE5+S4+9997ObmgAqHCb
-qNXp521rkPjTeXHdrsSMh5NI9FG9SczjU92gLOPfSX5FEw24bh7NZWAVrVDhy5wn
-BWAZow2kByQ2SLRitUJr+a1xF3UO3PgHLKdP0H0qZp9TCar3nzJxwMUyGJxOcd4f
-mElyYNIsJtOBsIIoBsNh+aj5pSjOiuEZmfipbHuMWpjEwF1+UVH4iPXQugyKgFze
-Gc8wy3aFlmA4dH2jbSzP3aIwiFUDgqsUrqdyEXVVeQKBgQD5/psH3uk3AOkRC/k/
-P6cI5pwFG0rFRe3UgBJFqODnbTZR+0BwyTqf9kCZgi0nJIudCNyUF5utl8rkWdwE
-s2s42NibGWTVyb5dabT+dHwP42jFljCxxbZw1D3GmP1mX0ybyXj0BOqWEpMHc76q
-ZxzJFfML0FfyTxMVycukBL4bEwKBgQDD8m2Y5GvO17RJDeG6yPupTvWbcBaUTuwe
-0w9LOWSOYi3YPAIt7m6yE9XH9cWSFqXMoOAS5Lu1zUuBvwhZz3XAAeL9JpU2F/1V
-DW7NiChNb7Np2X1dUHZTS5EmaAkok55uEMfA1N1FhsDfN+qCxVPITUszYwrPCu52
-SMd4Nx5s5QKBgQDfK6woTZWyNYzaW+8IyIEL0BqN8HxCOZgD8MTfDNChqHwqmXpA
-dVNxg3rNz0kRvW0pJcUMKzsdr/k++v0P8T+RwvszEmtS8sOPTpN16HTsFh3s7ZPQ
-z2h7tuzjAqaMIh0YobXpWQ42JKS+rVQTePNYi9CpxjcMqAyokbnKVTWEowKBgFrB
-5/eAHVsh19RahKoyOzZRZztGsH6jC4S/d379J1E3skpMiSnjHQyIWWWTtZ4TtVnR
-TdgSb8smOonvBJwsljqH5S4h98ylUeZaIW87WId9bFljrkhRY2zzPFjQqSVNMn2C
-cjMjpRV189GwIYPOiB7nhiRYBIKfapII5bMNvJ7tAoGACMvtonFh25b7gB7j3Pep
-LEH/fA5CRiOs7Plrt2Sv54wAup4Y6+HQ8i/KFOXIejEN9vfY1YRfyD5Ajc05zg90
-uE8aLb5YtFvoaLAnc/A2ceW8sNxGgT5aPyLPUdmfSryAO4ayFDHmRlGFRsZtTUbn
-Iy60nwnOxK6B5mZV2Cs+kv8=
------END PRIVATE KEY-----";
 
     /// Tests that exercise the merged allowlist path through real callback handlers.
     /// These verify that `resolve_allowed_emails` is correctly wired at both call

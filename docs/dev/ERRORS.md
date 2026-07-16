@@ -190,6 +190,14 @@ Stable kinds emitted by `crates/lab/src/config/env_merge.rs` (the shared
   `doctor.audit.full` call did not return within `AUDIT_TIMEOUT` (30s).
   Caller should retry after fixing whichever service probe is hanging
   (typically a misconfigured `*_URL` for an unreachable host). HTTP 504.
+- `draft_clear_failed` — the environment merge committed successfully, but
+  the durable draft could not be removed. The error names the retained draft
+  and backup so the operator can recover without replaying it. HTTP 500.
+
+The filesystem browser emits `workspace_not_configured` when
+`workspace.root` is absent or invalid. This is an operator configuration
+dependency, not an internal crash; HTTP maps it to 409 until configuration is
+repaired.
 
 Removed from drafts (not used in code; do not reintroduce):
 `merge_locked_by_other`, `merge_concurrent_write`, `backup_failed_disk_full`,

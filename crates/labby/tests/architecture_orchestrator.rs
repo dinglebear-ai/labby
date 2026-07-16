@@ -399,6 +399,22 @@ fn is_dotted_action(name: &str) -> bool {
     })
 }
 
+#[test]
+fn mcp_layer_depends_on_shared_auth_context_not_api_adapter() {
+    let root = crate_src_root().join("mcp");
+    let mut violations = Vec::new();
+    walk_rs_files(&root, &mut |path, contents| {
+        if contents.contains("crate::api::oauth::AuthContext") {
+            violations.push(path.display().to_string());
+        }
+    });
+    assert!(
+        violations.is_empty(),
+        "MCP must import labby_auth::auth_context::AuthContext directly; API adapter dependency in: {}",
+        violations.join(", ")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------

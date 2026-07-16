@@ -30,6 +30,12 @@ pub(super) fn build_action_catalog(services: &[RegisteredService]) -> Vec<Action
                 action: action.name.to_string(),
                 description: action.description.to_string(),
                 destructive: action.destructive,
+                requires_admin: action.requires_admin,
+                required_scopes: if action.requires_admin {
+                    vec!["lab:admin".to_string()]
+                } else {
+                    Vec::new()
+                },
                 params: action
                     .params
                     .iter()
@@ -43,7 +49,7 @@ pub(super) fn build_action_catalog(services: &[RegisteredService]) -> Vec<Action
                 returns: action.returns.to_string(),
                 surface_availability: action_surfaces,
                 requires_http_subject: service.name == "fs" && action.name == "fs.preview",
-                auth_posture: auth_posture(service.name, action.name),
+                auth_posture: auth_posture(service.name, action.name, action.requires_admin),
                 inventory_scope: "global_inventory_not_active_runtime_exposure".to_string(),
                 builtin: false,
             });
@@ -80,9 +86,11 @@ fn action_surfaces(
     surfaces
 }
 
-fn auth_posture(service: &str, action: &str) -> String {
+fn auth_posture(service: &str, action: &str, requires_admin: bool) -> String {
     if service == "fs" && action == "fs.preview" {
         "HTTP-only admin/browser session path; intentionally unavailable on MCP".to_string()
+    } else if requires_admin {
+        "requires lab:admin in addition to the selected transport authentication".to_string()
     } else {
         "uses the selected transport auth and gateway visibility policy".to_string()
     }
@@ -109,6 +117,8 @@ fn builtin_action(
         action: action.to_string(),
         description: description.to_string(),
         destructive: false,
+        requires_admin: false,
+        required_scopes: Vec::new(),
         params,
         returns: if action == "schema" {
             "ActionSpec".to_string()

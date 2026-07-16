@@ -766,16 +766,16 @@ async fn run_command(program: &str, args: &[&str]) -> Result<CommandCapture, Too
     let child_id = child.id();
     let stdout = tokio::spawn(read_capped(child.stdout.take()));
     let stderr = tokio::spawn(read_capped(child.stderr.take()));
-    let status = tokio::time::timeout(COMMAND_TIMEOUT, child.wait())
-        .await
-        .map_err(|_| {
-            kill_process_tree(child_id);
-            ToolError::Sdk {
-                sdk_kind: "internal_error".into(),
+    let status = match tokio::time::timeout(COMMAND_TIMEOUT, child.wait()).await {
+        Ok(status) => status.map_err(io_error)?,
+        Err(_) => {
+            kill_process_tree(child_id).await;
+            return Err(ToolError::Sdk {
+                sdk_kind: "timeout".into(),
                 message: format!("command timed out after {COMMAND_TIMEOUT:?}: {display}"),
-            }
-        })?
-        .map_err(io_error)?;
+            });
+        }
+    };
     let stdout = stdout
         .await
         .unwrap_or_else(|err| format!("failed to join command output reader: {err}"));
@@ -821,26 +821,37 @@ where
 }
 
 #[cfg(unix)]
-fn kill_process_tree(child_id: Option<u32>) {
+async fn kill_process_tree(child_id: Option<u32>) {
+    kill_process_tree_with(child_id, "kill", Duration::from_millis(500)).await;
+}
+
+#[cfg(unix)]
+async fn kill_process_tree_with(child_id: Option<u32>, kill_bin: &str, grace: Duration) {
     let Some(pid) = child_id else {
         return;
     };
     let group = format!("-{pid}");
     drop(
-        std::process::Command::new("kill")
+        Command::new(kill_bin)
             .args(["-TERM", &group])
-            .status(),
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await,
     );
-    std::thread::sleep(Duration::from_millis(500));
+    tokio::time::sleep(grace).await;
     drop(
-        std::process::Command::new("kill")
+        Command::new(kill_bin)
             .args(["-KILL", &group])
-            .status(),
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await,
     );
 }
 
 #[cfg(not(unix))]
-fn kill_process_tree(_child_id: Option<u32>) {}
+async fn kill_process_tree(_child_id: Option<u32>) {}
 
 fn command_display(program: &str, args: &[&str]) -> String {
     std::iter::once(program)
@@ -924,6 +935,37 @@ fn io_error(err: std::io::Error) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_signal_runner_is_injectable_and_sends_term_then_kill() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("signals.log");
+        let script = dir.path().join("fake-kill");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        kill_process_tree_with(
+            Some(4242),
+            script.to_str().unwrap(),
+            Duration::from_millis(1),
+        )
+        .await;
+        let calls = std::fs::read_to_string(log).unwrap();
+        assert_eq!(
+            calls.lines().collect::<Vec<_>>(),
+            ["-TERM -4242", "-KILL -4242"]
+        );
+    }
 
     #[test]
     fn dry_run_plan_renders_privilege_and_non_actions() {

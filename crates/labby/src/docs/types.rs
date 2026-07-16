@@ -63,6 +63,8 @@ pub struct ActionDoc {
     pub action: String,
     pub description: String,
     pub destructive: bool,
+    pub requires_admin: bool,
+    pub required_scopes: Vec<String>,
     pub params: Vec<ParamDoc>,
     pub returns: String,
     pub surface_availability: SurfaceAvailability,

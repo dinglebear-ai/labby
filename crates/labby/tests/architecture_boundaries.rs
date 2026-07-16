@@ -72,6 +72,38 @@ fn dispatch_layer_does_not_import_mcp_surface_modules() {
     );
 }
 
+#[test]
+fn cli_layer_does_not_import_sibling_surface_modules() {
+    let cli = lab_src().join("cli");
+    let mut files = Vec::new();
+    rust_files(&cli, &mut files);
+
+    let offenders: Vec<_> = files
+        .into_iter()
+        .filter_map(|path| {
+            // `serve.rs` is the process composition root: it intentionally
+            // assembles the HTTP and MCP transports. Other human CLI shims
+            // must remain independent of sibling adapters.
+            if path.file_name().and_then(|name| name.to_str()) == Some("serve.rs") {
+                return None;
+            }
+            let content = fs::read_to_string(&path).expect("read source");
+            let has_import = content.lines().map(str::trim).any(|line| {
+                line.starts_with("use crate::mcp")
+                    || line.starts_with("use crate::api")
+                    || line.contains("crate::mcp::")
+                    || line.contains("crate::api::")
+            });
+            has_import.then_some(path.strip_prefix(lab_src()).unwrap().display().to_string())
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "CLI must not import sibling API/MCP surfaces; offenders: {offenders:?}"
+    );
+}
+
 fn lab_gateway_src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")

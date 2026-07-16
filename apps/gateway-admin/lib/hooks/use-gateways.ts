@@ -408,9 +408,9 @@ export function useGatewayMutations() {
     await refreshGatewayCache()
   }, [])
 
-  const testGateway = useCallback(async (id: string): Promise<TestGatewayResult> => {
+  const testGateway = useCallback(async (id: string, signal?: AbortSignal): Promise<TestGatewayResult> => {
     if (USE_MOCK_DATA) {
-      await mockDelay(1500) // Longer delay for test
+      await abortableMockDelay(1500, signal) // Longer delay for test
       const gateway = mockGateways.find(g => g.id === id)
       if (!gateway) throw new Error('Gateway not found')
       if (!gateway.status.healthy) {
@@ -422,7 +422,7 @@ export function useGatewayMutations() {
       }
       return mockTestResult
     }
-    return await gatewayApi.test(id)
+    return await gatewayApi.test(id, signal)
   }, [])
 
   const reloadGateway = useCallback(async (id: string): Promise<ReloadGatewayResult> => {

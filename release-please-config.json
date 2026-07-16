@@ -3,6 +3,8 @@
   "release-type": "simple",
   "include-v-in-tag": true,
   "include-component-in-tag": false,
+  "draft": true,
+  "force-tag-creation": true,
   "bootstrap-sha": "3f0df5c142fc07bf750e3fbbe97b1d855c806134",
   "changelog-sections": [
     {

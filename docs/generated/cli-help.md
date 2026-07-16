@@ -153,8 +153,6 @@ Commands:
   oauth-relay  Check public OAuth callback relay registry and optionally target sockets
   proxy        Check public Lab and protected MCP proxy endpoints from caller-visible URLs
   system       Run local system checks (env vars, Docker, disk, toolchain)
-  service      Probe a single configured service
-  services     Probe all configured services
   help         Print this message or the help of the given subcommand(s)
 
 Options:
@@ -255,52 +253,6 @@ Options:
 Run local system checks (env vars, Docker, disk, toolchain)
 
 Usage: system [OPTIONS]
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -h, --help
-          Print help
-```
-
-## `labby doctor service`
-
-```text
-Probe a single configured service
-
-Usage: service [OPTIONS] <NAME>
-
-Arguments:
-  <NAME>
-          Service name (e.g. radarr, sonarr, plex)
-
-Options:
-      --json
-          Emit JSON instead of human-readable tables
-
-      --color <COLOR>
-          Control human-readable CLI styling
-
-          [default: auto]
-          [possible values: auto, plain, color]
-
-  -h, --help
-          Print help
-```
-
-## `labby doctor services`
-
-```text
-Probe all configured services
-
-Usage: services [OPTIONS]
 
 Options:
       --json
@@ -3045,8 +2997,14 @@ Options:
       --limit <LIMIT>
 
 
-      --offset <OFFSET>
+      --cursor <CURSOR>
+          Continue from the opaque cursor returned by the previous page
 
+      --include-total
+          Include the exact number of rows matching the filters
+
+      --offset <OFFSET>
+          Deprecated deep-offset pagination; use `--cursor` instead
 
   -h, --help
           Print help
