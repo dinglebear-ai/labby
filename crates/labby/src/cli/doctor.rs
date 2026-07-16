@@ -1,12 +1,10 @@
 //! `labby doctor` — focused health checks and full audit.
 //!
 //! Subcommands:
-//!   labby doctor              — full audit (system + auth + all service probes)
+//!   labby doctor              — full audit (system + auth + gateway + relay)
 //!   labby doctor system       — local system checks only
 //!   labby doctor auth         — auth/OAuth configuration checks
 //!   labby doctor oauth-relay  — public OAuth callback relay registry checks
-//!   labby doctor service NAME — probe a single service
-//!   labby doctor services     — probe all configured services
 //!
 //! Exit codes: 0 = ok, 1 = warnings, 2 = failures.
 
@@ -37,13 +35,6 @@ pub enum DoctorCheck {
     Proxy(DoctorProxyArgs),
     /// Run local system checks (env vars, Docker, disk, toolchain)
     System,
-    /// Probe a single configured service
-    Service {
-        /// Service name (e.g. radarr, sonarr, plex)
-        name: String,
-    },
-    /// Probe all configured services
-    Services,
 }
 
 #[derive(Debug, Args)]
@@ -77,8 +68,6 @@ pub async fn run(args: DoctorArgs, format: OutputFormat) -> Result<ExitCode> {
         Some(DoctorCheck::OauthRelay(args)) => run_oauth_relay(args, format).await,
         Some(DoctorCheck::Proxy(args)) => run_proxy(args, format).await,
         Some(DoctorCheck::System) => run_system(format).await,
-        Some(DoctorCheck::Service { name }) => run_service(name, format).await,
-        Some(DoctorCheck::Services) => run_services(format).await,
     }
 }
 
@@ -315,76 +304,6 @@ async fn run_system(format: OutputFormat) -> Result<ExitCode> {
     println!();
 
     Ok(exit_code(&report))
-}
-
-// ---------------------------------------------------------------------------
-// service subcommand
-// ---------------------------------------------------------------------------
-
-async fn run_service(name: String, format: OutputFormat) -> Result<ExitCode> {
-    let clients = Arc::new(ServiceClients::from_env());
-    let finding = crate::dispatch::doctor::service::probe_service(&clients, &name, None)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    if format.is_json() {
-        println!("{}", serde_json::to_string_pretty(&finding)?);
-        let report = Report {
-            findings: vec![finding],
-        };
-        return Ok(exit_code(&report));
-    }
-
-    let theme = CliTheme::from_context(format.render_context());
-    print_section(theme, &format!("Service probe: {name}"));
-    print_finding_indented(theme, &finding);
-    println!();
-
-    let report = Report {
-        findings: vec![finding],
-    };
-    Ok(exit_code(&report))
-}
-
-// ---------------------------------------------------------------------------
-// services subcommand
-// ---------------------------------------------------------------------------
-
-async fn run_services(format: OutputFormat) -> Result<ExitCode> {
-    use tokio::sync::mpsc;
-    let clients = Arc::new(ServiceClients::from_env());
-    let (tx, mut rx) = mpsc::channel(64);
-
-    // Stream only service probes (no system/auth checks)
-    tokio::spawn(async move {
-        crate::dispatch::doctor::service::stream_service_probes(clients, tx).await;
-    });
-
-    let mut findings: Vec<Finding> = Vec::new();
-
-    if format.is_json() {
-        while let Some(f) = rx.recv().await {
-            findings.push(f);
-        }
-        let report = Report { findings };
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(exit_code(&report));
-    }
-
-    let theme = CliTheme::from_context(format.render_context());
-    print_section(theme, "Service probes");
-    while let Some(f) = rx.recv().await {
-        println!(
-            "    {badge}  {service}: {msg}",
-            badge = severity_badge(theme, f.severity),
-            service = theme.section(&f.service),
-            msg = theme.muted(&f.message),
-        );
-        findings.push(f);
-    }
-    println!();
-
-    Ok(exit_code(&Report { findings }))
 }
 
 // ---------------------------------------------------------------------------

@@ -152,5 +152,5 @@ When working with the codebase, assume all features are enabled by default. The 
 
 - **New contributors**: Read [Architecture](architecture.md), then [Domain Concepts](domain.md)
 - **Feature work**: Start with [Development Guide](development.md), then consult service-specific docs
-- **Deployment**: See [docs/runtime/CONFIG.md](../docs/runtime/CONFIG.md) and [docs/runtime/OPERATIONS.md](../docs/runtime/OPERATIONS.md)
+- **Deployment**: See [docs/runtime/CONFIG.md](../docs/runtime/CONFIG.md) and [docs/OPERATIONS.md](../docs/OPERATIONS.md)
 - **MCP integration**: See [docs/surfaces/MCP.md](../docs/surfaces/MCP.md) and [docs/services/GATEWAY.md](../docs/services/GATEWAY.md)

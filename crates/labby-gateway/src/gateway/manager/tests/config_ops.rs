@@ -89,17 +89,17 @@ fn service_config_get_treats_empty_values_as_not_present() {
 // `registered_service_meta` (which resolves via the static `service_meta` table) —
 // both are production-code changes. Leaving ignored per the restoration spec.
 #[tokio::test]
-#[ignore = "no kept service declares required_env post-pivot; re-fixturing needs a prod PluginMeta change"]
 async fn service_config_get_marks_service_unconfigured_when_required_fields_are_missing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
-    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default())
+        .with_builtin_service_registry(deploy_known_registry());
 
     let mut values = BTreeMap::new();
-    values.insert("PLEX_TOKEN".to_string(), "token".to_string());
+    values.insert("FIXTURE_TOKEN".to_string(), "token".to_string());
 
     let config = manager
-        .set_service_config("deploy", &values)
+        .set_service_config("fixture-service", &values)
         .await
         .expect("set service config");
 

@@ -85,7 +85,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}

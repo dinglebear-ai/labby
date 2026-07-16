@@ -209,7 +209,7 @@ impl ToolRegistry {
 // It does that through the `InProcessService` / `InProcessServiceRegistry`
 // traits; we implement them here for `RegisteredService` / `ToolRegistry` so the
 // gateway pool can enumerate services and hand each one back to the
-// `mcp::in_process_peer` connector (which downcasts via `as_any`).
+// product composition connector (which downcasts via `as_any`).
 
 #[cfg(feature = "gateway")]
 impl labby_gateway::registry::InProcessService for RegisteredService {

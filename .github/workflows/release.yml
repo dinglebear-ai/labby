@@ -26,16 +26,50 @@ env:
   CARGO_BUILD_RUSTC_WRAPPER: ""
 
 jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release tag, ancestry, and version lockstep
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::release tag must be stable SemVer vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::tag commit is not reachable from origin/main"
+            exit 1
+          }
+          expected="${GITHUB_REF_NAME#v}"
+          cargo_version="$(sed -n '/^\[workspace.package\]$/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          npm_version="$(node -p "require('./packages/labby-mcp/package.json').version")"
+          registry_version="$(python3 -c "import json; print(json.load(open('server.json'))['version'])")"
+          manifest_version="$(python3 -c "import json; print(json.load(open('.release-please-manifest.json'))['.'])")"
+          for pair in "Cargo.toml:$cargo_version" "package.json:$npm_version" "server.json:$registry_version" "release manifest:$manifest_version"; do
+            [[ "${pair#*:}" == "$expected" ]] || { echo "::error::${pair%%:*} version ${pair#*:} != $expected"; exit 1; }
+          done
+          npm test --prefix packages/labby-mcp
+          npm run check --prefix packages/labby-mcp
+          npm pack --dry-run --json ./packages/labby-mcp >/dev/null
+
   frontend-assets:
     name: Frontend assets
     runs-on: ubuntu-latest
+    needs: preflight
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
       - uses: ./.github/actions/build-gateway-admin
       - name: Upload gateway-admin export
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out/
@@ -65,10 +99,10 @@ jobs:
             binary: labby.exe
             archive: lab-x86_64-pc-windows-msvc.zip
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -129,7 +163,7 @@ jobs:
           }
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: lab-${{ matrix.target }}
           path: |
@@ -138,68 +172,51 @@ jobs:
           if-no-files-found: error
 
   container:
-    name: Container image
+    name: Build and smoke container image
     needs: frontend-assets
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      - name: Log in to GitHub Container Registry
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build container image
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+      - name: Build private container candidate
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
           context: .
           file: config/Dockerfile
           push: false
-          load: true
-          tags: lab:release-dry-run
+          outputs: type=docker,dest=/tmp/lab-container-image.tar
+          tags: lab:release-candidate
+      - name: Load private container candidate
+        run: docker load --input /tmp/lab-container-image.tar
       - name: Smoke container Code Mode runner
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           set -euo pipefail
-          docker run --rm lab:release-dry-run --json gateway code exec \
+          docker run --rm lab:release-candidate --json gateway code exec \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
-      - name: Build and push container image
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+      - name: Upload tested container candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          context: .
-          file: config/Dockerfile
-          push: true
-          # The immutable, reproducible reference is the :<tag> (vX.Y.Z) image.
-          # :latest is MUTABLE — it is retained only because docker-compose.prod.yml
-          # defaults LABBY_IMAGE to ghcr.io/jmagar/lab:latest. Prefer pinning to a
-          # version tag (or digest) in any reproducibility-sensitive deployment.
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:latest
+          name: lab-container-image
+          path: /tmp/lab-container-image.tar
+          if-no-files-found: error
+          retention-days: 1
 
   incus-image:
     name: Incus image
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           name: lab-x86_64-unknown-linux-gnu
       - name: Install distrobuilder
@@ -207,7 +224,10 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
-          sudo snap install distrobuilder --classic
+          sudo snap install distrobuilder --classic --revision 2114
+          sudo distrobuilder version
+          snap list distrobuilder
+          dpkg-query -W debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
           sudo incus admin init --minimal || true
       - name: Validate Incus image scripts and definition
         run: |
@@ -229,7 +249,7 @@ jobs:
           SMOKE_PROFILE_NAME: labby-gateway-release-smoke
           SMOKE_BOOTSTRAP_PROFILE_NAME: labby-gateway-release-bootstrap-smoke
       - name: Upload Incus image artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: lab-incus-image
           path: |
@@ -238,21 +258,36 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Create Release
+    name: Publish validated release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build, container, incus-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           pattern: lab-*
           merge-multiple: true
-      - name: Create GitHub release
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+      - name: Verify artifact checksums
+        run: sha256sum --check --ignore-missing ./*.sha256
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          path: .
+          format: spdx-json
+          output-file: labby.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Prepare private draft release
+        id: draft-release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -265,91 +300,102 @@ jobs:
             lab-*.zip.sha256
             labby-incus-*.tar.xz
             labby-incus-*.tar.xz.sha256
+            labby.spdx.json
           )
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+            if [[ "$is_draft" != "true" ]]; then
+              echo "::error::release $RELEASE_TAG is already published; refusing to mutate it"
+              exit 1
+            fi
             gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+            echo "created=false" >> "$GITHUB_OUTPUT"
           else
-            gh release create "$RELEASE_TAG" "${files[@]}" --generate-notes
+            gh release create "$RELEASE_TAG" "${files[@]}" --draft --generate-notes
+            echo "created=true" >> "$GITHUB_OUTPUT"
           fi
-
-  npm:
-    name: Publish npm launcher
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+          subject-path: |
+            lab-*.tar.gz
+            lab-*.zip
+            labby-incus-*.tar.xz
+            labby.spdx.json
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
+      - name: Publish exact tested image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ghcr.io/${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          previous_latest="$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
+          previous_release="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
+          printf '%s\n' "${previous_latest:-none}" > /tmp/labby-previous-latest-digest
+          if [[ "$previous_release" != sha256:* ]]; then
+            touch /tmp/labby-new-version-image
+          fi
+          touch /tmp/labby-image-publish-started
+          docker load --input lab-container-image.tar
+          docker tag lab:release-candidate "$IMAGE:$RELEASE_TAG"
+          docker tag lab:release-candidate "$IMAGE:latest"
+          docker push "$IMAGE:$RELEASE_TAG"
+          docker push "$IMAGE:latest"
+          digest="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$digest" == sha256:* ]] || { echo "::error::could not resolve published image digest"; exit 1; }
+          cosign sign --yes "$IMAGE@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest container image
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
-      - name: Verify launcher version matches tag
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
-          version="$(node -p "require('./packages/labby-mcp/package.json').version")"
-          if [ "$version" != "$tag" ]; then
-            echo "::error::packages/labby-mcp/package.json version $version does not match tag $GITHUB_REF_NAME"
-            exit 1
-          fi
-      - name: Verify npm launcher package
-        run: |
-          set -euo pipefail
-          npm test --prefix packages/labby-mcp
-          npm run check --prefix packages/labby-mcp
-          npm pack --dry-run --json ./packages/labby-mcp
       - name: Check whether npm version already exists
         id: npm-version
         run: |
-          set -euo pipefail
           version="$(node -p "require('./packages/labby-mcp/package.json').version")"
           if npm view "labby-mcp@$version" version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Publish npm launcher
+      - name: Publish validated npm launcher
         if: steps.npm-version.outputs.exists != 'true'
         run: npm publish --access public ./packages/labby-mcp
-
-  mcp-registry:
-    name: Publish MCP Registry metadata
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: npm
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-      - name: Install mcp-publisher
+      - name: Install verified mcp-publisher
         run: |
           set -euo pipefail
-          archive="mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz"
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/${archive}" \
-            | tar xz mcp-publisher
+          version="v1.8.0"
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          expected="1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf"
+          curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$archive" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${version}/${archive}"
+          curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+            --output "${archive}.sigstore.json" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${version}/${archive}.sigstore.json"
+          printf '%s  %s\n' "$expected" "$archive" | sha256sum --check --strict
+          cosign verify-blob \
+            --bundle "${archive}.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${version}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$archive"
+          tar xzf "$archive" mcp-publisher
           chmod +x ./mcp-publisher
           ./mcp-publisher --version
-      - name: Verify registry metadata version matches tag
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
-          version="$(python3 -c "import json; print(json.load(open('server.json'))['version'])")"
-          if [ "$version" != "$tag" ]; then
-            echo "::error::server.json version $version does not match tag $GITHUB_REF_NAME"
-            exit 1
-          fi
       - name: Check whether MCP Registry version already exists
         id: mcp-version
         run: |
-          set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           import urllib.error
@@ -370,7 +416,7 @@ jobs:
               else:
                   raise
           PY
-      - name: Publish MCP Registry metadata
+      - name: Publish validated MCP Registry metadata
         if: steps.mcp-version.outputs.exists != 'true'
         env:
           MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
@@ -379,3 +425,31 @@ jobs:
           test -n "$MCP_PRIVATE_KEY"
           ./mcp-publisher login dns --domain dinglebear.ai --private-key "$MCP_PRIVATE_KEY"
           ./mcp-publisher publish server.json
+      - name: Publish GitHub release last
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
+      - name: Roll back partial publication
+        if: failure()
+        env:
+          DRAFT_CREATED: ${{ steps.draft-release.outputs.created }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$DRAFT_CREATED" == "true" ]]; then
+            gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
+          fi
+          if [[ -f /tmp/labby-new-version-image ]]; then
+            package="${GITHUB_REPOSITORY#*/}"
+            version_id="$(gh api --paginate "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions" \
+              --jq ".[] | select(.metadata.container.tags | index(\"$RELEASE_TAG\")) | .id" | head -1)"
+            if [[ -n "$version_id" ]]; then
+              gh api --method DELETE "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions/${version_id}" || true
+            fi
+          fi
+          previous_latest="$(cat /tmp/labby-previous-latest-digest 2>/dev/null || printf none)"
+          if [[ -f /tmp/labby-image-publish-started && "$previous_latest" == sha256:* ]]; then
+            docker buildx imagetools create \
+              --tag "ghcr.io/${GITHUB_REPOSITORY}:latest" \
+              "ghcr.io/${GITHUB_REPOSITORY}@${previous_latest}" || true
+          fi

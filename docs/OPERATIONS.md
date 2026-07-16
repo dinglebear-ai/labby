@@ -52,6 +52,9 @@ When `LABBY_AUTH_MODE=oauth`, `lab` persists local auth state on disk:
 
 - SQLite database: `~/.labby/auth.db` by default
 - JWT signing key: `~/.labby/auth-jwt.pem` by default
+- Secret files use owner-only permissions on every supported host: mode 0600
+  on Unix and a protected owner-only DACL on Windows. This includes `.env`,
+  drafts/backups, the auth database and WAL/SHM sidecars, and signing keys.
 
 Rules:
 

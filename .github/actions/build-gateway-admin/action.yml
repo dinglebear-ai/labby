@@ -8,11 +8,11 @@ description: >
 runs:
   using: composite
   steps:
-    - uses: pnpm/action-setup@v4
+    - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
       with:
         version: 9.15.9
 
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
       with:
         node-version: 20
         cache: pnpm

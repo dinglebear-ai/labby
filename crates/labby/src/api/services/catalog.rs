@@ -154,6 +154,8 @@ mod tests {
                 name: "queue.list".to_string(),
                 description: "List queue".to_string(),
                 destructive: false,
+                requires_admin: false,
+                required_scopes: vec![],
                 returns: "Queue[]".to_string(),
                 params: vec![ParamEntry {
                     name: "page".to_string(),

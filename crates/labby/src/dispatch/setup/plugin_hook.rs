@@ -278,34 +278,36 @@ pub fn export_plugin_env_from(env: PathBuf) -> Result<PluginExportOutcome, ToolE
 /// Uses `CLAUDE_PLUGIN_OPTION_SERVER_URL` if `server_url` is not provided.
 /// Non-blocking: a failed probe is reported as `reachable: false`, not an error.
 pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutcome {
-    let url_owned: String;
-    let url = match server_url.filter(|s| !s.is_empty()) {
-        Some(u) => u,
-        None => {
-            url_owned = std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL").unwrap_or_default();
-            if url_owned.is_empty() {
-                "http://localhost:8765"
-            } else {
-                url_owned.as_str()
-            }
+    let configured = std::env::var("CLAUDE_PLUGIN_OPTION_SERVER_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "http://localhost:8765".to_string());
+    let requested = server_url.filter(|value| !value.trim().is_empty());
+    let (base, health_url) = match validated_connectivity_target(requested, &configured) {
+        Ok(target) => target,
+        Err(message) => {
+            return ConnectivityOutcome {
+                server_url: "<rejected>".to_string(),
+                reachable: false,
+                latency_ms: None,
+                status: None,
+                message,
+            };
         }
     };
-
-    // Strip trailing /mcp if the user copied from .mcp.json.
-    let base = url.trim_end_matches('/').trim_end_matches("/mcp");
-    let health_url = format!("{base}/health");
 
     // See api/state.rs::build_protected_mcp_http_client for why this call is
     // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
     drop(rustls::crypto::ring::default_provider().install_default());
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     {
         Ok(c) => c,
         Err(e) => {
             return ConnectivityOutcome {
-                server_url: base.to_string(),
+                server_url: base.clone(),
                 reachable: false,
                 latency_ms: None,
                 status: None,
@@ -315,12 +317,12 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
     };
 
     let start = std::time::Instant::now();
-    match client.get(&health_url).send().await {
+    match client.get(health_url).send().await {
         Ok(response) => {
             let status = response.status().as_u16();
             let latency = start.elapsed().as_millis() as u64;
             ConnectivityOutcome {
-                server_url: base.to_string(),
+                server_url: base.clone(),
                 reachable: status < 400,
                 latency_ms: Some(latency),
                 status: Some(status),
@@ -328,13 +330,72 @@ pub async fn validate_connectivity(server_url: Option<&str>) -> ConnectivityOutc
             }
         }
         Err(e) => ConnectivityOutcome {
-            server_url: base.to_string(),
+            server_url: base,
             reachable: false,
             latency_ms: None,
             status: None,
             message: format!("unreachable: {e}"),
         },
     }
+}
+
+/// Resolve the connectivity probe to the single operator-configured origin.
+///
+/// This is deliberately an allow-list policy rather than a general-purpose
+/// URL fetcher: the setup probe has no reason to contact an arbitrary host.
+/// A caller override is accepted only when it normalizes to exactly the same
+/// origin as `CLAUDE_PLUGIN_OPTION_SERVER_URL`. Redirects are disabled by the
+/// caller, so a trusted origin cannot bounce the probe into metadata/LAN space.
+fn validated_connectivity_target(
+    requested: Option<&str>,
+    configured: &str,
+) -> Result<(String, url::Url), String> {
+    let configured = normalize_connectivity_base(configured)?;
+    let requested = normalize_connectivity_base(requested.unwrap_or(configured.as_str()))?;
+    if requested != configured {
+        return Err(
+            "connectivity target must match the configured plugin server origin".to_string(),
+        );
+    }
+    let health = url::Url::parse(&format!("{configured}/health"))
+        .map_err(|_| "configured plugin server URL is invalid".to_string())?;
+    Ok((configured, health))
+}
+
+fn normalize_connectivity_base(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw.trim())
+        .map_err(|_| "plugin server URL must be an absolute http(s) URL".to_string())?;
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(
+            "plugin server URL must not include credentials, query, or fragment".to_string(),
+        );
+    }
+    let host = parsed
+        .host()
+        .ok_or_else(|| "plugin server URL must include a host".to_string())?;
+    let loopback = match host {
+        url::Host::Domain(name) => name.eq_ignore_ascii_case("localhost"),
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    };
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+        return Err(
+            "plugin server URL must use https (http is allowed only on loopback)".to_string(),
+        );
+    }
+    if !matches!(parsed.path(), "" | "/" | "/mcp" | "/mcp/") {
+        return Err("plugin server URL path must be `/` or `/mcp`".to_string());
+    }
+
+    let mut base = parsed;
+    base.set_path("");
+    base.set_query(None);
+    base.set_fragment(None);
+    Ok(base.as_str().trim_end_matches('/').to_ascii_lowercase())
 }
 
 fn run_for_paths(mode: Mode, lab_home: PathBuf, env: PathBuf) -> Result<SetupReport, ToolError> {
@@ -472,6 +533,48 @@ fn io_error(check: &'static str, path: &Path, error: std::io::Error) -> ToolErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connectivity_target_is_pinned_to_configured_origin() {
+        let (base, health) = validated_connectivity_target(
+            Some("https://lab.example.com/mcp"),
+            "https://lab.example.com",
+        )
+        .expect("same configured origin");
+        assert_eq!(base, "https://lab.example.com");
+        assert_eq!(health.as_str(), "https://lab.example.com/health");
+
+        for attacker_url in [
+            "http://169.254.169.254/latest/meta-data",
+            "http://127.0.0.1:2375",
+            "http://10.0.0.5:8080",
+            "https://other.example.com",
+        ] {
+            assert!(
+                validated_connectivity_target(Some(attacker_url), "https://lab.example.com")
+                    .is_err(),
+                "{attacker_url} must not override the configured origin"
+            );
+        }
+    }
+
+    #[test]
+    fn connectivity_target_allows_only_https_or_loopback_http() {
+        assert!(normalize_connectivity_base("http://localhost:8765/mcp").is_ok());
+        assert!(normalize_connectivity_base("http://127.0.0.1:8765").is_ok());
+        assert!(normalize_connectivity_base("http://[::1]:8765").is_ok());
+        assert!(normalize_connectivity_base("https://lab.example.com").is_ok());
+
+        for blocked in [
+            "http://10.0.0.5:8765",
+            "http://169.254.169.254",
+            "https://user:password@lab.example.com",
+            "https://lab.example.com?next=http://169.254.169.254",
+            "https://lab.example.com/redirect",
+        ] {
+            assert!(normalize_connectivity_base(blocked).is_err(), "{blocked}");
+        }
+    }
 
     #[test]
     fn check_reports_missing_paths_without_creating_them() {

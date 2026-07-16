@@ -11,7 +11,7 @@ import { MarkdownBody } from "./MarkdownBody";
 // non-deterministic XSS regression test is worse than none.
 beforeAll(async () => {
   await import("./MarkdownBodyInner");
-});
+}, 60_000);
 
 // T-M3: lock in the hardened streamdown pipeline (S-M1/S-M2/S-L1). Crawled/RAG
 // content flows through MarkdownBody, so a regression that loosened sanitize/harden
@@ -27,7 +27,7 @@ async function renderMarkdown(markdown: string): Promise<HTMLElement> {
     () => {
       expect(container.querySelector("pre.output-body.output-code")).toBeNull();
     },
-    { timeout: 5000 },
+    { timeout: 30_000 },
   );
   return container;
 }

@@ -58,6 +58,11 @@ const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Overall per-request timeout for the archive download.
 const ARCHIVE_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Extraction/fsync work is expensive and `spawn_blocking` otherwise admits
+/// an unbounded queue. Two concurrent phases preserve useful parallelism while
+/// placing a hard ceiling on installer pressure.
+static INSTALL_BLOCKING_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
 /// Errors produced by [`AcpInstaller`]. Wraps [`ApiError`] transparently so it
 /// composes with the rest of the SDK error taxonomy; the `kind()` accessor
 /// returns the stable dispatcher kind string callers map onto their surface
@@ -213,38 +218,62 @@ impl AcpInstaller {
                 AcpInstallerError::internal(format!("create {}: {e}", spec.install_dir.display()))
             })?;
 
-        // Download to a temp file next to the install dir so rename is atomic.
-        let tmp_archive = tempfile::NamedTempFile::new_in(&spec.install_dir)
-            .map_err(|e| AcpInstallerError::internal(format!("temp archive: {e}")))?;
+        // Tempfile creation can perform filesystem I/O; keep it off the async
+        // executor just like extraction and the final durable install.
+        let install_dir = spec.install_dir.clone();
+        let tmp_archive = run_blocking_install(move || {
+            tempfile::NamedTempFile::new_in(&install_dir)
+                .map_err(|e| AcpInstallerError::internal(format!("temp archive: {e}")))
+        })
+        .await?;
 
         let sha256 = download_archive(&parsed, tmp_archive.path()).await?;
         verify_sha256(&expected_sha256, &sha256)?;
 
-        // Extract to a temp dir in the same parent for an atomic move.
-        let tmp_extract = tempfile::TempDir::new_in(&spec.install_dir)
-            .map_err(|e| AcpInstallerError::internal(format!("temp extract dir: {e}")))?;
-
-        extract_archive(tmp_archive.path(), tmp_extract.path(), &spec.archive_url)?;
-
-        let binary_name = Path::new(spec.cmd.trim_start_matches("./"))
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(spec.cmd.trim_start_matches("./"));
-
-        let src = find_binary_in_dir(tmp_extract.path(), binary_name).ok_or_else(|| {
-            AcpInstallerError::NotFound(format!(
-                "binary `{binary_name}` not found in extracted archive"
-            ))
-        })?;
-
-        let dest = spec.install_dir.join(binary_name);
-        install_executable_atomically(&src, &dest)?;
-
-        Ok(InstallOutcome {
-            installed_path: dest,
-            sha256,
-        })
+        let spec = spec.clone();
+        run_blocking_install(move || finish_install(spec, tmp_archive, sha256)).await
     }
+}
+
+async fn run_blocking_install<T, F>(operation: F) -> Result<T, AcpInstallerError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AcpInstallerError> + Send + 'static,
+{
+    let _permit = INSTALL_BLOCKING_LIMIT.acquire().await.map_err(|_| {
+        AcpInstallerError::internal("ACP install blocking-work limiter unexpectedly closed")
+    })?;
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| {
+            AcpInstallerError::internal(format!("ACP install worker failed: {error}"))
+        })?
+}
+
+fn finish_install(
+    spec: InstallSpec,
+    tmp_archive: tempfile::NamedTempFile,
+    sha256: String,
+) -> Result<InstallOutcome, AcpInstallerError> {
+    let tmp_extract = tempfile::TempDir::new_in(&spec.install_dir)
+        .map_err(|e| AcpInstallerError::internal(format!("temp extract dir: {e}")))?;
+    extract_archive(tmp_archive.path(), tmp_extract.path(), &spec.archive_url)?;
+
+    let binary_name = Path::new(spec.cmd.trim_start_matches("./"))
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(spec.cmd.trim_start_matches("./"));
+    let src = find_binary_in_dir(tmp_extract.path(), binary_name).ok_or_else(|| {
+        AcpInstallerError::NotFound(format!(
+            "binary `{binary_name}` not found in extracted archive"
+        ))
+    })?;
+    let dest = spec.install_dir.join(binary_name);
+    install_executable_atomically(&src, &dest)?;
+    Ok(InstallOutcome {
+        installed_path: dest,
+        sha256,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +824,50 @@ fn fsync_parent_dir(parent: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_install_work_does_not_stall_async_executor() {
+        let worker = run_blocking_install(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(())
+        });
+        let timer = tokio::time::timeout(
+            Duration::from_millis(50),
+            tokio::time::sleep(Duration::from_millis(5)),
+        );
+        let (_, timer_result) = tokio::join!(worker, timer);
+        assert!(
+            timer_result.is_ok(),
+            "blocking install work stalled the executor"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_install_work_has_a_concurrency_ceiling() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            workers.push(run_blocking_install(move || {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(current, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(25));
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }));
+        }
+        futures::future::try_join_all(workers)
+            .await
+            .expect("bounded workers complete");
+        assert!(maximum.load(Ordering::SeqCst) <= 2);
+    }
 
     #[test]
     fn missing_integrity_metadata_normalization_fails() {

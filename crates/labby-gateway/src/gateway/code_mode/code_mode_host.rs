@@ -410,6 +410,16 @@ impl GatewayManager {
         }
     }
 
+    /// Drop-safe cancellation cleanup for a run that never reached its async
+    /// journal flush boundary. This is synchronous by design so an execution
+    /// future's `Drop` can remove buffered request state immediately.
+    pub fn discard_step_buffer(&self, execution_id: &str) {
+        self.step_buffers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(execution_id);
+    }
+
     /// Read-only accessor to the step journal store (used by tests and future
     /// read surfaces). `None` when journaling is unconfigured.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -904,6 +914,25 @@ mod tests {
             .unwrap();
         // Must not panic/propagate, and must drain the buffer even on error.
         mgr.flush_step_journal("e", &JournalOwner::default()).await;
+        assert!(mgr.step_buffer_is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_execution_can_drop_buffer_without_async_cleanup() {
+        let (mgr, _cfg, _db) = test_manager_with_journal().await;
+        mgr.record_step(
+            ExecCtx {
+                seq: 1,
+                execution_id: Some(Arc::<str>::from("exec_cancelled")),
+                step_ordinal: Some(0),
+            },
+            "first",
+            &serde_json::json!({"value": 1}),
+        )
+        .await
+        .unwrap();
+        assert!(!mgr.step_buffer_is_empty());
+        mgr.discard_step_buffer("exec_cancelled");
         assert!(mgr.step_buffer_is_empty());
     }
 

@@ -21,6 +21,16 @@ use tauri::{AppHandle, Manager};
 
 use crate::{LabbySettings, PartialPaletteSettings, SETTINGS_FILE};
 
+pub(crate) async fn run_blocking_io<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|err| format!("persistence worker failed: {err}"))?
+}
+
 pub(crate) fn read_settings_result(app: &AppHandle) -> Result<PartialPaletteSettings, String> {
     let path = match settings_path(app) {
         Ok(p) => p,
@@ -119,4 +129,24 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Box<dyn std::
     write().inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
     })
+}
+
+#[cfg(test)]
+mod async_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn slow_disk_work_does_not_stall_async_commands() {
+        let write = run_blocking_io(|| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            Ok(())
+        });
+        let timer = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            tokio::time::sleep(std::time::Duration::from_millis(5)),
+        );
+        let (write_result, timer_result) = tokio::join!(write, timer);
+        assert!(write_result.is_ok());
+        assert!(timer_result.is_ok(), "disk work stalled the async executor");
+    }
 }

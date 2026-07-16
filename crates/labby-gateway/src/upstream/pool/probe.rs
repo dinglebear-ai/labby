@@ -64,12 +64,7 @@ impl UpstreamPool {
         tokio::spawn(async move {
             let mut attempt = 0_u32;
             loop {
-                let base = reprobe_backoff(attempt);
-                let sleep_for = if attempt == 0 {
-                    types::REPROBE_INTERVAL
-                } else {
-                    jitter_delay(base, stable_jitter_seed(&config.name, attempt))
-                };
+                let sleep_for = reprobe_sleep_for(&config.name, attempt);
                 tracing::debug!(
                     surface = "dispatch",
                     service = "upstream.pool",
@@ -100,6 +95,15 @@ impl UpstreamPool {
                     _ = tokio::time::sleep(sleep_for) => {}
                 }
 
+                let permit = tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    permit = pool.reprobe_semaphore.clone().acquire_owned() => {
+                        match permit {
+                            Ok(permit) => permit,
+                            Err(_) => break,
+                        }
+                    }
+                };
                 let reprobe_started = Instant::now();
                 match pool.reprobe_upstream(&config, None, None).await {
                     Ok(true) => {
@@ -155,6 +159,7 @@ impl UpstreamPool {
                         );
                     }
                 }
+                drop(permit);
             }
         });
     }
@@ -321,6 +326,18 @@ impl UpstreamPool {
     }
 }
 
+fn reprobe_sleep_for(upstream: &str, attempt: u32) -> std::time::Duration {
+    let base = if attempt == 0 {
+        types::REPROBE_INTERVAL
+    } else {
+        reprobe_backoff(attempt)
+    };
+    // Healthy upstreams used to all wake on the exact same first interval.
+    // Stable jitter on every interval spreads fleet work while remaining
+    // deterministic for a given upstream/attempt pair.
+    jitter_delay(base, stable_jitter_seed(upstream, attempt))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::testsupport::*;
@@ -358,6 +375,32 @@ mod tests {
 
         assert!(!result);
         assert!(pool.find_tool("anything").await.is_none());
+    }
+
+    #[test]
+    fn healthy_reprobe_intervals_are_stably_jittered() {
+        let alpha = reprobe_sleep_for("alpha", 0);
+        assert_eq!(alpha, reprobe_sleep_for("alpha", 0));
+        assert_ne!(alpha, reprobe_sleep_for("bravo", 0));
+        assert_ne!(alpha, types::REPROBE_INTERVAL);
+    }
+
+    #[tokio::test]
+    async fn reprobe_gate_caps_peak_fleet_concurrency() {
+        let pool = UpstreamPool::new();
+        let limit = super::super::helpers::upstream_discovery_concurrency(None);
+        let mut held = Vec::new();
+        for _ in 0..limit {
+            held.push(
+                pool.reprobe_semaphore
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("permit below configured limit"),
+            );
+        }
+        assert!(pool.reprobe_semaphore.try_acquire().is_err());
+        drop(held.pop());
+        assert!(pool.reprobe_semaphore.try_acquire().is_ok());
     }
 
     #[test]

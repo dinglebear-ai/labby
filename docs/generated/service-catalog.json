@@ -2,7 +2,7 @@
   {
     "name": "doctor",
     "display_name": "Doctor",
-    "description": "Comprehensive health audit: env vars, system probes, and service reachability",
+    "description": "Comprehensive health audit: env vars, system, gateway, and OAuth relay checks",
     "category": "bootstrap",
     "status": "available",
     "feature": null,

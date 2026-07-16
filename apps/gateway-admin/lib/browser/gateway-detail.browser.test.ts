@@ -6,11 +6,53 @@ import { spawn, type ChildProcess } from 'node:child_process'
 
 import { chromium } from 'playwright'
 
-const PORT = 3101
-const BASE_URL = `http://127.0.0.1:${PORT}`
 const APP_DIR = new URL('../../', import.meta.url)
+let baseUrl = ''
 let previewServer: ChildProcess | null = null
 let previewServerReady: Promise<void> | null = null
+let buildReady: Promise<void> | null = null
+let previewStderr = ''
+
+async function allocatePort(): Promise<number> {
+  const server = http.createServer()
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.ok(address && typeof address !== 'string')
+  const port = address.port
+  server.close()
+  await once(server, 'close')
+  return port
+}
+
+function buildApplicationOnce() {
+  if (buildReady) return buildReady
+  if (process.env.GATEWAY_ADMIN_BROWSER_SKIP_BUILD === 'true') {
+    buildReady = Promise.resolve()
+    return buildReady
+  }
+  buildReady = new Promise<void>((resolve, reject) => {
+    const child = spawn('pnpm', ['run', 'build'], {
+      cwd: APP_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        LAB_ALLOWED_DEV_ORIGINS: '127.0.0.1',
+        NEXT_PUBLIC_MOCK_DATA: 'true',
+        NEXT_PUBLIC_API_TOKEN: 'dev-token',
+      },
+    })
+    let output = ''
+    child.stdout?.on('data', (chunk) => { output += String(chunk) })
+    child.stderr?.on('data', (chunk) => { output += String(chunk) })
+    child.once('error', reject)
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolve()
+      else reject(new Error(`Gateway Admin build failed (${code ?? signal}):\n${output.slice(-12_000)}`))
+    })
+  })
+  return buildReady
+}
 
 async function waitForServer(url: string) {
   const deadline = Date.now() + 60_000
@@ -35,7 +77,7 @@ async function waitForServer(url: string) {
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
 
-  throw new Error(`Timed out waiting for preview server at ${url}`)
+  throw new Error(`Timed out waiting for preview server at ${url}:\n${previewStderr.slice(-12_000)}`)
 }
 
 async function startPreviewServer() {
@@ -44,17 +86,22 @@ async function startPreviewServer() {
     return
   }
 
-  previewServer = spawn(
-    '/usr/bin/zsh',
-    ['-lc', `LAB_ALLOWED_DEV_ORIGINS=127.0.0.1 NEXT_PUBLIC_MOCK_DATA=true NEXT_PUBLIC_API_TOKEN=dev-token pnpm exec next build && python3 -m http.server ${PORT} --directory out --bind 127.0.0.1`],
-    {
-      cwd: APP_DIR,
-      stdio: 'ignore',
-      env: process.env,
-    },
-  )
-
-  previewServerReady = waitForServer(`${BASE_URL}/gateway/?id=gw-2`)
+  previewServerReady = (async () => {
+    await buildApplicationOnce()
+    const port = await allocatePort()
+    baseUrl = `http://127.0.0.1:${port}`
+    previewServer = spawn(
+      'python3',
+      ['-m', 'http.server', String(port), '--directory', 'out', '--bind', '127.0.0.1'],
+      { cwd: APP_DIR, stdio: ['ignore', 'pipe', 'pipe'], env: process.env },
+    )
+    previewServer.stdout?.on('data', (chunk) => { previewStderr += String(chunk) })
+    previewServer.stderr?.on('data', (chunk) => { previewStderr += String(chunk) })
+    const earlyExit = once(previewServer, 'exit').then(([code, signal]) => {
+      throw new Error(`Preview server exited before readiness (${code ?? signal}):\n${previewStderr.slice(-12_000)}`)
+    })
+    await Promise.race([waitForServer(`${baseUrl}/gateway/?id=gw-2`), earlyExit])
+  })()
   await previewServerReady
 }
 
@@ -69,7 +116,7 @@ test.after(async () => {
     new Promise((resolve) => setTimeout(resolve, 2_000)),
   ])
 
-  if (previewServer.exitCode === null && !previewServer.killed) {
+  if (previewServer.exitCode === null) {
     previewServer.kill('SIGKILL')
     await once(previewServer, 'exit').catch(() => undefined)
   }
@@ -84,13 +131,14 @@ test('gateway manage tools flow persists after a full reload in mock preview', {
   })
 
   const page = await browser.newPage()
-  await page.goto(`${BASE_URL}/gateway/?id=gw-2`, { waitUntil: 'networkidle' })
+  await page.goto(`${baseUrl}/gateway/?id=gw-2`, { waitUntil: 'networkidle' })
   await page.evaluate(() => {
     window.localStorage.clear()
   })
   await page.reload({ waitUntil: 'networkidle' })
 
-  await page.getByRole('button', { name: 'Manage Tools' }).click()
+  await page.getByRole('button', { name: 'Tools', exact: true }).click()
+  await page.getByRole('button', { name: 'Manage tools', exact: true }).click()
   await page.locator('#select-all-visible').click()
   await page.getByRole('button', { name: 'Disable selected' }).click()
   await page.getByRole('button', { name: 'Save changes' }).click()
@@ -102,7 +150,10 @@ test('gateway manage tools flow persists after a full reload in mock preview', {
 
   await page.reload({ waitUntil: 'networkidle' })
 
-  await assert.doesNotReject(() => page.getByRole('button', { name: 'Manage Tools' }).waitFor())
+  await page.getByRole('button', { name: 'Tools', exact: true }).click()
+  await assert.doesNotReject(() =>
+    page.getByRole('button', { name: 'Manage tools', exact: true }).waitFor(),
+  )
   await assert.doesNotReject(() =>
     page.locator('p, div').filter({ hasText: /^0\/12$/ }).first().waitFor(),
   )
@@ -118,7 +169,7 @@ test('gateway detail uses a compact summary and endpoint block in mock preview',
   })
 
   const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
-  await page.goto(`${BASE_URL}/gateway/?id=gw-2`, { waitUntil: 'networkidle' })
+  await page.goto(`${baseUrl}/gateway/?id=gw-2`, { waitUntil: 'networkidle' })
   await page.evaluate(() => {
     window.localStorage.clear()
   })
@@ -128,7 +179,10 @@ test('gateway detail uses a compact summary and endpoint block in mock preview',
   await assert.doesNotReject(() => page.getByText('Resources').first().waitFor())
   await assert.doesNotReject(() => page.getByText('Prompts').first().waitFor())
   await assert.doesNotReject(() => page.getByText('http://localhost:3001/mcp').waitFor())
-  await assert.doesNotReject(() => page.getByRole('button', { name: 'Manage Tools' }).waitFor())
+  await page.getByRole('button', { name: 'Tools', exact: true }).click()
+  await assert.doesNotReject(() =>
+    page.getByRole('button', { name: 'Manage tools', exact: true }).waitFor(),
+  )
 
   assert.equal(await page.getByText('TOOL SURFACE').count(), 0)
   assert.equal(await page.getByText('BEARER ENV').count(), 0)
@@ -151,16 +205,16 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   })
 
   const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
-  await page.goto(`${BASE_URL}/gateways/`, { waitUntil: 'networkidle' })
+  await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
   await page.evaluate(() => {
     window.localStorage.clear()
   })
   await page.reload({ waitUntil: 'networkidle' })
 
   await assert.doesNotReject(() => page.getByText('CONFIGURED').first().waitFor())
-  await assert.doesNotReject(() => page.getByText('5').first().waitFor())
+  await assert.doesNotReject(() => page.locator('p:visible').filter({ hasText: /^5$/ }).first().waitFor())
   await assert.doesNotReject(() => page.getByText('DISCOVERED TOOLS').first().waitFor())
-  await assert.doesNotReject(() => page.getByText('39').first().waitFor())
+  await assert.doesNotReject(() => page.locator('p:visible').filter({ hasText: /^39$/ }).first().waitFor())
   assert.match(await page.locator('body').innerText(), /github-server[\s\S]*12\/12/)
 
   const hasHorizontalOverflow = await page.evaluate(() => {
@@ -180,12 +234,13 @@ test('gateway detail disable flow shows confirmation, persists disabled state, a
   })
 
   const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
-  await page.goto(`${BASE_URL}/gateway/?id=gw-2`, { waitUntil: 'networkidle' })
+  await page.goto(`${baseUrl}/gateway/?id=gw-2`, { waitUntil: 'networkidle' })
   await page.evaluate(() => {
     window.localStorage.clear()
   })
   await page.reload({ waitUntil: 'networkidle' })
 
+  await page.getByRole('tab', { name: /Settings/ }).click()
   const enabledSwitch = page.getByRole('switch', { name: 'Server enabled' })
   await assert.doesNotReject(() => enabledSwitch.waitFor())
   assert.equal(await enabledSwitch.getAttribute('aria-checked'), 'true')
@@ -235,7 +290,7 @@ test('gateway list row action disable flow opens and completes successfully', { 
   })
 
   const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
-  await page.goto(`${BASE_URL}/gateways/`, { waitUntil: 'networkidle' })
+  await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
   await page.evaluate(() => {
     window.localStorage.clear()
   })

@@ -84,12 +84,41 @@ impl GatewayManager {
         parent.join(format!("{stem}.runtime.json"))
     }
 
-    async fn load_runtime_state(&self) -> PersistedGatewayRuntimeState {
+    async fn load_runtime_state(&self) -> Result<PersistedGatewayRuntimeState, ToolError> {
         let path = self.runtime_state_path();
-        let Ok(raw) = tokio::fs::read_to_string(path).await else {
-            return PersistedGatewayRuntimeState::default();
+        let raw = match tokio::fs::read_to_string(&path).await {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(PersistedGatewayRuntimeState::default());
+            }
+            Err(error) => {
+                return Err(ToolError::internal_message(format!(
+                    "failed to read gateway runtime state {}: {error}",
+                    path.display()
+                )));
+            }
         };
-        serde_json::from_str(&raw).unwrap_or_default()
+        match serde_json::from_str(&raw) {
+            Ok(state) => Ok(state),
+            Err(error) => {
+                let quarantine_suffix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let quarantine = path.with_extension(format!("corrupt-{quarantine_suffix}.json"));
+                tokio::fs::rename(&path, &quarantine).await.map_err(|rename_error| {
+                    ToolError::internal_message(format!(
+                        "gateway runtime state {} is corrupt ({error}) and could not be quarantined: {rename_error}",
+                        path.display()
+                    ))
+                })?;
+                Err(ToolError::internal_message(format!(
+                    "gateway runtime state {} is corrupt and was quarantined at {}: {error}",
+                    path.display(),
+                    quarantine.display()
+                )))
+            }
+        }
     }
 
     async fn persist_runtime_state(
@@ -150,7 +179,7 @@ impl GatewayManager {
         cfg: &GatewayConfig,
         pool: Option<&UpstreamPool>,
     ) -> Result<PersistedGatewayRuntimeState, ToolError> {
-        let mut state = self.load_runtime_state().await;
+        let mut state = self.load_runtime_state().await?;
         state
             .entries
             .retain(persisted_runtime_process_still_matches);
@@ -780,4 +809,70 @@ fn terminate_process(_pid: u32) -> Result<(), ()> {
 #[cfg(not(unix))]
 fn terminate_process_group(_pid: u32) -> Result<(), ()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn malformed_runtime_state_is_quarantined_instead_of_overwritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("config.toml");
+        let manager = GatewayManager::new(config, GatewayRuntimeHandle::default());
+        let state_path = manager.runtime_state_path();
+        tokio::fs::write(&state_path, b"{not-json")
+            .await
+            .expect("write corrupt state");
+
+        let error = manager
+            .load_runtime_state()
+            .await
+            .expect_err("corrupt state must be visible");
+        assert!(error.user_message().contains("quarantined"));
+        assert!(!state_path.exists(), "corrupt source must be moved aside");
+        let quarantined = std::fs::read_dir(dir.path())
+            .expect("read state dir")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .find(|name| name.starts_with("config.runtime.corrupt-") && name.ends_with(".json"));
+        assert!(quarantined.is_some(), "forensic copy must be preserved");
+    }
+
+    #[tokio::test]
+    async fn missing_runtime_state_defaults_but_other_io_failures_do_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        );
+        assert_eq!(
+            manager
+                .load_runtime_state()
+                .await
+                .expect("missing defaults"),
+            PersistedGatewayRuntimeState::default()
+        );
+
+        std::fs::create_dir(manager.runtime_state_path()).expect("directory at state path");
+        assert!(manager.load_runtime_state().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn runtime_state_atomic_write_surfaces_unwritable_parent_shape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent_file = dir.path().join("not-a-directory");
+        std::fs::write(&parent_file, "x").expect("parent file");
+        let manager = GatewayManager::new(
+            parent_file.join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        );
+        assert!(
+            manager
+                .persist_runtime_state(&PersistedGatewayRuntimeState::default())
+                .await
+                .is_err(),
+            "durable write failures must be observable"
+        );
+    }
 }

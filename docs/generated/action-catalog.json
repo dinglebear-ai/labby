@@ -2,8 +2,10 @@
   {
     "service": "doctor",
     "action": "audit.full",
-    "description": "Probe all configured services plus system checks; streams results",
+    "description": "Run system, auth, gateway-upstream, and OAuth-relay checks; streams results",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "stream<Finding>",
     "surface_availability": {
@@ -22,6 +24,8 @@
     "action": "auth.check",
     "description": "Check auth/OAuth configuration: env vars, file presence, and Unix file permissions",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "DoctorReport",
     "surface_availability": {
@@ -40,6 +44,8 @@
     "action": "help",
     "description": "Show this action catalog",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -58,6 +64,10 @@
     "action": "oauth.relay.check",
     "description": "Check public OAuth callback relay registry readiness; optionally probe registered target sockets",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "probe_targets",
@@ -74,7 +84,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -83,6 +93,8 @@
     "action": "proxy.check",
     "description": "Check public Lab and protected MCP proxy endpoints from caller-visible URLs. Probes: app health, protected-resource metadata, OAuth bearer challenge, wrong-path 404 behavior, and (when backend_url is provided) backend-leak redaction.",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "app_url",
@@ -126,6 +138,8 @@
     "action": "schema",
     "description": "Return the parameter schema for a named action",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "action",
@@ -148,40 +162,11 @@
   },
   {
     "service": "doctor",
-    "action": "service.probe",
-    "description": "Probe a single named service via its health endpoint",
-    "destructive": false,
-    "params": [
-      {
-        "name": "service",
-        "ty": "string",
-        "required": true,
-        "description": "Service name to probe (e.g. \"radarr\", \"sonarr\")"
-      },
-      {
-        "name": "instance",
-        "ty": "string",
-        "required": false,
-        "description": "Named instance label for multi-instance services"
-      }
-    ],
-    "returns": "Finding",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "doctor",
     "action": "system.checks",
     "description": "Run local system probes: env vars, Docker, disk, ports, config files",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "DoctorReport",
     "surface_availability": {
@@ -200,6 +185,8 @@
     "action": "fs.list",
     "description": "List immediate entries of a directory inside the configured workspace root",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "path",
@@ -225,6 +212,8 @@
     "action": "fs.preview",
     "description": "Stream a capped byte window from a workspace file (HTTP-only, admin-session gated)",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "path",
@@ -256,6 +245,8 @@
     "action": "help",
     "description": "Show service actions",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "HelpPayload",
     "surface_availability": {
@@ -274,6 +265,8 @@
     "action": "schema",
     "description": "Show the schema for a specific action",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "action",
@@ -299,6 +292,10 @@
     "action": "gateway.add",
     "description": "Add a gateway and reconcile runtime state",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "spec",
@@ -321,7 +318,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -330,6 +327,10 @@
     "action": "gateway.client_config.get",
     "description": "Get the MCP client configuration JSON for one gateway",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -346,7 +347,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -355,6 +356,10 @@
     "action": "gateway.clients.list",
     "description": "List inbound MCP clients/sessions currently connected to this gateway. Best-effort — reflects the most recently observed connect events, not a strict live liveness view",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "GatewayClientView[]",
     "surface_availability": {
@@ -364,7 +369,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -373,6 +378,10 @@
     "action": "gateway.code_mode.get",
     "description": "Read gateway-wide Code Mode exposure and execution settings",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "CodeModeConfig",
     "surface_availability": {
@@ -382,7 +391,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -391,6 +400,10 @@
     "action": "gateway.code_mode.set",
     "description": "Configure gateway code execution limits",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "enabled",
@@ -455,7 +468,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -464,6 +477,10 @@
     "action": "gateway.discover",
     "description": "Scan the machine for MCP server configs from known editors and tools (cursor, claude-code, claude-desktop, codex, windsurf, opencode, vscode, gemini). Read-only — does not modify config.",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "clients",
@@ -486,7 +503,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -495,6 +512,10 @@
     "action": "gateway.discovered_prompts",
     "description": "List discovered upstream prompts for one gateway",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -511,7 +532,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -520,6 +541,10 @@
     "action": "gateway.discovered_resources",
     "description": "List discovered upstream resources for one gateway",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -536,7 +561,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -545,6 +570,10 @@
     "action": "gateway.discovered_tools",
     "description": "List discovered upstream tool metadata and exposure state for one gateway",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -561,7 +590,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -570,6 +599,10 @@
     "action": "gateway.enrich.apply",
     "description": "Persist an operator-approved Code Mode upstream hint after hash validation",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "upstream",
@@ -598,7 +631,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -607,6 +640,10 @@
     "action": "gateway.enrich.preview",
     "description": "Preview Code Mode upstream hint proposals from cached gateway metadata",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "upstreams",
@@ -647,7 +684,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -656,6 +693,10 @@
     "action": "gateway.get",
     "description": "Get one configured gateway",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -672,7 +713,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -681,6 +722,10 @@
     "action": "gateway.import",
     "description": "Import discovered MCP servers into the gateway config as disabled-by-default entries. Servers are marked with their discovery source.",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "all",
@@ -709,7 +754,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -718,6 +763,10 @@
     "action": "gateway.import_pending.approve",
     "description": "Approve a pending discovered server and add it to the gateway config as disabled-by-default",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -734,7 +783,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -743,6 +792,10 @@
     "action": "gateway.import_pending.list",
     "description": "List MCP servers discovered but waiting for operator approval (gateway_import_mode=pending)",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "PendingImportView[]",
     "surface_availability": {
@@ -752,7 +805,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -761,6 +814,10 @@
     "action": "gateway.import_pending.reject",
     "description": "Reject a pending discovered server and tombstone it so it never re-appears",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -777,7 +834,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -786,6 +843,10 @@
     "action": "gateway.import_tombstones.clear",
     "description": "Clear one import tombstone so a previously deleted imported server can be imported again",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -826,7 +887,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -835,6 +896,10 @@
     "action": "gateway.import_tombstones.list",
     "description": "List operator-deleted imported MCP servers that are suppressed from automatic re-import",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "ImportTombstoneView[]",
     "surface_availability": {
@@ -844,7 +909,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -853,6 +918,10 @@
     "action": "gateway.import_tombstones.restore",
     "description": "Atomically clear one import tombstone and restore the matching discovered server as disabled",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -893,7 +962,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -902,6 +971,10 @@
     "action": "gateway.list",
     "description": "List configured gateways",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "ServerView[]",
     "surface_availability": {
@@ -911,7 +984,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -920,6 +993,10 @@
     "action": "gateway.mcp.cleanup",
     "description": "Kill or preview running processes associated with one upstream MCP server",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -948,7 +1025,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -957,6 +1034,10 @@
     "action": "gateway.mcp.disable",
     "description": "Disable an upstream MCP server and optionally clean up running processes",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -985,7 +1066,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -994,6 +1075,10 @@
     "action": "gateway.mcp.enable",
     "description": "Enable an upstream MCP server so new sessions discover and proxy it again",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -1010,7 +1095,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1019,6 +1104,10 @@
     "action": "gateway.mcp.list",
     "description": "List upstream MCP runtime state, discovery counts, and likely stale process counts",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "GatewayMcpRuntimeView[]",
     "surface_availability": {
@@ -1028,7 +1117,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1037,6 +1126,10 @@
     "action": "gateway.oauth.clear",
     "description": "Clear stored upstream OAuth credentials for the shared gateway credential",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "upstream",
@@ -1059,7 +1152,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1068,6 +1161,10 @@
     "action": "gateway.oauth.probe",
     "description": "Probe a URL for OAuth support via RFC 8414 AS metadata discovery. Rejects userinfo, query strings, and fragments. Registers a transient OAuth manager keyed by URL host, port, and path; it is persisted only after a successful callback updates gateway config.",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "url",
@@ -1084,7 +1181,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1093,6 +1190,10 @@
     "action": "gateway.oauth.start",
     "description": "Start the upstream OAuth flow for the shared gateway credential and return the browser authorization URL",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "upstream",
@@ -1115,7 +1216,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1124,6 +1225,10 @@
     "action": "gateway.oauth.status",
     "description": "Read upstream OAuth status for the shared gateway credential",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "upstream",
@@ -1146,7 +1251,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1155,6 +1260,10 @@
     "action": "gateway.oauth.wait",
     "description": "Poll gateway.oauth.status until the upstream is authenticated or timeout elapses. Returns {authenticated: bool, timed_out: bool}. Moves the --wait poll loop out of the CLI into shared dispatch (Q-H3).",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "upstream",
@@ -1183,7 +1292,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1192,6 +1301,10 @@
     "action": "gateway.protected_route.add",
     "description": "Add a Gateway-managed protected MCP route",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "route",
@@ -1208,7 +1321,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1217,6 +1330,10 @@
     "action": "gateway.protected_route.get",
     "description": "Get one Gateway-managed protected MCP route",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -1233,7 +1350,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1242,6 +1359,10 @@
     "action": "gateway.protected_route.list",
     "description": "List Gateway-managed public MCP routes protected by Lab OAuth",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "ProtectedMcpRouteConfig[]",
     "surface_availability": {
@@ -1251,7 +1372,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1260,6 +1381,10 @@
     "action": "gateway.protected_route.remove",
     "description": "Remove a Gateway-managed protected MCP route",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -1276,7 +1401,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1285,6 +1410,10 @@
     "action": "gateway.protected_route.test",
     "description": "Validate a proposed protected MCP route without saving it",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "route",
@@ -1301,7 +1430,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1310,6 +1439,10 @@
     "action": "gateway.protected_route.update",
     "description": "Replace a Gateway-managed protected MCP route",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -1332,7 +1465,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1341,6 +1474,10 @@
     "action": "gateway.public_urls.get",
     "description": "Read the resolved canonical public URL pair (app and MCP gateway). Merges LABBY_PUBLIC_URL / LABBY_MCP_GATEWAY_URL env vars over config.toml [public_urls] section and the legacy [auth].public_url field.",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}",
     "surface_availability": {
@@ -1350,7 +1487,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1359,6 +1496,10 @@
     "action": "gateway.reload",
     "description": "Reload gateways from config and reconcile runtime state",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "GatewayCatalogDiff",
     "surface_availability": {
@@ -1368,7 +1509,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1377,6 +1518,10 @@
     "action": "gateway.remove",
     "description": "Remove a gateway and reconcile runtime state",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -1393,7 +1538,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1402,6 +1547,8 @@
     "action": "gateway.schema",
     "description": "Return the cached tool schemas (input_schema + meta) for one upstream MCP server, filtered by its exposure policy.",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "name",
@@ -1427,6 +1574,10 @@
     "action": "gateway.server.get",
     "description": "Get one unified server row by id",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "id",
@@ -1443,7 +1594,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1452,6 +1603,10 @@
     "action": "gateway.servers",
     "description": "List upstream MCP servers connected to the gateway, with cached tool/prompt/resource counts and tools-capability health.",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "GatewayServersDoc",
     "surface_availability": {
@@ -1461,7 +1616,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1470,6 +1625,10 @@
     "action": "gateway.service_actions",
     "description": "List compiled action metadata for one Lab-backed service",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "service",
@@ -1486,7 +1645,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1495,6 +1654,10 @@
     "action": "gateway.service_config.get",
     "description": "Read canonical config for one Lab-backed service",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "service",
@@ -1511,7 +1674,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1520,6 +1683,10 @@
     "action": "gateway.service_config.set",
     "description": "Write canonical config for one Lab-backed service",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "service",
@@ -1542,7 +1709,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1551,6 +1718,10 @@
     "action": "gateway.status",
     "description": "Get current runtime gateway status",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -1567,7 +1738,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1576,6 +1747,10 @@
     "action": "gateway.supported_services",
     "description": "List metadata-backed Lab services that can be added as virtual servers",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "SupportedServiceView[]",
     "surface_availability": {
@@ -1585,7 +1760,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1594,6 +1769,10 @@
     "action": "gateway.test",
     "description": "Test a configured or proposed gateway without saving it (probing a stdio gateway runs its local command)",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -1616,7 +1795,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1625,6 +1804,10 @@
     "action": "gateway.update",
     "description": "Update a gateway and reconcile runtime state",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -1653,7 +1836,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1662,6 +1845,10 @@
     "action": "gateway.usage.calls",
     "description": "List raw gateway upstream call records, newest first",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "since_unix",
@@ -1688,10 +1875,16 @@
         "description": "Max rows to return, capped at 1000 (default 100)"
       },
       {
-        "name": "offset",
-        "ty": "integer",
+        "name": "cursor",
+        "ty": "string",
         "required": false,
-        "description": "Row offset for pagination"
+        "description": "Opaque keyset cursor returned by the previous page"
+      },
+      {
+        "name": "include_total",
+        "ty": "boolean",
+        "required": false,
+        "description": "Compute exact matching row count (default false)"
       }
     ],
     "returns": "GatewayUsageCallsView",
@@ -1702,7 +1895,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1711,6 +1904,10 @@
     "action": "gateway.usage.metrics",
     "description": "Aggregate gateway upstream call telemetry: totals, error rate, top tools, top actors",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "since_unix",
@@ -1739,7 +1936,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1748,6 +1945,10 @@
     "action": "gateway.virtual_server.disable",
     "description": "Disable a Lab-backed virtual server without removing its config",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "id",
@@ -1764,7 +1965,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1773,6 +1974,10 @@
     "action": "gateway.virtual_server.enable",
     "description": "Enable a configured Lab-backed service as a virtual server",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "id",
@@ -1789,7 +1994,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1798,6 +2003,10 @@
     "action": "gateway.virtual_server.get_mcp_policy",
     "description": "Read the MCP action allowlist for a Lab-backed virtual server",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "id",
@@ -1814,7 +2023,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1823,6 +2032,10 @@
     "action": "gateway.virtual_server.quarantine.list",
     "description": "List Lab-backed virtual servers quarantined during config migration",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "ServerView[]",
     "surface_availability": {
@@ -1832,7 +2045,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1841,6 +2054,10 @@
     "action": "gateway.virtual_server.quarantine.restore",
     "description": "Restore a quarantined Lab-backed virtual server into the active gateway list",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "id",
@@ -1857,7 +2074,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1866,6 +2083,10 @@
     "action": "gateway.virtual_server.remove",
     "description": "Remove a Lab-backed virtual server config entry",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "id",
@@ -1882,7 +2103,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1891,6 +2112,10 @@
     "action": "gateway.virtual_server.set_mcp_policy",
     "description": "Replace the MCP action allowlist for a Lab-backed virtual server",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "id",
@@ -1913,7 +2138,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1922,6 +2147,10 @@
     "action": "gateway.virtual_server.set_surface",
     "description": "Enable or disable one surface on a Lab-backed virtual server",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "id",
@@ -1950,7 +2179,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -1959,6 +2188,8 @@
     "action": "help",
     "description": "Show this action catalog",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -1977,6 +2208,8 @@
     "action": "schema",
     "description": "Return the parameter schema for a named action",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "action",
@@ -2002,6 +2235,8 @@
     "action": "help",
     "description": "Show this action catalog",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -2020,6 +2255,8 @@
     "action": "onboarding.audit",
     "description": "Audit service onboarding against the current repo contract",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "services",
@@ -2045,6 +2282,8 @@
     "action": "schema",
     "description": "Return the parameter schema for a named action",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "action",
@@ -2070,6 +2309,8 @@
     "action": "help",
     "description": "Show this action catalog",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -2088,6 +2329,8 @@
     "action": "schema",
     "description": "Return the parameter schema for a named action",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "action",
@@ -2113,6 +2356,10 @@
     "action": "server_logs.query",
     "description": "Read and filter Labby's rolling JSON server process logs",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "limit",
@@ -2177,7 +2424,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2185,7 +2432,11 @@
     "service": "setup",
     "action": "bootstrap",
     "description": "Create ~/.labby/.env with a generated token + loopback defaults when absent (first-run)",
-    "destructive": false,
+    "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "BootstrapOutcome",
     "surface_availability": {
@@ -2195,7 +2446,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2204,6 +2455,8 @@
     "action": "check",
     "description": "Check local Lab setup prerequisites without mutating the filesystem",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "SetupReport",
     "surface_availability": {
@@ -2222,6 +2475,10 @@
     "action": "draft.commit",
     "description": "Run audit and atomically merge .env.draft into .env",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "force",
@@ -2238,7 +2495,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2247,6 +2504,10 @@
     "action": "draft.discard",
     "description": "Discard .env.draft without modifying .env",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "DraftDiscardOutcome",
     "surface_availability": {
@@ -2256,7 +2517,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2265,6 +2526,10 @@
     "action": "draft.get",
     "description": "Read .env.draft with secret values masked to '***'",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "DraftEntry[]",
     "surface_availability": {
@@ -2274,7 +2539,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2282,7 +2547,11 @@
     "service": "setup",
     "action": "draft.set",
     "description": "Write a key (or section) into .env.draft (validated server-side)",
-    "destructive": false,
+    "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "entries",
@@ -2305,7 +2574,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2314,6 +2583,10 @@
     "action": "finalize",
     "description": "Alias for draft.commit; same params, same returns",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "force",
@@ -2330,7 +2603,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2339,6 +2612,8 @@
     "action": "help",
     "description": "Show this action catalog",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -2357,6 +2632,10 @@
     "action": "install_plugin",
     "description": "Deprecated alias for `plugin.install`",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "service",
@@ -2373,7 +2652,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2382,6 +2661,10 @@
     "action": "installed_plugins",
     "description": "Deprecated alias for `plugins.installed`",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "force",
@@ -2398,7 +2681,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2407,6 +2690,10 @@
     "action": "plugin.install",
     "description": "Install the Claude Code plugin for one configured service",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "service",
@@ -2423,7 +2710,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2432,6 +2719,10 @@
     "action": "plugin.uninstall",
     "description": "Uninstall the Claude Code plugin for one service",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "service",
@@ -2448,7 +2739,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2457,6 +2748,10 @@
     "action": "plugin_connectivity",
     "description": "Validate connectivity to the lab MCP server at {server_url}/health",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "server_url",
@@ -2473,7 +2768,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2482,6 +2777,10 @@
     "action": "plugin_export",
     "description": "Read ~/.labby/.env and return current values keyed by userConfig field name",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "PluginExportOutcome",
     "surface_availability": {
@@ -2491,7 +2790,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2500,6 +2799,10 @@
     "action": "plugin_hook",
     "description": "Run binary-owned local setup checks for Claude plugin hooks; in repair mode also syncs CLAUDE_PLUGIN_OPTION_* and probes server connectivity",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "repair",
@@ -2516,7 +2819,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2525,6 +2828,10 @@
     "action": "plugin_sync",
     "description": "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "PluginSyncOutcome",
     "surface_availability": {
@@ -2534,7 +2841,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2543,6 +2850,10 @@
     "action": "plugins.installed",
     "description": "List installed Claude Code lab plugins",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "force",
@@ -2559,7 +2870,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2568,6 +2879,10 @@
     "action": "repair",
     "description": "Repair missing local Lab setup prerequisites without contacting external services",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "SetupReport",
     "surface_availability": {
@@ -2577,7 +2892,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2586,6 +2901,8 @@
     "action": "schema",
     "description": "Return the parameter schema for a named action",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "action",
@@ -2611,6 +2928,8 @@
     "action": "schema.get",
     "description": "UiSchema projection for all (or filtered) services",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "services",
@@ -2636,6 +2955,10 @@
     "action": "services.status",
     "description": "Join service configuration, draft, and Claude plugin state",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "ServiceStatus[]",
     "surface_availability": {
@@ -2645,7 +2968,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2654,6 +2977,10 @@
     "action": "services_status",
     "description": "Deprecated alias for `services.status`",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "ServiceStatus[]",
     "surface_availability": {
@@ -2663,7 +2990,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2672,6 +2999,10 @@
     "action": "settings.advanced_state",
     "description": "Return redacted advanced settings state",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "SettingsState",
     "surface_availability": {
@@ -2681,7 +3012,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2690,6 +3021,10 @@
     "action": "settings.config.update",
     "description": "Admin-only scalar config.toml settings update",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "entries",
@@ -2706,7 +3041,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2715,6 +3050,10 @@
     "action": "settings.env.update",
     "description": "Admin-only targeted .env settings update for known low-risk LABBY_* keys",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "entries",
@@ -2731,7 +3070,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2740,6 +3079,8 @@
     "action": "settings.env_schema",
     "description": "Return generated and registry-derived environment variable inventory",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "EnvSettingSpec[]",
     "surface_availability": {
@@ -2758,6 +3099,8 @@
     "action": "settings.schema",
     "description": "Return the safe settings schema with risk and write-policy metadata",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "SettingsSchema",
     "surface_availability": {
@@ -2776,6 +3119,10 @@
     "action": "settings.state",
     "description": "Return section-scoped safe settings values and source metadata",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "section",
@@ -2792,7 +3139,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2801,6 +3148,10 @@
     "action": "settings.update",
     "description": "Update non-secret operator settings with validation",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "services.built_in_upstream_apis_enabled",
@@ -2817,7 +3168,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2826,6 +3177,10 @@
     "action": "state",
     "description": "First-run + draft snapshot for the wizard / settings UI",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [],
     "returns": "SetupSnapshot",
     "surface_availability": {
@@ -2835,7 +3190,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2844,6 +3199,10 @@
     "action": "uninstall_plugin",
     "description": "Deprecated alias for `plugin.uninstall`",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "service",
@@ -2860,7 +3219,7 @@
       "web_ui": true
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2869,6 +3228,8 @@
     "action": "help",
     "description": "Show this action catalog",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
@@ -2887,6 +3248,8 @@
     "action": "schema",
     "description": "Return the parameter schema for a named action",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [
       {
         "name": "action",
@@ -2912,6 +3275,10 @@
     "action": "snippets.create",
     "description": "Create a user snippet under LABBY_HOME/snippets",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -2946,7 +3313,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2955,6 +3322,10 @@
     "action": "snippets.exec",
     "description": "Execute a snippet through gateway Code Mode",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -2977,7 +3348,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -2986,6 +3357,10 @@
     "action": "snippets.get",
     "description": "Return one snippet body and metadata",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -3002,7 +3377,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3011,6 +3386,8 @@
     "action": "snippets.list",
     "description": "List built-in and user executable Code Mode snippets",
     "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
     "params": [],
     "returns": "SnippetList",
     "surface_availability": {
@@ -3029,6 +3406,10 @@
     "action": "snippets.promote",
     "description": "Promote a successful live Code Mode execution into a user snippet",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "execution_id",
@@ -3059,12 +3440,6 @@
         "ty": "boolean",
         "required": false,
         "description": "Allow creating a user snippet that shadows a built-in snippet"
-      },
-      {
-        "name": "confirm",
-        "ty": "boolean",
-        "required": false,
-        "description": "Required by headless MCP clients for destructive promotion"
       }
     ],
     "returns": "SnippetPromotionResult",
@@ -3075,7 +3450,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3084,6 +3459,10 @@
     "action": "snippets.remove",
     "description": "Remove a user snippet",
     "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -3100,7 +3479,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3109,6 +3488,10 @@
     "action": "snippets.test",
     "description": "Execute one snippet and report pass/fail",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -3137,7 +3520,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -3146,6 +3529,10 @@
     "action": "snippets.validate",
     "description": "Validate a snippet body or existing snippet without executing it",
     "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
     "params": [
       {
         "name": "name",
@@ -3168,7 +3555,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   }

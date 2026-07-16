@@ -97,6 +97,9 @@ pub struct UpstreamPool {
     oauth_client_cache: Option<OauthClientCache>,
     /// Background reprobe task cancellation tokens, keyed by upstream name.
     probe_tasks: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    /// Shared fleet-wide gate for periodic reprobes. Per-upstream tasks retain
+    /// independent schedules, but only a bounded number may probe concurrently.
+    reprobe_semaphore: Arc<tokio::sync::Semaphore>,
     /// Per-upstream lazy connection gates to prevent duplicate cold starts.
     lazy_connect_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
     /// Per-`(upstream, subject)` cached connections for the OAuth / subject-scoped
@@ -252,6 +255,9 @@ impl UpstreamPool {
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             oauth_client_cache: None,
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
+            reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                upstream_discovery_concurrency(None),
+            )),
             lazy_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             subject_connections: Arc::new(RwLock::new(HashMap::new())),
             subject_connect_locks: Arc::new(RwLock::new(HashMap::new())),

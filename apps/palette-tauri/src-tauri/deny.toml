@@ -1,0 +1,13 @@
+[advisories]
+# Tauri's Linux desktop stack necessarily includes archived GTK3 bindings.
+# Track vulnerabilities here; do not fail this independent lock audit on
+# maintenance-status notices that have no compatible Tauri replacement.
+unmaintained = "none"
+ignore = [
+  # plist 1.9 (via tauri-utils 2.9) constrains quick-xml to 0.39. Palette does
+  # not parse caller-controlled XML/plist data; these paths are build/runtime
+  # platform metadata only. Remove both exceptions as soon as tauri-utils
+  # accepts quick-xml >=0.41.
+  { id = "RUSTSEC-2026-0194", reason = "transitive plist parser is not exposed to untrusted XML; upstream tauri-utils currently prevents the fixed quick-xml" },
+  { id = "RUSTSEC-2026-0195", reason = "transitive plist parser is not exposed to untrusted XML; upstream tauri-utils currently prevents the fixed quick-xml" },
+]

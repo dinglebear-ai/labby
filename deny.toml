@@ -3,11 +3,11 @@ unmaintained = "all"
 yanked = "deny"
 ignore = [
     # owner: jmagar
-    # reason: RSA PKCS#1 v1.5 timing side-channel (CRT blinding omitted). Lab does not perform
-    #         RSA signing or decryption at the TLS termination point — TLS is handled by SWAG/nginx
-    #         upstream. The rsa crate is a transitive dep; no upstream patch available.
+    # reason: RSA remains transitively required to verify Google OIDC RS256 ID tokens. Lab's own
+    #         access-token signing uses Ed25519 and performs no production RSA private-key operation;
+    #         the affected RSA decryption/signing path is therefore not reachable in production.
     # re-review: 2026-09 — drop once rsa upstream ships a fix or the dep is removed
-    { id = "RUSTSEC-2023-0071", reason = "RSA timing side-channel; no upstream patch yet — TLS offloaded to SWAG, not in our hot path" },
+    { id = "RUSTSEC-2023-0071", reason = "RSA is verification-only for Google OIDC; Lab access tokens use Ed25519 and no production private-key RSA operation" },
 ]
 
 [licenses]

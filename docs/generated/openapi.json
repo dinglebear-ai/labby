@@ -100,7 +100,7 @@
           "doctor"
         ],
         "summary": "Dispatch action to doctor",
-        "description": "Execute an action on the doctor service. Use `action: \"help\"` to list available actions.",
+        "description": "Execute an action on the doctor service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -134,6 +134,16 @@
           },
           "401": {
             "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -166,7 +176,7 @@
           "fs"
         ],
         "summary": "Dispatch action to fs",
-        "description": "Execute an action on the fs service. Use `action: \"help\"` to list available actions.",
+        "description": "Execute an action on the fs service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -200,6 +210,16 @@
           },
           "401": {
             "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -232,7 +252,7 @@
           "gateway"
         ],
         "summary": "Dispatch action to gateway",
-        "description": "Execute an action on the gateway service. Use `action: \"help\"` to list available actions.",
+        "description": "Execute an action on the gateway service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -274,6 +294,16 @@
               }
             }
           },
+          "403": {
+            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation error (missing or invalid param)",
             "content": {
@@ -298,7 +328,7 @@
           "lab_admin"
         ],
         "summary": "Dispatch action to lab_admin",
-        "description": "Execute an action on the lab_admin service. Use `action: \"help\"` to list available actions.",
+        "description": "Execute an action on the lab_admin service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -332,6 +362,16 @@
           },
           "401": {
             "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -493,7 +533,7 @@
           "server_logs"
         ],
         "summary": "Dispatch action to server_logs",
-        "description": "Execute an action on the server_logs service. Use `action: \"help\"` to list available actions.",
+        "description": "Execute an action on the server_logs service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -527,6 +567,16 @@
           },
           "401": {
             "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -559,7 +609,7 @@
           "setup"
         ],
         "summary": "Dispatch action to setup",
-        "description": "Execute an action on the setup service. Use `action: \"help\"` to list available actions.",
+        "description": "Execute an action on the setup service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -601,6 +651,16 @@
               }
             }
           },
+          "403": {
+            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation error (missing or invalid param)",
             "content": {
@@ -625,7 +685,7 @@
           "snippets"
         ],
         "summary": "Dispatch action to snippets",
-        "description": "Execute an action on the snippets service. Use `action: \"help\"` to list available actions.",
+        "description": "Execute an action on the snippets service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -659,6 +719,16 @@
           },
           "401": {
             "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSdk"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks the action's required `lab:admin` scope",
             "content": {
               "application/json": {
                 "schema": {
@@ -738,20 +808,6 @@
         ],
         "properties": {
           "action": {
-            "type": "string"
-          }
-        }
-      },
-      "DoctorServiceProbeParams": {
-        "type": "object",
-        "required": [
-          "service"
-        ],
-        "properties": {
-          "instance": {
-            "type": "string"
-          },
-          "service": {
             "type": "string"
           }
         }
@@ -1408,10 +1464,13 @@
       "GatewayGatewayUsageCallsParams": {
         "type": "object",
         "properties": {
-          "limit": {
-            "type": "integer"
+          "cursor": {
+            "type": "string"
           },
-          "offset": {
+          "include_total": {
+            "type": "boolean"
+          },
+          "limit": {
             "type": "integer"
           },
           "since_unix": {
@@ -2023,9 +2082,6 @@
           "name"
         ],
         "properties": {
-          "confirm": {
-            "type": "boolean"
-          },
           "description": {
             "type": "string"
           },

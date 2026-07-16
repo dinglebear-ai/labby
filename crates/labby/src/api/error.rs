@@ -45,7 +45,9 @@ impl IntoResponse for ApiError {
             "auth_failed" => StatusCode::UNAUTHORIZED,
             "not_found" => StatusCode::NOT_FOUND,
             "rate_limited" | "queue_saturated" | "session_limit_exceeded" | "too_many_subscribers" => StatusCode::TOO_MANY_REQUESTS,
-            "sync_in_progress" | "service_unavailable" | "provider_unavailable" => {
+            "sync_in_progress"
+            | "service_unavailable"
+            | "provider_unavailable" => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
             "missing_param" | "invalid_param" | "validation_failed" | "invalid_hint" => {
@@ -76,6 +78,7 @@ impl IntoResponse for ApiError {
             "secrets_export_not_allowed" => StatusCode::FORBIDDEN,
             "install_timeout"
             | "timeout"
+            | "audit_timeout"
             | "code_mode_timeout"
             | "code_mode_fuel_exhausted"
             | "provider_timeout" => StatusCode::GATEWAY_TIMEOUT,
@@ -108,7 +111,12 @@ impl IntoResponse for ApiError {
             | "deploy_failed"
             | "not_connected"
             | "invalid_provider_output" => StatusCode::BAD_GATEWAY,
-            "conflict" | "ambiguous_tool" | "restart_required" | "stale_suggestion" => {
+            "conflict"
+            | "ambiguous_tool"
+            | "restart_required"
+            | "stale_suggestion"
+            | "merge_write_conflict"
+            | "workspace_not_configured" => {
                 StatusCode::CONFLICT
             }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -242,6 +250,19 @@ mod tests {
         assert_eq!(
             status_for("invalid_provider_output"),
             StatusCode::BAD_GATEWAY
+        );
+    }
+
+    #[test]
+    fn setup_and_workspace_kinds_do_not_fall_through_to_500() {
+        assert_eq!(status_for("audit_timeout"), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(status_for("merge_write_conflict"), StatusCode::CONFLICT);
+        assert_eq!(status_for("workspace_not_configured"), StatusCode::CONFLICT);
+        // A post-commit draft cleanup failure really is an internal partial
+        // transaction failure and intentionally remains HTTP 500.
+        assert_eq!(
+            status_for("draft_clear_failed"),
+            StatusCode::INTERNAL_SERVER_ERROR
         );
     }
 

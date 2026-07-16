@@ -399,6 +399,36 @@ static DEPLOY_TEST_META: labby_primitives::plugin::PluginMeta =
         supports_multi_instance: false,
     };
 
+static FIXTURE_TEST_REQUIRED_ENV: &[labby_primitives::plugin::EnvVar] = &[
+    labby_primitives::plugin::EnvVar {
+        name: "FIXTURE_URL",
+        description: "Fixture service URL",
+        example: "http://127.0.0.1:9999",
+        secret: false,
+        ui: None,
+    },
+    labby_primitives::plugin::EnvVar {
+        name: "FIXTURE_TOKEN",
+        description: "Fixture service token",
+        example: "secret",
+        secret: true,
+        ui: None,
+    },
+];
+
+static FIXTURE_TEST_META: labby_primitives::plugin::PluginMeta =
+    labby_primitives::plugin::PluginMeta {
+        name: "fixture-service",
+        display_name: "Fixture Service",
+        description: "test-only metadata-backed service",
+        category: labby_primitives::plugin::Category::Bootstrap,
+        docs_url: "",
+        required_env: FIXTURE_TEST_REQUIRED_ENV,
+        optional_env: &[],
+        default_port: Some(9999),
+        supports_multi_instance: false,
+    };
+
 impl crate::registry::InProcessServiceRegistry for DeployTestRegistry {
     fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
         Vec::new()
@@ -407,11 +437,11 @@ impl crate::registry::InProcessServiceRegistry for DeployTestRegistry {
 
 impl crate::gateway::service_registry::GatewayServiceRegistry for DeployTestRegistry {
     fn service_names(&self) -> Vec<&'static str> {
-        vec!["deploy"]
+        vec!["deploy", "fixture-service"]
     }
 
     fn contains_service(&self, name: &str) -> bool {
-        name == "deploy"
+        matches!(name, "deploy" | "fixture-service")
     }
 
     fn service_actions(
@@ -435,7 +465,11 @@ impl crate::gateway::service_registry::GatewayServiceRegistry for DeployTestRegi
     }
 
     fn service_meta(&self, name: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
-        (name == "deploy").then_some(&DEPLOY_TEST_META)
+        match name {
+            "deploy" => Some(&DEPLOY_TEST_META),
+            "fixture-service" => Some(&FIXTURE_TEST_META),
+            _ => None,
+        }
     }
 }
 
@@ -1105,7 +1139,6 @@ async fn enabling_virtual_server_marks_existing_server_row_enabled() {
 // rejected before a service row can be created. Needs a service_meta service with
 // env fields.
 #[tokio::test]
-#[ignore = "service_config.set requires a service_meta service with env fields; only deploy resolves and it has none — prod change required"]
 async fn enabling_virtual_server_creates_missing_service_row() {
     let manager = test_manager();
 
@@ -1113,10 +1146,10 @@ async fn enabling_virtual_server_creates_missing_service_row() {
         &manager,
         "gateway.service_config.set",
         json!({
-            "service": "deploy",
+            "service": "fixture-service",
             "values": {
-                "PLEX_URL": "http://127.0.0.1:32400",
-                "PLEX_TOKEN": "token"
+                "FIXTURE_URL": "http://127.0.0.1:9999",
+                "FIXTURE_TOKEN": "token"
             }
         }),
     )
@@ -1126,12 +1159,12 @@ async fn enabling_virtual_server_creates_missing_service_row() {
     let value = dispatch_with_manager(
         &manager,
         "gateway.virtual_server.enable",
-        json!({"id": "deploy"}),
+        json!({"id": "fixture-service"}),
     )
     .await
     .expect("enable missing virtual server");
 
-    assert_eq!(value["id"], "deploy");
+    assert_eq!(value["id"], "fixture-service");
     assert_eq!(value["source"], "in_process");
     assert_eq!(value["enabled"], true);
     assert_eq!(value["surfaces"]["mcp"]["enabled"], true);
@@ -1181,7 +1214,6 @@ async fn disabling_virtual_server_keeps_server_row_visible_but_disabled() {
 // declares none, so the write is rejected. Needs a service_meta service with env
 // fields.
 #[tokio::test]
-#[ignore = "service_config.set requires a service_meta service with env fields; only deploy resolves and it has none — prod change required"]
 async fn setting_service_config_writes_canonical_env_backed_fields() {
     let manager = test_manager();
 
@@ -1189,31 +1221,31 @@ async fn setting_service_config_writes_canonical_env_backed_fields() {
         &manager,
         "gateway.service_config.set",
         json!({
-            "service": "deploy",
+            "service": "fixture-service",
             "values": {
-                "PLEX_URL": "http://127.0.0.1:32400",
-                "PLEX_TOKEN": "token"
+                "FIXTURE_URL": "http://127.0.0.1:9999",
+                "FIXTURE_TOKEN": "token"
             }
         }),
     )
     .await
     .expect("set service config");
 
-    assert_eq!(value["service"], "deploy");
+    assert_eq!(value["service"], "fixture-service");
     assert_eq!(value["configured"], true);
     assert!(
         value["fields"]
             .as_array()
             .expect("fields")
             .iter()
-            .any(|field| field["name"] == "PLEX_URL" && field["present"] == true)
+            .any(|field| field["name"] == "FIXTURE_URL" && field["present"] == true)
     );
     assert!(
         value["fields"]
             .as_array()
             .expect("fields")
             .iter()
-            .any(|field| field["name"] == "PLEX_TOKEN" && field["present"] == true)
+            .any(|field| field["name"] == "FIXTURE_TOKEN" && field["present"] == true)
     );
 }
 
@@ -1223,14 +1255,13 @@ async fn setting_service_config_writes_canonical_env_backed_fields() {
 // declares none, so the write is rejected before the read-back can be exercised.
 // Needs a service_meta service with env fields.
 #[tokio::test]
-#[ignore = "service_config.set requires a service_meta service with env fields; only deploy resolves and it has none — prod change required"]
 async fn configured_but_disabled_service_can_be_read_back_for_editing() {
     let manager = test_manager();
     manager
         .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
             virtual_servers: vec![labby_runtime::gateway_config::VirtualServerConfig {
-                id: "deploy".to_string(),
-                service: "deploy".to_string(),
+                id: "fixture-service".to_string(),
+                service: "fixture-service".to_string(),
                 enabled: false,
                 surfaces: labby_runtime::gateway_config::VirtualServerSurfacesConfig::default(),
                 mcp_policy: None,
@@ -1243,10 +1274,10 @@ async fn configured_but_disabled_service_can_be_read_back_for_editing() {
         &manager,
         "gateway.service_config.set",
         json!({
-            "service": "deploy",
+            "service": "fixture-service",
             "values": {
-                "PLEX_URL": "http://127.0.0.1:32400",
-                "PLEX_TOKEN": "token"
+                "FIXTURE_URL": "http://127.0.0.1:9999",
+                "FIXTURE_TOKEN": "token"
             }
         }),
     )
@@ -1256,27 +1287,27 @@ async fn configured_but_disabled_service_can_be_read_back_for_editing() {
     let value = dispatch_with_manager(
         &manager,
         "gateway.service_config.get",
-        json!({"service": "deploy"}),
+        json!({"service": "fixture-service"}),
     )
     .await
     .expect("get service config");
 
-    assert_eq!(value["service"], "deploy");
+    assert_eq!(value["service"], "fixture-service");
     assert_eq!(value["configured"], true);
     assert!(
         value["fields"]
             .as_array()
             .expect("fields")
             .iter()
-            .any(|field| field["name"] == "PLEX_URL"
-                && field["value_preview"] == "http://127.0.0.1:32400")
+            .any(|field| field["name"] == "FIXTURE_URL"
+                && field["value_preview"] == "http://127.0.0.1:9999")
     );
     assert!(
         value["fields"]
             .as_array()
             .expect("fields")
             .iter()
-            .any(|field| field["name"] == "PLEX_TOKEN" && field["secret"] == true)
+            .any(|field| field["name"] == "FIXTURE_TOKEN" && field["secret"] == true)
     );
 }
 

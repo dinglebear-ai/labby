@@ -4,8 +4,8 @@
 #[cfg(feature = "gateway")]
 use super::oauth_upstream_subject_for_request;
 use super::{
-    actor_key_from_extensions, code_mode_read_scope_allowed, subject_from_extensions,
-    tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
+    actor_key_from_extensions, builtin_action_requires_admin, code_mode_read_scope_allowed,
+    subject_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
 use crate::dispatch::error::ToolError;
 use crate::registry::RegisteredService;
@@ -20,8 +20,8 @@ fn noop_dispatch(
     Box::pin(async { Ok(Value::Null) })
 }
 
-fn make_auth(scopes: &[&str]) -> crate::api::oauth::AuthContext {
-    crate::api::oauth::AuthContext {
+fn make_auth(scopes: &[&str]) -> labby_auth::auth_context::AuthContext {
+    labby_auth::auth_context::AuthContext {
         sub: "test-user".to_string(),
         actor_key: None,
         scopes: scopes.iter().map(|s| s.to_string()).collect(),
@@ -35,15 +35,17 @@ fn make_auth(scopes: &[&str]) -> crate::api::oauth::AuthContext {
 #[test]
 fn server_reads_subject_scoped_upstream_pool_from_request_extensions() {
     let mut parts = axum::http::Request::new(()).into_parts().0;
-    parts.extensions.insert(crate::api::oauth::AuthContext {
-        sub: "alice".to_string(),
-        actor_key: Some(std::sync::Arc::<str>::from("actor-alice")),
-        scopes: vec!["lab".to_string()],
-        issuer: "https://lab.example.com".to_string(),
-        via_session: true,
-        csrf_token: None,
-        email: Some("alice@example.com".to_string()),
-    });
+    parts
+        .extensions
+        .insert(labby_auth::auth_context::AuthContext {
+            sub: "alice".to_string(),
+            actor_key: Some(std::sync::Arc::<str>::from("actor-alice")),
+            scopes: vec!["lab".to_string()],
+            issuer: "https://lab.example.com".to_string(),
+            via_session: true,
+            csrf_token: None,
+            email: Some("alice@example.com".to_string()),
+        });
 
     let mut extensions = rmcp::model::Extensions::new();
     extensions.insert(parts);
@@ -64,7 +66,7 @@ fn gateway_builtin_actions_require_admin_scope() {
         actions: crate::dispatch::gateway::ACTIONS,
         dispatch: noop_dispatch,
     };
-    let read_only = crate::api::oauth::AuthContext {
+    let read_only = labby_auth::auth_context::AuthContext {
         sub: "alice".to_string(),
         actor_key: None,
         scopes: vec!["lab".to_string()],
@@ -73,7 +75,7 @@ fn gateway_builtin_actions_require_admin_scope() {
         csrf_token: None,
         email: None,
     };
-    let admin = crate::api::oauth::AuthContext {
+    let admin = labby_auth::auth_context::AuthContext {
         scopes: vec!["lab:admin".to_string()],
         ..read_only.clone()
     };
@@ -118,7 +120,7 @@ fn snippets_builtin_actions_require_catalog_admin_scope() {
     for spec in crate::dispatch::snippets::ACTIONS {
         assert_eq!(
             spec.requires_admin,
-            super::builtin_action_requires_admin(&entry, spec.name),
+            builtin_action_requires_admin(&entry, spec.name),
             "MCP admin gate must follow snippets catalog for `{}`",
             spec.name
         );
@@ -138,8 +140,49 @@ fn snippets_builtin_actions_require_catalog_admin_scope() {
 }
 
 #[test]
+fn doctor_relay_check_uses_catalog_admin_gate() {
+    let entry = RegisteredService {
+        name: "doctor",
+        description: "Doctor",
+        category: "bootstrap",
+        kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+        status: "available",
+        actions: crate::dispatch::doctor::ACTIONS,
+        dispatch: noop_dispatch,
+    };
+    let read_only = make_auth(&["lab:read"]);
+    let admin = make_auth(&["lab:admin"]);
+    assert!(builtin_action_requires_admin(&entry, "oauth.relay.check"));
+    assert!(!tool_execute_builtin_action_allowed(
+        &entry,
+        "oauth.relay.check",
+        Some(&read_only)
+    ));
+    assert!(tool_execute_builtin_action_allowed(
+        &entry,
+        "doctor.oauth.relay.check",
+        Some(&admin)
+    ));
+}
+
+#[test]
+fn every_registered_action_uses_its_catalog_admin_metadata() {
+    for entry in crate::registry::build_default_registry().services() {
+        for spec in entry.actions {
+            assert_eq!(
+                builtin_action_requires_admin(entry, spec.name),
+                spec.requires_admin,
+                "{}::{}",
+                entry.name,
+                spec.name
+            );
+        }
+    }
+}
+
+#[test]
 fn code_mode_scope_allows_read_but_tool_execute_does_not() {
-    let base = crate::api::oauth::AuthContext {
+    let base = labby_auth::auth_context::AuthContext {
         sub: "alice".to_string(),
         actor_key: None,
         scopes: vec!["lab:read".to_string()],
@@ -148,19 +191,19 @@ fn code_mode_scope_allows_read_but_tool_execute_does_not() {
         csrf_token: None,
         email: None,
     };
-    let lab = crate::api::oauth::AuthContext {
+    let lab = labby_auth::auth_context::AuthContext {
         scopes: vec!["lab".to_string()],
         ..base.clone()
     };
-    let admin = crate::api::oauth::AuthContext {
+    let admin = labby_auth::auth_context::AuthContext {
         scopes: vec!["lab:admin".to_string()],
         ..base.clone()
     };
-    let empty = crate::api::oauth::AuthContext {
+    let empty = labby_auth::auth_context::AuthContext {
         scopes: Vec::new(),
         ..base.clone()
     };
-    let unrelated = crate::api::oauth::AuthContext {
+    let unrelated = labby_auth::auth_context::AuthContext {
         scopes: vec!["profile".to_string()],
         ..base.clone()
     };
@@ -179,14 +222,14 @@ fn code_mode_scope_allows_read_but_tool_execute_does_not() {
 }
 
 #[test]
-fn setup_destructive_builtin_actions_require_admin_scope() {
+fn setup_state_and_destructive_actions_require_admin_scope() {
     let registry = crate::registry::build_default_registry();
     let entry = registry
         .services()
         .iter()
         .find(|service| service.name == "setup")
         .expect("setup service");
-    let read_only = crate::api::oauth::AuthContext {
+    let read_only = labby_auth::auth_context::AuthContext {
         sub: "alice".to_string(),
         actor_key: None,
         scopes: vec!["lab".to_string()],
@@ -195,15 +238,20 @@ fn setup_destructive_builtin_actions_require_admin_scope() {
         csrf_token: None,
         email: None,
     };
-    let admin = crate::api::oauth::AuthContext {
+    let admin = labby_auth::auth_context::AuthContext {
         scopes: vec!["lab:admin".to_string()],
         ..read_only.clone()
     };
 
-    assert!(tool_execute_builtin_action_allowed(
+    assert!(!tool_execute_builtin_action_allowed(
         entry,
         "state",
         Some(&read_only)
+    ));
+    assert!(tool_execute_builtin_action_allowed(
+        entry,
+        "state",
+        Some(&admin)
     ));
     assert!(!tool_execute_builtin_action_allowed(
         entry,

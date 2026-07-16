@@ -102,6 +102,7 @@ rmcp = { version = "2.1", features = [
 # oauth / jwt
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 rsa = "0.10.0-rc.16"
+ed25519-dalek = { version = "2.2", features = ["pkcs8", "pem"] }
 rand = "0.10"
 rusqlite = { version = "0.39", features = ["bundled"] }
 sha2 = "0.11"

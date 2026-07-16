@@ -173,6 +173,13 @@ pub struct GatewayUsageCallsParams {
     pub upstream: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Opaque keyset cursor returned by the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Request an exact COUNT(*) for this filter. Disabled by default.
+    #[serde(default)]
+    pub include_total: Option<bool>,
+    /// Deprecated. Non-zero offsets are rejected to prevent deep scans.
     #[serde(default)]
     pub offset: Option<usize>,
 }
