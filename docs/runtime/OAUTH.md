@@ -40,7 +40,8 @@ When OAuth mode is configured, `labby serve` performs these steps at startup:
 
 1. Validate that `LABBY_PUBLIC_URL`, Google credentials, and `LABBY_AUTH_ADMIN_EMAIL` are present.
 2. Open the SQLite auth store in WAL mode with a non-zero busy timeout.
-3. Load or generate the persisted RSA signing key.
+3. Load or generate the persisted Ed25519 signing key. Legacy RSA key files are
+   quarantined and rotated on first startup after upgrade.
 4. Build the concrete Google provider callback URL from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`.
 
 Startup fails closed if any of those steps fail.
@@ -317,9 +318,10 @@ Validation steps:
 6. Validate the `aud` claim matches the configured audience.
 7. Extract scopes from the `scope` claim (space-separated string) or the `scp` claim (JSON array).
 
-### Supported Algorithm
+### Supported Algorithms
 
-- RS256
+- Lab-issued access tokens: EdDSA (Ed25519)
+- Google ID tokens: RS256 verification only
 
 ### Scopes
 

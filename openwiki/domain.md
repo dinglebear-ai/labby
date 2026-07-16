@@ -135,16 +135,18 @@ dispatch/
 
 ### MCP Tool Mapping
 
-Each service exposes **one MCP tool** per action, not per method:
+Each runtime service exposes exactly **one MCP tool**. The tool accepts a dotted
+`action` plus a free-form `params` object and dispatches through the shared
+catalog:
 
 **Tool shape** ([`crates/labby/src/mcp/`](../crates/labby/src/mcp/)):
 ```json
 {
-  "name": "<service>_<action>",
+  "name": "<service>",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "action": { "const": "<action_name>" },
+      "action": { "type": "string", "example": "resource.verb" },
       "params": { "$ref": "#/definitions/Params" }
     }
   }
@@ -231,9 +233,9 @@ port = 8765
 ```
 
 **Environment mapping**:
-- `LAB_LOG` - overrides `[log]` settings
-- `LAB_SERVER_HOST` - overrides `[server.host]`
-- `LAB_SERVER_PORT` - overrides `[server.port]`
+- `LABBY_LOG` - overrides `[log].filter`
+- `LABBY_MCP_HTTP_HOST` - overrides the HTTP bind host
+- `LABBY_MCP_HTTP_PORT` - overrides the HTTP bind port
 - See [`.env.example`](../.env.example) for full list
 
 ### Gateway Config Store
@@ -244,8 +246,9 @@ Gateway configuration is injected via `GatewayConfigStore` trait:
 
 **Implementation** ([`crates/labby-gateway/src/gateway/manager/`](../crates/labby-gateway/src/gateway/manager/)):
 - Host implements `GatewayConfigStore` to render config
-- Gateway polls store for upstream configuration changes
-- Supports dynamic reconfiguration without restart
+- Mutating gateway actions persist through the store and explicitly reload the
+  affected runtime state
+- Supports dynamic reconfiguration through `gateway.reload`
 
 ## Authentication and Authorization
 
@@ -347,7 +350,7 @@ Lab has a structured observability model for request tracing, error handling, an
 
 **Output formats**:
 - **Console** - Human-readable with colors (when TTY)
-- **JSON** - Structured logs (when `LAB_LOG_FORMAT=json`)
+- **JSON** - Structured logs (when `LABBY_LOG_FORMAT=json`)
 
 ### Request Tracing
 

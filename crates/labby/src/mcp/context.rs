@@ -13,6 +13,7 @@
 use std::borrow::Cow;
 
 use axum::http::request::Parts;
+use labby_auth::auth_context::AuthContext;
 use rmcp::RoleServer;
 use rmcp::service::RequestContext;
 use sha2::{Digest, Sha256};
@@ -109,14 +110,14 @@ pub(crate) fn actor_key_from_extensions(extensions: &rmcp::model::Extensions) ->
 
 pub(crate) fn auth_context_from_extensions(
     extensions: &rmcp::model::Extensions,
-) -> Option<&crate::api::oauth::AuthContext> {
+) -> Option<&AuthContext> {
     let parts = extensions.get::<Parts>()?;
-    parts.extensions.get::<crate::api::oauth::AuthContext>()
+    parts.extensions.get::<AuthContext>()
 }
 
 #[cfg(feature = "gateway")]
 pub(crate) fn oauth_upstream_subject_for_request<'a>(
-    auth: Option<&crate::api::oauth::AuthContext>,
+    auth: Option<&AuthContext>,
     request_subject: Option<&'a str>,
 ) -> Option<Cow<'a, str>> {
     match auth {
@@ -128,7 +129,7 @@ pub(crate) fn oauth_upstream_subject_for_request<'a>(
     }
 }
 
-pub(crate) fn tool_execute_scope_allowed(auth: Option<&crate::api::oauth::AuthContext>) -> bool {
+pub(crate) fn tool_execute_scope_allowed(auth: Option<&AuthContext>) -> bool {
     auth.is_none_or(|auth| {
         auth.scopes
             .iter()
@@ -141,7 +142,7 @@ pub(crate) fn tool_execute_scope_allowed(auth: Option<&crate::api::oauth::AuthCo
 /// Code Mode app resources require at least `lab:read`; executable Code Mode
 /// calls require the stronger `lab` or `lab:admin`.
 /// `None` auth means stdio transport — trusted by design (no per-request AuthContext).
-pub(crate) fn code_mode_read_scope_allowed(auth: Option<&crate::api::oauth::AuthContext>) -> bool {
+pub(crate) fn code_mode_read_scope_allowed(auth: Option<&AuthContext>) -> bool {
     auth.is_none_or(|auth| {
         auth.scopes
             .iter()
@@ -152,8 +153,20 @@ pub(crate) fn code_mode_read_scope_allowed(auth: Option<&crate::api::oauth::Auth
 pub(crate) fn tool_execute_builtin_action_allowed(
     entry: &crate::registry::RegisteredService,
     action: &str,
-    auth: Option<&crate::api::oauth::AuthContext>,
+    auth: Option<&AuthContext>,
 ) -> bool {
+    let bare = action
+        .strip_prefix(&format!("{}.", entry.name))
+        .unwrap_or(action);
+    if entry.name == "setup"
+        && crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&bare)
+        && auth.is_some()
+    {
+        // MCP-over-HTTP always carries AuthContext. Only trusted local stdio
+        // (represented by no per-request auth context) may mint credentials or
+        // ask the host to probe a caller-selected URL.
+        return false;
+    }
     if !builtin_action_requires_admin(entry, action) {
         return true;
     }
@@ -173,34 +186,27 @@ pub(crate) fn builtin_action_requires_admin(
     entry: &crate::registry::RegisteredService,
     action: &str,
 ) -> bool {
-    // Catalog-driven metadata is the single source of truth for admin gating.
-    if matches!(
-        entry.name,
-        "gateway" | "marketplace" | "setup" | "server_logs" | "snippets" | "stash"
-    ) {
-        // The universal built-ins are never admin-gated, whether the caller
-        // passes them bare (`help`) or service-prefixed (`gateway.help`).  The
-        // catalog stores them bare, so strip any `gateway.` prefix before the
-        // discovery check.
-        let service_prefix = format!("{}.", entry.name);
-        let bare = action.strip_prefix(&service_prefix).unwrap_or(action);
-        if bare == "help" || bare == "schema" {
-            return false;
-        }
-        let lookup = if entry.actions.iter().any(|spec| spec.name == action) {
-            action
-        } else {
-            bare
-        };
-        return entry
-            .actions
-            .iter()
-            .find(|spec| spec.name == lookup)
-            .map(|spec| spec.requires_admin)
-            // Unknown actions default to admin-required (fail-safe).
-            .unwrap_or(true);
+    // Catalog-driven metadata is the single source of truth for every
+    // registered service. Keeping an allow-list here caused newly registered
+    // services (notably Doctor) to silently bypass their admin metadata.
+    let service_prefix = format!("{}.", entry.name);
+    let bare = action.strip_prefix(&service_prefix).unwrap_or(action);
+    if bare == "help" || bare == "schema" {
+        return false;
     }
-    false
+    let lookup = if entry.actions.iter().any(|spec| spec.name == action) {
+        action
+    } else {
+        bare
+    };
+    entry
+        .actions
+        .iter()
+        .find(|spec| spec.name == lookup)
+        .map(|spec| spec.requires_admin)
+        // Unknown actions fail closed. Dispatch will still return its normal
+        // unknown-action envelope after an administrator reaches it.
+        .unwrap_or(true)
 }
 
 #[cfg(test)]

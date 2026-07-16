@@ -254,9 +254,10 @@ fn ensure_restrictive_permissions(path: &Path) -> Result<(), ToolError> {
         .map_err(|error| storage_error(format!("chmod 0600 `{}`: {error}", path.display())))
 }
 
-#[cfg(not(unix))]
-fn ensure_restrictive_permissions(_path: &Path) -> Result<(), ToolError> {
-    Ok(())
+#[cfg(windows)]
+fn ensure_restrictive_permissions(path: &Path) -> Result<(), ToolError> {
+    labby_auth::util::harden_secret_file(path)
+        .map_err(|error| storage_error(format!("harden ACL `{}`: {error}", path.display())))
 }
 
 fn open_connection(path: &Path) -> Result<Connection, ToolError> {
@@ -282,6 +283,12 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
     conn.execute_batch(CREATE_TABLE).map_err(sqlite_error)?;
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
         .map_err(sqlite_error)?;
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+        if sidecar.exists() {
+            ensure_restrictive_permissions(&sidecar)?;
+        }
+    }
     Ok(conn)
 }
 

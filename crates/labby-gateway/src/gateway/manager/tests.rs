@@ -94,6 +94,36 @@ static DEPLOY_KNOWN_META: labby_primitives::plugin::PluginMeta =
         supports_multi_instance: false,
     };
 
+static FIXTURE_REQUIRED_ENV: &[labby_primitives::plugin::EnvVar] = &[
+    labby_primitives::plugin::EnvVar {
+        name: "FIXTURE_URL",
+        description: "Fixture service URL",
+        example: "http://127.0.0.1:9999",
+        secret: false,
+        ui: None,
+    },
+    labby_primitives::plugin::EnvVar {
+        name: "FIXTURE_TOKEN",
+        description: "Fixture secret",
+        example: "secret",
+        secret: true,
+        ui: None,
+    },
+];
+
+static FIXTURE_SERVICE_META: labby_primitives::plugin::PluginMeta =
+    labby_primitives::plugin::PluginMeta {
+        name: "fixture-service",
+        display_name: "Fixture Service",
+        description: "test-only metadata-backed service",
+        category: labby_primitives::plugin::Category::Bootstrap,
+        docs_url: "",
+        required_env: FIXTURE_REQUIRED_ENV,
+        optional_env: &[],
+        default_port: Some(9999),
+        supports_multi_instance: false,
+    };
+
 impl crate::registry::InProcessServiceRegistry for DeployKnownRegistry {
     fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
         Vec::new()
@@ -102,11 +132,11 @@ impl crate::registry::InProcessServiceRegistry for DeployKnownRegistry {
 
 impl crate::gateway::service_registry::GatewayServiceRegistry for DeployKnownRegistry {
     fn service_names(&self) -> Vec<&'static str> {
-        vec!["deploy"]
+        vec!["deploy", "fixture-service"]
     }
 
     fn contains_service(&self, name: &str) -> bool {
-        name == "deploy"
+        matches!(name, "deploy" | "fixture-service")
     }
 
     fn service_actions(
@@ -130,7 +160,11 @@ impl crate::gateway::service_registry::GatewayServiceRegistry for DeployKnownReg
     }
 
     fn service_meta(&self, name: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
-        (name == "deploy").then_some(&DEPLOY_KNOWN_META)
+        match name {
+            "deploy" => Some(&DEPLOY_KNOWN_META),
+            "fixture-service" => Some(&FIXTURE_SERVICE_META),
+            _ => None,
+        }
     }
 }
 

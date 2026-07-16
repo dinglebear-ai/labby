@@ -18,6 +18,7 @@ OUTPUT_KEYS = [
     "rust_compile",
     "rust_test",
     "web",
+    "palette",
     "npm",
     "docker",
     "security",
@@ -66,6 +67,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         },
     )
     web = any_match(paths, lambda p: starts(p, "apps/gateway-admin/"))
+    palette = any_match(paths, lambda p: starts(p, "apps/palette-tauri/"))
     npm = any_match(paths, lambda p: starts(p, "packages/labby-mcp/") or p == "server.json")
     rust_sources = any_match(
         paths,
@@ -90,7 +92,9 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         },
     )
     rust_compile = rust_sources or rust_manifests
-    rust_test = rust_sources
+    # Dependency, lockfile, toolchain, and build-policy changes can alter test
+    # compilation and runtime behavior just as directly as a Rust source edit.
+    rust_test = rust_sources or rust_manifests
     security = any_match(
         paths,
         lambda p: p in {"Cargo.lock", "deny.toml", ".gitleaksignore"} or starts(p, ".cargo/"),
@@ -121,6 +125,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "rust_compile": rust_compile,
         "rust_test": rust_test,
         "web": web,
+        "palette": palette,
         "npm": npm,
         "docker": docker,
         "security": security,

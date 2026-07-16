@@ -60,7 +60,7 @@ pub(crate) async fn fetch_catalog(
     oauth_state: tauri::State<'_, crate::oauth::OauthState>,
     etag: Option<String>,
 ) -> Result<LabbyHttpResult, String> {
-    let settings = merged_settings(&app)?;
+    let settings = merged_settings(&app).await?;
     let base_url = validate_saved_server_url(&settings.server_url)?;
     let url = format!("{}/v1/catalog", base_url.trim_end_matches('/'));
     let client = (*bridge).client();
@@ -118,7 +118,7 @@ pub(crate) async fn dispatch_action(
     request: DispatchRequest,
 ) -> Result<LabbyHttpResult, String> {
     validate_service_name(&request.service)?;
-    let settings = merged_settings(&app)?;
+    let settings = merged_settings(&app).await?;
     let base_url = validate_saved_server_url(&settings.server_url)?;
     let url = format!("{}/v1/{}", base_url.trim_end_matches('/'), request.service);
     let client = (*bridge).client();
@@ -160,7 +160,7 @@ pub(crate) async fn fetch_launcher_catalog(
     oauth_state: tauri::State<'_, crate::oauth::OauthState>,
     etag: Option<String>,
 ) -> Result<LabbyHttpResult, String> {
-    let settings = merged_settings(&app)?;
+    let settings = merged_settings(&app).await?;
     let base_url = validate_saved_server_url(&settings.server_url)?;
     let url = format!("{}/v1/palette/catalog", base_url.trim_end_matches('/'));
     let client = (*bridge).client();
@@ -229,10 +229,13 @@ pub(crate) async fn fetch_launcher_schema(
             "launcher id must be mcp:<upstream>::<tool> or labby:<service>::<action>".to_string(),
         );
     }
-    let settings = merged_settings(&app)?;
+    let settings = merged_settings(&app).await?;
     let base_url = validate_saved_server_url(&settings.server_url)?;
-    let mut url = reqwest::Url::parse(&format!("{}/v1/palette/schema", base_url.trim_end_matches('/')))
-        .map_err(|err| err.to_string())?;
+    let mut url = reqwest::Url::parse(&format!(
+        "{}/v1/palette/schema",
+        base_url.trim_end_matches('/')
+    ))
+    .map_err(|err| err.to_string())?;
     url.query_pairs_mut().append_pair("id", &id);
     let client = (*bridge).client();
     let static_token = settings
@@ -272,7 +275,7 @@ pub(crate) async fn execute_launcher_entry(
     request: LauncherExecuteRequest,
 ) -> Result<LabbyHttpResult, String> {
     validate_launcher_request(&request)?;
-    let settings = merged_settings(&app)?;
+    let settings = merged_settings(&app).await?;
     let base_url = validate_saved_server_url(&settings.server_url)?;
     let url = format!("{}/v1/palette/execute", base_url.trim_end_matches('/'));
     let client = (*bridge).client();
@@ -380,10 +383,7 @@ fn parse_json_payload(content_type: Option<&str>, text: &str) -> Result<serde_js
 }
 
 async fn discover_api_base_url(client: &reqwest::Client, base_url: &str) -> Result<String, String> {
-    let url = format!(
-        "{}/.well-known/labby.json",
-        base_url.trim_end_matches('/')
-    );
+    let url = format!("{}/.well-known/labby.json", base_url.trim_end_matches('/'));
     let response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/json")

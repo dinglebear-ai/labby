@@ -199,6 +199,8 @@ pub fn help_payload(service: &str, actions: &[ActionSpec]) -> Value {
             "name": a.name,
             "description": a.description,
             "destructive": a.destructive,
+            "requires_admin": a.requires_admin,
+            "required_scopes": if a.requires_admin { vec!["lab:admin"] } else { Vec::<&str>::new() },
             "returns": a.returns,
             "params": a.params.iter().map(|p| serde_json::json!({
                 "name": p.name,
@@ -227,6 +229,8 @@ pub fn action_schema(actions: &[ActionSpec], action_name: &str) -> Result<Value,
         "action": spec.name,
         "description": spec.description,
         "destructive": spec.destructive,
+        "requires_admin": spec.requires_admin,
+        "required_scopes": if spec.requires_admin { vec!["lab:admin"] } else { Vec::<&str>::new() },
         "returns": spec.returns,
         "params": spec.params.iter().map(|p| serde_json::json!({
             "name": p.name,

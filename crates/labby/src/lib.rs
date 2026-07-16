@@ -26,6 +26,7 @@ pub(crate) mod app_manifest;
 pub mod catalog;
 #[allow(unreachable_pub)]
 pub mod cli;
+pub(crate) mod composition;
 pub mod config;
 #[allow(unreachable_pub)]
 pub mod dispatch;

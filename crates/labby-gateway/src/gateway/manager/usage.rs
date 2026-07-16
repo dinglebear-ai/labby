@@ -6,7 +6,7 @@
 use labby_runtime::error::ToolError;
 
 use crate::usage::query::{
-    DEFAULT_CALLS_LIMIT, MAX_CALLS_LIMIT, UsageCallsQuery, UsageMetricsQuery,
+    DEFAULT_CALLS_LIMIT, MAX_CALLS_LIMIT, UsageCallsQuery, UsageCursor, UsageMetricsQuery,
 };
 
 use super::GatewayManager;
@@ -91,18 +91,31 @@ impl GatewayManager {
             });
         };
         let allowed_upstreams = scoped_allowed_upstreams(&scope, params.upstream.as_deref())?;
+        if params.offset.unwrap_or(0) > 0 {
+            return Err(ToolError::InvalidParam {
+                message: "offset pagination is disabled; pass the previous page's cursor"
+                    .to_string(),
+                param: "offset".to_string(),
+            });
+        }
+        let cursor = params
+            .cursor
+            .as_deref()
+            .map(parse_usage_cursor)
+            .transpose()?;
         let limit = params
             .limit
             .unwrap_or(DEFAULT_CALLS_LIMIT)
             .min(MAX_CALLS_LIMIT);
-        let (rows, total_matching) = store
+        let (rows, total_matching, next_cursor) = store
             .list_calls(UsageCallsQuery {
                 since_unix: params.since_unix,
                 until_unix: params.until_unix,
                 upstream: params.upstream,
                 allowed_upstreams,
                 limit,
-                offset: params.offset.unwrap_or(0),
+                cursor,
+                include_total: params.include_total.unwrap_or(false),
             })
             .await?;
         Ok(GatewayUsageCallsView {
@@ -118,8 +131,32 @@ impl GatewayManager {
                 })
                 .collect(),
             total_matching,
+            next_cursor: next_cursor.map(format_usage_cursor),
         })
     }
+}
+
+fn parse_usage_cursor(cursor: &str) -> Result<UsageCursor, ToolError> {
+    let (ts, id) = cursor
+        .split_once(':')
+        .ok_or_else(|| ToolError::InvalidParam {
+            message: "cursor must have the form <timestamp>:<id>".to_string(),
+            param: "cursor".to_string(),
+        })?;
+    Ok(UsageCursor {
+        ts_unix: ts.parse().map_err(|_| ToolError::InvalidParam {
+            message: "cursor timestamp is invalid".to_string(),
+            param: "cursor".to_string(),
+        })?,
+        id: id.parse().map_err(|_| ToolError::InvalidParam {
+            message: "cursor id is invalid".to_string(),
+            param: "cursor".to_string(),
+        })?,
+    })
+}
+
+fn format_usage_cursor(cursor: UsageCursor) -> String {
+    format!("{}:{}", cursor.ts_unix, cursor.id)
 }
 
 /// Enforce route scope for a usage query, delegating to the shared

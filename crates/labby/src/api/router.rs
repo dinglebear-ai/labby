@@ -14,7 +14,6 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{get, post},
 };
-use subtle::ConstantTimeEq;
 use tower::ServiceExt;
 use tower_http::{
     compression::CompressionLayer,
@@ -39,57 +38,14 @@ use crate::app_manifest::{
     SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_DATA_API_PREFIX,
 };
 
-/// Convert lab's strongly-typed [`crate::observability::activity::ActorKeyDeriver`]
-/// into the closure-erased [`labby_auth::ActorKeyDeriver`] alias accepted by
-/// [`AuthLayer::with_actor_key_deriver`]. Keeps the lab-specific HMAC actor-key
-/// derivation while letting lab-auth stay agnostic about consumer-specific
-/// observability hooks.
-fn lab_auth_deriver(
-    deriver: Arc<crate::observability::activity::ActorKeyDeriver>,
-) -> Arc<labby_auth::ActorKeyDeriver> {
-    Arc::new(move |subject: &str| {
-        deriver
-            .derive_subject(subject)
-            .map(crate::observability::activity::ActorKey::into_arc)
-    })
-}
+use super::router_middleware::{
+    derive_actor_key, lab_auth_deriver, parse_bearer_token, percent_encode_path, tokens_equal,
+};
 
-pub(crate) fn tokens_equal(a: &str, b: &str) -> bool {
-    a.as_bytes().ct_eq(b.as_bytes()).into()
-}
-
-fn percent_encode_path(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/' | b'?') {
-            out.push(b as char);
-        } else {
-            out.push('%');
-            out.push(
-                char::from_digit(u32::from(b >> 4), 16)
-                    .unwrap()
-                    .to_ascii_uppercase(),
-            );
-            out.push(
-                char::from_digit(u32::from(b & 0xf), 16)
-                    .unwrap()
-                    .to_ascii_uppercase(),
-            );
-        }
-    }
-    out
-}
-
-pub(crate) fn parse_bearer_token(header_value: &str) -> Option<String> {
-    let mut parts = header_value.split_whitespace();
-    let scheme = parts.next()?;
-    let token = parts.next()?;
-    if parts.next().is_some() || !scheme.eq_ignore_ascii_case("bearer") {
-        return None;
-    }
-    Some(token.to_string())
-}
-
+use super::app_routes::{
+    apps_launcher_page, apps_manifest, labby_app_host_js, server_logs_app_page,
+};
+use super::dev_mockup::{dev_mockup, dev_mockup_named};
 use super::{health, services, state::AppState};
 use crate::api::error::ApiError;
 use crate::dispatch::error::ToolError;
@@ -1048,15 +1004,6 @@ async fn authenticate_request(
     ))
 }
 
-fn derive_actor_key(
-    deriver: Option<&crate::observability::activity::ActorKeyDeriver>,
-    subject: &str,
-) -> Option<Arc<str>> {
-    deriver
-        .and_then(|deriver| deriver.derive_subject(subject))
-        .map(crate::observability::activity::ActorKey::into_arc)
-}
-
 /// Build the `/v1` sub-router with all feature-gated service routes.
 #[cfg_attr(not(feature = "fs"), allow(unused_variables))]
 fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppState> {
@@ -1218,93 +1165,6 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
     v1
 }
 
-// ── Dev mockup file server ────────────────────────────────────────────────
-// Implements the Tier 1 serving model from docs/design/component-development.md §5.
-// Serves self-contained HTML from ~/.superpowers/brainstorm/content/ at:
-//   GET /dev/mockup          → newest .html file
-//   GET /dev/mockup/{name}   → newest .html whose stem contains {name}
-//
-// Rules (enforced by the doc — do not violate):
-//   • These functions MUST live in router.rs alongside dev_marketplace_readonly.
-//     The other Claude session strips dev-tooling code from web.rs.
-//   • MUST NOT delegate to serve_web_request — that serves the Next.js SPA.
-//   • Routes MUST be registered before the static-file fallback.
-
-fn dev_mockup_dir() -> std::path::PathBuf {
-    crate::config::home_dir()
-        .map(|h| h.join(".superpowers/brainstorm/content"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".superpowers/brainstorm/content"))
-}
-
-fn dev_mockup_newest(fragment: Option<&str>) -> Option<std::path::PathBuf> {
-    std::fs::read_dir(dev_mockup_dir())
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("html"))
-        .filter(|e| {
-            fragment.is_none_or(|n| {
-                e.path()
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|s| s.contains(n))
-            })
-        })
-        .filter_map(|e| {
-            e.metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .map(|t| (e.path(), t))
-        })
-        .max_by_key(|(_, t)| *t)
-        .map(|(p, _)| p)
-}
-
-fn dev_mockup_response(fragment: Option<&str>) -> axum::response::Response {
-    use axum::response::Html;
-    match dev_mockup_newest(fragment) {
-        None => {
-            // Escape the fragment before embedding it in HTML to prevent XSS.
-            // The name comes from a URL path segment and is user-controlled.
-            let escaped = fragment
-                .map(|n| {
-                    format!(
-                        " '{}'",
-                        n.replace('&', "&amp;")
-                            .replace('<', "&lt;")
-                            .replace('>', "&gt;")
-                            .replace('"', "&quot;")
-                    )
-                })
-                .unwrap_or_default();
-            Html(format!(
-                "<p style='font-family:sans-serif;padding:2rem'>No{escaped} mockup found in \
-                 <code>~/.superpowers/brainstorm/content/</code></p>"
-            ))
-            .into_response()
-        }
-        Some(path) => match std::fs::read_to_string(&path) {
-            Ok(html) => Html(html).into_response(),
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to read dev mockup");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
-        },
-    }
-}
-
-async fn dev_mockup() -> axum::response::Response {
-    dev_mockup_response(None)
-}
-
-async fn dev_mockup_named(
-    axum::extract::Path(name): axum::extract::Path<String>,
-) -> axum::response::Response {
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    dev_mockup_response(Some(&name))
-}
-
 // GET /dev/api/nodeinfo — unauthenticated, read-only.
 // Returns config.toml values + ~/.labby/.env contents (secrets masked) so the
 // setup wizard can pre-populate all fields without requiring a bearer token.
@@ -1403,58 +1263,6 @@ async fn labby_discovery(State(state): State<AppState>) -> axum::response::Respo
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=300"),
-    );
-    response
-}
-
-async fn apps_manifest(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    let manifest =
-        crate::app_manifest::manifest_for_registry(&state.registry).map_err(|error| {
-            ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: format!(
-                    "app `{}` references missing action `{}/{}`",
-                    error.app_slug, error.service, error.action
-                ),
-            }
-        })?;
-    let value = serde_json::to_value(manifest).map_err(|error| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("failed to serialize app manifest: {error}"),
-    })?;
-    Ok(Json(value))
-}
-
-async fn apps_launcher_page() -> axum::response::Response {
-    let mut response = Html(crate::app_assets::APPS_LAUNCHER_HTML).into_response();
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, no-store"),
-    );
-    response
-}
-
-async fn server_logs_app_page() -> axum::response::Response {
-    let mut response = Html(crate::app_assets::SERVER_LOGS_APP_HTML).into_response();
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, no-store"),
-    );
-    response
-}
-
-async fn labby_app_host_js() -> axum::response::Response {
-    let mut response = (
-        [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=300"),
-        ],
-        crate::app_assets::LABBY_APP_HOST_JS,
-    )
-        .into_response();
-    response.headers_mut().insert(
-        HeaderName::from_static("x-content-type-options"),
-        HeaderValue::from_static("nosniff"),
     );
     response
 }

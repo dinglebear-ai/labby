@@ -31,29 +31,8 @@ pub const ACTIONS: &[ActionSpec] = &[
         params: &[],
     },
     ActionSpec {
-        name: "service.probe",
-        description: "Probe a single named service via its health endpoint",
-        destructive: false,
-        requires_admin: false,
-        returns: "Finding",
-        params: &[
-            ParamSpec {
-                name: "service",
-                ty: "string",
-                required: true,
-                description: "Service name to probe (e.g. \"radarr\", \"sonarr\")",
-            },
-            ParamSpec {
-                name: "instance",
-                ty: "string",
-                required: false,
-                description: "Named instance label for multi-instance services",
-            },
-        ],
-    },
-    ActionSpec {
         name: "audit.full",
-        description: "Probe all configured services plus system checks; streams results",
+        description: "Run system, auth, gateway-upstream, and OAuth-relay checks; streams results",
         destructive: false,
         requires_admin: false,
         returns: "stream<Finding>",

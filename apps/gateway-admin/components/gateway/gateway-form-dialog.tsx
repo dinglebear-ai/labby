@@ -1,14 +1,11 @@
 'use client'
 
-import Image from 'next/image'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   AlertCircle,
-  CheckCircle2,
   ChevronRight,
   ClipboardPaste,
   FileJson2,
-  Globe2,
   KeyRound,
   Loader2,
   Play,
@@ -16,7 +13,6 @@ import {
   Settings2,
   ShieldCheck,
   ShieldOff,
-  TerminalSquare,
   X,
 } from 'lucide-react'
 import {
@@ -30,7 +26,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { TextSurface } from '@/components/ui/text-surface'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -47,7 +42,6 @@ import type {
   CreateGatewayInput,
   UpdateGatewayInput,
   TransportType,
-  SupportedService,
   ProtectedMcpRouteInput,
 } from '@/lib/types/gateway'
 import { toast } from 'sonner'
@@ -69,19 +63,33 @@ import type { OAuthConnectState } from '@/lib/types/upstream-oauth'
 import { formatStdioCommandLine, parseStdioCommandLine } from '@/lib/stdio-command'
 import { Badge } from '@/components/ui/badge'
 import {
-  SERVICE_BRANDS,
-  SERVICE_BRAND_FALLBACK,
   SERVICE_ENV_PREFIXES,
-  SERVICE_LOGOS,
-  SERVICE_SVG_FALLBACKS,
-  isServiceKey,
 } from '@/lib/branding/service-brands'
+import {
+  gatewayFormUiReducer,
+  initialGatewayFormUiState,
+  type GatewayFormUiState,
+} from './gateway-form-state'
+import { oauthConnectButtonLabel, shouldAutoConnectOauth } from './gateway-form-oauth'
+import { GatewayConfigEditor } from './gateway-config-editor'
+import {
+  GatewaySaveCompensationError,
+  runGatewaySaveTransaction,
+  type GatewaySaveRollback,
+} from './gateway-save-transaction'
+import { serviceFields } from './gateway-service-fields'
+import { GatewayCustomConnectionForm } from './gateway-custom-connection-form'
+import { GatewayLabServiceForm } from './gateway-lab-service-form'
+
+export type { GatewaySaveRollback } from './gateway-save-transaction'
+
+export { oauthConnectButtonLabel, shouldAutoConnectOauth } from './gateway-form-oauth'
 
 interface GatewayFormDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   gateway: Gateway | null
-  onSave: (input: CreateGatewayInput | UpdateGatewayInput) => Promise<void>
+  onSave: (input: CreateGatewayInput | UpdateGatewayInput) => Promise<GatewaySaveRollback | void>
 }
 
 type FormMode = 'custom' | 'lab'
@@ -187,38 +195,6 @@ function parseGatewayEnvObject(value: unknown): Record<string, string> {
   )
 }
 
-function ServiceIconBox({ serviceKey }: { serviceKey: string }) {
-  const [imgError, setImgError] = useState(false)
-  const known = isServiceKey(serviceKey) ? serviceKey : null
-  const brand = known ? SERVICE_BRANDS[known] : SERVICE_BRAND_FALLBACK
-  const logo = !imgError && known ? SERVICE_LOGOS[known] : null
-  const svg = known ? SERVICE_SVG_FALLBACKS[known] : undefined
-
-  return (
-    <div
-      className="flex items-center justify-center w-9 h-9 rounded-lg shrink-0"
-      style={{
-        background: 'var(--aurora-control-surface)',
-        border: `2px solid ${brand}`,
-        boxShadow: `0 0 0 1px ${brand}33`,
-      }}
-    >
-      {logo ? (
-        <Image src={logo} alt="" className="h-5 w-5 object-contain" height={20} width={20} unoptimized onError={() => setImgError(true)} />
-      ) : svg ? (
-        <span
-          className="w-5 h-5 block"
-          style={{ color: brand }}
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: trusted static SVG strings
-          dangerouslySetInnerHTML={{ __html: svg.replace('fill="white"', `fill="${brand}"`) }}
-        />
-      ) : (
-        <span className="text-xs font-bold" style={{ color: brand }}>{serviceKey[0]?.toUpperCase()}</span>
-      )}
-    </div>
-  )
-}
-
 const emptyCustomState = {
   transport: 'http' as TransportType,
   name: '',
@@ -228,40 +204,6 @@ const emptyCustomState = {
   proxyResources: true,
   proxyPrompts: true,
   proxyMcpUi: true,
-}
-
-function serviceFields(serviceMeta: SupportedService | null) {
-  return serviceMeta ? [...serviceMeta.required_env, ...serviceMeta.optional_env] : []
-}
-
-export function shouldAutoConnectOauth({
-  open,
-  isEditing,
-  transport,
-  authMode,
-  oauthDiscovered,
-  upstream,
-}: {
-  open: boolean
-  isEditing: boolean
-  transport: TransportType
-  authMode: GatewayAuthMode
-  oauthDiscovered: boolean
-  upstream?: string
-}) {
-  return open
-    && !isEditing
-    && transport === 'http'
-    && authMode === 'none'
-    && oauthDiscovered
-    && !!upstream?.trim()
-}
-
-export function oauthConnectButtonLabel(state: OAuthConnectState) {
-  if (state.kind === 'probing') return 'Detecting OAuth...'
-  if (state.kind === 'authorizing') return 'Waiting...'
-  if (state.kind === 'blocked') return 'Click to authorize'
-  return 'Connect via OAuth'
 }
 
 export function GatewayFormDialog({
@@ -300,7 +242,21 @@ export function GatewayFormDialog({
   const [proxyResources, setProxyResources] = useState(true)
   const [proxyPrompts, setProxyPrompts] = useState(true)
   const [proxyMcpUi, setProxyMcpUi] = useState(true)
-  const [jsonDrawerOpen, setJsonDrawerOpen] = useState(false)
+  const [uiState, dispatchUi] = useReducer(gatewayFormUiReducer, initialGatewayFormUiState)
+  const setUi = <Key extends keyof GatewayFormUiState>(key: Key, value: GatewayFormUiState[Key]) => {
+    dispatchUi({ type: 'set', key, value })
+  }
+  const {
+    jsonDrawerOpen,
+    isSaving,
+    isTesting,
+    saveError,
+    errors,
+    oauthState,
+    oauthProbed,
+    isProbing,
+  } = uiState
+  const setJsonDrawerOpen = (value: boolean) => setUi('jsonDrawerOpen', value)
   const [jsonText, setJsonText] = useState('')
   const [jsonValid, setJsonValid] = useState(false)
   const syncingRef = useRef(false)
@@ -310,13 +266,23 @@ export function GatewayFormDialog({
   const [serviceValues, setServiceValues] = useState<Record<string, string>>({})
   const [enableServer, setEnableServer] = useState(true)
 
-  const [isSaving, setIsSaving] = useState(false)
-  const [isTesting, setIsTesting] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
-  const [errors, setErrors] = useState<Record<string, string>>({})
-  const [oauthState, setOauthState] = useState<OAuthConnectState>({ kind: 'idle' })
-  const [oauthProbed, setOauthProbed] = useState<{ oauth_discovered: boolean; upstream: string; issuer?: string; scopes?: string[]; registration_strategy?: string } | null>(null)
-  const [isProbing, setIsProbing] = useState(false)
+  const setIsSaving = (value: boolean) => setUi('isSaving', value)
+  const setIsTesting = (value: boolean) => setUi('isTesting', value)
+  const setSaveError = (value: string | null) => setUi('saveError', value)
+  const setErrors = (value: Record<string, string>) => setUi('errors', value)
+  const setOauthState = (value: OAuthConnectState) => setUi('oauthState', value)
+  const setOauthProbed = (value: GatewayFormUiState['oauthProbed']) => setUi('oauthProbed', value)
+  const setIsProbing = (value: boolean) => setUi('isProbing', value)
+
+  useEffect(() => () => abortControllerRef.current?.abort(), [])
+
+  const requestOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      abortControllerRef.current?.abort()
+      abortControllerRef.current = null
+    }
+    onOpenChange(nextOpen)
+  }
 
   const serviceMeta = useMemo(
     () => supportedServices?.find((service) => service.key === selectedService) ?? null,
@@ -825,7 +791,7 @@ export function GatewayFormDialog({
 
     setIsTesting(true)
     try {
-      const result = await testGateway(gateway.id)
+      const result = await testGateway(gateway.id, controller.signal)
       if (controller.signal.aborted) return
       if (result.severity === 'warning') {
         toast.warning(result.detail || result.message)
@@ -879,7 +845,7 @@ export function GatewayFormDialog({
           return
         }
         toast.success(isEditing ? 'Lab server updated successfully' : 'Lab server configured successfully')
-        onOpenChange(false)
+        requestOpenChange(false)
         return
       }
 
@@ -897,12 +863,16 @@ export function GatewayFormDialog({
             route.name !== existingProtectedRoute?.name,
         ),
       )
-      await onSave(buildInput())
-      if (normalizedProtectedPath) {
-        await saveProtectedRoute(normalizedProtectedPath, controller.signal)
-      } else {
-        await removeExistingProtectedRouteIfCleared(normalizedProtectedPath, controller.signal)
-      }
+      await runGatewaySaveTransaction(
+        () => onSave(buildInput()),
+        async () => {
+          if (normalizedProtectedPath) {
+            await saveProtectedRoute(normalizedProtectedPath, controller.signal)
+          } else {
+            await removeExistingProtectedRouteIfCleared(normalizedProtectedPath, controller.signal)
+          }
+        },
+      )
       if (controller.signal.aborted) return
       toast.success(
         normalizedProtectedPath
@@ -913,8 +883,14 @@ export function GatewayFormDialog({
             ? 'Server updated successfully'
             : 'Server created successfully',
       )
-      onOpenChange(false)
+      requestOpenChange(false)
     } catch (error) {
+      if (error instanceof GatewaySaveCompensationError) {
+        const message = getErrorMessage(error.rollbackError, error.message)
+        setSaveError(message)
+        toast.error(message)
+        return
+      }
       if (isAbortError(error)) return
       if (error instanceof GatewayApiError && error.status === 409) {
         setSaveError(error.message)
@@ -1079,12 +1055,7 @@ export function GatewayFormDialog({
   const jsonTransportLabel = transport === 'http' ? 'HTTP URL' : 'stdio command'
 
   return (
-    <Dialog open={open} onOpenChange={(nextOpen) => {
-      if (!nextOpen) {
-        abortControllerRef.current?.abort()
-      }
-      onOpenChange(nextOpen)
-    }}>
+    <Dialog open={open} onOpenChange={requestOpenChange}>
         <DialogContent
           className={cn(
             'overflow-visible transition-[border-radius] duration-[250ms]',
@@ -1134,230 +1105,37 @@ export function GatewayFormDialog({
           className="space-y-4"
         >
           <TabsContent value="lab" className="space-y-6">
-            <FieldGroup>
-              <Field>
-                <div
-                  className="grid grid-cols-3 sm:grid-cols-4 gap-2 overflow-y-auto aurora-scrollbar pr-1"
-                  style={{ maxHeight: 320 }}
-                >
-                  {(supportedServices ?? []).map((svc) => (
-                    <button
-                      key={svc.key}
-                      type="button"
-                      onClick={() => setSelectedService(svc.key)}
-                      className={cn(
-                        'flex flex-col items-center gap-1.5 rounded-aurora-2 border p-2 text-center transition-colors hover:border-primary/60 hover:bg-accent/30',
-                        selectedService === svc.key
-                          ? 'border-primary bg-primary/10'
-                          : 'border-aurora-border-strong bg-aurora-page-bg',
-                      )}
-                    >
-                      <ServiceIconBox serviceKey={svc.key} />
-                      <div className="min-w-0 w-full">
-                        <p className="text-xs font-medium leading-tight truncate">{svc.display_name}</p>
-                        <p className="text-[10px] text-aurora-text-muted truncate">{svc.category}</p>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-                {errors.service && <p className="text-sm text-destructive">{errors.service}</p>}
-              </Field>
-            </FieldGroup>
-
-            {serviceMeta && (
-              <FieldGroup>
-                {serviceEnvFields.map((field) => {
-                  const configField = serviceConfig?.fields.find((item) => item.name === field.name)
-                  const hasStoredSecret = field.secret && configField?.present
-
-                  return (
-                    <Field key={field.name}>
-                    <FieldLabel htmlFor={field.name}>{field.name}</FieldLabel>
-                    <Input
-                      id={field.name}
-                      type={field.secret ? 'password' : 'text'}
-                      value={serviceValues[field.name] ?? ''}
-                      onChange={(event) =>
-                        setServiceValues((current) => ({
-                          ...current,
-                          [field.name]: event.target.value,
-                        }))
-                      }
-                      placeholder={hasStoredSecret ? 'Leave blank to keep current value' : field.example}
-                      className={cn(gatewayInputClassName, errors[field.name] && 'border-destructive')}
-                    />
-                    {errors[field.name] ? (
-                      <p className="text-sm text-destructive">{errors[field.name]}</p>
-                    ) : (
-                      <FieldDescription>
-                        {field.description}
-                        {hasStoredSecret ? ' Current secret is already configured.' : ''}
-                      </FieldDescription>
-                    )}
-                    </Field>
-                  )
-                })}
-              </FieldGroup>
-            )}
-
-            <div className="flex items-center justify-between rounded-lg border p-4">
-              <div className="space-y-0.5">
-                <Label htmlFor="enable-virtual-server" className="font-medium">
-                  Enable server
-                </Label>
-                <p className="text-sm text-aurora-text-muted">
-                  Save canonical service config and expose this Lab service as a visible server.
-                </p>
-              </div>
-              <Switch
-                id="enable-virtual-server"
-                checked={enableServer}
-                onCheckedChange={setEnableServer}
-              />
-            </div>
+            <GatewayLabServiceForm
+              supportedServices={supportedServices ?? []}
+              selectedService={selectedService}
+              onSelectService={setSelectedService}
+              serviceFields={serviceEnvFields}
+              serviceConfig={serviceConfig}
+              serviceValues={serviceValues}
+              onServiceValuesChange={setServiceValues}
+              errors={errors}
+              enableServer={enableServer}
+              onEnableServerChange={setEnableServer}
+            />
           </TabsContent>
 
           <TabsContent value="custom" className="flex flex-col gap-4">
-            <div className="order-1 rounded-aurora-2 border border-aurora-border-strong bg-aurora-control-surface/70 p-4 shadow-[var(--aurora-highlight-medium)]">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="space-y-1">
-                  <p className="flex items-center gap-2 text-[13px] font-semibold text-aurora-text-primary">
-                    {transport === 'http' ? <Globe2 className="size-4 text-aurora-accent-primary" /> : <TerminalSquare className="size-4 text-aurora-accent-primary" />}
-                    Connection
-                  </p>
-                  <p className="text-[12px] leading-5 text-aurora-text-muted">
-                    {transport === 'http' ? 'Remote MCP endpoint.' : 'Local process launched over stdin/stdout.'}
-                  </p>
-                </div>
-                <RadioGroup
-                  value={transport}
-                  onValueChange={(value) => setTransport(value as TransportType)}
-                  className="grid grid-cols-2 overflow-hidden rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-medium p-1"
-                >
-                  <label
-                    className={cn(
-                      'flex h-8 cursor-pointer items-center justify-center gap-2 rounded-aurora-1 px-3 text-[12px] font-semibold transition-[background-color,color,box-shadow]',
-                      transport === 'http'
-                        ? 'bg-aurora-accent-primary/12 text-aurora-text-primary shadow-aurora-active-glow'
-                        : 'text-aurora-text-muted hover:text-aurora-text-primary',
-                    )}
-                    htmlFor="transport-http"
-                  >
-                    <RadioGroupItem value="http" id="transport-http" className="sr-only" />
-                    <Globe2 className="size-3.5" />
-                    HTTP
-                  </label>
-                  <label
-                    className={cn(
-                      'flex h-8 cursor-pointer items-center justify-center gap-2 rounded-aurora-1 px-3 text-[12px] font-semibold transition-[background-color,color,box-shadow]',
-                      transport === 'stdio'
-                        ? 'bg-aurora-accent-primary/12 text-aurora-text-primary shadow-aurora-active-glow'
-                        : 'text-aurora-text-muted hover:text-aurora-text-primary',
-                    )}
-                    htmlFor="transport-stdio"
-                  >
-                    <RadioGroupItem value="stdio" id="transport-stdio" className="sr-only" />
-                    <TerminalSquare className="size-3.5" />
-                    stdio
-                  </label>
-                </RadioGroup>
-              </div>
-
-              <div className="mt-4 grid gap-4">
-                <Field>
-                  <FieldLabel htmlFor="name">Name</FieldLabel>
-                  <Input
-                    id="name"
-                    value={name}
-                    onChange={(event) => { nameAutoRef.current = false; setName(event.target.value) }}
-                    placeholder="my-gateway"
-                    className={cn(gatewayInputClassName, errors.name && 'border-destructive')}
-                  />
-                  {errors.name ? (
-                    <p className="text-sm text-destructive">{errors.name}</p>
-                  ) : (
-                    <FieldDescription>
-                      Letters, digits, underscores, hyphens. For URLs, Labby can fill this from the host.
-                    </FieldDescription>
-                  )}
-                </Field>
-
-                {transport === 'http' ? (
-                  <Field>
-                    <FieldLabel htmlFor="url">URL</FieldLabel>
-                    <div className="relative">
-                      <Input
-                        id="url"
-                        value={url}
-                        onChange={(event) => setUrl(event.target.value)}
-                        placeholder="https://example.com/mcp"
-                        className={cn(gatewayInputClassName, 'pr-8', errors.url && 'border-destructive')}
-                      />
-                      {isProbing && (
-                        <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 size-4 text-aurora-text-muted animate-spin pointer-events-none" />
-                      )}
-                      {!isProbing && oauthProbed?.oauth_discovered && (
-                        <CheckCircle2 className="absolute right-2.5 top-1/2 -translate-y-1/2 size-4 text-aurora-success pointer-events-none" />
-                      )}
-                    </div>
-                    {errors.url ? (
-                      <p className="text-sm text-destructive">{errors.url}</p>
-                    ) : (
-                      <FieldDescription>
-                        Labby probes this endpoint and detects OAuth support automatically.
-                      </FieldDescription>
-                    )}
-                  </Field>
-                ) : (
-                  <Field>
-                    <FieldLabel htmlFor="command">Command line</FieldLabel>
-                    <Input
-                      id="command"
-                      value={command}
-                      onChange={(event) => setCommand(event.target.value)}
-                      placeholder="npx -y @modelcontextprotocol/server-filesystem /path"
-                      className={cn(gatewayInputClassName, errors.command && 'border-destructive')}
-                    />
-                    {errors.command ? (
-                      <p className="text-sm text-destructive">{errors.command}</p>
-                    ) : (
-                      <FieldDescription>
-                        Enter the full launch command. Quoted arguments with spaces are preserved.
-                      </FieldDescription>
-                    )}
-                  </Field>
-                )}
-
-                <details
-                  className="group rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-medium/50 p-3"
-                >
-                  <summary className="flex cursor-pointer select-none list-none items-center justify-between gap-3 text-sm font-semibold text-aurora-text-primary [&::-webkit-details-marker]:hidden">
-                    <span className="flex min-w-0 items-center gap-2">
-                      <ChevronRight className="size-4 shrink-0 transition-transform group-open:rotate-90" />
-                      <Settings2 className="size-4 shrink-0 text-aurora-accent-primary" />
-                      <span>Environment</span>
-                    </span>
-                    <span className="text-[12px] font-medium text-aurora-text-muted">
-                      {Object.keys(stdioEnv).length ? `${Object.keys(stdioEnv).length} vars` : 'Optional'}
-                    </span>
-                  </summary>
-                  <div className="mt-3 space-y-2">
-                    <textarea
-                      className={cn(
-                        'min-h-[112px] w-full resize-none rounded-aurora-1 px-3 py-2 font-mono text-xs text-aurora-text-primary outline-none transition-[border-color,box-shadow,background-color] focus:border-aurora-accent-primary focus:ring-2 focus:ring-aurora-accent-primary/34',
-                        gatewayInputClassName,
-                      )}
-                      placeholder={'GOOGLE_APPLICATION_CREDENTIALS=/path/to/creds.json\nMCP_LOG_LEVEL=info'}
-                      value={envText}
-                      onChange={(event) => handleEnvTextChange(event.target.value)}
-                    />
-                    <p className="text-[12px] leading-5 text-aurora-text-muted">
-                      One <code>KEY=VALUE</code> per line. Saved with this server config.
-                    </p>
-                  </div>
-                </details>
-              </div>
-            </div>
+            <GatewayCustomConnectionForm
+              transport={transport}
+              onTransportChange={setTransport}
+              name={name}
+              onNameChange={(next) => { nameAutoRef.current = false; setName(next) }}
+              url={url}
+              onUrlChange={setUrl}
+              command={command}
+              onCommandChange={setCommand}
+              envText={envText}
+              onEnvTextChange={handleEnvTextChange}
+              envCount={Object.keys(stdioEnv).length}
+              errors={errors}
+              isProbing={isProbing}
+              oauthDiscovered={Boolean(oauthProbed?.oauth_discovered)}
+            />
 
             <details
               className="group order-3 rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-medium/50 p-4 shadow-[var(--aurora-highlight-medium)]"
@@ -1805,22 +1583,17 @@ export function GatewayFormDialog({
               </div>
             </div>
 
-            <div className="min-h-[420px] flex-1">
-              <TextSurface
-                path="gateway-config.json"
-                value={jsonText}
-                mode="edit"
-                language="json"
-                diagnostics={jsonHasText ? undefined : []}
-                onChange={(next) => {
-                  setJsonText(next)
-                  parseJsonToForm(next)
-                }}
-                onCopy={() => {
-                  void navigator.clipboard.writeText(jsonText)
-                }}
-              />
-            </div>
+            <GatewayConfigEditor
+              value={jsonText}
+              hasText={jsonHasText}
+              onChange={(next) => {
+                setJsonText(next)
+                parseJsonToForm(next)
+              }}
+              onCopy={() => {
+                void navigator.clipboard.writeText(jsonText)
+              }}
+            />
 
             {!jsonValid && jsonHasText && (
               <div className="flex items-start gap-2 rounded-aurora-1 border border-aurora-error/35 bg-aurora-error-surface px-3 py-2 text-[12px] leading-5 text-aurora-error">
@@ -1892,7 +1665,7 @@ export function GatewayFormDialog({
               Test
             </Button>
           )}
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => requestOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleSave} disabled={isSaving || isTesting}>

@@ -97,7 +97,7 @@ cd apps/gateway-admin && rtk tsc --noEmit
 
 # HMAC key verification
 grep -i "LAB_ACP_HMAC_SECRET" ~/.labby/.env
-# → LAB_ACP_HMAC_SECRET=2e5bc11c3e0a9cf8c4082c50340eca66b20d19a37ffa600ad084d663badaf3e0
+# → LAB_ACP_HMAC_SECRET=[REDACTED: rotated after public exposure]
 
 # Non-Aurora color audit
 rtk grep -rn "rgba\|emerald-|sky-500|cyan-500|rose-300|pink-500|orange-500|destructive" \

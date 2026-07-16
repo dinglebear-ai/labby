@@ -8,18 +8,24 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
-use crate::at_rest::{TokenEncryptionKey, maybe_decrypt, maybe_encrypt};
+mod migrations;
+mod rows;
+mod tokens;
+use migrations::run_migrations;
+use rows::*;
+
+use crate::at_rest::TokenEncryptionKey;
 use crate::error::AuthError;
 use crate::types::{
     AllowedUserRow, AuthorizationCodeRow, AuthorizationRequestRow, BrowserLoginStateRow,
-    BrowserSessionRow, NativeAuthorizationResultRow, RefreshTokenRow, RegisteredClient,
-    UpstreamOauthCredentialRow, UpstreamOauthStateRow,
+    BrowserSessionRow, NativeAuthorizationResultRow, RegisteredClient, UpstreamOauthCredentialRow,
+    UpstreamOauthStateRow,
 };
 
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
 /// Schema version for the `PRAGMA user_version` migration guard.
 /// Increment this whenever a migration step is added to `run_migrations`.
-const SCHEMA_VERSION: i64 = 4;
+pub(super) const SCHEMA_VERSION: i64 = 4;
 
 use crate::util::{
     ensure_restrictive_permissions, fingerprint, now_unix, set_restrictive_permissions,
@@ -256,218 +262,6 @@ impl SqliteStore {
                 ),
                 other => sqlite_error(other),
             })
-        })
-        .await
-    }
-
-    /// Insert a new refresh token row, storing a SHA-256 hash of the raw token
-    /// as the primary key.  The plaintext token is **never** persisted; only the
-    /// caller-returned value contains it.  If an encryption key is configured,
-    /// `provider_refresh_token` is encrypted at rest before storage.
-    ///
-    /// Use [`rotate_refresh_token`] instead of calling this twice when replacing
-    /// an existing token — that method performs the swap atomically.
-    pub async fn upsert_refresh_token(&self, token: RefreshTokenRow) -> Result<(), AuthError> {
-        let hash = hash_token(&token.refresh_token);
-        let encrypted_provider_rt = token
-            .provider_refresh_token
-            .as_deref()
-            .map(|raw| maybe_encrypt(self.enc_key.as_deref(), raw))
-            .transpose()?;
-        self.with_conn(move |conn| {
-            conn.execute(
-                "INSERT INTO refresh_tokens (
-                    refresh_token_hash, client_id, subject, resource, scope,
-                    provider_refresh_token, created_at, expires_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(refresh_token_hash) DO UPDATE SET
-                    client_id = excluded.client_id,
-                    subject = excluded.subject,
-                    resource = excluded.resource,
-                    scope = excluded.scope,
-                    provider_refresh_token = excluded.provider_refresh_token,
-                    created_at = excluded.created_at,
-                    expires_at = excluded.expires_at",
-                params![
-                    hash,
-                    token.client_id,
-                    token.subject,
-                    token.resource,
-                    token.scope,
-                    encrypted_provider_rt,
-                    token.created_at,
-                    token.expires_at,
-                ],
-            )
-            .map_err(sqlite_error)?;
-            Ok(())
-        })
-        .await
-    }
-
-    /// Atomically replace an existing refresh token with a new one in a single
-    /// SQLite transaction.  The old token is deleted and the new token is
-    /// inserted; if the old token is not found or has expired the operation
-    /// fails without inserting the new row (replay-safe).
-    ///
-    /// Both the DELETE and the INSERT are wrapped in an explicit `BEGIN` /
-    /// `COMMIT` so a crash between the two statements cannot leave the database
-    /// without a valid refresh token.
-    ///
-    /// Returns the newly issued `RefreshTokenRow` (with `refresh_token` set to
-    /// the new plaintext value) on success.
-    pub async fn rotate_refresh_token(
-        &self,
-        old_token: &str,
-        new_token: RefreshTokenRow,
-    ) -> Result<Option<RefreshTokenRow>, AuthError> {
-        let old_hash = hash_token(old_token);
-        let new_hash = hash_token(&new_token.refresh_token);
-        let now = now_unix();
-        let encrypted_provider_rt = new_token
-            .provider_refresh_token
-            .as_deref()
-            .map(|raw| maybe_encrypt(self.enc_key.as_deref(), raw))
-            .transpose()?;
-        self.with_conn(move |conn| {
-            conn.execute_batch("BEGIN").map_err(sqlite_error)?;
-
-            let delete_result = conn
-                .execute(
-                    "DELETE FROM refresh_tokens
-                     WHERE refresh_token_hash = ?1
-                       AND expires_at > ?2",
-                    params![old_hash, now],
-                )
-                .map_err(sqlite_error);
-
-            let deleted = match delete_result {
-                Ok(n) => n,
-                Err(e) => {
-                    drop(conn.execute_batch("ROLLBACK"));
-                    return Err(e);
-                }
-            };
-
-            if deleted == 0 {
-                // Old token not found or already expired — rollback and reject.
-                drop(conn.execute_batch("ROLLBACK"));
-                return Ok(None);
-            }
-
-            let insert_result = conn
-                .execute(
-                    "INSERT INTO refresh_tokens (
-                    refresh_token_hash, client_id, subject, resource, scope,
-                    provider_refresh_token, created_at, expires_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![
-                        new_hash,
-                        new_token.client_id,
-                        new_token.subject,
-                        new_token.resource,
-                        new_token.scope,
-                        encrypted_provider_rt,
-                        new_token.created_at,
-                        new_token.expires_at,
-                    ],
-                )
-                .map_err(sqlite_error);
-
-            match insert_result {
-                Ok(_) => {
-                    conn.execute_batch("COMMIT").map_err(sqlite_error)?;
-                    Ok(Some(new_token))
-                }
-                Err(e) => {
-                    drop(conn.execute_batch("ROLLBACK"));
-                    Err(e)
-                }
-            }
-        })
-        .await
-    }
-
-    pub async fn find_refresh_token(
-        &self,
-        refresh_token: &str,
-    ) -> Result<Option<RefreshTokenRow>, AuthError> {
-        let hash = hash_token(refresh_token);
-        // Keep the plaintext value in memory so the caller receives a row with
-        // `refresh_token` populated (the DB never stores it).
-        let plaintext = refresh_token.to_string();
-        let now = now_unix();
-        let enc_key = self.enc_key.clone();
-        self.with_conn(move |conn| {
-            let row = conn
-                .query_row(
-                    "SELECT client_id, subject, scope,
-                        provider_refresh_token, created_at, expires_at, resource
-                 FROM refresh_tokens
-                 WHERE refresh_token_hash = ?1
-                   AND expires_at > ?2",
-                    params![hash, now],
-                    |row| {
-                        Ok(RefreshTokenRow {
-                            refresh_token: plaintext.clone(),
-                            client_id: row.get(0)?,
-                            subject: row.get(1)?,
-                            scope: row.get(2)?,
-                            provider_refresh_token: row.get(3)?,
-                            created_at: row.get(4)?,
-                            expires_at: row.get(5)?,
-                            resource: row.get(6).unwrap_or_default(),
-                        })
-                    },
-                )
-                .optional()
-                .map_err(sqlite_error)?;
-
-            // Decrypt provider_refresh_token if present and an enc key is
-            // configured.  maybe_decrypt is a no-op for plaintext values, so
-            // this is safe to call unconditionally once a row is found.
-            match row {
-                Some(mut r) => {
-                    if let Some(raw) = r.provider_refresh_token.as_deref() {
-                        r.provider_refresh_token = Some(maybe_decrypt(enc_key.as_deref(), raw)?);
-                    }
-                    Ok(Some(r))
-                }
-                None => Ok(None),
-            }
-        })
-        .await
-    }
-
-    /// Whether the given local OAuth client already holds an unexpired `lab`
-    /// refresh token.
-    ///
-    /// Scoped per `client_id` rather than "any client, anywhere" — Google
-    /// only skips re-issuing a refresh token for a (Google account,
-    /// `LABBY_GOOGLE_CLIENT_ID`) pair it has already consented to, and that
-    /// consent state is shared across every local DCR client. A global
-    /// existence check therefore let an established client's refresh token
-    /// silently mask the fact that a brand-new client (e.g. a fresh
-    /// Claude.ai/ChatGPT connector registration) had never completed a
-    /// forced-consent round trip, so Google returned an access token with no
-    /// refresh token for that new client. Scoping by `client_id` preserves
-    /// the original UX intent — skip the extra consent screen for a client
-    /// that's authorized before — without leaking one client's consent
-    /// state into another's. Callers still need their own additional check
-    /// when more than one Google account is allowed to sign in, since two
-    /// different accounts sharing one `client_id` aren't distinguishable
-    /// from this method alone — see the call site in `authorize()`.
-    pub async fn has_refresh_token_for_client(&self, client_id: &str) -> Result<bool, AuthError> {
-        let now = now_unix();
-        let client_id = client_id.to_string();
-        self.with_conn(move |conn| {
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM refresh_tokens WHERE expires_at > ?1 AND client_id = ?2)",
-                params![now, client_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|exists: i64| exists != 0)
-            .map_err(sqlite_error)
         })
         .await
     }
@@ -1290,167 +1084,17 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
         set_restrictive_permissions(path)?;
     }
     ensure_restrictive_permissions(path)?;
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+        if sidecar.exists() {
+            set_restrictive_permissions(&sidecar)?;
+            ensure_restrictive_permissions(&sidecar)?;
+        }
+    }
 
     run_migrations(&conn)?;
 
     Ok(conn)
-}
-
-/// One-time migrations keyed by `PRAGMA user_version`.
-///
-/// Migration 0 → 1: add `refresh_token_hash` to the `refresh_tokens` table
-/// (if the table was created with the old `refresh_token TEXT PRIMARY KEY`
-/// schema) and backfill SHA-256 hashes for any plaintext rows that pre-date
-/// this change.  New databases created with the v1 schema already have
-/// `refresh_token_hash` as the PK, so the `ALTER TABLE` step is a no-op in
-/// that case.
-fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
-    let current_version: i64 = conn
-        .query_row("PRAGMA user_version;", [], |row| row.get(0))
-        .map_err(sqlite_error)?;
-
-    if current_version < 1 {
-        // Step 1: add `refresh_token_hash` column if missing (pre-v1 DBs have
-        // `refresh_token TEXT PRIMARY KEY` and no hash column).
-        let cols: Vec<String> = {
-            let mut stmt = conn
-                .prepare("PRAGMA table_info(refresh_tokens);")
-                .map_err(sqlite_error)?;
-            stmt.query_map([], |row| row.get::<_, String>(1))
-                .map_err(sqlite_error)?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(sqlite_error)?
-        };
-
-        if !cols.iter().any(|c| c == "refresh_token_hash") {
-            // Old schema: add the column and back-fill SHA-256 hashes.
-            conn.execute_batch("ALTER TABLE refresh_tokens ADD COLUMN refresh_token_hash TEXT;")
-                .map_err(sqlite_error)?;
-
-            // Back-fill: hash existing plaintext `refresh_token` values.  We
-            // can only do this in a SQL-only migration when the hash is
-            // computed outside SQLite; instead load all rows, compute hashes
-            // in Rust, and update.
-            let rows: Vec<(String,)> = {
-                let mut stmt = conn
-                    .prepare("SELECT refresh_token FROM refresh_tokens WHERE refresh_token_hash IS NULL;")
-                    .map_err(sqlite_error)?;
-                stmt.query_map([], |row| Ok((row.get::<_, String>(0)?,)))
-                    .map_err(sqlite_error)?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(sqlite_error)?
-            };
-            for (plaintext,) in rows {
-                let hash = hash_token(&plaintext);
-                conn.execute(
-                    "UPDATE refresh_tokens SET refresh_token_hash = ?1 WHERE refresh_token = ?2 AND refresh_token_hash IS NULL;",
-                    params![hash, plaintext],
-                )
-                .map_err(sqlite_error)?;
-            }
-
-            warn!(
-                "migration v1: added refresh_token_hash column and backfilled existing rows — old plaintext tokens invalidated on next rotation"
-            );
-        }
-
-        // Ensure a UNIQUE index exists on refresh_token_hash so that
-        // ON CONFLICT(refresh_token_hash) works correctly on pre-existing
-        // databases where the column was added by ALTER TABLE (not declared as
-        // PRIMARY KEY).  On new databases the column is already PRIMARY KEY so
-        // this index is redundant but harmless.
-        conn.execute_batch(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_refresh_tokens_hash \
-             ON refresh_tokens(refresh_token_hash);",
-        )
-        .map_err(sqlite_error)?;
-
-        conn.execute_batch("PRAGMA user_version = 1;")
-            .map_err(sqlite_error)?;
-    }
-
-    if current_version < 2 {
-        // Step 2: add `dynamic_client_id` column to `upstream_oauth_state`.
-        // This column binds the OAuth client_id used to begin a specific
-        // authorization flow to the CSRF state row so that concurrent
-        // `begin_authorization` calls for the same upstream+subject can each
-        // complete their own callback with the correct client_id (lab-77y5.15).
-        add_column_if_missing(conn, "upstream_oauth_state", "dynamic_client_id", "TEXT")?;
-
-        conn.execute_batch("PRAGMA user_version = 2;")
-            .map_err(sqlite_error)?;
-    }
-
-    if current_version < 3 {
-        // Step 3: index `refresh_tokens(client_id, expires_at)` — the columns
-        // `has_refresh_token_for_client` filters on. The table has no other
-        // index on either column (only `refresh_token_hash`, the PK), so this
-        // query was a full table scan; harmless at today's single-tenant row
-        // counts, but this now runs on every interactive `/authorize` request
-        // rather than as an occasional admin check, so it's worth having.
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_client_expiry \
-             ON refresh_tokens(client_id, expires_at);",
-        )
-        .map_err(sqlite_error)?;
-
-        conn.execute_batch("PRAGMA user_version = 3;")
-            .map_err(sqlite_error)?;
-    }
-
-    if current_version < 4 {
-        // Step 4: add a FOREIGN KEY constraint on refresh_tokens.client_id ->
-        // registered_clients.client_id. SQLite has no ALTER TABLE ADD
-        // CONSTRAINT, so recreate the table with the constraint present and
-        // copy the existing rows across — SQLite's standard procedure for
-        // this. registered_clients is append-only (nothing in this crate
-        // ever deletes a row from it), so a legitimately-issued refresh
-        // token can never reference a client_id that later stops existing;
-        // this only guards against future code accidentally minting a
-        // token for an unregistered client_id, which the app-level
-        // find_client() check in authorize.rs is already supposed to
-        // prevent.
-        //
-        // PRAGMA foreign_keys must be toggled outside any transaction (it's
-        // a silent no-op if changed while one is open), so it's set before
-        // BEGIN and restored after COMMIT rather than inside the batch.
-        conn.execute_batch("PRAGMA foreign_keys = OFF;")
-            .map_err(sqlite_error)?;
-        conn.execute_batch(
-            "BEGIN;
-             CREATE TABLE refresh_tokens_new (
-                 refresh_token_hash TEXT PRIMARY KEY,
-                 client_id TEXT NOT NULL REFERENCES registered_clients(client_id),
-                 subject TEXT NOT NULL,
-                 resource TEXT NOT NULL DEFAULT '',
-                 scope TEXT NOT NULL,
-                 provider_refresh_token TEXT,
-                 created_at INTEGER NOT NULL,
-                 expires_at INTEGER NOT NULL
-             );
-             INSERT INTO refresh_tokens_new (
-                 refresh_token_hash, client_id, subject, resource, scope,
-                 provider_refresh_token, created_at, expires_at
-             )
-             SELECT
-                 refresh_token_hash, client_id, subject, resource, scope,
-                 provider_refresh_token, created_at, expires_at
-             FROM refresh_tokens;
-             DROP TABLE refresh_tokens;
-             ALTER TABLE refresh_tokens_new RENAME TO refresh_tokens;
-             CREATE INDEX IF NOT EXISTS idx_refresh_tokens_client_expiry \
-                 ON refresh_tokens(client_id, expires_at);
-             COMMIT;",
-        )
-        .map_err(sqlite_error)?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(sqlite_error)?;
-
-        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
-            .map_err(sqlite_error)?;
-    }
-
-    Ok(())
 }
 
 /// Compute a hex-encoded SHA-256 digest of a token for safe storage.
@@ -1512,108 +1156,6 @@ fn add_column_if_missing(
         .map_err(sqlite_error)?;
     }
     Ok(())
-}
-
-fn row_to_allowed_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<AllowedUserRow> {
-    Ok(AllowedUserRow {
-        email: row.get(0)?,
-        added_by: row.get(1)?,
-        created_at: row.get(2)?,
-    })
-}
-
-fn row_to_authorization_request(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<AuthorizationRequestRow> {
-    Ok(AuthorizationRequestRow {
-        state: row.get(0)?,
-        client_id: row.get(1)?,
-        redirect_uri: row.get(2)?,
-        client_state: row.get(3)?,
-        resource: row.get(10)?,
-        scope: row.get(4)?,
-        provider_code_verifier: row.get(5)?,
-        code_challenge: row.get(6)?,
-        code_challenge_method: row.get(7)?,
-        created_at: row.get(8)?,
-        expires_at: row.get(9)?,
-    })
-}
-
-fn row_to_authorization_code(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthorizationCodeRow> {
-    Ok(AuthorizationCodeRow {
-        code: row.get(0)?,
-        client_id: row.get(1)?,
-        subject: row.get(2)?,
-        redirect_uri: row.get(3)?,
-        resource: row.get(10)?,
-        scope: row.get(4)?,
-        code_challenge: row.get(5)?,
-        code_challenge_method: row.get(6)?,
-        provider_refresh_token: row.get(7)?,
-        created_at: row.get(8)?,
-        expires_at: row.get(9)?,
-    })
-}
-
-fn row_to_browser_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrowserSessionRow> {
-    Ok(BrowserSessionRow {
-        session_id: row.get(0)?,
-        subject: row.get(1)?,
-        email: row.get(2)?,
-        csrf_token: row.get(3)?,
-        created_at: row.get(4)?,
-        expires_at: row.get(5)?,
-    })
-}
-
-fn row_to_browser_login_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrowserLoginStateRow> {
-    Ok(BrowserLoginStateRow {
-        state: row.get(0)?,
-        return_to: row.get(1)?,
-        provider_code_verifier: row.get(2)?,
-        created_at: row.get(3)?,
-        expires_at: row.get(4)?,
-    })
-}
-
-fn row_to_native_authorization_result(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<NativeAuthorizationResultRow> {
-    Ok(NativeAuthorizationResultRow {
-        state: row.get(0)?,
-        code: row.get(1)?,
-        created_at: row.get(2)?,
-        expires_at: row.get(3)?,
-    })
-}
-
-fn row_to_upstream_oauth_credentials(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<UpstreamOauthCredentialRow> {
-    let refresh_token_present: i64 = row.get(8)?;
-    Ok(UpstreamOauthCredentialRow {
-        upstream_name: row.get(0)?,
-        subject: row.get(1)?,
-        client_id: row.get(2)?,
-        granted_scopes_json: row.get(3)?,
-        token_blob: row.get(4)?,
-        token_blob_nonce: row.get(5)?,
-        token_received_at: row.get(6)?,
-        access_token_expires_at: row.get(7)?,
-        refresh_token_present: refresh_token_present != 0,
-    })
-}
-
-fn row_to_upstream_oauth_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<UpstreamOauthStateRow> {
-    Ok(UpstreamOauthStateRow {
-        upstream_name: row.get(0)?,
-        subject: row.get(1)?,
-        csrf_token: row.get(2)?,
-        pkce_verifier: row.get(3)?,
-        created_at: row.get(4)?,
-        expires_at: row.get(5)?,
-    })
 }
 
 #[cfg(test)]

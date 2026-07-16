@@ -72,26 +72,50 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
             let a = crate::dispatch::helpers::require_str(params, "action")?;
             action_schema(ACTIONS, a)
         }
-        "state" => state_action(),
-        "bootstrap" => super::bootstrap_action(),
-        "schema.get" => schema_get_action(params),
-        "draft.get" => draft_get_action(),
-        "draft.set" => draft_set_action(params).await,
-        "draft.discard" => draft_discard_action(),
+        "state" => run_blocking_setup("state", state_action).await,
+        "bootstrap" => run_blocking_setup("bootstrap", super::bootstrap_action).await,
+        "schema.get" => {
+            let params = params.clone();
+            run_blocking_setup("schema.get", move || schema_get_action(&params)).await
+        }
+        "draft.get" => run_blocking_setup("draft.get", draft_get_action).await,
+        "draft.set" => {
+            let params = params.clone();
+            run_blocking_setup("draft.set", move || draft_set_action(&params)).await
+        }
+        "draft.discard" => run_blocking_setup("draft.discard", draft_discard_action).await,
         "draft.commit" => draft_commit_action(params).await,
         "settings.schema" => to_json(super::settings::schema_response()),
-        "settings.state" => settings_state_action(params),
-        "settings.update" => settings_update_action(params),
-        "settings.env.update" => settings_env_update_action(params).await,
-        "settings.config.update" => settings_config_update_action(params),
-        "settings.advanced_state" => settings_advanced_state_action(params),
+        "settings.state" => blocking_params("settings.state", params, settings_state_action).await,
+        "settings.update" => {
+            blocking_params("settings.update", params, settings_update_action).await
+        }
+        "settings.env.update" => {
+            blocking_params("settings.env.update", params, settings_env_update_action).await
+        }
+        "settings.config.update" => {
+            blocking_params(
+                "settings.config.update",
+                params,
+                settings_config_update_action,
+            )
+            .await
+        }
+        "settings.advanced_state" => {
+            blocking_params(
+                "settings.advanced_state",
+                params,
+                settings_advanced_state_action,
+            )
+            .await
+        }
         "settings.env_schema" => settings_env_schema_action(),
         "plugin_hook" => plugin_hook_action(params).await,
-        "plugin_sync" => plugin_sync_action(),
-        "plugin_export" => plugin_export_action(),
+        "plugin_sync" => run_blocking_setup("plugin_sync", plugin_sync_action).await,
+        "plugin_export" => run_blocking_setup("plugin_export", plugin_export_action).await,
         "plugin_connectivity" => plugin_connectivity_action(params).await,
-        "check" => setup_check_action(),
-        "repair" => setup_repair_action(),
+        "check" => run_blocking_setup("check", setup_check_action).await,
+        "repair" => run_blocking_setup("repair", setup_repair_action).await,
         // Plugin-lifecycle actions. The dotted `<resource>.<verb>` forms are
         // the canonical names; the snake_case arms beside them are deprecated
         // aliases retained for backward compatibility. Every name routed here
@@ -112,6 +136,28 @@ async fn dispatch_inner(action: &str, params: &Value) -> Result<Value, ToolError
             hint: None,
         }),
     }
+}
+
+async fn run_blocking_setup<T, F>(operation: &'static str, task: F) -> Result<T, ToolError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ToolError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("setup {operation} worker failed: {error}"),
+        })?
+}
+
+async fn blocking_params(
+    operation: &'static str,
+    params: &Value,
+    task: fn(&Value) -> Result<Value, ToolError>,
+) -> Result<Value, ToolError> {
+    let params = params.clone();
+    run_blocking_setup(operation, move || task(&params)).await
 }
 
 async fn plugin_hook_action(params: &Value) -> Result<Value, ToolError> {
@@ -289,7 +335,7 @@ fn parse_update_entries(
     })
 }
 
-async fn settings_env_update_action(params: &Value) -> Result<Value, ToolError> {
+fn settings_env_update_action(params: &Value) -> Result<Value, ToolError> {
     let entries = parse_update_entries(params)?;
     let env_entries = super::settings::env_entries_from_updates(&entries)?;
     let env = env_path();
@@ -605,7 +651,7 @@ fn draft_get_action() -> Result<Value, ToolError> {
     Ok(json!({ "entries": masked }))
 }
 
-async fn draft_set_action(params: &Value) -> Result<Value, ToolError> {
+fn draft_set_action(params: &Value) -> Result<Value, ToolError> {
     let entries = parse_entries(params)?;
     let force = parse_force(params);
 
@@ -634,7 +680,33 @@ fn draft_discard_action() -> Result<Value, ToolError> {
 
 fn validate_against_registry(entries: &[DraftEntry]) -> Result<(), ToolError> {
     let index = cached_env_var_index();
+    let schema = super::settings::env_schema();
     for entry in entries {
+        let valid_name = !entry.key.is_empty()
+            && entry.key.len() <= 128
+            && entry.key.as_bytes()[0].is_ascii_uppercase()
+            && entry
+                .key
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_');
+        if !valid_name {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "environment key `{}` must match [A-Z][A-Z0-9_]{{0,127}}",
+                    entry.key
+                ),
+                param: entry.key.clone(),
+            });
+        }
+        if !schema.iter().any(|spec| spec.key == entry.key) {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "environment key `{}` is not declared by the setup schema",
+                    entry.key
+                ),
+                param: entry.key.clone(),
+            });
+        }
         if let Some(var) = index.get(entry.key.as_str())
             && let Some(ui) = var.ui
         {
@@ -654,7 +726,13 @@ async fn draft_commit_action(params: &Value) -> Result<Value, ToolError> {
     let env = env_path();
     let draft = draft_path();
 
-    if !draft.exists() {
+    if !tokio::fs::try_exists(&draft)
+        .await
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: format!("failed to inspect draft `{}`: {error}", draft.display()),
+        })?
+    {
         return Err(ToolError::InvalidParam {
             message: "no draft to commit (.env.draft missing)".into(),
             param: "draft".into(),
@@ -662,7 +740,11 @@ async fn draft_commit_action(params: &Value) -> Result<Value, ToolError> {
     }
 
     // Snapshot mtime before the audit so an interleaved writer is detected.
-    let expected_mtime = snapshot_mtime(&env);
+    let snapshot_path = env.clone();
+    let expected_mtime = run_blocking_setup("draft.commit.snapshot", move || {
+        Ok(snapshot_mtime(&snapshot_path))
+    })
+    .await?;
 
     // Run doctor.audit.full inline. The orchestrator-exception clause in
     // dispatch/CLAUDE.md permits Bootstrap services to invoke peer dispatch.
@@ -693,25 +775,27 @@ async fn draft_commit_action(params: &Value) -> Result<Value, ToolError> {
         }));
     }
 
-    let entries = draft::read_entries(&draft);
-    let outcome = env_merge::merge(
-        &env,
-        MergeRequest {
-            entries: entries
-                .into_iter()
-                .map(|e| EnvEntry::new(e.key, e.value))
-                .collect(),
-            force,
-            expected_mtime,
-        },
-    )
-    .map_err(map_merge_err)?;
-    // env_merge::merge owns rollback semantics: on a post-backup failure
-    // it surfaces commit_rollback_failed with the backup_path so the
-    // operator can recover manually. Dispatch does not retry the merge.
-
-    // Successful commit — clear the draft so the wizard does not re-replay.
-    std::fs::remove_file(&draft).ok();
+    let outcome = run_blocking_setup("draft.commit", move || {
+        let entries = draft::read_entries(&draft);
+        let outcome = env_merge::merge(
+            &env,
+            MergeRequest {
+                entries: entries
+                    .into_iter()
+                    .map(|e| EnvEntry::new(e.key, e.value))
+                    .collect(),
+                force,
+                expected_mtime,
+            },
+        )
+        .map_err(map_merge_err)?;
+        // env_merge::merge owns rollback semantics. Clearing the durable draft
+        // is part of the same blocking transaction boundary: report a partial
+        // commit instead of allowing the async adapter to claim success.
+        clear_draft_after_commit(&draft, outcome.backup_path.as_deref(), draft::discard)?;
+        Ok(outcome)
+    })
+    .await?;
 
     let result = CommitOutcome {
         written: outcome.written,
@@ -736,6 +820,25 @@ async fn draft_commit_action(params: &Value) -> Result<Value, ToolError> {
     );
 
     to_json(result)
+}
+
+fn clear_draft_after_commit<F>(
+    draft_path: &std::path::Path,
+    backup_path: Option<&std::path::Path>,
+    clear: F,
+) -> Result<(), ToolError>
+where
+    F: FnOnce(&std::path::Path) -> std::io::Result<bool>,
+{
+    clear(draft_path).map_err(|error| ToolError::Sdk {
+        sdk_kind: "draft_clear_failed".to_string(),
+        message: format!(
+            "environment was committed but draft `{}` could not be cleared: {error}; backup: {}",
+            draft_path.display(),
+            backup_path.map_or_else(|| "<none>".to_string(), |path| path.display().to_string())
+        ),
+    })?;
+    Ok(())
 }
 
 fn audit_summary(audit: &Value) -> (usize, usize, bool) {
@@ -1344,5 +1447,21 @@ mod tests {
         for key in services.keys() {
             assert_eq!(key, "radarr");
         }
+    }
+
+    #[test]
+    fn injected_draft_clear_failure_reports_partial_commit_and_backup() {
+        let draft = std::path::Path::new("/tmp/test.env.draft");
+        let backup = std::path::Path::new("/tmp/test.env.bak.1");
+        let err = clear_draft_after_commit(draft, Some(backup), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected clear failure",
+            ))
+        })
+        .expect_err("clear failure must not report commit success");
+        assert_eq!(err.kind(), "draft_clear_failed");
+        assert!(err.to_string().contains("test.env.bak.1"));
+        assert!(err.to_string().contains("environment was committed"));
     }
 }

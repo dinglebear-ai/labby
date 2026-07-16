@@ -8,13 +8,15 @@
     "dev": "next dev -H 0.0.0.0",
     "prebuild": "node scripts/sync-install-script.mjs",
     "build": "next build",
+    "postbuild": "node scripts/check-route-bundle-budgets.mjs",
     "start": "python3 -m http.server 3000 -d out",
     "preview": "python3 -m http.server 3000 -d out",
     "lint": "eslint .",
     "test": "pnpm run test:unit && pnpm run test:install-script",
     "test:unit": "node scripts/run-unit-tests.mjs",
     "test:install-script": "node --test scripts/*.test.mjs",
-    "test:browser": "node --test --experimental-strip-types lib/browser/**/*.test.ts"
+    "test:browser": "node --test --experimental-strip-types lib/browser/**/*.test.ts",
+    "test:bundle": "node scripts/check-route-bundle-budgets.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",

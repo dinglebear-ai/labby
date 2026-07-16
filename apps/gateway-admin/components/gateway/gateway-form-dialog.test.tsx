@@ -356,6 +356,82 @@ test('clearing a protected route removes the existing route after saving', async
   }
 })
 
+test('protected-route failure rolls back the gateway save and keeps the dialog open', async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') {
+      return gatewayActionResponse(init, {
+        protectedRoutes: [protectedRouteFixture('old-route', '/old', 'tools')],
+        failAction: 'gateway.protected_route.update',
+      })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    let rollbackCalls = 0
+    const view = await renderOpenGatewayDialog(gatewayFixture('tools'), async () => async () => {
+      rollbackCalls += 1
+    })
+
+    const pathInput = document.querySelector('#protected-public-path') as HTMLInputElement | null
+    assert.ok(pathInput)
+    await waitFor(() => assert.equal(pathInput.value, 'old'))
+    await setInputValue(window, pathInput, 'new')
+    await clickSave()
+
+    await waitFor(() => {
+      assert.equal(rollbackCalls, 1)
+      assert.ok(document.querySelector('[role="dialog"]'))
+      assert.match(document.body.textContent ?? '', /Save Changes/i)
+    })
+
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('closing the dialog aborts an in-flight gateway connection test', async () => {
+  installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  let testSignal: AbortSignal | undefined
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body ?? '{}')) as { action?: string }
+      if (body.action === 'gateway.test') {
+        testSignal = init.signal ?? undefined
+        return new Promise<Response>((_resolve, reject) => {
+          testSignal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+        })
+      }
+      return gatewayActionResponse(init, {})
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    const view = await renderOpenGatewayDialog(gatewayFixture('tools'))
+    const testButton = [...document.querySelectorAll('button')]
+      .find((button) => button.textContent?.trim() === 'Test') as HTMLButtonElement | undefined
+    assert.ok(testButton)
+    await act(async () => { testButton.click() })
+    await waitFor(() => assert.ok(testSignal))
+
+    const cancelButton = [...document.querySelectorAll('button')]
+      .find((button) => button.textContent?.trim() === 'Cancel') as HTMLButtonElement | undefined
+    assert.ok(cancelButton)
+    await act(async () => { cancelButton.click() })
+    assert.equal(testSignal?.aborted, true)
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('saving a custom HTTP server with no auth sends no bearer credential', async () => {
   const window = installGatewayDialogDom()
   const originalFetch = globalThis.fetch
@@ -824,7 +900,7 @@ async function waitFor(assertion: () => void) {
 
 async function renderOpenGatewayDialog(
   gateway: Gateway | null = null,
-  onSave: (input: CreateGatewayInput | UpdateGatewayInput) => Promise<void> = async () => {},
+  onSave: (input: CreateGatewayInput | UpdateGatewayInput) => Promise<(() => Promise<void>) | void> = async () => {},
 ) {
   const { GatewayFormDialog } = await import('./gateway-form-dialog')
 
@@ -880,12 +956,16 @@ function gatewayActionResponse(
   options: {
     protectedRoutes?: ProtectedMcpRoute[]
     onAction?: (action: string, params: Record<string, unknown>) => void
+    failAction?: string
   },
 ) {
   const body = JSON.parse(String(init?.body ?? '{}')) as { action?: string; params?: Record<string, unknown> }
   const action = body.action ?? ''
   const params = body.params ?? {}
   options.onAction?.(action, params)
+  if (action === options.failAction) {
+    return jsonResponse({ kind: 'upstream_error', message: 'route write failed' }, 500)
+  }
 
   switch (action) {
     case 'gateway.supported_services':

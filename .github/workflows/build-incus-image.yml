@@ -29,7 +29,7 @@ on:
       - scripts/ci/smoke-incus-image.sh
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -37,6 +37,7 @@ env:
   RUSTFLAGS: -D warnings
   RUSTC_WRAPPER: ""
   CARGO_BUILD_RUSTC_WRAPPER: ""
+  DISTROBUILDER_SNAP_REVISION: "2114"
 
 jobs:
   build-image:
@@ -61,7 +62,13 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
-          sudo snap install distrobuilder --classic
+          sudo snap install distrobuilder --classic --revision "$DISTROBUILDER_SNAP_REVISION"
+          sudo distrobuilder version
+          snap list distrobuilder
+          # Ubuntu runner packages are bound to GitHub's reviewed image
+          # snapshot; record the resolved versions because cross-image apt
+          # version pins are not stable or consistently retained.
+          dpkg-query -W debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
           sudo incus admin init --minimal || true
 
       - name: Validate image scripts and definition
@@ -109,36 +116,72 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish rolling latest release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  publish-image:
+    name: Publish immutable Incus image and advance rolling alias
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: labby-incus-image
+          path: dist
+      - name: Publish verified immutable image, then move rolling alias
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: labby-incus-latest
-          RELEASE_TITLE: labby-incus latest
+          ROLLING_TAG: labby-incus-latest
         run: |
           set -euo pipefail
-
+          immutable_tag="labby-incus-${GITHUB_SHA::12}"
+          (cd dist && sha256sum --check --strict ./*.sha256)
           release_notes="$(mktemp)"
           cat >"$release_notes" <<EOF
-          Rolling Labby Incus image build from \`${GITHUB_SHA}\`.
+          Immutable Labby Incus image built from \`${GITHUB_SHA}\`.
 
           - Repository: ${GITHUB_REPOSITORY}
           - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           - Source branch: ${GITHUB_REF_NAME}
           EOF
-
-          git tag -f "$RELEASE_TAG" "$GITHUB_SHA"
-          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$RELEASE_TAG"
-
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" \
-              --title "$RELEASE_TITLE" \
-              --notes-file "$release_notes" \
-              --latest
-            gh release upload "$RELEASE_TAG" dist/* --clobber
+          if gh release view "$immutable_tag" >/dev/null 2>&1; then
+            echo "::error::immutable Incus release already exists: $immutable_tag"
+            exit 1
           else
-            gh release create "$RELEASE_TAG" dist/* \
-              --title "$RELEASE_TITLE" \
-              --notes-file "$release_notes" \
-              --latest
+            gh release create "$immutable_tag" dist/* --target "$GITHUB_SHA" \
+              --title "$immutable_tag" --notes-file "$release_notes" --latest=false
           fi
+          verify_dir="$(mktemp -d)"
+          gh release download "$immutable_tag" --dir "$verify_dir"
+          (cd "$verify_dir" && sha256sum --check --strict ./*.sha256)
+
+          rolling_notes="$(mktemp)"
+          printf "Rolling pointer to immutable release \`%s\`.\n\nSource commit: \`%s\`\n" \
+            "$immutable_tag" "$GITHUB_SHA" > "$rolling_notes"
+          if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
+            gh release upload "$ROLLING_TAG" "$verify_dir"/* --clobber
+            while IFS= read -r asset; do
+              [[ -z "$asset" || -f "$verify_dir/$asset" ]] || \
+                gh release delete-asset "$ROLLING_TAG" "$asset" --yes
+            done < <(gh release view "$ROLLING_TAG" --json assets --jq '.assets[].name')
+            gh release edit "$ROLLING_TAG" --title "labby-incus latest" \
+              --notes-file "$rolling_notes" --latest=false
+          else
+            gh release create "$ROLLING_TAG" "$verify_dir"/* --target "$GITHUB_SHA" \
+              --title "labby-incus latest" --notes-file "$rolling_notes" --latest=false
+          fi
+
+          # Prove the rolling release now serves the exact immutable assets.
+          # The tag itself does not move until this remote checksum succeeds.
+          rolling_verify_dir="$(mktemp -d)"
+          gh release download "$ROLLING_TAG" --dir "$rolling_verify_dir"
+          (cd "$rolling_verify_dir" && sha256sum --check --strict ./*.sha256)
+
+          # The mutable alias advances only after immutable publication and
+          # both immutable and rolling remote checksum verification complete.
+          git tag -f "$ROLLING_TAG" "$GITHUB_SHA"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$ROLLING_TAG"

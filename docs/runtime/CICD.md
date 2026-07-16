@@ -8,7 +8,7 @@ This document is the authoritative contract for CI, release, and artifact delive
 
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
 That classifier maps the changed file list into stable routing categories:
-`docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`,
+`docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`, `palette`,
 `docker`, `security`, and `release`. Scheduled and manual runs enable every
 category so periodic/manual validation stays broad.
 
@@ -29,6 +29,7 @@ jobs when their changed-path category is enabled:
 | Unraid plugin checksums | always | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
+| Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | Feature slices | `rust_compile` | `cargo check -p labby --no-default-features --features <slice>` |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
@@ -36,6 +37,9 @@ jobs when their changed-path category is enabled:
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
 | Lint | `rust_compile` | `cargo clippy --workspace --all-features -- -D warnings` |
 | Deny | `security` | `cargo deny check` |
+| Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
+| Palette Tauri | `palette` | independent lockfile audit plus Linux tests and native Windows build/test smoke |
+| Rust coverage | `rust_test` | LCOV trend artifact with project and critical auth/gateway/dispatch/config floors |
 | Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the self-hosted `linux-ci` runner for trusted events |
 | Tests (Linux fork PR fallback) | `rust_test` | same nextest run on `ubuntu-latest` for fork PRs |
 | Tests (Windows) | `rust_test` | same nextest run on the self-hosted `windows-ci` Windows runner, with fork PRs excluded from self-hosted runners |
@@ -43,6 +47,18 @@ jobs when their changed-path category is enabled:
 | Container smoke | `docker` | Docker build using `config/Dockerfile` |
 
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer.
+
+### Revoked-history secret baseline policy
+
+The full-history Gitleaks scan may baseline only a historical credential that
+is confirmed revoked or retired and whose current tree is redacted. Every
+entry must be the exact Gitleaks fingerprint
+`commit:path:rule-id:line`; wildcard, path-wide, rule-wide, and current-file
+allowlists are prohibited. A reviewer must verify both revocation or retirement
+and current-tree redaction before adding the fingerprint. CI must never baseline a finding introduced at `HEAD`: remove the secret and rotate or revoke
+it instead. Keep an exact historical fingerprint only while the offending
+commit remains reachable; remove it after an intentional history rewrite makes
+that commit unreachable.
 
 The frontend build is required because the Rust binary embeds the exported
 Labby assets. It is a production build gate, not a TypeScript strictness gate:
@@ -97,13 +113,21 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 
 ## Release Process
 
-1. Bump version with `cargo-release` (single workspace version)
-2. `cargo-release` tags the commit `vX.Y.Z` and pushes
-3. The `vX.Y.Z` tag triggers the release CI job
-4. Release job builds frontend assets once and reuses them for each target build
-5. Release job builds the container image from `config/Dockerfile` and pushes it to GHCR
-6. GitHub generates release notes from the tag diff
-7. Binary archives and checksum files are published to GitHub Releases
+1. Release Please prepares the version/changelog PR but does not create a GitHub release.
+2. Merging that PR creates the stable `vX.Y.Z` tag and triggers release CI.
+3. Preflight requires strict stable SemVer, ancestry from `origin/main`, and exact Cargo/npm/MCP/release-manifest version lockstep.
+4. Binary, Incus, and container candidates are built and smoke-tested as private workflow artifacts.
+5. The final gated job verifies checksums, emits an SPDX SBOM and GitHub provenance attestations, then publishes the exact tested image by digest and signs it keylessly with Cosign.
+6. The immutable image tag and compatibility `latest` tag advance together; failure deletes the new version and restores the previous `latest` digest.
+7. The draft GitHub release is made public last, after every required validation and attestation succeeds.
+
+The npm and MCP registries do not support deleting an already-published
+version. If publication reaches one registry and then fails, rerun the same tag
+after correcting the failure: the release job checks each registry first,
+skips the version that already exists, republishes only the missing surface,
+and makes the draft GitHub release public only after both registry versions are
+present. Never create a replacement tag or bump the version to recover a
+partially published release.
 
 **Tag format:** `vX.Y.Z` — no other formats are accepted.
 
@@ -115,7 +139,30 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 - **Container surface:** GitHub Container Registry (`ghcr.io/jmagar/lab`)
 - **Artifacts per release:** one binary archive per supported target (Linux x86_64, Windows x86_64; aarch64 dropped deliberately — rquickjs-sys does not cross-compile and no fleet host is ARM)
 - **Checksums:** every binary archive has a SHA-256 checksum file
-- **No package registry publishing** (crates.io, npm, etc.) unless explicitly decided
+- **Package registries:** the `labby-mcp` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
+
+## MCP Registry DNS Key Rotation
+
+The release workflow verifies `mcp-publisher` against the exact v1.8.0 GitHub
+release asset SHA-256 before the `MCP_PRIVATE_KEY` secret enters the process.
+Key rotation is a coordinated DNS and GitHub operation; never change only one
+side or print the private key in a workflow log.
+
+1. On a trusted host with OpenSSL 3, generate a fresh Ed25519 key:
+   `openssl genpkey -algorithm Ed25519 -out key.pem`.
+2. Derive the public value with
+   `openssl pkey -in key.pem -pubout -outform DER | tail -c 32 | base64`.
+3. Replace the TXT record at the **`dinglebear.ai` apex** with exactly one
+   `v=MCPv1; k=ed25519; p=<public-key>` value. The registry does not use an
+   `_mcp-*` selector, and the old record must be removed rather than retained.
+4. After authoritative and public DNS both return only the new record, derive
+   the private hex value with
+   `openssl pkey -in key.pem -noout -text | grep -A3 'priv:' | tail -n +2 | tr -d ' :\n'`.
+5. Replace the repository `MCP_PRIVATE_KEY` Actions secret using a no-echo
+   channel, run `mcp-publisher login dns --domain dinglebear.ai --private-key "$MCP_PRIVATE_KEY"`, and verify an idempotent metadata publication.
+6. Securely destroy the local plaintext key after the secret and DNS record
+   have been verified; if any step fails, restore both prior DNS and secret
+   together.
 
 ## Test Reports
 

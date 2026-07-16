@@ -202,9 +202,10 @@ fn ensure_restrictive_permissions(path: &Path) -> Result<(), ToolError> {
         .map_err(|error| storage_error(format!("chmod 0600 `{}`: {error}", path.display())))
 }
 
-#[cfg(not(unix))]
-fn ensure_restrictive_permissions(_path: &Path) -> Result<(), ToolError> {
-    Ok(())
+#[cfg(windows)]
+fn ensure_restrictive_permissions(path: &Path) -> Result<(), ToolError> {
+    labby_auth::util::harden_secret_file(path)
+        .map_err(|error| storage_error(format!("harden ACL `{}`: {error}", path.display())))
 }
 
 fn open_connection(path: &Path) -> Result<Connection, ToolError> {
@@ -238,6 +239,7 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
             elapsed_ms INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_ts ON upstream_calls(ts_unix);
+        CREATE INDEX IF NOT EXISTS idx_upstream_calls_page ON upstream_calls(ts_unix DESC, id DESC);
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_upstream ON upstream_calls(upstream_name, ts_unix);
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_tool ON upstream_calls(upstream_name, tool_name);
         CREATE INDEX IF NOT EXISTS idx_upstream_calls_actor ON upstream_calls(actor);",
@@ -245,6 +247,12 @@ fn open_connection(path: &Path) -> Result<Connection, ToolError> {
     .map_err(sqlite_error)?;
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
         .map_err(sqlite_error)?;
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+        if sidecar.exists() {
+            ensure_restrictive_permissions(&sidecar)?;
+        }
+    }
     Ok(conn)
 }
 
@@ -320,12 +328,18 @@ impl UsageStore {
         .await
     }
 
-    /// Returns the requested page plus the total row count matching the
-    /// filter (ignoring `limit`/`offset`), newest calls first.
+    /// Returns a keyset-paginated page, an optional total, and the next cursor.
     pub async fn list_calls(
         &self,
         query: super::query::UsageCallsQuery,
-    ) -> Result<(Vec<super::query::UpstreamCallRecordView>, i64), ToolError> {
+    ) -> Result<
+        (
+            Vec<super::query::UpstreamCallRecordView>,
+            Option<i64>,
+            Option<super::query::UsageCursor>,
+        ),
+        ToolError,
+    > {
         self.with_conn(move |conn| {
             let (where_clause, mut bind) = usage_where_clause(
                 &query.since_unix,
@@ -334,44 +348,79 @@ impl UsageStore {
                 &query.allowed_upstreams,
             );
 
-            let total: i64 = conn
-                .query_row(
-                    &format!("SELECT COUNT(*) FROM upstream_calls {where_clause}"),
-                    rusqlite::params_from_iter(bind.iter()),
-                    |row| row.get(0),
+            let total = if query.include_total {
+                Some(
+                    conn.query_row(
+                        &format!("SELECT COUNT(*) FROM upstream_calls {where_clause}"),
+                        rusqlite::params_from_iter(bind.iter()),
+                        |row| row.get(0),
+                    )
+                    .map_err(sqlite_error)?,
                 )
-                .map_err(sqlite_error)?;
+            } else {
+                None
+            };
+
+            let mut page_where = where_clause;
+            if let Some(cursor) = query.cursor {
+                let prefix = if page_where.is_empty() {
+                    "WHERE"
+                } else {
+                    "AND"
+                };
+                page_where.push_str(&format!(
+                    " {prefix} (ts_unix < ?{} OR (ts_unix = ?{} AND id < ?{}))",
+                    bind.len() + 1,
+                    bind.len() + 2,
+                    bind.len() + 3,
+                ));
+                bind.push(rusqlite::types::Value::Integer(cursor.ts_unix));
+                bind.push(rusqlite::types::Value::Integer(cursor.ts_unix));
+                bind.push(rusqlite::types::Value::Integer(cursor.id));
+            }
 
             // Defense-in-depth: clamp here too, regardless of whether the
             // caller (`gateway/manager/usage.rs`) already clamped.
             let limit = query.limit.min(super::query::MAX_CALLS_LIMIT);
-            bind.push(rusqlite::types::Value::Integer(limit as i64));
-            bind.push(rusqlite::types::Value::Integer(query.offset as i64));
+            bind.push(rusqlite::types::Value::Integer(
+                limit.saturating_add(1) as i64
+            ));
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms \
-                     FROM upstream_calls {where_clause} \
-                     ORDER BY ts_unix DESC, id DESC LIMIT ?{} OFFSET ?{}",
-                    bind.len() - 1,
+                    "SELECT id, ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms \
+                     FROM upstream_calls {page_where} \
+                     ORDER BY ts_unix DESC, id DESC LIMIT ?{}",
                     bind.len()
                 ))
                 .map_err(sqlite_error)?;
             let rows = stmt
                 .query_map(rusqlite::params_from_iter(bind.iter()), |row| {
                     Ok(super::query::UpstreamCallRecordView {
-                        ts_unix: row.get(0)?,
-                        upstream: row.get(1)?,
-                        tool: row.get(2)?,
-                        actor: row.get(3)?,
-                        outcome: row.get(4)?,
-                        elapsed_ms: row.get(5)?,
+                        id: row.get(0)?,
+                        ts_unix: row.get(1)?,
+                        upstream: row.get(2)?,
+                        tool: row.get(3)?,
+                        actor: row.get(4)?,
+                        outcome: row.get(5)?,
+                        elapsed_ms: row.get(6)?,
                     })
                 })
                 .map_err(sqlite_error)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(sqlite_error)?;
 
-            Ok((rows, total))
+            let mut rows = rows;
+            let has_more = rows.len() > limit;
+            rows.truncate(limit);
+            let next_cursor = has_more.then(|| {
+                let last = rows.last().expect("has_more implies a non-empty page");
+                super::query::UsageCursor {
+                    ts_unix: last.ts_unix,
+                    id: last.id,
+                }
+            });
+
+            Ok((rows, total, next_cursor))
         })
         .await
     }
@@ -580,7 +629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_calls_respects_limit_and_reports_total_matching() {
+    async fn list_calls_uses_stable_keyset_cursor_and_optional_total() {
         use super::super::query::UsageCallsQuery;
 
         let dir = tempfile::tempdir().unwrap();
@@ -590,22 +639,93 @@ mod tests {
             store.record_call(sample_record(ts)).await.unwrap();
         }
 
-        let (page, total) = store
+        let (page, total, cursor) = store
             .list_calls(UsageCallsQuery {
                 since_unix: None,
                 until_unix: None,
                 upstream: None,
                 allowed_upstreams: None,
                 limit: 2,
-                offset: 0,
+                cursor: None,
+                include_total: true,
             })
             .await
             .unwrap();
 
         assert_eq!(page.len(), 2);
-        assert_eq!(total, 5);
+        assert_eq!(total, Some(5));
+        let cursor = cursor.expect("next cursor");
         // Newest first.
         assert_eq!(page[0].ts_unix, 4);
+
+        let (next, total, next_cursor) = store
+            .list_calls(UsageCallsQuery {
+                since_unix: None,
+                until_unix: None,
+                upstream: None,
+                allowed_upstreams: None,
+                limit: 2,
+                cursor: Some(cursor),
+                include_total: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            total, None,
+            "deep pages must skip a full recount by default"
+        );
+        assert_eq!(
+            next.iter().map(|row| row.ts_unix).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert!(next_cursor.is_some());
+    }
+
+    #[tokio::test]
+    async fn deep_keyset_page_stays_within_large_row_budget() {
+        use super::super::query::{UsageCallsQuery, UsageCursor};
+
+        const ROWS: i64 = 100_000;
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute_batch("BEGIN IMMEDIATE").map_err(super::sqlite_error)?;
+                for ts in 0..ROWS {
+                    conn.execute(
+                        "INSERT INTO upstream_calls (ts_unix, upstream_name, tool_name, actor, outcome, elapsed_ms) VALUES (?1, 'github', 'search', 'actor', 'ok', 1)",
+                        [ts],
+                    )
+                    .map_err(super::sqlite_error)?;
+                }
+                conn.execute_batch("COMMIT").map_err(super::sqlite_error)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let page = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            store.list_calls(UsageCallsQuery {
+                since_unix: None,
+                until_unix: None,
+                upstream: None,
+                allowed_upstreams: None,
+                limit: 100,
+                cursor: Some(UsageCursor {
+                    ts_unix: 1_000,
+                    id: 1_001,
+                }),
+                include_total: false,
+            }),
+        )
+        .await
+        .expect("100k-row deep page exceeded the two-second regression budget")
+        .unwrap();
+
+        assert_eq!(page.0.len(), 100);
+        assert_eq!(page.1, None);
+        assert_eq!(page.0[0].ts_unix, 999);
     }
 
     /// Regression guard for the write-semaphore backpressure mechanism

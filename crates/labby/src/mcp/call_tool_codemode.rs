@@ -32,6 +32,37 @@ use crate::mcp::result_format::{
 };
 use crate::mcp::server::LabMcpServer;
 
+struct StepBufferDropGuard {
+    manager: std::sync::Arc<labby_gateway::gateway::manager::GatewayManager>,
+    execution_id: String,
+    armed: bool,
+}
+
+impl StepBufferDropGuard {
+    fn new(
+        manager: std::sync::Arc<labby_gateway::gateway::manager::GatewayManager>,
+        execution_id: String,
+    ) -> Self {
+        Self {
+            manager,
+            execution_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StepBufferDropGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.manager.discard_step_buffer(&self.execution_id);
+        }
+    }
+}
+
 /// Static body for the primary `codemode` MCP tool description.
 ///
 /// The final model-visible description is rendered with the current upstream
@@ -360,6 +391,8 @@ impl LabMcpServer {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let execution_id = format!("exec_{now_ms:016}_{}", ulid::Ulid::new());
+        let mut step_buffer_guard =
+            StepBufferDropGuard::new(std::sync::Arc::clone(manager), execution_id.clone());
         let capability_filter_fingerprint = capability_filter.fingerprint();
         tracing::info!(
             surface = "mcp",
@@ -441,6 +474,7 @@ impl LabMcpServer {
                 manager
                     .flush_step_journal(&execution_id, &journal_owner)
                     .await;
+                step_buffer_guard.disarm();
                 let tool_error = err.into_tool_error();
                 manager
                     .record_code_mode_history(CodeModeHistoryEntry {
@@ -481,6 +515,7 @@ impl LabMcpServer {
         manager
             .flush_step_journal(&execution_id, &journal_owner)
             .await;
+        step_buffer_guard.disarm();
         response.execution_id = Some(execution_id.clone());
 
         // Keep Code Mode's own MCP App as the top-level output template. Any

@@ -31,26 +31,26 @@
 
 Golden instances were stood up from fresh linuxserver images, verified via API, then stopped and snapshotted:
 
-| Service | Image | Version | Dataset | Snapshot | Auth / API Key | Container Port |
+| Service | Image | Version | Dataset | Snapshot | [REDACTED: rotate credentials before restoring snapshot] | Container Port |
 |---------|-------|---------|---------|----------|----------------|---------------|
 | **Servarr** | | | | | | |
-| Radarr | `lscr.io/linuxserver/radarr:latest` | 6.1.1.10360 | `backup/lab/live/golden/radarr` | `@configured-v1` | API Key: `e1aa7e5c555642abba060cd9466cc24d` | 7878 |
-| Sonarr | `lscr.io/linuxserver/sonarr:latest` | 4.0.17.2952 | `backup/lab/live/golden/sonarr` | `@configured-v1` | API Key: `0be6971b8ce348a29beef1efa75564db` | 8989 |
-| Prowlarr | `lscr.io/linuxserver/prowlarr:latest` | 2.3.5.5327 | `backup/lab/live/golden/prowlarr` | `@configured-v1` | API Key: `c73bebf7b160405f9d386e5527369271` | 9696 |
+| Radarr | `lscr.io/linuxserver/radarr:latest` | 6.1.1.10360 | `backup/lab/live/golden/radarr` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 7878 |
+| Sonarr | `lscr.io/linuxserver/sonarr:latest` | 4.0.17.2952 | `backup/lab/live/golden/sonarr` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8989 |
+| Prowlarr | `lscr.io/linuxserver/prowlarr:latest` | 2.3.5.5327 | `backup/lab/live/golden/prowlarr` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 9696 |
 | **Media** | | | | | | |
 | Plex | `lscr.io/linuxserver/plex:latest` | 1.43.1.10611 | `backup/lab/live/golden/plex` | `@configured-v1` | Unclaimed (no auth). `/identity` works, library endpoints 401. | 32400 |
-| Tautulli | `ghcr.io/hotio/tautulli:testing` | 2.17.0 | `backup/lab/live/golden/tautulli` | `@configured-v1` | API Key: `9aa536fa86024d42af45d774c10763db` | 8181 |
+| Tautulli | `ghcr.io/hotio/tautulli:testing` | 2.17.0 | `backup/lab/live/golden/tautulli` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8181 |
 | Overseerr | `ghcr.io/hotio/overseerr:release` | 1.34.0 | `backup/lab/live/golden/overseerr` | `@configured-v1` | Setup-pending (needs Plex account). `/api/v1/status` works. | 5055 |
 | **Download** | | | | | | |
-| SABnzbd | `ghcr.io/hotio/sabnzbd:latest` | 4.5.5 | `backup/lab/live/golden/sabnzbd` | `@configured-v1` | API Key: `73813a0364534c7bad5a3266f23fcb49`. `inet_exposure=4`, wizard bypassed. | 8080 |
-| qBittorrent | `linuxserver/qbittorrent:latest` | 5.1.4 | `backup/lab/live/golden/qbittorrent` | `@configured-v1` | user: `admin`, pass: `lab-test-golden`. Login via cookie auth. | 8080 |
+| SABnzbd | `ghcr.io/hotio/sabnzbd:latest` | 4.5.5 | `backup/lab/live/golden/sabnzbd` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
+| qBittorrent | `linuxserver/qbittorrent:latest` | 5.1.4 | `backup/lab/live/golden/qbittorrent` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8080 |
 | **Notes/Docs** | | | | | | |
-| Memos | `ghcr.io/usememos/memos` | 0.24.0 | `backup/lab/live/golden/memos` | `@configured-v1` | Bearer token (JWT access token, no expiry). User: `admin`. | 5230 |
-| Linkding | `sissbruecker/linkding` | latest | `backup/lab/live/golden/linkding` | `@configured-v1` | Token via `ApiToken` model. User: `admin`, pass: `lab-test-golden`. Env: `LD_SUPERUSER_NAME`. | 9090 |
-| Bytestash | `ghcr.io/jordan-dalby/bytestash:latest` | latest | `backup/lab/live/golden/bytestash` | `@configured-v1` | JWT auth. User: `admin`, pass: `lab-test-golden`. `JWT_SECRET=test-golden-secret-key-for-lab`. | 5000 |
-| Paperless | `ghcr.io/paperless-ngx/paperless-ngx` | latest | `backup/lab/live/golden/paperless` | `@configured-v1` | Token: `25a9e0b34ca3485d620783a9bcc7f7a7febff339`. User: `admin`, pass: `lab-test-golden`. **Needs Redis sidecar.** | 8000 |
+| Memos | `ghcr.io/usememos/memos` | 0.24.0 | `backup/lab/live/golden/memos` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 5230 |
+| Linkding | `sissbruecker/linkding` | latest | `backup/lab/live/golden/linkding` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 9090 |
+| Bytestash | `ghcr.io/jordan-dalby/bytestash:latest` | latest | `backup/lab/live/golden/bytestash` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 5000 |
+| Paperless | `ghcr.io/paperless-ngx/paperless-ngx` | latest | `backup/lab/live/golden/paperless` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 8000 |
 | **Notifications** | | | | | | |
-| Gotify | `gotify/server:latest` | latest | `backup/lab/live/golden/gotify` | `@configured-v1` | Default user: `admin`/`admin`. App token: `AjoHfnf2U3AOJ5d`. | 80 |
+| Gotify | `gotify/server:latest` | latest | `backup/lab/live/golden/gotify` | `@configured-v1` | [REDACTED: rotate credentials before restoring snapshot] | 80 |
 | Apprise | `caronc/apprise:latest` | 1.3.3 | `backup/lab/live/golden/apprise` | `@configured-v1` | No auth (stateless). `/status` returns `OK`. | 8000 |
 | **AI** | | | | | | |
 | Qdrant | `qdrant/qdrant:latest` | latest | `backup/lab/live/golden/qdrant` | `@configured-v1` | No auth. `/healthz` and `/collections` work. | 6333 (HTTP), 6334 (gRPC) |
@@ -1165,7 +1165,7 @@ Manifest must include credentials under `secrets` (stripped by Rust before writi
     "linkding": {"token": "<token>"},
     "bytestash": {"username": "admin", "password": "lab-test-golden", "jwt_secret": "test-golden-secret-key-for-lab"},
     "paperless": {"token": "<token>"},
-    "gotify": {"app_token": "AjoHfnf2U3AOJ5d"},
+- [REDACTED: rotate credentials before restoring snapshot]
     "plex": {},
     "overseerr": {},
     "apprise": {},
@@ -1215,11 +1215,11 @@ extract_secrets() {
             ;;
         paperless)
             # DRF Token — baked into golden snapshot DB
-            printf '"token":"25a9e0b34ca3485d620783a9bcc7f7a7febff339"'
+- [REDACTED: rotate credentials before restoring snapshot]
             ;;
         gotify)
             # App token — baked into golden snapshot DB
-            printf '"app_token":"AjoHfnf2U3AOJ5d"'
+- [REDACTED: rotate credentials before restoring snapshot]
             ;;
         plex|overseerr|apprise|qdrant)
             # No secrets needed

@@ -40,6 +40,9 @@ jobs:
       rust_compile: ${{ steps.classify.outputs.rust_compile }}
       rust_test: ${{ steps.classify.outputs.rust_test }}
       web: ${{ steps.classify.outputs.web }}
+      # `all` keeps the first PR that introduces this category fail-closed
+      # while the trusted base-branch classifier is still one revision behind.
+      palette: ${{ steps.classify.outputs.palette == 'true' || steps.classify.outputs.all == 'true' }}
       npm: ${{ steps.classify.outputs.npm }}
       docker: ${{ steps.classify.outputs.docker }}
       security: ${{ steps.classify.outputs.security }}
@@ -60,7 +63,7 @@ jobs:
           #!/usr/bin/env python3
           import argparse
           from pathlib import Path
-          keys = "all docs docs_check workflow rust_compile rust_test web npm docker security release".split()
+          keys = "all docs docs_check workflow rust_compile rust_test web palette npm docker security release".split()
           parser = argparse.ArgumentParser()
           parser.add_argument("--event", required=True)
           parser.add_argument("--output", type=Path, required=True)
@@ -124,8 +127,15 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: stable
-      - run: go run github.com/rhysd/actionlint/cmd/actionlint@latest
+          go-version: 1.26.5
+      - name: Run pinned Actionlint
+        run: |
+          set -euo pipefail
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          go version
+          echo "actionlint=v1.7.7"
+      - name: Test CI policy helpers
+        run: python3 -m unittest scripts/ci/test_check_rust_coverage.py
 
   frontend-assets:
     name: Frontend assets
@@ -151,6 +161,30 @@ jobs:
           path: apps/gateway-admin/out/
           if-no-files-found: error
           retention-days: 1
+
+  gateway-admin-browser:
+    name: Gateway Admin browser tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.web == 'true' }}
+    defaults:
+      run:
+        working-directory: apps/gateway-admin
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:browser
 
   fmt:
     name: Format
@@ -347,6 +381,7 @@ jobs:
         with:
           install_args: just
       - run: just docs-check
+      - run: python3 scripts/ci/check-openwiki.py
 
   clippy:
     name: Clippy
@@ -912,6 +947,117 @@ jobs:
           docker stop  lab-ci-smoke 2>/dev/null || true
           docker rm -f lab-ci-smoke 2>/dev/null || true
 
+  palette-web:
+    name: Palette renderer
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.palette == 'true' }}
+    defaults:
+      run:
+        working-directory: apps/palette-tauri
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/palette-tauri/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm coverage
+      - run: pnpm typecheck
+      - run: pnpm vite:build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: palette-renderer-coverage
+          path: apps/palette-tauri/coverage/
+          if-no-files-found: error
+
+  palette-rust:
+    name: Palette Tauri (Linux)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.palette == 'true' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: apps/palette-tauri/src-tauri
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: cargo test --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --locked
+      - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
+        with:
+          tool: cargo-deny
+      - run: cargo deny --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --config apps/palette-tauri/src-tauri/deny.toml check advisories
+
+  palette-windows:
+    name: Palette Tauri (Windows smoke)
+    runs-on: windows-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.palette == 'true' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: apps/palette-tauri/src-tauri
+      - run: cargo test --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --locked
+      - run: cargo build --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --locked
+
+  rust-coverage:
+    name: Rust coverage
+    runs-on: ubuntu-latest
+    needs: [changes, frontend-assets]
+    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gateway-admin-out
+          path: apps/gateway-admin/out
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - name: Collect coverage
+        run: cargo llvm-cov nextest --workspace --all-features --locked --profile ci --lcov --output-path lcov.info
+      - name: Enforce coverage floor and critical-module floor
+        run: |
+          python3 scripts/ci/check-rust-coverage.py lcov.info \
+            --overall-minimum 15 \
+            --critical-minimum 5 \
+            --critical crates/labby-auth/src/ \
+            --critical crates/labby-gateway/src/ \
+            --critical crates/labby/src/dispatch/ \
+            --critical crates/labby/src/config.rs \
+            --summary coverage-summary.md
+          cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rust-coverage
+          path: |
+            lcov.info
+            coverage-summary.md
+          if-no-files-found: error
+
   ci-gate:
     name: ci-gate
     runs-on: ubuntu-latest
@@ -922,6 +1068,7 @@ jobs:
       - unraid-plugin-check
       - actionlint
       - frontend-assets
+      - gateway-admin-browser
       - fmt
       - deny
       - check
@@ -933,8 +1080,14 @@ jobs:
       - test
       - test-fork
       - test-windows
+      - codemode-runner-smoke
+      - mcp-regressions
       - release-smoke
       - container
+      - palette-web
+      - palette-rust
+      - palette-windows
+      - rust-coverage
     steps:
       - name: verify required jobs passed or were intentionally skipped
         run: |
@@ -952,6 +1105,7 @@ jobs:
           require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
           require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
+          require_success_or_skipped gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
           require_success_or_skipped fmt "${{ needs.fmt.result }}"
           require_success_or_skipped deny "${{ needs.deny.result }}"
           require_success_or_skipped check "${{ needs.check.result }}"
@@ -963,5 +1117,11 @@ jobs:
           require_success_or_skipped test "${{ needs.test.result }}"
           require_success_or_skipped test-fork "${{ needs.test-fork.result }}"
           require_success_or_skipped test-windows "${{ needs.test-windows.result }}"
+          require_success_or_skipped codemode-runner-smoke "${{ needs.codemode-runner-smoke.result }}"
+          require_success_or_skipped mcp-regressions "${{ needs.mcp-regressions.result }}"
           require_success_or_skipped release-smoke "${{ needs.release-smoke.result }}"
           require_success_or_skipped container "${{ needs.container.result }}"
+          require_success_or_skipped palette-web "${{ needs.palette-web.result }}"
+          require_success_or_skipped palette-rust "${{ needs.palette-rust.result }}"
+          require_success_or_skipped palette-windows "${{ needs.palette-windows.result }}"
+          require_success_or_skipped rust-coverage "${{ needs.rust-coverage.result }}"

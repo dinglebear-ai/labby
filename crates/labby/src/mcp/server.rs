@@ -77,7 +77,7 @@ pub struct LabMcpServer {
 #[cfg(feature = "gateway")]
 pub fn verify_upstream_subject_resolution_support() -> anyhow::Result<()> {
     let (parts, _) = http::Request::new(()).into_parts();
-    let auth = crate::api::oauth::AuthContext {
+    let auth = labby_auth::auth_context::AuthContext {
         sub: "startup-self-test".to_string(),
         actor_key: None,
         scopes: Vec::new(),
@@ -435,15 +435,17 @@ mod tests {
         // `rmcp::model::Extensions`.
         fn extensions_with_subject(subject: &str) -> rmcp::model::Extensions {
             let (mut parts, _) = http::Request::new(()).into_parts();
-            parts.extensions.insert(crate::api::oauth::AuthContext {
-                sub: subject.to_string(),
-                actor_key: None,
-                scopes: Vec::new(),
-                issuer: "https://lab.example.com".to_string(),
-                via_session: false,
-                csrf_token: None,
-                email: None,
-            });
+            parts
+                .extensions
+                .insert(labby_auth::auth_context::AuthContext {
+                    sub: subject.to_string(),
+                    actor_key: None,
+                    scopes: Vec::new(),
+                    issuer: "https://lab.example.com".to_string(),
+                    via_session: false,
+                    csrf_token: None,
+                    email: None,
+                });
             let mut extensions = rmcp::model::Extensions::new();
             extensions.insert(parts);
             extensions

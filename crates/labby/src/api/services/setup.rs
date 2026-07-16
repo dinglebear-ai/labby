@@ -33,7 +33,14 @@ async fn handle(
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok());
-    require_setup_admin(&req.action, request_id, auth.as_ref())?;
+    let peer_addr = peer.as_ref().map(|Extension(ConnectInfo(addr))| *addr);
+    require_setup_admin(&req.action, request_id, auth.as_ref(), peer_addr)?;
+    if local_only_action(&req.action) && !request_is_loopback(peer_addr) {
+        return Err(ApiError(ToolError::Sdk {
+            sdk_kind: "forbidden".into(),
+            message: format!("setup action `{}` is only available locally", req.action),
+        }));
+    }
     if plugin_lifecycle_action(&req.action) && !http_bind_is_loopback(&state) {
         tracing::info!(
             surface = "api",
@@ -50,11 +57,7 @@ async fn handle(
     handle_action_with_meta(
         "setup",
         "api",
-        dispatch_meta_from_headers(
-            &headers,
-            auth.as_ref().map(|value| &value.0),
-            peer.map(|Extension(ConnectInfo(addr))| addr),
-        ),
+        dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0), peer_addr),
         req,
         ACTIONS,
         |action, params| async move { crate::dispatch::setup::dispatch(&action, params).await },
@@ -82,8 +85,11 @@ fn require_setup_admin(
     action: &str,
     request_id: Option<&str>,
     auth: Option<&Extension<AuthContext>>,
+    peer: Option<SocketAddr>,
 ) -> Result<(), ToolError> {
-    if !setup_action_requires_admin(action) || has_admin_scope(auth) {
+    let bare = action.strip_prefix("setup.").unwrap_or(action);
+    let local_first_run_capability = bare == "bootstrap" && request_is_loopback(peer);
+    if !setup_action_requires_admin(action) || has_admin_scope(auth) || local_first_run_capability {
         return Ok(());
     }
 
@@ -114,6 +120,15 @@ fn plugin_lifecycle_action(action: &str) -> bool {
     // catalog, and dispatch routing share one source of truth instead of three
     // hand-synced literal lists.
     crate::dispatch::setup::PLUGIN_LIFECYCLE_ACTIONS.contains(&action)
+}
+
+fn local_only_action(action: &str) -> bool {
+    let bare = action.strip_prefix("setup.").unwrap_or(action);
+    crate::dispatch::setup::LOCAL_ONLY_ACTIONS.contains(&bare)
+}
+
+fn request_is_loopback(peer: Option<SocketAddr>) -> bool {
+    peer.is_some_and(|addr| addr.ip().is_loopback())
 }
 
 fn http_bind_is_loopback(state: &AppState) -> bool {
@@ -186,6 +201,19 @@ mod tests {
                 "{near_miss} is not a real lifecycle action and must not be gated"
             );
         }
+    }
+
+    #[test]
+    fn credential_bootstrap_and_connectivity_probe_are_local_only() {
+        assert!(local_only_action("bootstrap"));
+        assert!(local_only_action("setup.bootstrap"));
+        assert!(local_only_action("plugin_connectivity"));
+        assert!(!local_only_action("draft.commit"));
+
+        assert!(request_is_loopback(Some("127.0.0.1:1234".parse().unwrap())));
+        assert!(request_is_loopback(Some("[::1]:1234".parse().unwrap())));
+        assert!(!request_is_loopback(Some("10.0.0.5:1234".parse().unwrap())));
+        assert!(!request_is_loopback(None));
     }
 
     /// `host_is_loopback` is the predicate the `handle` gate uses to decide
@@ -273,8 +301,30 @@ mod tests {
             "settings.config.update",
             "settings.env.update",
         ] {
-            assert!(require_setup_admin(action, None, Some(&read_only)).is_err());
-            assert!(require_setup_admin(action, None, Some(&auth(&["lab:admin"]))).is_ok());
+            assert!(require_setup_admin(action, None, Some(&read_only), None).is_err());
+            assert!(require_setup_admin(action, None, Some(&auth(&["lab:admin"])), None).is_ok());
         }
+    }
+
+    #[test]
+    fn bootstrap_allows_unauthenticated_loopback_first_run_only() {
+        require_setup_admin(
+            "bootstrap",
+            None,
+            None,
+            Some("127.0.0.1:1234".parse().unwrap()),
+        )
+        .expect("local first-run capability");
+        assert_eq!(
+            require_setup_admin(
+                "bootstrap",
+                None,
+                None,
+                Some("10.0.0.5:1234".parse().unwrap())
+            )
+            .expect_err("remote bootstrap denied")
+            .kind(),
+            "forbidden"
+        );
     }
 }

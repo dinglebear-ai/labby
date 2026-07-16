@@ -82,23 +82,23 @@ async fn stale_virtual_server_with_unknown_service_does_not_break_list() {
 // a service_meta-resolvable service that declares a required env var — none exists
 // post-pivot.
 #[tokio::test]
-#[ignore = "needs a service_meta-resolvable service with required env fields; only `deploy` resolves and it declares none — prod change required"]
 async fn incomplete_service_does_not_appear_in_list_before_virtual_server_enablement() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
-    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default())
+        .with_builtin_service_registry(deploy_known_registry());
 
     let mut values = BTreeMap::new();
-    values.insert("PLEX_TOKEN".to_string(), "token".to_string());
+    values.insert("FIXTURE_TOKEN".to_string(), "token".to_string());
 
     manager
-        .set_service_config("deploy", &values)
+        .set_service_config("fixture-service", &values)
         .await
         .expect("set service config");
 
     let servers = manager.list().await.expect("list");
     assert!(
-        servers.iter().all(|server| server.id != "deploy"),
+        servers.iter().all(|server| server.id != "fixture-service"),
         "incomplete services should not appear in the gateway catalog"
     );
 }
@@ -192,24 +192,39 @@ fn healthy_informational_probe_messages_do_not_create_gateway_warnings() {
 // the config write, but the `.expect()` on it panics first. Needs a
 // service_meta-resolvable service that declares env fields — none exists post-pivot.
 #[tokio::test]
-#[ignore = "set_service_config rejects deploy's PLEX_* fields (deploy declares no env); needs a service_meta service with env fields — prod change required"]
 async fn managed_services_are_hidden_on_surfaces_until_enabled() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
-    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default())
+        .with_builtin_service_registry(deploy_known_registry());
 
     let mut values = BTreeMap::new();
-    values.insert("PLEX_URL".to_string(), "http://127.0.0.1:32400".to_string());
-    values.insert("PLEX_TOKEN".to_string(), "token".to_string());
+    values.insert(
+        "FIXTURE_URL".to_string(),
+        "http://127.0.0.1:9999".to_string(),
+    );
+    values.insert("FIXTURE_TOKEN".to_string(), "token".to_string());
 
     manager
-        .set_service_config("deploy", &values)
+        .set_service_config("fixture-service", &values)
         .await
         .expect("set service config");
 
-    assert!(!manager.surface_enabled_for_service("deploy", "mcp").await);
-    assert!(manager.surface_enabled_for_service("deploy", "api").await);
-    assert!(manager.surface_enabled_for_service("deploy", "cli").await);
+    assert!(
+        !manager
+            .surface_enabled_for_service("fixture-service", "mcp")
+            .await
+    );
+    assert!(
+        manager
+            .surface_enabled_for_service("fixture-service", "api")
+            .await
+    );
+    assert!(
+        manager
+            .surface_enabled_for_service("fixture-service", "cli")
+            .await
+    );
 }
 
 // Re-fixtured post-gateway-pivot: backed by the kept/registered `deploy` service,

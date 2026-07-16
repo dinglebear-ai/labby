@@ -25,6 +25,11 @@ pub const PLUGIN_LIFECYCLE_ACTIONS: &[&str] = &[
     "uninstall_plugin",
 ];
 
+/// Setup actions that may only run from a trusted local transport. These
+/// either mint first-run credentials or initiate an outbound connectivity
+/// probe from the host, so an admin bearer alone is not sufficient.
+pub const LOCAL_ONLY_ACTIONS: &[&str] = &["bootstrap", "plugin_connectivity"];
+
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "help",
@@ -51,15 +56,15 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "state",
         description: "First-run + draft snapshot for the wizard / settings UI",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "SetupSnapshot",
         params: &[],
     },
     ActionSpec {
         name: "bootstrap",
         description: "Create ~/.labby/.env with a generated token + loopback defaults when absent (first-run)",
-        destructive: false,
-        requires_admin: false,
+        destructive: true,
+        requires_admin: true,
         returns: "BootstrapOutcome",
         params: &[],
     },
@@ -80,15 +85,15 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "draft.get",
         description: "Read .env.draft with secret values masked to '***'",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "DraftEntry[]",
         params: &[],
     },
     ActionSpec {
         name: "draft.set",
         description: "Write a key (or section) into .env.draft (validated server-side)",
-        destructive: false,
-        requires_admin: false,
+        destructive: true,
+        requires_admin: true,
         returns: "DraftSetOutcome",
         params: &[
             ParamSpec {
@@ -109,7 +114,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "draft.discard",
         description: "Discard .env.draft without modifying .env",
         destructive: true,
-        requires_admin: false,
+        requires_admin: true,
         returns: "DraftDiscardOutcome",
         params: &[],
     },
@@ -117,7 +122,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "draft.commit",
         description: "Run audit and atomically merge .env.draft into .env",
         destructive: true,
-        requires_admin: false,
+        requires_admin: true,
         returns: "CommitOutcome",
         params: &[ParamSpec {
             name: "force",
@@ -130,7 +135,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "settings.state",
         description: "Return section-scoped safe settings values and source metadata",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "SettingsState",
         params: &[ParamSpec {
             name: "section",
@@ -159,7 +164,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "settings.advanced_state",
         description: "Return redacted advanced settings state",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "SettingsState",
         params: &[],
     },
@@ -206,7 +211,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "plugin_hook",
         description: "Run binary-owned local setup checks for Claude plugin hooks; in repair mode also syncs CLAUDE_PLUGIN_OPTION_* and probes server connectivity",
         destructive: true,
-        requires_admin: false,
+        requires_admin: true,
         // Composite payload: { setup: SetupReport, sync: PluginSyncOutcome|null, connectivity: ConnectivityOutcome }.
         // `sync` is null when called with repair=false (check mode is guaranteed non-mutating).
         returns: "PluginHookReport",
@@ -221,7 +226,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "plugin_sync",
         description: "Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env as LABBY_* vars",
         destructive: true,
-        requires_admin: false,
+        requires_admin: true,
         returns: "PluginSyncOutcome",
         params: &[],
     },
@@ -229,7 +234,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "plugin_export",
         description: "Read ~/.labby/.env and return current values keyed by userConfig field name",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "PluginExportOutcome",
         params: &[],
     },
@@ -237,7 +242,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "plugin_connectivity",
         description: "Validate connectivity to the lab MCP server at {server_url}/health",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "ConnectivityOutcome",
         params: &[ParamSpec {
             name: "server_url",
@@ -278,7 +283,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "plugins.installed",
         description: "List installed Claude Code lab plugins",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "InstalledPlugin[]",
         params: &[ParamSpec {
             name: "force",
@@ -292,7 +297,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "installed_plugins",
         description: "Deprecated alias for `plugins.installed`",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "InstalledPlugin[]",
         params: &[ParamSpec {
             name: "force",
@@ -305,7 +310,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "services.status",
         description: "Join service configuration, draft, and Claude plugin state",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "ServiceStatus[]",
         params: &[],
     },
@@ -314,7 +319,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "services_status",
         description: "Deprecated alias for `services.status`",
         destructive: false,
-        requires_admin: false,
+        requires_admin: true,
         returns: "ServiceStatus[]",
         params: &[],
     },
@@ -322,7 +327,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "plugin.install",
         description: "Install the Claude Code plugin for one configured service",
         destructive: true,
-        requires_admin: false,
+        requires_admin: true,
         returns: "PluginMutationResult",
         params: &[ParamSpec {
             name: "service",
@@ -336,7 +341,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "install_plugin",
         description: "Deprecated alias for `plugin.install`",
         destructive: true,
-        requires_admin: false,
+        requires_admin: true,
         returns: "PluginMutationResult",
         params: &[ParamSpec {
             name: "service",
@@ -349,7 +354,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "plugin.uninstall",
         description: "Uninstall the Claude Code plugin for one service",
         destructive: true,
-        requires_admin: false,
+        requires_admin: true,
         returns: "PluginMutationResult",
         params: &[ParamSpec {
             name: "service",
@@ -363,7 +368,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "uninstall_plugin",
         description: "Deprecated alias for `plugin.uninstall`",
         destructive: true,
-        requires_admin: false,
+        requires_admin: true,
         returns: "PluginMutationResult",
         params: &[ParamSpec {
             name: "service",
@@ -376,7 +381,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "finalize",
         description: "Alias for draft.commit; same params, same returns",
         destructive: true,
-        requires_admin: false,
+        requires_admin: true,
         returns: "CommitOutcome",
         params: &[ParamSpec {
             name: "force",
