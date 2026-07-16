@@ -2330,6 +2330,20 @@ mod tests {
             html.contains("sendSizeChanged"),
             "inline app should notify MCP Apps hosts when content height changes"
         );
+        let reset_height = html
+            .find("document.documentElement.style.height=\"auto\"")
+            .expect("inline app resets the persisted root height");
+        let measure_height = html
+            .find("document.body.getBoundingClientRect()")
+            .expect("inline app measures its content height");
+        assert!(
+            reset_height < measure_height,
+            "persisted heights must be reset before measuring so the app can shrink"
+        );
+        assert!(
+            html.contains("if(activeMcpUiUri!==uri)setMinimized(true)"),
+            "repainting the same MCP UI must preserve a user's restored inspector state"
+        );
         assert!(
             html.contains("autoResize: false"),
             "document-root auto-resize can over-report empty iframe space below the widget"

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   AlertCircle,
   ChevronRight,
@@ -243,9 +243,12 @@ export function GatewayFormDialog({
   const [proxyPrompts, setProxyPrompts] = useState(true)
   const [proxyMcpUi, setProxyMcpUi] = useState(true)
   const [uiState, dispatchUi] = useReducer(gatewayFormUiReducer, initialGatewayFormUiState)
-  const setUi = <Key extends keyof GatewayFormUiState>(key: Key, value: GatewayFormUiState[Key]) => {
+  const setUi = useCallback(<Key extends keyof GatewayFormUiState,>(
+    key: Key,
+    value: GatewayFormUiState[Key],
+  ) => {
     dispatchUi({ type: 'set', key, value })
-  }
+  }, [])
   const {
     jsonDrawerOpen,
     isSaving,
@@ -256,7 +259,10 @@ export function GatewayFormDialog({
     oauthProbed,
     isProbing,
   } = uiState
-  const setJsonDrawerOpen = (value: boolean) => setUi('jsonDrawerOpen', value)
+  const setJsonDrawerOpen = useCallback(
+    (value: boolean) => setUi('jsonDrawerOpen', value),
+    [setUi],
+  )
   const [jsonText, setJsonText] = useState('')
   const [jsonValid, setJsonValid] = useState(false)
   const syncingRef = useRef(false)
@@ -266,13 +272,22 @@ export function GatewayFormDialog({
   const [serviceValues, setServiceValues] = useState<Record<string, string>>({})
   const [enableServer, setEnableServer] = useState(true)
 
-  const setIsSaving = (value: boolean) => setUi('isSaving', value)
-  const setIsTesting = (value: boolean) => setUi('isTesting', value)
-  const setSaveError = (value: string | null) => setUi('saveError', value)
-  const setErrors = (value: Record<string, string>) => setUi('errors', value)
-  const setOauthState = (value: OAuthConnectState) => setUi('oauthState', value)
-  const setOauthProbed = (value: GatewayFormUiState['oauthProbed']) => setUi('oauthProbed', value)
-  const setIsProbing = (value: boolean) => setUi('isProbing', value)
+  const setIsSaving = useCallback((value: boolean) => setUi('isSaving', value), [setUi])
+  const setIsTesting = useCallback((value: boolean) => setUi('isTesting', value), [setUi])
+  const setSaveError = useCallback((value: string | null) => setUi('saveError', value), [setUi])
+  const setErrors = useCallback(
+    (value: Record<string, string>) => setUi('errors', value),
+    [setUi],
+  )
+  const setOauthState = useCallback(
+    (value: OAuthConnectState) => setUi('oauthState', value),
+    [setUi],
+  )
+  const setOauthProbed = useCallback(
+    (value: GatewayFormUiState['oauthProbed']) => setUi('oauthProbed', value),
+    [setUi],
+  )
+  const setIsProbing = useCallback((value: boolean) => setUi('isProbing', value), [setUi])
 
   useEffect(() => () => abortControllerRef.current?.abort(), [])
 
@@ -328,7 +343,7 @@ export function GatewayFormDialog({
         scopes: info?.scopes,
       })
     }
-  }, [oauthState, oauthStatus?.authenticated])
+  }, [oauthState, oauthStatus?.authenticated, setOauthState])
 
   // Auto-probe the URL for OAuth support when transport is HTTP and URL looks valid.
   // Resets probed state and authMode when URL changes so stale OAuth option disappears.
@@ -521,7 +536,7 @@ export function GatewayFormDialog({
         nameAutoRef.current = false
       }
     setErrors({})
-  }, [open, gateway, protectedRoutes])
+  }, [open, gateway, protectedRoutes, setErrors, setJsonDrawerOpen, setOauthProbed, setOauthState])
 
   useEffect(() => {
     if (!open || !gateway || gateway.source === 'in_process') return
@@ -554,7 +569,7 @@ export function GatewayFormDialog({
     autoOauthAttemptedForRef.current = null
     setOauthState({ kind: 'idle' })
     setOauthProbed(null)
-  }, [gateway, isEditing, url])
+  }, [gateway, isEditing, setOauthProbed, setOauthState, url])
 
   // Stdio connections don't support upstream authentication, so clear all OAuth
   // and bearer state whenever the transport is stdio. If a protected public path
@@ -568,7 +583,7 @@ export function GatewayFormDialog({
     setOauthProbed(null)
     setBearerTokenEnv('')
     setBearerTokenValue('')
-  }, [protectedPublicPath, transport])
+  }, [protectedPublicPath, setOauthProbed, setOauthState, transport])
 
   useEffect(() => {
     if (!serviceMeta || !serviceConfig) return

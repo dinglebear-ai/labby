@@ -143,6 +143,45 @@ test('renders upstream MCP UI resources below the minimized inspector', async ()
   }
 })
 
+test('refreshing a trace with the same MCP UI keeps a restored inspector open', async () => {
+  installTestDom()
+  const trace = {
+    kind: 'code_mode_execute_trace' as const,
+    call_count: 1,
+    calls: [
+      {
+        id: 'quick-shell::run_command',
+        namespace: 'quick-shell',
+        tool: 'run_command',
+        ok: true,
+        elapsed_ms: 18,
+        ui: { resourceUri: 'ui://quick-shell/app.html' },
+      },
+    ],
+    result_shape: { type: 'undefined' as const },
+  }
+  const { container, rerender, unmount } = await renderClient(
+    <CodeModeInspector initialTrace={trace} />,
+  )
+
+  assert.ok(container.querySelector('[aria-label="Restore inspector"]'))
+  await clickButtonByLabel(container, 'Restore inspector')
+  assert.ok(container.querySelector('[aria-label="Minimize inspector"]'))
+
+  await rerender(
+    <CodeModeInspector
+      initialTrace={{
+        ...trace,
+        calls: [{ ...trace.calls[0], elapsed_ms: 24 }],
+      }}
+    />,
+  )
+
+  assert.ok(container.querySelector('[aria-label="Minimize inspector"]'))
+  assert.equal(container.querySelector('[aria-label="Restore inspector"]'), null)
+  await unmount()
+})
+
 test('renders the result disclosure with shape summary and expandable value', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(

@@ -282,6 +282,7 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   // Host-delivered tool-call arguments apply to the live run only.
   const inputSnippet = live ? toolInputSnippet(toolInput) : null
   const activeUi = [...calls].reverse().find((call) => call.ui)?.ui ?? null
+  const activeUiResourceUri = activeUi?.resourceUri ?? null
   const warnings = [
     ...(bridgeWarning ? [bridgeWarning] : []),
     ...(state.live?.warnings?.map((warning) => warning.message) ?? []),
@@ -289,8 +290,8 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   ]
 
   useEffect(() => {
-    if (activeUi) setMinimized(true)
-  }, [activeUi])
+    setMinimized(Boolean(activeUiResourceUri))
+  }, [activeUiResourceUri])
 
   return (
     <main
