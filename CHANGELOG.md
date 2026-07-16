@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0](https://github.com/jmagar/labby/compare/v1.4.1...v1.5.0) (2026-07-16)
+
+
+### Added
+
+* **unraid:** add Incus gateway converger ([1b213a1](https://github.com/jmagar/labby/commit/1b213a19b587108c349cb6013c8a0cdaf25a6edc))
+* **unraid:** add Incus gateway runtime mode ([b8a9697](https://github.com/jmagar/labby/commit/b8a96976b47f68499ac3d67a598e78fd959c06c4))
+* **unraid:** add Incus settings form fields ([0e345db](https://github.com/jmagar/labby/commit/0e345db458113f10f27b0d4941620f2dbf14ca6d))
+* **unraid:** branch rc.labby on RUNTIME_MODE (native|incus) ([6678b4d](https://github.com/jmagar/labby/commit/6678b4dc87646849e9a46866f4efd941c3472dbc))
+* **unraid:** vendor labby Incus profile and env sourcer ([11c732a](https://github.com/jmagar/labby/commit/11c732aee2981f78078e41ad8fe766f9495bad57))
+* **unraid:** wire incus plugin assets ([7f8145e](https://github.com/jmagar/labby/commit/7f8145e5ed7af22c2dff69c7f89c0a5444ea1b0a))
+
+
+### Fixed
+
+* **auth:** allow legacy ChatGPT OAuth callback ([f6f5ae1](https://github.com/jmagar/labby/commit/f6f5ae15e857c41a7ec171361bef634d127d0727))
+* **auth:** allow legacy ChatGPT openai callback ([42da0b2](https://github.com/jmagar/labby/commit/42da0b263818beff4508ceaf5d8baff20ae2e4ec))
+* **mcp:** remove non-elicitation destructive gates ([bbac44f](https://github.com/jmagar/labby/commit/bbac44fb4e5b22651b26165bb78ee345e479abbc))
+* remediate comprehensive project review ([#248](https://github.com/jmagar/labby/issues/248)) ([e9c6577](https://github.com/jmagar/labby/commit/e9c6577ac310fa65c9e391aca78d88c262cd8006))
+* **unraid:** add native gateway management controls ([1332107](https://github.com/jmagar/labby/commit/1332107704d98ac5fb493e2f2f14975d9457bd20))
+* **unraid:** bump native controls plugin version ([192a8fb](https://github.com/jmagar/labby/commit/192a8fbfef5ab0d485968f4c6eeb08f468c8bbc0))
+* **unraid:** close Incus review gaps ([94a2f8a](https://github.com/jmagar/labby/commit/94a2f8aa383f14003ebe6bf6534ac6213b7b4aa5))
+* **unraid:** close Incus runtime review gaps ([a7a5c81](https://github.com/jmagar/labby/commit/a7a5c81517cef2aa96788edc27b60bd300aa7df2))
+* **unraid:** drop letter-suffixed plugin versioning, use plain patch bumps ([ffc2088](https://github.com/jmagar/labby/commit/ffc2088b4b769b06dc6376a023836938a4ab3ab2))
+* **unraid:** embed gateway admin in plugin page ([875ff06](https://github.com/jmagar/labby/commit/875ff06c3766e0c79963566078f477dd2bf81281))
+* **unraid:** fail closed on Incus init state checks ([7f4fa27](https://github.com/jmagar/labby/commit/7f4fa27a89175d9e8e5b663369572f9732d9f0f7))
+* **unraid:** harden Incus mode handoffs ([c2547c5](https://github.com/jmagar/labby/commit/c2547c56197f3d700a4766199d749e9d16ae114f))
+* **unraid:** harden native gateway controls ([9a66d4b](https://github.com/jmagar/labby/commit/9a66d4b91b4e4ae55128117296b28140c3fd8dea))
+* **unraid:** preserve plugin version history ([a0c80e4](https://github.com/jmagar/labby/commit/a0c80e4976b5dc7804d6665ba94766436b7cc1c8))
+* **unraid:** propagate Incus state failures during converge ([d3fc6f3](https://github.com/jmagar/labby/commit/d3fc6f30c2e00cfe22827a972f58b3730ee70f29))
+* **unraid:** replace gateway iframe with native controls ([aade10b](https://github.com/jmagar/labby/commit/aade10be4b801862ba0c50dfd9ed02d569e8e0e4))
+* **unraid:** safely redact one-shot Tailscale key ([1d1800c](https://github.com/jmagar/labby/commit/1d1800c4da8d8270576c8e196d3359add866ab52))
+* **unraid:** trust rc.labby's exit code, backup cfg before overwrite, always stop on unmount ([c7c344f](https://github.com/jmagar/labby/commit/c7c344fa638d07be92cd6dd83748aa7550dcef8a))
+* **unraid:** use current Incus config-set syntax ([e6adf66](https://github.com/jmagar/labby/commit/e6adf662e12a347648bbd26c8d999c5c289695b3))
+
 ## [1.4.1](https://github.com/jmagar/labby/compare/v1.4.0...v1.4.1) (2026-07-15)
 
 
