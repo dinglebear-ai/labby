@@ -9,6 +9,8 @@ import {
   CornerDownLeft,
   FileBox,
   History,
+  Maximize2,
+  Minimize2,
   Terminal,
   Wrench,
   X,
@@ -165,6 +167,7 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   const [bridgeWarning, setBridgeWarning] = useState<string | null>(null)
   const [bridgeState, setBridgeState] = useState<'connecting' | 'connected' | 'fallback'>('fallback')
   const [resourceReader, setResourceReader] = useState<ResourceReader | null>(null)
+  const [minimized, setMinimized] = useState(false)
 
   const acceptTrace = useCallback((raw: unknown): boolean => {
     const trace = parseCodeModeTrace(raw)
@@ -278,11 +281,16 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
   const describeDoc = live ? describeMarkdown(live.result) : null
   // Host-delivered tool-call arguments apply to the live run only.
   const inputSnippet = live ? toolInputSnippet(toolInput) : null
+  const activeUi = [...calls].reverse().find((call) => call.ui)?.ui ?? null
   const warnings = [
     ...(bridgeWarning ? [bridgeWarning] : []),
     ...(state.live?.warnings?.map((warning) => warning.message) ?? []),
     ...state.historyWarnings,
   ]
+
+  useEffect(() => {
+    if (activeUi) setMinimized(true)
+  }, [activeUi])
 
   return (
     <main
@@ -293,8 +301,9 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
           'radial-gradient(900px 420px at 12% -10%, rgba(41,182,246,0.08), transparent 60%), var(--aurora-page-bg)',
       }}
     >
+      <div className="mx-auto w-full max-w-[680px]">
       <section
-        className="mx-auto w-full max-w-[680px] overflow-hidden rounded-[18px] border"
+        className={cn('w-full overflow-hidden border', minimized ? 'rounded-[10px]' : 'rounded-[18px]')}
         style={{
           background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
           borderColor: 'color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
@@ -317,81 +326,84 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
           // A rendered trace proves the bridge works — the state label only
           // earns its place while the card is empty, explaining why.
           bridgeLabel={run ? null : bridgeState}
+          minimized={minimized}
+          onToggleMinimized={() => setMinimized((current) => !current)}
         />
 
-        {warnings.map((warning, index) => (
-          <WarnLine key={`${warning}-${index}`} message={warning} />
-        ))}
+        {!minimized ? (
+          <>
+            {warnings.map((warning, index) => (
+              <WarnLine key={`${warning}-${index}`} message={warning} />
+            ))}
 
-        {!run ? (
-          <p className="px-3 py-4 text-center text-xs text-aurora-text-muted">
-            Waiting for an MCP Apps tool result or history snapshot.
-          </p>
-        ) : (
-          // Cap the rows region (~10 rows) so long runs scroll internally
-          // instead of growing the inline card unbounded — the MCP host sizes
-          // the iframe to the document height.
-          <div className="aurora-scrollbar max-h-[300px] overflow-y-auto overscroll-contain">
-            {calls.length > 0 ? (
-              <CallRows
-                calls={calls}
-                expanded={expanded}
-                onToggle={toggle}
-                resourceReader={resourceReader}
-              />
-            ) : live && live.result !== undefined ? null : (
-              <p className="px-3 py-3 text-xs text-aurora-text-muted">No calls were made.</p>
+            {!run ? (
+              <p className="px-3 py-4 text-center text-xs text-aurora-text-muted">
+                Waiting for an MCP Apps tool result or history snapshot.
+              </p>
+            ) : (
+              // Cap the rows region (~10 rows) so long runs scroll internally
+              // instead of growing the inline card unbounded — the MCP host sizes
+              // the iframe to the document height.
+              <div className="aurora-scrollbar max-h-[300px] overflow-y-auto overscroll-contain">
+                {calls.length > 0 ? (
+                  <CallRows calls={calls} expanded={expanded} onToggle={toggle} />
+                ) : live && live.result !== undefined ? null : (
+                  <p className="px-3 py-3 text-xs text-aurora-text-muted">No calls were made.</p>
+                )}
+                {discovery ? (
+                  <DiscoveryRows discovery={discovery} expanded={expanded} onToggle={toggle} />
+                ) : null}
+                {inputSnippet ? (
+                  <InputRow
+                    snippet={inputSnippet}
+                    open={Boolean(expanded.input)}
+                    onToggle={() => toggle('input')}
+                  />
+                ) : null}
+                {live && live.result !== undefined ? (
+                  <ResultRow
+                    trace={live}
+                    markdown={describeDoc}
+                    open={Boolean(expanded.result)}
+                    onToggle={() => toggle('result')}
+                  />
+                ) : null}
+                {live?.artifacts?.length ? (
+                  <ArtifactsRow
+                    artifacts={live.artifacts}
+                    open={Boolean(expanded.artifacts)}
+                    onToggle={() => toggle('artifacts')}
+                  />
+                ) : null}
+                {selectedEntry ? <HistoryNote /> : null}
+              </div>
             )}
-            {discovery ? (
-              <DiscoveryRows discovery={discovery} expanded={expanded} onToggle={toggle} />
-            ) : null}
-            {inputSnippet ? (
-              <InputRow
-                snippet={inputSnippet}
-                open={Boolean(expanded.input)}
-                onToggle={() => toggle('input')}
-              />
-            ) : null}
-            {live && live.result !== undefined ? (
-              <ResultRow
-                trace={live}
-                markdown={describeDoc}
-                open={Boolean(expanded.result)}
-                onToggle={() => toggle('result')}
-              />
-            ) : null}
-            {live?.artifacts?.length ? (
-              <ArtifactsRow
-                artifacts={live.artifacts}
-                open={Boolean(expanded.artifacts)}
-                onToggle={() => toggle('artifacts')}
-              />
-            ) : null}
-            {selectedEntry ? <HistoryNote /> : null}
-          </div>
-        )}
 
-        <WidgetFoot
-          history={state.history}
-          live={state.live}
-          selected={state.selected}
-          onSelect={(selection) => {
-            setState((previous) => ({ ...previous, selected: selection }))
-            const entry =
-              selection === 'live'
-                ? null
-                : state.history.find((candidate) => candidate.seq === selection)
-            setExpanded(
-              selection === 'live'
-                ? expandFirstFailedCall(state.live?.calls)
-                : expandFirstFailedCall(entry?.calls),
-            )
-          }}
-          inputTokens={tokens?.input_tokens}
-          outputTokens={tokens?.output_tokens}
-          logsCount={live?.logs_count}
-        />
+            <WidgetFoot
+              history={state.history}
+              live={state.live}
+              selected={state.selected}
+              onSelect={(selection) => {
+                setState((previous) => ({ ...previous, selected: selection }))
+                const entry =
+                  selection === 'live'
+                    ? null
+                    : state.history.find((candidate) => candidate.seq === selection)
+                setExpanded(
+                  selection === 'live'
+                    ? expandFirstFailedCall(state.live?.calls)
+                    : expandFirstFailedCall(entry?.calls),
+                )
+              }}
+              inputTokens={tokens?.input_tokens}
+              outputTokens={tokens?.output_tokens}
+              logsCount={live?.logs_count}
+            />
+          </>
+        ) : null}
       </section>
+      {activeUi ? <McpUiResourcePanel ui={activeUi} resourceReader={resourceReader} /> : null}
+      </div>
     </main>
   )
 }
@@ -410,17 +422,21 @@ function WidgetHead({
   errorKind,
   elapsedMs,
   bridgeLabel,
+  minimized,
+  onToggleMinimized,
 }: {
   subLabel: string | null
   ok: boolean
   errorKind: string | undefined
   elapsedMs: number | undefined
   bridgeLabel: string | null
+  minimized: boolean
+  onToggleMinimized: () => void
 }) {
   return (
     <div
-      className="flex items-center gap-2 border-b px-3 py-2"
-      style={{ borderColor: HEAD_FOOT_BORDER, background: HEAD_FOOT_BG }}
+      className={cn('flex min-w-0 items-center gap-2 px-3', minimized ? 'py-1.5' : 'border-b py-2')}
+      style={{ borderColor: minimized ? 'transparent' : HEAD_FOOT_BORDER, background: HEAD_FOOT_BG }}
     >
       <LabbyMark />
       <span className="text-[12.5px] font-bold">Execute</span>
@@ -443,6 +459,16 @@ function WidgetHead({
       {bridgeLabel !== null && bridgeLabel !== 'connected' ? (
         <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>{bridgeLabel}</span>
       ) : null}
+      <button
+        type="button"
+        aria-label={minimized ? 'Restore inspector' : 'Minimize inspector'}
+        aria-pressed={minimized}
+        title={minimized ? 'Restore inspector' : 'Minimize inspector'}
+        onClick={onToggleMinimized}
+        className="flex size-5 shrink-0 items-center justify-center rounded border border-transparent text-aurora-text-muted transition-colors hover:border-aurora-border-strong hover:text-aurora-text-primary"
+      >
+        {minimized ? <Maximize2 className="size-3" strokeWidth={1.75} /> : <Minimize2 className="size-3" strokeWidth={1.75} />}
+      </button>
     </div>
   )
 }
@@ -496,12 +522,10 @@ function CallRows({
   calls,
   expanded,
   onToggle,
-  resourceReader,
 }: {
   calls: CodeModeCallTrace[]
   expanded: Record<string, boolean>
   onToggle: (key: string) => void
-  resourceReader: ResourceReader | null
 }) {
   const maxElapsed = Math.max(...calls.map((call) => call.elapsed_ms), 1)
   // When start offsets are present (newer traces), bars form a true waterfall
@@ -590,7 +614,6 @@ function CallRows({
                 ) : null}
               </div>
             ) : null}
-            {call.ui ? <McpUiResourcePreview ui={call.ui} resourceReader={resourceReader} /> : null}
           </div>
         )
       })}
@@ -598,7 +621,7 @@ function CallRows({
   )
 }
 
-function McpUiResourcePreview({
+function McpUiResourcePanel({
   ui,
   resourceReader,
 }: {
@@ -642,14 +665,21 @@ function McpUiResourcePreview({
   }, [resourceReader, ui.resourceUri])
 
   return (
-    <div
-      className="border-t px-3 py-2 pl-[34px]"
+    <section
+      className="mt-2 overflow-hidden rounded-[10px] border"
       style={{
-        borderColor: HAIRLINE,
-        background: 'color-mix(in srgb, var(--aurora-accent-primary) 5%, transparent)',
+        borderColor: 'color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
+        background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
+        boxShadow: 'var(--aurora-shadow-medium), var(--aurora-highlight-strong)',
       }}
     >
-      <div className="flex min-w-0 items-center gap-2">
+      <div
+        className="flex min-w-0 items-center gap-2 border-b px-3 py-2"
+        style={{
+        borderColor: HAIRLINE,
+        background: HEAD_FOOT_BG,
+      }}
+      >
         <FileBox className="size-3 shrink-0 text-aurora-accent-primary" strokeWidth={1.75} />
         <span className={cn(AURORA_BADGE_LABEL, 'shrink-0 text-aurora-accent-strong')}>MCP UI</span>
         <span className="min-w-0 truncate font-mono text-[11px] text-aurora-text-muted">
@@ -666,16 +696,26 @@ function McpUiResourcePreview({
           </span>
         ) : null}
       </div>
-      {html ? (
-        <iframe
-          title={`${ui.resourceUri} MCP UI`}
-          className="mt-2 h-48 w-full rounded border bg-white"
-          style={{ borderColor: HAIRLINE }}
-          sandbox="allow-scripts allow-forms allow-popups allow-downloads"
-          srcDoc={html}
-        />
-      ) : null}
-    </div>
+      <div className="min-h-[220px] bg-white">
+        {html ? (
+          <iframe
+            title={`${ui.resourceUri} MCP UI`}
+            className="block min-h-[320px] w-full border-0 bg-white"
+            style={{ height: 'min(620px, 72vh)' }}
+            sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+            srcDoc={html}
+          />
+        ) : (
+          <div className="flex min-h-[220px] items-center justify-center px-5 text-center text-xs text-[#4a6872]">
+            {state === 'loading'
+              ? 'Loading MCP UI...'
+              : state === 'error'
+                ? 'Failed to load MCP UI resource.'
+                : 'MCP UI resource reader unavailable.'}
+          </div>
+        )}
+      </div>
+    </section>
   )
 }
 

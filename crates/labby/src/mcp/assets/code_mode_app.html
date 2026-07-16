@@ -24,10 +24,13 @@ html.light body{background:transparent}
 #content::-webkit-scrollbar{width:6px}
 #content::-webkit-scrollbar-track{background:transparent}
 #content::-webkit-scrollbar-thumb{background-color:var(--aurora-border-strong);border-radius:999px}
-body{margin:0;padding:0;width:100%;min-height:0;height:auto;overflow:hidden;background:transparent;color:var(--aurora-text-primary)}
+body{display:block;margin:0;padding:0;width:100%;min-height:0;height:auto;overflow:hidden;background:transparent;color:var(--aurora-text-primary)}
 .widget{width:100%;max-width:none;margin:0;overflow:hidden;border-radius:10px;background:linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong));border:1px solid color-mix(in srgb,var(--aurora-border-default) 45%,var(--aurora-page-bg));box-shadow:var(--aurora-shadow-medium),var(--aurora-highlight-strong)}
+.widget.minimized .summary,.widget.minimized .toolbar,.widget.minimized #content,.widget.minimized .foot{display:none!important}
+.widget.minimized .head{border-bottom:none;padding-block:6px}
+.widget.minimized .head-sub{max-width:42vw}
 .head,.foot{display:flex;align-items:center;gap:8px;padding:8px 10px;background:color-mix(in srgb,var(--aurora-page-bg) 25%,transparent)}
-.head{border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg))}
+.head{border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg));min-width:0}
 .foot{border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg));padding:6px 12px}
 .summary{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 35%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 18%,transparent);overflow-x:auto;scrollbar-width:none}
 .toolbar{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 35%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 10%,transparent)}
@@ -97,6 +100,13 @@ details[open]>.row .chev{transform:rotate(90deg)}
 .mcp-ui-head{display:flex;align-items:center;gap:7px;min-width:0}
 .mcp-ui-uri{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px "JetBrains Mono",ui-monospace,monospace;color:var(--aurora-text-muted)}
 .mcp-ui-frame{width:100%;height:192px;border-radius:8px;border:1px solid color-mix(in srgb,var(--aurora-border-default) 42%,transparent);background:#fff}
+.external-mcp-app{margin-top:8px;overflow:hidden;border-radius:10px;border:1px solid color-mix(in srgb,var(--aurora-border-default) 45%,var(--aurora-page-bg));background:linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong));box-shadow:var(--aurora-shadow-medium),var(--aurora-highlight-strong)}
+.external-mcp-head{display:flex;align-items:center;gap:7px;min-width:0;padding:7px 10px;border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg));background:color-mix(in srgb,var(--aurora-page-bg) 25%,transparent)}
+.external-mcp-uri{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px "JetBrains Mono",ui-monospace,monospace;color:var(--aurora-text-muted)}
+.external-mcp-status{margin-left:auto;flex:none}
+.external-mcp-body{min-height:220px;background:#fff}
+.external-mcp-frame{display:block;width:100%;height:min(620px,72vh);min-height:320px;border:0;background:#fff}
+.external-mcp-message{display:flex;align-items:center;justify-content:center;min-height:220px;padding:20px;color:#4a6872;font:12px Inter,"Segoe UI",system-ui,sans-serif}
 .iconbtn{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border-radius:5px;border:1px solid transparent;background:transparent;color:var(--aurora-text-muted);cursor:pointer}
 .iconbtn:hover{color:var(--aurora-text-primary);border-color:var(--aurora-border-strong)}
 .iconbtn.primary{color:var(--aurora-accent-strong);border-color:color-mix(in srgb,var(--aurora-accent-primary) 22%,transparent)}
@@ -140,6 +150,10 @@ details[open]>.mrow .chev{transform:rotate(90deg)}
 <span id="headstatus"></span>
 <span class="ms" id="headelapsed" hidden></span>
 <span class="badge" id="state">read only</span>
+<button type="button" class="iconbtn" id="minimizeToggle" aria-label="Minimize inspector" aria-pressed="false" title="Minimize inspector">
+<svg class="minimize-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>
+<svg class="restore-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" hidden><path d="m7 14 5-5 5 5"/></svg>
+</button>
 </div>
 <div class="summary" id="summaryStats" hidden></div>
 <div class="toolbar" id="toolbar" hidden>
@@ -161,6 +175,15 @@ details[open]>.mrow .chev{transform:rotate(90deg)}
 <span class="foot-meta" id="footmeta"></span>
 </div>
 </main>
+<section class="external-mcp-app" id="externalMcpApp" hidden>
+<div class="external-mcp-head">
+<span class="st info"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M2 15h10"/><path d="m9 18 3-3-3-3"/></svg></span>
+<span class="badge">MCP UI</span>
+<span class="external-mcp-uri" id="externalMcpUri"></span>
+<span class="badge external-mcp-status" id="externalMcpStatus"></span>
+</div>
+<div class="external-mcp-body" id="externalMcpBody"></div>
+</section>
 <script>window.__LAB_CODE_MODE_INITIAL_TRACE__ = null;</script>
 <script type="module">
 var __=Object.defineProperty;var I_=(r)=>r;function U_(r,i){this[r]=I_.bind(null,i)}var Jr=(r,i)=>{for(var $ in i)__(r,$,{get:i[$],enumerable:!0,configurable:!0,set:U_.bind(i,$)})};var jr={};Jr(jr,{version:()=>Wu,util:()=>O,treeifyError:()=>Q$,toJSONSchema:()=>jv,toDotPath:()=>C6,safeParseAsync:()=>Cn,safeParse:()=>rn,safeEncodeAsync:()=>s6,safeEncode:()=>p6,safeDecodeAsync:()=>r4,safeDecode:()=>a6,registry:()=>pi,regexes:()=>Ir,process:()=>Y,prettifyError:()=>B$,parseAsync:()=>Rn,parse:()=>en,meta:()=>co,locales:()=>vi,isValidJWT:()=>O4,isValidBase64URL:()=>k4,isValidBase64:()=>du,initializeContext:()=>Br,globalRegistry:()=>R,globalConfig:()=>Bn,formatError:()=>Zn,flattenError:()=>xn,finalize:()=>Hr,extractDefs:()=>Fr,encodeAsync:()=>d6,encode:()=>y6,describe:()=>wo,decodeAsync:()=>h6,decode:()=>f6,createToJSONSchemaMethod:()=>ko,createStandardJSONSchemaMethod:()=>kn,config:()=>x,clone:()=>rr,_xor:()=>lU,_xid:()=>ov,_void:()=>to,_uuidv7:()=>iv,_uuidv6:()=>nv,_uuidv4:()=>rv,_uuid:()=>si,_url:()=>ui,_uppercase:()=>gn,_unknown:()=>$o,_union:()=>oU,_undefined:()=>no,_ulid:()=>gv,_uint64:()=>sg,_uint32:()=>yg,_tuple:()=>IU,_trim:()=>Un,_transform:()=>OU,_toUpperCase:()=>wn,_toLowerCase:()=>Dn,_templateLiteral:()=>XU,_symbol:()=>ro,_superRefine:()=>Do,_success:()=>LU,_stringbool:()=>No,_stringFormat:()=>Nn,_string:()=>Qg,_startsWith:()=>ln,_slugify:()=>cn,_size:()=>er,_set:()=>wU,_safeParseAsync:()=>nn,_safeParse:()=>sr,_safeEncodeAsync:()=>Hi,_safeEncode:()=>Bi,_safeDecodeAsync:()=>Ei,_safeDecode:()=>Fi,_regex:()=>un,_refine:()=>Uo,_record:()=>UU,_readonly:()=>WU,_property:()=>Sv,_promise:()=>VU,_positive:()=>kv,_pipe:()=>jU,_parseAsync:()=>ar,_parse:()=>pr,_overwrite:()=>cr,_optional:()=>zU,_number:()=>qg,_nullable:()=>PU,_null:()=>io,_normalize:()=>In,_nonpositive:()=>zv,_nonoptional:()=>JU,_nonnegative:()=>Pv,_never:()=>uo,_negative:()=>Ov,_nativeEnum:()=>NU,_nanoid:()=>$v,_nan:()=>lo,_multipleOf:()=>Yr,_minSize:()=>zr,_minLength:()=>Ar,_min:()=>nr,_mime:()=>_n,_maxSize:()=>Qr,_maxLength:()=>Rr,_max:()=>lr,_map:()=>DU,_mac:()=>Fg,_lte:()=>lr,_lt:()=>kr,_lowercase:()=>tn,_literal:()=>kU,_length:()=>Cr,_lazy:()=>GU,_ksuid:()=>lv,_jwt:()=>Nv,_isoTime:()=>mg,_isoDuration:()=>Mg,_isoDateTime:()=>Eg,_isoDate:()=>Tg,_ipv6:()=>_v,_ipv4:()=>bv,_intersection:()=>_U,_int64:()=>ag,_int32:()=>Cg,_int:()=>Zg,_includes:()=>on,_guid:()=>$i,_gte:()=>nr,_gt:()=>Or,_float64:()=>Rg,_float32:()=>eg,_file:()=>_o,_enum:()=>cU,_endsWith:()=>bn,_encodeAsync:()=>Yi,_encode:()=>Vi,_emoji:()=>vv,_email:()=>ai,_e164:()=>cv,_discriminatedUnion:()=>bU,_default:()=>SU,_decodeAsync:()=>Qi,_decode:()=>Ki,_date:()=>go,_custom:()=>Io,_cuid2:()=>tv,_cuid:()=>uv,_coercedString:()=>Bg,_coercedNumber:()=>xg,_coercedDate:()=>oo,_coercedBoolean:()=>dg,_coercedBigint:()=>pg,_cidrv6:()=>Uv,_cidrv4:()=>Iv,_check:()=>X4,_catch:()=>AU,_boolean:()=>fg,_bigint:()=>hg,_base64url:()=>wv,_base64:()=>Dv,_array:()=>bo,_any:()=>vo,TimePrecision:()=>Hg,NEVER:()=>S$,JSONSchemaGenerator:()=>vl,JSONSchema:()=>G4,Doc:()=>qi,$output:()=>Vg,$input:()=>Kg,$constructor:()=>I,$brand:()=>J$,$ZodXor:()=>Ut,$ZodXID:()=>Tu,$ZodVoid:()=>lt,$ZodUnknown:()=>gt,$ZodUnion:()=>pn,$ZodUndefined:()=>$t,$ZodUUID:()=>Vu,$ZodURL:()=>Yu,$ZodULID:()=>Eu,$ZodType:()=>A,$ZodTuple:()=>di,$ZodTransform:()=>St,$ZodTemplateLiteral:()=>Qt,$ZodSymbol:()=>vt,$ZodSuccess:()=>Xt,$ZodStringFormat:()=>H,$ZodString:()=>Zr,$ZodSet:()=>kt,$ZodRegistry:()=>Yg,$ZodRecord:()=>ct,$ZodRealError:()=>ur,$ZodReadonly:()=>Yt,$ZodPromise:()=>Ft,$ZodPrefault:()=>jt,$ZodPipe:()=>Kt,$ZodOptional:()=>hi,$ZodObjectJIT:()=>It,$ZodObject:()=>S4,$ZodNumberFormat:()=>nt,$ZodNumber:()=>yi,$ZodNullable:()=>Lt,$ZodNull:()=>ut,$ZodNonOptional:()=>Wt,$ZodNever:()=>ot,$ZodNanoID:()=>Bu,$ZodNaN:()=>Vt,$ZodMap:()=>Nt,$ZodMAC:()=>Cu,$ZodLiteral:()=>zt,$ZodLazy:()=>Ht,$ZodKSUID:()=>mu,$ZodJWT:()=>su,$ZodIntersection:()=>wt,$ZodISOTime:()=>xu,$ZodISODuration:()=>Zu,$ZodISODateTime:()=>Mu,$ZodISODate:()=>qu,$ZodIPv6:()=>Ru,$ZodIPv4:()=>eu,$ZodGUID:()=>Gu,$ZodFunction:()=>Bt,$ZodFile:()=>Pt,$ZodExactOptional:()=>Jt,$ZodError:()=>qn,$ZodEnum:()=>Ot,$ZodEncodeError:()=>Mr,$ZodEmoji:()=>Qu,$ZodEmail:()=>Ku,$ZodE164:()=>au,$ZodDiscriminatedUnion:()=>Dt,$ZodDefault:()=>At,$ZodDate:()=>bt,$ZodCustomStringFormat:()=>rt,$ZodCustom:()=>Et,$ZodCodec:()=>an,$ZodCheckUpperCase:()=>zu,$ZodCheckStringFormat:()=>vn,$ZodCheckStartsWith:()=>Su,$ZodCheckSizeEquals:()=>Du,$ZodCheckRegex:()=>ku,$ZodCheckProperty:()=>Lu,$ZodCheckOverwrite:()=>ju,$ZodCheckNumberFormat:()=>bu,$ZodCheckMultipleOf:()=>lu,$ZodCheckMinSize:()=>Uu,$ZodCheckMinLength:()=>cu,$ZodCheckMimeType:()=>Au,$ZodCheckMaxSize:()=>Iu,$ZodCheckMaxLength:()=>wu,$ZodCheckLowerCase:()=>Ou,$ZodCheckLessThan:()=>mi,$ZodCheckLengthEquals:()=>Nu,$ZodCheckIncludes:()=>Pu,$ZodCheckGreaterThan:()=>Mi,$ZodCheckEndsWith:()=>Ju,$ZodCheckBigIntFormat:()=>_u,$ZodCheck:()=>m,$ZodCatch:()=>Gt,$ZodCUID2:()=>Hu,$ZodCUID:()=>Fu,$ZodCIDRv6:()=>fu,$ZodCIDRv4:()=>yu,$ZodBoolean:()=>hn,$ZodBigIntFormat:()=>it,$ZodBigInt:()=>fi,$ZodBase64URL:()=>pu,$ZodBase64:()=>hu,$ZodAsyncError:()=>Nr,$ZodArray:()=>_t,$ZodAny:()=>tt});var S$=Object.freeze({status:"aborted"});function I(r,i,$){function u(g,b){if(!g._zod)Object.defineProperty(g,"_zod",{value:{def:b,constr:t,traits:new Set},enumerable:!1});if(g._zod.traits.has(r))return;g._zod.traits.add(r),i(g,b);let o=t.prototype,_=Object.keys(o);for(let w=0;w<_.length;w++){let c=_[w];if(!(c in g))g[c]=o[c].bind(g)}}let n=$?.Parent??Object;class v extends n{}Object.defineProperty(v,"name",{value:r});function t(g){var b;let o=$?.Parent?new v:this;u(o,g),(b=o._zod).deferred??(b.deferred=[]);for(let _ of o._zod.deferred)_();return o}return Object.defineProperty(t,"init",{value:u}),Object.defineProperty(t,Symbol.hasInstance,{value:(g)=>{if($?.Parent&&g instanceof $.Parent)return!0;return g?._zod?.traits?.has(r)}}),Object.defineProperty(t,"name",{value:r}),t}var J$=Symbol("zod_brand");class Nr extends Error{constructor(){super("Encountered Promise during synchronous parse. Use .parseAsync() instead.")}}class Mr extends Error{constructor(r){super(`Encountered unidirectional transform during encode: ${r}`);this.name="ZodEncodeError"}}var Bn={};function x(r){if(r)Object.assign(Bn,r);return Bn}var O={};Jr(O,{unwrapMessage:()=>Fn,uint8ArrayToHex:()=>T_,uint8ArrayToBase64url:()=>H_,uint8ArrayToBase64:()=>Z6,stringifyPrimitive:()=>N,slugify:()=>j$,shallowClone:()=>X$,safeExtend:()=>V_,required:()=>Q_,randomString:()=>J_,propertyKeyTypes:()=>Tn,promiseAllObject:()=>S_,primitiveTypes:()=>G$,prefixIssues:()=>or,pick:()=>W_,partial:()=>Y_,parsedType:()=>k,optionalKeys:()=>V$,omit:()=>X_,objectClone:()=>O_,numKeys:()=>L_,nullish:()=>Xr,normalizeParams:()=>z,mergeDefs:()=>Lr,merge:()=>K_,jsonStringifyReplacer:()=>fr,joinValues:()=>U,issue:()=>hr,isPlainObject:()=>Vr,isObject:()=>qr,hexToUint8Array:()=>E_,getSizableOrigin:()=>mn,getParsedType:()=>A_,getLengthableOrigin:()=>Mn,getEnumValues:()=>Hn,getElementAtPath:()=>P_,floatSafeRemainder:()=>A$,finalizeIssue:()=>$r,extend:()=>G_,escapeRegex:()=>_r,esc:()=>Xi,defineLazy:()=>W,createTransparentProxy:()=>j_,cloneDef:()=>z_,clone:()=>rr,cleanRegex:()=>En,cleanEnum:()=>B_,captureStackTrace:()=>Gi,cached:()=>dr,base64urlToUint8Array:()=>F_,base64ToUint8Array:()=>x6,assignProp:()=>Gr,assertNotEqual:()=>w_,assertNever:()=>N_,assertIs:()=>c_,assertEqual:()=>D_,assert:()=>k_,allowsEval:()=>W$,aborted:()=>Kr,NUMBER_FORMAT_RANGES:()=>K$,Class:()=>e6,BIGINT_FORMAT_RANGES:()=>Y$});function D_(r){return r}function w_(r){return r}function c_(r){}function N_(r){throw Error("Unexpected value in exhaustive check")}function k_(r){}function Hn(r){let i=Object.values(r).filter((u)=>typeof u==="number");return Object.entries(r).filter(([u,n])=>i.indexOf(+u)===-1).map(([u,n])=>n)}function U(r,i="|"){return r.map(($)=>N($)).join(i)}function fr(r,i){if(typeof i==="bigint")return i.toString();return i}function dr(r){return{get value(){{let $=r();return Object.defineProperty(this,"value",{value:$}),$}throw Error("cached value already set")}}}function Xr(r){return r===null||r===void 0}function En(r){let i=r.startsWith("^")?1:0,$=r.endsWith("$")?r.length-1:r.length;return r.slice(i,$)}function A$(r,i){let $=(r.toString().split(".")[1]||"").length,u=i.toString(),n=(u.split(".")[1]||"").length;if(n===0&&/\d?e-\d?/.test(u)){let b=u.match(/\d?e-(\d?)/);if(b?.[1])n=Number.parseInt(b[1])}let v=$>n?$:n,t=Number.parseInt(r.toFixed(v).replace(".","")),g=Number.parseInt(i.toFixed(v).replace(".",""));return t%g/10**v}var q6=Symbol("evaluating");function W(r,i,$){let u=void 0;Object.defineProperty(r,i,{get(){if(u===q6)return;if(u===void 0)u=q6,u=$();return u},set(n){Object.defineProperty(r,i,{value:n})},configurable:!0})}function O_(r){return Object.create(Object.getPrototypeOf(r),Object.getOwnPropertyDescriptors(r))}function Gr(r,i,$){Object.defineProperty(r,i,{value:$,writable:!0,enumerable:!0,configurable:!0})}function Lr(...r){let i={};for(let $ of r){let u=Object.getOwnPropertyDescriptors($);Object.assign(i,u)}return Object.defineProperties({},i)}function z_(r){return Lr(r._zod.def)}function P_(r,i){if(!i)return r;return i.reduce(($,u)=>$?.[u],r)}function S_(r){let i=Object.keys(r),$=i.map((u)=>r[u]);return Promise.all($).then((u)=>{let n={};for(let v=0;v<i.length;v++)n[i[v]]=u[v];return n})}function J_(r=10){let $="";for(let u=0;u<r;u++)$+="abcdefghijklmnopqrstuvwxyz"[Math.floor(Math.random()*26)];return $}function Xi(r){return JSON.stringify(r)}function j$(r){return r.toLowerCase().trim().replace(/[^\w\s-]/g,"").replace(/[\s_-]+/g,"-").replace(/^-+|-+$/g,"")}var Gi="captureStackTrace"in Error?Error.captureStackTrace:(...r)=>{};function qr(r){return typeof r==="object"&&r!==null&&!Array.isArray(r)}var W$=dr(()=>{if(typeof navigator<"u"&&navigator?.userAgent?.includes("Cloudflare"))return!1;try{return new Function(""),!0}catch(r){return!1}});function Vr(r){if(qr(r)===!1)return!1;let i=r.constructor;if(i===void 0)return!0;if(typeof i!=="function")return!0;let $=i.prototype;if(qr($)===!1)return!1;if(Object.prototype.hasOwnProperty.call($,"isPrototypeOf")===!1)return!1;return!0}function X$(r){if(Vr(r))return{...r};if(Array.isArray(r))return[...r];return r}function L_(r){let i=0;for(let $ in r)if(Object.prototype.hasOwnProperty.call(r,$))i++;return i}var A_=(r)=>{let i=typeof r;switch(i){case"undefined":return"undefined";case"string":return"string";case"number":return Number.isNaN(r)?"nan":"number";case"boolean":return"boolean";case"function":return"function";case"bigint":return"bigint";case"symbol":return"symbol";case"object":if(Array.isArray(r))return"array";if(r===null)return"null";if(r.then&&typeof r.then==="function"&&r.catch&&typeof r.catch==="function")return"promise";if(typeof Map<"u"&&r instanceof Map)return"map";if(typeof Set<"u"&&r instanceof Set)return"set";if(typeof Date<"u"&&r instanceof Date)return"date";if(typeof File<"u"&&r instanceof File)return"file";return"object";default:throw Error(`Unknown data type: ${i}`)}},Tn=new Set(["string","number","symbol"]),G$=new Set(["string","number","bigint","boolean","symbol","undefined"]);function _r(r){return r.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}function rr(r,i,$){let u=new r._zod.constr(i??r._zod.def);if(!i||$?.parent)u._zod.parent=r;return u}function z(r){let i=r;if(!i)return{};if(typeof i==="string")return{error:()=>i};if(i?.message!==void 0){if(i?.error!==void 0)throw Error("Cannot specify both `message` and `error` params");i.error=i.message}if(delete i.message,typeof i.error==="string")return{...i,error:()=>i.error};return i}function j_(r){let i;return new Proxy({},{get($,u,n){return i??(i=r()),Reflect.get(i,u,n)},set($,u,n,v){return i??(i=r()),Reflect.set(i,u,n,v)},has($,u){return i??(i=r()),Reflect.has(i,u)},deleteProperty($,u){return i??(i=r()),Reflect.deleteProperty(i,u)},ownKeys($){return i??(i=r()),Reflect.ownKeys(i)},getOwnPropertyDescriptor($,u){return i??(i=r()),Reflect.getOwnPropertyDescriptor(i,u)},defineProperty($,u,n){return i??(i=r()),Reflect.defineProperty(i,u,n)}})}function N(r){if(typeof r==="bigint")return r.toString()+"n";if(typeof r==="string")return`"${r}"`;return`${r}`}function V$(r){return Object.keys(r).filter((i)=>{return r[i]._zod.optin==="optional"&&r[i]._zod.optout==="optional"})}var K$={safeint:[Number.MIN_SAFE_INTEGER,Number.MAX_SAFE_INTEGER],int32:[-2147483648,2147483647],uint32:[0,4294967295],float32:[-340282346638528860000000000000000000000,340282346638528860000000000000000000000],float64:[-Number.MAX_VALUE,Number.MAX_VALUE]},Y$={int64:[BigInt("-9223372036854775808"),BigInt("9223372036854775807")],uint64:[BigInt(0),BigInt("18446744073709551615")]};function W_(r,i){let $=r._zod.def,u=$.checks;if(u&&u.length>0)throw Error(".pick() cannot be used on object schemas containing refinements");let v=Lr(r._zod.def,{get shape(){let t={};for(let g in i){if(!(g in $.shape))throw Error(`Unrecognized key: "${g}"`);if(!i[g])continue;t[g]=$.shape[g]}return Gr(this,"shape",t),t},checks:[]});return rr(r,v)}function X_(r,i){let $=r._zod.def,u=$.checks;if(u&&u.length>0)throw Error(".omit() cannot be used on object schemas containing refinements");let v=Lr(r._zod.def,{get shape(){let t={...r._zod.def.shape};for(let g in i){if(!(g in $.shape))throw Error(`Unrecognized key: "${g}"`);if(!i[g])continue;delete t[g]}return Gr(this,"shape",t),t},checks:[]});return rr(r,v)}function G_(r,i){if(!Vr(i))throw Error("Invalid input to extend: expected a plain object");let $=r._zod.def.checks;if($&&$.length>0){let v=r._zod.def.shape;for(let t in i)if(Object.getOwnPropertyDescriptor(v,t)!==void 0)throw Error("Cannot overwrite keys on object schemas containing refinements. Use `.safeExtend()` instead.")}let n=Lr(r._zod.def,{get shape(){let v={...r._zod.def.shape,...i};return Gr(this,"shape",v),v}});return rr(r,n)}function V_(r,i){if(!Vr(i))throw Error("Invalid input to safeExtend: expected a plain object");let $=Lr(r._zod.def,{get shape(){let u={...r._zod.def.shape,...i};return Gr(this,"shape",u),u}});return rr(r,$)}function K_(r,i){let $=Lr(r._zod.def,{get shape(){let u={...r._zod.def.shape,...i._zod.def.shape};return Gr(this,"shape",u),u},get catchall(){return i._zod.def.catchall},checks:[]});return rr(r,$)}function Y_(r,i,$){let n=i._zod.def.checks;if(n&&n.length>0)throw Error(".partial() cannot be used on object schemas containing refinements");let t=Lr(i._zod.def,{get shape(){let g=i._zod.def.shape,b={...g};if($)for(let o in $){if(!(o in g))throw Error(`Unrecognized key: "${o}"`);if(!$[o])continue;b[o]=r?new r({type:"optional",innerType:g[o]}):g[o]}else for(let o in g)b[o]=r?new r({type:"optional",innerType:g[o]}):g[o];return Gr(this,"shape",b),b},checks:[]});return rr(i,t)}function Q_(r,i,$){let u=Lr(i._zod.def,{get shape(){let n=i._zod.def.shape,v={...n};if($)for(let t in $){if(!(t in v))throw Error(`Unrecognized key: "${t}"`);if(!$[t])continue;v[t]=new r({type:"nonoptional",innerType:n[t]})}else for(let t in n)v[t]=new r({type:"nonoptional",innerType:n[t]});return Gr(this,"shape",v),v}});return rr(i,u)}function Kr(r,i=0){if(r.aborted===!0)return!0;for(let $=i;$<r.issues.length;$++)if(r.issues[$]?.continue!==!0)return!0;return!1}function or(r,i){return i.map(($)=>{var u;return(u=$).path??(u.path=[]),$.path.unshift(r),$})}function Fn(r){return typeof r==="string"?r:r?.message}function $r(r,i,$){let u={...r,path:r.path??[]};if(!r.message){let n=Fn(r.inst?._zod.def?.error?.(r))??Fn(i?.error?.(r))??Fn($.customError?.(r))??Fn($.localeError?.(r))??"Invalid input";u.message=n}if(delete u.inst,delete u.continue,!i?.reportInput)delete u.input;return u}function mn(r){if(r instanceof Set)return"set";if(r instanceof Map)return"map";if(r instanceof File)return"file";return"unknown"}function Mn(r){if(Array.isArray(r))return"array";if(typeof r==="string")return"string";return"unknown"}function k(r){let i=typeof r;switch(i){case"number":return Number.isNaN(r)?"nan":"number";case"object":{if(r===null)return"null";if(Array.isArray(r))return"array";let $=r;if($&&Object.getPrototypeOf($)!==Object.prototype&&"constructor"in $&&$.constructor)return $.constructor.name}}return i}function hr(...r){let[i,$,u]=r;if(typeof i==="string")return{message:i,code:"custom",input:$,inst:u};return{...i}}function B_(r){return Object.entries(r).filter(([i,$])=>{return Number.isNaN(Number.parseInt(i,10))}).map((i)=>i[1])}function x6(r){let i=atob(r),$=new Uint8Array(i.length);for(let u=0;u<i.length;u++)$[u]=i.charCodeAt(u);return $}function Z6(r){let i="";for(let $=0;$<r.length;$++)i+=String.fromCharCode(r[$]);return btoa(i)}function F_(r){let i=r.replace(/-/g,"+").replace(/_/g,"/"),$="=".repeat((4-i.length%4)%4);return x6(i+$)}function H_(r){return Z6(r).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"")}function E_(r){let i=r.replace(/^0x/,"");if(i.length%2!==0)throw Error("Invalid hex string length");let $=new Uint8Array(i.length/2);for(let u=0;u<i.length;u+=2)$[u/2]=Number.parseInt(i.slice(u,u+2),16);return $}function T_(r){return Array.from(r).map((i)=>i.toString(16).padStart(2,"0")).join("")}class e6{constructor(...r){}}var R6=(r,i)=>{r.name="$ZodError",Object.defineProperty(r,"_zod",{value:r._zod,enumerable:!1}),Object.defineProperty(r,"issues",{value:i,enumerable:!1}),r.message=JSON.stringify(i,fr,2),Object.defineProperty(r,"toString",{value:()=>r.message,enumerable:!1})},qn=I("$ZodError",R6),ur=I("$ZodError",R6,{Parent:Error});function xn(r,i=($)=>$.message){let $={},u=[];for(let n of r.issues)if(n.path.length>0)$[n.path[0]]=$[n.path[0]]||[],$[n.path[0]].push(i(n));else u.push(i(n));return{formErrors:u,fieldErrors:$}}function Zn(r,i=($)=>$.message){let $={_errors:[]},u=(n)=>{for(let v of n.issues)if(v.code==="invalid_union"&&v.errors.length)v.errors.map((t)=>u({issues:t}));else if(v.code==="invalid_key")u({issues:v.issues});else if(v.code==="invalid_element")u({issues:v.issues});else if(v.path.length===0)$._errors.push(i(v));else{let t=$,g=0;while(g<v.path.length){let b=v.path[g];if(g!==v.path.length-1)t[b]=t[b]||{_errors:[]};else t[b]=t[b]||{_errors:[]},t[b]._errors.push(i(v));t=t[b],g++}}};return u(r),$}function Q$(r,i=($)=>$.message){let $={errors:[]},u=(n,v=[])=>{var t,g;for(let b of n.issues)if(b.code==="invalid_union"&&b.errors.length)b.errors.map((o)=>u({issues:o},b.path));else if(b.code==="invalid_key")u({issues:b.issues},b.path);else if(b.code==="invalid_element")u({issues:b.issues},b.path);else{let o=[...v,...b.path];if(o.length===0){$.errors.push(i(b));continue}let _=$,w=0;while(w<o.length){let c=o[w],P=w===o.length-1;if(typeof c==="string")_.properties??(_.properties={}),(t=_.properties)[c]??(t[c]={errors:[]}),_=_.properties[c];else _.items??(_.items=[]),(g=_.items)[c]??(g[c]={errors:[]}),_=_.items[c];if(P)_.errors.push(i(b));w++}}};return u(r),$}function C6(r){let i=[],$=r.map((u)=>typeof u==="object"?u.key:u);for(let u of $)if(typeof u==="number")i.push(`[${u}]`);else if(typeof u==="symbol")i.push(`[${JSON.stringify(String(u))}]`);else if(/[^\w$]/.test(u))i.push(`[${JSON.stringify(u)}]`);else{if(i.length)i.push(".");i.push(u)}return i.join("")}function B$(r){let i=[],$=[...r.issues].sort((u,n)=>(u.path??[]).length-(n.path??[]).length);for(let u of $)if(i.push(`✖ ${u.message}`),u.path?.length)i.push(`  → at ${C6(u.path)}`);return i.join(`
@@ -259,6 +282,11 @@ const resultSearch=document.getElementById("resultSearch");
 const toolMsg=document.getElementById("toolmsg");
 const copyReplay=document.getElementById("copyReplay");
 const saveSnippetButton=document.getElementById("saveSnippet");
+const minimizeToggle=document.getElementById("minimizeToggle");
+const externalMcpApp=document.getElementById("externalMcpApp");
+const externalMcpUri=document.getElementById("externalMcpUri");
+const externalMcpStatus=document.getElementById("externalMcpStatus");
+const externalMcpBody=document.getElementById("externalMcpBody");
 // Widget state: the latest live execute trace plus the server-injected
 // bounded history snapshot. `selected` is "live" or a history entry seq.
 let live=null;
@@ -274,6 +302,9 @@ const copyButtonTimers=new WeakMap();
 let resizeApp=null;
 let resourceReader=null;
 let resizePending=false;
+let minimized=false;
+let activeMcpUiUri="";
+let activeMcpUiLoadToken=0;
 // The LLM's tool-call arguments, delivered by the host (MCP Apps
 // ui/notifications/tool-input, or window.openai.toolInput). For codemode that
 // is { code: "async () => { … }" } — the snippet that drove the run.
@@ -290,15 +321,40 @@ function scheduleResize(){
   resizePending=true;
   requestAnimationFrame(()=>{
     resizePending=false;
-    const rect=widget?widget.getBoundingClientRect():document.body.getBoundingClientRect();
-    const width=Math.ceil(rect.width||document.documentElement.scrollWidth||window.innerWidth);
-    const height=Math.ceil(rect.height||document.body.scrollHeight||document.documentElement.scrollHeight);
+    const rect=document.body.getBoundingClientRect();
+    const width=Math.ceil(Math.max(rect.width||0,document.documentElement.scrollWidth||0,window.innerWidth||0));
+    const height=Math.ceil(Math.max(rect.height||0,document.body.scrollHeight||0,document.documentElement.scrollHeight||0));
     document.documentElement.style.height=`${height}px`;
     document.body.style.height=`${height}px`;
     if(resizeApp&&typeof resizeApp.sendSizeChanged==="function"){
       Promise.resolve(resizeApp.sendSizeChanged({width,height})).catch(()=>{});
     }
   });
+}
+function updateMinimizeButton(){
+  if(!minimizeToggle)return;
+  minimizeToggle.setAttribute("aria-pressed",minimized?"true":"false");
+  minimizeToggle.setAttribute("aria-label",minimized?"Restore inspector":"Minimize inspector");
+  minimizeToggle.title=minimized?"Restore inspector":"Minimize inspector";
+  const minIcon=minimizeToggle.querySelector(".minimize-icon");
+  const restoreIcon=minimizeToggle.querySelector(".restore-icon");
+  if(minIcon)minIcon.hidden=minimized;
+  if(restoreIcon)restoreIcon.hidden=!minimized;
+}
+function setMinimized(next){
+  minimized=next===true;
+  widget&&widget.classList.toggle("minimized",minimized);
+  updateMinimizeButton();
+  scheduleResize();
+}
+function clearExternalMcpApp(){
+  activeMcpUiLoadToken++;
+  activeMcpUiUri="";
+  if(externalMcpApp)externalMcpApp.hidden=true;
+  if(externalMcpUri)externalMcpUri.textContent="";
+  if(externalMcpStatus)externalMcpStatus.textContent="";
+  if(externalMcpBody)externalMcpBody.innerHTML="";
+  scheduleResize();
 }
 const COPY_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 const CHECK_ICON='<svg class="ok-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
@@ -600,38 +656,65 @@ function callUi(call){
   if(!ui||typeof ui!=="object"||Array.isArray(ui))return null;
   return typeof ui.resourceUri==="string"&&ui.resourceUri.trim().length?ui:null;
 }
-function mcpUiStrip(ui){
-  if(!ui)return "";
-  return `<div class="mcp-ui-strip" data-mcp-ui-uri="${esc(ui.resourceUri)}"><div class="mcp-ui-head"><span class="st info">${FILE_ICON}</span><span class="badge">MCP UI</span><span class="mcp-ui-uri">${esc(ui.resourceUri)}</span></div></div>`;
+function activeCallUi(calls){
+  for(let i=calls.length-1;i>=0;i--){
+    const ui=callUi(calls[i]);
+    if(ui)return ui;
+  }
+  return null;
 }
-function hydrateMcpUiResources(){
-  const nodes=content.querySelectorAll("[data-mcp-ui-uri]");
-  if(!nodes.length)return;
-  if(!resourceReader){scheduleResize();return;}
-  nodes.forEach(node=>{
-    if(node.dataset.loading==="true"||node.dataset.loaded==="true")return;
-    const uri=node.dataset.mcpUiUri;
-    if(!uri)return;
-    node.dataset.loading="true";
-    resourceReader({uri}).then(result=>{
-      const contents=Array.isArray(result&&result.contents)?result.contents:[];
-      const item=contents.find(c=>{
-        const mime=(c&&((c.mimeType||c.mime_type)||""))+"";
-        return c&&typeof c.text==="string"&&(mime.includes("html")||c.uri===uri);
-      });
-      if(item&&typeof item.text==="string"){
-        const frame=document.createElement("iframe");
-        frame.className="mcp-ui-frame";
-        frame.title=`${uri} MCP UI`;
-        frame.setAttribute("sandbox","allow-scripts allow-forms allow-popups allow-downloads");
-        frame.srcdoc=item.text;
-        node.appendChild(frame);
-        node.dataset.loaded="true";
-      }
-    }).catch(()=>{node.dataset.error="true";}).finally(()=>{
-      node.dataset.loading="false";
-      scheduleResize();
+function setExternalMcpMessage(message){
+  if(externalMcpBody)externalMcpBody.innerHTML=`<div class="external-mcp-message">${esc(message)}</div>`;
+}
+function showExternalMcpApp(ui){
+  if(!ui){clearExternalMcpApp();return;}
+  const uri=ui.resourceUri.trim();
+  if(!uri){clearExternalMcpApp();return;}
+  setMinimized(true);
+  if(externalMcpApp)externalMcpApp.hidden=false;
+  if(externalMcpUri)externalMcpUri.textContent=uri;
+  if(activeMcpUiUri===uri&&externalMcpBody&&externalMcpBody.querySelector("iframe")){
+    if(externalMcpStatus)externalMcpStatus.textContent="ready";
+    scheduleResize();
+    return;
+  }
+  activeMcpUiUri=uri;
+  const token=++activeMcpUiLoadToken;
+  if(externalMcpStatus)externalMcpStatus.textContent=resourceReader?"loading":"unavailable";
+  if(!resourceReader){
+    setExternalMcpMessage("MCP UI resource reader unavailable.");
+    scheduleResize();
+    return;
+  }
+  setExternalMcpMessage("Loading MCP UI...");
+  resourceReader({uri}).then(result=>{
+    if(token!==activeMcpUiLoadToken)return;
+    const contents=Array.isArray(result&&result.contents)?result.contents:[];
+    const item=contents.find(c=>{
+      const mime=(c&&((c.mimeType||c.mime_type)||""))+"";
+      return c&&typeof c.text==="string"&&(mime.includes("html")||c.uri===uri);
     });
+    if(item&&typeof item.text==="string"){
+      const frame=document.createElement("iframe");
+      frame.className="external-mcp-frame";
+      frame.title=`${uri} MCP UI`;
+      frame.setAttribute("sandbox","allow-scripts allow-forms allow-popups allow-downloads");
+      frame.srcdoc=item.text;
+      if(externalMcpBody){
+        externalMcpBody.innerHTML="";
+        externalMcpBody.appendChild(frame);
+      }
+      if(externalMcpStatus)externalMcpStatus.textContent="ready";
+    }else{
+      if(externalMcpStatus)externalMcpStatus.textContent="unavailable";
+      setExternalMcpMessage("MCP UI resource did not return HTML.");
+    }
+  }).catch(()=>{
+    if(token!==activeMcpUiLoadToken)return;
+    if(externalMcpStatus)externalMcpStatus.textContent="unavailable";
+    setExternalMcpMessage("Failed to load MCP UI resource.");
+  }).finally(()=>{
+    if(token===activeMcpUiLoadToken)scheduleResize();
   });
 }
 function emptyReason(t){
@@ -769,8 +852,7 @@ function callRow(call,timing,autoOpen,key){
   const err=!ok&&call.error_kind?`<div class="errline">${esc(call.error_kind)}</div>`:"";
   const meta=`<div class="call-meta"><span class="meta-pill">Invocation ${esc(invocation)}</span><span class="meta-pill">Resolved ${esc(id)}</span>${action?`<span class="meta-pill">Action ${esc(action)}</span>`:""}</div>`;
   const params=call.params!==undefined&&call.params!==null?`<div class="kv-label">Redacted params</div>${codeBlock(json(call.params))}`:"";
-  const ui=mcpUiStrip(callUi(call));
-  return `<details class="${callClass}"${autoOpen?" open":""} data-row-key="${esc(key)}"><summary class="${rowClass}">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${meta}${params}</div></details>${ui}`;
+  return `<details class="${callClass}"${autoOpen?" open":""} data-row-key="${esc(key)}"><summary class="${rowClass}">${summary}<span class="chev">${CHEV}</span></summary><div class="sub">${err}${meta}${params}</div></details>`;
 }
 const TERMINAL_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>';
 function inputRow(){
@@ -882,6 +964,7 @@ function paint(){
     headStatus.innerHTML="";
     headElapsed.hidden=true;
     content.innerHTML='<p class="empty">Run codemode to populate the inspector.</p>';
+    clearExternalMcpApp();
     paintFoot(null);
     paintToolbar(null);
     scheduleResize();
@@ -919,12 +1002,13 @@ function paint(){
   if(entry)html+=section("History",`<div class="histnote">${HISTORY_ICON}<span>Result not retained in history — params and call outcomes only.</span></div>`);
   content.innerHTML=html;
   restoreExpandedRows(openRows);
-  hydrateMcpUiResources();
+  showExternalMcpApp(activeCallUi(calls));
   paintFoot(run);
   paintToolbar(run);
   scheduleResize();
 }
 content.addEventListener("toggle",()=>scheduleResize(),true);
+minimizeToggle&&minimizeToggle.addEventListener("click",()=>setMinimized(!minimized));
 resultSearch.addEventListener("input",()=>{
   resultQuery=resultSearch.value.trim();
   paint();
@@ -998,6 +1082,7 @@ function render(trace){
   }
   headSub.textContent="";headStatus.innerHTML="";headElapsed.hidden=true;
   content.innerHTML=`<pre class="dump">${esc(json(t))}</pre>`;
+  clearExternalMcpApp();
   paintFoot(null);
   paintToolbar(null);
   scheduleResize();

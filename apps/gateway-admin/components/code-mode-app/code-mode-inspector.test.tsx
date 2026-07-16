@@ -18,6 +18,15 @@ async function clickButton(container: Element, matcher: (text: string) => boolea
   })
 }
 
+async function clickButtonByLabel(container: Element, label: string) {
+  const button = container.querySelector(`button[aria-label="${label}"]`)
+  assert.ok(button, `expected button labeled ${label}`)
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await Promise.resolve()
+  })
+}
+
 test('renders execute call rows with expandable redacted params', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(
@@ -55,7 +64,7 @@ test('renders execute call rows with expandable redacted params', async () => {
   await unmount()
 })
 
-test('renders upstream MCP UI resources on call rows', async () => {
+test('minimizes and restores the inspector', async () => {
   installTestDom()
   const { container, unmount } = await renderClient(
     <CodeModeInspector
@@ -63,23 +72,75 @@ test('renders upstream MCP UI resources on call rows', async () => {
         kind: 'code_mode_execute_trace',
         call_count: 1,
         calls: [
-          {
-            id: 'quick-shell::run_command',
-            namespace: 'quick-shell',
-            tool: 'run_command',
-            ok: true,
-            elapsed_ms: 18,
-            ui: { resourceUri: 'ui://quick-shell/app.html' },
-          },
+          { id: 'arcane::containers', namespace: 'arcane', tool: 'containers', ok: true, elapsed_ms: 96 },
         ],
         result_shape: { type: 'undefined' },
       }}
     />,
   )
 
-  assert.match(container.textContent ?? '', /MCP UI/)
-  assert.match(container.textContent ?? '', /ui:\/\/quick-shell\/app\.html/)
+  assert.match(container.textContent ?? '', /containers/)
+  await clickButtonByLabel(container, 'Minimize inspector')
+  assert.ok(container.querySelector('[aria-label="Restore inspector"]'))
+  assert.doesNotMatch(container.textContent ?? '', /containers/)
+  await clickButtonByLabel(container, 'Restore inspector')
+  assert.match(container.textContent ?? '', /containers/)
   await unmount()
+})
+
+test('renders upstream MCP UI resources below the minimized inspector', async () => {
+  installTestDom()
+  globalThis.window.ExtApps = {
+    App: class {
+      readServerResource = async ({ uri }: { uri: string }) => ({
+        contents: [
+          {
+            uri,
+            mimeType: 'text/html;profile=mcp-app',
+            text: '<main><h1>Quick shell</h1></main>',
+          },
+        ],
+      })
+      connect = async () => ({})
+    },
+  }
+  try {
+    const { container, unmount } = await renderClient(
+      <CodeModeInspector
+        initialTrace={{
+          kind: 'code_mode_execute_trace',
+          call_count: 1,
+          calls: [
+            {
+              id: 'quick-shell::run_command',
+              namespace: 'quick-shell',
+              tool: 'run_command',
+              ok: true,
+              elapsed_ms: 18,
+              ui: { resourceUri: 'ui://quick-shell/app.html' },
+            },
+          ],
+          result_shape: { type: 'undefined' },
+        }}
+      />,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    assert.ok(container.querySelector('[aria-label="Restore inspector"]'))
+    assert.doesNotMatch(container.textContent ?? '', /run_command/)
+    assert.match(container.textContent ?? '', /MCP UI/)
+    assert.match(container.textContent ?? '', /ui:\/\/quick-shell\/app\.html/)
+    const iframe = container.querySelector('iframe[title="ui://quick-shell/app.html MCP UI"]')
+    assert.ok(iframe)
+    assert.match(iframe.getAttribute('srcdoc') ?? '', /Quick shell/)
+    await unmount()
+  } finally {
+    globalThis.window.ExtApps = undefined
+  }
 })
 
 test('renders the result disclosure with shape summary and expandable value', async () => {
