@@ -18,7 +18,7 @@ The review validated **49 unique issues** after cross-phase deduplication:
 
 The repository's normal baseline is strong but incomplete: `just lint` passed; 2,035/2,035 runnable Rust tests passed; Gateway Admin passed 336 unit and 2 installer tests. Those gates did not cover the highest-risk authorization, cancellation, secret, and publication boundaries found here.
 
-Remediation and PR validation subsequently surfaced ten additional delivery
+Remediation and PR validation subsequently surfaced eleven additional delivery
 issues outside the original 49-finding snapshot. All were fixed before merge:
 same-resource MCP UI refreshes re-minimizing restored inspectors (React and
 embedded hosts), persisted iframe heights preventing shrink, Windows ACL
@@ -27,6 +27,9 @@ cargo-deny CLI breaking its CI invocation, obsolete Node action runtimes, an
 invalid distrobuilder version probe, loopback reverse proxies satisfying the
 unauthenticated bootstrap capability, a zero-limit usage-page panic, and the
 CLI exposing offset pagination without the replacement cursor control.
+The final review pass also found that the accepted local bootstrap capability
+was not propagated through the shared API admin gate; that capability is now
+scoped to bootstrap and covered by regression tests.
 
 ## P0 — Immediate security remediation
 

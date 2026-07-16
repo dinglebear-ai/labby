@@ -86,5 +86,6 @@ All 49 findings from `05-final-report.md` are required. Status is updated only a
 - [x] Checkout, setup-node, and artifact actions use immutable Node 24-capable releases.
 - [x] Incus validation invokes the supported distrobuilder version flag.
 - [x] Setup bootstrap requires both a loopback peer and loopback Host capability.
+- [x] Local bootstrap capability propagates through the shared API admin gate for bootstrap only.
 - [x] Usage pagination clamps a zero row limit before cursor derivation.
 - [x] Gateway CLI exposes cursor pagination and exact-total control.

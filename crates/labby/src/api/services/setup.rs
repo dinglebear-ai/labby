@@ -16,7 +16,9 @@ use serde_json::Value;
 
 use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
-use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
+use crate::api::services::helpers::{
+    ApiDispatchMeta, dispatch_meta_from_headers, handle_action_with_meta,
+};
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::setup::ACTIONS;
@@ -55,10 +57,13 @@ async fn handle(
             message: "setup plugin lifecycle actions are only available over loopback HTTP".into(),
         }));
     }
+    let mut dispatch_meta =
+        dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0), peer_addr);
+    apply_local_bootstrap_capability(&mut dispatch_meta, &req.action, has_local_capability);
     handle_action_with_meta(
         "setup",
         "api",
-        dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0), peer_addr),
+        dispatch_meta,
         req,
         ACTIONS,
         |action, params| async move { crate::dispatch::setup::dispatch(&action, params).await },
@@ -88,8 +93,7 @@ fn require_setup_admin(
     auth: Option<&Extension<AuthContext>>,
     has_local_capability: bool,
 ) -> Result<(), ToolError> {
-    let bare = action.strip_prefix("setup.").unwrap_or(action);
-    let local_first_run_capability = bare == "bootstrap" && has_local_capability;
+    let local_first_run_capability = local_bootstrap_capability(action, has_local_capability);
     if !setup_action_requires_admin(action) || has_admin_scope(auth) || local_first_run_capability {
         return Ok(());
     }
@@ -106,6 +110,23 @@ fn require_setup_admin(
         sdk_kind: "forbidden".to_string(),
         message: format!("action `{action}` requires `lab:admin` scope"),
     })
+}
+
+fn local_bootstrap_capability(action: &str, has_local_capability: bool) -> bool {
+    action.strip_prefix("setup.").unwrap_or(action) == "bootstrap" && has_local_capability
+}
+
+fn apply_local_bootstrap_capability(
+    dispatch_meta: &mut ApiDispatchMeta<'_>,
+    action: &str,
+    has_local_capability: bool,
+) {
+    if local_bootstrap_capability(action, has_local_capability) {
+        // The route-specific gate accepts this as the first-run capability.
+        // Carry that decision through the shared requires_admin gate for this
+        // action only; otherwise it would reject the same request a second time.
+        dispatch_meta.is_lab_admin = Some(true);
+    }
 }
 
 fn plugin_lifecycle_action(action: &str) -> bool {
@@ -324,6 +345,22 @@ mod tests {
                 .kind(),
             "forbidden"
         );
+        assert!(local_bootstrap_capability("bootstrap", true));
+        assert!(local_bootstrap_capability("setup.bootstrap", true));
+        assert!(!local_bootstrap_capability("bootstrap", false));
+        assert!(!local_bootstrap_capability("settings.update", true));
+
+        let mut local_bootstrap_meta = ApiDispatchMeta::default();
+        apply_local_bootstrap_capability(&mut local_bootstrap_meta, "bootstrap", true);
+        assert_eq!(local_bootstrap_meta.is_lab_admin, Some(true));
+
+        let mut remote_bootstrap_meta = ApiDispatchMeta::default();
+        apply_local_bootstrap_capability(&mut remote_bootstrap_meta, "bootstrap", false);
+        assert_eq!(remote_bootstrap_meta.is_lab_admin, None);
+
+        let mut local_settings_meta = ApiDispatchMeta::default();
+        apply_local_bootstrap_capability(&mut local_settings_meta, "settings.update", true);
+        assert_eq!(local_settings_meta.is_lab_admin, None);
     }
 
     #[test]
