@@ -92,17 +92,19 @@ pub fn harden_secret_file(path: &Path) -> Result<(), AuthError> {
     const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 $path = $env:LABBY_SECRET_FILE_PATH
-$acl = Get-Acl -LiteralPath $path
-$owner = $acl.Owner
-$acl.SetAccessRuleProtection($true, $false)
-foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }
-$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-  $owner,
-  [System.Security.AccessControl.FileSystemRights]::FullControl,
-  [System.Security.AccessControl.AccessControlType]::Allow
-)
-$acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $path -AclObject $acl
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+function Invoke-Icacls {
+  & $icacls @args | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "icacls failed with exit code $LASTEXITCODE for arguments: $args"
+  }
+}
+# Reset removes every prior explicit ACE, then removing inheritance leaves an
+# empty DACL before the current owner SID receives the sole FullControl rule.
+Invoke-Icacls $path '/reset'
+Invoke-Icacls $path '/inheritance:r'
+Invoke-Icacls $path '/grant:r' ("*" + $sid + ':(F)')
 $verified = Get-Acl -LiteralPath $path
 if (-not $verified.AreAccessRulesProtected) {
   throw 'secret file ACL still inherits access rules'
