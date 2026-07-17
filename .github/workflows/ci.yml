@@ -306,6 +306,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: "22"
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo check -p labby --no-default-features --features ${{ matrix.slice }} --all-targets --locked
@@ -415,6 +418,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: "22"
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - name: MCP route-scope resources/tools and list pagination
@@ -465,6 +471,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: "22"
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
@@ -546,6 +555,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: "22"
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
@@ -594,6 +606,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: "22"
       - name: Prune persistent Windows build caches
         shell: pwsh
         run: |
@@ -1030,6 +1045,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: "22"
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
         with:
           components: llvm-tools-preview
