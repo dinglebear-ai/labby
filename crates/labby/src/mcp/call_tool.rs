@@ -71,6 +71,27 @@ fn route_scope_denied_result(service: &str, action: &str, message: String) -> Ca
     CallToolResult::error(vec![ContentBlock::text(envelope.to_string())])
 }
 
+#[cfg(feature = "gateway")]
+fn retain_route_visible_gateway_status_rows(
+    value: &mut Value,
+    route_scope: &crate::mcp::route_scope::McpRouteScope,
+) {
+    let Value::Array(rows) = value else {
+        return;
+    };
+    rows.retain(|row| {
+        let id = row.get("id").and_then(Value::as_str).unwrap_or_default();
+        let name = row.get("name").and_then(Value::as_str).unwrap_or_default();
+        match row.get("source").and_then(Value::as_str) {
+            Some("custom_gateway") => route_scope.allows_upstream(id),
+            Some("in_process") => {
+                route_scope.allows_service(id) || route_scope.allows_service(name)
+            }
+            _ => false,
+        }
+    });
+}
+
 /// Request MCP elicitation for a destructive action when the client supports it.
 async fn require_destructive_confirmation(
     context: &RequestContext<RoleServer>,
@@ -470,6 +491,10 @@ impl LabMcpServer {
                             enrichment_scope,
                         )
                         .await
+                        .map(|mut value| {
+                            retain_route_visible_gateway_status_rows(&mut value, &self.route_scope);
+                            value
+                        })
                     }
                     _ => Err(ToolError::UnknownAction {
                         message: format!("unknown Gateway Status action `{synthetic_action}`"),

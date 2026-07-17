@@ -982,6 +982,212 @@ async fn list_tools_advertises_add_server_app_only_to_admins() {
 }
 
 #[tokio::test]
+async fn gateway_status_app_is_admin_only_and_returns_gateway_list() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let denied_tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .await
+        .expect("read-scope tools");
+    assert!(
+        denied_tools
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != GATEWAY_STATUS_TOOL_NAME)
+    );
+    let denied_call = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(GATEWAY_STATUS_TOOL_NAME),
+            scoped_context(running.peer().clone(), &["lab:read"]),
+        )
+        .await
+        .expect("hidden status call");
+    assert!(denied_call.is_error.unwrap_or(false));
+
+    let admin_tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("admin tools");
+    let status_tool = admin_tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == GATEWAY_STATUS_TOOL_NAME)
+        .expect("Gateway Status tool");
+    assert!(
+        status_tool
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.0["ui"]["resourceUri"].as_str())
+            .is_some_and(|uri| uri.starts_with(GATEWAY_STATUS_APP_URI))
+    );
+
+    for action in ["open", "refresh"] {
+        let result = running
+            .service()
+            .call_tool_impl(
+                CallToolRequestParams::new(GATEWAY_STATUS_TOOL_NAME).with_arguments(
+                    serde_json::Map::from_iter([
+                        ("action".to_string(), Value::String(action.to_string())),
+                        ("params".to_string(), serde_json::json!({})),
+                    ]),
+                ),
+                scoped_context(running.peer().clone(), &["lab:admin"]),
+            )
+            .await
+            .expect("admin status callback");
+        assert!(!result.is_error.unwrap_or(false));
+        assert!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|value| value["data"].as_array())
+                .is_some(),
+            "{action} must return the route-scoped gateway list"
+        );
+    }
+}
+
+#[tokio::test]
+async fn gateway_status_app_obeys_gateway_list_policy() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(restricted_gateway_manager(&["gateway.test"]).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("restricted tools");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != GATEWAY_STATUS_TOOL_NAME)
+    );
+    let resources = running
+        .service()
+        .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("restricted resources");
+    assert!(
+        resources
+            .resources
+            .iter()
+            .all(|resource| !resource.uri.starts_with(GATEWAY_STATUS_APP_URI))
+    );
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(GATEWAY_STATUS_TOOL_NAME),
+            scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("restricted status call");
+    assert!(result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn gateway_status_app_requires_manager_and_gateway_registry() {
+    for server in [
+        test_server(
+            crate::registry::build_default_registry(),
+            None,
+            crate::mcp::route_scope::McpRouteScope::Root,
+            crate::mcp::logging::LoggingLevel::Emergency,
+        ),
+        test_server(
+            ToolRegistry::new(),
+            Some(code_mode_manager(true).await),
+            crate::mcp::route_scope::McpRouteScope::Root,
+            crate::mcp::logging::LoggingLevel::Emergency,
+        ),
+    ] {
+        let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let tools = running
+            .service()
+            .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+            .await
+            .expect("tools without complete status wiring");
+        assert!(
+            tools
+                .tools
+                .iter()
+                .all(|tool| tool.name.as_ref() != GATEWAY_STATUS_TOOL_NAME)
+        );
+    }
+}
+
+#[tokio::test]
+async fn gateway_status_app_returns_only_route_visible_upstreams() {
+    let pool = Arc::new(UpstreamPool::new());
+    let manager = code_mode_manager_with_pool_multi(
+        true,
+        vec![
+            fixture_upstream_config("visible"),
+            fixture_upstream_config("hidden"),
+        ],
+        pool,
+    )
+    .await;
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "visible-only",
+            ["visible"],
+            ["gateway"],
+            true,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(GATEWAY_STATUS_TOOL_NAME),
+            scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("route-scoped status result");
+    let rows = result
+        .structured_content
+        .as_ref()
+        .and_then(|value| value["data"].as_array())
+        .expect("status rows");
+    let ids = rows
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["visible"]);
+}
+
+#[tokio::test]
 async fn list_tools_does_not_advertise_unreadable_server_logs_ui_metadata() {
     let server = test_server(
         crate::registry::build_default_registry(),

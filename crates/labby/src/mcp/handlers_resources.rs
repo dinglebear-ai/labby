@@ -1129,12 +1129,56 @@ impl LabMcpServer {
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
         if !self.gateway_status_app_available_on_mcp().await {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                subject,
+                elapsed_ms,
+                kind = "not_found",
+                resource_uri = resource_uri_log,
+                "gateway status app resource unavailable"
+            );
+            self.emit_dispatch_notification(
+                context,
+                "lab",
+                "read_resource",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind: "not_found",
+                },
+            )
+            .await;
             return Err(ErrorData::resource_not_found(
                 format!("unknown UI resource: {uri}"),
                 None,
             ));
         }
         if !admin_app_resources_visible(auth_context_from_extensions(&context.extensions)) {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                subject,
+                elapsed_ms,
+                kind = "forbidden",
+                resource_uri = resource_uri_log,
+                "gateway status app resource denied by scope"
+            );
+            self.emit_dispatch_notification(
+                context,
+                "lab",
+                "read_resource",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind: "forbidden",
+                },
+            )
+            .await;
             return Err(ErrorData::invalid_params(
                 "Gateway Status app resources require scope: lab:admin",
                 Some(json!({
@@ -2015,6 +2059,112 @@ mod tests {
             );
         }
         assert!(html.contains("window.__LABBY_MCP_RESOURCE=true;"));
+    }
+
+    #[test]
+    fn gateway_status_app_handles_live_status_and_mobile_lifecycle() {
+        let descriptor = GATEWAY_STATUS_APP_RESOURCE_DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.uri == GATEWAY_STATUS_APP_URI)
+            .expect("Gateway Status descriptor");
+        let html = gateway_status_app()
+            .inline_html(descriptor)
+            .expect("Gateway Status HTML");
+
+        for expected in [
+            "warning.message",
+            "warnings.map",
+            "exposed_tool_count??",
+            "window.openai.toolOutput",
+            "observer.disconnect()",
+            ".badge.disabled",
+            "min-height:44px",
+            "visible ${plural",
+            "showing data from",
+        ] {
+            assert!(
+                html.contains(expected),
+                "Gateway Status app must include marker `{expected}`"
+            );
+        }
+        for forbidden in ["min-height:100dvh", "height+20", "text(warnings[0])"] {
+            assert!(
+                !html.contains(forbidden),
+                "Gateway Status app must not include `{forbidden}`"
+            );
+        }
+        assert!(html.contains("window.__LABBY_MCP_RESOURCE=true;"));
+    }
+
+    #[tokio::test]
+    async fn gateway_status_resources_are_admin_only_and_use_runtime_mime() {
+        let server = resource_scope_server(crate::mcp::route_scope::McpRouteScope::Root).await;
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let denied = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+            .await
+            .expect("read-scope resources");
+        assert!(
+            denied
+                .resources
+                .iter()
+                .all(|resource| !resource.uri.starts_with(GATEWAY_STATUS_APP_URI))
+        );
+
+        let allowed = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+            .await
+            .expect("admin resources");
+        assert!(
+            allowed
+                .resources
+                .iter()
+                .any(|resource| strip_app_version(&resource.uri) == GATEWAY_STATUS_APP_URI)
+        );
+
+        let forbidden = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(GATEWAY_STATUS_APP_URI),
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .expect_err("status resource must require admin");
+        assert_eq!(
+            forbidden.data.as_ref().expect("error data")["kind"],
+            json!("forbidden")
+        );
+
+        for (uri, expected_mime) in [
+            (GATEWAY_STATUS_APP_URI, CODE_MODE_APP_MIME),
+            (
+                GATEWAY_STATUS_APP_SKYBRIDGE_URI,
+                CODE_MODE_APP_SKYBRIDGE_MIME,
+            ),
+        ] {
+            let read = running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(uri),
+                    scoped_context(running.peer().clone(), &["lab:admin"]),
+                )
+                .await
+                .expect("admin status resource");
+            let ResourceContents::TextResourceContents {
+                mime_type, text, ..
+            } = &read.contents[0]
+            else {
+                panic!("expected text status resource");
+            };
+            assert_eq!(mime_type.as_deref(), Some(expected_mime));
+            assert!(text.contains("Gateway Status"));
+        }
     }
 
     #[tokio::test]
