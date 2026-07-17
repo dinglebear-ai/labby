@@ -69,7 +69,7 @@ pub use self::core::{GatewayManagerConfig, GatewayOauthConfig};
 pub use self::import_matchers::ImportTombstoneSelector;
 pub(crate) use self::import_matchers::{discovered_is_tombstoned, partition_discovered_for_import};
 #[allow(unused_imports)]
-pub use self::pool_lifecycle::{GatewayCatalogSnapshot, diff_catalogs};
+pub use self::pool_lifecycle::{GatewayCatalogSnapshot, GatewayReloadOutcome, diff_catalogs};
 
 #[derive(Clone)]
 pub struct GatewayManager {
