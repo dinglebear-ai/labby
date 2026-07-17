@@ -9,13 +9,14 @@ use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::dispatch::upstream::types::{
     ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
 };
-use crate::mcp::catalog::{CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
+use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
 use crate::mcp::handlers_resources::{
-    CODE_MODE_APP_SKYBRIDGE_URI, CODE_MODE_APP_URI, SERVER_LOGS_APP_SKYBRIDGE_URI,
-    SERVER_LOGS_APP_URI,
+    ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
+    CODE_MODE_APP_URI, SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI,
 };
 use crate::mcp::handlers_tools::{
-    code_mode_tool_meta, code_mode_trace_output_schema, server_logs_tool_meta,
+    add_server_tool_meta, add_server_tool_schema, code_mode_tool_meta,
+    code_mode_trace_output_schema, server_logs_tool_meta,
 };
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
@@ -410,6 +411,51 @@ async fn call_tool_server_logs_requires_admin_scope() {
 }
 
 #[tokio::test]
+async fn call_tool_add_server_opens_for_admin_and_rejects_read_scope() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let denied = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(ADD_SERVER_TOOL_NAME),
+            scoped_context(running.peer().clone(), &["lab:read"]),
+        )
+        .await
+        .expect("denied Add Server result");
+    assert!(denied.is_error.unwrap_or(false));
+    assert!(
+        denied.content[0]
+            .as_text()
+            .expect("text")
+            .text
+            .contains("lab:admin")
+    );
+
+    let opened = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(ADD_SERVER_TOOL_NAME),
+            scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("opened Add Server result");
+    assert!(!opened.is_error.unwrap_or(false));
+    assert_eq!(
+        opened.structured_content.as_ref().expect("structured")["data"]["kind"],
+        "add_server"
+    );
+}
+
+#[tokio::test]
 async fn call_tool_runs_destructive_builtin_when_elicitation_is_not_supported() {
     DESTRUCTIVE_DISPATCH_COUNT.store(0, Ordering::SeqCst);
     let server = test_server(
@@ -500,6 +546,27 @@ fn server_logs_tool_meta_points_to_log_viewer_ui_resource() {
         "server_logs tool must expose the OpenAI Apps output template"
     );
     assert!(skybridge.contains("?v="));
+}
+
+#[test]
+fn add_server_tool_meta_and_schema_bind_the_create_app() {
+    let meta = add_server_tool_meta(ADD_SERVER_TOOL_NAME);
+    assert!(
+        meta.0["ui"]["resourceUri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with(ADD_SERVER_APP_URI) && uri.contains("?v="))
+    );
+    assert!(
+        meta.0["openai/outputTemplate"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with(ADD_SERVER_APP_SKYBRIDGE_URI))
+    );
+    let schema = add_server_tool_schema();
+    assert_eq!(
+        schema["properties"]["action"]["enum"],
+        serde_json::json!(["open", "test", "create"])
+    );
+    assert_eq!(schema["additionalProperties"], false);
 }
 
 #[test]
@@ -594,6 +661,49 @@ async fn list_tools_keeps_server_logs_visible_when_code_mode_hides_raw_tools() {
             .and_then(|value| value.as_str())
             .is_some_and(|uri| uri.starts_with(SERVER_LOGS_APP_SKYBRIDGE_URI)),
         "server_logs should advertise ChatGPT output template"
+    );
+}
+
+#[tokio::test]
+async fn list_tools_advertises_add_server_app_only_to_admins() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let denied = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .await
+        .expect("read-scope tools");
+    assert!(
+        denied
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != ADD_SERVER_TOOL_NAME)
+    );
+
+    let allowed = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("admin tools");
+    let tool = allowed
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == ADD_SERVER_TOOL_NAME)
+        .expect("Add Server tool");
+    assert!(
+        tool.meta
+            .as_ref()
+            .and_then(|meta| meta.0["ui"]["resourceUri"].as_str())
+            .is_some_and(|uri| uri.starts_with(ADD_SERVER_APP_URI))
     );
 }
 

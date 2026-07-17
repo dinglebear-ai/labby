@@ -20,9 +20,9 @@ use serde_json::Value;
 
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::{CodeModeUpstreamDescription, code_mode_description};
-#[cfg(feature = "gateway")]
-use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
+#[cfg(feature = "gateway")]
+use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME};
 use crate::mcp::completion::action_schema;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::auth_context_from_extensions;
@@ -30,7 +30,9 @@ use crate::mcp::context::auth_context_from_extensions;
 use crate::mcp::context::oauth_upstream_subject_for_request;
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::{
-    code_mode_app_resource_uri_for_tool, code_mode_app_skybridge_uri_for_tool,
+    add_server_app_resource_uri_for_tool, add_server_app_resources_visible,
+    add_server_app_skybridge_uri_for_tool, code_mode_app_resource_uri_for_tool,
+    code_mode_app_skybridge_uri_for_tool,
 };
 use crate::mcp::handlers_resources::{
     server_logs_app_resource_uri_for_tool, server_logs_app_resources_visible,
@@ -115,6 +117,10 @@ impl LabMcpServer {
                 true
             }
         };
+        #[cfg(feature = "gateway")]
+        let add_server_app_visible = add_server_app_resources_visible(auth)
+            && self.route_scope.allows_service("gateway")
+            && self.service_visible_on_mcp("gateway").await;
         let mut builtin_names = Vec::new();
         for svc in self.registry.services() {
             if self.route_scope.allows_service(svc.name)
@@ -182,6 +188,20 @@ impl LabMcpServer {
                 .with_meta(code_mode_tool_meta(CODE_MODE_TOOL_NAME)),
             );
             advertised_names.insert(CODE_MODE_TOOL_NAME.to_string());
+            gateway_tool_count += 1;
+        }
+
+        #[cfg(feature = "gateway")]
+        if !tools.finished() && add_server_app_visible {
+            tools.accept(
+                Tool::new(
+                    ADD_SERVER_TOOL_NAME,
+                    "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
+                    add_server_tool_schema(),
+                )
+                .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME)),
+            );
+            advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
 
@@ -416,6 +436,50 @@ fn server_logs_tool_meta(tool_name: &str) -> Meta {
         );
     }
     Meta(meta)
+}
+
+#[cfg(feature = "gateway")]
+fn add_server_tool_meta(tool_name: &str) -> Meta {
+    let resource_uri = add_server_app_resource_uri_for_tool(tool_name)
+        .expect("Add Server tool must have an associated UI resource");
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "ui".to_string(),
+        serde_json::json!({ "resourceUri": resource_uri }),
+    );
+    if let Some(skybridge_uri) = add_server_app_skybridge_uri_for_tool(tool_name) {
+        meta.insert(
+            "openai/outputTemplate".to_string(),
+            serde_json::json!(skybridge_uri),
+        );
+    }
+    Meta(meta)
+}
+
+#[cfg(feature = "gateway")]
+fn add_server_tool_schema() -> Arc<serde_json::Map<String, Value>> {
+    static SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(|| {
+        let Value::Object(schema) = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["open", "test", "create"],
+                    "default": "open",
+                    "description": "Open the form, test a proposed server, or create it. Most callers should omit this to open the app."
+                },
+                "params": {
+                    "type": "object",
+                    "description": "For test/create, pass { spec: GatewayUpstreamConfig }. The app builds this payload interactively."
+                }
+            },
+            "additionalProperties": false
+        }) else {
+            unreachable!("Add Server schema is an object")
+        };
+        Arc::new(schema)
+    });
+    Arc::clone(&SCHEMA)
 }
 
 #[cfg(feature = "gateway")]

@@ -13,6 +13,8 @@ use crate::mcp::prompts::list_all as list_builtin_prompts;
 pub(crate) const CODE_MODE_TOOL_NAME: &str = "codemode";
 /// Lab-owned server process log viewer tool name.
 pub(crate) const SERVER_LOGS_TOOL_NAME: &str = "server_logs";
+/// Lab-owned MCP App entry point for adding a gateway upstream.
+pub(crate) const ADD_SERVER_TOOL_NAME: &str = "add_server";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodeModeVisibility {

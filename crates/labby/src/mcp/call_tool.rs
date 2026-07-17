@@ -28,9 +28,9 @@ use crate::dispatch::gateway::manager::CallbackToolLookup;
 use crate::dispatch::upstream::types::UpstreamTool;
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_upstream::PreResolvedUpstreamTool;
-#[cfg(feature = "gateway")]
-use crate::mcp::catalog::CODE_MODE_TOOL_NAME;
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
+#[cfg(feature = "gateway")]
+use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME};
 use crate::mcp::context::{
     auth_context_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
@@ -174,6 +174,99 @@ impl LabMcpServer {
                 return self
                     .call_tool_codemode_impl(&service, &args, &context)
                     .await;
+            }
+
+            if service == ADD_SERVER_TOOL_NAME {
+                let synthetic_action = if action.is_empty() {
+                    "open"
+                } else {
+                    action.as_str()
+                };
+                if !self.route_scope.allows_service("gateway")
+                    || !self.service_visible_on_mcp("gateway").await
+                {
+                    return Ok(route_scope_denied_result(
+                        &service,
+                        synthetic_action,
+                        "Gateway management is not exposed on this MCP route".to_string(),
+                    ));
+                }
+                let auth = auth_context_from_extensions(&context.extensions);
+                if !auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin")) {
+                    let envelope = build_error_extra(
+                        &service,
+                        synthetic_action,
+                        "forbidden",
+                        "Add Server requires scope: lab:admin",
+                        &serde_json::json!({ "required_scopes": ["lab:admin"] }),
+                    );
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        envelope.to_string(),
+                    )]));
+                }
+                let result = match synthetic_action {
+                    "open" => Ok(serde_json::json!({
+                        "kind": "add_server",
+                        "status": "ready",
+                    })),
+                    "test" | "create" => {
+                        let Some(manager) = &self.gateway_manager else {
+                            let envelope = build_error(
+                                &service,
+                                synthetic_action,
+                                "internal_error",
+                                "gateway manager not wired",
+                            );
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                                envelope.to_string(),
+                            )]));
+                        };
+                        let gateway_action = if synthetic_action == "test" {
+                            "gateway.test"
+                        } else {
+                            "gateway.add"
+                        };
+                        let params =
+                            inject_gateway_origin_param(params, self.request_subject(&context));
+                        let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
+                            route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
+                        };
+                        crate::dispatch::gateway::dispatch_with_manager_scoped(
+                            manager,
+                            gateway_action,
+                            params,
+                            enrichment_scope,
+                        )
+                        .await
+                    }
+                    _ => Err(ToolError::UnknownAction {
+                        message: format!("unknown Add Server action `{synthetic_action}`"),
+                        valid: vec!["open".to_string(), "test".to_string(), "create".to_string()],
+                        hint: None,
+                    }),
+                };
+                let result =
+                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
+                let elapsed_ms = start.elapsed().as_millis();
+                let input_tokens = estimate_tokens_args(&args);
+                let (result, outcome) = format_dispatch_result(
+                    result,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    &self.request_subject_log_tag(&context),
+                    self.request_actor_key(&context),
+                    input_tokens,
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    outcome,
+                )
+                .await;
+                return Ok(result);
             }
         }
 
