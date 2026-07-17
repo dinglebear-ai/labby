@@ -519,6 +519,36 @@ impl UpstreamPool {
         }
         names
     }
+
+    /// Return just the names of healthy MCP App tools allowed by a route scope.
+    ///
+    /// Mirrors `healthy_ui_tools_allowed` without cloning tool schemas, for
+    /// downstream `tools/list_changed` snapshot comparisons.
+    pub async fn healthy_ui_tool_names_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<String> {
+        let catalog = self.catalog.read().await;
+        let mut names: Vec<String> = catalog
+            .iter()
+            .filter(|(name, entry)| {
+                upstream_allowed(allowed, name) && entry.tool_health.is_routable()
+            })
+            .filter(|(_, entry)| entry.proxy_resources)
+            .flat_map(|(_, entry)| {
+                entry.tools.values().filter_map(|tool| {
+                    (entry.exposure_policy.matches(tool.tool.name.as_ref())
+                        && tool_has_mcp_app_ui_resource(tool))
+                    .then(|| tool.tool.name.to_string())
+                })
+            })
+            .take(MAX_UPSTREAM_TOOLS + 1)
+            .collect();
+        if names.len() > MAX_UPSTREAM_TOOLS {
+            names.truncate(MAX_UPSTREAM_TOOLS);
+        }
+        names
+    }
 }
 
 pub(super) fn tool_mcp_app_ui_resource_uri(tool: &UpstreamTool) -> Option<&str> {

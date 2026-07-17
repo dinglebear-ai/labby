@@ -1044,6 +1044,42 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
 }
 
 #[tokio::test]
+async fn tool_catalog_snapshot_tracks_promoted_mcp_app_tools_in_code_mode() {
+    let upstream_name: Arc<str> = Arc::from("apps");
+    let ui_tool = fixture_upstream_tool(
+        &upstream_name,
+        "youtube_search_ui",
+        Some("ui://apps/youtube-search.html"),
+    );
+    let plain_tool = fixture_upstream_tool(&upstream_name, "youtube_probe", None);
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "apps",
+        fixture_upstream_entry(
+            "apps",
+            HashMap::from([
+                ("youtube_search_ui".to_string(), ui_tool),
+                ("youtube_probe".to_string(), plain_tool),
+            ]),
+        ),
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(true, fixture_upstream_config("apps"), pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+
+    let snapshot = server.snapshot_tool_catalog().await;
+
+    assert!(snapshot.tools.contains(CODE_MODE_TOOL_NAME));
+    assert!(snapshot.tools.contains("youtube_search_ui"));
+    assert!(!snapshot.tools.contains("youtube_probe"));
+}
+
+#[tokio::test]
 async fn list_tools_does_not_cold_connect_code_mode_catalog() {
     let pool = Arc::new(UpstreamPool::new());
     let manager = code_mode_manager_with_pool(
