@@ -132,8 +132,8 @@ async fn detached_reload_applies_config_after_caller_cancellation() {
     // Simulate the timeout middleware dropping the request future after a
     // single poll: the reload must keep running in its owned task.
     let cancelled = tokio::time::timeout(
-        std::time::Duration::ZERO,
-        manager.reload_with_origin_detached(None, None, std::time::Duration::from_secs(30)),
+        Duration::ZERO,
+        manager.reload_with_origin_detached(None, None, Duration::from_secs(30)),
     )
     .await;
     assert!(
@@ -141,7 +141,7 @@ async fn detached_reload_applies_config_after_caller_cancellation() {
         "caller future completed within one poll; cancellation was not exercised"
     );
 
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(pool) = manager.current_pool().await
             && pool.cached_upstream_summary("beta").await.is_some()
@@ -152,7 +152,7 @@ async fn detached_reload_applies_config_after_caller_cancellation() {
             tokio::time::Instant::now() < deadline,
             "detached reload never applied the pending config"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -171,7 +171,7 @@ async fn detached_reload_returns_completed_diff_within_wait_budget() {
 
     let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
     let outcome = manager
-        .reload_with_origin_detached(None, None, std::time::Duration::from_secs(30))
+        .reload_with_origin_detached(None, None, Duration::from_secs(30))
         .await
         .expect("detached reload");
 

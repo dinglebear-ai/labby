@@ -121,6 +121,17 @@ impl LabMcpServer {
         }
     }
 
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn add_server_app_available_on_mcp(&self) -> bool {
+        self.registry
+            .services()
+            .iter()
+            .any(|entry| entry.name == "gateway")
+            && self.service_visible_on_mcp("gateway").await
+            && self.action_allowed_on_mcp("gateway", "gateway.test").await
+            && self.action_allowed_on_mcp("gateway", "gateway.add").await
+    }
+
     pub(crate) async fn allowed_mcp_actions(&self, service: &str) -> Option<Vec<String>> {
         #[cfg(feature = "gateway")]
         match &self.gateway_manager {

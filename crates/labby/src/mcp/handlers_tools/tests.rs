@@ -196,6 +196,45 @@ async fn code_mode_manager(
     manager
 }
 
+async fn restricted_gateway_manager(
+    allowed_actions: &[&str],
+) -> Arc<crate::dispatch::gateway::manager::GatewayManager> {
+    let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+    let manager = Arc::new(
+        crate::dispatch::gateway::config_store::test_gateway_manager(
+            std::path::PathBuf::from("config.toml"),
+            runtime,
+        )
+        .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry())),
+    );
+    manager
+        .seed_config_unchecked_for_tests(
+            crate::config::LabConfig {
+                virtual_servers: vec![crate::config::VirtualServerConfig {
+                    id: "gateway".to_string(),
+                    service: "gateway".to_string(),
+                    enabled: true,
+                    surfaces: crate::config::VirtualServerSurfacesConfig {
+                        cli: false,
+                        api: false,
+                        mcp: true,
+                        webui: false,
+                    },
+                    mcp_policy: Some(crate::config::VirtualServerMcpPolicyConfig {
+                        allowed_actions: allowed_actions
+                            .iter()
+                            .map(|action| (*action).to_string())
+                            .collect(),
+                    }),
+                }],
+                ..crate::config::LabConfig::default()
+            }
+            .to_gateway_config(),
+        )
+        .await;
+    manager
+}
+
 async fn code_mode_manager_with_pool(
     enabled: bool,
     upstream: crate::config::UpstreamConfig,
@@ -456,6 +495,119 @@ async fn call_tool_add_server_opens_for_admin_and_rejects_read_scope() {
 }
 
 #[tokio::test]
+async fn add_server_app_obeys_gateway_action_policy_for_discovery_and_callbacks() {
+    let manager = restricted_gateway_manager(&["gateway.test"]).await;
+    assert!(
+        manager
+            .mcp_action_allowed_for_service("gateway", "gateway.test")
+            .await
+    );
+    assert!(
+        !manager
+            .mcp_action_allowed_for_service("gateway", "gateway.add")
+            .await
+    );
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("restricted tools");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != ADD_SERVER_TOOL_NAME),
+        "the app must be hidden unless test and add are both exposed"
+    );
+
+    let resources = running
+        .service()
+        .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("restricted resources");
+    assert!(
+        resources
+            .resources
+            .iter()
+            .all(|resource| !resource.uri.starts_with(ADD_SERVER_APP_URI)),
+        "hidden tools must not leave a readable app resource advertised"
+    );
+
+    let denied = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(ADD_SERVER_TOOL_NAME).with_arguments(
+                serde_json::Map::from_iter([
+                    ("action".to_string(), Value::String("create".to_string())),
+                    ("params".to_string(), serde_json::json!({ "spec": {} })),
+                ]),
+            ),
+            scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("restricted create result");
+    assert!(denied.is_error.unwrap_or(false));
+    let text = denied.content[0].as_text().expect("text").text.as_str();
+    assert!(text.contains("unknown_action"));
+    assert!(text.contains("gateway.add"));
+}
+
+#[tokio::test]
+async fn add_server_app_handles_missing_gateway_registry_without_panicking() {
+    let server = test_server(
+        ToolRegistry::new(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("tools without gateway registry");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != ADD_SERVER_TOOL_NAME)
+    );
+
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(ADD_SERVER_TOOL_NAME).with_arguments(
+                serde_json::Map::from_iter([
+                    ("action".to_string(), Value::String("test".to_string())),
+                    ("params".to_string(), serde_json::json!({ "spec": {} })),
+                ]),
+            ),
+            scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("missing gateway registry result");
+    assert!(result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    assert!(text.contains("internal_error"));
+    assert!(text.contains("gateway registry entry not wired"));
+}
+
+#[tokio::test]
 async fn call_tool_runs_destructive_builtin_when_elicitation_is_not_supported() {
     DESTRUCTIVE_DISPATCH_COUNT.store(0, Ordering::SeqCst);
     let server = test_server(
@@ -567,6 +719,20 @@ fn add_server_tool_meta_and_schema_bind_the_create_app() {
         serde_json::json!(["open", "test", "create"])
     );
     assert_eq!(schema["additionalProperties"], false);
+    let spec = &schema["properties"]["params"]["properties"]["spec"];
+    assert_eq!(spec["required"], serde_json::json!(["name"]));
+    assert_eq!(spec["oneOf"].as_array().map(Vec::len), Some(2));
+    for field in [
+        "name",
+        "url",
+        "command",
+        "args",
+        "enabled",
+        "proxy_resources",
+        "proxy_prompts",
+    ] {
+        assert!(spec["properties"].get(field).is_some(), "missing {field}");
+    }
 }
 
 #[test]

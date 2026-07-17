@@ -69,6 +69,49 @@ fn route_scope_denied_result(service: &str, action: &str, message: String) -> Ca
     CallToolResult::error(vec![ContentBlock::text(envelope.to_string())])
 }
 
+async fn require_destructive_confirmation(
+    context: &RequestContext<RoleServer>,
+    service: &str,
+    action: &str,
+) -> Result<(), CallToolResult> {
+    match elicit_confirm(context, service, action).await {
+        ConfirmOutcome::Confirmed | ConfirmOutcome::NotSupported => Ok(()),
+        ConfirmOutcome::Declined | ConfirmOutcome::Cancelled => Err(CallToolResult::error(vec![
+            ContentBlock::text(
+                build_error(
+                    service,
+                    action,
+                    "confirmation_required",
+                    &format!("action `{action}` is destructive — confirm to proceed"),
+                )
+                .to_string(),
+            ),
+        ])),
+        ConfirmOutcome::Failed => Err(CallToolResult::error(vec![ContentBlock::text(
+            build_error(
+                service,
+                action,
+                "confirmation_required",
+                &format!(
+                    "action `{action}` is destructive — confirmation failed, retry with a client that supports MCP elicitation"
+                ),
+            )
+            .to_string(),
+        )])),
+        ConfirmOutcome::TimedOut => Err(CallToolResult::error(vec![ContentBlock::text(
+            build_error(
+                service,
+                action,
+                "confirmation_required",
+                &format!(
+                    "action `{action}` is destructive — confirmation timed out, retry when ready to confirm"
+                ),
+            )
+            .to_string(),
+        )])),
+    }
+}
+
 fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
     let raw = subject
         .map(|value| format!("mcp:{value}"))
@@ -205,10 +248,20 @@ impl LabMcpServer {
                     )]));
                 }
                 let result = match synthetic_action {
-                    "open" => Ok(serde_json::json!({
-                        "kind": "add_server",
-                        "status": "ready",
-                    })),
+                    "open" => {
+                        if !self.add_server_app_available_on_mcp().await {
+                            return Ok(route_scope_denied_result(
+                                &service,
+                                synthetic_action,
+                                "Gateway test and add actions are not both exposed on this MCP route"
+                                    .to_string(),
+                            ));
+                        }
+                        Ok(serde_json::json!({
+                            "kind": "add_server",
+                            "status": "ready",
+                        }))
+                    }
                     "test" | "create" => {
                         let Some(manager) = &self.gateway_manager else {
                             let envelope = build_error(
@@ -226,6 +279,65 @@ impl LabMcpServer {
                         } else {
                             "gateway.add"
                         };
+                        if !self.action_allowed_on_mcp("gateway", gateway_action).await {
+                            let envelope = build_error_extra(
+                                &service,
+                                synthetic_action,
+                                "unknown_action",
+                                &format!(
+                                    "action `{gateway_action}` is not exposed for service `gateway`"
+                                ),
+                                &serde_json::json!({
+                                    "canonical_action": gateway_action,
+                                    "valid": self.allowed_mcp_actions("gateway").await,
+                                }),
+                            );
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                                envelope.to_string(),
+                            )]));
+                        }
+                        let gateway_entry = self
+                            .registry
+                            .services()
+                            .iter()
+                            .find(|entry| entry.name == "gateway");
+                        let Some(gateway_entry) = gateway_entry else {
+                            let envelope = build_error(
+                                &service,
+                                synthetic_action,
+                                "internal_error",
+                                "gateway registry entry not wired",
+                            );
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                                envelope.to_string(),
+                            )]));
+                        };
+                        if !tool_execute_builtin_action_allowed(gateway_entry, gateway_action, auth)
+                        {
+                            let envelope = build_error_extra(
+                                &service,
+                                synthetic_action,
+                                "forbidden",
+                                &format!("action `{gateway_action}` requires `lab:admin` scope"),
+                                &serde_json::json!({ "required_scopes": ["lab:admin"] }),
+                            );
+                            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                                envelope.to_string(),
+                            )]));
+                        }
+                        if gateway_entry
+                            .actions
+                            .iter()
+                            .any(|entry| entry.name == gateway_action && entry.destructive)
+                            && let Err(result) = require_destructive_confirmation(
+                                &context,
+                                &service,
+                                synthetic_action,
+                            )
+                            .await
+                        {
+                            return Ok(result);
+                        }
                         let params =
                             inject_gateway_origin_param(params, self.request_subject(&context));
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
@@ -488,48 +600,10 @@ impl LabMcpServer {
                 .iter()
                 .any(|a| a.name == action && a.destructive);
             if is_destructive {
-                match elicit_confirm(&context, &service, &action).await {
-                    ConfirmOutcome::Confirmed => {}
-                    ConfirmOutcome::Declined | ConfirmOutcome::Cancelled => {
-                        let envelope = build_error(
-                            &service,
-                            &action,
-                            "confirmation_required",
-                            &format!("action `{action}` is destructive — confirm to proceed"),
-                        );
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            envelope.to_string(),
-                        )]));
-                    }
-                    ConfirmOutcome::NotSupported => {
-                        // No fallback prompt, no `params.confirm`, no block.
-                    }
-                    ConfirmOutcome::Failed => {
-                        let envelope = build_error(
-                            &service,
-                            &action,
-                            "confirmation_required",
-                            &format!(
-                                "action `{action}` is destructive — confirmation failed, retry with a client that supports MCP elicitation"
-                            ),
-                        );
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            envelope.to_string(),
-                        )]));
-                    }
-                    ConfirmOutcome::TimedOut => {
-                        let envelope = build_error(
-                            &service,
-                            &action,
-                            "confirmation_required",
-                            &format!(
-                                "action `{action}` is destructive — confirmation timed out, retry when ready to confirm"
-                            ),
-                        );
-                        return Ok(CallToolResult::error(vec![ContentBlock::text(
-                            envelope.to_string(),
-                        )]));
-                    }
+                if let Err(result) =
+                    require_destructive_confirmation(&context, &service, &action).await
+                {
+                    return Ok(result);
                 }
             }
         }

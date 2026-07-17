@@ -158,10 +158,6 @@ impl GatewayManager {
     }
 
     pub async fn allowed_mcp_actions_for_service(&self, service: &str) -> Option<Vec<String>> {
-        if self.registered_service_meta(service).is_none() {
-            return None;
-        }
-
         let cfg = self.config.read().await;
         let virtual_server = find_virtual_server_for_service(&cfg, service)?;
         if !virtual_server.enabled || !virtual_server.surfaces.mcp {
@@ -180,22 +176,16 @@ impl GatewayManager {
     }
 
     pub async fn mcp_action_allowed_for_service(&self, service: &str, action: &str) -> bool {
-        if self.registered_service_meta(service).is_none() {
+        let cfg = self.config.read().await;
+        let Some(virtual_server) = find_virtual_server_for_service(&cfg, service) else {
             return true;
-        }
-
-        if !self.surface_enabled_for_service(service, "mcp").await {
+        };
+        if !virtual_server.enabled || !virtual_server.surfaces.mcp {
             return false;
         }
-
         if matches!(action, "help" | "schema") {
             return true;
         }
-
-        let cfg = self.config.read().await;
-        let Some(virtual_server) = find_virtual_server_for_service(&cfg, service) else {
-            return false;
-        };
 
         match &virtual_server.mcp_policy {
             Some(policy) if !policy.allowed_actions.is_empty() => policy

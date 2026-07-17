@@ -30,12 +30,11 @@ use crate::mcp::context::auth_context_from_extensions;
 use crate::mcp::context::oauth_upstream_subject_for_request;
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::{
-    add_server_app_resource_uri_for_tool, add_server_app_resources_visible,
-    add_server_app_skybridge_uri_for_tool, code_mode_app_resource_uri_for_tool,
-    code_mode_app_skybridge_uri_for_tool,
+    add_server_app_resource_uri_for_tool, add_server_app_skybridge_uri_for_tool,
+    code_mode_app_resource_uri_for_tool, code_mode_app_skybridge_uri_for_tool,
 };
 use crate::mcp::handlers_resources::{
-    server_logs_app_resource_uri_for_tool, server_logs_app_resources_visible,
+    admin_app_resources_visible, server_logs_app_resource_uri_for_tool,
     server_logs_app_skybridge_uri_for_tool,
 };
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
@@ -110,7 +109,7 @@ impl LabMcpServer {
         let server_logs_app_visible = {
             #[cfg(feature = "gateway")]
             {
-                server_logs_app_resources_visible(auth)
+                admin_app_resources_visible(auth)
             }
             #[cfg(not(feature = "gateway"))]
             {
@@ -118,9 +117,8 @@ impl LabMcpServer {
             }
         };
         #[cfg(feature = "gateway")]
-        let add_server_app_visible = add_server_app_resources_visible(auth)
-            && self.route_scope.allows_service("gateway")
-            && self.service_visible_on_mcp("gateway").await;
+        let add_server_app_visible =
+            admin_app_resources_visible(auth) && self.add_server_app_available_on_mcp().await;
         let mut builtin_names = Vec::new();
         for svc in self.registry.services() {
             if self.route_scope.allows_service(svc.name)
@@ -397,57 +395,44 @@ impl LabMcpServer {
 fn code_mode_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = code_mode_app_resource_uri_for_tool(tool_name)
         .expect("Code Mode tools must have an associated UI resource");
-    let mut meta = serde_json::Map::new();
     // Anthropic / MCP Apps (SEP-1724) binding: hosts read `_meta.ui.resourceUri`.
-    meta.insert(
-        "ui".to_string(),
-        serde_json::json!({
-            "resourceUri": resource_uri,
-        }),
-    );
     // OpenAI Apps SDK binding: ChatGPT / Codex hosts bind the widget via
     // `openai/outputTemplate` rather than `_meta.ui`. It points at the skybridge
     // variant of the same widget — identical HTML, served under the
     // `text/html+skybridge` MIME those hosts expect — so the Claude resource
     // stays untouched. The widget self-hydrates from `window.openai.toolOutput`.
-    if let Some(skybridge_uri) = code_mode_app_skybridge_uri_for_tool(tool_name) {
-        meta.insert(
-            "openai/outputTemplate".to_string(),
-            serde_json::json!(skybridge_uri),
-        );
-    }
-    Meta(meta)
+    owned_app_tool_meta(
+        resource_uri,
+        code_mode_app_skybridge_uri_for_tool(tool_name),
+    )
 }
 
 fn server_logs_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = server_logs_app_resource_uri_for_tool(tool_name)
         .expect("server log tools must have an associated UI resource");
-    let mut meta = serde_json::Map::new();
-    meta.insert(
-        "ui".to_string(),
-        serde_json::json!({
-            "resourceUri": resource_uri,
-        }),
-    );
-    if let Some(skybridge_uri) = server_logs_app_skybridge_uri_for_tool(tool_name) {
-        meta.insert(
-            "openai/outputTemplate".to_string(),
-            serde_json::json!(skybridge_uri),
-        );
-    }
-    Meta(meta)
+    owned_app_tool_meta(
+        resource_uri,
+        server_logs_app_skybridge_uri_for_tool(tool_name),
+    )
 }
 
 #[cfg(feature = "gateway")]
 fn add_server_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = add_server_app_resource_uri_for_tool(tool_name)
         .expect("Add Server tool must have an associated UI resource");
+    owned_app_tool_meta(
+        resource_uri,
+        add_server_app_skybridge_uri_for_tool(tool_name),
+    )
+}
+
+fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> Meta {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "ui".to_string(),
         serde_json::json!({ "resourceUri": resource_uri }),
     );
-    if let Some(skybridge_uri) = add_server_app_skybridge_uri_for_tool(tool_name) {
+    if let Some(skybridge_uri) = skybridge_uri {
         meta.insert(
             "openai/outputTemplate".to_string(),
             serde_json::json!(skybridge_uri),
@@ -470,7 +455,63 @@ fn add_server_tool_schema() -> Arc<serde_json::Map<String, Value>> {
                 },
                 "params": {
                     "type": "object",
-                    "description": "For test/create, pass { spec: GatewayUpstreamConfig }. The app builds this payload interactively."
+                    "description": "For test/create, pass a proposed upstream server configuration.",
+                    "required": ["spec"],
+                    "properties": {
+                        "spec": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+                                    "description": "Unique gateway server name."
+                                },
+                                "url": {
+                                    "type": "string",
+                                    "format": "uri",
+                                    "description": "HTTP(S) MCP endpoint for a remote server."
+                                },
+                                "command": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Executable for a local stdio MCP server."
+                                },
+                                "args": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "default": [],
+                                    "description": "Arguments passed to the local stdio command."
+                                },
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": true
+                                },
+                                "proxy_resources": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Expose discovered upstream resources downstream."
+                                },
+                                "proxy_prompts": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Expose discovered upstream prompts downstream."
+                                }
+                            },
+                            "oneOf": [
+                                {
+                                    "required": ["url"],
+                                    "not": { "anyOf": [{ "required": ["command"] }, { "required": ["args"] }] }
+                                },
+                                {
+                                    "required": ["command"],
+                                    "not": { "required": ["url"] }
+                                }
+                            ],
+                            "additionalProperties": true
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false

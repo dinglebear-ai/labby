@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Add Server</title>
 <style>
-:root{color-scheme:dark;--bg:#07131c;--panel:#173245;--panel-deep:#0b202d;--footer:#102636;--border:#1d3d4e;--border-strong:#28556b;--text:#e6f4fb;--muted:#a7bcc9;--accent:#29b6f6;--accent-strong:#67cbfa;--ok:#7dd3c7;--warn:#c6a36b;--error:#c78490;--focus:rgba(41,182,246,.26);font-family:Inter,Manrope,"Segoe UI",system-ui,sans-serif;color:var(--text)}
+:root{color-scheme:dark;--panel:#173245;--panel-deep:#0b202d;--footer:#102636;--border:#1d3d4e;--border-strong:#28556b;--text:#e6f4fb;--muted:#a7bcc9;--accent:#29b6f6;--accent-strong:#67cbfa;--ok:#7dd3c7;--error:#c78490;--focus:rgba(41,182,246,.26);font-family:Inter,Manrope,"Segoe UI",system-ui,sans-serif;color:var(--text)}
 *{box-sizing:border-box}
 html,body{margin:0;min-width:0;background:transparent}
 body{padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
@@ -20,7 +20,7 @@ h1{margin:0;font-size:29px;line-height:1.12;letter-spacing:-.025em;font-weight:8
 .close:focus-visible,.button:focus-visible,.switch:focus-visible,input:focus-visible{outline:0;box-shadow:0 0 0 3px var(--focus)}
 .fields{display:grid;gap:22px}
 .field{display:grid;gap:9px}
-label,.eyebrow{color:var(--muted);font-size:15px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}
+label{color:var(--muted);font-size:15px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}
 input[type=text]{width:100%;min-height:58px;border:1px solid color-mix(in srgb,var(--border) 58%,transparent);border-radius:21px;background:var(--panel-deep);padding:0 17px;color:var(--text);font-size:18px;caret-color:var(--accent);transition:border-color .16s ease,box-shadow .16s ease,background .16s ease}
 input[type=text]::placeholder{color:color-mix(in srgb,var(--muted) 64%,transparent)}
 input[type=text]:hover{border-color:var(--border-strong)}
@@ -54,7 +54,7 @@ input[type=text]:focus{border-color:var(--accent);background:#0a1d29}
  .content{padding:22px 18px 17px}
  .header{grid-template-columns:minmax(0,1fr) 40px;gap:10px;margin-bottom:24px}
  h1{font-size:25px}.lede{font-size:15px;max-width:31ch}.close{width:40px;height:40px;margin:-6px -6px 0 0}
- .fields{gap:19px}label,.eyebrow{font-size:13px}input[type=text]{min-height:52px;border-radius:16px;padding:0 14px;font-size:16px}.help{font-size:14px}
+ .fields{gap:19px}label{font-size:13px}input[type=text]{min-height:52px;border-radius:16px;padding:0 14px;font-size:16px}.help{font-size:14px}
  .options{margin-top:16px}.option{min-height:72px;padding:14px 0;gap:12px}.option-title{font-size:15px}.option-copy{font-size:13px}.switch{width:48px;height:28px}.switch::after{width:20px;height:20px}.switch[aria-checked=true]::after{transform:translateX(20px)}
  .footer{display:grid;grid-template-columns:1fr 1fr;padding:14px 18px max(14px,env(safe-area-inset-bottom));gap:10px}.footer-spacer{display:none}.button{min-height:48px;border-radius:15px;padding:0 14px}.button.primary{grid-column:1/-1;grid-row:1;min-width:0}.button.test{grid-column:1}.button.cancel{grid-column:2}
 }
@@ -105,8 +105,11 @@ const prompts=document.getElementById("prompts");
 const status=document.getElementById("status");
 const testButton=document.getElementById("test");
 const createButton=document.getElementById("create");
+const cancelButton=document.getElementById("cancel");
+const closeButton=document.getElementById("close");
 const dialog=document.querySelector(".dialog");
-let busy=false;
+const originalButtonMarkup=new Map([[testButton,testButton.innerHTML],[createButton,createButton.innerHTML]]);
+let lifecycle="idle",disposed=false,closeTimer=null,resizeFrame=null;
 function toggle(button){button.setAttribute("aria-checked",button.getAttribute("aria-checked")!=="true"?"true":"false")}
 resources.addEventListener("click",()=>toggle(resources));prompts.addEventListener("click",()=>toggle(prompts));
 function words(value){
@@ -130,8 +133,8 @@ function spec(){
  if(/^https?:\/\//i.test(target)){value.url=target}else{const parts=words(target);if(!parts.length)throw new Error("Enter a local command.");value.command=parts.shift();value.args=parts}
  return value;
 }
-function message(text,kind=""){status.textContent=text;status.className=`status show ${kind}`.trim();scheduleResize()}
-function clearMessage(){status.textContent="";status.className="status";scheduleResize()}
+function message(text,kind=""){if(disposed)return;status.textContent=text;status.className=`status show ${kind}`.trim();scheduleResize()}
+function clearMessage(){if(disposed)return;status.textContent="";status.className="status";scheduleResize()}
 function normalize(value){
  if(!value)return value;if(value.structuredContent)return normalize(value.structuredContent);
  if(value.ok===false)throw new Error(value.error&&value.error.message||"The gateway request failed.");
@@ -139,18 +142,23 @@ function normalize(value){
  if(Array.isArray(value.content)&&value.content[0]&&value.content[0].text){try{return normalize(JSON.parse(value.content[0].text))}catch(_){}}
  return value;
 }
-function setBusy(value,button){busy=value;testButton.disabled=value;createButton.disabled=value;const label=button&&button.querySelector("span:last-child");if(button){button.dataset.label=label?label.textContent:button.textContent;if(label)label.innerHTML=value?'<span class="spinner"></span> Working…':button.dataset.label;else button.innerHTML=value?'<span class="spinner"></span> Working…':button.dataset.label}}
+function nonEssentialCapabilityError(error){return error.includes("does not implement MCP prompts discovery")||error.includes("does not implement MCP resource discovery")||((error.includes("failed to list prompts from upstream:")||error.includes("failed to list resources from upstream:"))&&(error.includes("Method not found")||error.includes("-32601")))}
+function probeStatus(result){const count=Number(result&&result.tool_count||0)+Number(result&&result.resource_count||0)+Number(result&&result.prompt_count||0);const raw=String(result&&result.last_error||"").trim();const error=raw&&!nonEssentialCapabilityError(raw)?raw:"";return count>0?{connected:true,healthy:!error,error}:{connected:false,healthy:false,error:error||"No capabilities (tools, resources, or prompts) were discovered from this server."}}
+function setControlsDisabled(value){for(const control of [nameInput,targetInput,resources,prompts,testButton,createButton,cancelButton,closeButton])control.disabled=value}
+function startBusy(button){lifecycle="busy";setControlsDisabled(true);button.innerHTML='<span class="spinner"></span> Working…'}
+function restoreIdle(){if(disposed||lifecycle!=="busy")return;for(const [button,markup] of originalButtonMarkup)button.innerHTML=markup;lifecycle="idle";setControlsDisabled(false)}
 async function run(action,button){
- if(busy)return;clearMessage();let config;try{config=spec()}catch(error){message(error.message,"error");return}
- setBusy(true,button);
- try{const result=normalize(await host.callAction("add_server",action,{spec:config}));if(action==="test"){const reachable=result&&result.reachable!==false;message(reachable?"Connection succeeded. The server is ready to add.":"The server responded, but the connection check did not pass.",reachable?"ok":"error")}else{message(`Created ${config.name}. The gateway catalog is reconciling.`,"ok");setTimeout(closeApp,700)}}catch(error){message((error&&error.message)||"The gateway request failed.","error")}finally{setBusy(false,button)}
+ if(lifecycle!=="idle"||disposed)return;clearMessage();let config;try{config=spec()}catch(error){message(error.message,"error");return}
+ startBusy(button);
+ try{const raw=await host.callAction("add_server",action,{spec:config});if(disposed)return;const result=normalize(raw);if(action==="test"){const probe=probeStatus(result||{});message(probe.connected?(probe.healthy?"Connection succeeded. The server is ready to add.":`Connected with a warning: ${probe.error}`):probe.error,probe.connected&&probe.healthy?"ok":"error")}else{lifecycle="closing";message(`Created ${config.name}. The gateway catalog is reconciling.`,"ok");closeTimer=setTimeout(closeApp,700)}}catch(error){if(!disposed)message((error&&error.message)||"The gateway request failed.","error")}finally{restoreIdle()}
 }
-function closeApp(){if(host&&typeof host.requestTeardown==="function")host.requestTeardown();else if(history.length>1)history.back()}
-function scheduleResize(){requestAnimationFrame(()=>{const rect=dialog.getBoundingClientRect();host.requestResize({width:Math.ceil(rect.width),height:Math.ceil(rect.height+20)})})}
+function dispose(){if(disposed)return;disposed=true;lifecycle="disposed";if(closeTimer!==null)clearTimeout(closeTimer);if(resizeFrame!==null)cancelAnimationFrame(resizeFrame);observer.disconnect()}
+function closeApp(){if(lifecycle==="busy"||disposed)return;dispose();if(host&&typeof host.requestTeardown==="function")host.requestTeardown();else if(history.length>1)history.back()}
+function scheduleResize(){if(disposed||resizeFrame!==null)return;resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;if(disposed)return;const rect=dialog.getBoundingClientRect();host.requestResize({width:Math.ceil(rect.width),height:Math.ceil(rect.height+20)})})}
 form.addEventListener("submit",event=>{event.preventDefault();void run("create",createButton)});
 testButton.addEventListener("click",()=>void run("test",testButton));
-document.getElementById("cancel").addEventListener("click",closeApp);document.getElementById("close").addEventListener("click",closeApp);
-new ResizeObserver(scheduleResize).observe(dialog);scheduleResize();
+cancelButton.addEventListener("click",closeApp);closeButton.addEventListener("click",closeApp);
+const observer=new ResizeObserver(scheduleResize);observer.observe(dialog);window.addEventListener("pagehide",dispose,{once:true});scheduleResize();
 })();
 </script>
 </body>
