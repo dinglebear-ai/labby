@@ -252,8 +252,15 @@ impl GatewayManager {
                 Ok(()) => {
                     refreshed = true;
                     self.evict_subject_client(upstream, subject);
+                    // Fire-and-forget: rediscovery is a full reload that can
+                    // outlive this request future's deadline; the detached
+                    // task applies (and logs) on its own.
                     if let Err(error) = self
-                        .reload_with_origin(Some("upstream-oauth.status.refresh"), None)
+                        .reload_with_origin_detached(
+                            Some("upstream-oauth.status.refresh"),
+                            None,
+                            std::time::Duration::ZERO,
+                        )
                         .await
                     {
                         tracing::warn!(

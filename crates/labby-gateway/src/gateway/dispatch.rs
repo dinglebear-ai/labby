@@ -647,9 +647,16 @@ async fn handle_gateway_actions(
         }
         "gateway.reload" => {
             let params: GatewayReloadParams = parse_params(params_value)?;
+            // Bounded below the API router's 30s TimeoutLayer so a slow full
+            // rebuild reports "still reconciling" instead of the middleware
+            // cancelling the reload mid-flight and discarding the config.
             to_json(
                 manager
-                    .reload_with_origin(params.origin.as_deref(), params.owner.map(Into::into))
+                    .reload_with_origin_detached(
+                        params.origin.as_deref(),
+                        params.owner.map(Into::into),
+                        std::time::Duration::from_secs(20),
+                    )
                     .await?,
             )
         }

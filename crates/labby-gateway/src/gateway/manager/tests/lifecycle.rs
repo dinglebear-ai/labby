@@ -99,6 +99,87 @@ fn catalog_diff_detects_removed_tool_provider() {
     assert!(!diff.prompts_changed);
 }
 
+// The HTTP dispatch surface wraps every request in a 30s TimeoutLayer that
+// drops the handler future at the deadline. A reload driven directly by the
+// request future is silently cancelled mid-rebuild and the pending config is
+// never applied. The detached entry point must survive caller cancellation.
+#[tokio::test]
+async fn detached_reload_applies_config_after_caller_cancellation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    write_gateway_config(
+        &path,
+        &GatewayConfig {
+            upstream: vec![fixture_http_upstream("alpha")],
+            ..GatewayConfig::default()
+        },
+    )
+    .expect("write config");
+
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager
+        .reload_with_origin(None, None)
+        .await
+        .expect("initial reload");
+
+    let mut cfg = load_gateway_config(&path).expect("load config");
+    cfg.upstream = vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ];
+    write_gateway_config(&path, &cfg).expect("rewrite config");
+
+    // Simulate the timeout middleware dropping the request future after a
+    // single poll: the reload must keep running in its owned task.
+    let cancelled = tokio::time::timeout(
+        std::time::Duration::ZERO,
+        manager.reload_with_origin_detached(None, None, std::time::Duration::from_secs(30)),
+    )
+    .await;
+    assert!(
+        cancelled.is_err(),
+        "caller future completed within one poll; cancellation was not exercised"
+    );
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(pool) = manager.current_pool().await
+            && pool.cached_upstream_summary("beta").await.is_some()
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "detached reload never applied the pending config"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn detached_reload_returns_completed_diff_within_wait_budget() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    write_gateway_config(
+        &path,
+        &GatewayConfig {
+            upstream: vec![fixture_http_upstream("alpha")],
+            ..GatewayConfig::default()
+        },
+    )
+    .expect("write config");
+
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    let outcome = manager
+        .reload_with_origin_detached(None, None, std::time::Duration::from_secs(30))
+        .await
+        .expect("detached reload");
+
+    assert!(outcome.completed);
+    assert!(outcome.diff.is_some());
+    assert!(manager.current_pool().await.is_some());
+}
+
 #[tokio::test]
 async fn runtime_handle_starts_without_pool() {
     let handle = GatewayRuntimeHandle::default();

@@ -49,6 +49,19 @@ impl VirtualServerMigration {
     }
 }
 
+/// Result of a detached reload: `completed: false` means the reconcile is
+/// still running in its owned task and will apply on its own; the flattened
+/// catalog diff is present only when the reload finished within the wait
+/// budget.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct GatewayReloadOutcome {
+    pub completed: bool,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<GatewayCatalogDiff>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 impl GatewayManager {
     pub async fn reload_with_origin(
         &self,
@@ -57,6 +70,78 @@ impl GatewayManager {
     ) -> Result<GatewayCatalogDiff, ToolError> {
         let _mutation_guard = self.config_mutation.lock().await;
         self.reload_with_origin_unlocked(origin, owner).await
+    }
+
+    /// Reload in an owned task so the reconcile survives caller cancellation.
+    ///
+    /// Dispatch surfaces run inside request futures that the HTTP stack is
+    /// free to drop (the API router's 30s `TimeoutLayer`, client disconnects).
+    /// A full pool rebuild probes every upstream and routinely outlives those
+    /// deadlines, so driving `reload_with_origin` directly from the request
+    /// future silently discards the pending config at the timeout. Spawning
+    /// decouples the reconcile from the request lifetime; the bounded wait
+    /// keeps the common fast path returning a real diff.
+    pub async fn reload_with_origin_detached(
+        &self,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        wait: std::time::Duration,
+    ) -> Result<GatewayReloadOutcome, ToolError> {
+        let manager = self.clone();
+        let origin = origin.map(str::to_owned);
+        let mut task =
+            tokio::spawn(async move { manager.reload_with_origin(origin.as_deref(), owner).await });
+        match tokio::time::timeout(wait, &mut task).await {
+            Ok(Ok(result)) => result.map(|diff| GatewayReloadOutcome {
+                completed: true,
+                diff: Some(diff),
+                note: None,
+            }),
+            Ok(Err(join_error)) => Err(ToolError::internal_message(format!(
+                "gateway reload task failed: {join_error}"
+            ))),
+            Err(_elapsed) => {
+                tokio::spawn(async move {
+                    match task.await {
+                        Ok(Ok(diff)) => tracing::info!(
+                            surface = "dispatch",
+                            service = "gateway",
+                            action = "gateway.reload",
+                            event = "background.finish",
+                            tools_changed = diff.tools_changed,
+                            resources_changed = diff.resources_changed,
+                            prompts_changed = diff.prompts_changed,
+                            "backgrounded gateway reload finished"
+                        ),
+                        Ok(Err(error)) => tracing::warn!(
+                            surface = "dispatch",
+                            service = "gateway",
+                            action = "gateway.reload",
+                            event = "background.error",
+                            error = %error,
+                            "backgrounded gateway reload failed"
+                        ),
+                        Err(join_error) => tracing::warn!(
+                            surface = "dispatch",
+                            service = "gateway",
+                            action = "gateway.reload",
+                            event = "background.panic",
+                            error = %join_error,
+                            "backgrounded gateway reload task failed"
+                        ),
+                    }
+                });
+                Ok(GatewayReloadOutcome {
+                    completed: false,
+                    diff: None,
+                    note: Some(
+                        "reload is still reconciling upstreams in the background; \
+                         check `gateway list` for the applied state"
+                            .to_string(),
+                    ),
+                })
+            }
+        }
     }
 
     pub(super) async fn reload_with_origin_unlocked(
