@@ -177,7 +177,9 @@ impl ServerHandler for LabMcpServer {
             .enable_completions();
         #[cfg(feature = "gateway")]
         let builder = builder.enable_extensions_with(mcp_apps_ui_extension());
-        ServerInfo::new(builder.build())
+        let mut info = ServerInfo::new(builder.build());
+        info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
+        info
     }
 
     #[allow(deprecated)]
@@ -372,6 +374,8 @@ mod tests {
         };
 
         let info = server.get_info();
+        assert_eq!(info.server_info.name, "labby");
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(
             info.capabilities.tools.and_then(|c| c.list_changed),
             Some(true)
