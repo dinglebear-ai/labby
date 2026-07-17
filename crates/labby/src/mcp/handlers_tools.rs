@@ -392,6 +392,7 @@ impl LabMcpServer {
 }
 
 #[cfg(feature = "gateway")]
+/// Build MCP Apps metadata for the synthetic Code Mode tool.
 fn code_mode_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = code_mode_app_resource_uri_for_tool(tool_name)
         .expect("Code Mode tools must have an associated UI resource");
@@ -407,6 +408,7 @@ fn code_mode_tool_meta(tool_name: &str) -> Meta {
     )
 }
 
+/// Build MCP Apps metadata for the Server Logs tool.
 fn server_logs_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = server_logs_app_resource_uri_for_tool(tool_name)
         .expect("server log tools must have an associated UI resource");
@@ -417,6 +419,7 @@ fn server_logs_tool_meta(tool_name: &str) -> Meta {
 }
 
 #[cfg(feature = "gateway")]
+/// Build MCP Apps metadata for the synthetic Add Server tool.
 fn add_server_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = add_server_app_resource_uri_for_tool(tool_name)
         .expect("Add Server tool must have an associated UI resource");
@@ -426,6 +429,7 @@ fn add_server_tool_meta(tool_name: &str) -> Meta {
     )
 }
 
+/// Bind one tool to its MCP Apps and optional OpenAI skybridge resources.
 fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> Meta {
     let mut meta = serde_json::Map::new();
     meta.insert(
@@ -442,6 +446,7 @@ fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> M
 }
 
 #[cfg(feature = "gateway")]
+/// Describe the synthetic Add Server callback contract for agent clients.
 fn add_server_tool_schema() -> Arc<serde_json::Map<String, Value>> {
     static SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(|| {
         let Value::Object(schema) = serde_json::json!({

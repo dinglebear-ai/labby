@@ -37,6 +37,8 @@ use crate::mcp::context::{
 use crate::mcp::elicitation::{ConfirmOutcome, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::DispatchError;
+#[cfg(feature = "gateway")]
+use crate::mcp::handlers_resources::admin_app_resources_visible;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel, spawn_dispatch_notification};
 use crate::mcp::result_format::{
     estimate_tokens_args, format_dispatch_result, tool_error_envelope,
@@ -69,6 +71,7 @@ fn route_scope_denied_result(service: &str, action: &str, message: String) -> Ca
     CallToolResult::error(vec![ContentBlock::text(envelope.to_string())])
 }
 
+/// Request MCP elicitation for a destructive action when the client supports it.
 async fn require_destructive_confirmation(
     context: &RequestContext<RoleServer>,
     service: &str,
@@ -112,6 +115,7 @@ async fn require_destructive_confirmation(
     }
 }
 
+/// Attach the authenticated MCP subject to gateway mutations without replacing caller values.
 fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
     let raw = subject
         .map(|value| format!("mcp:{value}"))
@@ -133,6 +137,57 @@ fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
 }
 
 impl LabMcpServer {
+    #[cfg(feature = "gateway")]
+    /// Record one structured failure event for a handled Add Server callback.
+    async fn log_add_server_failure(
+        &self,
+        context: &RequestContext<RoleServer>,
+        action: &str,
+        kind: &'static str,
+        message: &str,
+        elapsed_ms: u128,
+    ) {
+        let subject = self.request_subject_log_tag(context);
+        if kind == "internal_error" {
+            tracing::error!(
+                surface = "mcp",
+                service = ADD_SERVER_TOOL_NAME,
+                action,
+                subject,
+                elapsed_ms,
+                kind,
+                error = %message,
+                "Add Server dispatch error"
+            );
+        } else {
+            tracing::warn!(
+                surface = "mcp",
+                service = ADD_SERVER_TOOL_NAME,
+                action,
+                subject,
+                elapsed_ms,
+                kind,
+                error = %message,
+                "Add Server dispatch error"
+            );
+        }
+        self.emit_dispatch_notification(
+            context,
+            ADD_SERVER_TOOL_NAME,
+            action,
+            elapsed_ms,
+            DispatchLogOutcome::Failure {
+                level: if kind == "internal_error" {
+                    LoggingLevel::Error
+                } else {
+                    LoggingLevel::Warning
+                },
+                kind,
+            },
+        )
+        .await;
+    }
+
     fn log_route_scope_denial(
         &self,
         context: &RequestContext<RoleServer>,
@@ -219,57 +274,34 @@ impl LabMcpServer {
                     .await;
             }
 
-            if service == ADD_SERVER_TOOL_NAME {
+            let handles_add_server = service == ADD_SERVER_TOOL_NAME
+                && admin_app_resources_visible(auth_context_from_extensions(&context.extensions))
+                && self.add_server_app_available_on_mcp().await;
+            if handles_add_server {
                 let synthetic_action = if action.is_empty() {
                     "open"
                 } else {
                     action.as_str()
                 };
-                if !self.route_scope.allows_service("gateway")
-                    || !self.service_visible_on_mcp("gateway").await
-                {
-                    return Ok(route_scope_denied_result(
-                        &service,
-                        synthetic_action,
-                        "Gateway management is not exposed on this MCP route".to_string(),
-                    ));
-                }
                 let auth = auth_context_from_extensions(&context.extensions);
-                if !auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin")) {
-                    let envelope = build_error_extra(
-                        &service,
-                        synthetic_action,
-                        "forbidden",
-                        "Add Server requires scope: lab:admin",
-                        &serde_json::json!({ "required_scopes": ["lab:admin"] }),
-                    );
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        envelope.to_string(),
-                    )]));
-                }
                 let result = match synthetic_action {
-                    "open" => {
-                        if !self.add_server_app_available_on_mcp().await {
-                            return Ok(route_scope_denied_result(
-                                &service,
-                                synthetic_action,
-                                "Gateway test and add actions are not both exposed on this MCP route"
-                                    .to_string(),
-                            ));
-                        }
-                        Ok(serde_json::json!({
-                            "kind": "add_server",
-                            "status": "ready",
-                        }))
-                    }
+                    "open" => Ok(serde_json::json!({
+                        "kind": "add_server",
+                        "status": "ready",
+                    })),
                     "test" | "create" => {
                         let Some(manager) = &self.gateway_manager else {
-                            let envelope = build_error(
-                                &service,
+                            let message = "gateway manager not wired";
+                            self.log_add_server_failure(
+                                &context,
                                 synthetic_action,
                                 "internal_error",
-                                "gateway manager not wired",
-                            );
+                                message,
+                                start.elapsed().as_millis(),
+                            )
+                            .await;
+                            let envelope =
+                                build_error(&service, synthetic_action, "internal_error", message);
                             return Ok(CallToolResult::error(vec![ContentBlock::text(
                                 envelope.to_string(),
                             )]));
@@ -280,13 +312,22 @@ impl LabMcpServer {
                             "gateway.add"
                         };
                         if !self.action_allowed_on_mcp("gateway", gateway_action).await {
+                            let message = format!(
+                                "action `{gateway_action}` is not exposed for service `gateway`"
+                            );
+                            self.log_add_server_failure(
+                                &context,
+                                synthetic_action,
+                                "unknown_action",
+                                &message,
+                                start.elapsed().as_millis(),
+                            )
+                            .await;
                             let envelope = build_error_extra(
                                 &service,
                                 synthetic_action,
                                 "unknown_action",
-                                &format!(
-                                    "action `{gateway_action}` is not exposed for service `gateway`"
-                                ),
+                                &message,
                                 &serde_json::json!({
                                     "canonical_action": gateway_action,
                                     "valid": self.allowed_mcp_actions("gateway").await,
@@ -302,23 +343,38 @@ impl LabMcpServer {
                             .iter()
                             .find(|entry| entry.name == "gateway");
                         let Some(gateway_entry) = gateway_entry else {
-                            let envelope = build_error(
-                                &service,
+                            let message = "gateway registry entry not wired";
+                            self.log_add_server_failure(
+                                &context,
                                 synthetic_action,
                                 "internal_error",
-                                "gateway registry entry not wired",
-                            );
+                                message,
+                                start.elapsed().as_millis(),
+                            )
+                            .await;
+                            let envelope =
+                                build_error(&service, synthetic_action, "internal_error", message);
                             return Ok(CallToolResult::error(vec![ContentBlock::text(
                                 envelope.to_string(),
                             )]));
                         };
                         if !tool_execute_builtin_action_allowed(gateway_entry, gateway_action, auth)
                         {
+                            let message =
+                                format!("action `{gateway_action}` requires `lab:admin` scope");
+                            self.log_add_server_failure(
+                                &context,
+                                synthetic_action,
+                                "forbidden",
+                                &message,
+                                start.elapsed().as_millis(),
+                            )
+                            .await;
                             let envelope = build_error_extra(
                                 &service,
                                 synthetic_action,
                                 "forbidden",
-                                &format!("action `{gateway_action}` requires `lab:admin` scope"),
+                                &message,
                                 &serde_json::json!({ "required_scopes": ["lab:admin"] }),
                             );
                             return Ok(CallToolResult::error(vec![ContentBlock::text(
@@ -336,6 +392,14 @@ impl LabMcpServer {
                             )
                             .await
                         {
+                            self.log_add_server_failure(
+                                &context,
+                                synthetic_action,
+                                "confirmation_required",
+                                "destructive action confirmation was not completed",
+                                start.elapsed().as_millis(),
+                            )
+                            .await;
                             return Ok(result);
                         }
                         let params =

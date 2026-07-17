@@ -450,7 +450,7 @@ async fn call_tool_server_logs_requires_admin_scope() {
 }
 
 #[tokio::test]
-async fn call_tool_add_server_opens_for_admin_and_rejects_read_scope() {
+async fn call_tool_add_server_opens_for_admin_without_reserving_hidden_name() {
     let server = test_server(
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
@@ -472,11 +472,12 @@ async fn call_tool_add_server_opens_for_admin_and_rejects_read_scope() {
         .expect("denied Add Server result");
     assert!(denied.is_error.unwrap_or(false));
     assert!(
-        denied.content[0]
+        !denied.content[0]
             .as_text()
             .expect("text")
             .text
-            .contains("lab:admin")
+            .contains("lab:admin"),
+        "a hidden synthetic tool must fall through instead of intercepting the name"
     );
 
     let opened = running
@@ -544,7 +545,7 @@ async fn add_server_app_obeys_gateway_action_policy_for_discovery_and_callbacks(
         "hidden tools must not leave a readable app resource advertised"
     );
 
-    let denied = running
+    let hidden = running
         .service()
         .call_tool_impl(
             CallToolRequestParams::new(ADD_SERVER_TOOL_NAME).with_arguments(
@@ -557,10 +558,12 @@ async fn add_server_app_obeys_gateway_action_policy_for_discovery_and_callbacks(
         )
         .await
         .expect("restricted create result");
-    assert!(denied.is_error.unwrap_or(false));
-    let text = denied.content[0].as_text().expect("text").text.as_str();
-    assert!(text.contains("unknown_action"));
-    assert!(text.contains("gateway.add"));
+    assert!(hidden.is_error.unwrap_or(false));
+    let text = hidden.content[0].as_text().expect("text").text.as_str();
+    assert!(
+        !text.contains("gateway.add"),
+        "a hidden synthetic tool must fall through instead of intercepting the name: {text}"
+    );
 }
 
 #[tokio::test]
@@ -603,8 +606,88 @@ async fn add_server_app_handles_missing_gateway_registry_without_panicking() {
         .expect("missing gateway registry result");
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
-    assert!(text.contains("internal_error"));
-    assert!(text.contains("gateway registry entry not wired"));
+    assert!(
+        !text.contains("gateway registry entry not wired"),
+        "a non-advertised synthetic tool must not intercept a potentially upstream-owned name"
+    );
+}
+
+#[tokio::test]
+async fn add_server_app_is_hidden_without_gateway_manager() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .await
+        .expect("tools without gateway manager");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != ADD_SERVER_TOOL_NAME)
+    );
+}
+
+#[tokio::test]
+async fn hidden_add_server_synthetic_tool_does_not_shadow_upstream_tool() {
+    let upstream_name: Arc<str> = Arc::from("apps");
+    let upstream_tool = fixture_upstream_tool(&upstream_name, ADD_SERVER_TOOL_NAME, None);
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "apps",
+        fixture_upstream_entry(
+            "apps",
+            HashMap::from([(ADD_SERVER_TOOL_NAME.to_string(), upstream_tool)]),
+        ),
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(false, fixture_upstream_config("apps"), pool).await;
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:read"]);
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, context.clone())
+        .await
+        .expect("read-scope tools");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == ADD_SERVER_TOOL_NAME),
+        "the upstream tool should remain advertised when the synthetic app is hidden"
+    );
+
+    let result = running
+        .service()
+        .call_tool_impl(CallToolRequestParams::new(ADD_SERVER_TOOL_NAME), context)
+        .await
+        .expect("upstream Add Server result");
+    assert!(result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    assert!(
+        text.contains("upstream_error") && !text.contains("lab:admin"),
+        "the call should reach normal upstream routing: {text}"
+    );
 }
 
 #[tokio::test]

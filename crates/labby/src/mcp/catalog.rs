@@ -122,11 +122,15 @@ impl LabMcpServer {
     }
 
     #[cfg(feature = "gateway")]
+    /// Whether the current route can safely advertise and execute Add Server.
     pub(crate) async fn add_server_app_available_on_mcp(&self) -> bool {
-        self.registry
-            .services()
-            .iter()
-            .any(|entry| entry.name == "gateway")
+        self.route_scope.allows_service("gateway")
+            && self.gateway_manager.is_some()
+            && self
+                .registry
+                .services()
+                .iter()
+                .any(|entry| entry.name == "gateway")
             && self.service_visible_on_mcp("gateway").await
             && self.action_allowed_on_mcp("gateway", "gateway.test").await
             && self.action_allowed_on_mcp("gateway", "gateway.add").await
