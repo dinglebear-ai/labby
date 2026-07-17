@@ -168,6 +168,12 @@ pub struct PendingImportView {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayRuntimeView {
     pub name: String,
+    /// Whether the upstream completed discovery and remains routable.
+    ///
+    /// Capability counts are not a connection signal: a valid MCP server may
+    /// advertise zero tools, resources, and prompts.
+    #[serde(default)]
+    pub connected: bool,
     #[serde(default)]
     pub tool_count: usize,
     #[serde(default)]

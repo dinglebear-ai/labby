@@ -19,36 +19,167 @@ header{display:flex;justify-content:space-between;gap:18px;align-items:flex-star
 </head>
 <body>
 <main class="shell" id="shell">
-  <header><div><h1>Gateway Status</h1><p class="lede">Live health and capabilities for connected upstream MCP servers.</p></div><button class="refresh" id="refresh" type="button">Refresh</button></header>
+  <header><div><h1>Gateway Status</h1><p class="lede">Current health and capabilities for connected upstream MCP servers.</p></div><button class="refresh" id="refresh" type="button">Refresh</button></header>
   <section class="summary" aria-label="Gateway summary">
     <div class="metric connected"><strong id="connected">—</strong><span>Connected</span></div>
     <div class="metric"><strong id="enabled">—</strong><span>Enabled</span></div>
     <div class="metric attention"><strong id="attention">—</strong><span>Attention</span></div>
   </section>
   <div class="toolbar"><input class="filter" id="filter" type="search" placeholder="Filter upstreams…" aria-label="Filter upstreams"></div>
-  <p class="status" id="status" role="status" aria-live="polite">Loading live gateway status…</p>
+  <p class="status" id="status" role="status" aria-live="polite">Loading gateway status…</p>
   <section class="list" id="list" aria-label="Gateway upstreams"></section>
 </main>
 <script>
-(()=>{"use strict";
-const host=window.LabbyAppHost,shell=document.getElementById("shell"),list=document.getElementById("list"),status=document.getElementById("status"),refresh=document.getElementById("refresh"),filter=document.getElementById("filter"),connected=document.getElementById("connected"),enabled=document.getElementById("enabled"),attention=document.getElementById("attention");let upstreams=[],lastUpdated=null,disposed=false,frame=null;
-function normalize(value){if(value==null)return value;if(Array.isArray(value))return value;if(value.structuredContent!=null)return normalize(value.structuredContent);if(value.data!=null)return normalize(value.data);if(Array.isArray(value.content)&&value.content[0]&&value.content[0].text){try{return normalize(JSON.parse(value.content[0].text))}catch(_){}}return value}
+(() => {
+"use strict";
+const host=window.LabbyAppHost;
+const shell=document.getElementById("shell");
+const list=document.getElementById("list");
+const status=document.getElementById("status");
+const refresh=document.getElementById("refresh");
+const filter=document.getElementById("filter");
+const connected=document.getElementById("connected");
+const enabled=document.getElementById("enabled");
+const attention=document.getElementById("attention");
+let upstreams=[];
+let lastUpdated=null;
+let disposed=false;
+let frame=null;
+let initialOutputTimer=null;
+let generation=0;
+let acceptingInitialOutput=true;
+
+function normalize(value){
+ if(value==null||Array.isArray(value))return value;
+ if(value.structuredContent!=null)return normalize(value.structuredContent);
+ if(value.ok===false)throw new Error(value.error&&value.error.message||"The gateway request failed.");
+ if(value.ok===true)return normalize(value.data);
+ if(value.isError===true&&Array.isArray(value.content)){
+  const message=value.content.map(item=>item&&item.text).filter(Boolean).join("\n");
+  throw new Error(message||"The gateway request failed.");
+ }
+ if(value.data!=null)return normalize(value.data);
+ if(Array.isArray(value.content)&&value.content[0]&&value.content[0].text){
+  try{return normalize(JSON.parse(value.content[0].text))}catch(_){}
+ }
+ return value;
+}
 function text(value){return String(value==null?"":value).replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char])}
 function plural(count,one,many=`${one}s`){return count===1?one:many}
 function warningMessage(warning){return warning&&typeof warning==="object"?(warning.message||warning.code||"Unknown warning"):String(warning||"Unknown warning")}
-function capabilities(item){return Number(item.exposed_tool_count??item.discovered_tool_count??0)+Number(item.exposed_resource_count??item.discovered_resource_count??0)+Number(item.exposed_prompt_count??item.discovered_prompt_count??0)}
-function render(){const query=filter.value.trim().toLowerCase();const visible=upstreams.filter(item=>String(item.name||item.id||"").toLowerCase().includes(query));connected.textContent=String(upstreams.filter(item=>item.connected).length);enabled.textContent=String(upstreams.filter(item=>item.enabled).length);attention.textContent=String(upstreams.filter(item=>item.enabled&&(!item.connected||(Array.isArray(item.warnings)&&item.warnings.length>0))).length);list.innerHTML=visible.length?visible.map(item=>{const name=text(item.name||item.id||"Unnamed upstream"),isConnected=!!item.connected,warnings=Array.isArray(item.warnings)?item.warnings:[],count=capabilities(item),badgeClass=isConnected?"connected":item.enabled?"disconnected":"disabled",badgeLabel=isConnected?"Connected":item.enabled?"Disconnected":"Disabled";return `<article class="server"><div class="identity"><div class="name">${name}</div><div class="details"><span>${count} ${plural(count,"capability","capabilities")}</span><span>${text(item.config_summary&&item.config_summary.transport||item.source||"gateway")}</span></div>${warnings.length?`<ul class="warnings">${warnings.map(warning=>`<li>${text(warningMessage(warning))}</li>`).join("")}</ul>`:""}</div><span class="badge ${badgeClass}">${badgeLabel}</span></article>`}).join(""):`<div class="empty">${query?"No upstreams match this filter.":"No upstreams are visible on this route."}</div>`;scheduleResize()}
-function applySnapshot(raw){const value=normalize(raw);if(!Array.isArray(value))throw new Error("Gateway status returned an invalid snapshot.");upstreams=value;lastUpdated=new Date();status.className="status";status.textContent=`Updated ${lastUpdated.toLocaleTimeString()} · ${upstreams.length} visible ${plural(upstreams.length,"upstream")}`;render()}
-async function load(){if(disposed)return;refresh.disabled=true;status.className="status";status.textContent="Refreshing live gateway status…";try{const raw=await host.callAction("gateway_status","refresh",{});if(!disposed)applySnapshot(raw)}catch(error){if(!disposed){status.className="status error";status.textContent=lastUpdated?`Refresh failed; showing data from ${lastUpdated.toLocaleTimeString()}.`:(error&&error.message)||"Gateway status could not be loaded."}}finally{if(!disposed)refresh.disabled=false}}
-function acceptToolOutput(raw){if(raw==null||disposed)return false;try{applySnapshot(raw);return true}catch(error){status.className="status error";status.textContent=(error&&error.message)||"Gateway status could not be loaded.";return false}}
-function onOpenAiGlobals(event){const globals=event&&event.detail&&event.detail.globals;if(globals&&Object.prototype.hasOwnProperty.call(globals,"toolOutput"))acceptToolOutput(globals.toolOutput)}
-function onMcpMessage(event){const data=event&&event.data;if(event.source===window.parent&&data&&data.method==="ui/notifications/tool-result")acceptToolOutput(data.params)}
+function capabilities(item){
+ return Number(item.exposed_tool_count??item.discovered_tool_count??0)
+  +Number(item.exposed_resource_count??item.discovered_resource_count??0)
+  +Number(item.exposed_prompt_count??item.discovered_prompt_count??0);
+}
+function serverMarkup(item){
+ const name=text(item.name||item.id||"Unnamed upstream");
+ const isConnected=!!item.connected;
+ const warnings=Array.isArray(item.warnings)?item.warnings:[];
+ const count=capabilities(item);
+ const badgeClass=isConnected?"connected":item.enabled?"disconnected":"disabled";
+ const badgeLabel=isConnected?"Connected":item.enabled?"Disconnected":"Disabled";
+ const warningMarkup=warnings.length?`<ul class="warnings">${warnings.map(warning=>`<li>${text(warningMessage(warning))}</li>`).join("")}</ul>`:"";
+ return `<article class="server"><div class="identity"><div class="name">${name}</div><div class="details"><span>${count} ${plural(count,"capability","capabilities")}</span><span>${text(item.config_summary&&item.config_summary.transport||item.source||"gateway")}</span></div>${warningMarkup}</div><span class="badge ${badgeClass}">${badgeLabel}</span></article>`;
+}
+function render(){
+ const query=filter.value.trim().toLowerCase();
+ const visible=upstreams.filter(item=>String(item.name||item.id||"").toLowerCase().includes(query));
+ connected.textContent=String(upstreams.filter(item=>item.connected).length);
+ enabled.textContent=String(upstreams.filter(item=>item.enabled).length);
+ attention.textContent=String(upstreams.filter(item=>item.enabled&&(!item.connected||(Array.isArray(item.warnings)&&item.warnings.length>0))).length);
+ list.innerHTML=visible.length?visible.map(serverMarkup).join(""):`<div class="empty">${query?"No upstreams match this filter.":"No upstreams are visible on this route."}</div>`;
+ scheduleResize();
+}
+function applySnapshot(raw){
+ const value=normalize(raw);
+ if(!Array.isArray(value))throw new Error("Gateway status returned an invalid snapshot.");
+ upstreams=value;
+ lastUpdated=new Date();
+ status.className="status";
+ status.textContent=`Updated ${lastUpdated.toLocaleTimeString()} · ${upstreams.length} visible ${plural(upstreams.length,"upstream")}`;
+ render();
+}
+function cancelInitialOutputTimer(){
+ if(initialOutputTimer===null)return;
+ clearTimeout(initialOutputTimer);
+ initialOutputTimer=null;
+}
+async function load(){
+ if(disposed)return;
+ acceptingInitialOutput=false;
+ cancelInitialOutputTimer();
+ const requestGeneration=++generation;
+ refresh.disabled=true;
+ status.className="status";
+ status.textContent="Refreshing gateway status…";
+ try{
+  const raw=await host.callAction("gateway_status","refresh",{});
+  if(!disposed&&requestGeneration===generation)applySnapshot(raw);
+ }catch(error){
+  if(!disposed&&requestGeneration===generation){
+   status.className="status error";
+   status.textContent=lastUpdated?`Refresh failed; showing data from ${lastUpdated.toLocaleTimeString()}.`:(error&&error.message)||"Gateway status could not be loaded.";
+  }
+ }finally{
+  if(!disposed&&requestGeneration===generation)refresh.disabled=false;
+ }
+}
+function acceptToolOutput(raw){
+ if(raw==null||disposed||!acceptingInitialOutput)return false;
+ acceptingInitialOutput=false;
+ cancelInitialOutputTimer();
+ generation+=1;
+ try{applySnapshot(raw);return true}
+ catch(error){
+  status.className="status error";
+  status.textContent=(error&&error.message)||"Gateway status could not be loaded.";
+  return false;
+ }
+}
+function onOpenAiGlobals(event){
+ const globals=event&&event.detail&&event.detail.globals;
+ if(globals&&Object.prototype.hasOwnProperty.call(globals,"toolOutput"))acceptToolOutput(globals.toolOutput);
+}
+function onMcpMessage(event){
+ const data=event&&event.data;
+ if(event.source===window.parent&&data&&data.method==="ui/notifications/tool-result")acceptToolOutput(data.params);
+}
 function onRefresh(){void load()}
 function onFilter(){render()}
-function scheduleResize(){if(disposed||frame!==null)return;frame=requestAnimationFrame(()=>{frame=null;if(!disposed)host.requestResize({width:Math.ceil(shell.getBoundingClientRect().width),height:Math.ceil(shell.scrollHeight)})})}
+function scheduleResize(){
+ if(disposed||frame!==null)return;
+ frame=requestAnimationFrame(()=>{
+  frame=null;
+  if(!disposed)host.requestResize({height:Math.ceil(document.documentElement.scrollHeight)});
+ });
+}
 const observer=new ResizeObserver(scheduleResize);
-function dispose(){disposed=true;observer.disconnect();refresh.removeEventListener("click",onRefresh);filter.removeEventListener("input",onFilter);window.removeEventListener("openai:set_globals",onOpenAiGlobals);window.removeEventListener("message",onMcpMessage);if(frame!==null){cancelAnimationFrame(frame);frame=null}}
-refresh.addEventListener("click",onRefresh);filter.addEventListener("input",onFilter);window.addEventListener("openai:set_globals",onOpenAiGlobals);window.addEventListener("message",onMcpMessage);observer.observe(shell);window.addEventListener("pagehide",dispose,{once:true});scheduleResize();if(!acceptToolOutput(window.openai&&window.openai.toolOutput))void load();
+function dispose(){
+ if(disposed)return;
+ disposed=true;
+ observer.disconnect();
+ refresh.removeEventListener("click",onRefresh);
+ filter.removeEventListener("input",onFilter);
+ window.removeEventListener("openai:set_globals",onOpenAiGlobals);
+ window.removeEventListener("message",onMcpMessage);
+ window.removeEventListener("pagehide",dispose);
+ cancelInitialOutputTimer();
+ if(frame!==null){cancelAnimationFrame(frame);frame=null}
+}
+refresh.addEventListener("click",onRefresh);
+filter.addEventListener("input",onFilter);
+window.addEventListener("openai:set_globals",onOpenAiGlobals);
+window.addEventListener("message",onMcpMessage);
+observer.observe(shell);
+window.addEventListener("pagehide",dispose,{once:true});
+scheduleResize();
+if(!acceptToolOutput(window.openai&&window.openai.toolOutput)){
+ initialOutputTimer=setTimeout(()=>{
+  initialOutputTimer=null;
+  if(acceptingInitialOutput)void load();
+ },50);
+}
 })();
 </script>
 </body>

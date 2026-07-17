@@ -398,6 +398,22 @@ async fn lazily_seeded_healthy_upstream_reports_connected_before_first_use() {
 }
 
 #[tokio::test]
+async fn runtime_view_reports_zero_capability_healthy_upstream_connected() {
+    let pool = UpstreamPool::new();
+    let upstream = fixture_http_upstream("empty-upstream");
+    pool.seed_lazy_upstreams(std::slice::from_ref(&upstream))
+        .await;
+
+    let runtime = runtime_view(Some(&pool), "empty-upstream", None).await;
+    let value = serde_json::to_value(runtime).expect("runtime serializes");
+
+    assert_eq!(value["connected"], serde_json::json!(true));
+    assert_eq!(value["tool_count"], serde_json::json!(0));
+    assert_eq!(value["resource_count"], serde_json::json!(0));
+    assert_eq!(value["prompt_count"], serde_json::json!(0));
+}
+
+#[tokio::test]
 async fn errored_upstream_reports_disconnected_even_when_circuit_closed() {
     // An upstream with a recorded operator-visible error must surface as down
     // regardless of the optimistic seeded health default.
