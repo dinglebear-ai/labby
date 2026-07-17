@@ -9,14 +9,18 @@ use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::dispatch::upstream::types::{
     ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
 };
-use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
+use crate::mcp::catalog::{
+    ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
+};
 use crate::mcp::handlers_resources::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
-    CODE_MODE_APP_URI, SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI,
+    CODE_MODE_APP_URI, GATEWAY_STATUS_APP_SKYBRIDGE_URI, GATEWAY_STATUS_APP_URI,
+    SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI,
 };
 use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_tool_meta,
-    code_mode_trace_output_schema, server_logs_tool_meta,
+    code_mode_trace_output_schema, gateway_status_tool_meta, gateway_status_tool_schema,
+    server_logs_tool_meta,
 };
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
@@ -816,6 +820,27 @@ fn add_server_tool_meta_and_schema_bind_the_create_app() {
     ] {
         assert!(spec["properties"].get(field).is_some(), "missing {field}");
     }
+}
+
+#[test]
+fn gateway_status_tool_meta_and_schema_bind_the_status_app() {
+    let meta = gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME);
+    assert!(
+        meta.0["ui"]["resourceUri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with(GATEWAY_STATUS_APP_URI) && uri.contains("?v="))
+    );
+    assert!(
+        meta.0["openai/outputTemplate"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with(GATEWAY_STATUS_APP_SKYBRIDGE_URI))
+    );
+    let schema = gateway_status_tool_schema();
+    assert_eq!(
+        schema["properties"]["action"]["enum"],
+        serde_json::json!(["open", "refresh"])
+    );
+    assert_eq!(schema["additionalProperties"], false);
 }
 
 #[test]

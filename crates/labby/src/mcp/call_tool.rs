@@ -30,7 +30,7 @@ use crate::dispatch::upstream::types::UpstreamTool;
 use crate::mcp::call_tool_upstream::PreResolvedUpstreamTool;
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
-use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME};
+use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
 use crate::mcp::context::{
     auth_context_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
@@ -418,6 +418,62 @@ impl LabMcpServer {
                     _ => Err(ToolError::UnknownAction {
                         message: format!("unknown Add Server action `{synthetic_action}`"),
                         valid: vec!["open".to_string(), "test".to_string(), "create".to_string()],
+                        hint: None,
+                    }),
+                };
+                let result =
+                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
+                let elapsed_ms = start.elapsed().as_millis();
+                let input_tokens = estimate_tokens_args(&args);
+                let (result, outcome) = format_dispatch_result(
+                    result,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    &self.request_subject_log_tag(&context),
+                    self.request_actor_key(&context),
+                    input_tokens,
+                );
+                self.emit_dispatch_notification(
+                    &context,
+                    &service,
+                    synthetic_action,
+                    elapsed_ms,
+                    outcome,
+                )
+                .await;
+                return Ok(result);
+            }
+
+            let handles_gateway_status = service == GATEWAY_STATUS_TOOL_NAME
+                && admin_app_resources_visible(auth_context_from_extensions(&context.extensions))
+                && self.gateway_status_app_available_on_mcp().await;
+            if handles_gateway_status {
+                let synthetic_action = if action.is_empty() {
+                    "open"
+                } else {
+                    action.as_str()
+                };
+                let result = match synthetic_action {
+                    "open" | "refresh" => {
+                        let manager = self
+                            .gateway_manager
+                            .as_ref()
+                            .expect("availability requires a gateway manager");
+                        let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
+                            route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
+                        };
+                        crate::dispatch::gateway::dispatch_with_manager_scoped(
+                            manager,
+                            "gateway.list",
+                            serde_json::json!({}),
+                            enrichment_scope,
+                        )
+                        .await
+                    }
+                    _ => Err(ToolError::UnknownAction {
+                        message: format!("unknown Gateway Status action `{synthetic_action}`"),
+                        valid: vec!["open".to_string(), "refresh".to_string()],
                         hint: None,
                     }),
                 };
