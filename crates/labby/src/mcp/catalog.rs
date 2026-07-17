@@ -344,13 +344,15 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if !visibility.hides_raw_tools()
-            && let Some(pool) = self.current_upstream_pool().await
-        {
-            for tool_name in pool
-                .healthy_tool_names_allowed(self.route_scope.allowed_upstreams())
-                .await
-            {
+        if let Some(pool) = self.current_upstream_pool().await {
+            let upstream_tool_names = if visibility.hides_raw_tools() {
+                pool.healthy_ui_tool_names_allowed(self.route_scope.allowed_upstreams())
+                    .await
+            } else {
+                pool.healthy_tool_names_allowed(self.route_scope.allowed_upstreams())
+                    .await
+            };
+            for tool_name in upstream_tool_names {
                 tools.insert(tool_name);
             }
         }
