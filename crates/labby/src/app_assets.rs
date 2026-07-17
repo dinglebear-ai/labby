@@ -8,9 +8,6 @@ pub(crate) const SERVER_LOGS_APP_SKYBRIDGE_URI: &str = "ui://lab/server-logs/vie
 
 pub(crate) const SERVER_LOGS_APP_HTML: &str = include_str!("mcp/assets/server_logs_app.html");
 
-/// URI namespace reserved for the gateway Add Server app.
-#[cfg(feature = "gateway")]
-pub(crate) const ADD_SERVER_APP_URI_PREFIX: &str = "ui://lab/gateway/";
 #[cfg(feature = "gateway")]
 pub(crate) const ADD_SERVER_APP_URI: &str = "ui://lab/gateway/add-server";
 /// OpenAI Apps skybridge variant for ChatGPT / Codex hosts.
@@ -18,6 +15,15 @@ pub(crate) const ADD_SERVER_APP_URI: &str = "ui://lab/gateway/add-server";
 pub(crate) const ADD_SERVER_APP_SKYBRIDGE_URI: &str = "ui://lab/gateway/add-server.skybridge";
 #[cfg(feature = "gateway")]
 pub(crate) const ADD_SERVER_APP_HTML: &str = include_str!("mcp/assets/add_server_app.html");
+
+/// URI namespace reserved for the gateway upstream status app.
+#[cfg(feature = "gateway")]
+pub(crate) const GATEWAY_STATUS_APP_URI: &str = "ui://lab/gateway/status";
+/// OpenAI Apps skybridge variant for ChatGPT / Codex hosts.
+#[cfg(feature = "gateway")]
+pub(crate) const GATEWAY_STATUS_APP_SKYBRIDGE_URI: &str = "ui://lab/gateway/status.skybridge";
+#[cfg(feature = "gateway")]
+pub(crate) const GATEWAY_STATUS_APP_HTML: &str = include_str!("mcp/assets/gateway_status_app.html");
 
 pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
   "use strict";
