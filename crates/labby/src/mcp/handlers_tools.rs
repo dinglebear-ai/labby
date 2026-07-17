@@ -22,7 +22,7 @@ use serde_json::Value;
 use crate::mcp::call_tool_codemode::{CodeModeUpstreamDescription, code_mode_description};
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
-use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME};
+use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
 use crate::mcp::completion::action_schema;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::auth_context_from_extensions;
@@ -32,6 +32,7 @@ use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::handlers_resources::{
     add_server_app_resource_uri_for_tool, add_server_app_skybridge_uri_for_tool,
     code_mode_app_resource_uri_for_tool, code_mode_app_skybridge_uri_for_tool,
+    gateway_status_app_resource_uri_for_tool, gateway_status_app_skybridge_uri_for_tool,
 };
 use crate::mcp::handlers_resources::{
     admin_app_resources_visible, server_logs_app_resource_uri_for_tool,
@@ -119,6 +120,9 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let add_server_app_visible =
             admin_app_resources_visible(auth) && self.add_server_app_available_on_mcp().await;
+        #[cfg(feature = "gateway")]
+        let gateway_status_app_visible =
+            admin_app_resources_visible(auth) && self.gateway_status_app_available_on_mcp().await;
         let mut builtin_names = Vec::new();
         for svc in self.registry.services() {
             if self.route_scope.allows_service(svc.name)
@@ -200,6 +204,20 @@ impl LabMcpServer {
                 .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME)),
             );
             advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
+            gateway_tool_count += 1;
+        }
+
+        #[cfg(feature = "gateway")]
+        if !tools.finished() && gateway_status_app_visible {
+            tools.accept(
+                Tool::new(
+                    GATEWAY_STATUS_TOOL_NAME,
+                    "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
+                    gateway_status_tool_schema(),
+                )
+                .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME)),
+            );
+            advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
 
@@ -429,6 +447,17 @@ fn add_server_tool_meta(tool_name: &str) -> Meta {
     )
 }
 
+#[cfg(feature = "gateway")]
+/// Build MCP Apps metadata for the synthetic Gateway Status tool.
+fn gateway_status_tool_meta(tool_name: &str) -> Meta {
+    let resource_uri = gateway_status_app_resource_uri_for_tool(tool_name)
+        .expect("Gateway Status tool must have an associated UI resource");
+    owned_app_tool_meta(
+        resource_uri,
+        gateway_status_app_skybridge_uri_for_tool(tool_name),
+    )
+}
+
 /// Bind one tool to its MCP Apps and optional OpenAI skybridge resources.
 fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> Meta {
     let mut meta = serde_json::Map::new();
@@ -522,6 +551,33 @@ fn add_server_tool_schema() -> Arc<serde_json::Map<String, Value>> {
             "additionalProperties": false
         }) else {
             unreachable!("Add Server schema is an object")
+        };
+        Arc::new(schema)
+    });
+    Arc::clone(&SCHEMA)
+}
+
+#[cfg(feature = "gateway")]
+/// Describe the read-only Gateway Status callback contract.
+fn gateway_status_tool_schema() -> Arc<serde_json::Map<String, Value>> {
+    static SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(|| {
+        let Value::Object(schema) = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["open", "refresh"],
+                    "default": "open",
+                    "description": "Open the status app or refresh its live upstream snapshot."
+                },
+                "params": {
+                    "type": "object",
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        }) else {
+            unreachable!("Gateway Status schema is an object")
         };
         Arc::new(schema)
     });

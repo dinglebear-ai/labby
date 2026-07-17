@@ -15,6 +15,8 @@ pub(crate) const CODE_MODE_TOOL_NAME: &str = "codemode";
 pub(crate) const SERVER_LOGS_TOOL_NAME: &str = "server_logs";
 /// Lab-owned MCP App entry point for adding a gateway upstream.
 pub(crate) const ADD_SERVER_TOOL_NAME: &str = "add_server";
+/// Lab-owned MCP App entry point for live gateway upstream status.
+pub(crate) const GATEWAY_STATUS_TOOL_NAME: &str = "gateway_status";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodeModeVisibility {
@@ -134,6 +136,20 @@ impl LabMcpServer {
             && self.service_visible_on_mcp("gateway").await
             && self.action_allowed_on_mcp("gateway", "gateway.test").await
             && self.action_allowed_on_mcp("gateway", "gateway.add").await
+    }
+
+    #[cfg(feature = "gateway")]
+    /// Whether the current route can safely advertise live gateway status.
+    pub(crate) async fn gateway_status_app_available_on_mcp(&self) -> bool {
+        self.route_scope.allows_service("gateway")
+            && self.gateway_manager.is_some()
+            && self
+                .registry
+                .services()
+                .iter()
+                .any(|entry| entry.name == "gateway")
+            && self.service_visible_on_mcp("gateway").await
+            && self.action_allowed_on_mcp("gateway", "gateway.list").await
     }
 
     pub(crate) async fn allowed_mcp_actions(&self, service: &str) -> Option<Vec<String>> {
