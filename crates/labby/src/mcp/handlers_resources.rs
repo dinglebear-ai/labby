@@ -1453,10 +1453,104 @@ mod tests {
     use std::collections::BTreeMap;
     use std::future::Future;
     use std::pin::Pin;
+    use std::process::Command;
     use std::sync::Arc;
 
     const UPSTREAM_UI_URI: &str = "ui://quick-shell/app.html";
     const UPSTREAM_UI_TOOL_NAME: &str = "quick_shell_ui";
+
+    fn final_inline_script(html: &str) -> &str {
+        html.rsplit_once("<script>")
+            .and_then(|(_, tail)| tail.split_once("</script>"))
+            .map(|(script, _)| script)
+            .expect("final inline app script")
+    }
+
+    fn function_source<'a>(html: &'a str, start: &str, next: &str) -> &'a str {
+        let tail = html.split_once(start).expect("function start").1;
+        let body = tail.split_once(next).expect("next function").0;
+        let start_offset = html.len() - tail.len() - start.len();
+        let end_offset = start_offset + start.len() + body.len();
+        &html[start_offset..end_offset]
+    }
+
+    fn run_node(script: &str) {
+        let output = Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .expect("node must be available for MCP App behavior tests");
+        assert!(
+            output.status.success(),
+            "node behavior test failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn dom_harness(host_body: &str) -> String {
+        format!(
+            r#"
+const all = new Map();
+function makeElement(id) {{
+  const attrs = new Map();
+  const listeners = new Map();
+  const element = {{
+    id, value: "", textContent: "", className: "", innerHTML: "", disabled: false,
+    scrollHeight: id === "shell" ? 700 : 600,
+    getAttribute(name) {{ return attrs.has(name) ? attrs.get(name) : null; }},
+    setAttribute(name, value) {{ attrs.set(name, String(value)); }},
+    addEventListener(type, listener) {{
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(listener);
+    }},
+    removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }},
+    dispatch(type, event = {{}}) {{
+      event.preventDefault ||= () => {{}};
+      for (const listener of [...(listeners.get(type) || [])]) listener(event);
+    }},
+    focus() {{}},
+    getBoundingClientRect() {{ return {{ width: 800, height: 600 }}; }}
+  }};
+  all.set(id, element);
+  return element;
+}}
+for (const id of ["form","name","target","resources","prompts","status","test","create","cancel","close","shell","list","refresh","filter","connected","enabled","attention"]) makeElement(id);
+all.get("resources").setAttribute("aria-checked", "true");
+all.get("prompts").setAttribute("aria-checked", "true");
+const dialog = makeElement("dialog");
+const windowListeners = new Map();
+const parentWindow = {{}};
+const window = {{
+  parent: parentWindow,
+  openai: null,
+  addEventListener(type, listener) {{
+    if (!windowListeners.has(type)) windowListeners.set(type, new Set());
+    windowListeners.get(type).add(listener);
+  }},
+  removeEventListener(type, listener) {{ windowListeners.get(type)?.delete(listener); }},
+  dispatch(type, event = {{}}) {{
+    for (const listener of [...(windowListeners.get(type) || [])]) listener(event);
+  }}
+}};
+const document = {{
+  documentElement: {{ scrollHeight: 777 }},
+  getElementById(id) {{ return all.get(id); }},
+  querySelector(selector) {{ return selector === ".dialog" ? dialog : null; }}
+}};
+const history = {{ length: 1, back() {{}} }};
+let frameId = 0;
+const frames = new Map();
+function requestAnimationFrame(callback) {{ const id = ++frameId; frames.set(id, callback); return id; }}
+function cancelAnimationFrame(id) {{ frames.delete(id); }}
+function flushFrames() {{ const queued = [...frames.values()]; frames.clear(); for (const callback of queued) callback(); }}
+class ResizeObserver {{ constructor(callback) {{ this.callback = callback; }} observe() {{}} disconnect() {{}} }}
+const host = {{ {host_body} }};
+window.LabbyAppHost = host;
+Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, cancelAnimationFrame, ResizeObserver }});
+"#
+        )
+    }
 
     struct UpstreamUiResourceServer;
 
@@ -2037,8 +2131,8 @@ mod tests {
 
         for expected in [
             "Add Server",
-            "Test Connection",
-            "Create Server",
+            "Test connection",
+            "Create server",
             "host.callAction(\"add_server\",action",
             "proxy_resources",
             "proxy_prompts",
@@ -2052,6 +2146,9 @@ mod tests {
             "observer.disconnect()",
             "originalButtonMarkup",
             "nameInput,targetInput,resources,prompts",
+            ".status.warn",
+            "document.documentElement.scrollHeight",
+            "removeEventListener",
         ] {
             assert!(
                 html.contains(expected),
@@ -2059,6 +2156,80 @@ mod tests {
             );
         }
         assert!(html.contains("window.__LABBY_MCP_RESOURCE=true;"));
+        assert!(!html.contains("height+20"));
+    }
+
+    #[test]
+    fn add_server_command_parser_preserves_argv_boundaries() {
+        let source = function_source(
+            ADD_SERVER_APP_FALLBACK_HTML,
+            "function words(value)",
+            "function spec()",
+        );
+        run_node(&format!(
+            r#"
+{source}
+const cases = [
+  ['cmd "" tail', ['cmd', '', 'tail']],
+  ['tool --regex \\d+', ['tool', '--regex', '\\d+']],
+  ['"C:\\Program Files\\server.exe" --flag', ['C:\\Program Files\\server.exe', '--flag']],
+  ['tool escaped\\ space', ['tool', 'escaped space']],
+  ['tool "quoted \\"value\\""', ['tool', 'quoted "value"']],
+  ['tool trailing\\', ['tool', 'trailing\\']]
+];
+for (const [input, expected] of cases) {{
+  const actual = words(input);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {{
+    throw new Error(`${{input}} => ${{JSON.stringify(actual)}}, expected ${{JSON.stringify(expected)}}`);
+  }}
+}}
+"#
+        ));
+    }
+
+    #[test]
+    fn add_server_resize_and_teardown_are_stable() {
+        let mut script = dom_harness(
+            r#"sizes: [], teardowns: 0,
+requestResize(size) { this.sizes.push(size); },
+requestTeardown() { this.teardowns += 1; },
+async callAction() { return { ok: true, data: {} }; }"#,
+        );
+        script.push_str(final_inline_script(ADD_SERVER_APP_FALLBACK_HTML));
+        script.push_str(
+            r#"
+flushFrames();
+if (host.sizes.length !== 1) throw new Error(`expected one resize, got ${host.sizes.length}`);
+if ('width' in host.sizes[0]) throw new Error(`app must not request width: ${JSON.stringify(host.sizes[0])}`);
+if (host.sizes[0].height !== 777) throw new Error(`height must include document: ${JSON.stringify(host.sizes[0])}`);
+const exposeResources = all.get('resources');
+const before = exposeResources.getAttribute('aria-checked');
+all.get('close').dispatch('click');
+exposeResources.dispatch('click');
+if (exposeResources.getAttribute('aria-checked') !== before) throw new Error('disposed switch handler remained active');
+if (host.teardowns !== 1) throw new Error(`expected one teardown, got ${host.teardowns}`);
+"#,
+        );
+        run_node(&script);
+    }
+
+    #[test]
+    fn add_server_accepts_a_connected_zero_capability_handshake() {
+        let source = function_source(
+            ADD_SERVER_APP_FALLBACK_HTML,
+            "function probeStatus(result)",
+            "function setControlsDisabled(value)",
+        );
+        run_node(&format!(
+            r#"
+function nonEssentialCapabilityError() {{ return false; }}
+{source}
+const probe = probeStatus({{connected:true,tool_count:0,resource_count:0,prompt_count:0,last_error:null}});
+if (!probe.connected || !probe.healthy || !probe.empty) {{
+  throw new Error(`zero-capability handshake was rejected: ${{JSON.stringify(probe)}}`);
+}}
+"#
+        ));
     }
 
     #[test]
@@ -2081,19 +2252,94 @@ mod tests {
             "min-height:44px",
             "visible ${plural",
             "showing data from",
+            "value.ok===false",
+            "document.documentElement.scrollHeight",
+            "initialOutputTimer",
         ] {
             assert!(
                 html.contains(expected),
                 "Gateway Status app must include marker `{expected}`"
             );
         }
-        for forbidden in ["min-height:100dvh", "height+20", "text(warnings[0])"] {
+        for forbidden in [
+            "min-height:100dvh",
+            "height+20",
+            "text(warnings[0])",
+            "width:Math.ceil",
+        ] {
             assert!(
                 !html.contains(forbidden),
                 "Gateway Status app must not include `{forbidden}`"
             );
         }
         assert!(html.contains("window.__LABBY_MCP_RESOURCE=true;"));
+    }
+
+    #[test]
+    fn gateway_status_keeps_the_newest_snapshot() {
+        let mut script = dom_harness(
+            r#"sizes: [], calls: 0, pending: [],
+requestResize(size) { this.sizes.push(size); },
+requestTeardown() {},
+callAction() { this.calls += 1; return new Promise(resolve => this.pending.push(resolve)); }"#,
+        );
+        script.push_str(final_inline_script(GATEWAY_STATUS_APP_FALLBACK_HTML));
+        script.push_str(
+            r#"
+(async () => {
+  await new Promise(resolve => setTimeout(resolve, 100));
+  if (host.calls !== 1) throw new Error(`expected one fallback refresh, got ${host.calls}`);
+  host.pending.shift()({ok:true,data:[{id:'new',name:'new',enabled:true,connected:true,warnings:[],config_summary:{transport:'http'}}]});
+  await new Promise(resolve => setImmediate(resolve));
+  window.dispatch('message', {source: parentWindow, data:{method:'ui/notifications/tool-result',params:{ok:true,data:[{id:'old',name:'old',enabled:true,connected:true,warnings:[],config_summary:{transport:'http'}}]}}});
+  if (!all.get('list').innerHTML.includes('new') || all.get('list').innerHTML.includes('old')) throw new Error(`stale launch output replaced refresh: ${all.get('list').innerHTML}`);
+  flushFrames();
+  if (host.sizes.some(size => 'width' in size)) throw new Error(`status app must not request width: ${JSON.stringify(host.sizes)}`);
+  if (!host.sizes.some(size => size.height === 777)) throw new Error(`status height must include document: ${JSON.stringify(host.sizes)}`);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"#,
+        );
+        run_node(&script);
+    }
+
+    #[test]
+    fn gateway_status_preserves_structured_errors() {
+        let source = function_source(
+            GATEWAY_STATUS_APP_FALLBACK_HTML,
+            "function normalize(value)",
+            "function text(value)",
+        );
+        run_node(&format!(
+            r#"
+{source}
+for (const value of [
+  {{ok:false,error:{{message:'backend exploded'}}}},
+  {{structuredContent:{{ok:false,error:{{message:'nested exploded'}}}}}},
+  {{isError:true,content:[{{type:'text',text:'text exploded'}}]}}
+]) {{
+  let message = '';
+  try {{ normalize(value); }} catch (error) {{ message = error.message; }}
+  if (!message.includes('exploded')) throw new Error(`structured error was masked: ${{message}}`);
+}}
+"#
+        ));
+    }
+
+    #[test]
+    fn gateway_status_discovery_contract_is_documented() {
+        let mcp = include_str!("../../../../docs/surfaces/MCP.md");
+        let gateway = include_str!("../../../../docs/services/GATEWAY.md");
+        for expected in [
+            "gateway_status",
+            "ui://lab/gateway/status",
+            "gateway.list",
+            "lab:admin",
+        ] {
+            assert!(
+                mcp.contains(expected) || gateway.contains(expected),
+                "Gateway Status docs must include `{expected}`"
+            );
+        }
     }
 
     #[tokio::test]

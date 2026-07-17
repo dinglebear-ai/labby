@@ -596,9 +596,15 @@ pub(super) async fn runtime_view(
 
     let last_error = operator_visible_upstream_error(pool.upstream_last_error(name).await);
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
+    let tool_health = pool.upstream_tool_health(name).await;
+    let connected = last_error.is_none()
+        && tool_health
+            .map(|health| health.is_routable())
+            .unwrap_or(false);
 
     GatewayRuntimeView {
         name: name.to_string(),
+        connected,
         tool_count: summary.discovered_tool_count,
         resource_count: summary.discovered_resource_count,
         prompt_count,

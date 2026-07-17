@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Add Server</title>
 <style>
-:root{color-scheme:dark;--panel:#173245;--panel-deep:#0b202d;--footer:#102636;--border:#1d3d4e;--border-strong:#28556b;--text:#e6f4fb;--muted:#a7bcc9;--accent:#29b6f6;--accent-strong:#67cbfa;--ok:#7dd3c7;--error:#c78490;--focus:rgba(41,182,246,.26);font-family:Inter,Manrope,"Segoe UI",system-ui,sans-serif;color:var(--text)}
+:root{color-scheme:dark;--panel:#173245;--panel-deep:#0b202d;--footer:#102636;--border:#1d3d4e;--border-strong:#28556b;--text:#e6f4fb;--muted:#a7bcc9;--accent:#29b6f6;--accent-strong:#67cbfa;--ok:#7dd3c7;--warn:#c6a36b;--error:#c78490;--focus:rgba(41,182,246,.26);font-family:Inter,Manrope,"Segoe UI",system-ui,sans-serif;color:var(--text)}
 *{box-sizing:border-box}
 html,body{margin:0;min-width:0;background:transparent}
 body{padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
@@ -36,7 +36,7 @@ input[type=text]:focus{border-color:var(--accent);background:#0a1d29}
 .switch[aria-checked=true]{background:var(--accent)}
 .switch[aria-checked=true]::after{transform:translateX(22px);background:#062033}
 .status{display:none;margin-top:17px;padding:11px 13px;border:1px solid var(--border);border-radius:12px;background:color-mix(in srgb,var(--panel-deep) 72%,transparent);font-size:14px;line-height:1.4;color:var(--muted)}
-.status.show{display:block}.status.ok{border-color:color-mix(in srgb,var(--ok) 42%,var(--border));color:var(--ok)}.status.error{border-color:color-mix(in srgb,var(--error) 52%,var(--border));color:#efb5bf}
+.status.show{display:block}.status.ok{border-color:color-mix(in srgb,var(--ok) 42%,var(--border));color:var(--ok)}.status.warn{border-color:color-mix(in srgb,var(--warn) 48%,var(--border));color:var(--warn)}.status.error{border-color:color-mix(in srgb,var(--error) 52%,var(--border));color:#efb5bf}
 .footer{display:flex;align-items:center;gap:12px;padding:20px 30px;background:color-mix(in srgb,var(--footer) 94%,transparent);border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
 .footer-spacer{flex:1}
 .button{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:50px;padding:0 20px;border:1px solid var(--border);border-radius:18px;background:transparent;color:var(--muted);font-weight:800;cursor:pointer;white-space:nowrap;transition:transform .12s ease,border-color .16s ease,background .16s ease,color .16s ease}
@@ -74,17 +74,17 @@ input[type=text]:focus{border-color:var(--accent);background:#0a1d29}
         <div class="field"><label for="target">Command / endpoint</label><input id="target" name="target" type="text" placeholder="https://host.example.com/mcp · npx -y @scope/mcp-server" autocomplete="off" spellcheck="false" required><p class="help">Paste a URL for a remote server, or the command that starts a local one — the transport is detected automatically.</p></div>
       </div>
       <div class="options">
-        <div class="option"><div><div class="option-title">Expose Resources</div><div class="option-copy">Proxy discovered MCP resources downstream.</div></div><button class="switch" id="resources" type="button" role="switch" aria-checked="true" aria-label="Expose Resources"></button></div>
-        <div class="option"><div><div class="option-title">Expose Prompts</div><div class="option-copy">Proxy discovered MCP prompts downstream.</div></div><button class="switch" id="prompts" type="button" role="switch" aria-checked="true" aria-label="Expose Prompts"></button></div>
+        <div class="option"><div><div class="option-title">Expose resources</div><div class="option-copy">Proxy discovered MCP resources downstream.</div></div><button class="switch" id="resources" type="button" role="switch" aria-checked="true" aria-label="Expose resources"></button></div>
+        <div class="option"><div><div class="option-title">Expose prompts</div><div class="option-copy">Proxy discovered MCP prompts downstream.</div></div><button class="switch" id="prompts" type="button" role="switch" aria-checked="true" aria-label="Expose prompts"></button></div>
       </div>
       <div class="status" id="status" role="status" aria-live="polite"></div>
     </form>
   </section>
   <footer class="footer">
-    <button class="button test" id="test" type="button"><span class="play">&#9655;</span><span>Test Connection</span></button>
+    <button class="button test" id="test" type="button"><span class="play">&#9655;</span><span>Test connection</span></button>
     <span class="footer-spacer"></span>
     <button class="button cancel" id="cancel" type="button">Cancel</button>
-    <button class="button primary" id="create" type="submit" form="form">Create Server</button>
+    <button class="button primary" id="create" type="submit" form="form">Create server</button>
   </footer>
 </main>
 <script>window.__LABBY_APP_INFO={name:"LabbyAddServer",version:"1.0.0"};</script>
@@ -107,22 +107,26 @@ const testButton=document.getElementById("test");
 const createButton=document.getElementById("create");
 const cancelButton=document.getElementById("cancel");
 const closeButton=document.getElementById("close");
-const dialog=document.querySelector(".dialog");
 const originalButtonMarkup=new Map([[testButton,testButton.innerHTML],[createButton,createButton.innerHTML]]);
 let lifecycle="idle",disposed=false,closeTimer=null,resizeFrame=null;
 function toggle(button){button.setAttribute("aria-checked",button.getAttribute("aria-checked")!=="true"?"true":"false")}
-resources.addEventListener("click",()=>toggle(resources));prompts.addEventListener("click",()=>toggle(prompts));
+function onResources(){toggle(resources)}
+function onPrompts(){toggle(prompts)}
 function words(value){
- const out=[];let token="",quote=null,escape=false;
- for(const char of value.trim()){
-  if(escape){token+=char;escape=false;continue}
-  if(char==="\\"&&quote!=="'"){escape=true;continue}
+ const out=[];let token="",quote=null,tokenStarted=false;
+ for(let index=0;index<value.length;index+=1){
+  const char=value[index];
+  if(char==="\\"&&quote!=="'"){
+   const next=value[index+1];
+   if(next!==undefined&&(next==="\\"||/\s/.test(next)||(quote!==null&&next===quote))){token+=next;tokenStarted=true;index+=1;continue}
+   token+="\\";tokenStarted=true;continue;
+  }
   if(quote){if(char===quote)quote=null;else token+=char;continue}
-  if(char==='"'||char==="'"){quote=char;continue}
-  if(/\s/.test(char)){if(token){out.push(token);token=""}continue}
-  token+=char;
+  if(char==='"'||char==="'"){quote=char;tokenStarted=true;continue}
+  if(/\s/.test(char)){if(tokenStarted){out.push(token);token="";tokenStarted=false}continue}
+  token+=char;tokenStarted=true;
  }
- if(escape)token+="\\";if(quote)throw new Error("Close the quoted command argument.");if(token)out.push(token);return out;
+ if(quote)throw new Error("Close the quoted command argument.");if(tokenStarted)out.push(token);return out;
 }
 function spec(){
  const name=nameInput.value.trim();const target=targetInput.value.trim();
@@ -143,20 +147,23 @@ function normalize(value){
  return value;
 }
 function nonEssentialCapabilityError(error){return error.includes("does not implement MCP prompts discovery")||error.includes("does not implement MCP resource discovery")||((error.includes("failed to list prompts from upstream:")||error.includes("failed to list resources from upstream:"))&&(error.includes("Method not found")||error.includes("-32601")))}
-function probeStatus(result){const count=Number(result&&result.tool_count||0)+Number(result&&result.resource_count||0)+Number(result&&result.prompt_count||0);const raw=String(result&&result.last_error||"").trim();const error=raw&&!nonEssentialCapabilityError(raw)?raw:"";return count>0?{connected:true,healthy:!error,error}:{connected:false,healthy:false,error:error||"No capabilities (tools, resources, or prompts) were discovered from this server."}}
+function probeStatus(result){const count=Number(result&&result.tool_count||0)+Number(result&&result.resource_count||0)+Number(result&&result.prompt_count||0);const raw=String(result&&result.last_error||"").trim();const error=raw&&!nonEssentialCapabilityError(raw)?raw:"";const connected=result&&result.connected===true;return connected?{connected:true,healthy:!error,error,empty:count===0}:{connected:false,healthy:false,error:error||"The gateway could not connect to this server."}}
 function setControlsDisabled(value){for(const control of [nameInput,targetInput,resources,prompts,testButton,createButton,cancelButton,closeButton])control.disabled=value}
 function startBusy(button){lifecycle="busy";setControlsDisabled(true);button.innerHTML='<span class="spinner"></span> Working…'}
 function restoreIdle(){if(disposed||lifecycle!=="busy")return;for(const [button,markup] of originalButtonMarkup)button.innerHTML=markup;lifecycle="idle";setControlsDisabled(false)}
 async function run(action,button){
  if(lifecycle!=="idle"||disposed)return;clearMessage();let config;try{config=spec()}catch(error){message(error.message,"error");return}
  startBusy(button);
- try{const raw=await host.callAction("add_server",action,{spec:config});if(disposed)return;const result=normalize(raw);if(action==="test"){const probe=probeStatus(result||{});message(probe.connected?(probe.healthy?"Connection succeeded. The server is ready to add.":`Connected with a warning: ${probe.error}`):probe.error,probe.connected&&probe.healthy?"ok":"error")}else{lifecycle="closing";message(`Created ${config.name}. The gateway catalog is reconciling.`,"ok");closeTimer=setTimeout(closeApp,700)}}catch(error){if(!disposed)message((error&&error.message)||"The gateway request failed.","error")}finally{restoreIdle()}
+ try{const raw=await host.callAction("add_server",action,{spec:config});if(disposed)return;const result=normalize(raw);if(action==="test"){const probe=probeStatus(result||{});const success=probe.empty?"Connection succeeded. The server advertised no capabilities.":"Connection succeeded. The server is ready to add.";message(probe.connected?(probe.healthy?success:`Connected with a warning: ${probe.error}`):probe.error,probe.connected?(probe.healthy?"ok":"warn"):"error")}else{lifecycle="closing";message(`Created ${config.name}. The gateway catalog is reconciling.`,"ok");closeTimer=setTimeout(closeApp,700)}}catch(error){if(!disposed)message((error&&error.message)||"The gateway request failed.","error")}finally{restoreIdle()}
 }
-function dispose(){if(disposed)return;disposed=true;lifecycle="disposed";if(closeTimer!==null)clearTimeout(closeTimer);if(resizeFrame!==null)cancelAnimationFrame(resizeFrame);observer.disconnect()}
+function onSubmit(event){event.preventDefault();void run("create",createButton)}
+function onTest(){void run("test",testButton)}
+function dispose(){if(disposed)return;disposed=true;lifecycle="disposed";if(closeTimer!==null)clearTimeout(closeTimer);if(resizeFrame!==null)cancelAnimationFrame(resizeFrame);observer.disconnect();resources.removeEventListener("click",onResources);prompts.removeEventListener("click",onPrompts);form.removeEventListener("submit",onSubmit);testButton.removeEventListener("click",onTest);cancelButton.removeEventListener("click",closeApp);closeButton.removeEventListener("click",closeApp);window.removeEventListener("pagehide",dispose)}
 function closeApp(){if(lifecycle==="busy"||disposed)return;dispose();if(host&&typeof host.requestTeardown==="function")host.requestTeardown();else if(history.length>1)history.back()}
-function scheduleResize(){if(disposed||resizeFrame!==null)return;resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;if(disposed)return;const rect=dialog.getBoundingClientRect();host.requestResize({width:Math.ceil(rect.width),height:Math.ceil(rect.height+20)})})}
-form.addEventListener("submit",event=>{event.preventDefault();void run("create",createButton)});
-testButton.addEventListener("click",()=>void run("test",testButton));
+function scheduleResize(){if(disposed||resizeFrame!==null)return;resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;if(!disposed)host.requestResize({height:Math.ceil(document.documentElement.scrollHeight)})})}
+resources.addEventListener("click",onResources);prompts.addEventListener("click",onPrompts);
+form.addEventListener("submit",onSubmit);
+testButton.addEventListener("click",onTest);
 cancelButton.addEventListener("click",closeApp);closeButton.addEventListener("click",closeApp);
 const observer=new ResizeObserver(scheduleResize);observer.observe(dialog);window.addEventListener("pagehide",dispose,{once:true});scheduleResize();
 })();

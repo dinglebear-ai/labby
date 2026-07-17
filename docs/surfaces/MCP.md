@@ -180,11 +180,27 @@ callers:
 
 - tool: `add_server`
 - resource: `ui://lab/gateway/add-server`
+- tool: `gateway_status`
+- resource: `ui://lab/gateway/status`
 
 The Add Server app opens with no tool arguments. App-originated `test` and
 `create` calls delegate to the canonical `gateway.test` and `gateway.add`
 actions, so config validation, persistence, and runtime reconciliation stay in
 the gateway dispatch layer.
+
+`gateway_status` opens a read-only snapshot of the upstreams visible to the
+current route. Its `refresh` callback delegates to `gateway.list`; it does not
+bypass route, service-registry, manager, or scope checks. Both gateway apps are
+therefore advertised only when a gateway manager is mounted, the `gateway`
+service and required action are visible on the route, and the caller has
+`lab:admin`.
+
+MCP hosts commonly cache `tools/list` for the lifetime of a connection. Labby
+emits the matching list-changed notifications when the visible catalog changes,
+but a host that does not refresh on those notifications must reconnect. If a
+new app remains absent after reconnecting, confirm that the running Labby binary
+contains the change rather than relying on the source checkout or a newer local
+binary.
 
 These listed resources return `text/html;profile=mcp-app` and locked-down
 resource metadata for MCP Apps-capable hosts. The `codemode` tool also

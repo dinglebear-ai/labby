@@ -195,6 +195,24 @@ The app callbacks remain thin MCP adapters: `test` delegates to
 `gateway.test`, and `create` delegates to `gateway.add`. The tool and resource
 require `lab:admin`; they are omitted from lower-scope catalogs.
 
+### Gateway Status MCP App
+
+Admin-capable MCP Apps hosts also receive a synthetic `gateway_status` tool
+bound to `ui://lab/gateway/status`. Calling it opens a responsive, read-only
+snapshot of connected upstreams, their exposed capability counts, transport,
+and warnings. Its `refresh` callback delegates to `gateway.list`, and late
+launch output cannot overwrite a newer manual refresh.
+
+The tool and resource require `lab:admin`. They are advertised only when the
+active MCP route has a gateway manager, includes the `gateway` service, and
+allows `gateway.list`; a protected gateway subset that omits any of those
+prerequisites will not expose the app. Labby sends tool/resource list-changed
+notifications when this catalog changes. Reconnect clients that cache their
+initial catalog and do not honor those notifications. If the app is still
+missing, compare the running `labby --version` and binary with the build that
+introduced `gateway_status`; updating a source checkout does not replace an
+already-running service binary.
+
 `code_mode.result_shape_policy` defaults to `"off"`. When set to `"truncate"`,
 Labby shapes only successful completed final `result` values after the `__ui`
 unwrap and before envelope truncation. Sandbox-visible `callTool()` and
