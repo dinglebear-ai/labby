@@ -8,6 +8,17 @@ pub(crate) const SERVER_LOGS_APP_SKYBRIDGE_URI: &str = "ui://lab/server-logs/vie
 
 pub(crate) const SERVER_LOGS_APP_HTML: &str = include_str!("mcp/assets/server_logs_app.html");
 
+/// URI namespace reserved for the gateway Add Server app.
+#[cfg(feature = "gateway")]
+pub(crate) const ADD_SERVER_APP_URI_PREFIX: &str = "ui://lab/gateway/";
+#[cfg(feature = "gateway")]
+pub(crate) const ADD_SERVER_APP_URI: &str = "ui://lab/gateway/add-server";
+/// OpenAI Apps skybridge variant for ChatGPT / Codex hosts.
+#[cfg(feature = "gateway")]
+pub(crate) const ADD_SERVER_APP_SKYBRIDGE_URI: &str = "ui://lab/gateway/add-server.skybridge";
+#[cfg(feature = "gateway")]
+pub(crate) const ADD_SERVER_APP_HTML: &str = include_str!("mcp/assets/add_server_app.html");
+
 pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
   "use strict";
   if (window.LabbyAppHost) return;
@@ -16,6 +27,7 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
   const pending = new Map();
   let rpcId = 1;
   let mcpConnectPromise = null;
+  const appInfo = window.__LABBY_APP_INFO || { name: "LabbyApp", version: "1.0.0" };
   const hasOpenAiBridge = () => !!(window.openai && typeof window.openai.callTool === "function");
   const hasMcpBridge = () => window.__LABBY_MCP_RESOURCE === true && window.parent && window.parent !== window;
   window.addEventListener("message", event => {
@@ -64,7 +76,7 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
     if (!hasMcpBridge()) throw new Error("MCP app bridge unavailable");
     if (!mcpConnectPromise) {
       mcpConnectPromise = mcpRequest("ui/initialize", {
-        appInfo: { name: "LabbyServerLogs", version: "1.0.0" },
+        appInfo,
         appCapabilities: {},
         protocolVersion: MCP_PROTOCOL_VERSION
       }).then(result => {
@@ -131,6 +143,15 @@ pub(crate) const LABBY_APP_HOST_JS: &str = r#"(() => {
         try { window.openai.requestWidgetResize(size); } catch (_) {}
       } else if (hasMcpBridge()) {
         mcpNotify("ui/notifications/size-changed", size || {});
+      }
+    },
+    requestTeardown() {
+      if (hasMcpBridge()) {
+        mcpNotify("ui/notifications/request-teardown", {});
+      } else if (hasOpenAiBridge() && typeof window.openai.requestClose === "function") {
+        try { window.openai.requestClose(); } catch (_) {}
+      } else if (window.history.length > 1) {
+        window.history.back();
       }
     },
     readState(key) {

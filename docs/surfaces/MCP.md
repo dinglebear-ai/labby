@@ -175,6 +175,17 @@ Code Mode also exposes MCP App UI resources:
 - `ui://lab/code-mode/codemode`
 - `ui://lab/code-mode/history`
 
+Gateway administration exposes a separate app entry point to `lab:admin`
+callers:
+
+- tool: `add_server`
+- resource: `ui://lab/gateway/add-server`
+
+The Add Server app opens with no tool arguments. App-originated `test` and
+`create` calls delegate to the canonical `gateway.test` and `gateway.add`
+actions, so config validation, persistence, and runtime reconciliation stay in
+the gateway dispatch layer.
+
 These listed resources return `text/html;profile=mcp-app` and locked-down
 resource metadata for MCP Apps-capable hosts. The `codemode` tool also
 advertises the OpenAI Apps output template at

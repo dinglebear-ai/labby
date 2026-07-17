@@ -22,9 +22,15 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
 
+#[cfg(feature = "gateway")]
+pub(crate) use crate::app_assets::{
+    ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, ADD_SERVER_APP_URI_PREFIX,
+};
 pub(crate) use crate::app_assets::{
     SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
 };
+#[cfg(feature = "gateway")]
+use crate::mcp::catalog::ADD_SERVER_TOOL_NAME;
 use crate::mcp::catalog::{CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
@@ -117,6 +123,8 @@ pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = 
 
 const CODE_MODE_APP_FALLBACK_HTML: &str = include_str!("assets/code_mode_app.html");
 const SERVER_LOGS_APP_FALLBACK_HTML: &str = crate::app_assets::SERVER_LOGS_APP_HTML;
+#[cfg(feature = "gateway")]
+const ADD_SERVER_APP_FALLBACK_HTML: &str = crate::app_assets::ADD_SERVER_APP_HTML;
 
 pub(crate) const SERVER_LOGS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
     AppResourceDescriptor {
@@ -135,6 +143,28 @@ pub(crate) const SERVER_LOGS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] 
         resource_description: "Admin MCP App for Labby server process logs",
         skybridge_widget_description: Some(
             "Admin viewer for Labby's rolling server process logs with level, service, action, kind, and text filters.",
+        ),
+    },
+];
+
+#[cfg(feature = "gateway")]
+pub(crate) const ADD_SERVER_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
+    AppResourceDescriptor {
+        uri: ADD_SERVER_APP_URI,
+        name: "gateway/add-server",
+        runtime: CodeModeRuntime::McpApp,
+        tool_name: Some(ADD_SERVER_TOOL_NAME),
+        resource_description: "Admin MCP App for adding an upstream server to Labby",
+        skybridge_widget_description: None,
+    },
+    AppResourceDescriptor {
+        uri: ADD_SERVER_APP_SKYBRIDGE_URI,
+        name: "gateway/add-server.skybridge",
+        runtime: CodeModeRuntime::Skybridge,
+        tool_name: Some(ADD_SERVER_TOOL_NAME),
+        resource_description: "Admin MCP App for adding an upstream server to Labby",
+        skybridge_widget_description: Some(
+            "Connect and test a remote or local MCP server, then add it to the Labby gateway catalog.",
         ),
     },
 ];
@@ -161,23 +191,99 @@ const fn fnv1a_64(bytes: &[u8]) -> u64 {
 /// makes the advertised URI change exactly when the widget changes, forcing the
 /// host to refetch. The read path strips this suffix before matching descriptors,
 /// so the base URIs stay directly readable.
+/// Hash the fallback HTML plus the host bridge injected into the served resource.
+fn bridged_app_content_version(html: &str) -> String {
+    let input = format!("{html}\n{}", crate::app_assets::LABBY_APP_HOST_JS);
+    format!("{:016x}", fnv1a_64(input.as_bytes()))
+}
+
 static CODE_MODE_APP_VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!("{:016x}", fnv1a_64(CODE_MODE_APP_FALLBACK_HTML.as_bytes()))
 });
-static SERVER_LOGS_APP_VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    format!(
-        "{:016x}",
-        fnv1a_64(SERVER_LOGS_APP_FALLBACK_HTML.as_bytes())
-    )
-});
+static SERVER_LOGS_APP_VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| bridged_app_content_version(SERVER_LOGS_APP_FALLBACK_HTML));
+#[cfg(feature = "gateway")]
+static ADD_SERVER_APP_VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| bridged_app_content_version(ADD_SERVER_APP_FALLBACK_HTML));
 
-/// Append the cache-bust token to a base Code Mode widget URI.
-fn versioned_app_uri(base: &str) -> String {
-    format!("{base}?v={}", *CODE_MODE_APP_VERSION)
+#[derive(Clone, Copy)]
+struct OwnedAppRegistration {
+    descriptors: &'static [AppResourceDescriptor],
+    html: &'static str,
+    version: &'static std::sync::LazyLock<String>,
 }
 
-fn versioned_server_logs_app_uri(base: &str) -> String {
-    format!("{base}?v={}", *SERVER_LOGS_APP_VERSION)
+impl OwnedAppRegistration {
+    /// Resolve either a canonical or cache-busted URI to its descriptor.
+    fn descriptor(self, uri: &str) -> Option<&'static AppResourceDescriptor> {
+        app_descriptor_for_uri(self.descriptors, uri)
+    }
+
+    /// Add the registration's content-derived cache-bust token to a base URI.
+    fn versioned_uri(self, base: &str) -> String {
+        format!("{base}?v={}", self.version.as_str())
+    }
+
+    /// Build the MCP resource metadata for one registered runtime variant.
+    fn resource(self, descriptor: &AppResourceDescriptor) -> Resource {
+        let uri = self.versioned_uri(descriptor.uri);
+        Resource::new(uri.clone(), descriptor.name.to_string())
+            .with_description(descriptor.resource_description)
+            .with_mime_type(descriptor.runtime.mime())
+            .with_meta(app_resource_meta_for_descriptor(&uri, descriptor))
+    }
+
+    /// Build the resource-list entries hosts are expected to discover.
+    fn listed_resources(self) -> Vec<Resource> {
+        self.descriptors
+            .iter()
+            .filter(|descriptor| descriptor.runtime.listed())
+            .map(|descriptor| self.resource(descriptor))
+            .collect()
+    }
+
+    /// Find a tool-bound URI for a particular host runtime.
+    fn uri_for_tool(self, runtime: CodeModeRuntime, tool_name: &str) -> Option<String> {
+        self.descriptors
+            .iter()
+            .find(|descriptor| {
+                descriptor.runtime == runtime && descriptor.tool_name == Some(tool_name)
+            })
+            .map(|descriptor| self.versioned_uri(descriptor.uri))
+    }
+
+    /// Inline the shared host bridge into this registration's fallback HTML.
+    fn inline_html(self, descriptor: &AppResourceDescriptor) -> Result<String, String> {
+        inline_app_host_script(self.html, descriptor)
+    }
+}
+
+/// Return the shared Code Mode app registration.
+fn code_mode_app() -> OwnedAppRegistration {
+    OwnedAppRegistration {
+        descriptors: CODE_MODE_APP_RESOURCE_DESCRIPTORS,
+        html: CODE_MODE_APP_FALLBACK_HTML,
+        version: &CODE_MODE_APP_VERSION,
+    }
+}
+
+/// Return the Server Logs app registration.
+fn server_logs_app() -> OwnedAppRegistration {
+    OwnedAppRegistration {
+        descriptors: SERVER_LOGS_APP_RESOURCE_DESCRIPTORS,
+        html: SERVER_LOGS_APP_FALLBACK_HTML,
+        version: &SERVER_LOGS_APP_VERSION,
+    }
+}
+
+#[cfg(feature = "gateway")]
+/// Return the gateway Add Server app registration.
+fn add_server_app() -> OwnedAppRegistration {
+    OwnedAppRegistration {
+        descriptors: ADD_SERVER_APP_RESOURCE_DESCRIPTORS,
+        html: ADD_SERVER_APP_FALLBACK_HTML,
+        version: &ADD_SERVER_APP_VERSION,
+    }
 }
 
 /// Strip the `?v=<hash>` cache-bust suffix so a versioned URI matches its base
@@ -252,11 +358,24 @@ impl LabMcpServer {
         }
 
         if !resources.finished()
-            && server_logs_app_resources_visible(auth)
+            && admin_app_resources_visible(auth)
             && self.route_scope.allows_service(SERVER_LOGS_TOOL_NAME)
             && self.service_visible_on_mcp(SERVER_LOGS_TOOL_NAME).await
         {
             for resource in server_logs_app_resources() {
+                resources.accept(resource);
+                if resources.finished() {
+                    break;
+                }
+            }
+        }
+
+        #[cfg(feature = "gateway")]
+        if !resources.finished()
+            && admin_app_resources_visible(auth)
+            && self.add_server_app_available_on_mcp().await
+        {
+            for resource in add_server_app_resources() {
                 resources.accept(resource);
                 if resources.finished() {
                     break;
@@ -418,6 +537,18 @@ impl LabMcpServer {
         if uri.starts_with(SERVER_LOGS_APP_URI_PREFIX) {
             return self
                 .read_server_logs_app_resource_impl(uri, &subject, start, &context)
+                .await;
+        }
+        #[cfg(feature = "gateway")]
+        if uri.starts_with(ADD_SERVER_APP_URI_PREFIX) {
+            return self
+                .read_add_server_app_resource_impl(
+                    uri,
+                    &resource_uri_log,
+                    &subject,
+                    start,
+                    &context,
+                )
                 .await;
         }
         // Any other `ui://` is an upstream MCP Apps (mcp-ui) widget resource
@@ -751,7 +882,7 @@ impl LabMcpServer {
             ));
         }
         let auth = auth_context_from_extensions(&context.extensions);
-        if !server_logs_app_resources_visible(auth) {
+        if !admin_app_resources_visible(auth) {
             let elapsed_ms = start.elapsed().as_millis();
             tracing::warn!(
                 surface = "mcp",
@@ -783,11 +914,12 @@ impl LabMcpServer {
             ));
         }
 
-        let descriptor = app_descriptor_for_uri(SERVER_LOGS_APP_RESOURCE_DESCRIPTORS, uri)
-            .ok_or_else(|| {
-                ErrorData::resource_not_found(format!("unknown UI resource: {uri}"), None)
-            })?;
-        let html = server_logs_app_html_for_descriptor(descriptor)
+        let app = server_logs_app();
+        let descriptor = app.descriptor(uri).ok_or_else(|| {
+            ErrorData::resource_not_found(format!("unknown UI resource: {uri}"), None)
+        })?;
+        let html = app
+            .inline_html(descriptor)
             .map_err(|message| ErrorData::internal_error(message, None))?;
         let runtime = descriptor.runtime;
         let mime_type = runtime.mime();
@@ -819,6 +951,110 @@ impl LabMcpServer {
                 .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
         ]))
     }
+
+    #[cfg(feature = "gateway")]
+    async fn read_add_server_app_resource_impl(
+        &self,
+        uri: &str,
+        resource_uri_log: &str,
+        subject: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        if !self.add_server_app_available_on_mcp().await {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                subject,
+                elapsed_ms,
+                kind = "not_found",
+                resource_uri = resource_uri_log,
+                "add server app resource unavailable"
+            );
+            self.emit_dispatch_notification(
+                context,
+                "lab",
+                "read_resource",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind: "not_found",
+                },
+            )
+            .await;
+            return Err(ErrorData::resource_not_found(
+                format!("unknown UI resource: {uri}"),
+                None,
+            ));
+        }
+        let auth = auth_context_from_extensions(&context.extensions);
+        if !admin_app_resources_visible(auth) {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                subject,
+                elapsed_ms,
+                kind = "forbidden",
+                resource_uri = resource_uri_log,
+                "add server app resource denied by scope"
+            );
+            self.emit_dispatch_notification(
+                context,
+                "lab",
+                "read_resource",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind: "forbidden",
+                },
+            )
+            .await;
+            return Err(ErrorData::invalid_params(
+                "Add Server app resources require scope: lab:admin",
+                Some(json!({
+                    "kind": "forbidden",
+                    "required_scopes": ["lab:admin"],
+                })),
+            ));
+        }
+        let app = add_server_app();
+        let descriptor = app.descriptor(uri).ok_or_else(|| {
+            ErrorData::resource_not_found(format!("unknown UI resource: {uri}"), None)
+        })?;
+        let html = app
+            .inline_html(descriptor)
+            .map_err(|message| ErrorData::internal_error(message, None))?;
+        let mime_type = descriptor.runtime.mime();
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            elapsed_ms,
+            resource_uri = resource_uri_log,
+            mime_type,
+            html_bytes = html.len(),
+            "add server app resource read ok"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "read_resource",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(html, uri.to_string())
+                .with_mime_type(mime_type)
+                .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
+        ]))
+    }
 }
 
 #[cfg(test)]
@@ -841,32 +1077,17 @@ fn code_mode_app_html_for_descriptor(history: Option<&Value>) -> String {
     html
 }
 
-fn app_resource(
-    descriptor: &AppResourceDescriptor,
-    versioned_uri: impl Fn(&str) -> String,
-) -> Resource {
-    let uri = versioned_uri(descriptor.uri);
-    Resource::new(uri.clone(), descriptor.name.to_string())
-        .with_description(descriptor.resource_description)
-        .with_mime_type(descriptor.runtime.mime())
-        .with_meta(app_resource_meta_for_descriptor(&uri, descriptor))
-}
-
 #[cfg(test)]
 fn server_logs_app_html(uri: &str) -> Result<String, String> {
-    let Some(descriptor) = app_descriptor_for_uri(SERVER_LOGS_APP_RESOURCE_DESCRIPTORS, uri) else {
+    let app = server_logs_app();
+    let Some(descriptor) = app.descriptor(uri) else {
         return Err(format!("unknown UI resource: {uri}"));
     };
-    server_logs_app_html_for_descriptor(descriptor)
+    app.inline_html(descriptor)
 }
 
-fn server_logs_app_html_for_descriptor(
-    descriptor: &AppResourceDescriptor,
-) -> Result<String, String> {
-    inline_server_logs_host_script(SERVER_LOGS_APP_FALLBACK_HTML, descriptor)
-}
-
-fn inline_server_logs_host_script(
+/// Replace the external host-script marker with the embedded bridge runtime.
+fn inline_app_host_script(
     html: &str,
     descriptor: &AppResourceDescriptor,
 ) -> Result<String, String> {
@@ -888,6 +1109,7 @@ fn inline_server_logs_host_script(
     ))
 }
 
+/// Resolve a canonical or cache-busted URI within a descriptor table.
 fn app_descriptor_for_uri<'a>(
     descriptors: &'a [AppResourceDescriptor],
     uri: &str,
@@ -896,12 +1118,9 @@ fn app_descriptor_for_uri<'a>(
     descriptors.iter().find(|descriptor| descriptor.uri == base)
 }
 
-fn code_mode_app_resource(descriptor: &AppResourceDescriptor) -> Resource {
-    app_resource(descriptor, versioned_app_uri)
-}
-
-fn server_logs_app_resource(descriptor: &AppResourceDescriptor) -> Resource {
-    app_resource(descriptor, versioned_server_logs_app_uri)
+#[cfg(test)]
+fn versioned_app_uri(base: &str) -> String {
+    code_mode_app().versioned_uri(base)
 }
 
 /// Host runtime a Code Mode app URI targets. Callers must pass a table URI; an
@@ -923,6 +1142,7 @@ fn app_runtime_for_uri(
         .runtime
 }
 
+/// Whether Code Mode app resources are readable by the current caller.
 fn code_mode_app_resources_visible(
     exposes_synthetic_tools: bool,
     auth: Option<&labby_auth::auth_context::AuthContext>,
@@ -930,26 +1150,27 @@ fn code_mode_app_resources_visible(
     exposes_synthetic_tools && code_mode_read_scope_allowed(auth)
 }
 
-pub(crate) fn server_logs_app_resources_visible(
+/// Whether admin-only Lab-owned app resources are readable by this caller.
+pub(crate) fn admin_app_resources_visible(
     auth: Option<&labby_auth::auth_context::AuthContext>,
 ) -> bool {
     auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"))
 }
 
+/// Build the discoverable Code Mode app resources.
 fn code_mode_app_resources() -> Vec<Resource> {
-    CODE_MODE_APP_RESOURCE_DESCRIPTORS
-        .iter()
-        .filter(|descriptor| descriptor.runtime.listed())
-        .map(code_mode_app_resource)
-        .collect()
+    code_mode_app().listed_resources()
 }
 
+/// Build the discoverable Server Logs app resources.
 fn server_logs_app_resources() -> Vec<Resource> {
-    SERVER_LOGS_APP_RESOURCE_DESCRIPTORS
-        .iter()
-        .filter(|descriptor| descriptor.runtime.listed())
-        .map(server_logs_app_resource)
-        .collect()
+    server_logs_app().listed_resources()
+}
+
+#[cfg(feature = "gateway")]
+/// Build the discoverable Add Server app resources.
+fn add_server_app_resources() -> Vec<Resource> {
+    add_server_app().listed_resources()
 }
 
 /// MCP Apps (Claude) widget URI for a tool — backs `_meta.ui.resourceUri`.
@@ -957,54 +1178,34 @@ fn server_logs_app_resources() -> Vec<Resource> {
 /// Carries the `?v=<hash>` cache-bust suffix so a rebuilt widget forces the host
 /// to refetch instead of rendering its cached copy of the previous build.
 pub(crate) fn code_mode_app_resource_uri_for_tool(tool_name: &str) -> Option<String> {
-    code_mode_app_uri_for_tool(CodeModeRuntime::McpApp, tool_name)
+    code_mode_app().uri_for_tool(CodeModeRuntime::McpApp, tool_name)
 }
 
 /// OpenAI Apps (ChatGPT / Codex) widget URI for a tool — backs `openai/outputTemplate`.
 ///
 /// Carries the same `?v=<hash>` cache-bust suffix as the MCP Apps URI.
 pub(crate) fn code_mode_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
-    code_mode_app_uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
+    code_mode_app().uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
 }
 
 /// MCP Apps widget URI for the server log viewer tool.
 pub(crate) fn server_logs_app_resource_uri_for_tool(tool_name: &str) -> Option<String> {
-    server_logs_app_uri_for_tool(CodeModeRuntime::McpApp, tool_name)
+    server_logs_app().uri_for_tool(CodeModeRuntime::McpApp, tool_name)
 }
 
 /// OpenAI Apps skybridge widget URI for the server log viewer tool.
 pub(crate) fn server_logs_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
-    server_logs_app_uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
+    server_logs_app().uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
 }
 
-fn code_mode_app_uri_for_tool(runtime: CodeModeRuntime, tool_name: &str) -> Option<String> {
-    app_uri_for_tool(
-        CODE_MODE_APP_RESOURCE_DESCRIPTORS,
-        runtime,
-        tool_name,
-        versioned_app_uri,
-    )
+#[cfg(feature = "gateway")]
+pub(crate) fn add_server_app_resource_uri_for_tool(tool_name: &str) -> Option<String> {
+    add_server_app().uri_for_tool(CodeModeRuntime::McpApp, tool_name)
 }
 
-fn server_logs_app_uri_for_tool(runtime: CodeModeRuntime, tool_name: &str) -> Option<String> {
-    app_uri_for_tool(
-        SERVER_LOGS_APP_RESOURCE_DESCRIPTORS,
-        runtime,
-        tool_name,
-        versioned_server_logs_app_uri,
-    )
-}
-
-fn app_uri_for_tool(
-    descriptors: &[AppResourceDescriptor],
-    runtime: CodeModeRuntime,
-    tool_name: &str,
-    versioned_uri: impl Fn(&str) -> String,
-) -> Option<String> {
-    descriptors
-        .iter()
-        .find(|descriptor| descriptor.runtime == runtime && descriptor.tool_name == Some(tool_name))
-        .map(|descriptor| versioned_uri(descriptor.uri))
+#[cfg(feature = "gateway")]
+pub(crate) fn add_server_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
+    add_server_app().uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
 }
 
 #[cfg(test)]
@@ -1603,6 +1804,7 @@ mod tests {
         let html = server_logs_app_html(SERVER_LOGS_APP_URI).expect("server logs resource");
 
         for expected in [
+            "LabbyServerLogs",
             "server_logs.query",
             "/v1/server-logs/query",
             "html.browser",
@@ -1635,10 +1837,46 @@ mod tests {
             .find(|descriptor| descriptor.uri == SERVER_LOGS_APP_URI)
             .expect("server logs descriptor");
 
-        let err = inline_server_logs_host_script("<html></html>", descriptor)
+        let err = inline_app_host_script("<html></html>", descriptor)
             .expect_err("missing host script marker should fail");
 
         assert!(err.contains("missing Labby app host script marker"));
+    }
+
+    #[test]
+    fn add_server_app_is_interactive_and_mobile_responsive() {
+        let descriptor = ADD_SERVER_APP_RESOURCE_DESCRIPTORS
+            .iter()
+            .find(|descriptor| descriptor.uri == ADD_SERVER_APP_URI)
+            .expect("Add Server descriptor");
+        let html = add_server_app()
+            .inline_html(descriptor)
+            .expect("Add Server HTML");
+
+        for expected in [
+            "Add Server",
+            "Test Connection",
+            "Create Server",
+            "host.callAction(\"add_server\",action",
+            "proxy_resources",
+            "proxy_prompts",
+            "@media (max-width:620px)",
+            "env(safe-area-inset-bottom)",
+            "min-height:48px",
+            "ui/notifications/request-teardown",
+            "probeStatus(result)",
+            "result&&result.last_error",
+            "lifecycle=\"closing\"",
+            "observer.disconnect()",
+            "originalButtonMarkup",
+            "nameInput,targetInput,resources,prompts",
+        ] {
+            assert!(
+                html.contains(expected),
+                "Add Server app must include marker `{expected}`"
+            );
+        }
+        assert!(html.contains("window.__LABBY_MCP_RESOURCE=true;"));
     }
 
     #[tokio::test]
@@ -2122,6 +2360,29 @@ mod tests {
         // An un-tabled URI is still rejected even with a cache-bust suffix.
         let bogus = versioned_app_uri("ui://lab/code-mode/nope");
         assert!(code_mode_app_html(&bogus, None).is_err());
+    }
+
+    #[test]
+    fn bridged_app_version_includes_the_injected_host_runtime() {
+        let html = "<html>fixture</html>";
+        let html_only = format!("{:016x}", fnv1a_64(html.as_bytes()));
+        let combined = format!("{html}\n{}", crate::app_assets::LABBY_APP_HOST_JS);
+
+        assert_eq!(
+            bridged_app_content_version(html),
+            format!("{:016x}", fnv1a_64(combined.as_bytes()))
+        );
+        assert_ne!(bridged_app_content_version(html), html_only);
+    }
+
+    #[test]
+    fn add_server_resource_log_uri_redacts_query_credentials() {
+        let uri = format!("{ADD_SERVER_APP_URI}?token=super-secret#fragment");
+        let resource_uri_log =
+            crate::dispatch::upstream::pool::redact_resource_uri_for_logging(&uri);
+
+        assert_eq!(resource_uri_log, ADD_SERVER_APP_URI);
+        assert!(!resource_uri_log.contains("super-secret"));
     }
 
     #[test]

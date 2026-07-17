@@ -147,6 +147,9 @@ Resources are read-only. Do not use them for mutations.
 
 - `ui://lab/code-mode/*` — Lab's own Code Mode app resources, served locally
   from bundled HTML (`read_code_mode_app_resource_impl`).
+- `ui://lab/gateway/add-server` — the admin-only Add Server app bound to the
+  synthetic `add_server` tool. Its `test` and `create` callbacks delegate to
+  `gateway.test` and `gateway.add`; do not duplicate gateway persistence logic.
 - any other `ui://<upstream>/…` — an upstream mcp-ui widget resource (referenced
   by a tool result's `_meta.ui.resourceUri`). Routed to the owning upstream peer
   via `pool.read_upstream_ui_resource` (catalog reverse-lookup, native URI
