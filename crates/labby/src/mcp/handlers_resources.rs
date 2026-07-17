@@ -1036,7 +1036,7 @@ impl LabMcpServer {
             action = "read_resource",
             subject,
             elapsed_ms,
-            resource_uri = uri,
+            resource_uri = resource_uri_log,
             mime_type,
             html_bytes = html.len(),
             "add server app resource read ok"
