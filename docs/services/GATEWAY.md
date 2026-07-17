@@ -182,6 +182,19 @@ History is process-local, memory-only, maintained under entry/byte caps on a
 best-effort basis, and cleared on restart; do not treat it as a durable audit log
 or a hard storage quota until the backend history-cap follow-up lands.
 
+### Add Server MCP App
+
+Admin-capable MCP Apps hosts also receive a synthetic `add_server` tool bound to
+`ui://lab/gateway/add-server`. Calling the tool with no arguments opens a
+responsive form for a server name and either an HTTP endpoint or local stdio
+command. The app auto-detects the transport, can probe the proposed server, and
+can add it to the gateway catalog while controlling resource and prompt
+exposure.
+
+The app callbacks remain thin MCP adapters: `test` delegates to
+`gateway.test`, and `create` delegates to `gateway.add`. The tool and resource
+require `lab:admin`; they are omitted from lower-scope catalogs.
+
 `code_mode.result_shape_policy` defaults to `"off"`. When set to `"truncate"`,
 Labby shapes only successful completed final `result` values after the `__ui`
 unwrap and before envelope truncation. Sandbox-visible `callTool()` and
