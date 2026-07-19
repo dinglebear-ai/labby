@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0](https://github.com/jmagar/labby/compare/v1.5.0...v1.6.0) (2026-07-17)
+
+
+### Added
+
+* **mcp:** add gateway upstream status app ([#252](https://github.com/jmagar/labby/issues/252)) ([01c2c4d](https://github.com/jmagar/labby/commit/01c2c4da665941eafdb7e3d06e6f5f25b2256b20))
+* **mcp:** add responsive server onboarding app ([#250](https://github.com/jmagar/labby/issues/250)) ([ef49be1](https://github.com/jmagar/labby/commit/ef49be16727daa2b4a173ca642e43544ccd8b03c))
+
+
+### Fixed
+
+* **gateway:** survive request cancellation during gateway.reload ([4dbe7d8](https://github.com/jmagar/labby/commit/4dbe7d89fdfcebf77d4651d453e5864abf714800))
+* **mcp:** advertise labby server identity instead of rmcp defaults ([#249](https://github.com/jmagar/labby/issues/249)) ([05eab05](https://github.com/jmagar/labby/commit/05eab05d68dc440599a57c7caafb4d7c9ca49dee))
+* **mcp:** harden gateway apps after review ([#254](https://github.com/jmagar/labby/issues/254)) ([d969456](https://github.com/jmagar/labby/commit/d969456363f9199dc514b5e49dbb5872eb44d9d1))
+* **mcp:** notify clients when app tools appear ([#253](https://github.com/jmagar/labby/issues/253)) ([a17fa9e](https://github.com/jmagar/labby/commit/a17fa9e3960c4e8e0c6afceeea9788722ec8a926))
+
 ## [1.5.0](https://github.com/jmagar/labby/compare/v1.4.1...v1.5.0) (2026-07-16)
 
 
