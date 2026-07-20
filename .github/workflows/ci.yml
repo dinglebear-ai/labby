@@ -31,7 +31,7 @@ env:
 jobs:
   changes:
     name: changes
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     outputs:
       all: ${{ steps.classify.outputs.all }}
       docs: ${{ steps.classify.outputs.docs }}
@@ -93,7 +93,7 @@ jobs:
 
   secret-scan:
     name: Secret scan (gitleaks)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     permissions:
       contents: read
     steps:
@@ -108,7 +108,7 @@ jobs:
 
   unraid-plugin-check:
     name: Unraid plugin checksums
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -118,7 +118,7 @@ jobs:
 
   actionlint:
     name: Actionlint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: changes
     if: ${{ needs.changes.outputs.workflow == 'true' }}
     steps:
@@ -139,7 +139,7 @@ jobs:
 
   frontend-assets:
     name: Frontend assets
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: changes
     if: >-
       ${{
@@ -164,7 +164,7 @@ jobs:
 
   gateway-admin-browser:
     name: Gateway Admin browser tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: changes
     if: ${{ needs.changes.outputs.web == 'true' }}
     defaults:
@@ -188,7 +188,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
@@ -202,7 +202,7 @@ jobs:
 
   deny:
     name: Cargo Deny
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: changes
     if: ${{ needs.changes.outputs.security == 'true' }}
     steps:
@@ -213,7 +213,7 @@ jobs:
 
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
@@ -230,7 +230,7 @@ jobs:
 
   codemode-runner-smoke:
     name: Code Mode runner smoke
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
@@ -252,7 +252,7 @@ jobs:
 
   npm-launcher:
     name: npm launcher
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: changes
     if: ${{ needs.changes.outputs.npm == 'true' }}
     steps:
@@ -271,7 +271,7 @@ jobs:
 
   feature-slices:
     name: Feature slice (${{ matrix.slice }})
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     # CLAUDE.md's intent is that each standalone product slice compiles on its
@@ -322,7 +322,7 @@ jobs:
 
   extracted-crate-slices:
     name: Extracted crate slice (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     env:
@@ -367,7 +367,7 @@ jobs:
 
   docs-check:
     name: Generated docs
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.docs_check == 'true' }}
     steps:
@@ -388,7 +388,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
@@ -407,7 +407,7 @@ jobs:
 
   mcp-regressions:
     name: MCP focused regressions
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
@@ -455,7 +455,7 @@ jobs:
     # partial invalidations that restore doesn't cover (dependency bumps,
     # source-only changes). ubuntu-latest jobs (test-fork, etc.) remain
     # untouched — a persistent cache gains nothing on an ephemeral runner.
-    runs-on: [self-hosted, linux-lab]
+    runs-on: [self-hosted, unraid]
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
       (
@@ -541,7 +541,7 @@ jobs:
 
   test-fork:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
@@ -908,7 +908,7 @@ jobs:
 
   container:
     name: Container build + smoke
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.docker == 'true' }}
     steps:
@@ -964,7 +964,7 @@ jobs:
 
   palette-web:
     name: Palette renderer
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
     defaults:
@@ -995,7 +995,7 @@ jobs:
 
   palette-rust:
     name: Palette Tauri (Linux)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
     steps:
@@ -1034,7 +1034,7 @@ jobs:
 
   rust-coverage:
     name: Rust coverage
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
@@ -1078,7 +1078,7 @@ jobs:
 
   ci-gate:
     name: ci-gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     if: always()
     needs:
       - changes
