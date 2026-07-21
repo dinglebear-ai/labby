@@ -42,7 +42,7 @@ env:
 jobs:
   build-image:
     name: Build and smoke Incus image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     timeout-minutes: 120
 
     steps:
@@ -120,7 +120,7 @@ jobs:
     name: Publish immutable Incus image and advance rolling alias
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build-image
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     permissions:
       contents: write
     steps:

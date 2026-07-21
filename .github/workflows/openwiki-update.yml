@@ -14,7 +14,7 @@ jobs:
     # OpenWiki uses Jacob's OpenAI-compatible gateway. GitHub-hosted runners
     # hit Cloudflare managed challenges on the public hostname, so use tootie's
     # Tailscale endpoint from the trusted private Linux runner class.
-    runs-on: [self-hosted, linux-lab]
+    runs-on: [self-hosted, unraid]
     steps:
       - name: Check out repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5

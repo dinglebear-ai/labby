@@ -28,7 +28,7 @@ env:
 jobs:
   preflight:
     name: Release preflight
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -61,7 +61,7 @@ jobs:
 
   frontend-assets:
     name: Frontend assets
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: preflight
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -174,7 +174,7 @@ jobs:
   container:
     name: Build and smoke container image
     needs: frontend-assets
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -211,7 +211,7 @@ jobs:
   incus-image:
     name: Incus image
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -261,7 +261,7 @@ jobs:
     name: Publish validated release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build, container, incus-image]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     permissions:
       contents: write
       packages: write

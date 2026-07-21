@@ -58,7 +58,7 @@ concurrency:
 jobs:
   release-please:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     permissions:
       contents: write       # required to create release commits and tags
       pull-requests: write  # required to create and update release PRs
@@ -81,7 +81,7 @@ jobs:
     name: Sync release metadata to release PR version
     needs: release-please
     if: ${{ needs.release-please.outputs.prs_created == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     permissions:
       contents: write
     steps:
