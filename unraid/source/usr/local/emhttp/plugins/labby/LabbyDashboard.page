@@ -1,0 +1,98 @@
+Menu="Dashboard"
+Title="Labby"
+Icon="server"
+Tag="server"
+Cond="(preg_match('/DASHBOARD_WIDGET_ENABLE\s*=\s*[\x22\x27]false[\x22\x27]/', @file_get_contents('/boot/config/plugins/labby/labby.cfg') ?: '') !== 1)"
+---
+<?php
+/*
+ * Main → Dashboard status tile for Labby.
+ *
+ * This stays dependency-free because it renders on every Dashboard visit.
+ * It polls an authenticated, aggregate-only endpoint: no upstream URLs,
+ * commands, environment names, credentials, or tool arguments cross this
+ * surface. The endpoint supports both native and Incus runtime modes.
+ */
+?>
+<style>
+  .lbw-wrap{display:flex;flex-direction:column;gap:8px;padding:2px}
+  .lbw-head{display:flex;align-items:center;gap:8px;min-width:0;font-size:1.25rem}
+  .lbw-dot{width:9px;height:9px;border-radius:50%;background:#8a8a8a;flex:none}
+  .lbw-dot.on{background:#63a659}
+  .lbw-dot.warn{background:#e0a53b}
+  .lbw-dot.bad{background:#c95656}
+  .lbw-state{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lbw-runtime{margin-left:auto;border:1px solid var(--border-color,#33383d);border-radius:999px;padding:2px 8px;font-size:1.05rem;opacity:.75}
+  .lbw-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .lbw-tile{min-width:0;border:1px solid var(--border-color,#33383d);border-radius:8px;padding:8px 6px;text-align:center}
+  .lbw-value{overflow:hidden;text-overflow:ellipsis;font-size:1.9rem;font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums}
+  .lbw-label{font-size:1.05rem;opacity:.72;text-transform:uppercase;letter-spacing:.04em}
+  .lbw-errors.has-errors{color:#c95656}
+  .lbw-foot{display:flex;align-items:center;gap:8px;min-width:0;padding-right:44px;font-size:1.15rem;opacity:.72}
+  .lbw-meta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lbw-foot a{margin-left:auto;white-space:nowrap}
+</style>
+
+<div class="lbw-wrap" id="labby-dashboard-widget" aria-live="polite">
+  <div class="lbw-head">
+    <span class="lbw-dot" data-lbw="dot" aria-hidden="true"></span>
+    <strong class="lbw-state" data-lbw="state">Connecting…</strong>
+    <span class="lbw-runtime" data-lbw="runtime">—</span>
+  </div>
+  <div class="lbw-tiles">
+    <div class="lbw-tile"><div class="lbw-value" data-lbw="connected">—</div><div class="lbw-label">Connected</div></div>
+    <div class="lbw-tile"><div class="lbw-value" data-lbw="tools">—</div><div class="lbw-label">Tools</div></div>
+    <div class="lbw-tile"><div class="lbw-value lbw-errors" data-lbw="errors">—</div><div class="lbw-label">Errors</div></div>
+  </div>
+  <div class="lbw-foot">
+    <span class="lbw-meta" data-lbw="meta">Waiting for live status</span>
+    <a href="/Settings/Labby">Settings ›</a>
+  </div>
+</div>
+
+<script>
+(function(){
+  var root=document.getElementById('labby-dashboard-widget');
+  if(!root)return;
+  var timer=null,request=null;
+  var get=function(name){return root.querySelector('[data-lbw="'+name+'"]');};
+  var set=function(name,value){var el=get(name);if(el)el.textContent=value;};
+  function unavailable(message){
+    var dot=get('dot');if(dot)dot.className='lbw-dot bad';
+    set('state',message||'Status unavailable');
+    set('connected','—');set('tools','—');set('errors','—');
+    set('meta','Live aggregates unavailable');
+  }
+  function render(data){
+    if(!data||!data.service||!data.gateway){unavailable('Invalid status response');return;}
+    var running=data.service.running===true;
+    var gatewayOk=data.gateway.available===true;
+    var errors=Number(data.gateway.errors)||0;
+    var dot=get('dot');
+    if(dot)dot.className='lbw-dot'+(running&&gatewayOk&&errors===0?' on':running?' warn':'');
+    set('state',running?(gatewayOk?'Gateway running':'Running · gateway unavailable'):'Service stopped');
+    set('runtime',data.runtime==='incus'?'Incus':'Native');
+    set('connected',gatewayOk?(String(Number(data.gateway.connected)||0)+' / '+String(Number(data.gateway.enabled)||0)):'—');
+    set('tools',gatewayOk?String(Number(data.gateway.tools)||0):'—');
+    set('errors',gatewayOk?String(errors):'—');
+    var errorEl=get('errors');if(errorEl)errorEl.className='lbw-value lbw-errors'+(errors>0?' has-errors':'');
+    if(!running)set('meta',data.service.enabled?'Autostart enabled':'Autostart disabled');
+    else if(gatewayOk)set('meta',String(Number(data.gateway.total)||0)+' servers · '+String(Number(data.gateway.enabled)||0)+' enabled');
+    else set('meta','Could not read gateway inventory');
+  }
+  function schedule(){clearTimeout(timer);timer=setTimeout(refresh,15000);}
+  function refresh(){
+    if(document.hidden){schedule();return;}
+    if(request)request.abort();
+    request=new AbortController();
+    var timeout=setTimeout(function(){request.abort();},10000);
+    fetch('/plugins/labby/include/dashboard-status.php',{credentials:'same-origin',cache:'no-store',signal:request.signal})
+      .then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();})
+      .then(render)
+      .catch(function(error){if(error.name!=='AbortError')unavailable('Status unavailable');})
+      .finally(function(){clearTimeout(timeout);request=null;schedule();});
+  }
+  document.addEventListener('visibilitychange',function(){if(!document.hidden){clearTimeout(timer);refresh();}});
+  refresh();
+})();
+</script>

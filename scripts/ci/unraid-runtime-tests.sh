@@ -7,6 +7,8 @@ rc_script="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/scripts/rc.la
 incus_env_script="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/scripts/labby-incus-env.sh"
 incus_init_script="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/scripts/labby-incus-init.sh"
 page_file="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/Labby.page"
+dashboard_page_file="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/LabbyDashboard.page"
+dashboard_status_file="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/include/dashboard-status.php"
 profile_file="$repo_root/unraid/source/usr/local/emhttp/plugins/labby/incus/labby-gateway-profile.yaml"
 
 tmp="$(mktemp -d)"
@@ -53,6 +55,7 @@ SERVICE="enabled"
 LABBY_DIR="$tmp/labby-state"
 HTTP_HOST="127.0.0.1"
 HTTP_PORT="8765"
+DASHBOARD_WIDGET_ENABLE="true"
 CFG
 }
 
@@ -585,6 +588,91 @@ test_page_exposes_native_gateway_controls() {
     assert_file_not_contains "$page_file" 'links out to labby'
 }
 
+test_dashboard_widget_contract() {
+    assert_file_contains "$dashboard_page_file" 'Menu="Dashboard"'
+    assert_file_contains "$dashboard_page_file" 'Title="Labby"'
+    assert_file_contains "$dashboard_page_file" 'DASHBOARD_WIDGET_ENABLE'
+    assert_file_contains "$dashboard_page_file" 'data-lbw="connected"'
+    assert_file_contains "$dashboard_page_file" 'data-lbw="tools"'
+    assert_file_contains "$dashboard_page_file" 'data-lbw="errors"'
+    assert_file_contains "$dashboard_page_file" '/plugins/labby/include/dashboard-status.php'
+    assert_file_contains "$dashboard_page_file" 'credentials:'"'"'same-origin'"'"
+    assert_file_contains "$dashboard_page_file" 'setTimeout(refresh,15000)'
+    assert_file_not_contains "$dashboard_page_file" 'unraid-settings-shell'
+
+    assert_file_contains "$dashboard_status_file" 'Cache-Control: no-store'
+    assert_file_contains "$dashboard_status_file" "'exposed_tool_count'"
+    assert_file_contains "$dashboard_status_file" "'available' => \$available"
+    assert_file_not_contains "$dashboard_status_file" "'name' =>"
+    assert_file_not_contains "$dashboard_status_file" "'url' =>"
+    assert_file_not_contains "$dashboard_status_file" "'command' =>"
+
+    assert_file_contains "$page_file" 'name="DASHBOARD_WIDGET_ENABLE"'
+    assert_file_contains "$page_file" 'DASHBOARD_WIDGET_ENABLE must be true or false.'
+
+    php -l "$dashboard_status_file" >/dev/null
+    php "$dashboard_status_file" |
+        jq -e '
+            (.service.enabled | type == "boolean")
+            and (.service.running | type == "boolean")
+            and (.runtime == "native" or .runtime == "incus")
+            and (.gateway.available | type == "boolean")
+            and (.gateway.total | type == "number")
+            and (.gateway.connected | type == "number")
+            and (.gateway.tools | type == "number")
+            and (.gateway.errors | type == "number")
+        ' >/dev/null
+}
+
+test_dashboard_endpoint_incus_mode() {
+    local dash="$tmp/dashboard-incus"
+    mkdir -p "$dash"
+    cat > "$dash/labby.cfg" <<CFG
+RUNTIME_MODE="incus"
+INCUS_CONTAINER_NAME="labby-gateway"
+SERVICE="enabled"
+LABBY_DIR="/mnt/user/appdata/labby"
+HTTP_HOST="127.0.0.1"
+HTTP_PORT="8765"
+CFG
+    cat > "$dash/rc.labby" <<'SH'
+#!/usr/bin/env bash
+echo 'labby: RUNNING (Incus container labby-gateway)'
+SH
+    cat > "$dash/incus-env.sh" <<SH
+#!/usr/bin/env bash
+export INCUS="$dash/incus"
+SH
+    cat > "$dash/incus" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '[{"enabled":true,"connected":true,"exposed_tool_count":4},{"enabled":true,"connected":false,"exposed_tool_count":2,"last_error":"offline"},{"enabled":false,"connected":false,"exposed_tool_count":0}]'
+SH
+    chmod +x "$dash/rc.labby" "$dash/incus" "$dash/incus-env.sh"
+
+    cat > "$dash/run.php" <<PHP
+<?php
+define('LABBY_DASHBOARD_CFG', '$dash/labby.cfg');
+define('LABBY_DASHBOARD_BIN', '$dash/labby');
+define('LABBY_DASHBOARD_INCUS_ENV', '$dash/incus-env.sh');
+define('LABBY_DASHBOARD_RC', '$dash/rc.labby');
+require '$dashboard_status_file';
+PHP
+
+    php "$dash/run.php" |
+        jq -e '
+            .service == {"enabled":true,"running":true}
+            and .runtime == "incus"
+            and .gateway == {
+                "available":true,
+                "total":3,
+                "enabled":2,
+                "connected":1,
+                "tools":6,
+                "errors":1
+            }
+        ' >/dev/null
+}
+
 test_env_sourcer_is_idempotent
 test_native_start_does_not_require_incus
 test_native_start_ignores_unproven_incus_query_failure
@@ -604,5 +692,7 @@ test_labby_dir_validator_rejects_non_array_paths
 test_profile_is_rendered_in_one_edit
 test_tailscale_key_redaction_helpers
 test_page_exposes_native_gateway_controls
+test_dashboard_widget_contract
+test_dashboard_endpoint_incus_mode
 
 echo "unraid runtime behavior tests OK"

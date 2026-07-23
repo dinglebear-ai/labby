@@ -8,7 +8,7 @@
 # Usage:
 #   scripts/ci/unraid-plugin-checksums.sh [--fix] [--tag vX.Y.Z] [--tarball PATH]
 #
-# --tag and --tarball are optional: without them, only the nine
+# --tag and --tarball are optional: without them, only the eleven
 # unraid/source/ companion-file checksums are checked (cheap, safe to run
 # on every PR — this is what ci.yml's always-on unraid-plugin-check job
 # runs). --tag/--tarball are a MANUAL tool, not wired into any CI job:
@@ -87,6 +87,8 @@ md5_of() { md5sum "$1" | awk '{print $1}'; }
 
 check_or_fix cfgMD5 "$(md5_of "$src/labby.cfg")" "unraid/source/.../labby.cfg"
 check_or_fix pageMD5 "$(md5_of "$src/Labby.page")" "unraid/source/.../Labby.page"
+check_or_fix dashboardMD5 "$(md5_of "$src/LabbyDashboard.page")" "unraid/source/.../LabbyDashboard.page"
+check_or_fix dashboardStatusMD5 "$(md5_of "$src/include/dashboard-status.php")" "unraid/source/.../include/dashboard-status.php"
 check_or_fix rcMD5 "$(md5_of "$src/scripts/rc.labby")" "unraid/source/.../scripts/rc.labby"
 check_or_fix preflightMD5 "$(md5_of "$src/scripts/labby-preflight.sh")" "unraid/source/.../scripts/labby-preflight.sh"
 check_or_fix mountedMD5 "$(md5_of "$src/event/disks_mounted")" "unraid/source/.../event/disks_mounted"

@@ -62,6 +62,7 @@ $cfg['SERVICE'] = $cfg['SERVICE'] ?? 'disabled';
 $cfg['LABBY_DIR'] = $cfg['LABBY_DIR'] ?? '/mnt/user/appdata/labby';
 $cfg['HTTP_HOST'] = $cfg['HTTP_HOST'] ?? '127.0.0.1';
 $cfg['HTTP_PORT'] = $cfg['HTTP_PORT'] ?? '8765';
+$cfg['DASHBOARD_WIDGET_ENABLE'] = $cfg['DASHBOARD_WIDGET_ENABLE'] ?? 'true';
 
 function labby_cfg_template($cfg) {
     return <<<CFG
@@ -105,6 +106,9 @@ LABBY_DIR="{$cfg['LABBY_DIR']}"   # persistent gateway state (must be on the arr
 # container, see docs/runtime/INCUS.md.
 HTTP_HOST="{$cfg['HTTP_HOST']}"                 # LABBY_MCP_HTTP_HOST
 HTTP_PORT="{$cfg['HTTP_PORT']}"                      # LABBY_MCP_HTTP_PORT
+
+# ---- Main/Dashboard widget ----
+DASHBOARD_WIDGET_ENABLE="{$cfg['DASHBOARD_WIDGET_ENABLE']}"        # true|false — show live Labby gateway aggregates on Main/Dashboard
 
 CFG;
 }
@@ -422,6 +426,7 @@ if ($settingsError === null && isset($_POST['labby_settings_save'])) {
     $postedHost = labby_post_string('HTTP_HOST');
     $postedPort = labby_post_string('HTTP_PORT');
     $postedDir = labby_post_string('LABBY_DIR');
+    $postedDashboardWidgetEnable = labby_post_string('DASHBOARD_WIDGET_ENABLE');
 
     // Every field is checked against a strict allowlist — this file gets
     // bash-`source`d verbatim by rc.labby/event hooks, so an unvalidated
@@ -454,6 +459,8 @@ if ($settingsError === null && isset($_POST['labby_settings_save'])) {
         $settingsError = 'LABBY_DIR must be an absolute path using only letters, numbers, "_", ".", "/", and "-".';
     } elseif (!labby_is_array_backed_path($postedDir)) {
         $settingsError = 'LABBY_DIR must live on Unraid array/cache storage such as /mnt/user/appdata/labby, /mnt/cache/appdata/labby, or /mnt/disk1/appdata/labby.';
+    } elseif (!in_array($postedDashboardWidgetEnable, ['true', 'false'], true)) {
+        $settingsError = 'DASHBOARD_WIDGET_ENABLE must be true or false.';
     } elseif (
         $postedIncusContainerName !== ($cfg['INCUS_CONTAINER_NAME'] ?? 'labby-gateway')
         && labby_incus_marker_exists($cfgFile, $cfg)
@@ -476,6 +483,7 @@ if ($settingsError === null && isset($_POST['labby_settings_save'])) {
         $newCfg['HTTP_HOST'] = $postedHost;
         $newCfg['HTTP_PORT'] = $postedPort;
         $newCfg['LABBY_DIR'] = $postedDir;
+        $newCfg['DASHBOARD_WIDGET_ENABLE'] = $postedDashboardWidgetEnable;
     }
 
     if ($settingsError === null) {
@@ -1005,6 +1013,13 @@ _(HTTP host)_:
 _(HTTP port)_:
 : <input type="text" name="HTTP_PORT" value="<?= htmlspecialchars($cfg['HTTP_PORT'], ENT_QUOTES) ?>" size="6" maxlength="5" pattern="[0-9]{1,5}" title="A port number between 1 and 65535">
 <blockquote class="inline_help">_(Takes effect on the next restart, like HTTP host — Apply alone does not restart a currently running labby.)_</blockquote>
+
+_(Dashboard widget)_:
+: <select name="DASHBOARD_WIDGET_ENABLE">
+  <?= mk_option($cfg['DASHBOARD_WIDGET_ENABLE'], "true", "Enabled") ?>
+  <?= mk_option($cfg['DASHBOARD_WIDGET_ENABLE'], "false", "Disabled") ?>
+  </select>
+<blockquote class="inline_help">_(Shows aggregate Labby service and gateway health on Main > Dashboard. The widget exposes counts only; it never publishes server configuration, credentials, or tool arguments.)_</blockquote>
 
 <div class="lb-form-footer">
   <input type="reset" value="_(Reset)_">

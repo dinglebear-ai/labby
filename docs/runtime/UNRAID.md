@@ -120,6 +120,8 @@ unraid/
   source/usr/local/emhttp/plugins/labby/
     labby.cfg                                  default config template (flash-persisted copy is the source of truth once installed)
     Labby.page                                  status + settings form (SERVICE/LABBY_DIR/HTTP_HOST/HTTP_PORT/RUNTIME_MODE/INCUS_IMAGE_SHA256/...) plus native gateway reload/upstream controls
+    LabbyDashboard.page                         dependency-free Main/Dashboard tile for live aggregate gateway health
+    include/dashboard-status.php                authenticated native/Incus status endpoint used only by the dashboard tile
     scripts/rc.labby                            start/stop/restart/status, branches on RUNTIME_MODE between the native rc.d path and the Incus container path
     scripts/labby-preflight.sh                   read-only glibc/binary sanity check for native mode; rc.labby refuses to start if this fails
     scripts/labby-incus-env.sh                   points the Incus CLI at incus-unraid's private-prefixed daemon — incus mode only
@@ -168,6 +170,15 @@ add-HTTP/add-stdio, enable/disable, remove, and stale-process cleanup
 actions. Settings owns SERVICE, LABBY_DIR, HTTP_HOST, HTTP_PORT,
 RUNTIME_MODE, and all Incus image/network/Tailscale fields from
 `labby.cfg`, with backup-first atomic persistence.
+
+`LabbyDashboard.page` adds a native Main > Dashboard tile. It polls
+`include/dashboard-status.php` every 15 seconds for service/runtime state,
+connected versus enabled upstream counts, exposed tool totals, and connection
+errors. The endpoint is served behind the normal webGUI session and returns
+aggregates only: upstream names, URLs, commands, environment keys, credentials,
+logs, and tool arguments are never included. Set
+`DASHBOARD_WIDGET_ENABLE="false"` in Settings to hide the tile without
+disabling the gateway.
 
 In native mode gateway actions run the host plugin binary against
 `LABBY_DIR`; in Incus mode the same actions execute
@@ -296,7 +307,8 @@ scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also c
 
 ### Required step: tag every commit that touches `labby.plg` or `unraid/source/`
 
-`srcURL` (companion-file downloads: `labby.cfg`, `Labby.page`, `rc.labby`,
+`srcURL` (companion-file downloads: `labby.cfg`, `Labby.page`,
+`LabbyDashboard.page`, its aggregate status endpoint, `rc.labby`,
 `labby-preflight.sh`, `labby-incus-env.sh`, `labby-incus-init.sh`, the
 vendored Incus profile, and both event hooks) is pinned to an immutable tag —
 `unraid-v&version;` — not to `main`. This is deliberate: every file under
