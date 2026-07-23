@@ -235,6 +235,25 @@ EOF
         || fail "incus env sourcer ignored configured INCUS_DIR: $configured_dir"
 }
 
+test_env_sourcer_keeps_system_xtables_extensions() {
+    local xtables_dir
+
+    mkdir -p "$tmp/system-xtables"
+    xtables_dir="$(
+        INCUS_PREFIX="$tmp/incus-prefix" \
+            INCUS_CONFIG="$tmp/missing-incus.cfg" \
+            SYSTEM_XTABLES_LIBDIR="$tmp/system-xtables" \
+            PATH="/usr/bin" \
+            bash -c "
+                set -euo pipefail
+                . '$incus_env_script'
+                printf '%s' \"\$XTABLES_LIBDIR\"
+            "
+    )"
+    [ "$xtables_dir" = "$tmp/system-xtables" ] \
+        || fail "incus env sourcer did not preserve the system xtables extension directory: $xtables_dir"
+}
+
 test_native_start_does_not_require_incus() {
     write_cfg native
     printf 'missing\n' > "$tmp/incus-state"
@@ -710,6 +729,7 @@ PHP
 
 test_env_sourcer_is_idempotent
 test_env_sourcer_honors_incus_config_dir
+test_env_sourcer_keeps_system_xtables_extensions
 test_native_start_does_not_require_incus
 test_native_start_ignores_unproven_incus_query_failure
 test_native_start_fails_closed_with_incus_marker_and_missing_cli
