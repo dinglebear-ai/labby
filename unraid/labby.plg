@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.13">
+  <!ENTITY version      "1.3.14">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -49,7 +49,7 @@
   <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
   <!ENTITY incusProfileMD5 "0419cfb5166a433dfc8149cbefcc3e48">
-  <!ENTITY incusEnvMD5     "c6b3e1da0d630cfa5b12d00a435411a9">
+  <!ENTITY incusEnvMD5     "bae86ad48f8f091e0708469f75b45aeb">
   <!ENTITY incusInitMD5    "f20df050b79c62ebef0c0c893457755d">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
@@ -58,6 +58,10 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.14
+- Exports the private Incus CLI path from the shared environment helper so
+  the Incus-mode Dashboard widget can query live gateway aggregates.
+
 ###1.3.13
 - Keeps Unraid's system xtables extensions discoverable while the private
   Incus library environment is active, allowing the Incus-mode LAN egress
