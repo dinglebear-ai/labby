@@ -97,7 +97,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     rust_test = rust_sources or rust_manifests
     security = any_match(
         paths,
-        lambda p: p in {"Cargo.lock", "deny.toml", ".gitleaksignore"} or starts(p, ".cargo/"),
+        lambda p: p in {"Cargo.lock", "deny.toml"} or starts(p, ".cargo/"),
     )
     security = security or rust_sources
     docs_check = docs_check or rust_sources

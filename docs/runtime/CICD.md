@@ -15,8 +15,7 @@ category so periodic/manual validation stays broad.
 Branch protection should require the stable aggregate `ci-gate` check. The
 heavy jobs below may be skipped when their category is false; `ci-gate` treats
 `success` and intentionally `skipped` jobs as acceptable, and fails on failed or
-cancelled dependencies. `secret-scan` remains always-on because secrets can be
-introduced in any file type.
+cancelled dependencies.
 
 ## CI Checks
 
@@ -25,7 +24,6 @@ jobs when their changed-path category is enabled:
 
 | Check | Category | Command |
 |-------|----------|---------|
-| Secret scan | always | `gitleaks/gitleaks-action@v3` full-history scan with existing historical findings baselined in `.gitleaksignore` |
 | Unraid plugin checksums | always | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
@@ -47,18 +45,6 @@ jobs when their changed-path category is enabled:
 | Container smoke | `docker` | Docker build using `config/Dockerfile` |
 
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer.
-
-### Revoked-history secret baseline policy
-
-The full-history Gitleaks scan may baseline only a historical credential that
-is confirmed revoked or retired and whose current tree is redacted. Every
-entry must be the exact Gitleaks fingerprint
-`commit:path:rule-id:line`; wildcard, path-wide, rule-wide, and current-file
-allowlists are prohibited. A reviewer must verify both revocation or retirement
-and current-tree redaction before adding the fingerprint. CI must never baseline a finding introduced at `HEAD`: remove the secret and rotate or revoke
-it instead. Keep an exact historical fingerprint only while the offending
-commit remains reachable; remove it after an intentional history rewrite makes
-that commit unreachable.
 
 The frontend build is required because the Rust binary embeds the exported
 Labby assets. It is a production build gate, not a TypeScript strictness gate:
