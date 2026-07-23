@@ -754,10 +754,30 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
   #labby-plugin-root .lb-detail-grid { grid-template-columns:1fr; }
   #labby-plugin-root .lb-settings-card dt { float:none; width:auto; padding:12px 14px 4px; text-align:left; }
   #labby-plugin-root .lb-settings-card dd { margin:0; min-height:0; padding:4px 14px 12px; }
-  #labby-plugin-root table, #labby-plugin-root thead, #labby-plugin-root tbody, #labby-plugin-root tr, #labby-plugin-root th, #labby-plugin-root td { display:block; }
+  #labby-plugin-root table, #labby-plugin-root thead, #labby-plugin-root tbody, #labby-plugin-root th { display:block; }
   #labby-plugin-root thead { display:none; }
-  #labby-plugin-root tr { padding:10px 14px; border-top:1px solid var(--lb-line); }
-  #labby-plugin-root td { padding:3px 0; border:0; }
+  #labby-plugin-root tr {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    grid-template-areas:
+      "server server"
+      "status transport"
+      "capabilities capabilities"
+      "runtime runtime"
+      "actions actions";
+    gap:7px 12px;
+    padding:14px;
+    border-top:1px solid var(--lb-line);
+  }
+  #labby-plugin-root td { display:block; min-width:0; padding:0; border:0; }
+  #labby-plugin-root .lb-cell-server { grid-area:server; display:grid; gap:3px; }
+  #labby-plugin-root .lb-cell-server .lb-sub { margin:0; overflow-wrap:anywhere; word-break:break-word; }
+  #labby-plugin-root .lb-cell-status { grid-area:status; align-self:center; }
+  #labby-plugin-root .lb-cell-transport { grid-area:transport; justify-self:end; }
+  #labby-plugin-root .lb-cell-capabilities { grid-area:capabilities; }
+  #labby-plugin-root .lb-cell-runtime { grid-area:runtime; color:var(--lb-muted); }
+  #labby-plugin-root .lb-cell-actions { grid-area:actions; display:flex; flex-wrap:wrap; gap:6px; padding-top:3px; }
+  #labby-plugin-root .lb-cell-actions form { margin:0 !important; }
 }
 </style>
 
@@ -1053,12 +1073,12 @@ _(Arguments)_:
     $stale = (int) ($row['likely_stale_count'] ?? 0);
 ?>
 <tr>
-  <td data-label="Server"><strong><?= htmlspecialchars($name, ENT_QUOTES) ?></strong><?php if ($target !== ''): ?><div class="lb-sub"><?= htmlspecialchars($target, ENT_QUOTES) ?></div><?php endif; ?></td>
-  <td data-label="Status"><span class="lb-status <?= empty($row['enabled']) ? 'off' : (!empty($row['connected']) ? 'ok' : 'bad') ?>"><?= htmlspecialchars(labby_upstream_status_text($row), ENT_QUOTES) ?></span></td>
-  <td data-label="Transport"><span class="lb-transport"><?= htmlspecialchars($transport, ENT_QUOTES) ?></span></td>
-  <td><?= htmlspecialchars(labby_count_summary($row), ENT_QUOTES) ?></td>
-  <td><?= $pid === null ? '_(No process)_' : 'PID ' . htmlspecialchars((string) $pid, ENT_QUOTES) ?><?= $stale > 0 ? ' / ' . htmlspecialchars((string) $stale, ENT_QUOTES) . ' _(stale)_' : '' ?></td>
-  <td>
+  <td class="lb-cell-server" data-label="Server"><strong><?= htmlspecialchars($name, ENT_QUOTES) ?></strong><?php if ($target !== ''): ?><div class="lb-sub"><?= htmlspecialchars($target, ENT_QUOTES) ?></div><?php endif; ?></td>
+  <td class="lb-cell-status" data-label="Status"><span class="lb-status <?= empty($row['enabled']) ? 'off' : (!empty($row['connected']) ? 'ok' : 'bad') ?>"><?= htmlspecialchars(labby_upstream_status_text($row), ENT_QUOTES) ?></span></td>
+  <td class="lb-cell-transport" data-label="Transport"><span class="lb-transport"><?= htmlspecialchars($transport, ENT_QUOTES) ?></span></td>
+  <td class="lb-cell-capabilities"><?= htmlspecialchars(labby_count_summary($row), ENT_QUOTES) ?></td>
+  <td class="lb-cell-runtime"><?= $pid === null ? '_(No process)_' : 'PID ' . htmlspecialchars((string) $pid, ENT_QUOTES) ?><?= $stale > 0 ? ' / ' . htmlspecialchars((string) $stale, ENT_QUOTES) . ' _(stale)_' : '' ?></td>
+  <td class="lb-cell-actions">
     <?php if ($name !== ''): ?>
     <?php if ($enabled): ?>
 	    <form method="post" style="display:inline">
