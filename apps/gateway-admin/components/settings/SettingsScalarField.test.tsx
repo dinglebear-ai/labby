@@ -37,6 +37,7 @@ test('SettingsScalarField renders scalar metadata and value', () => {
   const html = renderToStaticMarkup(
     <SettingsScalarField field={field} value="labby=info" state={state} onChange={() => undefined} />,
   )
+  assert.match(html, /data-unraid-settings-row="true"/)
   assert.match(html, /Log filter/)
   assert.match(html, /LAB_LOG/)
   assert.match(html, /labby=info/)

@@ -114,6 +114,8 @@ test('SettingsScalarSection renders reset and save controls', () => {
   const html = renderToStaticMarkup(
     <SettingsScalarSection title="Core" description="" section="core" state={state} fields={fields} onSaved={() => undefined} />,
   )
+  assert.match(html, /data-unraid-settings-card="true"/)
+  assert.match(html, /linear-gradient\(90deg,#e22828,#ff8c2f\)/)
   assert.match(html, /Core/)
   assert.match(html, /Reset/)
   assert.match(html, /Save changes/)
@@ -155,7 +157,7 @@ test('SettingsScalarSection sends previous values on confirmed env save', async 
   }
 })
 
-test('SettingsScalarSection blocks mixed env and config saves', async () => {
+test('SettingsScalarSection saves mixed env and config changes in sequence', async () => {
   installDom()
   const configField: SettingsFieldSpec = {
     ...fields[0],
@@ -174,19 +176,42 @@ test('SettingsScalarSection blocks mixed env and config saves', async () => {
   }
   const originalEnvUpdate = setupApi.settingsEnvUpdate
   const originalConfigUpdate = setupApi.settingsConfigUpdate
-  let calls = 0
+  const calls: string[] = []
+  let savedState: SettingsState | undefined
   setupApi.settingsEnvUpdate = async () => {
-    calls += 1
-    return mixedState
+    calls.push('env')
+    return {
+      ...mixedState,
+      values: { ...mixedState.values, LAB_LOG: 'lab=debug' },
+    }
   }
   setupApi.settingsConfigUpdate = async () => {
-    calls += 1
-    return { state: mixedState, backup_path: null }
+    calls.push('config')
+    return {
+      state: {
+        ...mixedState,
+        values: {
+          ...mixedState.values,
+          LAB_LOG: 'lab=debug',
+          'output.format': 'json',
+        },
+      },
+      backup_path: null,
+    }
   }
 
   try {
     const view = await renderClient(
-      <SettingsScalarSection title="Core" description="" section="core" state={mixedState} fields={[fields[0], configField]} onSaved={() => undefined} />,
+      <SettingsScalarSection
+        title="Core"
+        description=""
+        section="core"
+        state={mixedState}
+        fields={[fields[0], configField]}
+        onSaved={(next) => {
+          savedState = next
+        }}
+      />,
     )
     const inputs = [...view.container.querySelectorAll('input')]
     assert.equal(inputs.length, 2)
@@ -195,8 +220,9 @@ test('SettingsScalarSection blocks mixed env and config saves', async () => {
     await click(view.container.querySelector('[data-slot="checkbox"]'))
     await click([...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('Save changes')) ?? null)
 
-    await waitFor(() => assert.match(view.container.textContent ?? '', /Save \.env and config\.toml settings separately/))
-    assert.equal(calls, 0)
+    await waitFor(() => assert.deepEqual(calls, ['env', 'config']))
+    assert.equal(savedState?.values.LAB_LOG, 'lab=debug')
+    assert.equal(savedState?.values['output.format'], 'json')
     await view.unmount()
   } finally {
     setupApi.settingsEnvUpdate = originalEnvUpdate
