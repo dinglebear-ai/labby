@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0](https://github.com/dinglebear-ai/labby/compare/v1.6.0...v1.7.0) (2026-07-23)
+
+
+### Added
+
+* **setup:** slim and harden Incus provisioning ([db77f71](https://github.com/dinglebear-ai/labby/commit/db77f71c5af2dce2818072e9996fd3be06645a1a))
+* **unraid:** add live dashboard widget ([5240bc9](https://github.com/dinglebear-ai/labby/commit/5240bc9472c124445637b7a936fd25a161b59b91))
+* **unraid:** polish mobile gateway management ([28fef10](https://github.com/dinglebear-ai/labby/commit/28fef10de84f9ca6e0cf2f95b2d5c65e22200e42))
+* **web:** add operational Unraid settings page ([c31ca4d](https://github.com/dinglebear-ai/labby/commit/c31ca4d6002240a8108736905359014a1b9e5b1f))
+
+
+### Fixed
+
+* **auth:** separate browser callback from issuer ([#258](https://github.com/dinglebear-ai/labby/issues/258)) ([4dc5ce6](https://github.com/dinglebear-ai/labby/commit/4dc5ce628077ad71523ca9ece7b141222edba81e))
+* **unraid:** align settings shell with source mock ([ce825fe](https://github.com/dinglebear-ai/labby/commit/ce825fe0b636549cbbce5e03d4b9459c6e128a93))
+* **unraid:** expose Incus CLI to dashboard status ([b89a6d7](https://github.com/dinglebear-ai/labby/commit/b89a6d7b705e4cddc5b8f302a828a95040cf81eb))
+* **unraid:** honor Incus daemon state path ([ebdb087](https://github.com/dinglebear-ai/labby/commit/ebdb087e9aca6e50ba1fb8fa01fd862bcfe0715e))
+* **unraid:** preserve xtables extensions in Incus mode ([c20daf4](https://github.com/dinglebear-ai/labby/commit/c20daf45e0d38aa958929e748115d25f28ca4e77))
+* **unraid:** prevent mobile gateway row overlap ([05087a5](https://github.com/dinglebear-ai/labby/commit/05087a57cdcf6441ad5f4c4802a5ab3cfcda9ce0))
+* **unraid:** run Incus UI commands as numeric user ([d084926](https://github.com/dinglebear-ai/labby/commit/d084926aa1993fe9f727936223aeb304206dcb22))
+* **unraid:** ship the real Labby plugin control plane ([49d5707](https://github.com/dinglebear-ai/labby/commit/49d57074f0bf42411e22b75f9e7bb9739b727c56))
+
 ## [1.6.0](https://github.com/jmagar/labby/compare/v1.5.0...v1.6.0) (2026-07-17)
 
 
