@@ -562,6 +562,11 @@ test_page_exposes_native_gateway_controls() {
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="disable"'
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="cleanup_preview"'
     assert_file_contains "$page_file" 'name="labby_mcp_action" value="cleanup"'
+    assert_file_contains "$page_file" 'class="lb-cell-server"'
+    assert_file_contains "$page_file" 'class="lb-cell-status"'
+    assert_file_contains "$page_file" 'grid-template-areas:'
+    assert_file_contains "$page_file" '"status transport"'
+    assert_file_contains "$page_file" 'overflow-wrap:anywhere'
     assert_file_contains "$page_file" "exec \"\$1\" --user labby"
     assert_file_contains "$page_file" 'timeout'
     assert_file_contains "$page_file" 'Submit one Labby action at a time.'
