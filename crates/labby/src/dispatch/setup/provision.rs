@@ -81,8 +81,11 @@ enum ActionKind {
     AgentClis,
     Mise,
     Chezmoi,
+    Crgx,
     TailscaleInstall,
     TailscaleJoin,
+    CacheCleanup,
+    AndroidSdk,
     ControllerConfig,
     HostService,
 }
@@ -218,6 +221,11 @@ fn build_plan(skip_deps: bool) -> Vec<ProvisionAction> {
                 kind: ActionKind::Chezmoi,
             },
             ProvisionAction {
+                privilege: Privilege::Lab,
+                label: Cow::Borrowed("install crgx (user-space)"),
+                kind: ActionKind::Crgx,
+            },
+            ProvisionAction {
                 privilege: Privilege::Root,
                 label: Cow::Borrowed("install tailscale client"),
                 kind: ActionKind::TailscaleInstall,
@@ -228,6 +236,18 @@ fn build_plan(skip_deps: bool) -> Vec<ProvisionAction> {
                 privilege: Privilege::Root,
                 label: Cow::Borrowed("join tailnet using TS_AUTHKEY"),
                 kind: ActionKind::TailscaleJoin,
+            });
+        }
+        actions.push(ProvisionAction {
+            privilege: Privilege::Root,
+            label: Cow::Borrowed("clean apt + npm caches (image bloat)"),
+            kind: ActionKind::CacheCleanup,
+        });
+        if android_sdk_enabled() {
+            actions.push(ProvisionAction {
+                privilege: Privilege::Root,
+                label: Cow::Borrowed("install android-sdk (opt-in, claude-in-mobile)"),
+                kind: ActionKind::AndroidSdk,
             });
         }
     }
@@ -292,8 +312,11 @@ impl ProvisionAction {
             }
             ActionKind::Mise => lab_command_success("command -v mise >/dev/null").await,
             ActionKind::Chezmoi => lab_command_success("command -v chezmoi >/dev/null").await,
+            ActionKind::Crgx => lab_command_success("command -v crgx >/dev/null").await,
             ActionKind::TailscaleInstall => command_success("tailscale", &["version"]).await,
             ActionKind::TailscaleJoin => command_success("tailscale", &["ip", "-4"]).await,
+            ActionKind::CacheCleanup => caches_cleaned().await,
+            ActionKind::AndroidSdk => command_success("adb", &["version"]).await,
             ActionKind::ControllerConfig => controller_config_ready().await,
             ActionKind::HostService => super::host_service::installed_and_ready().await,
         }
@@ -328,11 +351,20 @@ impl ProvisionAction {
             ActionKind::Chezmoi => {
                 run_image_provision_action("chezmoi").await?;
             }
+            ActionKind::Crgx => {
+                run_image_provision_action("crgx").await?;
+            }
             ActionKind::TailscaleInstall => {
                 run_image_provision_action("tailscale-install").await?;
             }
             ActionKind::TailscaleJoin => {
                 install_and_join_tailscale().await?;
+            }
+            ActionKind::CacheCleanup => {
+                run_image_provision_action("cache-cleanup").await?;
+            }
+            ActionKind::AndroidSdk => {
+                run_image_provision_action("android-sdk").await?;
             }
             ActionKind::ControllerConfig => {
                 ensure_controller_config().await?;
@@ -455,6 +487,55 @@ async fn apt_floor_installed() -> Result<bool, ToolError> {
         if !output.status.success() || !output.stdout.starts_with("ii ") {
             return Ok(false);
         }
+    }
+    Ok(true)
+}
+
+/// `is_done` check for [`ActionKind::CacheCleanup`].
+///
+/// The cleanup targets (`/var/cache/apt/archives`, apt's `*.bin` index caches,
+/// `/var/lib/apt/lists/*`, npm's `_cacache`) all regenerate on demand, so their
+/// presence is the bloat condition. Caches are "done" (cleaned) when none of
+/// those paths carry weight. Uses directory listing rather than `du` so a
+/// transient empty file (e.g. `lock`) does not falsely report unclean.
+async fn caches_cleaned() -> Result<bool, ToolError> {
+    let apt_archives = std::fs::read_dir("/var/cache/apt/archives")
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "deb"))
+                .count()
+        })
+        .unwrap_or(0);
+    if apt_archives > 0 {
+        return Ok(false);
+    }
+    let apt_bin_caches = ["/var/cache/apt/pkgcache.bin", "/var/cache/apt/srcpkgcache.bin"]
+        .into_iter()
+        .any(|path| std::fs::metadata(path).is_ok_and(|meta| meta.len() > 0));
+    if apt_bin_caches {
+        return Ok(false);
+    }
+    let apt_lists = std::fs::read_dir("/var/lib/apt/lists")
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    // partial/ holds in-progress downloads; lock is transient.
+                    !name.starts_with("partial") && name != "lock"
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    if apt_lists > 0 {
+        return Ok(false);
+    }
+    let npm_cacache = std::fs::metadata(format!("{LABBY_HOME}/.npm/_cacache"))
+        .is_ok_and(|meta| meta.is_dir());
+    if npm_cacache {
+        return Ok(false);
     }
     Ok(true)
 }
@@ -677,6 +758,14 @@ fn tailscale_authkey() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+/// Opt-in gate for the android-sdk provision step. Folds the
+/// `LABBY_ENABLE_ANDROID_SDK=1` env override over `[setup].install_android_sdk`
+/// in config.toml via the process-wide resolved-preference cache (installed at
+/// startup by `install_resolved_preferences`). Either source enables it.
+fn android_sdk_enabled() -> bool {
+    crate::config::resolved_install_android_sdk()
 }
 
 fn tailscale_hostname() -> Option<String> {
@@ -973,13 +1062,16 @@ mod tests {
 
         assert!(text.contains("[root] apt install: git openssh-client gh"));
         assert!(text.contains("ffmpeg"));
-        assert!(text.contains("adb"));
-        assert!(text.contains("android-sdk"));
+        // android-sdk is opt-in (LABBY_ENABLE_ANDROID_SDK); not in the default plan.
+        assert!(!text.contains("install android-sdk"));
+        assert!(!text.contains("apt install: git openssh-client gh ca-certificates curl rsync xz-utils python3 zsh ffmpeg adb"));
         assert!(text.contains("[labby] install node v24.x"));
         assert!(text.contains("[labby] install rust + go toolchains"));
         assert!(text.contains("[labby] install claude + codex + gemini"));
         assert!(text.contains("[labby] install mise (user-space)"));
         assert!(text.contains("[labby] install chezmoi (user-space)"));
+        assert!(text.contains("[labby] install crgx (user-space)"));
+        assert!(text.contains("[root] clean apt + npm caches (image bloat)"));
         assert!(text.contains("[root] install tailscale client"));
         assert!(text.contains("[root] set Labby node runtime role to controller"));
         assert!(text.contains("[root] write /etc/systemd/system/labby.service"));
@@ -989,6 +1081,10 @@ mod tests {
 
     #[test]
     fn apt_floor_is_derived_from_incus_image_yaml() {
+        // android-sdk is intentionally NOT in the apt floor; it installs via
+        // the LABBY_PROVISION_ACTION: android-sdk block when
+        // LABBY_ENABLE_ANDROID_SDK=1, to keep the JVM + java deps out of the
+        // baked image.
         assert_eq!(
             apt_floor(),
             vec![
@@ -1002,11 +1098,6 @@ mod tests {
                 "python3",
                 "zsh",
                 "ffmpeg",
-                "adb",
-                "android-sdk",
-                "android-sdk-platform-tools",
-                "android-sdk-platform-tools-common",
-                "android-sdk-build-tools",
             ]
         );
     }
@@ -1044,7 +1135,10 @@ files:
             "agent-clis",
             "mise",
             "chezmoi",
+            "crgx",
             "tailscale-install",
+            "cache-cleanup",
+            "android-sdk",
         ] {
             let script = image_provision_action(name).expect("named action should exist");
             assert!(script.contains(&format!("LABBY_PROVISION_ACTION: {name}")));

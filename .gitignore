@@ -87,6 +87,10 @@ __pycache__/
 **/*.rs.bk
 *.profraw
 *.profdata
+/.cargo/.global-cache
+/.cargo/.package-cache
+/.cargo/.package-cache-mutate
+/.cargo/registry/
 
 
 # ── Node / TypeScript build artifacts ────────────────────────────────────────
@@ -99,6 +103,8 @@ packages/*/vendor/
 data/
 proxies/
 outputs/
+/dist/
+/.zcode/
 config.local.toml
 *.key
 *.pem
