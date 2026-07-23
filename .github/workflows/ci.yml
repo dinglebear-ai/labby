@@ -113,6 +113,10 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.3"
+          coverage: none
       - run: scripts/ci/unraid-plugin-checksums.sh
       - run: scripts/ci/unraid-runtime-tests.sh
 
