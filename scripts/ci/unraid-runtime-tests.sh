@@ -571,6 +571,11 @@ test_page_exposes_native_gateway_controls() {
     assert_file_contains "$page_file" '"status transport"'
     assert_file_contains "$page_file" 'overflow-wrap:anywhere'
     assert_file_contains "$page_file" 'id="labby-server-count"'
+    assert_file_contains "$page_file" 'class="lb-card lb-server-list-card"'
+    assert_file_contains "$page_file" 'padding:22px 30px 30px'
+    assert_file_contains "$page_file" 'max-width:220px'
+    assert_file_contains "$page_file" " . ':' . \$cfg['HTTP_PORT'] . '/mcp'"
+    assert_file_contains "$page_file" '<span class="lb-version">v'
     assert_file_contains "$page_file" 'data-copy-target='
     assert_file_contains "$page_file" 'value="_(Retry connection)_"'
     assert_file_contains "$page_file" 'class="lb-action-menu"'

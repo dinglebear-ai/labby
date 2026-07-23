@@ -682,9 +682,13 @@ if (is_readable($pluginManifest)) {
     }
 }
 $runtimeMode = $cfg['RUNTIME_MODE'] === 'incus' ? 'Incus' : 'Native';
+$serverName = trim((string) ($_SERVER['SERVER_NAME'] ?? ''));
+if ($serverName === '') {
+    $serverName = 'tower';
+}
 $endpointDisplay = ($cfg['RUNTIME_MODE'] === 'incus')
     ? $cfg['INCUS_CONTAINER_NAME'] . ' · Tailscale'
-    : (($cfg['HTTP_HOST'] === '0.0.0.0' ? ($_SERVER['SERVER_NAME'] ?? 'tower') : $cfg['HTTP_HOST']) . ':' . $cfg['HTTP_PORT']);
+    : (($cfg['HTTP_HOST'] === '0.0.0.0' ? $serverName : $cfg['HTTP_HOST']) . ':' . $cfg['HTTP_PORT'] . '/mcp');
 $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
     isset($_POST['labby_gateway_action']) || isset($_POST['labby_gateway_add'])
     || isset($_POST['labby_gateway_add_stdio']) || isset($_POST['labby_gateway_server_action'])
@@ -712,26 +716,27 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
 #labby-plugin-root .lb-pill.bad { background:#fee2e2; color:#bd1818; }
 #labby-plugin-root .lb-grow { flex:1; }
 #labby-plugin-root .lb-tabs { display:inline-flex; border-radius:6px; background:#e5e5e5; padding:5px; gap:2px; }
-#labby-plugin-root .lb-tab { border:0; border-radius:6px; padding:6px 14px; background:transparent; color:#1c1b1b; font:500 14px inherit; cursor:pointer; box-shadow:none; }
+#labby-plugin-root .lb-tab { border:0; border-radius:6px; padding:6px 14px; background:transparent; color:#1c1b1b; font:500 14px inherit; cursor:pointer; box-shadow:none; text-transform:none; letter-spacing:normal; }
 #labby-plugin-root .lb-tab:hover { background:#fff; }
 #labby-plugin-root .lb-tab.active { background:linear-gradient(90deg,var(--lb-red),var(--lb-orange)); color:#fff; }
 #labby-plugin-root .lb-endpoint, #labby-plugin-root .lb-version { font:12px ui-monospace,Menlo,monospace; color:var(--lb-muted); white-space:nowrap; }
 #labby-plugin-root .lb-version { color:var(--lb-faint); }
-#labby-plugin-root .lb-main { max-width:1440px; width:100%; margin:auto; padding:20px; display:flex; flex-direction:column; gap:16px; }
+#labby-plugin-root .lb-main { max-width:1340px; width:100%; margin:auto; padding:22px 30px 30px; display:flex; flex-direction:column; gap:16px; }
 #labby-plugin-root [data-labby-screen][hidden] { display:none !important; }
-#labby-plugin-root .lb-screen { display:flex; flex-direction:column; gap:16px; }
-#labby-plugin-root .lb-card { overflow:hidden; border:2px solid #f5f5f5; border-radius:6px; background:var(--lb-card); box-shadow:0 4px 6px -1px rgba(0,0,0,.08); }
-#labby-plugin-root .lb-card-head { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; padding:20px 24px 16px; border-bottom:1px solid var(--lb-line); flex-wrap:wrap; }
+#labby-plugin-root .lb-screen { display:flex; flex-direction:column; gap:18px; }
+#labby-plugin-root .lb-card { overflow:hidden; border:1px solid #ededed; border-radius:6px; background:var(--lb-card); box-shadow:0 3px 7px rgba(0,0,0,.09); }
+#labby-plugin-root .lb-card-head { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; padding:20px 24px 25px; border-bottom:1px solid var(--lb-line); flex-wrap:wrap; }
 #labby-plugin-root .lb-eyebrow { font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--lb-muted); }
 #labby-plugin-root h1 { margin:6px 0 0; font-size:26px; line-height:1; font-weight:600; }
 #labby-plugin-root h2 { margin:0; font-size:16px; font-weight:600; }
 #labby-plugin-root .lb-sub { margin:5px 0 0; color:var(--lb-muted); font-size:12px; }
 #labby-plugin-root .lb-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-#labby-plugin-root button, #labby-plugin-root input[type=submit] { min-height:34px; border:1px solid #d4d4d4; border-radius:6px; padding:0 12px; background:#fff; color:#1c1b1b; font:600 12px inherit; cursor:pointer; }
+#labby-plugin-root .lb-actions form { margin:0; }
+#labby-plugin-root button, #labby-plugin-root input[type=submit] { min-height:34px; margin:0; border:1px solid #d4d4d4; border-radius:6px; padding:0 12px; background:#fff; color:#1c1b1b; font:600 12px inherit; cursor:pointer; text-transform:none; letter-spacing:normal; }
 #labby-plugin-root button:hover, #labby-plugin-root input[type=submit]:hover { background:#f5f5f5; }
 #labby-plugin-root .lb-primary, #labby-plugin-root input.lb-primary { border-color:transparent; background:linear-gradient(90deg,var(--lb-red),var(--lb-orange)); color:#fff; }
 #labby-plugin-root .lb-danger { color:#bd1818 !important; }
-#labby-plugin-root .lb-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); padding:12px 14px; background:#fafafa; }
+#labby-plugin-root .lb-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); min-height:96px; padding:22px 14px; background:#fafafa; }
 #labby-plugin-root .lb-stat { min-width:0; padding:4px 12px; border-right:1px solid #ececec; }
 #labby-plugin-root .lb-stat:last-child { border-right:0; }
 #labby-plugin-root .lb-stat-label { font-size:10px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--lb-faint); white-space:nowrap; }
@@ -751,22 +756,26 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
 #labby-plugin-root .lb-status:before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
 #labby-plugin-root .lb-status.ok { color:#4f9d4a; } #labby-plugin-root .lb-status.bad { color:#e22828; } #labby-plugin-root .lb-status.off { color:#a16a00; }
 #labby-plugin-root .notice { margin:0; border-radius:6px; background:#fff; padding:12px 16px; border:1px solid #e5e5e5; }
-#labby-plugin-root .lb-table-tools { display:flex; align-items:center; gap:10px; padding:10px 18px; border-bottom:1px solid var(--lb-line); background:var(--lb-card); }
+#labby-plugin-root .lb-table-tools { display:flex; align-items:center; gap:10px; min-height:52px; padding:7px 18px; border-bottom:1px solid var(--lb-line); background:var(--lb-card); }
 #labby-plugin-root input[type=text], #labby-plugin-root input[type=url], #labby-plugin-root input[type=password], #labby-plugin-root textarea, #labby-plugin-root select {
   width:100%; min-height:38px; border:1px solid #d4d4d4; border-radius:6px; background:#fff; color:#1c1b1b; padding:8px 10px; font:13px inherit; box-shadow:none;
 }
 #labby-plugin-root input:focus, #labby-plugin-root textarea:focus, #labby-plugin-root select:focus { outline:2px solid rgba(255,102,0,.22); border-color:#ff8c2f; }
-#labby-plugin-root .lb-filter { max-width:320px; }
+#labby-plugin-root .lb-filter { max-width:220px; min-height:34px !important; }
 #labby-plugin-root table { width:100%; border-collapse:collapse; margin:0; background:#fff; }
 #labby-plugin-root tbody tr[hidden] { display:none !important; }
 #labby-plugin-root th { padding:10px 18px; background:#fafafa; color:var(--lb-muted); font-size:10px; letter-spacing:.1em; text-transform:uppercase; text-align:left; }
-#labby-plugin-root td { padding:11px 18px; border-top:1px solid var(--lb-line); font-size:12px; vertical-align:middle; }
+#labby-plugin-root td { padding:6px 18px; border-top:1px solid var(--lb-line); font-size:12px; vertical-align:middle; }
 #labby-plugin-root td form { display:inline-flex !important; margin:2px 3px 2px 0; }
 #labby-plugin-root .lb-transport { display:inline-flex; border-radius:999px; padding:2px 8px; background:#e5e7eb; color:#1f2937; font:600 11px ui-monospace,Menlo,monospace; }
+#labby-plugin-root .lb-transport.http, #labby-plugin-root .lb-transport.https { background:#dbeafe; color:#1d4ed8; }
+#labby-plugin-root tbody tr.lb-row-state-ok { border-left:2px solid #67ad64; }
+#labby-plugin-root tbody tr.lb-row-state-bad { border-left:2px solid var(--lb-red); }
+#labby-plugin-root tbody tr.lb-row-state-off { border-left:2px solid #e4b82e; }
 #labby-plugin-root .lb-target-row { display:flex; align-items:center; gap:6px; min-width:0; margin-top:3px; }
 #labby-plugin-root .lb-server-target { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--lb-muted); text-decoration:none; }
 #labby-plugin-root .lb-server-target:hover { color:var(--lb-orange); text-decoration:underline; }
-#labby-plugin-root .lb-copy-target { display:inline-grid; place-items:center; flex:none; min-width:28px; min-height:28px; padding:0; border:0; color:var(--lb-muted); background:transparent; }
+#labby-plugin-root .lb-copy-target { display:inline-grid; place-items:center; flex:none; width:18px; min-width:18px; min-height:18px; padding:0; border:0; color:var(--lb-muted); background:transparent; font-size:10px; }
 #labby-plugin-root .lb-copy-target:hover, #labby-plugin-root .lb-copy-target.copied { color:#4f9d4a; background:#eef8ed; }
 #labby-plugin-root .lb-status-stack { display:grid; gap:3px; }
 #labby-plugin-root .lb-freshness { color:var(--lb-faint); font-size:10px; white-space:nowrap; }
@@ -780,7 +789,9 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
 #labby-plugin-root .lb-action-menu[open] summary, #labby-plugin-root .lb-server-details[open] summary { border-color:var(--lb-orange); background:#fff7f0; }
 #labby-plugin-root .lb-action-menu-items { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; padding:8px; border:1px solid var(--lb-line); border-radius:6px; background:#fafafa; }
 #labby-plugin-root .lb-action-menu-items form { margin:0 !important; }
-#labby-plugin-root .lb-server-details { width:100%; margin-top:5px; }
+#labby-plugin-root .lb-server-details { width:auto; margin-top:0; }
+#labby-plugin-root .lb-icon-action { width:34px; min-width:34px; padding:0; display:inline-grid; place-items:center; }
+#labby-plugin-root .lb-icon-action .lb-sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 #labby-plugin-root .lb-server-detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 16px; margin-top:8px; padding:10px; border:1px solid var(--lb-line); border-radius:6px; background:#fafafa; }
 #labby-plugin-root .lb-server-detail { display:grid; gap:2px; min-width:0; }
 #labby-plugin-root .lb-server-detail > span { color:var(--lb-faint); font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; }
@@ -868,7 +879,7 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
         <button type="button" class="lb-tab" role="tab" aria-selected="false" data-labby-tab="settings">Settings</button>
       </nav>
       <button type="button" class="lb-endpoint" id="labby-copy-endpoint" title="Copy gateway endpoint"><?= htmlspecialchars($endpointDisplay, ENT_QUOTES) ?></button>
-      <span class="lb-version">plugin v<?= htmlspecialchars($pluginVersion, ENT_QUOTES) ?></span>
+      <span class="lb-version">v<?= htmlspecialchars($pluginVersion, ENT_QUOTES) ?></span>
     </div>
   </header>
   <main class="lb-main">
@@ -1049,15 +1060,17 @@ _(Dashboard widget)_:
   <div class="lb-card">
     <div class="lb-card-head">
       <div>
-        <div class="lb-eyebrow">Gateway Control Plane</div>
+        <div class="lb-actions">
+          <div class="lb-eyebrow">Gateway Control Plane</div>
+          <span class="lb-pill <?= $gatewayErrors > 0 ? 'bad' : 'ok' ?>"><?= $gatewayErrors > 0 ? $gatewayErrors . ' Need Attention' : $gatewayConnected . ' Connected' ?></span>
+        </div>
         <h1>Gateway</h1>
-        <p class="lb-sub"><?= $gatewayTotal ?> servers · <?= $gatewayEnabled ?> enabled · <?= $gatewayErrors ?> need attention</p>
       </div>
       <div class="lb-actions">
         <?php if ($running): ?>
         <form method="post">
           <input type="hidden" name="labby_gateway_action" value="reload">
-          <input type="submit" value="_(Reload gateway)_">
+          <button class="lb-icon-action" type="submit" title="Reload gateway" aria-label="Reload gateway"><i class="fa fa-refresh" aria-hidden="true"></i><span class="lb-sr-only">_(Reload gateway)_</span></button>
         </form>
         <?php endif; ?>
         <button type="button" class="lb-primary" id="labby-add-toggle"><i class="fa fa-plus" aria-hidden="true"></i> Add Server</button>
@@ -1073,10 +1086,11 @@ _(Dashboard widget)_:
       <div class="lb-stat"><div class="lb-stat-label">Prompts</div><div class="lb-stat-value"><?= $gatewayPrompts ?></div></div>
       <div class="lb-stat"><div class="lb-stat-label">Runtime</div><div class="lb-stat-value"><?= htmlspecialchars($runtimeMode, ENT_QUOTES) ?></div></div>
     </div>
+  </div>
 <?php if (!$running): ?>
-<div class="lb-empty"><span class="orange-text">_(Start Labby to manage gateway MCP servers.)_</span></div>
+<div class="lb-card"><div class="lb-empty"><span class="orange-text">_(Start Labby to manage gateway MCP servers.)_</span></div></div>
 <?php else: ?>
-<div class="lb-drawer" id="labby-add-drawer" hidden>
+<div class="lb-card lb-drawer" id="labby-add-drawer" hidden>
   <div class="lb-add-grid">
     <div class="lb-form-card">
       <h2>Add HTTP MCP server</h2>
@@ -1119,6 +1133,7 @@ _(Arguments)_:
   </div>
 </div>
 
+<div class="lb-card lb-server-list-card">
 <?php if ($gatewayRowsError !== null): ?>
 <div class="lb-empty"><span class="red-text"><?= nl2br(htmlspecialchars($gatewayRowsError, ENT_QUOTES)) ?></span></div>
 <?php elseif (empty($gatewayRows)): ?>
@@ -1153,7 +1168,7 @@ _(Arguments)_:
     $errorText = labby_upstream_error_text($row);
     $targetIsUrl = $target !== '' && labby_validate_http_url($target);
 ?>
-<tr>
+<tr class="<?= empty($row['enabled']) ? 'lb-row-state-off' : (!empty($row['connected']) ? 'lb-row-state-ok' : 'lb-row-state-bad') ?>">
   <td class="lb-cell-server" data-label="Server">
     <strong><?= htmlspecialchars($name, ENT_QUOTES) ?></strong>
     <?php if ($target !== ''): ?>
@@ -1173,7 +1188,7 @@ _(Arguments)_:
       <span class="lb-freshness">Checked <?= htmlspecialchars($gatewayCheckedAt, ENT_QUOTES) ?></span>
     </span>
   </td>
-  <td class="lb-cell-transport" data-label="Transport"><span class="lb-transport"><?= htmlspecialchars($transport, ENT_QUOTES) ?></span></td>
+  <td class="lb-cell-transport" data-label="Transport"><span class="lb-transport <?= htmlspecialchars(strtolower($transport), ENT_QUOTES) ?>"><?= htmlspecialchars($transport, ENT_QUOTES) ?></span></td>
   <td class="lb-cell-capabilities"><?= htmlspecialchars(labby_count_summary($row), ENT_QUOTES) ?></td>
   <td class="lb-cell-runtime"><?= htmlspecialchars($runtimeSummary, ENT_QUOTES) ?></td>
   <td class="lb-cell-actions">
@@ -1238,8 +1253,8 @@ _(Arguments)_:
 </tbody>
 </table>
 <?php endif; ?>
+</div>
 <?php endif; ?>
-  </div>
 </section>
   </main>
 </div>
