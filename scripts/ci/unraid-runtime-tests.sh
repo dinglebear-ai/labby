@@ -235,6 +235,23 @@ EOF
         || fail "incus env sourcer ignored configured INCUS_DIR: $configured_dir"
 }
 
+test_env_sourcer_exports_incus_cli() {
+    local incus_cli
+
+    incus_cli="$(
+        INCUS_PREFIX="$tmp/incus-prefix" \
+            INCUS_CONFIG="$tmp/missing-incus.cfg" \
+            PATH="/usr/bin" \
+            bash -c "
+                set -euo pipefail
+                . '$incus_env_script'
+                printf '%s' \"\$INCUS\"
+            "
+    )"
+    [ "$incus_cli" = "$tmp/incus-prefix/bin/incus" ] \
+        || fail "incus env sourcer did not export the canonical Incus CLI: $incus_cli"
+}
+
 test_env_sourcer_keeps_system_xtables_extensions() {
     local xtables_dir
 
@@ -729,6 +746,7 @@ PHP
 
 test_env_sourcer_is_idempotent
 test_env_sourcer_honors_incus_config_dir
+test_env_sourcer_exports_incus_cli
 test_env_sourcer_keeps_system_xtables_extensions
 test_native_start_does_not_require_incus
 test_native_start_ignores_unproven_incus_query_failure

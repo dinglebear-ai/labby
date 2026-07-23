@@ -12,6 +12,7 @@ if [ ! -x "${INCUS_PREFIX}/bin/incus" ]; then
     fi
     exit 1
 fi
+export INCUS="${INCUS:-${INCUS_PREFIX}/bin/incus}"
 
 case ":${LD_LIBRARY_PATH:-}:" in
     *":${INCUS_PREFIX}/lib:"*) ;;
