@@ -1062,11 +1062,14 @@ mod tests {
     fn docker_container_missing_matches_lowercase_and_uppercase_no_object() {
         let upper_case = ToolError::Sdk {
             sdk_kind: "internal_error".into(),
-            message: "command failed: docker inspect ...\nstderr: Error: No such object: labby-master".into(),
+            message:
+                "command failed: docker inspect ...\nstderr: Error: No such object: labby-master"
+                    .into(),
         };
         let lower_case = ToolError::Sdk {
             sdk_kind: "internal_error".into(),
-            message: "command failed: docker inspect ...\nstderr: no such object: labby-master".into(),
+            message: "command failed: docker inspect ...\nstderr: no such object: labby-master"
+                .into(),
         };
         let other = ToolError::Sdk {
             sdk_kind: "internal_error".into(),
