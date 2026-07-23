@@ -77,7 +77,7 @@ function labby_dashboard_gateway_rows(array $cfg, int &$exitCode): array
             $exitCode = 1;
             return [];
         }
-        $script = '. "$1" && exec "$INCUS" exec "$2" --user labby -- env HOME=/home/labby XDG_CACHE_HOME=/home/labby/.cache XDG_CONFIG_HOME=/home/labby/.config XDG_DATA_HOME=/home/labby/.local/share PATH=/home/labby/.local/bin:/usr/local/bin:/usr/bin:/bin labby --json gateway mcp list';
+        $script = '. "$1" && exec "$INCUS" exec "$2" --user 1000 --group 1000 --cwd /home/labby -- env HOME=/home/labby XDG_CACHE_HOME=/home/labby/.cache XDG_CONFIG_HOME=/home/labby/.config XDG_DATA_HOME=/home/labby/.local/share PATH=/home/labby/.local/bin:/usr/local/bin:/usr/bin:/bin labby --json gateway mcp list';
         $output = labby_dashboard_exec([
             'timeout', '8', 'bash', '-c', $script, 'labby-dashboard',
             LABBY_DASHBOARD_INCUS_ENV, $container,

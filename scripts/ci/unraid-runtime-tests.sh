@@ -642,7 +642,7 @@ test_page_exposes_native_gateway_controls() {
     assert_file_contains "$page_file" 'function labby_runtime_summary'
     assert_file_contains "$page_file" 'position:sticky; top:63px'
     assert_file_contains "$page_file" 'grid-template-columns:repeat(2,minmax(0,1fr))'
-    assert_file_contains "$page_file" "exec \"\$1\" --user labby"
+    assert_file_contains "$page_file" "exec \"\$1\" --user 1000 --group 1000 --cwd /home/labby"
     assert_file_contains "$page_file" 'timeout'
     assert_file_contains "$page_file" 'Submit one Labby action at a time.'
     assert_file_not_contains "$page_file" '<iframe'
@@ -713,6 +713,40 @@ export INCUS="$dash/incus"
 SH
     cat > "$dash/incus" <<'SH'
 #!/usr/bin/env bash
+if [ "$1" = "exec" ]; then
+    shift
+    saw_user=false
+    saw_group=false
+    saw_cwd=false
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --user | --group)
+                flag="$1"
+                shift
+                [[ "${1:-}" =~ ^[0-9]+$ ]] || {
+                    echo "$flag requires a numeric ID" >&2
+                    exit 2
+                }
+                [ "$flag" = "--user" ] && saw_user=true
+                [ "$flag" = "--group" ] && saw_group=true
+                ;;
+            --cwd)
+                shift
+                [ "${1:-}" = "/home/labby" ] || {
+                    echo "--cwd must be /home/labby" >&2
+                    exit 2
+                }
+                saw_cwd=true
+                ;;
+            --) break ;;
+        esac
+        shift
+    done
+    $saw_user && $saw_group && $saw_cwd || {
+        echo "missing Labby execution identity or working directory" >&2
+        exit 2
+    }
+fi
 printf '%s\n' '[{"enabled":true,"connected":true,"exposed_tool_count":4},{"enabled":true,"connected":false,"exposed_tool_count":2,"last_error":"offline"},{"enabled":false,"connected":false,"exposed_tool_count":0}]'
 SH
     chmod +x "$dash/rc.labby" "$dash/incus" "$dash/incus-env.sh"
