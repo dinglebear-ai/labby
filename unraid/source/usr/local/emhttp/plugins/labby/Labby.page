@@ -207,6 +207,28 @@ function labby_count_summary($row) {
     return "$tools tools / $resources resources / $prompts prompts";
 }
 
+function labby_upstream_error_text($row) {
+    foreach (['error', 'last_error', 'startup_error', 'message'] as $key) {
+        $value = $row[$key] ?? null;
+        if (is_string($value) && trim($value) !== '') {
+            return trim($value);
+        }
+    }
+    return '';
+}
+
+function labby_runtime_summary($row) {
+    $pid = $row['pid'] ?? null;
+    $stale = (int) ($row['likely_stale_count'] ?? 0);
+    if ($pid !== null) {
+        return 'PID ' . (string) $pid . ($stale > 0 ? " / $stale stale" : '');
+    }
+    $transport = strtolower((string) ($row['transport'] ?? ''));
+    return in_array($transport, ['http', 'https', 'sse', 'streamable-http'], true)
+        ? ''
+        : 'No active process';
+}
+
 function labby_validate_upstream_name($name) {
     return preg_match('/^[A-Za-z0-9._-]{1,128}$/', $name);
 }
@@ -642,6 +664,15 @@ $gatewayErrors = count(array_filter($gatewayRows, fn($row) => !empty($row['enabl
 $gatewayTools = array_sum(array_map(fn($row) => (int) ($row['exposed_tool_count'] ?? 0), $gatewayRows));
 $gatewayResources = array_sum(array_map(fn($row) => (int) ($row['exposed_resource_count'] ?? 0), $gatewayRows));
 $gatewayPrompts = array_sum(array_map(fn($row) => (int) ($row['exposed_prompt_count'] ?? 0), $gatewayRows));
+$gatewayCheckedAt = date('g:i A');
+$pluginVersion = 'unknown';
+$pluginManifest = '/boot/config/plugins/labby.plg';
+if (is_readable($pluginManifest)) {
+    $manifest = file_get_contents($pluginManifest);
+    if (is_string($manifest) && preg_match('/<!ENTITY version\s+"([^"]+)"/', $manifest, $versionMatch)) {
+        $pluginVersion = $versionMatch[1];
+    }
+}
 $runtimeMode = $cfg['RUNTIME_MODE'] === 'incus' ? 'Incus' : 'Native';
 $endpointDisplay = ($cfg['RUNTIME_MODE'] === 'incus')
     ? $cfg['INCUS_CONTAINER_NAME'] . ' · Tailscale'
@@ -712,17 +743,41 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
 #labby-plugin-root .lb-status:before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
 #labby-plugin-root .lb-status.ok { color:#4f9d4a; } #labby-plugin-root .lb-status.bad { color:#e22828; } #labby-plugin-root .lb-status.off { color:#a16a00; }
 #labby-plugin-root .notice { margin:0; border-radius:6px; background:#fff; padding:12px 16px; border:1px solid #e5e5e5; }
-#labby-plugin-root .lb-table-tools { display:flex; align-items:center; gap:10px; padding:10px 18px; border-bottom:1px solid var(--lb-line); }
+#labby-plugin-root .lb-table-tools { display:flex; align-items:center; gap:10px; padding:10px 18px; border-bottom:1px solid var(--lb-line); background:var(--lb-card); }
 #labby-plugin-root input[type=text], #labby-plugin-root input[type=url], #labby-plugin-root input[type=password], #labby-plugin-root textarea, #labby-plugin-root select {
   width:100%; min-height:38px; border:1px solid #d4d4d4; border-radius:6px; background:#fff; color:#1c1b1b; padding:8px 10px; font:13px inherit; box-shadow:none;
 }
 #labby-plugin-root input:focus, #labby-plugin-root textarea:focus, #labby-plugin-root select:focus { outline:2px solid rgba(255,102,0,.22); border-color:#ff8c2f; }
 #labby-plugin-root .lb-filter { max-width:320px; }
 #labby-plugin-root table { width:100%; border-collapse:collapse; margin:0; background:#fff; }
+#labby-plugin-root tbody tr[hidden] { display:none !important; }
 #labby-plugin-root th { padding:10px 18px; background:#fafafa; color:var(--lb-muted); font-size:10px; letter-spacing:.1em; text-transform:uppercase; text-align:left; }
 #labby-plugin-root td { padding:11px 18px; border-top:1px solid var(--lb-line); font-size:12px; vertical-align:middle; }
 #labby-plugin-root td form { display:inline-flex !important; margin:2px 3px 2px 0; }
 #labby-plugin-root .lb-transport { display:inline-flex; border-radius:999px; padding:2px 8px; background:#e5e7eb; color:#1f2937; font:600 11px ui-monospace,Menlo,monospace; }
+#labby-plugin-root .lb-target-row { display:flex; align-items:center; gap:6px; min-width:0; margin-top:3px; }
+#labby-plugin-root .lb-server-target { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--lb-muted); text-decoration:none; }
+#labby-plugin-root .lb-server-target:hover { color:var(--lb-orange); text-decoration:underline; }
+#labby-plugin-root .lb-copy-target { display:inline-grid; place-items:center; flex:none; min-width:28px; min-height:28px; padding:0; border:0; color:var(--lb-muted); background:transparent; }
+#labby-plugin-root .lb-copy-target:hover, #labby-plugin-root .lb-copy-target.copied { color:#4f9d4a; background:#eef8ed; }
+#labby-plugin-root .lb-status-stack { display:grid; gap:3px; }
+#labby-plugin-root .lb-freshness { color:var(--lb-faint); font-size:10px; white-space:nowrap; }
+#labby-plugin-root .lb-cell-runtime:empty { padding:0; }
+#labby-plugin-root .lb-action-menu, #labby-plugin-root .lb-server-details { position:relative; display:inline-block; }
+#labby-plugin-root .lb-action-menu summary, #labby-plugin-root .lb-server-details summary {
+  list-style:none; display:inline-flex; align-items:center; gap:6px; min-height:34px; padding:0 12px;
+  border:1px solid #d4d4d4; border-radius:6px; background:#fff; color:#1c1b1b; font-size:12px; font-weight:600; cursor:pointer;
+}
+#labby-plugin-root .lb-action-menu summary::-webkit-details-marker, #labby-plugin-root .lb-server-details summary::-webkit-details-marker { display:none; }
+#labby-plugin-root .lb-action-menu[open] summary, #labby-plugin-root .lb-server-details[open] summary { border-color:var(--lb-orange); background:#fff7f0; }
+#labby-plugin-root .lb-action-menu-items { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; padding:8px; border:1px solid var(--lb-line); border-radius:6px; background:#fafafa; }
+#labby-plugin-root .lb-action-menu-items form { margin:0 !important; }
+#labby-plugin-root .lb-server-details { width:100%; margin-top:5px; }
+#labby-plugin-root .lb-server-detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 16px; margin-top:8px; padding:10px; border:1px solid var(--lb-line); border-radius:6px; background:#fafafa; }
+#labby-plugin-root .lb-server-detail { display:grid; gap:2px; min-width:0; }
+#labby-plugin-root .lb-server-detail > span { color:var(--lb-faint); font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; }
+#labby-plugin-root .lb-server-detail > strong, #labby-plugin-root .lb-server-detail > code { min-width:0; overflow-wrap:anywhere; font-size:11px; font-weight:500; }
+#labby-plugin-root .lb-server-error { grid-column:1/-1; color:#bd1818; }
 #labby-plugin-root .lb-drawer { border-top:1px solid var(--lb-line); background:#fafafa; padding:16px 18px; }
 #labby-plugin-root .lb-add-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
 #labby-plugin-root .lb-form-card { border:1px solid #e5e5e5; border-radius:6px; background:#fff; padding:16px; }
@@ -750,7 +805,12 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
   #labby-plugin-root .lb-tabs { overflow-x:auto; }
   #labby-plugin-root .lb-tab { padding:6px 9px; }
   #labby-plugin-root .lb-brand .lb-pill { display:none; }
-  #labby-plugin-root .lb-main { padding:10px; }
+  #labby-plugin-root .lb-main { padding:10px 10px max(104px, calc(env(safe-area-inset-bottom) + 88px)); }
+  #labby-plugin-root .lb-stats { grid-template-columns:repeat(2,minmax(0,1fr)); gap:0; }
+  #labby-plugin-root .lb-stat { padding:10px 12px; border-right:1px solid #ececec; border-bottom:1px solid #ececec; }
+  #labby-plugin-root .lb-stat:nth-child(2n) { border-right:0; }
+  #labby-plugin-root .lb-stat:nth-last-child(-n+2) { border-bottom:0; }
+  #labby-plugin-root .lb-table-tools { position:sticky; top:63px; z-index:20; padding:9px 14px; box-shadow:0 5px 12px rgba(0,0,0,.06); }
   #labby-plugin-root .lb-detail-grid { grid-template-columns:1fr; }
   #labby-plugin-root .lb-settings-card dt { float:none; width:auto; padding:12px 14px 4px; text-align:left; }
   #labby-plugin-root .lb-settings-card dd { margin:0; min-height:0; padding:4px 14px 12px; }
@@ -776,8 +836,11 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
   #labby-plugin-root .lb-cell-transport { grid-area:transport; justify-self:end; }
   #labby-plugin-root .lb-cell-capabilities { grid-area:capabilities; }
   #labby-plugin-root .lb-cell-runtime { grid-area:runtime; color:var(--lb-muted); }
-  #labby-plugin-root .lb-cell-actions { grid-area:actions; display:flex; flex-wrap:wrap; gap:6px; padding-top:3px; }
+  #labby-plugin-root .lb-cell-runtime:empty { display:none; }
+  #labby-plugin-root .lb-cell-actions { grid-area:actions; display:flex; align-items:flex-start; flex-wrap:wrap; gap:6px; padding-top:3px; }
   #labby-plugin-root .lb-cell-actions form { margin:0 !important; }
+  #labby-plugin-root .lb-server-detail-grid { grid-template-columns:1fr; }
+  #labby-plugin-root .lb-server-error { grid-column:auto; }
 }
 </style>
 
@@ -797,7 +860,7 @@ $initialTab = isset($_POST['labby_settings_save']) ? 'settings' : (
         <button type="button" class="lb-tab" role="tab" aria-selected="false" data-labby-tab="settings">Settings</button>
       </nav>
       <button type="button" class="lb-endpoint" id="labby-copy-endpoint" title="Copy gateway endpoint"><?= htmlspecialchars($endpointDisplay, ENT_QUOTES) ?></button>
-      <span class="lb-version">plugin v1.3.7</span>
+      <span class="lb-version">plugin v<?= htmlspecialchars($pluginVersion, ENT_QUOTES) ?></span>
     </div>
   </header>
   <main class="lb-main">
@@ -1049,7 +1112,7 @@ _(Arguments)_:
 <div class="lb-table-tools">
   <input class="lb-filter" id="labby-server-filter" type="text" placeholder="Filter servers..." aria-label="Filter servers">
   <span class="lb-grow"></span>
-  <span class="lb-sub"><?= $gatewayTotal ?> of <?= $gatewayTotal ?> servers</span>
+  <span class="lb-sub" id="labby-server-count"><?= $gatewayTotal ?> of <?= $gatewayTotal ?> servers</span>
 </div>
 <table>
 <thead>
@@ -1071,13 +1134,33 @@ _(Arguments)_:
     $target = (string) ($row['target'] ?? '');
     $pid = $row['pid'] ?? null;
     $stale = (int) ($row['likely_stale_count'] ?? 0);
+    $runtimeSummary = labby_runtime_summary($row);
+    $errorText = labby_upstream_error_text($row);
+    $targetIsUrl = $target !== '' && labby_validate_http_url($target);
 ?>
 <tr>
-  <td class="lb-cell-server" data-label="Server"><strong><?= htmlspecialchars($name, ENT_QUOTES) ?></strong><?php if ($target !== ''): ?><div class="lb-sub"><?= htmlspecialchars($target, ENT_QUOTES) ?></div><?php endif; ?></td>
-  <td class="lb-cell-status" data-label="Status"><span class="lb-status <?= empty($row['enabled']) ? 'off' : (!empty($row['connected']) ? 'ok' : 'bad') ?>"><?= htmlspecialchars(labby_upstream_status_text($row), ENT_QUOTES) ?></span></td>
+  <td class="lb-cell-server" data-label="Server">
+    <strong><?= htmlspecialchars($name, ENT_QUOTES) ?></strong>
+    <?php if ($target !== ''): ?>
+    <div class="lb-target-row">
+      <?php if ($targetIsUrl): ?>
+      <a class="lb-server-target" href="<?= htmlspecialchars($target, ENT_QUOTES) ?>" target="_blank" rel="noopener noreferrer"><?= htmlspecialchars($target, ENT_QUOTES) ?></a>
+      <button class="lb-copy-target" type="button" data-copy-target="<?= htmlspecialchars($target, ENT_QUOTES) ?>" aria-label="Copy <?= htmlspecialchars($name, ENT_QUOTES) ?> endpoint" title="Copy endpoint"><i class="fa fa-copy" aria-hidden="true"></i></button>
+      <?php else: ?>
+      <code class="lb-server-target"><?= htmlspecialchars($target, ENT_QUOTES) ?></code>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
+  </td>
+  <td class="lb-cell-status" data-label="Status">
+    <span class="lb-status-stack">
+      <span class="lb-status <?= empty($row['enabled']) ? 'off' : (!empty($row['connected']) ? 'ok' : 'bad') ?>"><?= htmlspecialchars(labby_upstream_status_text($row), ENT_QUOTES) ?></span>
+      <span class="lb-freshness">Checked <?= htmlspecialchars($gatewayCheckedAt, ENT_QUOTES) ?></span>
+    </span>
+  </td>
   <td class="lb-cell-transport" data-label="Transport"><span class="lb-transport"><?= htmlspecialchars($transport, ENT_QUOTES) ?></span></td>
   <td class="lb-cell-capabilities"><?= htmlspecialchars(labby_count_summary($row), ENT_QUOTES) ?></td>
-  <td class="lb-cell-runtime"><?= $pid === null ? '_(No process)_' : 'PID ' . htmlspecialchars((string) $pid, ENT_QUOTES) ?><?= $stale > 0 ? ' / ' . htmlspecialchars((string) $stale, ENT_QUOTES) . ' _(stale)_' : '' ?></td>
+  <td class="lb-cell-runtime"><?= htmlspecialchars($runtimeSummary, ENT_QUOTES) ?></td>
   <td class="lb-cell-actions">
     <?php if ($name !== ''): ?>
     <?php if ($enabled): ?>
@@ -1093,25 +1176,48 @@ _(Arguments)_:
       <input type="submit" value="_(Enable)_">
     </form>
     <?php endif; ?>
-	    <form method="post" style="display:inline">
-	      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
-	      <input type="hidden" name="labby_gateway_server_action" value="remove">
-	      <input type="submit" value="_(Remove)_" onclick="return confirm('Remove this upstream from the gateway?')">
-	    </form>
-	    <?php if ($stale > 0): ?>
-	    <form method="post" style="display:inline">
-	      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
-	      <input type="hidden" name="labby_mcp_action" value="cleanup_preview">
-	      <input type="submit" value="_(Preview cleanup)_">
-	    </form>
-	    <form method="post" style="display:inline">
-	      <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
-	      <input type="hidden" name="labby_mcp_action" value="cleanup">
-	      <input type="submit" value="_(Cleanup)_" onclick="return confirm('Clean up stale runtime processes for this upstream?')">
-	    </form>
-	    <?php endif; ?>
-	    <?php endif; ?>
-	  </td>
+    <?php if ($enabled && empty($row['connected'])): ?>
+    <form method="post">
+      <input type="hidden" name="labby_gateway_action" value="reload">
+      <input type="submit" value="_(Retry connection)_">
+    </form>
+    <?php endif; ?>
+    <details class="lb-action-menu">
+      <summary><i class="fa fa-ellipsis-h" aria-hidden="true"></i> More</summary>
+      <div class="lb-action-menu-items">
+        <form method="post">
+          <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+          <input type="hidden" name="labby_gateway_server_action" value="remove">
+          <input class="lb-danger" type="submit" value="_(Remove server)_" onclick="return confirm('Remove <?= htmlspecialchars($name, ENT_QUOTES) ?> from the gateway?')">
+        </form>
+        <?php if ($stale > 0): ?>
+        <form method="post">
+          <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+          <input type="hidden" name="labby_mcp_action" value="cleanup_preview">
+          <input type="submit" value="_(Preview cleanup)_">
+        </form>
+        <form method="post">
+          <input type="hidden" name="upstream_name" value="<?= htmlspecialchars($name, ENT_QUOTES) ?>">
+          <input type="hidden" name="labby_mcp_action" value="cleanup">
+          <input class="lb-danger" type="submit" value="_(Clean stale processes)_" onclick="return confirm('Clean up stale runtime processes for <?= htmlspecialchars($name, ENT_QUOTES) ?>?')">
+        </form>
+        <?php endif; ?>
+      </div>
+    </details>
+    <details class="lb-server-details">
+      <summary><i class="fa fa-info-circle" aria-hidden="true"></i> Details</summary>
+      <div class="lb-server-detail-grid">
+        <div class="lb-server-detail"><span>Transport</span><strong><?= htmlspecialchars($transport, ENT_QUOTES) ?></strong></div>
+        <div class="lb-server-detail"><span>State</span><strong><?= $enabled ? 'Enabled' : 'Disabled' ?> · <?= !empty($row['connected']) ? 'Connected' : 'Disconnected' ?></strong></div>
+        <div class="lb-server-detail"><span>Capabilities</span><strong><?= htmlspecialchars(labby_count_summary($row), ENT_QUOTES) ?></strong></div>
+        <div class="lb-server-detail"><span>Last checked</span><strong><?= htmlspecialchars($gatewayCheckedAt, ENT_QUOTES) ?></strong></div>
+        <?php if ($target !== ''): ?><div class="lb-server-detail"><span>Configured target</span><code><?= htmlspecialchars($target, ENT_QUOTES) ?></code></div><?php endif; ?>
+        <?php if ($runtimeSummary !== ''): ?><div class="lb-server-detail"><span>Runtime</span><strong><?= htmlspecialchars($runtimeSummary, ENT_QUOTES) ?></strong></div><?php endif; ?>
+        <?php if ($errorText !== ''): ?><div class="lb-server-detail lb-server-error"><span>Last error</span><strong><?= htmlspecialchars($errorText, ENT_QUOTES) ?></strong></div><?php endif; ?>
+      </div>
+    </details>
+    <?php endif; ?>
+  </td>
 </tr>
 <?php endforeach; ?>
 </tbody>
@@ -1156,10 +1262,35 @@ _(Arguments)_:
   });
 
   const filter = document.getElementById('labby-server-filter');
+  const serverCount = document.getElementById('labby-server-count');
   if (filter) filter.addEventListener('input', () => {
     const query = filter.value.trim().toLowerCase();
-    root.querySelectorAll('tbody tr').forEach(row => { row.hidden = query !== '' && !row.textContent.toLowerCase().includes(query); });
+    const rows = Array.from(root.querySelectorAll('tbody tr'));
+    let visible = 0;
+    rows.forEach(row => {
+      row.hidden = query !== '' && !row.textContent.toLowerCase().includes(query);
+      if (!row.hidden) visible += 1;
+    });
+    if (serverCount) serverCount.textContent = visible + ' of ' + rows.length + ' servers';
   });
+
+  root.querySelectorAll('[data-copy-target]').forEach(button => button.addEventListener('click', async () => {
+    const value = button.dataset.copyTarget || '';
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      const icon = button.querySelector('i');
+      const previousClass = icon ? icon.className : '';
+      button.classList.add('copied');
+      button.setAttribute('aria-label', 'Endpoint copied');
+      if (icon) icon.className = 'fa fa-check';
+      setTimeout(() => {
+        button.classList.remove('copied');
+        button.setAttribute('aria-label', 'Copy endpoint');
+        if (icon) icon.className = previousClass;
+      }, 1200);
+    } catch (_) {}
+  }));
 
   const copy = document.getElementById('labby-copy-endpoint');
   if (copy) copy.addEventListener('click', async () => {
