@@ -149,7 +149,7 @@ function labby_run_cli($cfg, $args, &$exitCode, $timeoutSeconds = 20) {
             return 'Invalid INCUS_CONTAINER_NAME; cannot execute gateway controls in Incus mode.';
         }
 
-        $script = '. /usr/local/emhttp/plugins/labby/scripts/labby-incus-env.sh && exec "$INCUS" exec "$1" --user labby -- env HOME=/home/labby XDG_CACHE_HOME=/home/labby/.cache XDG_CONFIG_HOME=/home/labby/.config XDG_DATA_HOME=/home/labby/.local/share PATH=/home/labby/.local/bin:/usr/local/bin:/usr/bin:/bin labby --json "${@:2}"';
+        $script = '. /usr/local/emhttp/plugins/labby/scripts/labby-incus-env.sh && exec "$INCUS" exec "$1" --user 1000 --group 1000 --cwd /home/labby -- env HOME=/home/labby XDG_CACHE_HOME=/home/labby/.cache XDG_CONFIG_HOME=/home/labby/.config XDG_DATA_HOME=/home/labby/.local/share PATH=/home/labby/.local/bin:/usr/local/bin:/usr/bin:/bin labby --json "${@:2}"';
         $parts = ['timeout', (string) $timeoutSeconds, 'bash', '-c', $script, 'labby-incus-cli', $containerName];
         foreach ($args as $arg) {
             $parts[] = $arg;

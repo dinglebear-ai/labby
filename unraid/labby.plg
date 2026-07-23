@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.14">
+  <!ENTITY version      "1.3.15">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -41,9 +41,9 @@
   <!ENTITY tarballURL   "&repoURL;/releases/download/v&labbyVersion;/&tarball;">
   <!ENTITY tarballMD5   "218537d21846aa36b22f75c881cbe636">
   <!ENTITY cfgMD5       "54ab819145fa4b327f2a763f718da04a">
-  <!ENTITY pageMD5      "122e34ad06c32b4cff3ef6ef344a20cf">
+  <!ENTITY pageMD5      "198bae46ed722f8880fedec89c9bd6a8">
   <!ENTITY dashboardMD5 "1dffc3d2eb9578072527927ef03c0e18">
-  <!ENTITY dashboardStatusMD5 "c6bbb538887a4a8566eb50587e7429a4">
+  <!ENTITY dashboardStatusMD5 "cc67612bc2e68d36dbfa991ffdbca8f9">
   <!ENTITY rcMD5        "6aabfdaf80dbcaadf72a6d47d85916e6">
   <!ENTITY preflightMD5 "70f9b0d26a1c4e5badcc11424381c156">
   <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">
@@ -58,6 +58,11 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.15
+- Uses the provisioned Labby user's numeric UID/GID for Incus exec calls so
+  Settings actions and Dashboard aggregates work with Incus' numeric-only
+  --user and --group flags.
+
 ###1.3.14
 - Exports the private Incus CLI path from the shared environment helper so
   the Incus-mode Dashboard widget can query live gateway aggregates.
