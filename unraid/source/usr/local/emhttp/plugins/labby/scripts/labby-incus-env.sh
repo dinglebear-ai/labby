@@ -27,6 +27,13 @@ case ":${PATH}:" in
     *) export PATH="${INCUS_PREFIX}/bin:${PATH}" ;;
 esac
 
+# The private Incus library path also supplies libxtables. Keep Unraid's
+# system iptables extensions discoverable when this environment is active.
+SYSTEM_XTABLES_LIBDIR="${SYSTEM_XTABLES_LIBDIR:-/usr/lib64/xtables}"
+if [ -d "$SYSTEM_XTABLES_LIBDIR" ]; then
+    export XTABLES_LIBDIR="${XTABLES_LIBDIR:-$SYSTEM_XTABLES_LIBDIR}"
+fi
+
 # The Incus plugin owns the daemon state path. Read only INCUS_DIR in a
 # subshell so sourcing its config cannot overwrite Labby's SERVICE or other
 # runtime settings in the caller.
