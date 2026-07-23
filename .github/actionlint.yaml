@@ -3,5 +3,6 @@
 # windows-lab.
 self-hosted-runner:
   labels:
+    - unraid
     - linux-lab
     - windows-lab
