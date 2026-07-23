@@ -212,6 +212,29 @@ test_env_sourcer_is_idempotent() {
     [ "$count" = $'1\n1\n1' ] || fail "incus env sourcer duplicated PATH/LD_LIBRARY_PATH entries: $count"
 }
 
+test_env_sourcer_honors_incus_config_dir() {
+    local configured_dir
+
+    cat > "$tmp/incus.cfg" <<'EOF'
+SERVICE='enabled'
+INCUS_DIR='/mnt/cache/incus'
+JAIL_BRIDGE='agentbr0'
+EOF
+    configured_dir="$(
+        INCUS_PREFIX="$tmp/incus-prefix" \
+            INCUS_CONFIG="$tmp/incus.cfg" \
+            INCUS_DIR="/should/not/win" \
+            PATH="/usr/bin" \
+            bash -c "
+                set -euo pipefail
+                . '$incus_env_script'
+                printf '%s' \"\$INCUS_DIR\"
+            "
+    )"
+    [ "$configured_dir" = "/mnt/cache/incus" ] \
+        || fail "incus env sourcer ignored configured INCUS_DIR: $configured_dir"
+}
+
 test_native_start_does_not_require_incus() {
     write_cfg native
     printf 'missing\n' > "$tmp/incus-state"
@@ -686,6 +709,7 @@ PHP
 }
 
 test_env_sourcer_is_idempotent
+test_env_sourcer_honors_incus_config_dir
 test_native_start_does_not_require_incus
 test_native_start_ignores_unproven_incus_query_failure
 test_native_start_fails_closed_with_incus_marker_and_missing_cli
