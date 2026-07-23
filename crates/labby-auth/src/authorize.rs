@@ -2052,6 +2052,7 @@ pub mod tests {
             google: GoogleConfig {
                 client_id: "client-id".to_string(),
                 client_secret: "client-secret".to_string(),
+                callback_url: None,
                 callback_path: "/auth/google/callback".to_string(),
                 scopes: vec![
                     "openid".to_string(),

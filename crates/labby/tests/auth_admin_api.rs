@@ -63,6 +63,7 @@ impl Harness {
             google: GoogleConfig {
                 client_id: "id".to_string(),
                 client_secret: "secret".to_string(),
+                callback_url: None,
                 callback_path: "/auth/google/callback".to_string(),
                 scopes: vec!["openid".to_string(), "email".to_string()],
             },
@@ -88,6 +89,7 @@ impl Harness {
             google: GoogleConfig {
                 client_id: "id".to_string(),
                 client_secret: "secret".to_string(),
+                callback_url: None,
                 callback_path: "/auth/google/callback".to_string(),
                 scopes: vec!["openid".to_string(), "email".to_string()],
             },

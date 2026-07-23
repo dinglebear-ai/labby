@@ -140,6 +140,7 @@ mod tests {
             google: crate::config::GoogleConfig {
                 client_id: "id".into(),
                 client_secret: "secret".into(),
+                callback_url: None,
                 callback_path: "/auth/google/callback".into(),
                 scopes: vec!["openid".into(), "email".into()],
             },

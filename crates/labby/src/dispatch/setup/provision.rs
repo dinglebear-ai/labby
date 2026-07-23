@@ -510,9 +510,12 @@ async fn caches_cleaned() -> Result<bool, ToolError> {
     if apt_archives > 0 {
         return Ok(false);
     }
-    let apt_bin_caches = ["/var/cache/apt/pkgcache.bin", "/var/cache/apt/srcpkgcache.bin"]
-        .into_iter()
-        .any(|path| std::fs::metadata(path).is_ok_and(|meta| meta.len() > 0));
+    let apt_bin_caches = [
+        "/var/cache/apt/pkgcache.bin",
+        "/var/cache/apt/srcpkgcache.bin",
+    ]
+    .into_iter()
+    .any(|path| std::fs::metadata(path).is_ok_and(|meta| meta.len() > 0));
     if apt_bin_caches {
         return Ok(false);
     }
@@ -532,8 +535,8 @@ async fn caches_cleaned() -> Result<bool, ToolError> {
     if apt_lists > 0 {
         return Ok(false);
     }
-    let npm_cacache = std::fs::metadata(format!("{LABBY_HOME}/.npm/_cacache"))
-        .is_ok_and(|meta| meta.is_dir());
+    let npm_cacache =
+        std::fs::metadata(format!("{LABBY_HOME}/.npm/_cacache")).is_ok_and(|meta| meta.is_dir());
     if npm_cacache {
         return Ok(false);
     }
