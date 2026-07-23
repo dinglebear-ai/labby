@@ -193,7 +193,9 @@ impl AuthState {
                 prefix = config.env_prefix
             ))
         })?;
-        let redirect_uri = build_google_redirect_uri(&public_url, &config.google.callback_path);
+        let redirect_uri = config.google.callback_url.clone().unwrap_or_else(|| {
+            build_google_redirect_uri(&public_url, &config.google.callback_path)
+        });
         let store = SqliteStore::open(config.sqlite_path.clone()).await?;
         let signing_keys = SigningKeys::load_or_create(&config.key_path)?;
         let mut google = GoogleProvider::new(
@@ -440,6 +442,7 @@ mod tests {
             google: GoogleConfig {
                 client_id: "client-id".to_string(),
                 client_secret: "client-secret".to_string(),
+                callback_url: None,
                 callback_path: "/auth/google/callback".to_string(),
                 scopes: vec![
                     "openid".to_string(),
@@ -520,6 +523,7 @@ mod tests {
             google: GoogleConfig {
                 client_id: "client-id".to_string(),
                 client_secret: "client-secret".to_string(),
+                callback_url: None,
                 callback_path: "/auth/google/callback".to_string(),
                 scopes: vec![
                     "openid".to_string(),
@@ -541,6 +545,45 @@ mod tests {
         assert_eq!(
             state.google.redirect_uri.as_str(),
             "https://lab.example.com/gateway/auth/google/callback"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_state_uses_explicit_google_callback_url_without_changing_public_url() {
+        let temp = tempdir().expect("tempdir");
+        let config = AuthConfig::from_sources(
+            [
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_PUBLIC_URL", "https://issuer.example.com"),
+                (
+                    "LAB_GOOGLE_CALLBACK_URL",
+                    "https://app.example.com/auth/google/callback",
+                ),
+                ("LAB_GOOGLE_CLIENT_ID", "client-id"),
+                ("LAB_GOOGLE_CLIENT_SECRET", "client-secret"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+                (
+                    "LAB_AUTH_SQLITE_PATH",
+                    temp.path().join("auth.db").to_str().expect("sqlite path"),
+                ),
+                (
+                    "LAB_AUTH_KEY_PATH",
+                    temp.path().join("auth.pem").to_str().expect("key path"),
+                ),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string())),
+        )
+        .expect("auth config");
+        let state = AuthState::new(config).await.expect("auth state");
+
+        assert_eq!(
+            state.config.public_url.as_ref().map(Url::as_str),
+            Some("https://issuer.example.com/")
+        );
+        assert_eq!(
+            state.google.redirect_uri.as_str(),
+            "https://app.example.com/auth/google/callback"
         );
     }
 }

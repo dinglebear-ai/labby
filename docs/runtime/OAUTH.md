@@ -21,13 +21,14 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 |----------|----------|-------------|
 | `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
 | `LABBY_MCP_HTTP_TOKEN` | bearer mode | Static bearer token for protected HTTP routes. |
-| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata, callback construction, and JWT issuer/audience. Path-prefixed deployments are supported. |
+| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
 | `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
 | `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
 | `LABBY_AUTH_SQLITE_PATH` | no | Override path for the SQLite auth database. |
 | `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. |
 | `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration. When unset, Labby seeds common ChatGPT/Claude callback patterns. Set it explicitly to replace those defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. |
 | `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Google email address of the bootstrap admin permitted to log in. Normalized to lowercase at startup. **Required** when `LABBY_AUTH_MODE=oauth`: startup fails if unset so no Google account can authenticate unless explicitly permitted. The `email_verified` claim in Google's id_token is enforced — accounts with unverified email addresses are rejected even if the address matches. Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
+| `LABBY_GOOGLE_CALLBACK_URL` | no | Absolute Google OAuth callback URL. Use this when the browser webapp host differs from the OAuth issuer; when unset, Labby derives the callback from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
 | `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
 | `LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `POST /register`. Defaults to `20`. |
@@ -42,7 +43,9 @@ When OAuth mode is configured, `labby serve` performs these steps at startup:
 2. Open the SQLite auth store in WAL mode with a non-zero busy timeout.
 3. Load or generate the persisted Ed25519 signing key. Legacy RSA key files are
    quarantined and rotated on first startup after upgrade.
-4. Build the concrete Google provider callback URL from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`.
+4. Use `LABBY_GOOGLE_CALLBACK_URL` when configured; otherwise build the
+   concrete Google provider callback URL from `LABBY_PUBLIC_URL` and
+   `LABBY_GOOGLE_CALLBACK_PATH`.
 
 Startup fails closed if any of those steps fail.
 
@@ -726,6 +729,8 @@ LABBY_MCP_HTTP_HOST=0.0.0.0
 LABBY_MCP_HTTP_PORT=8765
 LABBY_AUTH_MODE=oauth
 LABBY_PUBLIC_URL=https://lab.example.com
+# Optional when the webapp and OAuth issuer use different hosts:
+# LABBY_GOOGLE_CALLBACK_URL=https://labby.example.com/auth/google/callback
 LABBY_GOOGLE_CLIENT_ID=google-client-id
 LABBY_GOOGLE_CLIENT_SECRET=google-client-secret
 
