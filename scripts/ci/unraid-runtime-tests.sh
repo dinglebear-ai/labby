@@ -611,17 +611,21 @@ test_dashboard_widget_contract() {
     assert_file_contains "$page_file" 'DASHBOARD_WIDGET_ENABLE must be true or false.'
 
     php -l "$dashboard_status_file" >/dev/null
-    php "$dashboard_status_file" |
-        jq -e '
-            (.service.enabled | type == "boolean")
-            and (.service.running | type == "boolean")
-            and (.runtime == "native" or .runtime == "incus")
-            and (.gateway.available | type == "boolean")
-            and (.gateway.total | type == "number")
-            and (.gateway.connected | type == "number")
-            and (.gateway.tools | type == "number")
-            and (.gateway.errors | type == "number")
-        ' >/dev/null
+    local payload
+    payload="$(php "$dashboard_status_file")"
+    php -r '
+        $d = json_decode($argv[1], true);
+        $ok = is_array($d)
+            && is_bool($d["service"]["enabled"] ?? null)
+            && is_bool($d["service"]["running"] ?? null)
+            && in_array($d["runtime"] ?? null, ["native", "incus"], true)
+            && is_bool($d["gateway"]["available"] ?? null)
+            && is_int($d["gateway"]["total"] ?? null)
+            && is_int($d["gateway"]["connected"] ?? null)
+            && is_int($d["gateway"]["tools"] ?? null)
+            && is_int($d["gateway"]["errors"] ?? null);
+        exit($ok ? 0 : 1);
+    ' "$payload"
 }
 
 test_dashboard_endpoint_incus_mode() {
@@ -658,19 +662,22 @@ define('LABBY_DASHBOARD_RC', '$dash/rc.labby');
 require '$dashboard_status_file';
 PHP
 
-    php "$dash/run.php" |
-        jq -e '
-            .service == {"enabled":true,"running":true}
-            and .runtime == "incus"
-            and .gateway == {
-                "available":true,
-                "total":3,
-                "enabled":2,
-                "connected":1,
-                "tools":6,
-                "errors":1
-            }
-        ' >/dev/null
+    local payload
+    payload="$(php "$dash/run.php")"
+    php -r '
+        $d = json_decode($argv[1], true);
+        $ok = ($d["service"] ?? null) === ["enabled" => true, "running" => true]
+            && ($d["runtime"] ?? null) === "incus"
+            && ($d["gateway"] ?? null) === [
+                "available" => true,
+                "total" => 3,
+                "enabled" => 2,
+                "connected" => 1,
+                "tools" => 6,
+                "errors" => 1,
+            ];
+        exit($ok ? 0 : 1);
+    ' "$payload"
 }
 
 test_env_sourcer_is_idempotent
