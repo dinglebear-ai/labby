@@ -56,10 +56,6 @@ export function SettingsScalarSection({
         return
       }
       const { envEntries, configEntries } = buildDirtyEntriesByBackend(fields, changedKeys, values, initialValues, state.sources)
-      if (envEntries.length > 0 && configEntries.length > 0) {
-        setErrors({ _form: 'Save .env and config.toml settings separately.' })
-        return
-      }
       if (!confirmed) {
         setErrors({ _form: 'Confirm the settings write before saving.' })
         return
@@ -83,38 +79,62 @@ export function SettingsScalarSection({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
+    <Card
+      data-unraid-settings-card="true"
+      className="gap-0 overflow-hidden rounded-[6px] border-2 border-[#f5f5f5] bg-white text-[#1c1b1b] shadow-[0_4px_6px_-1px_rgba(0,0,0,0.08)]"
+    >
+      <CardHeader className="gap-1 border-b border-[#f0f0f0] px-5 py-4">
+        <CardTitle className="text-base font-semibold tracking-normal text-[#1c1b1b]">{title}</CardTitle>
+        <CardDescription className="text-xs text-[#737373]">{description}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
-        {fields.map((field) => (
-          <SettingsScalarField
-            key={field.key}
-            field={field}
-            value={values[field.key]}
-            state={state}
-            error={errors[field.key]}
-            onChange={(key, value) => {
-              setValues((prev) => ({ ...prev, [key]: value }))
-              setChangedKeys((prev) => new Set(prev).add(key))
-              setConfirmed(false)
-            }}
-          />
-        ))}
-        {errors._form ? <p className="text-sm text-destructive">{errors._form}</p> : null}
-        {changedKeys.size > 0 ? (
-          <label className="flex items-center gap-2 text-sm text-aurora-text-muted">
-            <Checkbox checked={confirmed} onCheckedChange={(checked) => setConfirmed(checked === true)} />
-            Confirm settings write
-          </label>
-        ) : null}
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" disabled={saving || changedKeys.size === 0} onClick={() => { setValues(initialValues); setChangedKeys(new Set()); setConfirmed(false) }}>
+      <CardContent className="p-0">
+        <div>
+          {fields.map((field) => (
+            <SettingsScalarField
+              key={field.key}
+              field={field}
+              value={values[field.key]}
+              state={state}
+              error={errors[field.key]}
+              onChange={(key, value) => {
+                setValues((prev) => ({ ...prev, [key]: value }))
+                setChangedKeys((prev) => new Set(prev).add(key))
+                setConfirmed(false)
+              }}
+            />
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-3 border-t border-[#f0f0f0] bg-[#fafafa] px-5 py-3">
+          <div className="min-w-0 flex-1">
+            {errors._form ? <p className="text-xs text-[#bd1818]">{errors._form}</p> : null}
+            {changedKeys.size > 0 ? (
+              <label className="flex items-center gap-2 text-xs text-[#737373]">
+                <Checkbox
+                  className="border-[#d4d4d4] data-[state=checked]:border-[#ff6600] data-[state=checked]:bg-[#ff6600]"
+                  checked={confirmed}
+                  onCheckedChange={(checked) => setConfirmed(checked === true)}
+                />
+                Confirm backup-first write of {changedKeys.size} changed {changedKeys.size === 1 ? 'setting' : 'settings'}
+              </label>
+            ) : (
+              <p className="text-[11px] text-[#a3a3a3]">No unsaved changes</p>
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            className="border-[#d4d4d4] bg-white text-[#1c1b1b] hover:bg-[#f5f5f5]"
+            disabled={saving || changedKeys.size === 0}
+            onClick={() => { setValues(initialValues); setChangedKeys(new Set()); setConfirmed(false) }}
+          >
             Reset
           </Button>
-          <Button type="button" disabled={saving || changedKeys.size === 0 || !confirmed} onClick={() => void save()}>
+          <Button
+            type="button"
+            className="border-0 bg-[linear-gradient(90deg,#e22828,#ff8c2f)] text-white hover:opacity-90"
+            disabled={saving || changedKeys.size === 0 || !confirmed}
+            onClick={() => void save()}
+          >
             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             Save changes
           </Button>

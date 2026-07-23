@@ -215,6 +215,47 @@
   --aurora-hover-bg: #dcedf2;
 }
 
+/* The settings surface intentionally mirrors Unraid's light control-panel
+   language. Scope the remap so the rest of Labby remains Aurora dark-first. */
+.unraid-settings-shell {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #1c1b1b;
+  --card: #ffffff;
+  --card-foreground: #1c1b1b;
+  --popover: #ffffff;
+  --popover-foreground: #1c1b1b;
+  --primary: #ff6600;
+  --primary-foreground: #ffffff;
+  --secondary: #e5e7eb;
+  --secondary-foreground: #1f2937;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --accent: #fff7ed;
+  --accent-foreground: #1c1b1b;
+  --destructive: #e22828;
+  --destructive-foreground: #ffffff;
+  --border: #e5e5e5;
+  --input: #d4d4d4;
+  --ring: #ff8c2f;
+  --aurora-page-bg: #f2f2f2;
+  --aurora-nav-bg: #ffffff;
+  --aurora-panel-medium: #ffffff;
+  --aurora-panel-strong: #fafafa;
+  --aurora-control-surface: #f5f5f5;
+  --aurora-border-default: #e5e5e5;
+  --aurora-border-strong: #d4d4d4;
+  --aurora-text-primary: #1c1b1b;
+  --aurora-text-muted: #737373;
+  --aurora-accent-primary: #ff6600;
+  --aurora-accent-strong: #ff8c2f;
+  --aurora-accent-deep: #e22828;
+  --aurora-warn: #8a6914;
+  --aurora-error: #bd1818;
+  --aurora-success: #457b3e;
+  --aurora-hover-bg: #fff7ed;
+}
+
 @theme inline {
   --font-sans: var(--font-inter), 'Segoe UI', 'Helvetica Neue', arial, sans-serif;
   --font-display: var(--font-manrope), var(--font-inter), 'Segoe UI', 'Helvetica Neue', arial, sans-serif;

@@ -369,6 +369,12 @@ pub fn schema_response() -> SettingsSchemaResponse {
                 advanced: false,
             },
             SettingsSectionSpec {
+                id: "setup",
+                label: "Deployment",
+                description: "Incus provisioning preferences and optional runtime capabilities.",
+                advanced: false,
+            },
+            SettingsSectionSpec {
                 id: "services",
                 label: "Services",
                 description: "Service env vars and service preferences.",
@@ -1641,6 +1647,36 @@ mod tests {
         for field in settings_fields() {
             assert!(seen.insert(field.key), "duplicate field {}", field.key);
         }
+    }
+
+    #[test]
+    fn every_settings_field_uses_a_declared_section() {
+        let schema = schema_response();
+        let sections = schema
+            .sections
+            .iter()
+            .map(|section| section.id)
+            .collect::<BTreeSet<_>>();
+
+        for field in schema.fields {
+            assert!(
+                sections.contains(field.section),
+                "settings field {} references undeclared section {}",
+                field.key,
+                field.section
+            );
+        }
+    }
+
+    #[test]
+    fn android_sdk_preference_round_trips_through_settings_state() {
+        let mut config = crate::config::LabConfig::default();
+        config.setup.install_android_sdk = Some(true);
+
+        assert_eq!(
+            crate::config::config_json_value_for_path(&config, "setup.install_android_sdk"),
+            json!(true)
+        );
     }
 
     #[test]

@@ -5,13 +5,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "api-docs")]
+use axum::response::Html;
 use axum::{
     Json, Router,
     body::Body,
     extract::{ConnectInfo, Query, State},
     http::{HeaderName, HeaderValue, Method, Request, StatusCode, header},
     middleware::Next,
-    response::{Html, IntoResponse},
+    response::IntoResponse,
     routing::{get, post},
 };
 use tower::ServiceExt;

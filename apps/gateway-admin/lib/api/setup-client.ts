@@ -354,11 +354,13 @@ export const MOCK_SETTINGS_SCHEMA: SettingsSchemaResponse = {
   sections: [
     { id: 'core', label: 'Core', description: 'Env-backed process defaults.', advanced: false },
     { id: 'features', label: 'Features', description: 'Runtime feature gates.', advanced: false },
+    { id: 'setup', label: 'Deployment', description: 'Incus provisioning preferences.', advanced: false },
     { id: 'advanced', label: 'Advanced', description: 'Advanced settings.', advanced: true },
   ],
   fields: [
     { key: 'LAB_LOG', label: 'Log filter', description: 'Tracing filter directive.', section: 'core', backend: 'env', control: 'text', risk: 'restart', write_policy: 'editable', apply_mode: 'restart', secret: false, required: false, env_override: null, min: null, max: null, options: [], example: 'labby=info' },
     { key: 'services.built_in_upstream_apis_enabled', label: 'Built-in upstream API services', description: 'Enable bundled external API integrations.', section: 'features', backend: 'config_toml', control: 'bool', risk: 'low', write_policy: 'editable', apply_mode: 'immediate', secret: false, required: false, env_override: null, min: null, max: null, options: [], example: 'true' },
+    { key: 'setup.install_android_sdk', label: 'Install android-sdk on provision', description: 'Install the optional Android toolchain used by claude-in-mobile.', section: 'setup', backend: 'config_toml', control: 'bool', risk: 'low', write_policy: 'editable', apply_mode: 'immediate', secret: false, required: false, env_override: 'LABBY_ENABLE_ANDROID_SDK', min: null, max: null, options: [], example: 'false' },
     { key: 'auth', label: 'Auth config', description: 'Redacted auth settings.', section: 'advanced', backend: 'config_toml', control: 'read_only', risk: 'security_sensitive', write_policy: 'secret_write_only_future', apply_mode: 'read_only', secret: true, required: false, env_override: null, min: null, max: null, options: [], example: null },
   ],
 }
@@ -372,6 +374,7 @@ function mockSettingsState(section: string, updates: SettingsUpdateEntry[] = [])
   const values: Record<string, unknown> = {
     LAB_LOG: 'labby=info,lab_apis=warn',
     'services.built_in_upstream_apis_enabled': true,
+    'setup.install_android_sdk': false,
     auth: { google_client_secret: { has_value: true } },
   }
   for (const update of updates) values[update.key] = update.value
@@ -384,6 +387,7 @@ function mockSettingsState(section: string, updates: SettingsUpdateEntry[] = [])
     sources: {
       LAB_LOG: { source: 'env', overridden_by_env: null },
       'services.built_in_upstream_apis_enabled': { source: 'config_toml', overridden_by_env: null },
+      'setup.install_android_sdk': { source: 'config_toml', overridden_by_env: null },
       auth: { source: 'config_toml', overridden_by_env: null },
     },
   }
