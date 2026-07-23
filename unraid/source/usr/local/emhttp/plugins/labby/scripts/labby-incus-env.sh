@@ -26,4 +26,24 @@ case ":${PATH}:" in
     *":${INCUS_PREFIX}/bin:"*) ;;
     *) export PATH="${INCUS_PREFIX}/bin:${PATH}" ;;
 esac
-export INCUS_DIR="/mnt/user/appdata/incus"
+
+# The Incus plugin owns the daemon state path. Read only INCUS_DIR in a
+# subshell so sourcing its config cannot overwrite Labby's SERVICE or other
+# runtime settings in the caller.
+INCUS_CONFIG="${INCUS_CONFIG:-/boot/config/plugins/incus/incus.cfg}"
+incus_configured_dir=""
+if [ -r "$INCUS_CONFIG" ]; then
+    incus_configured_dir="$(
+        unset INCUS_DIR
+        # shellcheck disable=SC1090
+        . "$INCUS_CONFIG" || exit 1
+        printf '%s' "${INCUS_DIR:-}"
+    )" || {
+        echo "labby-incus-env: failed to read INCUS_DIR from ${INCUS_CONFIG}" >&2
+        if (return 0 2>/dev/null); then
+            return 1
+        fi
+        exit 1
+    }
+fi
+export INCUS_DIR="${incus_configured_dir:-${INCUS_DIR:-/mnt/user/appdata/incus}}"

@@ -6,7 +6,7 @@
        Bumped whenever unraid/ packaging itself changes — independent of
        labbyVersion below, since a packaging fix (e.g. an rc.labby bug)
        doesn't require a new labby binary release. -->
-  <!ENTITY version      "1.3.11">
+  <!ENTITY version      "1.3.12">
   <!-- The labby release tag this plugin currently bundles. Only this
        entity (not the plugin version above) drives tarballURL/tarballMD5,
        so bumping the plugin version alone never points at a release tag
@@ -49,7 +49,7 @@
   <!ENTITY mountedMD5   "a6ef8ed960ca00812aa15dcd29a057e3">
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
   <!ENTITY incusProfileMD5 "0419cfb5166a433dfc8149cbefcc3e48">
-  <!ENTITY incusEnvMD5     "e4d6dbc277bb84b40e65d2f77f5b217f">
+  <!ENTITY incusEnvMD5     "ffc044a6ca196b48cb89d1d85015028b">
   <!ENTITY incusInitMD5    "f20df050b79c62ebef0c0c893457755d">
   <!ENTITY plugin       "/boot/config/plugins/&name;">
   <!ENTITY emhttp       "/usr/local/emhttp/plugins/&name;">
@@ -58,6 +58,11 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
 
 <CHANGES>
+###1.3.12
+- Makes Incus mode honor the incus-unraid plugin's persisted INCUS_DIR
+  instead of always looking for the daemon socket under
+  /mnt/user/appdata/incus.
+
 ###1.3.11
 - Tightens Settings > Labby against the original Labby-for-Unraid visual:
   exact 20 px content insets, matched summary/list card geometry, compact
