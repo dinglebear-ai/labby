@@ -93,6 +93,12 @@ impl UpstreamPool {
         tools
     }
 
+    /// Return healthy tools that an MCP App host must advertise.
+    ///
+    /// This includes both tools that own a UI resource and private/app-visible
+    /// callbacks invoked by that resource. Hosts such as Codex reject an app's
+    /// `tools/call` before it reaches Labby when the callback is absent from
+    /// `tools/list`, even though the callback remains hidden from the model.
     pub async fn healthy_ui_tools_allowed(
         &self,
         allowed: Option<&BTreeSet<String>>,
@@ -106,7 +112,7 @@ impl UpstreamPool {
             .flat_map(|(_, entry)| {
                 entry.tools.values().filter_map(|tool| {
                     (entry.exposure_policy.matches(tool.tool.name.as_ref())
-                        && tool_has_mcp_app_ui_resource(tool))
+                        && tool_is_mcp_app_host_visible(tool))
                     .then(|| tool.clone())
                 })
             })
@@ -520,7 +526,7 @@ impl UpstreamPool {
         names
     }
 
-    /// Return just the names of healthy MCP App tools allowed by a route scope.
+    /// Return just the names of healthy MCP App host-visible tools allowed by a route scope.
     ///
     /// Mirrors `healthy_ui_tools_allowed` without cloning tool schemas, for
     /// downstream `tools/list_changed` snapshot comparisons.
@@ -538,7 +544,7 @@ impl UpstreamPool {
             .flat_map(|(_, entry)| {
                 entry.tools.values().filter_map(|tool| {
                     (entry.exposure_policy.matches(tool.tool.name.as_ref())
-                        && tool_has_mcp_app_ui_resource(tool))
+                        && tool_is_mcp_app_host_visible(tool))
                     .then(|| tool.tool.name.to_string())
                 })
             })
@@ -565,6 +571,28 @@ pub fn tool_has_mcp_app_ui_resource(tool: &UpstreamTool) -> bool {
     tool_mcp_app_ui_resource_uri(tool).is_some()
 }
 
+fn tool_is_mcp_app_host_visible(tool: &UpstreamTool) -> bool {
+    if tool_has_mcp_app_ui_resource(tool) {
+        return true;
+    }
+    let Some(meta) = tool.tool.meta.as_ref() else {
+        return false;
+    };
+    let app_visible = meta
+        .0
+        .get("ui")
+        .and_then(|ui| ui.get("visibility"))
+        .and_then(Value::as_array)
+        .is_some_and(|visibility| visibility.iter().any(|value| value.as_str() == Some("app")));
+    let openai_private_callback = meta
+        .0
+        .get("openai/widgetAccessible")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && meta.0.get("openai/visibility").and_then(Value::as_str) == Some("private");
+    app_visible || openai_private_callback
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -582,6 +610,66 @@ mod tests {
         let pool = UpstreamPool::new();
         assert!(pool.healthy_tools().await.is_empty());
         assert_eq!(pool.upstream_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn code_mode_ui_catalog_includes_private_app_callbacks() {
+        let pool = UpstreamPool::new();
+        let upstream_name: Arc<str> = Arc::from("quick-shell");
+        let mut tools = test_upstream_tools(
+            &upstream_name,
+            &[
+                "open_quick_shell",
+                "get_quick_shell_session",
+                "unrelated_model_tool",
+            ],
+        );
+        tools
+            .get_mut("open_quick_shell")
+            .expect("UI tool")
+            .tool
+            .meta = Some(Meta(serde_json::Map::from_iter([
+            (
+                "ui".to_string(),
+                serde_json::json!({
+                    "resourceUri": "ui://quick-shell/mcp-app.html",
+                    "visibility": ["model", "app"]
+                }),
+            ),
+            ("openai/visibility".to_string(), serde_json::json!("public")),
+        ])));
+        tools
+            .get_mut("get_quick_shell_session")
+            .expect("app callback")
+            .tool
+            .meta = Some(Meta(serde_json::Map::from_iter([
+            (
+                "ui".to_string(),
+                serde_json::json!({ "visibility": ["app"] }),
+            ),
+            (
+                "openai/visibility".to_string(),
+                serde_json::json!("private"),
+            ),
+        ])));
+        let entry = healthy_in_process_entry(Arc::clone(&upstream_name), tools);
+        pool.catalog
+            .write()
+            .await
+            .insert("quick-shell".to_string(), entry);
+
+        let listed = pool.healthy_ui_tools_allowed(None).await;
+        let mut names = listed
+            .iter()
+            .map(|tool| tool.tool.name.as_ref())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+
+        assert_eq!(
+            names,
+            vec!["get_quick_shell_session", "open_quick_shell"],
+            "the host needs private app callbacks in tools/list, while unrelated model tools stay hidden"
+        );
     }
 
     #[tokio::test]
