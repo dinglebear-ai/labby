@@ -26,14 +26,18 @@ html.light body{background:transparent}
 #content::-webkit-scrollbar-thumb{background-color:var(--aurora-border-strong);border-radius:999px}
 body{display:block;margin:0;padding:0;width:100%;min-height:0;height:auto;overflow:hidden;background:transparent;color:var(--aurora-text-primary)}
 .widget{width:100%;max-width:none;margin:0;overflow:hidden;border-radius:10px;background:linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong));border:1px solid color-mix(in srgb,var(--aurora-border-default) 45%,var(--aurora-page-bg));box-shadow:var(--aurora-shadow-medium),var(--aurora-highlight-strong)}
-.widget.minimized .summary,.widget.minimized .toolbar,.widget.minimized #content,.widget.minimized .foot{display:none!important}
+.widget.minimized #content{display:none!important}
 .widget.minimized .head{border-bottom:none;padding-block:6px}
 .widget.minimized .head-sub{max-width:42vw}
 .head,.foot{display:flex;align-items:center;gap:8px;padding:8px 10px;background:color-mix(in srgb,var(--aurora-page-bg) 25%,transparent)}
 .head{border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg));min-width:0}
 .foot{border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg));padding:6px 12px}
-.summary{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 35%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 18%,transparent);overflow-x:auto;scrollbar-width:none}
-.toolbar{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid color-mix(in srgb,var(--aurora-border-default) 35%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 10%,transparent)}
+.head-tools{position:relative;flex:none}
+.head-tools>summary{list-style:none}
+.head-tools>summary::-webkit-details-marker{display:none}
+.head-tools-panel{position:absolute;z-index:20;top:25px;right:0;width:min(320px,calc(100vw - 24px));overflow:hidden;border:1px solid var(--aurora-border-strong);border-radius:8px;background:var(--aurora-control-surface);box-shadow:var(--aurora-shadow-medium)}
+.toolbar{display:flex;align-items:center;gap:6px;padding:7px}
+.head-tools-panel .foot{border-top:1px solid color-mix(in srgb,var(--aurora-border-default) 50%,var(--aurora-page-bg));padding:7px;background:transparent}
 .toolbar-group{display:flex;align-items:center;gap:3px}
 .search{width:130px;min-width:80px;height:24px;border-radius:6px;border:1px solid color-mix(in srgb,var(--aurora-border-default) 65%,transparent);background:color-mix(in srgb,var(--aurora-page-bg) 38%,var(--aurora-control-surface));color:var(--aurora-text-primary);font:inherit;font-size:11px;padding:0 8px;outline:none}
 .search:focus{border-color:color-mix(in srgb,var(--aurora-accent-primary) 60%,var(--aurora-border-strong));box-shadow:0 0 0 1px rgba(41,182,246,.22)}
@@ -41,14 +45,10 @@ body{display:block;margin:0;padding:0;width:100%;min-height:0;height:auto;overfl
 .toolmsg{font-size:10.5px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
 .toolmsg.ok{color:var(--aurora-success)}
 .toolmsg.err{color:var(--aurora-error)}
-.stat{display:inline-flex;align-items:baseline;gap:4px;padding:3px 7px;border-radius:6px;background:color-mix(in srgb,var(--aurora-control-surface) 78%,transparent);border:1px solid color-mix(in srgb,var(--aurora-border-default) 52%,transparent);white-space:nowrap;font-variant-numeric:tabular-nums}
-.stat-label{font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--aurora-text-muted)}
-.stat-val{font-size:11px;font-weight:700;color:var(--aurora-text-primary)}
-.stat.fail .stat-val{color:var(--aurora-error)}
-.stat.ok .stat-val{color:var(--aurora-success)}
 .mark{width:15px;height:15px;flex:none;color:var(--aurora-accent-strong)}
 .head-title{font-size:12.5px;font-weight:700;white-space:nowrap}
-.head-sub{font-size:11.5px;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.head-sub{font-size:11px;font-weight:500;font-variant-numeric:tabular-nums;color:var(--aurora-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.head-lock{display:flex;align-items:center;justify-content:center;color:var(--aurora-text-muted);flex:none}
 .spacer{flex:1}
 .dot{display:inline-block;width:5px;height:5px;border-radius:999px;flex:none;background:currentColor;box-shadow:0 0 4px currentColor}
 .ok{color:var(--aurora-success)}
@@ -145,17 +145,13 @@ details[open]>.mrow .chev{transform:rotate(90deg)}
 <div class="head">
 <svg class="mark" aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M12 3v18M3 12h18M6.7 6.7l10.6 10.6M17.3 6.7 6.7 17.3" stroke="currentColor" stroke-width="1.65" stroke-linecap="round"/></svg>
 <span class="head-title">Execute</span>
+<span id="headstatus"></span>
 <span class="head-sub" id="headsub">waiting for a tool result</span>
 <span class="spacer"></span>
-<span id="headstatus"></span>
-<span class="ms" id="headelapsed" hidden></span>
-<span class="badge" id="state">read only</span>
-<button type="button" class="iconbtn" id="minimizeToggle" aria-label="Minimize inspector" aria-pressed="false" title="Minimize inspector">
-<svg class="minimize-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>
-<svg class="restore-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" hidden><path d="m7 14 5-5 5 5"/></svg>
-</button>
-</div>
-<div class="summary" id="summaryStats" hidden></div>
+<span class="badge" id="state">waiting</span>
+<details class="head-tools">
+<summary class="iconbtn" aria-label="Inspector tools" title="Inspector tools"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></summary>
+<div class="head-tools-panel">
 <div class="toolbar" id="toolbar" hidden>
 <div class="toolbar-group">
 <button type="button" class="iconbtn" data-row-mode="expand" aria-label="Expand all" title="Expand all"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m7 8 5-5 5 5"/><path d="m7 16 5 5 5-5"/></svg></button>
@@ -167,18 +163,26 @@ details[open]>.mrow .chev{transform:rotate(90deg)}
 <button type="button" class="iconbtn" id="copyReplay" aria-label="Copy replay snippet" title="Copy replay snippet"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-2"/><path d="M8 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2"/><path d="M8 5h6"/><path d="m15 9 4 4-4 4"/><path d="M11 13h8"/></svg></button>
 <button type="button" class="iconbtn primary" id="saveSnippet" aria-label="Save snippet" title="Save snippet"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg></button>
 </div>
-<div id="content"><p class="empty">Run codemode to populate the inspector.</p></div>
 <div class="foot" id="foot" hidden>
 <span class="foot-label" id="footlabel">Session</span>
 <span class="chips" id="chips"></span>
 <span class="spacer"></span>
 <span class="foot-meta" id="footmeta"></span>
 </div>
+</div>
+</details>
+<span class="head-lock" role="img" aria-label="Read only" title="Read only"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="11" x="5" y="11" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+<button type="button" class="iconbtn" id="minimizeToggle" aria-label="Minimize inspector" aria-pressed="false" title="Minimize inspector">
+<svg class="minimize-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m7 14 5-5 5 5"/></svg>
+<svg class="restore-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" hidden><path d="m7 10 5 5 5-5"/></svg>
+</button>
+</div>
+<div id="content"><p class="empty">Run codemode to populate the inspector.</p></div>
 </main>
 <section class="external-mcp-app" id="externalMcpApp" hidden>
 <div class="external-mcp-head">
 <span class="st info"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M2 15h10"/><path d="m9 18 3-3-3-3"/></svg></span>
-<span class="badge">MCP UI</span>
+<span class="badge">MCP App</span>
 <span class="external-mcp-uri" id="externalMcpUri"></span>
 <span class="badge external-mcp-status" id="externalMcpStatus"></span>
 </div>
@@ -271,11 +275,9 @@ const content=document.getElementById("content");
 const state=document.getElementById("state");
 const headSub=document.getElementById("headsub");
 const headStatus=document.getElementById("headstatus");
-const headElapsed=document.getElementById("headelapsed");
 const foot=document.getElementById("foot");
 const chips=document.getElementById("chips");
 const footMeta=document.getElementById("footmeta");
-const summaryStats=document.getElementById("summaryStats");
 const widget=document.querySelector(".widget");
 const toolbar=document.getElementById("toolbar");
 const resultSearch=document.getElementById("resultSearch");
@@ -668,13 +670,19 @@ function activeCallUi(calls){
 function setExternalMcpMessage(message){
   if(externalMcpBody)externalMcpBody.innerHTML=`<div class="external-mcp-message">${esc(message)}</div>`;
 }
+function externalAppName(uri){
+  try{return new URL(uri).hostname||uri;}catch(_){return uri;}
+}
 function showExternalMcpApp(ui){
   if(!ui){clearExternalMcpApp();return;}
   const uri=ui.resourceUri.trim();
   if(!uri){clearExternalMcpApp();return;}
   if(activeMcpUiUri!==uri)setMinimized(true);
   if(externalMcpApp)externalMcpApp.hidden=false;
-  if(externalMcpUri)externalMcpUri.textContent=uri;
+  if(externalMcpUri){
+    externalMcpUri.textContent=externalAppName(uri);
+    externalMcpUri.title=uri;
+  }
   if(activeMcpUiUri===uri&&externalMcpBody&&externalMcpBody.querySelector("iframe")){
     if(externalMcpStatus)externalMcpStatus.textContent="ready";
     scheduleResize();
@@ -800,22 +808,20 @@ function section(title,body,meta=""){
   if(!body)return "";
   return `<section class="section"><div class="section-head"><span class="section-title">${esc(title)}</span>${meta?`<span class="section-meta">${esc(meta)}</span>`:""}</div>${body}</section>`;
 }
-function stat(label,value,kind=""){
-  return `<span class="stat ${esc(kind)}"><span class="stat-label">${esc(label)}</span><span class="stat-val">${esc(value)}</span></span>`;
-}
-function paintSummary(run,calls,ok,elapsed){
+function paintHeadMeta(run,calls,elapsed,discovery,doc){
   const failed=calls.filter(c=>c.ok!==true).length;
   const parts=[
-    stat("Calls",`${calls.length}`),
-    stat("Failed",`${failed}`,failed?"fail":"ok")
+    `${calls.length} call${calls.length===1?"":"s"}`
   ];
-  if(typeof elapsed==="number"&&Number.isFinite(elapsed))parts.push(stat("Elapsed",fmtMs(elapsed)));
+  if(failed)parts.push(`${failed} failed`);
+  if(typeof elapsed==="number"&&Number.isFinite(elapsed))parts.push(fmtMs(elapsed));
   if(run&&(run.input_tokens!==undefined||run.output_tokens!==undefined)){
-    parts.push(stat("Tokens",`${num(run.input_tokens)} in / ${num(run.output_tokens)} out`));
+    parts.push(`${num(run.input_tokens)}→${num(run.output_tokens)} tokens`);
   }
-  parts.push(stat("Status",ok?"success":"failed",ok?"ok":"fail"));
-  summaryStats.innerHTML=parts.join("");
-  summaryStats.hidden=false;
+  if(discovery)parts.push(`${discovery.hits.length} match${discovery.hits.length===1?"":"es"}`);
+  if(doc!==null)parts.push("describe");
+  if(num(run&&run.logs_count)>0)parts.push(`${num(run.logs_count)} log${num(run.logs_count)===1?"":"s"}`);
+  headSub.textContent=parts.join(" · ");
 }
 function discoveryRows(d){
   if(!d.hits.length)return `<p class="empty">${esc(d.hint||"No matches.")}</p>`;
@@ -961,10 +967,8 @@ function paint(){
   const run=t||entry||null;
   if(!run){
     expandedRows=null;
-    summaryStats.hidden=true;
     headSub.textContent="waiting for a tool result";
     headStatus.innerHTML="";
-    headElapsed.hidden=true;
     content.innerHTML='<p class="empty">Run codemode to populate the inspector.</p>';
     clearExternalMcpApp();
     paintFoot(null);
@@ -975,9 +979,6 @@ function paint(){
   const calls=Array.isArray(run.calls)?run.calls:[];
   const discovery=t?discoveryResult(t):null;
   const doc=t?describeMarkdown(t):null;
-  headSub.textContent=discovery
-    ?`· ${discovery.hits.length} of ${discovery.total} match${discovery.total===1?"":"es"}`
-    :(doc!==null?"· describe":`· ${calls.length} call${calls.length===1?"":"s"}`);
   const traceErrKind=t&&typeof t.error_kind==="string"?t.error_kind:undefined;
   const ok=t?(traceErrKind===undefined&&calls.every(c=>c.ok===true)):entry.ok===true;
   const errKind=t?(traceErrKind||(calls.find(c=>c.ok!==true)||{}).error_kind):entry.error_kind;
@@ -987,16 +988,14 @@ function paint(){
   const elapsed=t
     ?(typeof t.elapsed_ms==="number"&&Number.isFinite(t.elapsed_ms)?t.elapsed_ms:(liveHistoryEntry()||{}).elapsed_ms)
     :entry.elapsed_ms;
-  if(typeof elapsed==="number"&&Number.isFinite(elapsed)){headElapsed.textContent=fmtMs(elapsed);headElapsed.hidden=false}
-  else{headElapsed.hidden=true}
-  paintSummary(run,calls,ok,elapsed);
+  paintHeadMeta(run,calls,elapsed,discovery,doc);
   const hasOffsets=calls.some(c=>typeof c.start_ms==="number");
   const span=Math.max(1,...calls.map(c=>hasOffsets?num(c.start_ms)+num(c.elapsed_ms):num(c.elapsed_ms)));
   const maxElapsed=Math.max(0,...calls.map(c=>num(c.elapsed_ms)));
   const timing={span:span,hasOffsets:hasOffsets,maxElapsed:maxElapsed};
   const firstFailed=calls.findIndex(c=>c.ok!==true);
   const callRows=calls.map((c,i)=>callRow(c,timing,i===firstFailed,callRowKey(c))).join("");
-  let html=section("Calls",callRows||'<p class="empty">No calls were made.</p>',`${calls.length} total`);
+  let html=callRows?section("Calls",callRows,`${calls.length} total`):"";
   if(discovery)html+=section("Catalog",discoveryRows(discovery),`${discovery.hits.length} shown`);
   if(t)html+=section("Request",inputRow());
   if(t)html+=section("Response",resultRow(t));
@@ -1082,7 +1081,7 @@ function render(trace){
     paint();
     return true;
   }
-  headSub.textContent="";headStatus.innerHTML="";headElapsed.hidden=true;
+  headSub.textContent="";headStatus.innerHTML="";
   content.innerHTML=`<pre class="dump">${esc(json(t))}</pre>`;
   clearExternalMcpApp();
   paintFoot(null);
@@ -1187,7 +1186,7 @@ if (window.openai) {
       if (!hydrated) setState("connected", true);
       scheduleResize();
     })
-    .catch(() => { if (!hydrated) setState("read only", false); });
+    .catch(() => { if (!hydrated) state.hidden=true; });
 }
 })();
 </script>

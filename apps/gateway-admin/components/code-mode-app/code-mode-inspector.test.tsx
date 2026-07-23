@@ -51,6 +51,7 @@ test('renders execute call rows with expandable redacted params', async () => {
 
   assert.match(container.textContent ?? '', /Execute/)
   assert.match(container.textContent ?? '', /1 call/)
+  assert.ok(container.querySelector('[aria-label="Read only"]'))
   assert.match(container.textContent ?? '', /github/)
   assert.match(container.textContent ?? '', /search_issues/)
   assert.match(container.textContent ?? '', /12 ms/)
@@ -132,8 +133,8 @@ test('renders upstream MCP UI resources below the minimized inspector', async ()
 
     assert.ok(container.querySelector('[aria-label="Restore inspector"]'))
     assert.doesNotMatch(container.textContent ?? '', /run_command/)
-    assert.match(container.textContent ?? '', /MCP UI/)
-    assert.match(container.textContent ?? '', /ui:\/\/quick-shell\/app\.html/)
+    assert.match(container.textContent ?? '', /MCP App/)
+    assert.match(container.textContent ?? '', /quick-shell/)
     const iframe = container.querySelector('iframe[title="ui://quick-shell/app.html MCP UI"]')
     assert.ok(iframe)
     assert.match(iframe.getAttribute('srcdoc') ?? '', /Quick shell/)
@@ -208,7 +209,7 @@ test('renders the result disclosure with shape summary and expandable value', as
   await clickButton(container, (text) => text.startsWith('Result'))
   assert.match(container.textContent ?? '', /"containers": 24/)
   // Token/log metadata from the trace lands in the footer.
-  assert.match(container.textContent ?? '', /412 in · 96 out/)
+  assert.match(container.textContent ?? '', /412→96 tokens/)
   assert.match(container.textContent ?? '', /2 logs/)
   await unmount()
 })
@@ -245,7 +246,7 @@ test('renders in-sandbox search results as discovery match rows', async () => {
   // Discovery runs make zero broker calls — the hits render instead of a
   // bare "No calls were made." line.
   assert.doesNotMatch(container.textContent ?? '', /No calls were made/)
-  assert.match(container.textContent ?? '', /1 of 42 matches/)
+  assert.match(container.textContent ?? '', /1 match/)
   assert.match(container.textContent ?? '', /unifi/)
   assert.match(container.textContent ?? '', /device_list/)
   assert.match(container.textContent ?? '', /List UniFi devices/)
@@ -272,7 +273,7 @@ test('renders the zero-match discovery hint', async () => {
     />,
   )
 
-  assert.match(container.textContent ?? '', /0 of 0 matches/)
+  assert.match(container.textContent ?? '', /0 matches/)
   assert.match(container.textContent ?? '', /Broaden or try synonyms/)
   await unmount()
 })
@@ -424,7 +425,7 @@ test('selects the latest history entry and shows failure metadata', async () => 
   assert.match(container.textContent ?? '', /#7/)
 
   // Switching to #6 shows that entry's calls.
-  await clickButton(container, (text) => text === '#6')
+  await clickButton(container, (text) => text === 'Run #6')
   assert.match(container.textContent ?? '', /message.create/)
   await unmount()
 })
@@ -491,7 +492,7 @@ test('joins a live trace to its history entry for elapsed and chip labeling', as
 
   // Elapsed comes from the matching history entry; the chip is marked live.
   assert.match(container.textContent ?? '', /348 ms/)
-  assert.match(container.textContent ?? '', /#9 live/)
+  assert.match(container.textContent ?? '', /Run #9 · live/)
   assert.match(container.textContent ?? '', /Result/)
   // A rendered trace proves the bridge works — no status badge.
   assert.doesNotMatch(container.textContent ?? '', /connected/i)
@@ -515,8 +516,8 @@ test('hides the session strip when there is only a single run', async () => {
   // One run has nothing to switch between — no Session label, no lone chip.
   assert.doesNotMatch(container.textContent ?? '', /Session/)
   assert.doesNotMatch(container.textContent ?? '', /\blive\b/)
-  // Token meta still earns the footer.
-  assert.match(container.textContent ?? '', /42 in · 68 out/)
+  // Token meta stays in the one-line command bar.
+  assert.match(container.textContent ?? '', /42→68 tokens/)
   await unmount()
 })
 
