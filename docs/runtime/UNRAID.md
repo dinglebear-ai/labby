@@ -158,18 +158,24 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
 
 ## Settings page conventions
 
-`Labby.page` is a real settings form (SERVICE, LABBY_DIR, HTTP_HOST,
-HTTP_PORT, RUNTIME_MODE, and the Incus-only image/network/Tailscale fields
-— everything in `labby.cfg`), built to look and behave like a
-first-party classic Unraid settings page rather than a custom-styled form.
-Gateway management is also native to the page: it exposes a reload action,
-add-HTTP-upstream and add-stdio-upstream forms, and a live upstream MCP
-runtime table with enable/disable/remove and stale-process cleanup controls
-instead of embedding labby's separate admin web UI in an iframe. In native
-mode those actions run the host plugin binary against `LABBY_DIR`; in Incus
-mode the same actions execute `labby --json gateway ...` inside the gateway
-container as the `labby` user so they operate on the live container-owned
-gateway state.
+`Labby.page` is the complete Labby-for-Unraid control plane, rendered
+directly inside Settings > Labby. Its Overview, Gateway, and Settings tabs
+match the supplied Labby-for-Unraid design while remaining a native `.page`;
+there is no iframe, separate route, mock dataset, or standalone settings
+application. Status cards and counts come from `rc.labby` plus the live
+gateway catalog. Gateway controls expose reload, filter,
+add-HTTP/add-stdio, enable/disable, remove, and stale-process cleanup
+actions. Settings owns SERVICE, LABBY_DIR, HTTP_HOST, HTTP_PORT,
+RUNTIME_MODE, and all Incus image/network/Tailscale fields from
+`labby.cfg`, with backup-first atomic persistence.
+
+In native mode gateway actions run the host plugin binary against
+`LABBY_DIR`; in Incus mode the same actions execute
+`labby --json gateway ...` inside the gateway container as the `labby` user
+so they operate on the live container-owned gateway state. The visual shell
+uses the same role patterns and theme contract as the components under
+`~/workspace/upstream/unraid-api/unraid-ui`, adapted to the classic Unraid
+PHP/Markdown runtime that actually hosts third-party plugin pages.
 The markup conventions were reverse-engineered from a live Unraid 7.3.x
 install's own pages (`/usr/local/emhttp/webGui/DateTime.page`,
 `dynamix.my.servers/Connect.page`) and cross-checked against

@@ -5,23 +5,33 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
+import {
+  Activity,
+  Box,
+  Cog,
+  FileSearch,
+  Layers,
+  PlugZap,
+  Server,
+  Shield,
+} from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 
 interface RailEntry {
   href: string
   label: string
+  icon: React.ComponentType<{ className?: string }>
 }
 
 const ENTRIES: RailEntry[] = [
-  { href: '/settings/core/', label: 'Core' },
-  { href: '/settings/surfaces/', label: 'Surfaces' },
-  { href: '/settings/features/', label: 'Features' },
-  { href: '/settings/deployment/', label: 'Deployment' },
-  { href: '/settings/services/', label: 'Services' },
-  { href: '/settings/doctor/', label: 'Doctor' },
-  { href: '/settings/extract/', label: 'Extract' },
-  { href: '/settings/advanced/', label: 'Advanced' },
+  { href: '/settings/core/', label: 'Core', icon: Cog },
+  { href: '/settings/services/', label: 'Services', icon: Server },
+  { href: '/settings/surfaces/', label: 'Surfaces', icon: PlugZap },
+  { href: '/settings/features/', label: 'Features', icon: Layers },
+  { href: '/settings/doctor/', label: 'Doctor', icon: Activity },
+  { href: '/settings/extract/', label: 'Extract', icon: FileSearch },
+  { href: '/settings/advanced/', label: 'Advanced', icon: Shield },
 ]
 
 export function SettingsRail(): React.ReactElement {
@@ -30,7 +40,7 @@ export function SettingsRail(): React.ReactElement {
   const activeEntry = ENTRIES.find((entry) => pathname.startsWith(entry.href)) ?? ENTRIES[0]
   const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''
   return (
-    <nav aria-label="Settings sections" className="px-4 py-3">
+    <nav aria-label="Settings sections" className="p-3">
       <label htmlFor="settings-section" className="sr-only">
         Settings section
       </label>
@@ -38,7 +48,7 @@ export function SettingsRail(): React.ReactElement {
         id="settings-section"
         value={activeHref}
         onChange={(event) => router.push(event.target.value)}
-        className="h-9 w-full rounded-md border border-[#d4d4d4] bg-white px-3 text-sm font-medium text-[#1c1b1b] md:hidden"
+        className="h-10 w-full rounded-md border border-aurora-border-strong bg-aurora-control-surface px-3 text-sm font-medium text-aurora-text-primary md:hidden"
       >
         {ENTRIES.map((entry) => (
           <option key={entry.href} value={entry.href}>
@@ -46,21 +56,26 @@ export function SettingsRail(): React.ReactElement {
           </option>
         ))}
       </select>
-      <div className="hidden items-center gap-1 overflow-x-auto md:flex">
+      <div className="hidden gap-1 md:flex md:overflow-x-auto lg:flex-col lg:overflow-visible">
+        <h2 className="mb-2 hidden items-center gap-2 text-sm font-semibold uppercase text-aurora-text-muted lg:flex">
+          <Box className="h-4 w-4" /> Settings
+        </h2>
         {ENTRIES.map((entry) => {
           const active = pathname.startsWith(entry.href)
+          const Icon = entry.icon
           return (
             <Link
               key={entry.href}
               href={entry.href}
               aria-current={active ? 'page' : undefined}
               className={cn(
-                'flex shrink-0 items-center rounded-md px-3 py-1.5 text-xs font-semibold no-underline transition-colors',
+                'flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors lg:shrink',
                 active
-                  ? 'bg-white text-[#1c1b1b] shadow-sm'
-                  : 'text-[#737373] hover:bg-white/70 hover:text-[#1c1b1b]',
+                  ? 'bg-accent text-accent-foreground font-medium'
+                  : 'text-aurora-text-muted hover:bg-accent/50 hover:text-aurora-text-primary',
               )}
             >
+              <Icon className="h-4 w-4" />
               <span className="whitespace-nowrap">{entry.label}</span>
             </Link>
           )

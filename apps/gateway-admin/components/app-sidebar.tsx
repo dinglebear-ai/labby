@@ -68,8 +68,6 @@ export function AppSidebar() {
   const pathname = usePathname()
   const session = useBrowserSession()
 
-  if (pathname.startsWith('/settings')) return null
-
   const isActive = (url: string) => {
     if (url === '/') return pathname === '/'
     return pathname.startsWith(url)

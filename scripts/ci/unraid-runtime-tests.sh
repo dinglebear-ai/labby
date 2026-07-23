@@ -546,7 +546,14 @@ CFG
 
 test_page_exposes_native_gateway_controls() {
     assert_file_contains "$page_file" 'function labby_gateway_rows'
-    assert_file_contains "$page_file" '_(Gateway controls)_:'
+    assert_file_contains "$page_file" 'class="labby-live-shell"'
+    assert_file_contains "$page_file" 'data-labby-screen="overview"'
+    assert_file_contains "$page_file" 'data-labby-screen="gateway"'
+    assert_file_contains "$page_file" 'data-labby-screen="settings"'
+    assert_file_contains "$page_file" 'data-labby-tab="overview"'
+    assert_file_contains "$page_file" 'data-labby-tab="gateway"'
+    assert_file_contains "$page_file" 'data-labby-tab="settings"'
+    assert_file_not_contains "$page_file" 'NEXT_PUBLIC_MOCK_DATA'
     assert_file_contains "$page_file" 'name="labby_gateway_action" value="reload"'
     assert_file_contains "$page_file" 'name="labby_gateway_add" value="1"'
     assert_file_contains "$page_file" 'name="labby_gateway_add_stdio" value="1"'

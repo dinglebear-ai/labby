@@ -1901,7 +1901,6 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
             serde_json::json!(cfg.services.built_in_upstream_apis_enabled)
         }
         "services.tailscale.tailnet" => serde_json::json!(cfg.services.tailscale.tailnet),
-        "setup.install_android_sdk" => serde_json::json!(cfg.setup.install_android_sdk),
         "admin.enabled" => serde_json::json!(cfg.admin.enabled),
         "code_mode.trace_params" => serde_json::json!(cfg.code_mode.trace_params),
         "code_mode.timeout_ms" => serde_json::json!(cfg.code_mode.timeout_ms),
