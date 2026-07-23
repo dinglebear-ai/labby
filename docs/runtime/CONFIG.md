@@ -597,11 +597,12 @@ Full details in [OAUTH.md](./OAUTH.md).
 |----------|----------|-------------|
 | `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
 | `LABBY_MCP_HTTP_TOKEN` | bearer mode only | Static bearer token for protected HTTP routes. |
-| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata, JWT issuer/audience, callback construction, and allowed-host derivation. Path-prefixed deployments are supported. |
+| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata, JWT issuer/audience, and allowed-host derivation. It supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
 | `LABBY_AUTH_SQLITE_PATH` | no | Override path for the auth SQLite database. Defaults to `~/.labby/auth.db`. |
 | `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. Defaults to `~/.labby/auth-jwt.pem`. |
 | `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
 | `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
+| `LABBY_GOOGLE_CALLBACK_URL` | no | Absolute Google OAuth callback URL for split webapp/issuer deployments. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
 | `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
 | `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns. When unset, Labby seeds common ChatGPT/Claude callbacks. Set it explicitly to replace those defaults; set it empty to disable public HTTPS product defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. Host wildcards must be full labels, not raw suffix globs except for the explicit all-HTTPS sentinel `https://*`. |

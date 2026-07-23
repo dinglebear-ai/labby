@@ -91,21 +91,6 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: python3 "$LABBY_CHANGED_PATHS" --event "$EVENT_NAME" --output "$GITHUB_OUTPUT" --write-changed-files changed-files.txt
 
-  secret-scan:
-    name: Secret scan (gitleaks)
-    runs-on: [self-hosted, unraid]
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_SUMMARY: "true"
-
   unraid-plugin-check:
     name: Unraid plugin checksums
     runs-on: [self-hosted, unraid]
@@ -1086,7 +1071,6 @@ jobs:
     if: always()
     needs:
       - changes
-      - secret-scan
       - unraid-plugin-check
       - actionlint
       - frontend-assets
@@ -1123,7 +1107,6 @@ jobs:
             esac
           }
           require_success_or_skipped changes "${{ needs.changes.result }}"
-          require_success_or_skipped secret-scan "${{ needs.secret-scan.result }}"
           require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
           require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"

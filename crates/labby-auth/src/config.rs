@@ -85,6 +85,10 @@ pub struct GoogleConfig {
     pub client_id: String,
     #[serde(default)]
     pub client_secret: String,
+    /// Optional absolute Google OAuth callback URL. When absent, the callback
+    /// is derived from `public_url` and `callback_path`.
+    #[serde(default)]
+    pub callback_url: Option<Url>,
     #[serde(default = "default_callback_path")]
     pub callback_path: String,
     #[serde(default = "default_google_scopes")]
@@ -398,6 +402,7 @@ impl AuthConfigBuilder {
         let key_redirects = env_key(&prefix, "AUTH_ALLOWED_REDIRECT_URIS");
         let key_g_id = env_key(&prefix, "GOOGLE_CLIENT_ID");
         let key_g_secret = env_key(&prefix, "GOOGLE_CLIENT_SECRET");
+        let key_g_callback_url = env_key(&prefix, "GOOGLE_CALLBACK_URL");
         let key_g_callback = env_key(&prefix, "GOOGLE_CALLBACK_PATH");
         let key_g_scopes = env_key(&prefix, "GOOGLE_SCOPES");
         let key_at_ttl = env_key(&prefix, "AUTH_ACCESS_TOKEN_TTL_SECS");
@@ -429,6 +434,7 @@ impl AuthConfigBuilder {
             google: GoogleConfig {
                 client_id: read_string(&vars, &key_g_id).unwrap_or_default(),
                 client_secret: read_string(&vars, &key_g_secret).unwrap_or_default(),
+                callback_url: read_url(&vars, &key_g_callback_url)?,
                 callback_path: read_string(&vars, &key_g_callback)
                     .unwrap_or_else(|| DEFAULT_CALLBACK_PATH.to_string()),
                 scopes: read_csv(&vars, &key_g_scopes).unwrap_or_else(default_google_scopes),

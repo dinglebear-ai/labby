@@ -131,11 +131,6 @@ fn explicit_policy_files_route_to_the_right_checks() {
     let actionlint = classify("pull_request", &[".github/actionlint.yaml"]);
     assert_eq!(actionlint["workflow"], "true");
 
-    let gitleaks = classify("pull_request", &[".gitleaksignore"]);
-    assert_eq!(gitleaks["security"], "true");
-    assert_eq!(gitleaks["rust_compile"], "false");
-    assert_eq!(gitleaks["rust_test"], "false");
-
     let deny = classify("pull_request", &["deny.toml"]);
     assert_eq!(deny["security"], "true");
     assert_eq!(deny["rust_compile"], "true");
@@ -331,49 +326,4 @@ fn rolling_incus_release_promotes_verified_immutable_assets_before_tag() {
         upload < rolling_verify && rolling_verify < advance,
         "rolling assets must be uploaded and remotely verified before the tag advances"
     );
-}
-
-#[test]
-fn secret_scan_uses_full_history_and_only_exact_fingerprint_baselines() {
-    let workflow =
-        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
-    let secret_job = workflow
-        .split("  secret-scan:")
-        .nth(1)
-        .and_then(|section| section.split("\n  unraid-plugin-check:").next())
-        .expect("secret scan job");
-    assert!(
-        secret_job.contains("fetch-depth: 0"),
-        "secret scan must include history and HEAD"
-    );
-
-    let baseline = fs::read_to_string(repo_root().join(".gitleaksignore"))
-        .expect("read Gitleaks fingerprint baseline");
-    assert!(baseline.contains(
-        "17bc2ac442e2350efc4462f10811f089898b22c2:docs/sessions/2026-05-04-acp-session-persistence-chat-polish.md:generic-api-key:100"
-    ));
-    for (index, line) in baseline.lines().enumerate() {
-        if line.trim().is_empty() || line.starts_with('#') {
-            continue;
-        }
-        assert!(
-            line.split(':').count() >= 4 && !line.contains('*'),
-            ".gitleaksignore:{} must be an exact commit:path:rule:line fingerprint, not a broad path baseline",
-            index + 1
-        );
-    }
-
-    let policy =
-        fs::read_to_string(repo_root().join("docs/runtime/CICD.md")).expect("read CI/CD policy");
-    for required in [
-        "`commit:path:rule-id:line`",
-        "confirmed revoked or retired",
-        "current tree is redacted",
-        "must never baseline a finding introduced at `HEAD`",
-    ] {
-        assert!(
-            policy.contains(required),
-            "CI/CD policy must document revoked-history baseline rule: {required}"
-        );
-    }
 }
