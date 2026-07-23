@@ -18,6 +18,9 @@ packages:
   cleanup: true
   # Source of truth for the Labby gateway apt floor. `labby setup --provision`
   # derives its bare-metal package install/verification list from this install set.
+  # android-sdk is intentionally NOT in this list — it pulls ~300 MiB of JVM +
+  # java deps that only the claude-in-mobile MCP server needs. It installs via
+  # the LABBY_PROVISION_ACTION: android-sdk block when LABBY_ENABLE_ANDROID_SDK=1.
   repositories:
     - name: ubuntu
       url: |-
@@ -37,11 +40,6 @@ packages:
         - python3
         - zsh
         - ffmpeg
-        - adb
-        - android-sdk
-        - android-sdk-platform-tools
-        - android-sdk-platform-tools-common
-        - android-sdk-build-tools
 
 actions:
   - trigger: post-packages
@@ -241,11 +239,64 @@ actions:
     action: |-
       #!/usr/bin/env bash
       set -euo pipefail
+      # LABBY_PROVISION_ACTION: crgx
+      runuser -u labby -- env HOME=/home/labby USER=labby LOGNAME=labby XDG_CONFIG_HOME=/home/labby/.config XDG_CACHE_HOME=/home/labby/.cache XDG_DATA_HOME=/home/labby/.local/share sh -lc '
+      set -eu
+      if command -v crgx >/dev/null 2>&1; then
+        exit 0
+      fi
+      mkdir -p "$HOME/.local/bin"
+      tmp="$(mktemp -d)"
+      trap '\''rm -rf "$tmp"'\'' EXIT
+      installer="$tmp/crgx-install.sh"
+      curl -fsSL -o "$installer" https://crgx.dev/install.sh
+      test -s "$installer"
+      sh "$installer"
+      '
+
+  - trigger: post-packages
+    action: |-
+      #!/usr/bin/env bash
+      set -euo pipefail
+      # LABBY_PROVISION_ACTION: android-sdk
+      # Opt-in capability for the claude-in-mobile MCP server. Pulled out of the
+      # image apt floor because android-sdk drags in ~300 MiB of JVM + java deps
+      # that the gateway core does not need. The block guards itself on
+      # LABBY_ENABLE_ANDROID_SDK=1 because distrobuilder runs every post-packages
+      # action during image build — without this guard the packages would bake
+      # back into the image, defeating the slimming. provision.rs also gates the
+      # plan on the same env var so it only runs when explicitly requested.
+      case "${LABBY_ENABLE_ANDROID_SDK:-0}" in
+        1|true|yes|on|TRUE|YES|ON) ;;
+        *) echo "android-sdk: skipping (set LABBY_ENABLE_ANDROID_SDK=1 to install)"; exit 0 ;;
+      esac
+      apt-get update
+      apt-get install -y adb android-sdk android-sdk-platform-tools android-sdk-platform-tools-common android-sdk-build-tools
+
+  - trigger: post-packages
+    action: |-
+      #!/usr/bin/env bash
+      set -euo pipefail
       # LABBY_PROVISION_ACTION: tailscale-install
       if ! command -v tailscale >/dev/null 2>&1; then
         curl -fsSL https://tailscale.com/install.sh | sh
       fi
       rm -f /var/lib/tailscale/*.state /run/labby-ts-authkey
+
+  - trigger: post-packages
+    action: |-
+      #!/usr/bin/env bash
+      set -euo pipefail
+      # LABBY_PROVISION_ACTION: cache-cleanup
+      # Caches regenerate on demand (apt-get update re-pulls lists; npm install
+      # re-populates _cacache), so shipping them is pure image bloat. apt-get
+      # clean drops /var/cache/apt/archives; the *.bin + lists removals drop
+      # apt's pkgcache/srcpkgcache + downloaded package indexes; _cacache is
+      # npm's download cache left behind by the agent-clis global install.
+      apt-get clean
+      rm -f /var/cache/apt/*.bin
+      rm -rf /var/lib/apt/lists/*
+      rm -rf /home/labby/.npm/_cacache
 
 files:
   - generator: copy

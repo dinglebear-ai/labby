@@ -872,7 +872,12 @@ fn command_not_found(err: &ToolError) -> bool {
 
 fn docker_container_missing(err: &ToolError) -> bool {
     let message = err.to_string();
-    message.contains("No such object: labby-master") || message.contains("No such container")
+    let message = message.to_lowercase();
+    let has_container_id = message.contains("labby-master");
+    let has_not_found = message.contains("no such object")
+        || message.contains("no such container")
+        || message.contains("not found");
+    has_container_id && has_not_found
 }
 
 fn io_error(err: std::io::Error) -> ToolError {
@@ -1051,6 +1056,26 @@ mod tests {
             Some(12345),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn docker_container_missing_matches_lowercase_and_uppercase_no_object() {
+        let upper_case = ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: "command failed: docker inspect ...\nstderr: Error: No such object: labby-master".into(),
+        };
+        let lower_case = ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: "command failed: docker inspect ...\nstderr: no such object: labby-master".into(),
+        };
+        let other = ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: "command failed: docker inspect ...\nstderr: Error: No such container".into(),
+        };
+
+        assert!(docker_container_missing(&upper_case));
+        assert!(docker_container_missing(&lower_case));
+        assert!(!docker_container_missing(&other));
     }
 
     #[test]

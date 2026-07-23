@@ -50,6 +50,56 @@ fn process_matcher_uses_joined_cmdline_text() {
     ));
 }
 
+#[tokio::test]
+async fn cleanup_upstream_processes_invalidates_cached_upstream_catalog() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(path, runtime.clone());
+    let upstream = UpstreamConfig {
+        enabled: true,
+        name: "cleanup-cached-catalog".to_string(),
+        url: None,
+        bearer_token_env: None,
+        command: Some("cleanup-cached-catalog-command".to_string()),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+        proxy_resources: true,
+        proxy_prompts: false,
+        expose_tools: None,
+        expose_resources: None,
+        expose_prompts: None,
+        code_mode_hint: None,
+        oauth: None,
+        imported_from: None,
+        priority: 1.0,
+    };
+    manager
+        .replace_config_for_tests(vec![upstream.clone()])
+        .await;
+
+    let pool = Arc::new(UpstreamPool::new());
+    pool.install_test_tools_for_upstream(
+        &upstream,
+        vec![rmcp::model::Tool::new(
+            "open_quick_shell",
+            "cached tool metadata",
+            Arc::new(serde_json::Map::new()),
+        )],
+    )
+    .await
+    .expect("install cached tool");
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    assert_eq!(pool.healthy_tools().await.len(), 1);
+
+    manager
+        .cleanup_upstream_processes(&upstream.name, false, false)
+        .await
+        .expect("cleanup");
+
+    assert!(pool.healthy_tools().await.is_empty());
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cleanup_upstream_processes_kills_matching_github_chat_runtime() {

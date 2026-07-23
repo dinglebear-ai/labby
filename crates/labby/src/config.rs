@@ -153,6 +153,7 @@ pub(crate) fn code_mode_widget_callbacks_enabled() -> bool {
 static RESOLVED_SHOW_ALL: AtomicBool = AtomicBool::new(false);
 static RESOLVED_DEV_MODE: AtomicBool = AtomicBool::new(false);
 static RESOLVED_WIDGET_CALLBACKS: AtomicBool = AtomicBool::new(false);
+static RESOLVED_INSTALL_ANDROID_SDK: AtomicBool = AtomicBool::new(false);
 static RESOLVED_SYMBOLS: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static RESOLVED_PROTECTED_MCP_TIMEOUT_SECS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 static RESOLVED_DESTRUCTIVE_ELICITATION_TIMEOUT_MS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
@@ -191,6 +192,11 @@ pub(crate) fn install_resolved_preferences(config: &LabConfig) {
     RESOLVED_WIDGET_CALLBACKS.store(
         env_flag_enabled("LABBY_CODE_MODE_WIDGET_CALLBACKS")
             || config.code_mode.widget_callbacks.unwrap_or(false),
+        Ordering::Release,
+    );
+    RESOLVED_INSTALL_ANDROID_SDK.store(
+        env_flag_enabled("LABBY_ENABLE_ANDROID_SDK")
+            || config.setup.install_android_sdk.unwrap_or(false),
         Ordering::Release,
     );
     let symbols = std::env::var("LABBY_SYMBOLS")
@@ -246,6 +252,13 @@ pub(crate) fn resolved_dev_mode() -> bool {
 
 pub(crate) fn resolved_widget_callbacks_enabled() -> bool {
     RESOLVED_WIDGET_CALLBACKS.load(Ordering::Acquire)
+}
+
+/// Resolved "install android-sdk during provision" flag, folding
+/// `LABBY_ENABLE_ANDROID_SDK=1` env over `[setup].install_android_sdk` config.
+/// Read by the provision plan builder (`ActionKind::AndroidSdk`).
+pub(crate) fn resolved_install_android_sdk() -> bool {
+    RESOLVED_INSTALL_ANDROID_SDK.load(Ordering::Acquire)
 }
 
 pub(crate) fn resolved_symbols() -> Option<String> {
@@ -356,6 +369,9 @@ pub struct LabConfig {
     /// Per-service preference overrides.
     #[serde(default)]
     pub services: ServicePreferences,
+    /// Setup/provision preferences (operator toggles for `labby setup --provision`).
+    #[serde(default)]
+    pub setup: SetupPreferences,
     /// HTTP auth mode preferences.
     #[serde(default)]
     pub auth: Option<AuthFileConfig>,
@@ -1510,6 +1526,19 @@ pub struct TailscalePreferences {
     /// Default: `"-"` (auto-detect).
     #[serde(default)]
     pub tailnet: Option<String>,
+}
+
+/// `[setup]` preferences: operator toggles for `labby setup --provision`.
+///
+/// These are non-secret capabilities that provision can install on demand,
+/// kept out of the baked Incus image to slim it. Env overrides still apply.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetupPreferences {
+    /// Install `android-sdk` during provision. Needed only by the
+    /// claude-in-mobile MCP server. Default: false.
+    /// Env override: `LABBY_ENABLE_ANDROID_SDK=1`.
+    #[serde(default)]
+    pub install_android_sdk: Option<bool>,
 }
 
 /// Load `config.toml` only — no `.env`, no side effects beyond file reads.

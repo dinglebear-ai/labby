@@ -673,6 +673,18 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             Some("TAILSCALE_TAILNET"),
             Some("-"),
         ),
+        editable(
+            "setup",
+            "setup.install_android_sdk",
+            "Install android-sdk on provision",
+            "Run the android-sdk provision step (needed by claude-in-mobile MCP). \
+             Default: off. LABBY_ENABLE_ANDROID_SDK=1 overrides.",
+            SettingsBackend::ConfigToml,
+            SettingsControl::Bool,
+            SettingsApplyMode::Immediate,
+            Some("LABBY_ENABLE_ANDROID_SDK"),
+            Some("false"),
+        ),
         number_editable(
             "advanced",
             "upstream_request_timeout_ms",

@@ -250,6 +250,19 @@
 # first-party upstream integration features.
 # built_in_upstream_apis_enabled = true    # default: true
 
+# ── Setup / Provision Preferences ────────────────────────────────────────────
+
+[setup]
+# Operator toggles for `labby setup --provision`. These install optional
+# capabilities on demand — they are NOT baked into the Incus image to keep it
+# slim. Either this table or the matching env var enables a step.
+
+# Install android-sdk during provision. Only needed by the claude-in-mobile MCP
+# server (it pulls ~300 MiB of JVM + java deps that the gateway core does not
+# use). Default: false.
+# Override: LABBY_ENABLE_ANDROID_SDK=1
+# install_android_sdk = false               # default: false
+
 # ── Secrets (env-only) ───────────────────────────────────────────────────────
 #
 # These MUST be set via environment variables (in ~/.labby/.env), not here:
