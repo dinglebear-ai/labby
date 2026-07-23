@@ -1,68 +1,84 @@
-# Labby for Unraid design QA
+# Labby for Unraid fidelity QA
 
 **Source visual truth**
 
 - `Labby for Unraid.html`
-- `outputs/labby-settings-reference/final_runs/run_1/screenshots/reference_overview.png`
-- Source pixels: 1280 x 1800 RGBA.
+- `outputs/labby-fidelity-pass/final_runs/run_3/screenshots/final_execution_1_reference_gateway.png`
+- Source pixels: 1280 × 1800 RGBA.
 
 **Rendered implementation**
 
-- Native Unraid plugin route: `http://tower/Settings/Labby`
-- `outputs/labby-unraid-plugin/final_runs/run_1/screenshots/final_execution_1_native_overview.png`
-- `outputs/labby-unraid-plugin/final_runs/run_1/screenshots/final_execution_2_gateway.png`
-- `outputs/labby-unraid-plugin/final_runs/run_1/screenshots/final_execution_2b_gateway_drawer.png`
-- `outputs/labby-unraid-plugin/final_runs/run_1/screenshots/final_execution_3_incus_settings.png`
-- Implementation pixels: 1280 x 1800 RGBA; CSS viewport 1280 x 1800; device scale factor 1.
-- State: authenticated Unraid 7.3.2 Settings > Labby plugin page, live native runtime, live empty gateway catalog, Incus settings expanded for inspection.
+- Installed native Unraid plugin route: `Settings/Labby`
+- Plugin package: `1.3.11`
+- `outputs/labby-fidelity-pass/final_runs/run_3/screenshots/final_execution_2_live_overview.png`
+- `outputs/labby-fidelity-pass/final_runs/run_3/screenshots/final_execution_3_live_gateway.png`
+- `outputs/labby-fidelity-pass/final_runs/run_3/screenshots/final_execution_4_add_server.png`
+- `outputs/labby-fidelity-pass/final_runs/run_3/screenshots/final_execution_5_incus_settings.png`
+- Implementation pixels: 1280 × 1800 RGBA; CSS viewport 1280 × 1800; device scale factor 1.
+- State: authenticated Unraid 7.3.2, native Labby runtime, three connected HTTP upstreams, Incus settings temporarily expanded without saving.
 
 **Full-view comparison evidence**
 
-- `outputs/labby-unraid-plugin/final_runs/run_1/screenshots/reference_and_native_gateway.png`
-- The implementation is shown inside the real Unraid webGUI chrome; the source is the inner Labby product shell only. That host chrome is required by the selected native plugin surface and is excluded from fidelity findings.
-- Dynamic server rows and telemetry in the source are sample data. The implementation correctly renders current live values from the test box (zero configured upstreams) and does not substitute mock data.
+- `outputs/labby-fidelity-pass/final_runs/run_3/screenshots/final_execution_6_reference_and_live_gateway.png`
+- Source and implementation are combined in one 2560 × 1800 comparison image with no scaling.
+- Native Unraid chrome above the Labby shell is required host UI and is excluded from inner-shell fidelity findings.
 
 **Focused comparison evidence**
 
-- `outputs/labby-unraid-plugin/final_runs/run_1/screenshots/focused_gateway_shell_comparison.png`
-- The normalized inner-shell crop verifies the 3 px red-to-orange rail, 60 px product header, power identity, status pill, segmented tabs, endpoint/version treatment, card geometry, heading hierarchy, action placement, live summary grid, empty state, palette, radii, borders, and shadow density.
-- Focused Settings inspection verifies that native and Incus fields retain the Unraid definition-list alignment and that the Incus group expands without breaking the form grid.
+- The full-width normalized comparison keeps all important gateway details readable, so a separate crop is not required.
+- Measured source-aligned implementation geometry:
+  - summary card: x 20, width 1240, height 201;
+  - server-list card: x 20, width 1240, relative y 305 beneath the 64 px Labby header;
+  - filter row: 52 px;
+  - live server rows: 68 px, versus approximately 58 px passive rows in the mock. The extra 10 px retains live freshness and three working action controls.
 
 **Required fidelity surfaces**
 
-- Fonts and typography: clear-sans/system fallbacks, weights, 26 px primary headings, uppercase tracking, monospace endpoint/version text, and compact control labels match the source hierarchy. Native Unraid font rendering is intentionally retained.
-- Spacing and layout rhythm: shell width, 20 px page inset, 16 px section gaps, 6 px radii, card borders/shadows, segmented navigation, summary grid, and action alignment match the source. The mandatory Unraid header adds host chrome above the shell but does not alter its internal rhythm.
-- Colors and visual tokens: `#f2f2f2`, white cards, `#1c1b1b` ink, neutral grays, red/orange brand gradient, and green/red state colors match the source and Unraid component contract.
-- Image quality and asset fidelity: the source contains no raster product imagery. The implementation uses Unraid's installed Font Awesome icon for the power mark; no placeholder imagery, custom SVG, emoji, or generated substitute is present.
-- Copy and content: static Labby labels and control language follow the source. Counts, runtime labels, endpoint, status, and server content are deliberately live.
-- Accessibility and behavior: semantic tablist/tab roles and `aria-selected` states are present; keyboard-native buttons, form inputs, visible focus treatment, labels, and responsive rules are retained.
+- Fonts and typography: native Unraid Clear Sans/system rendering is retained. Heading scale, eyebrow tracking, title case, monospace endpoint/version treatment, weights, and wrapping match the source hierarchy.
+- Spacing and layout rhythm: 20 px content inset, 18 px inter-card gap, 1240 px cards, 201 px summary card, split summary/list hierarchy, filter width, borders, six-pixel radii, and shadow density match the source.
+- Colors and visual tokens: `#f2f2f2` canvas, white cards, `#1c1b1b` ink, neutral grays, red/orange identity gradient, green/red state pills, and blue HTTP transport pills match the mock.
+- Image quality and asset fidelity: the source has no raster product imagery. The implementation uses Unraid's installed Font Awesome assets for the power, reload, action, detail, and copy icons; no placeholders or approximate custom drawings were introduced.
+- Copy and content: product labels follow the source. Version, endpoint, counts, health, server rows, runtime, and capabilities are deliberately live rather than copied sample data.
+- Accessibility and behavior: semantic tabs, title-case accessible buttons, focus treatment, live filtering, Add Server, endpoint copy, expandable actions/details, native/Incus settings, and the Dashboard toggle remain operational.
 
-**Primary interactions tested**
+**Intentional upgrades preserved**
 
-- Switched Overview, Gateway, and Settings tabs.
-- Exercised the server filter.
-- Opened and closed the Add Server controls.
-- Switched the deployment selector to Incus, verified all Incus controls, and restored the original native selection without submitting.
-- Checked browser console errors and failed same-origin requests: none.
+- Native Unraid host chrome and plugin lifecycle.
+- Live gateway state instead of sample telemetry.
+- Settings tab, native/Incus deployment controls, backup-first persistence, and service controls.
+- Dashboard widget setting and aggregate health endpoint.
+- Status freshness, endpoint copy, enable/disable, retry, cleanup, remove, and detail actions.
 
 **Comparison history**
 
-1. P1: the Incus field group initially escaped the definition-list layout when expanded. Fix: enabled Markdown parsing on the conditional group. Post-fix evidence: `final_execution_3_incus_settings.png`.
-2. P1: browser diagnostics found invalid HTML `pattern` expressions under Firefox's Unicode Sets validation. Fix: replaced ambiguous hyphen/slash class members with explicit hexadecimal escapes. Post-fix evidence: clean `final_script_log.txt` diagnostics.
-3. P2: the Gateway state initially omitted the source's summary band. Fix: added a live eight-column gateway summary using actual upstream/runtime counts. Post-fix evidence: `focused_gateway_shell_comparison.png`.
+1. P1: the live gateway summary and server table were one continuous card while the source uses two elevated regions. Fix: split the live summary and list into separate cards. Post-fix evidence: run 3 combined comparison.
+2. P1: the inner content began at 12 px and summary/list heights did not match. Fix: measured and set the exact 20 px inset, 201 px summary height, and relative list y 305. Post-fix browser geometry assertions pass.
+3. P2: global Unraid styles forced uppercase labels and oversized margins, making rows and actions substantially less dense than the source. Fix: scoped title case, reset margins, compact copy controls, and reduced row padding. Post-fix live rows are 68 px and remain fully functional.
+4. P2: the endpoint rendered as `:8765` and omitted `/mcp`. Fix: fall back to `tower` for an empty server name and render `tower:8765/mcp`.
+5. P2: HTTP transport lacked the source's blue semantic treatment and rows lacked state rails. Fix: added transport-specific pills and live state rails.
 
 **Findings**
 
 - No actionable P0, P1, or P2 findings remain.
-- P3: the source mock shows call-rate, client-count, uptime-history, and sample server telemetry that the current gateway CLI does not expose. The plugin shows only values it can obtain from the live runtime rather than fabricating those metrics.
+- P3: the source mock includes calls/minute, clients, uptime bars, history charts, and error-rate telemetry that the current gateway surface does not expose. The plugin does not fabricate them.
+- P3: live rows are 10 px taller than the mock's passive rows because the production plugin exposes freshness and working management controls.
+
+**Primary interactions tested**
+
+- Switched Overview, Gateway, and Settings tabs.
+- Filtered the live gateway to one server and cleared the filter.
+- Opened and closed the HTTP/stdio Add Server controls.
+- Switched the deployment selector to Incus, verified the Incus controls, and restored native without submitting.
+- Checked the installed version and displayed MCP endpoint.
+- Checked browser console errors and failed same-origin requests: none.
 
 **Implementation checklist**
 
-- [x] Match the selected shell and component language.
-- [x] Keep the implementation inside the native Unraid plugin route.
-- [x] Wire all visible controls to real plugin/gateway operations.
-- [x] Preserve backup-first Incus/native deployment persistence.
-- [x] Verify live authenticated rendering and interactions.
-- [x] Verify browser console and request cleanliness.
+- [x] Match source shell geometry and component hierarchy.
+- [x] Preserve live data and native Unraid integration.
+- [x] Preserve native and Incus operational controls.
+- [x] Preserve Dashboard widget functionality.
+- [x] Verify package checksums and native/Incus runtime behavior.
+- [x] Verify browser interactions and diagnostics.
 
 final result: passed
