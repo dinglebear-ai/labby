@@ -35,8 +35,8 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  RUSTC_WRAPPER: ""
-  CARGO_BUILD_RUSTC_WRAPPER: ""
+  # Persistent per-runner zccache compile store for soldr (replaces sccache).
+  SOLDR_CACHE_DIR: ${{ github.workspace }}/../.soldr-cache
   DISTROBUILDER_SNAP_REVISION: "2114"
 
 jobs:
@@ -53,9 +53,8 @@ jobs:
 
       - uses: ./.github/actions/build-gateway-admin
 
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - name: Install Rust + soldr
+        uses: ./.github/actions/setup-rust-soldr
 
       - name: Install validation and image dependencies
         run: |
