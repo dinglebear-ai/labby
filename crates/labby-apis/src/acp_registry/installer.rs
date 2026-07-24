@@ -56,7 +56,7 @@ pub const MAX_ACP_UNCOMPRESSED_BYTES: u64 = 2 * MAX_ACP_ARCHIVE_BYTES;
 const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Overall per-request timeout for the archive download.
-const ARCHIVE_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const ARCHIVE_REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Extraction/fsync work is expensive and `spawn_blocking` otherwise admits
 /// an unbounded queue. Two concurrent phases preserve useful parallelism while

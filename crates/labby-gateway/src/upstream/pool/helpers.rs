@@ -45,14 +45,14 @@ pub(super) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// `elicitation/create` is forwarded to the downstream agent and answered by a
 /// human. The pool's `relay_timeout` field defaults to this; the binary
 /// overrides it from `upstream_relay_timeout_ms`. See `pool/relay.rs`.
-pub(super) const DEFAULT_RELAY_TIMEOUT: Duration = Duration::from_secs(300);
+pub(super) const DEFAULT_RELAY_TIMEOUT: Duration = Duration::from_mins(5);
 pub(super) const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 /// Idle TTL for per-`(upstream, subject)` cached connections.
 ///
 /// A connection that has not been used for this long will be evicted from
 /// the subject-connection cache on the next access for its key (P-C1), or by
 /// the background sweep task ([`SUBJECT_CONN_SWEEP_INTERVAL`]).
-pub(super) const SUBJECT_CONN_IDLE_TTL: Duration = Duration::from_secs(300);
+pub(super) const SUBJECT_CONN_IDLE_TTL: Duration = Duration::from_mins(5);
 
 /// Interval at which the background subject-connection sweep runs (P-H2).
 ///

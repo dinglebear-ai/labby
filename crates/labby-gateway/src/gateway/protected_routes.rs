@@ -17,7 +17,7 @@ impl ProtectedRouteIndex {
             index.routes.entry(host).or_default().push(route.clone());
         }
         for routes in index.routes.values_mut() {
-            routes.sort_by(|left, right| right.public_path.len().cmp(&left.public_path.len()));
+            routes.sort_by_key(|right| std::cmp::Reverse(right.public_path.len()));
         }
         index
     }

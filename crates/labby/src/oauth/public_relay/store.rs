@@ -431,7 +431,7 @@ fn prune_old_backups(path: &Path, keep: usize) {
         return;
     }
     // Newest first, so `skip(keep)` yields exactly the stale tail.
-    backups.sort_by(|a, b| b.0.cmp(&a.0));
+    backups.sort_by_key(|b| std::cmp::Reverse(b.0));
     for (_, stale) in backups.into_iter().skip(keep) {
         if let Err(error) = fs::remove_file(&stale) {
             tracing::warn!(

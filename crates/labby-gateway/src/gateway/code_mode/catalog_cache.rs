@@ -32,7 +32,7 @@ const CACHE_VERSION: u32 = 1;
 /// config edits; the TTL catches upstream-side tool drift (server upgrades)
 /// that no config change reflects.
 #[allow(dead_code)]
-const CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+const CACHE_TTL: Duration = Duration::from_hours(6);
 
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct CatalogCache {
