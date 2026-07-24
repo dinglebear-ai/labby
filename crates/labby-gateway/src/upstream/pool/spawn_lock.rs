@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 /// How long to wait for a contended lock before giving up and proceeding
 /// without it. Generous enough to cover a slow cold `npm`/`uv` install.
-const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(120);
+const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Poll interval while the lock is held by another process.
 const SPAWN_LOCK_POLL: Duration = Duration::from_millis(100);

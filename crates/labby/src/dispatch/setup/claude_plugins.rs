@@ -24,7 +24,7 @@ const DEFAULT_ORG: &str = match option_env!("LABBY_PLUGIN_ORG") {
     None => "lab",
 };
 const DEFAULT_SCOPE: &str = "user";
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
+const COMMAND_TIMEOUT: Duration = Duration::from_mins(5);
 const CACHE_TTL: Duration = Duration::from_secs(8);
 
 static INSTALLED_CACHE: OnceLock<Mutex<Option<(Instant, Vec<InstalledPlugin>)>>> = OnceLock::new();

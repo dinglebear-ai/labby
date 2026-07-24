@@ -428,7 +428,7 @@ impl GatewayManager {
             .cloned()
             .collect();
 
-        let results: Vec<_> = futures::stream::iter(enabled_upstreams.into_iter())
+        let results: Vec<_> = futures::stream::iter(enabled_upstreams)
             .map(|upstream| {
                 let pool = Arc::clone(&pool_arc);
                 let owner = owner_cloned.clone();

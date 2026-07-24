@@ -17,9 +17,9 @@ use tokio::process::Command;
 use crate::config::{ConfigScalarPatch, ConfigScalarValue};
 use crate::dispatch::error::ToolError;
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
+const COMMAND_TIMEOUT: Duration = Duration::from_mins(10);
 const CAPTURE_BYTES: usize = 16 * 1024;
-const STALE_LOCK_AFTER: Duration = Duration::from_secs(60 * 60);
+const STALE_LOCK_AFTER: Duration = Duration::from_hours(1);
 const LOCK_PATH: &str = "/var/lock/labby-provision.lock";
 const LABBY_USER: &str = "labby";
 const LABBY_HOME: &str = "/home/labby";
