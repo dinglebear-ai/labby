@@ -20,7 +20,7 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # Persistent per-runner zccache compile store for soldr (replaces sccache).
+  # Persistent per-runner zccache compile store for soldr.
   SOLDR_CACHE_DIR: ${{ github.workspace }}/../.soldr-cache
 
 jobs:
@@ -510,9 +510,11 @@ jobs:
     # skipped, so untrusted code can't execute on the runner — while our own
     # branch PRs (e.g. Windows reaping work) get pre-merge Windows verification.
     #
-    # The runner is steamy's Windows host with rustup, NASM, CMake, and
-    # LLVM/libclang preinstalled and a persistent warm target dir — no
-    # toolchain/cache actions needed.
+    # The runner is steamy's Windows host with NASM, CMake, and LLVM/libclang
+    # preinstalled and a persistent warm target dir. Rust is installed via the
+    # setup-rust-soldr composite with shims off (soldr's cargo shim doesn't work
+    # on native Windows), so cargo runs bare with no compile caching — the warm
+    # CARGO_TARGET_DIR is the only build cache.
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
       (
@@ -522,8 +524,6 @@ jobs:
     timeout-minutes: 120
     env:
       CARGO_TARGET_DIR: C:\Users\jmaga\actions-runner\labby\_cargo-target\labby
-      SCCACHE_DIR: C:\Users\jmaga\actions-runner\labby\_sccache\labby
-      SCCACHE_CACHE_SIZE: 20G
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -536,14 +536,21 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: "22"
+      - name: Install Rust + soldr (no shims on native Windows)
+        uses: ./.github/actions/setup-rust-soldr
+        with:
+          enable-shims: "false"
+      - name: Neutralize rustc wrapper (native Windows)
+        shell: pwsh
+        run: |
+          "RUSTC_WRAPPER=" >> $env:GITHUB_ENV
+          "CARGO_BUILD_RUSTC_WRAPPER=" >> $env:GITHUB_ENV
       - name: Prune persistent Windows build caches
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $targetDir = $env:CARGO_TARGET_DIR
-          $sccacheDir = $env:SCCACHE_DIR
           $targetMaxBytes = 50GB
-          $sccacheMaxBytes = 20GB
           $maxAgeDays = 14
 
           function Get-TreeSizeBytes($Path) {
@@ -602,14 +609,12 @@ jobs:
           }
 
           New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-          New-Item -ItemType Directory -Force -Path $sccacheDir | Out-Null
 
           # Native bindgen outputs can be left half-written by interrupted runs,
           # and Cargo may then reuse the stale build dir until the include! fails.
           Remove-TargetBuildDirs $targetDir @("libsqlite3-sys-*")
 
           Prune-ByAge $targetDir $maxAgeDays
-          Prune-ByAge $sccacheDir $maxAgeDays
 
           $size = Get-TreeSizeBytes $targetDir
           if ($size -gt $targetMaxBytes) {
@@ -620,63 +625,6 @@ jobs:
           }
 
           Enforce-HardCap $targetDir $targetMaxBytes "Persistent Cargo target dir"
-          Enforce-HardCap $sccacheDir $sccacheMaxBytes "Persistent sccache dir"
-      - name: Install sccache
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $version = "0.15.0"
-          $target = "x86_64-pc-windows-msvc"
-          $installDir = Join-Path $env:RUNNER_TEMP "sccache-$version-$target"
-          $sccacheExe = Join-Path $installDir "sccache.exe"
-          $current = $null
-          if (Test-Path $sccacheExe) {
-            try {
-              $current = (& $sccacheExe --version 2>$null)
-            } catch {
-              $current = $null
-            }
-          }
-          if ($current -like "*$version*") {
-            Write-Host "sccache already installed: $current"
-            $installDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-            "LABBY_SCCACHE_EXE=$sccacheExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "RUSTC_WRAPPER=$sccacheExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "CARGO_BUILD_RUSTC_WRAPPER=$sccacheExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            exit 0
-          }
-
-          $base = "https://github.com/mozilla/sccache/releases/download/v$version"
-          $archive = Join-Path $env:RUNNER_TEMP "sccache.tar.gz"
-          $shaFile = Join-Path $env:RUNNER_TEMP "sccache.sha256"
-          $extractDir = Join-Path $env:RUNNER_TEMP "sccache"
-
-          Invoke-WebRequest "$base/sccache-v$version-$target.tar.gz" -OutFile $archive
-          Invoke-WebRequest "$base/sccache-v$version-$target.tar.gz.sha256" -OutFile $shaFile
-
-          $expected = ((Get-Content $shaFile -Raw) -split "\s+")[0].Trim().ToLowerInvariant()
-          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) {
-            throw "sccache checksum mismatch: expected $expected, got $actual"
-          }
-
-          if (Test-Path $extractDir) {
-            Remove-Item -Recurse -Force $extractDir
-          }
-          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-          tar -xzf $archive -C $extractDir
-          $exe = Get-ChildItem -Path $extractDir -Recurse -Filter sccache.exe | Select-Object -First 1
-          if (-not $exe) {
-            throw "sccache.exe not found in release archive"
-          }
-
-          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-          Copy-Item $exe.FullName $sccacheExe -Force
-          $installDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "LABBY_SCCACHE_EXE=$sccacheExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "RUSTC_WRAPPER=$sccacheExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CARGO_BUILD_RUSTC_WRAPPER=$sccacheExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          & $sccacheExe --version
       - name: Install cargo-nextest
         shell: pwsh
         run: |
@@ -744,24 +692,13 @@ jobs:
       - name: Run Windows Job Object reaping integration test
         shell: pwsh
         run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci --run-ignored ignored-only --no-tests pass
-      - name: Show sccache stats
-        if: always()
-        shell: pwsh
-        run: |
-          if (Test-Path $env:LABBY_SCCACHE_EXE) {
-            & $env:LABBY_SCCACHE_EXE --show-stats
-          } else {
-            Write-Warning "sccache.exe was not installed at $env:LABBY_SCCACHE_EXE"
-          }
       - name: Enforce Windows build cache caps
         if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $targetDir = $env:CARGO_TARGET_DIR
-          $sccacheDir = $env:SCCACHE_DIR
           $targetMaxBytes = 50GB
-          $sccacheMaxBytes = 20GB
 
           function Get-TreeSizeBytes($Path) {
             if (-not (Test-Path $Path)) {
@@ -788,7 +725,6 @@ jobs:
           }
 
           Enforce-HardCap $targetDir $targetMaxBytes "Persistent Cargo target dir"
-          Enforce-HardCap $sccacheDir $sccacheMaxBytes "Persistent sccache dir"
 
   release-smoke:
     name: Release smoke (${{ matrix.os }})
