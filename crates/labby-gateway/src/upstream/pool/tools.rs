@@ -876,4 +876,65 @@ mod tests {
             vec!["visible".to_string()]
         );
     }
+
+    /// Regression (tools flapping): under Code Mode the reconcile snapshot uses
+    /// `healthy_ui_tool_names_allowed`, which must track ONLY MCP-App UI tools.
+    /// Raw upstream churn (an upstream becoming healthy and discovering plain
+    /// tools) must be invisible to it, so `tools/list_changed` is not emitted
+    /// for a change the Code-Mode client can never see — while `healthy_tools`
+    /// (the non-Code-Mode projection) still reflects the raw tool set.
+    #[tokio::test]
+    async fn healthy_ui_tool_names_hide_raw_tool_churn_under_code_mode() {
+        let pool = UpstreamPool::new();
+
+        // An app upstream exposing one UI tool and one plain tool.
+        let apps: Arc<str> = Arc::from("apps");
+        let mut apps_tools = test_upstream_tools(&apps, &["youtube_search_ui", "youtube_probe"]);
+        apps_tools
+            .get_mut("youtube_search_ui")
+            .expect("ui tool")
+            .tool
+            .meta = Some(Meta(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({ "resourceUri": "ui://apps/youtube-search.html" }),
+        )])));
+        pool.catalog.write().await.insert(
+            "apps".to_string(),
+            healthy_in_process_entry(Arc::clone(&apps), apps_tools),
+        );
+
+        // Only the UI tool is individually visible under Code Mode.
+        assert_eq!(
+            pool.healthy_ui_tool_names_allowed(None).await,
+            vec!["youtube_search_ui".to_string()]
+        );
+
+        // A brand-new upstream comes online carrying only plain (non-UI) tools —
+        // exactly the "late upstream/app hydration" churn from the incident.
+        let plain: Arc<str> = Arc::from("plain");
+        let plain_tools = test_upstream_tools(&plain, &["search", "download"]);
+        pool.catalog.write().await.insert(
+            "plain".to_string(),
+            healthy_in_process_entry(Arc::clone(&plain), plain_tools),
+        );
+
+        // Code-Mode projection is unchanged → reconcile diff stays tools_changed=false.
+        assert_eq!(
+            pool.healthy_ui_tool_names_allowed(None).await,
+            vec!["youtube_search_ui".to_string()],
+            "raw upstream tool churn must not alter the Code-Mode-visible tool set"
+        );
+
+        // The raw (non-Code-Mode) projection does grow, confirming the churn is
+        // real and only hidden by the Code-Mode filter.
+        let raw: BTreeSet<String> = pool
+            .healthy_tools()
+            .await
+            .into_iter()
+            .map(|t| t.tool.name.to_string())
+            .collect();
+        assert!(
+            raw.contains("search") && raw.contains("download") && raw.contains("youtube_probe")
+        );
+    }
 }
