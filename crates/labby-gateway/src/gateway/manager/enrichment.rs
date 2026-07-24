@@ -122,6 +122,12 @@ impl GatewayManager {
             .and_then(labby_runtime::gateway_config::normalize_code_mode_hint);
         upstream.code_mode_hint = Some(hint.clone());
         self.persist_config(cfg).await?;
+        // A `code_mode_hint` is rendered into the visible `codemode` tool
+        // description (the "Available upstream namespaces" section built in
+        // `mcp/handlers_tools.rs` via `code_mode_description`), so applying a
+        // hint genuinely changes the externally visible tool contract and must
+        // notify. Only the tool descriptor changes — resources and prompts do
+        // not — so this is a tools-only change.
         self.notify_catalog_changes(&GatewayCatalogDiff {
             tools_changed: true,
             resources_changed: false,

@@ -208,6 +208,24 @@ impl GatewayManager {
         );
         self.reconcile_upstream_oauth_managers(&cfg);
 
+        // Project catalog snapshots through the visible Code Mode contract so
+        // `tools/list_changed` fires on real client-facing changes only. The
+        // "before" snapshot uses the currently-active regime; the "after"
+        // snapshot uses the incoming config. When Code Mode itself toggles this
+        // correctly captures the raw↔`codemode` transition as a real change.
+        // The namespace tokens mirror the config-derived determinants of the
+        // visible `codemode` tool description, so upstream add/remove/enable and
+        // hint edits still notify while raw tool health/discovery churn does not.
+        let (old_code_mode_enabled, old_ns_tokens) = {
+            let current = self.config.read().await;
+            (
+                current.code_mode.enabled,
+                code_mode_namespace_tokens(&current),
+            )
+        };
+        let new_code_mode_enabled = cfg.code_mode.enabled;
+        let new_ns_tokens = code_mode_namespace_tokens(&cfg);
+
         let (pool_settings_unchanged, changed_upstreams, changed_upstreams_add_only) = {
             let current = self.config.read().await;
             let changed_upstreams = upstream_changed_names(&current, &cfg);
@@ -250,7 +268,12 @@ impl GatewayManager {
             && pool_runtime_identity_matches
             && let Some(current_pool) = existing_pool.clone()
         {
-            let before = snapshot_from_pool(Some(Arc::clone(&current_pool))).await;
+            let before = snapshot_from_pool(
+                Some(Arc::clone(&current_pool)),
+                old_code_mode_enabled,
+                &old_ns_tokens,
+            )
+            .await;
             current_pool
                 .reconcile_lazy_upstreams(
                     &cfg.upstream,
@@ -258,7 +281,12 @@ impl GatewayManager {
                     "gateway.reload.selective_reconcile",
                 )
                 .await;
-            let after = snapshot_from_pool(Some(Arc::clone(&current_pool))).await;
+            let after = snapshot_from_pool(
+                Some(Arc::clone(&current_pool)),
+                new_code_mode_enabled,
+                &new_ns_tokens,
+            )
+            .await;
             *self.protected_route_index.write().await =
                 ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
             *self.config.write().await = cfg;
@@ -291,7 +319,8 @@ impl GatewayManager {
         }
 
         let old_pool = existing_pool;
-        let before = snapshot_from_pool(old_pool.clone()).await;
+        let before =
+            snapshot_from_pool(old_pool.clone(), old_code_mode_enabled, &old_ns_tokens).await;
         let old_pool_present = old_pool.is_some();
         tracing::info!(
             surface = "dispatch",
@@ -386,7 +415,8 @@ impl GatewayManager {
             pool_arc.list_upstream_resources().await;
         }
 
-        let after = snapshot_from_pool(fresh_pool.clone()).await;
+        let after =
+            snapshot_from_pool(fresh_pool.clone(), new_code_mode_enabled, &new_ns_tokens).await;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -546,18 +576,74 @@ fn upstream_fingerprint_map(cfg: &GatewayConfig) -> BTreeMap<String, String> {
         .collect()
 }
 
-async fn snapshot_from_pool(pool: Option<Arc<UpstreamPool>>) -> GatewayCatalogSnapshot {
+/// Tokens mirroring the config-derived determinants of the visible `codemode`
+/// tool description — the "Available upstream namespaces" section rendered in
+/// `mcp/handlers_tools.rs::code_mode_upstreams_for_description`: each enabled
+/// upstream's namespace name plus its normalized Code Mode hint. Changing any of
+/// these changes the visible `codemode` tool descriptor and so is a real
+/// `tools/list` change; raw upstream tool health/discovery churn is not. Route
+/// scope (per-session) cannot be applied here, so this is the global superset —
+/// a conservative over-approximation that can only ever over-notify on rare
+/// operator config edits, never under-notify.
+fn code_mode_namespace_tokens(cfg: &GatewayConfig) -> BTreeSet<String> {
+    cfg.upstream
+        .iter()
+        .filter(|upstream| upstream.enabled)
+        .map(|upstream| {
+            let hint = upstream
+                .code_mode_hint
+                .as_deref()
+                .and_then(labby_runtime::gateway_config::normalize_code_mode_hint)
+                .unwrap_or_default();
+            // \u{1} is a control char that cannot appear in an upstream name or
+            // a real tool name, keeping these tokens disjoint from UI-tool names.
+            format!("\u{1}ns\u{1}{}\u{1}{hint}", upstream.name)
+        })
+        .collect()
+}
+
+/// Snapshot the pool's catalog for `tools/list_changed` change detection.
+///
+/// `code_mode_enabled` selects the **externally visible** tool projection so
+/// the diff reflects the client-facing contract, not raw internal pool state.
+/// When Code Mode is enabled the MCP surface hides every raw upstream tool
+/// behind the constant `codemode` tool and exposes only MCP-App UI tools
+/// individually (see `mcp/catalog.rs::snapshot_tool_catalog`). Diffing raw
+/// `healthy_tools()` in that mode makes ordinary upstream churn — an upstream
+/// becoming healthy, discovering tools, or being added — flip `tools_changed`
+/// and emit a spurious `tools/list_changed`, even though the visible contract
+/// (`codemode` + UI tools) never moved. That notification churn is what makes
+/// clients discard and rebuild the canonical `codemode` binding. So under Code
+/// Mode we snapshot the UI-tool names plus `ns_tokens` (the config-derived
+/// determinants of the visible `codemode` tool description); `codemode` itself
+/// is constant and does not affect the diff.
+async fn snapshot_from_pool(
+    pool: Option<Arc<UpstreamPool>>,
+    code_mode_enabled: bool,
+    ns_tokens: &BTreeSet<String>,
+) -> GatewayCatalogSnapshot {
     let Some(pool) = pool else {
         return GatewayCatalogSnapshot::default();
     };
 
-    GatewayCatalogSnapshot {
-        tools: pool
-            .healthy_tools()
+    let tools = if code_mode_enabled {
+        let mut tools: BTreeSet<String> = pool
+            .healthy_ui_tool_names_allowed(None)
+            .await
+            .into_iter()
+            .collect();
+        tools.extend(ns_tokens.iter().cloned());
+        tools
+    } else {
+        pool.healthy_tools()
             .await
             .into_iter()
             .map(|tool| tool.tool.name.to_string())
-            .collect(),
+            .collect()
+    };
+
+    GatewayCatalogSnapshot {
+        tools,
         resources: pool
             .routable_upstream_names(crate::upstream::types::UpstreamCapability::Resources)
             .await
@@ -568,5 +654,107 @@ async fn snapshot_from_pool(pool: Option<Arc<UpstreamPool>>) -> GatewayCatalogSn
             .await
             .into_iter()
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
+
+    use super::{GatewayCatalogSnapshot, code_mode_namespace_tokens, diff_catalogs};
+
+    fn upstream(name: &str, enabled: bool, hint: Option<&str>) -> UpstreamConfig {
+        UpstreamConfig {
+            enabled,
+            name: name.to_string(),
+            url: Some("http://127.0.0.1:9/mcp".to_string()),
+            bearer_token_env: None,
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            code_mode_hint: hint.map(str::to_string),
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }
+    }
+
+    fn config(upstreams: Vec<UpstreamConfig>) -> GatewayConfig {
+        GatewayConfig {
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        }
+    }
+
+    fn snapshot(tools: BTreeSet<String>) -> GatewayCatalogSnapshot {
+        GatewayCatalogSnapshot {
+            tools,
+            resources: BTreeSet::new(),
+            prompts: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn namespace_tokens_track_enabled_upstreams_and_hints() {
+        let tokens = code_mode_namespace_tokens(&config(vec![
+            upstream("github", true, Some("search repositories")),
+            upstream("rustarr", true, None),
+            upstream("disabled", false, Some("ignored")),
+        ]));
+
+        // Disabled upstreams never reach the visible description.
+        assert_eq!(tokens.len(), 2);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| t.contains("github") && t.contains("search repositories"))
+        );
+        assert!(tokens.iter().any(|t| t.contains("rustarr")));
+        assert!(!tokens.iter().any(|t| t.contains("disabled")));
+    }
+
+    #[test]
+    fn adding_an_upstream_changes_the_code_mode_visible_snapshot() {
+        // A newly added upstream — even one that brings only raw (non-UI) tools —
+        // adds a `codemode` description namespace, a real visible change that must
+        // still notify under Code Mode.
+        let before = code_mode_namespace_tokens(&config(vec![upstream("github", true, None)]));
+        let after = code_mode_namespace_tokens(&config(vec![
+            upstream("github", true, None),
+            upstream("rustarr", true, None),
+        ]));
+
+        assert!(diff_catalogs(&snapshot(before), &snapshot(after)).tools_changed);
+    }
+
+    #[test]
+    fn editing_a_hint_changes_the_code_mode_visible_snapshot() {
+        let before = code_mode_namespace_tokens(&config(vec![upstream("github", true, None)]));
+        let after = code_mode_namespace_tokens(&config(vec![upstream(
+            "github",
+            true,
+            Some("search repositories"),
+        )]));
+
+        assert!(diff_catalogs(&snapshot(before), &snapshot(after)).tools_changed);
+    }
+
+    #[test]
+    fn identical_config_yields_no_code_mode_visible_change() {
+        // Raw tool health/discovery churn leaves the namespace tokens identical,
+        // so the Code-Mode reconcile diff reports no change — no `tools/list_changed`.
+        let tokens = code_mode_namespace_tokens(&config(vec![
+            upstream("github", true, Some("search repositories")),
+            upstream("rustarr", true, None),
+        ]));
+
+        assert!(!diff_catalogs(&snapshot(tokens.clone()), &snapshot(tokens)).tools_changed);
     }
 }
