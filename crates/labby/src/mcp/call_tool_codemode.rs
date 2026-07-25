@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use labby_codemode::CodeModeExecutedCall;
 use labby_codemode::{MAX_SOURCE_BYTES, SERVICE as CODE_MODE_SERVICE};
+use labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Meta};
@@ -439,13 +440,13 @@ impl LabMcpServer {
         {
             Ok(response) => {
                 let after = self.snapshot_tool_catalog().await;
-                self.notify_catalog_changes(after.changes_since(&before))
+                self.notify_catalog_changes(after.changes_since(&before), SOURCE_MCP_CALL_CODEMODE)
                     .await;
                 response
             }
             Err(err) => {
                 let after = self.snapshot_tool_catalog().await;
-                self.notify_catalog_changes(after.changes_since(&before))
+                self.notify_catalog_changes(after.changes_since(&before), SOURCE_MCP_CALL_CODEMODE)
                     .await;
                 let calls = err.calls().to_vec();
                 let code_mode_calls = code_mode_call_metrics_json(&calls);

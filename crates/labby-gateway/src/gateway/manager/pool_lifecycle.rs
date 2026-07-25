@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::StreamExt as _;
 
@@ -15,6 +16,7 @@ use crate::gateway::service_registry::GatewayServiceRegistry;
 use crate::gateway::types::GatewayCatalogDiff;
 use crate::upstream::pool::UpstreamPool;
 use crate::upstream::types::UpstreamRuntimeOwner;
+use labby_runtime::catalog_notify::{SOURCE_GATEWAY_RELOAD_FULL, SOURCE_GATEWAY_RELOAD_SELECTIVE};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
 
@@ -35,6 +37,81 @@ pub fn diff_catalogs(
         tools_changed: before.tools != after.tools,
         resources_changed: before.resources != after.resources,
         prompts_changed: before.prompts != after.prompts,
+    }
+}
+
+/// Process-lifetime count of reconciles where the raw upstream tool set moved
+/// but the Code-Mode-visible contract did not — i.e. churn that would have
+/// broadcast a spurious `tools/list_changed` before the visible-contract
+/// projection landed. A steadily climbing value is the normal, healthy signal
+/// that raw upstreams are flapping and clients are being shielded from it.
+static SUPPRESSED_RAW_CHURN_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Cap on how many tool names a single delta log line will render. Reconciles
+/// after a cold start legitimately add hundreds of tools; the point of the
+/// field is diagnosing repeated small deltas, not dumping the catalog.
+const MAX_LOGGED_DELTA_NAMES: usize = 20;
+
+/// Prefix marking a synthetic namespace token inside a Code-Mode-visible
+/// snapshot. `\u{1}` cannot appear in an upstream name or a real tool name, so
+/// tokens stay disjoint from tool names in the same `BTreeSet`.
+const NS_TOKEN_PREFIX: &str = "\u{1}ns\u{1}";
+
+/// The rendered delta between two catalog snapshots, split so operators read
+/// tool names and namespace tokens as the different things they are.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CatalogToolDelta {
+    added: Vec<String>,
+    removed: Vec<String>,
+    namespaces_added: Vec<String>,
+    namespaces_removed: Vec<String>,
+    truncated: usize,
+}
+
+impl CatalogToolDelta {
+    fn describe(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Self {
+        let mut delta = Self::default();
+        for (source, tools, namespaces) in [
+            (
+                after.difference(before),
+                &mut delta.added,
+                &mut delta.namespaces_added,
+            ),
+            (
+                before.difference(after),
+                &mut delta.removed,
+                &mut delta.namespaces_removed,
+            ),
+        ] {
+            for entry in source {
+                // A namespace token is `\u{1}ns\u{1}<name>\u{1}<hint>`; render
+                // only the namespace name — the hint is operator-authored prose
+                // that would swamp the line, and its *presence* in the delta is
+                // the signal.
+                if let Some(rest) = entry.strip_prefix(NS_TOKEN_PREFIX) {
+                    let name = rest.split('\u{1}').next().unwrap_or(rest);
+                    namespaces.push(name.to_string());
+                } else {
+                    tools.push(entry.clone());
+                }
+            }
+        }
+        delta.truncate_names();
+        delta
+    }
+
+    fn truncate_names(&mut self) {
+        for names in [
+            &mut self.added,
+            &mut self.removed,
+            &mut self.namespaces_added,
+            &mut self.namespaces_removed,
+        ] {
+            if names.len() > MAX_LOGGED_DELTA_NAMES {
+                self.truncated += names.len() - MAX_LOGGED_DELTA_NAMES;
+                names.truncate(MAX_LOGGED_DELTA_NAMES);
+            }
+        }
     }
 }
 
@@ -293,25 +370,39 @@ impl GatewayManager {
             let current_cfg = self.config.read().await.clone();
             self.reconcile_runtime_state(&current_cfg, Some(current_pool.as_ref()))
                 .await?;
-            let diff = diff_catalogs(&before, &after);
-            self.notify_catalog_changes(&diff);
+            let observed =
+                ReconcileCatalogObservation::observe(&before, &after, new_code_mode_enabled);
+            let diff = observed.diff.clone();
+            self.notify_catalog_changes(&diff, SOURCE_GATEWAY_RELOAD_SELECTIVE);
             tracing::info!(
                 surface = "dispatch",
                 service = "gateway",
                 action = "gateway.reload",
                 event = "catalog.refresh.finish",
                 phase = "finish",
+                source = SOURCE_GATEWAY_RELOAD_SELECTIVE,
                 pool_rebuild_skipped = true,
                 selectively_reconciled_upstream_count = changed_upstreams.len(),
+                projection = observed.projection,
                 tools_changed = diff.tools_changed,
                 resources_changed = diff.resources_changed,
                 prompts_changed = diff.prompts_changed,
-                before_tool_count = before.tools.len(),
-                after_tool_count = after.tools.len(),
-                before_resource_count = before.resources.len(),
-                after_resource_count = after.resources.len(),
-                before_prompt_count = before.prompts.len(),
-                after_prompt_count = after.prompts.len(),
+                tools_added = ?observed.delta.added,
+                tools_removed = ?observed.delta.removed,
+                namespaces_added = ?observed.delta.namespaces_added,
+                namespaces_removed = ?observed.delta.namespaces_removed,
+                delta_truncated_count = observed.delta.truncated,
+                raw_tools_changed = observed.raw_tools_changed,
+                suppressed_raw_churn = observed.suppressed_raw_churn,
+                suppressed_raw_churn_total = observed.suppressed_raw_churn_total,
+                before_tool_count = before.visible.tools.len(),
+                after_tool_count = after.visible.tools.len(),
+                before_raw_tool_count = before.raw_tools.len(),
+                after_raw_tool_count = after.raw_tools.len(),
+                before_resource_count = before.visible.resources.len(),
+                after_resource_count = after.visible.resources.len(),
+                before_prompt_count = before.visible.prompts.len(),
+                after_prompt_count = after.visible.prompts.len(),
                 elapsed_ms = started.elapsed().as_millis(),
                 "gateway reconcile (upstream changes selectively reconciled; live pool preserved)"
             );
@@ -459,36 +550,52 @@ impl GatewayManager {
         let current_pool = self.runtime.current_pool().await;
         self.reconcile_runtime_state(&current_cfg, current_pool.as_deref())
             .await?;
-        let diff = diff_catalogs(&before, &after);
-        self.notify_catalog_changes(&diff);
+        let observed = ReconcileCatalogObservation::observe(&before, &after, new_code_mode_enabled);
+        let diff = observed.diff.clone();
+        self.notify_catalog_changes(&diff, SOURCE_GATEWAY_RELOAD_FULL);
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
             action = "gateway.reload",
             event = "catalog.refresh.finish",
             phase = "finish",
+            source = SOURCE_GATEWAY_RELOAD_FULL,
+            projection = observed.projection,
             tools_changed = diff.tools_changed,
             resources_changed = diff.resources_changed,
             prompts_changed = diff.prompts_changed,
-            before_tool_count = before.tools.len(),
-            after_tool_count = after.tools.len(),
-            before_resource_count = before.resources.len(),
-            after_resource_count = after.resources.len(),
-            before_prompt_count = before.prompts.len(),
-            after_prompt_count = after.prompts.len(),
+            tools_added = ?observed.delta.added,
+            tools_removed = ?observed.delta.removed,
+            namespaces_added = ?observed.delta.namespaces_added,
+            namespaces_removed = ?observed.delta.namespaces_removed,
+            delta_truncated_count = observed.delta.truncated,
+            raw_tools_changed = observed.raw_tools_changed,
+            suppressed_raw_churn = observed.suppressed_raw_churn,
+            suppressed_raw_churn_total = observed.suppressed_raw_churn_total,
+            before_tool_count = before.visible.tools.len(),
+            after_tool_count = after.visible.tools.len(),
+            before_raw_tool_count = before.raw_tools.len(),
+            after_raw_tool_count = after.raw_tools.len(),
+            before_resource_count = before.visible.resources.len(),
+            after_resource_count = after.visible.resources.len(),
+            before_prompt_count = before.visible.prompts.len(),
+            after_prompt_count = after.visible.prompts.len(),
             elapsed_ms = started.elapsed().as_millis(),
             "gateway reconcile"
         );
         Ok(diff)
     }
 
-    pub(super) fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff) {
+    /// `source` is the emitting site, carried through to the MCP peer fanout so
+    /// every `tools/list_changed` is attributable. Use a label from
+    /// `labby_runtime::catalog_notify`.
+    pub(super) fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff, source: &'static str) {
         if !diff.tools_changed && !diff.resources_changed && !diff.prompts_changed {
             return;
         }
 
         if let Some(notifier) = &self.notifier {
-            notifier.notify_catalog_changes(diff);
+            notifier.notify_catalog_changes(diff, source);
         }
     }
 }
@@ -595,9 +702,10 @@ fn code_mode_namespace_tokens(cfg: &GatewayConfig) -> BTreeSet<String> {
                 .as_deref()
                 .and_then(labby_runtime::gateway_config::normalize_code_mode_hint)
                 .unwrap_or_default();
-            // \u{1} is a control char that cannot appear in an upstream name or
-            // a real tool name, keeping these tokens disjoint from UI-tool names.
-            format!("\u{1}ns\u{1}{}\u{1}{hint}", upstream.name)
+            // `NS_TOKEN_PREFIX` uses \u{1}, a control char that cannot appear in
+            // an upstream name or a real tool name, keeping these tokens
+            // disjoint from UI-tool names.
+            format!("{NS_TOKEN_PREFIX}{}\u{1}{hint}", upstream.name)
         })
         .collect()
 }
@@ -617,14 +725,26 @@ fn code_mode_namespace_tokens(cfg: &GatewayConfig) -> BTreeSet<String> {
 /// Mode we snapshot the UI-tool names plus `ns_tokens` (the config-derived
 /// determinants of the visible `codemode` tool description); `codemode` itself
 /// is constant and does not affect the diff.
+///
+/// The raw tool set is captured alongside the visible one so the reconcile log
+/// can report *suppressed* churn — raw upstream movement that correctly did not
+/// notify. Without that field the fix is invisible in production: a quiet log
+/// looks identical whether nothing happened or everything was filtered.
 async fn snapshot_from_pool(
     pool: Option<Arc<UpstreamPool>>,
     code_mode_enabled: bool,
     ns_tokens: &BTreeSet<String>,
-) -> GatewayCatalogSnapshot {
+) -> ProjectedCatalogSnapshot {
     let Some(pool) = pool else {
-        return GatewayCatalogSnapshot::default();
+        return ProjectedCatalogSnapshot::default();
     };
+
+    let raw_tools: BTreeSet<String> = pool
+        .healthy_tools()
+        .await
+        .into_iter()
+        .map(|tool| tool.tool.name.to_string())
+        .collect();
 
     let tools = if code_mode_enabled {
         let mut tools: BTreeSet<String> = pool
@@ -635,25 +755,79 @@ async fn snapshot_from_pool(
         tools.extend(ns_tokens.iter().cloned());
         tools
     } else {
-        pool.healthy_tools()
-            .await
-            .into_iter()
-            .map(|tool| tool.tool.name.to_string())
-            .collect()
+        raw_tools.clone()
     };
 
-    GatewayCatalogSnapshot {
-        tools,
-        resources: pool
-            .routable_upstream_names(crate::upstream::types::UpstreamCapability::Resources)
-            .await
-            .into_iter()
-            .collect(),
-        prompts: pool
-            .routable_upstream_names(crate::upstream::types::UpstreamCapability::Prompts)
-            .await
-            .into_iter()
-            .collect(),
+    ProjectedCatalogSnapshot {
+        visible: GatewayCatalogSnapshot {
+            tools,
+            resources: pool
+                .routable_upstream_names(crate::upstream::types::UpstreamCapability::Resources)
+                .await
+                .into_iter()
+                .collect(),
+            prompts: pool
+                .routable_upstream_names(crate::upstream::types::UpstreamCapability::Prompts)
+                .await
+                .into_iter()
+                .collect(),
+        },
+        raw_tools,
+    }
+}
+
+/// A reconcile snapshot in both projections: the client-visible contract that
+/// drives `tools/list_changed`, and the raw upstream tool set behind it.
+#[derive(Debug, Default)]
+struct ProjectedCatalogSnapshot {
+    visible: GatewayCatalogSnapshot,
+    raw_tools: BTreeSet<String>,
+}
+
+/// Everything the reconcile finish log needs to say about a catalog transition:
+/// what the client will be told, what actually moved underneath, and whether
+/// raw churn was correctly withheld.
+struct ReconcileCatalogObservation {
+    diff: GatewayCatalogDiff,
+    delta: CatalogToolDelta,
+    projection: &'static str,
+    raw_tools_changed: bool,
+    suppressed_raw_churn: bool,
+    suppressed_raw_churn_total: u64,
+}
+
+impl ReconcileCatalogObservation {
+    /// Compares both projections and, as a side effect, advances the
+    /// process-lifetime suppressed-churn counter when this reconcile withheld a
+    /// notification. Call exactly once per reconcile.
+    fn observe(
+        before: &ProjectedCatalogSnapshot,
+        after: &ProjectedCatalogSnapshot,
+        code_mode_enabled: bool,
+    ) -> Self {
+        let diff = diff_catalogs(&before.visible, &after.visible);
+        let raw_tools_changed = before.raw_tools != after.raw_tools;
+        let suppressed_raw_churn = raw_tools_changed && !diff.tools_changed;
+        // `fetch_add` returns the previous value; report the post-increment
+        // total so the log reads as "this is the Nth suppression".
+        let suppressed_raw_churn_total = if suppressed_raw_churn {
+            SUPPRESSED_RAW_CHURN_TOTAL.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            SUPPRESSED_RAW_CHURN_TOTAL.load(Ordering::Relaxed)
+        };
+
+        Self {
+            delta: CatalogToolDelta::describe(&before.visible.tools, &after.visible.tools),
+            diff,
+            projection: if code_mode_enabled {
+                "code_mode_visible"
+            } else {
+                "raw"
+            },
+            raw_tools_changed,
+            suppressed_raw_churn,
+            suppressed_raw_churn_total,
+        }
     }
 }
 
@@ -663,7 +837,10 @@ mod tests {
 
     use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
 
-    use super::{GatewayCatalogSnapshot, code_mode_namespace_tokens, diff_catalogs};
+    use super::{
+        CatalogToolDelta, GatewayCatalogSnapshot, MAX_LOGGED_DELTA_NAMES, ProjectedCatalogSnapshot,
+        ReconcileCatalogObservation, code_mode_namespace_tokens, diff_catalogs,
+    };
 
     fn upstream(name: &str, enabled: bool, hint: Option<&str>) -> UpstreamConfig {
         UpstreamConfig {
@@ -698,6 +875,17 @@ mod tests {
             tools,
             resources: BTreeSet::new(),
             prompts: BTreeSet::new(),
+        }
+    }
+
+    fn names(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn projected(visible: &[&str], raw: &[&str]) -> ProjectedCatalogSnapshot {
+        ProjectedCatalogSnapshot {
+            visible: snapshot(names(visible)),
+            raw_tools: names(raw),
         }
     }
 
@@ -756,5 +944,92 @@ mod tests {
         ]));
 
         assert!(!diff_catalogs(&snapshot(tokens.clone()), &snapshot(tokens)).tools_changed);
+    }
+
+    #[test]
+    fn delta_separates_namespace_tokens_from_tool_names() {
+        let before = code_mode_namespace_tokens(&config(vec![upstream("github", true, None)]));
+        let mut after = code_mode_namespace_tokens(&config(vec![
+            upstream("github", true, None),
+            upstream("rustarr", true, Some("manage media")),
+        ]));
+        after.insert("youtube_search_ui".to_string());
+
+        let delta = CatalogToolDelta::describe(&before, &after);
+
+        // The namespace token must render as a bare upstream name, not the raw
+        // `\u{1}`-delimited sentinel, and must not be mistaken for a tool.
+        assert_eq!(delta.namespaces_added, vec!["rustarr".to_string()]);
+        assert_eq!(delta.added, vec!["youtube_search_ui".to_string()]);
+        assert!(delta.removed.is_empty());
+        assert!(delta.namespaces_removed.is_empty());
+        assert_eq!(delta.truncated, 0);
+    }
+
+    #[test]
+    fn delta_caps_logged_names_and_reports_the_remainder() {
+        // A cold-start reconcile legitimately adds hundreds of tools; the log
+        // line must stay bounded while still saying how much it dropped.
+        let before = BTreeSet::new();
+        let after: BTreeSet<String> = (0..MAX_LOGGED_DELTA_NAMES + 7)
+            .map(|index| format!("tool_{index:03}"))
+            .collect();
+
+        let delta = CatalogToolDelta::describe(&before, &after);
+
+        assert_eq!(delta.added.len(), MAX_LOGGED_DELTA_NAMES);
+        assert_eq!(delta.truncated, 7);
+    }
+
+    #[test]
+    fn observation_flags_suppressed_raw_churn_under_code_mode() {
+        // The incident shape: an upstream comes online and discovers tools, but
+        // the Code-Mode-visible contract is unmoved. No notification is due —
+        // and the reconcile log must still say the raw set moved, otherwise the
+        // suppression is invisible in production.
+        let before = projected(&["youtube_search_ui"], &["youtube_search_ui"]);
+        let after = projected(&["youtube_search_ui"], &["youtube_search_ui", "search"]);
+
+        let observed = ReconcileCatalogObservation::observe(&before, &after, true);
+
+        assert!(!observed.diff.tools_changed, "no visible change; no notify");
+        assert!(observed.raw_tools_changed);
+        assert!(observed.suppressed_raw_churn);
+        assert!(observed.suppressed_raw_churn_total >= 1);
+        assert_eq!(observed.projection, "code_mode_visible");
+    }
+
+    #[test]
+    fn observation_does_not_flag_suppression_for_a_real_visible_change() {
+        let before = projected(&["youtube_search_ui"], &["youtube_search_ui"]);
+        let after = projected(
+            &["youtube_search_ui", "podcast_ui"],
+            &["youtube_search_ui", "podcast_ui"],
+        );
+
+        let observed = ReconcileCatalogObservation::observe(&before, &after, true);
+
+        assert!(observed.diff.tools_changed);
+        assert!(observed.raw_tools_changed);
+        assert!(
+            !observed.suppressed_raw_churn,
+            "a notified change is not a suppression"
+        );
+        assert_eq!(observed.delta.added, vec!["podcast_ui".to_string()]);
+    }
+
+    #[test]
+    fn observation_outside_code_mode_reports_the_raw_projection() {
+        let before = projected(&["search"], &["search"]);
+        let after = projected(&["search", "download"], &["search", "download"]);
+
+        let observed = ReconcileCatalogObservation::observe(&before, &after, false);
+
+        assert_eq!(observed.projection, "raw");
+        assert!(observed.diff.tools_changed);
+        assert!(
+            !observed.suppressed_raw_churn,
+            "raw churn is a visible change when Code Mode is off, never suppressed"
+        );
     }
 }

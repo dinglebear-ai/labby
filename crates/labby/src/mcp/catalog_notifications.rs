@@ -56,10 +56,20 @@ impl From<&GatewayCatalogDiff> for CatalogNotificationChanges {
     }
 }
 
+/// Fan a catalog change out to every connected peer.
+///
+/// `source` attributes the emission to a call site (see
+/// `labby_runtime::catalog_notify`); it is the field that makes notification
+/// churn diagnosable, so callers must pass a real label rather than a
+/// convenient constant.
+///
+/// This is the single choke point every emitter funnels through, which is why
+/// churn is recorded here and nowhere else — recording per emitter would count
+/// a diff once per peer.
 pub(crate) async fn notify_catalog_peers(
     peers: &Arc<RwLock<Vec<Peer<RoleServer>>>>,
     changes: CatalogNotificationChanges,
-    log_message: &'static str,
+    source: &'static str,
 ) {
     if !changes.any() {
         return;
@@ -67,18 +77,49 @@ pub(crate) async fn notify_catalog_peers(
 
     let peer_snapshot = peers.read().await.clone();
     let peer_count = peer_snapshot.len();
+    let churn = crate::mcp::catalog_churn::record_notification();
+    // `during_tool_call` is the field to reach for first when a client reports
+    // "the tool disappeared mid-turn": a notification emitted while a call is
+    // open invalidates the binding that call is using.
+    let during_tool_call = churn.in_flight_tool_calls > 0;
     tracing::info!(
         surface = "mcp",
         service = "peers",
         action = "catalog.notify",
         subsystem = "mcp_server",
         phase = "catalog.notify",
+        source,
         peer_count,
         tools_changed = changes.tools_changed,
         resources_changed = changes.resources_changed,
         prompts_changed = changes.prompts_changed,
-        "{log_message}"
+        notify_total = churn.total,
+        since_last_ms = churn.since_last_ms,
+        window_count = churn.window_count,
+        window_secs = churn.window_secs,
+        in_flight_tool_calls = churn.in_flight_tool_calls,
+        during_tool_call,
+        "notifying MCP peers about catalog change"
     );
+    if churn.is_churning() {
+        tracing::warn!(
+            surface = "mcp",
+            service = "peers",
+            action = "catalog.notify.churn",
+            subsystem = "mcp_server",
+            phase = "catalog.notify",
+            source,
+            peer_count,
+            notify_total = churn.total,
+            since_last_ms = churn.since_last_ms,
+            window_count = churn.window_count,
+            window_secs = churn.window_secs,
+            threshold = churn.threshold,
+            in_flight_tool_calls = churn.in_flight_tool_calls,
+            during_tool_call,
+            "catalog notification churn: clients are rebuilding their tool bindings repeatedly"
+        );
+    }
 
     let notification_timeout = crate::config::resolved_catalog_notification_timeout();
     let notify_futures = peer_snapshot.iter().enumerate().map(|(peer_index, peer)| {
@@ -340,7 +381,7 @@ mod tests {
         notify_catalog_peers(
             &peers,
             CatalogNotificationChanges::new(true, false, false),
-            "test notify",
+            labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM,
         )
         .await;
         client.wait_for_notifications(1).await;
@@ -351,7 +392,7 @@ mod tests {
         notify_catalog_peers(
             &peers,
             CatalogNotificationChanges::new(false, true, true),
-            "test notify",
+            labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM,
         )
         .await;
         client.wait_for_notifications(3).await;
@@ -370,7 +411,7 @@ mod tests {
         notify_catalog_peers(
             &peers,
             CatalogNotificationChanges::new(false, false, false),
-            "test notify",
+            labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM,
         )
         .await;
 

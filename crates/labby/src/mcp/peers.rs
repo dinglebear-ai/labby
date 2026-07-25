@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
 #[cfg(feature = "gateway")]
-use crate::dispatch::gateway::types::GatewayCatalogDiff;
+use crate::dispatch::gateway::types::{CatalogChangeEvent, GatewayCatalogDiff};
 
 /// MCP-specific peer fanout that forwards catalog-change notifications to all
 /// connected `rmcp::Peer<RoleServer>` instances.
@@ -32,7 +32,7 @@ pub struct PeerNotifier {
 
 impl PeerNotifier {
     #[cfg(feature = "gateway")]
-    pub async fn run(self, mut rx: mpsc::UnboundedReceiver<GatewayCatalogDiff>) {
+    pub async fn run(self, mut rx: mpsc::UnboundedReceiver<CatalogChangeEvent>) {
         tracing::info!(
             surface = "mcp",
             service = "peers",
@@ -41,8 +41,8 @@ impl PeerNotifier {
             phase = "peer_notifier.start",
             "starting MCP peer catalog-change notifier"
         );
-        while let Some(diff) = rx.recv().await {
-            self.notify_catalog_changes(&diff).await;
+        while let Some(event) = rx.recv().await {
+            self.notify_catalog_changes(&event.diff, event.source).await;
         }
         tracing::info!(
             surface = "mcp",
@@ -55,12 +55,8 @@ impl PeerNotifier {
     }
 
     #[cfg(feature = "gateway")]
-    async fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff) {
-        crate::mcp::catalog_notifications::notify_catalog_peers(
-            &self.peers,
-            diff.into(),
-            "broadcasting catalog change to connected peers",
-        )
-        .await;
+    async fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff, source: &'static str) {
+        crate::mcp::catalog_notifications::notify_catalog_peers(&self.peers, diff.into(), source)
+            .await;
     }
 }

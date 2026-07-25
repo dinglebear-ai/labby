@@ -14,6 +14,7 @@
 //! `labby-auth` and `labby-codemode`, which never touch them.
 
 pub mod backoff;
+pub mod catalog_notify;
 pub mod client_registry;
 pub mod error;
 pub mod gateway_config;

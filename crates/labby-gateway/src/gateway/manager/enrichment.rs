@@ -1,3 +1,4 @@
+use labby_runtime::catalog_notify::SOURCE_GATEWAY_ENRICH_HINT;
 use labby_runtime::error::ToolError;
 
 use crate::gateway::enrichment::collector::{
@@ -128,11 +129,32 @@ impl GatewayManager {
         // hint genuinely changes the externally visible tool contract and must
         // notify. Only the tool descriptor changes — resources and prompts do
         // not — so this is a tools-only change.
-        self.notify_catalog_changes(&GatewayCatalogDiff {
-            tools_changed: true,
-            resources_changed: false,
-            prompts_changed: false,
-        });
+        //
+        // `hint_unchanged` marks the one case where this notification is known
+        // to be spurious: re-applying a hint that normalizes to the value
+        // already stored. The notification is still sent (suppressing it is a
+        // behavior change owned by the notification-coalescing work), but it is
+        // labelled so it can be counted rather than mistaken for real churn.
+        let hint_unchanged = previous_hint.as_deref()
+            == labby_runtime::gateway_config::normalize_code_mode_hint(&hint).as_deref();
+        tracing::info!(
+            surface = "dispatch",
+            service = "gateway",
+            action = "gateway.enrich.hint.apply",
+            event = "catalog.notify.intent",
+            source = SOURCE_GATEWAY_ENRICH_HINT,
+            upstream = %params.upstream,
+            hint_unchanged,
+            "gateway enrichment hint applied; notifying catalog change"
+        );
+        self.notify_catalog_changes(
+            &GatewayCatalogDiff {
+                tools_changed: true,
+                resources_changed: false,
+                prompts_changed: false,
+            },
+            SOURCE_GATEWAY_ENRICH_HINT,
+        );
 
         Ok(GatewayHintApplyView {
             upstream: params.upstream,

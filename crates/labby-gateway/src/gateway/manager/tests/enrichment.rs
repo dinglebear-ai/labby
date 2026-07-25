@@ -432,10 +432,16 @@ async fn enrich_apply_notifies_tool_description_change() {
         .await
         .expect("apply");
 
-    let diff = rx.recv().await.expect("catalog notification");
-    assert!(diff.tools_changed);
-    assert!(!diff.resources_changed);
-    assert!(!diff.prompts_changed);
+    let event = rx.recv().await.expect("catalog notification");
+    assert!(event.diff.tools_changed);
+    assert!(!event.diff.resources_changed);
+    assert!(!event.diff.prompts_changed);
+    // The emission must be attributable at the peer fanout, otherwise churn
+    // from this path is indistinguishable from a reconcile in the logs.
+    assert_eq!(
+        event.source,
+        labby_runtime::catalog_notify::SOURCE_GATEWAY_ENRICH_HINT
+    );
 }
 
 #[tokio::test]

@@ -19,6 +19,7 @@
 
 use std::time::Instant;
 
+use labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, JsonObject};
@@ -279,15 +280,21 @@ impl LabMcpServer {
                     )
                     .await;
                     let after = self.snapshot_tool_catalog().await;
-                    self.notify_catalog_changes(after.changes_since(&before))
-                        .await;
+                    self.notify_catalog_changes(
+                        after.changes_since(&before),
+                        SOURCE_MCP_CALL_UPSTREAM,
+                    )
+                    .await;
                     return Ok(result);
                 }
                 Some(Err(e)) => {
                     pool.record_failure(&upstream_name, e.clone()).await;
                     let after = self.snapshot_tool_catalog().await;
-                    self.notify_catalog_changes(after.changes_since(&before))
-                        .await;
+                    self.notify_catalog_changes(
+                        after.changes_since(&before),
+                        SOURCE_MCP_CALL_UPSTREAM,
+                    )
+                    .await;
                     let elapsed_ms = start.elapsed().as_millis();
                     tracing::warn!(
                         surface = "mcp",
@@ -339,8 +346,11 @@ impl LabMcpServer {
                         .await;
                     }
                     let after = self.snapshot_tool_catalog().await;
-                    self.notify_catalog_changes(after.changes_since(&before))
-                        .await;
+                    self.notify_catalog_changes(
+                        after.changes_since(&before),
+                        SOURCE_MCP_CALL_UPSTREAM,
+                    )
+                    .await;
                     let elapsed_ms = start.elapsed().as_millis();
                     tracing::warn!(
                         surface = "mcp",

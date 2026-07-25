@@ -9,23 +9,43 @@ use labby_runtime::gateway_config::ImportSource;
 /// connected transports (e.g. MCP peers) that tools, resources, or prompts
 /// have changed.  The concrete implementation lives in the MCP surface
 /// (`mcp/server.rs`) so that `rmcp::Peer` never leaks into dispatch.
+/// A catalog diff plus the emitting site that produced it.
+///
+/// The `source` rides with the diff so the MCP peer fanout can attribute every
+/// `tools/list_changed` it sends. Without it the fanout sees an anonymous
+/// stream of diffs and notification churn is undiagnosable — see
+/// `labby_runtime::catalog_notify` for the label vocabulary.
+///
+/// Deliberately not `Serialize`: `GatewayCatalogDiff` is the wire/DTO shape
+/// returned to callers, and this wrapper is internal plumbing.
+#[derive(Clone, Debug)]
+pub struct CatalogChangeEvent {
+    pub diff: GatewayCatalogDiff,
+    pub source: &'static str,
+}
+
 #[derive(Clone, Debug)]
 pub struct CatalogChangeNotifier {
-    tx: mpsc::UnboundedSender<GatewayCatalogDiff>,
+    tx: mpsc::UnboundedSender<CatalogChangeEvent>,
 }
 
 impl CatalogChangeNotifier {
     #[must_use]
-    pub fn new(tx: mpsc::UnboundedSender<GatewayCatalogDiff>) -> Self {
+    pub fn new(tx: mpsc::UnboundedSender<CatalogChangeEvent>) -> Self {
         Self { tx }
     }
 
-    pub fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff) {
-        if let Err(err) = self.tx.send(diff.clone()) {
+    pub fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff, source: &'static str) {
+        let event = CatalogChangeEvent {
+            diff: diff.clone(),
+            source,
+        };
+        if let Err(err) = self.tx.send(event) {
             tracing::warn!(
                 surface = "dispatch",
                 service = "gateway",
                 action = "catalog.notify",
+                source,
                 tools_changed = diff.tools_changed,
                 resources_changed = diff.resources_changed,
                 prompts_changed = diff.prompts_changed,

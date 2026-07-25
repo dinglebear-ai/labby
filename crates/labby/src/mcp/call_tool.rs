@@ -254,6 +254,12 @@ impl LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let start = Instant::now();
+        // Marks the caller's turn as open for the whole dispatch, including
+        // every early return below. A catalog notification emitted while this
+        // is held invalidates a binding the caller is actively using, so the
+        // fanout reports it as `during_tool_call` — the signal that separates
+        // harmless catalog movement from the flapping clients actually feel.
+        let _in_flight = crate::mcp::catalog_churn::InFlightToolCall::enter();
         let service = request.name.as_ref().to_string();
         let raw_arguments = request.arguments.clone();
         let args = request.arguments.unwrap_or_default();
