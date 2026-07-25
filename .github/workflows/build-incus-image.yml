@@ -42,7 +42,11 @@ env:
 jobs:
   build-image:
     name: Build and smoke Incus image
-    runs-on: [self-hosted, unraid]
+    # GitHub-hosted on purpose: this job installs distrobuilder from a pinned
+    # snap revision, and the self-hosted unraid runner has no snapd — the step
+    # dies on `sudo: snap: command not found`. See the comment on the install
+    # step below before moving this back.
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
@@ -56,6 +60,10 @@ jobs:
       - name: Install Rust + soldr
         uses: ./.github/actions/setup-rust-soldr
 
+      # Requires snapd (distrobuilder ships as a snap) plus apt, so this job
+      # only runs on a GitHub-hosted Ubuntu image. Moving it to a self-hosted
+      # runner needs snapd provisioned there first, or distrobuilder installed
+      # by some other pinned means.
       - name: Install validation and image dependencies
         run: |
           set -euo pipefail
@@ -119,7 +127,9 @@ jobs:
     name: Publish immutable Incus image and advance rolling alias
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build-image
-    runs-on: [self-hosted, unraid]
+    # Consumes the artifact produced by the GitHub-hosted build job above; kept
+    # on the same runner class so the two stay consistent.
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
