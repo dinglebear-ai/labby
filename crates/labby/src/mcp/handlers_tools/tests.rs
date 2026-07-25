@@ -3517,3 +3517,82 @@ async fn service_actions_json_filters_to_allowed_mcp_actions() {
             .any(|action| action["name"] == "session.list")
     );
 }
+
+/// Regression: the Code Mode regime is per-route, so the notification fanout
+/// must evaluate each peer's own contract.
+///
+/// With Code Mode enabled globally, a root session sees the constant `codemode`
+/// tool and raw upstream churn is invisible to it. A protected route with
+/// `expose_code_mode = false` sees the raw tools instead, so the *same* churn
+/// is a real change for that session. Evaluating one global projection and
+/// broadcasting the verdict told the raw-exposing session nothing.
+#[tokio::test]
+async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
+    let upstream_name: Arc<str> = Arc::from("apps");
+    let ui_tool = fixture_upstream_tool(
+        &upstream_name,
+        "youtube_search_ui",
+        Some("ui://apps/youtube-search.html"),
+    );
+    let plain_tool = fixture_upstream_tool(&upstream_name, "youtube_probe", None);
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "apps",
+        fixture_upstream_entry(
+            "apps",
+            HashMap::from([
+                ("youtube_search_ui".to_string(), ui_tool),
+                ("youtube_probe".to_string(), plain_tool),
+            ]),
+        ),
+    )
+    .await;
+    // One gateway, Code Mode on: the global regime both sessions share.
+    let manager = code_mode_manager_with_pool(true, fixture_upstream_config("apps"), pool).await;
+
+    let code_mode_peer = test_server(
+        completion_test_registry(),
+        Some(Arc::clone(&manager)),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    )
+    .peer_contract();
+    let raw_peer = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "ops",
+            ["apps"],
+            ["gateway"],
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    )
+    .peer_contract();
+
+    let code_mode_contract = code_mode_peer.visible_contract().await;
+    let raw_contract = raw_peer.visible_contract().await;
+
+    // The Code Mode session sees the synthetic tool and the MCP-App UI tool,
+    // never the plain upstream tool behind them.
+    assert!(code_mode_contract.tools.contains(CODE_MODE_TOOL_NAME));
+    assert!(code_mode_contract.tools.contains("youtube_search_ui"));
+    assert!(
+        !code_mode_contract.tools.contains("youtube_probe"),
+        "raw upstream tools stay hidden under Code Mode"
+    );
+
+    // The raw-exposing route sees the opposite: the plain tool is part of its
+    // contract, and `codemode` is not.
+    assert!(
+        raw_contract.tools.contains("youtube_probe"),
+        "a route with expose_code_mode = false sees raw upstream tools"
+    );
+    assert!(!raw_contract.tools.contains(CODE_MODE_TOOL_NAME));
+
+    // The whole point: one global projection cannot stand in for both.
+    assert_ne!(
+        code_mode_contract, raw_contract,
+        "per-peer evaluation is required; these sessions do not share a contract"
+    );
+}

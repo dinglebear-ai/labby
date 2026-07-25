@@ -1,11 +1,7 @@
-use std::sync::Arc;
-
 use futures::future::join_all;
-use rmcp::RoleServer;
-use rmcp::service::Peer;
-use tokio::sync::RwLock;
 
-use crate::mcp::catalog::CatalogChangeSet;
+use crate::mcp::catalog::{CatalogChangeSet, ToolCatalogSnapshot};
+use crate::mcp::peers::{PeerRegistry, RegisteredPeer};
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::types::GatewayCatalogDiff;
@@ -67,7 +63,7 @@ impl From<&GatewayCatalogDiff> for CatalogNotificationChanges {
 /// churn is recorded here and nowhere else — recording per emitter would count
 /// a diff once per peer.
 pub(crate) async fn notify_catalog_peers(
-    peers: &Arc<RwLock<Vec<Peer<RoleServer>>>>,
+    peers: &PeerRegistry,
     changes: CatalogNotificationChanges,
     source: &'static str,
 ) {
@@ -77,6 +73,26 @@ pub(crate) async fn notify_catalog_peers(
 
     let peer_snapshot = peers.read().await.clone();
     let peer_count = peer_snapshot.len();
+    let evaluated = evaluate_peers(peer_snapshot, changes).await;
+    let peers_notified = evaluated
+        .iter()
+        .filter(|evaluated| evaluated.changes.any())
+        .count();
+    // Nothing to say to anyone: the trigger did not move any peer's visible
+    // contract. This is the healthy outcome for raw upstream churn under Code
+    // Mode, and it must not count as a notification.
+    if peers_notified == 0 {
+        tracing::debug!(
+            surface = "mcp",
+            service = "peers",
+            action = "catalog.notify.skipped",
+            subsystem = "mcp_server",
+            source,
+            peer_count,
+            "catalog change moved no peer's visible contract; nothing broadcast"
+        );
+        return;
+    }
     let churn = crate::mcp::catalog_churn::record_notification();
     // `during_tool_call` is the field to reach for first when a client reports
     // "the tool disappeared mid-turn": a notification emitted while a call is
@@ -90,6 +106,8 @@ pub(crate) async fn notify_catalog_peers(
         phase = "catalog.notify",
         source,
         peer_count,
+        peers_notified,
+        peers_skipped = peer_count.saturating_sub(peers_notified),
         tools_changed = changes.tools_changed,
         resources_changed = changes.resources_changed,
         prompts_changed = changes.prompts_changed,
@@ -110,6 +128,7 @@ pub(crate) async fn notify_catalog_peers(
             phase = "catalog.notify",
             source,
             peer_count,
+            peers_notified,
             notify_total = churn.total,
             since_last_ms = churn.since_last_ms,
             window_count = churn.window_count,
@@ -122,8 +141,9 @@ pub(crate) async fn notify_catalog_peers(
     }
 
     let notification_timeout = crate::config::resolved_catalog_notification_timeout();
-    let notify_futures = peer_snapshot.iter().enumerate().map(|(peer_index, peer)| {
-        let peer = peer.clone();
+    let notify_futures = evaluated.iter().enumerate().map(|(peer_index, evaluated)| {
+        let peer = evaluated.registered.peer.clone();
+        let changes = evaluated.changes;
         async move {
             let result = tokio::time::timeout(notification_timeout, async {
                 if changes.tools_changed && peer.notify_tool_list_changed().await.is_err() {
@@ -193,10 +213,13 @@ pub(crate) async fn notify_catalog_peers(
     });
 
     let results = join_all(notify_futures).await;
-    let alive: Vec<_> = peer_snapshot
+    // A peer that was successfully told about its new contract has now been
+    // told; record that so the next fanout diffs against what it actually
+    // received. A peer that failed is being pruned, so its bookkeeping is moot.
+    let alive: Vec<RegisteredPeer> = evaluated
         .into_iter()
         .zip(results)
-        .filter_map(|(peer, ok)| ok.then_some(peer))
+        .filter_map(|(evaluated, ok)| ok.then(|| evaluated.into_published()))
         .collect();
 
     let alive_count = alive.len();
@@ -219,6 +242,63 @@ pub(crate) async fn notify_catalog_peers(
     );
 }
 
+/// One peer's evaluated outcome for a single fanout: what it will be told, and
+/// the contract to remember if that succeeds.
+struct EvaluatedPeer {
+    registered: RegisteredPeer,
+    changes: CatalogNotificationChanges,
+    /// Freshly computed contract, present only when tools were re-evaluated.
+    next_contract: Option<ToolCatalogSnapshot>,
+}
+
+impl EvaluatedPeer {
+    fn into_published(self) -> RegisteredPeer {
+        let mut registered = self.registered;
+        if let Some(next) = self.next_contract {
+            registered.last_contract = next;
+        }
+        registered
+    }
+}
+
+/// Re-derive each peer's visible contract and decide what that peer is owed.
+///
+/// `changes.tools_changed` arrives as a *hint* — "something happened that could
+/// move a tool list" — not a verdict. The verdict is per peer, because two
+/// sessions can see different contracts from the same gateway state (see
+/// `peer_contract.rs`). Resources and prompts are still global signals and are
+/// forwarded to every peer unchanged.
+///
+/// Contracts are computed off the registry lock: `visible_contract()` takes
+/// gateway config and pool locks, and holding the peer registry across that
+/// would serialize notification against session registration for no benefit.
+async fn evaluate_peers(
+    peer_snapshot: Vec<RegisteredPeer>,
+    changes: CatalogNotificationChanges,
+) -> Vec<EvaluatedPeer> {
+    let mut evaluated = Vec::with_capacity(peer_snapshot.len());
+    for registered in peer_snapshot {
+        let next_contract = if changes.tools_changed {
+            Some(registered.contract.visible_contract().await)
+        } else {
+            None
+        };
+        let tools_changed = next_contract
+            .as_ref()
+            .is_some_and(|next| *next != registered.last_contract);
+        evaluated.push(EvaluatedPeer {
+            registered,
+            changes: CatalogNotificationChanges::new(
+                tools_changed,
+                changes.resources_changed,
+                changes.prompts_changed,
+            ),
+            next_contract,
+        });
+    }
+    evaluated
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::Future;
@@ -232,10 +312,14 @@ mod tests {
 
     use super::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::catalog::CatalogChangeSet;
+    use crate::mcp::peers::{PeerRegistry, RegisteredPeer};
 
     #[derive(Clone)]
     struct TestServer {
-        peers: Arc<RwLock<Vec<rmcp::service::Peer<rmcp::RoleServer>>>>,
+        peers: PeerRegistry,
+        /// Whether this session registers as "my contract has moved since I was
+        /// last notified" (true) or "already in sync" (false).
+        stale: bool,
     }
 
     impl ServerHandler for TestServer {
@@ -245,8 +329,14 @@ mod tests {
         ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
             let peers = Arc::clone(&self.peers);
             let peer = context.peer.clone();
+            let stale = self.stale;
             async move {
-                peers.write().await.push(peer);
+                let registered = if stale {
+                    RegisteredPeer::stale_for_test(peer)
+                } else {
+                    RegisteredPeer::current_for_test(peer)
+                };
+                peers.write().await.push(registered);
             }
         }
     }
@@ -307,7 +397,7 @@ mod tests {
     }
 
     async fn connected_peer_fixture() -> (
-        Arc<RwLock<Vec<rmcp::service::Peer<rmcp::RoleServer>>>>,
+        PeerRegistry,
         TestClient,
         rmcp::service::RunningService<RoleClient, TestClient>,
         tokio::task::JoinHandle<
@@ -318,8 +408,29 @@ mod tests {
         >,
     ) {
         let peers = Arc::new(RwLock::new(Vec::new()));
+        let (client, client_service, server_handle) = connect_peer(&peers, true).await;
+        (peers, client, client_service, server_handle)
+    }
+
+    /// Attach one more session to an existing registry, registering it as
+    /// stale (owed a notification) or already in sync.
+    async fn connect_peer(
+        peers: &PeerRegistry,
+        stale: bool,
+    ) -> (
+        TestClient,
+        rmcp::service::RunningService<RoleClient, TestClient>,
+        tokio::task::JoinHandle<
+            Result<
+                rmcp::service::RunningService<rmcp::RoleServer, TestServer>,
+                rmcp::service::ServerInitializeError,
+            >,
+        >,
+    ) {
+        let expected_peer_count = peers.read().await.len() + 1;
         let server = TestServer {
-            peers: Arc::clone(&peers),
+            peers: Arc::clone(peers),
+            stale,
         };
         let client = TestClient::default();
         let (server_transport, client_transport) = tokio::io::duplex(4096);
@@ -331,14 +442,14 @@ mod tests {
             .expect("client starts");
 
         tokio::time::timeout(Duration::from_secs(5), async {
-            while peers.read().await.is_empty() {
+            while peers.read().await.len() < expected_peer_count {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("server peer registered");
 
-        (peers, client, client_service, server_handle)
+        (client, client_service, server_handle)
     }
 
     #[test]
@@ -421,5 +532,58 @@ mod tests {
 
         client_service.cancel().await.expect("client cancels");
         server_handle.abort();
+    }
+
+    /// Regression: one trigger, two sessions, only the one whose contract
+    /// actually moved is notified.
+    ///
+    /// A `tools_changed` trigger is a hint that something *might* have moved,
+    /// not a verdict for every peer — two sessions can hold different contracts
+    /// over the same gateway state (see `peer_contract.rs`). Broadcasting the
+    /// hint verbatim is what made unrelated sessions rebuild their bindings.
+    #[tokio::test]
+    async fn notify_catalog_peers_notifies_only_peers_whose_contract_moved() {
+        let peers = Arc::new(RwLock::new(Vec::new()));
+        let (moved_client, moved_service, moved_handle) = connect_peer(&peers, true).await;
+        let (unchanged_client, unchanged_service, unchanged_handle) =
+            connect_peer(&peers, false).await;
+
+        notify_catalog_peers(
+            &peers,
+            CatalogNotificationChanges::new(true, false, false),
+            labby_runtime::catalog_notify::SOURCE_GATEWAY_RELOAD_FULL,
+        )
+        .await;
+
+        moved_client.wait_for_notifications(1).await;
+        assert_eq!(moved_client.tool_count.load(Ordering::SeqCst), 1);
+        // Give a stray broadcast a chance to land before asserting its absence.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            unchanged_client.total(),
+            0,
+            "a peer whose visible contract did not move must not be told to rebuild"
+        );
+
+        // The notified peer's contract is now recorded as published, so an
+        // identical trigger is a no-op for everyone.
+        notify_catalog_peers(
+            &peers,
+            CatalogNotificationChanges::new(true, false, false),
+            labby_runtime::catalog_notify::SOURCE_GATEWAY_RELOAD_FULL,
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            moved_client.tool_count.load(Ordering::SeqCst),
+            1,
+            "publishing a contract must stop it from re-notifying every trigger"
+        );
+        assert_eq!(unchanged_client.total(), 0);
+
+        moved_service.cancel().await.expect("client cancels");
+        unchanged_service.cancel().await.expect("client cancels");
+        moved_handle.abort();
+        unchanged_handle.abort();
     }
 }
