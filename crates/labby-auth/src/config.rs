@@ -412,6 +412,7 @@ impl AuthConfigBuilder {
         let key_az_rpm = env_key(&prefix, "AUTH_AUTHORIZE_REQUESTS_PER_MINUTE");
         let key_max_pending = env_key(&prefix, "AUTH_MAX_PENDING_OAUTH_STATES");
         let key_enc_key = env_key(&prefix, "TOKEN_ENCRYPTION_KEY");
+        let key_scopes_supported = env_key(&prefix, "AUTH_SCOPES_SUPPORTED");
 
         let mode = AuthMode::parse(vars.get(&key_mode).map(String::as_str), &key_mode)?;
         let admin_email = read_string(&vars, &key_admin)
@@ -457,7 +458,15 @@ impl AuthConfigBuilder {
             env_prefix: prefix,
             default_data_dir: base_dir,
             session_cookie_name: self.session_cookie_name,
-            scopes_supported: self.scopes_supported,
+            // The canonical resource's advertised/accepted scope vocabulary.
+            // Overridable because clients do not all speak the same one: a
+            // protected MCP route can be given `mcp:read`/`mcp:write` in
+            // config, but the canonical resource short-circuits route lookup in
+            // `validate_scope`, so without this an MCP client that asks for the
+            // spec scopes against the root endpoint is refused with no
+            // configuration available to accept it.
+            scopes_supported: read_csv(&vars, &key_scopes_supported)
+                .unwrap_or(self.scopes_supported),
             resource_path: self.resource_path,
             default_scope: self.default_scope,
             static_token_scopes: self.static_token_scopes,
@@ -730,6 +739,61 @@ mod tests {
             .unwrap();
         assert!(matches!(cfg.mode, AuthMode::Bearer));
         assert!(cfg.public_url.is_none());
+    }
+
+    #[test]
+    fn scopes_supported_env_override_replaces_the_default_vocabulary() {
+        // The canonical resource short-circuits protected-route lookup in
+        // `validate_scope`, so an MCP client asking for the spec's
+        // `mcp:read`/`mcp:write` against the root endpoint could not be
+        // accommodated by any config until this override existed.
+        let cfg = AuthConfigBuilder::new()
+            .build_from_sources(fake_env_with_many([(
+                "LAB_AUTH_SCOPES_SUPPORTED",
+                "lab,lab:admin,mcp:read,mcp:write",
+            )]))
+            .unwrap();
+
+        assert_eq!(
+            cfg.scopes_supported,
+            vec![
+                "lab".to_string(),
+                "lab:admin".to_string(),
+                "mcp:read".to_string(),
+                "mcp:write".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn scopes_supported_defaults_when_env_is_unset() {
+        let cfg = AuthConfigBuilder::new()
+            .build_from_sources(Vec::<(String, String)>::new())
+            .unwrap();
+
+        assert_eq!(
+            cfg.scopes_supported,
+            vec!["lab".to_string(), "lab:admin".to_string()],
+            "an unset override must not change the advertised vocabulary"
+        );
+    }
+
+    #[test]
+    fn scopes_supported_override_must_still_contain_the_default_scope() {
+        // Dropping the default scope would make every unscoped authorize
+        // request fail validation, so this is refused at startup rather than
+        // at the first login.
+        let err = AuthConfigBuilder::new()
+            .build_from_sources(fake_env_with_many([(
+                "LAB_AUTH_SCOPES_SUPPORTED",
+                "mcp:read,mcp:write",
+            )]))
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("default_scope"),
+            "expected default_scope validation, got: {err}"
+        );
     }
 
     #[test]
