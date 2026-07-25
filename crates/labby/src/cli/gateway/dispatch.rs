@@ -519,6 +519,23 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"name": "example"}])))
             .mount(&server)
             .await;
+        // `detect` identifies a daemon one of two ways, and which one it picks
+        // depends on the *ambient* environment: with no `LABBY_MCP_HTTP_TOKEN`
+        // it trusts `/.well-known/labby.json`, but when that variable is set in
+        // the process environment it skips discovery entirely and probes
+        // `/v1/gateway/actions` for `gateway.reload`. Mocking only the
+        // discovery route made this test pass or fail according to whether the
+        // machine running it happened to have a labby token exported — which is
+        // why it failed only on the self-hosted Windows runner. Mock both, so
+        // the test asserts dispatch behaviour rather than the state of the
+        // host's environment.
+        Mock::given(method("GET"))
+            .and(path("/v1/gateway/actions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!([{"name": "gateway.reload"}])),
+            )
+            .mount(&server)
+            .await;
 
         let url = url::Url::parse(&server.uri()).expect("wiremock uri parses");
         let mut config = LabConfig::default();
