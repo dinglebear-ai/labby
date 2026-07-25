@@ -223,6 +223,12 @@ impl ServerHandler for LabMcpServer {
         let contract = self.peer_contract();
         let last_contract = contract.visible_contract().await;
         let route_scope_label = self.route_scope.label();
+        // Sweep dead sessions before adding this one. Pruning is otherwise
+        // only a side effect of the notification fanout, so on a healthy
+        // gateway — one that has stopped emitting spurious notifications — it
+        // would never run at all. Doing it on connect bounds growth by
+        // connection rate without a background task.
+        let pruned_peer_count = crate::mcp::peers::prune_closed_peers(&self.peers).await;
         let mut peers = self.peers.write().await;
         peers.push(crate::mcp::peers::RegisteredPeer {
             peer: context.peer,
@@ -236,6 +242,7 @@ impl ServerHandler for LabMcpServer {
             subsystem = "mcp_server",
             phase = "session.initialized",
             peer_count = peers.len(),
+            pruned_peer_count,
             route_scope = route_scope_label,
             "mcp session connected"
         );
