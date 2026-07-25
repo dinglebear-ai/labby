@@ -896,6 +896,48 @@ async fn run_http(
     Ok(ExitCode::SUCCESS)
 }
 
+async fn log_mcp_request(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let method = req.method().to_string();
+    let uri = req.uri().to_string();
+    let mcp_session_id = req
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("<none>")
+        .to_string();
+    let authorization_present = req.headers().contains_key(axum::http::header::AUTHORIZATION);
+    let user_agent = req
+        .headers()
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("<none>")
+        .to_string();
+    let origin = req
+        .headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("<none>")
+        .to_string();
+
+    tracing::info!(
+        surface = "mcp",
+        subsystem = "mcp_server",
+        action = "http_request",
+        method = %method,
+        uri = %uri,
+        mcp_session_id = %mcp_session_id,
+        authorization_present,
+        user_agent = %user_agent,
+        origin = %origin,
+        "incoming MCP HTTP request"
+    );
+
+    next.run(req).await
+}
+
 fn build_http_router(
     state: AppState,
     bearer_token: Option<String>,
@@ -909,7 +951,11 @@ fn build_http_router(
         // Build the MCP streamable HTTP service in the serve path (not in the
         // router module) to avoid an api->mcp dependency.
         let mcp_service = build_mcp_service(&state, mcp_config, notifier.clone())?;
-        Some(axum::Router::new().nest_service("/mcp", mcp_service))
+        Some(
+            axum::Router::new()
+                .nest_service("/mcp", mcp_service)
+                .layer(axum::middleware::from_fn(log_mcp_request)),
+        )
     } else {
         None
     };
