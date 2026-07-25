@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 
 use crate::mcp::logging::LoggingLevel;
+use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 use rmcp::{RoleClient, ServiceExt};
 use tokio::sync::RwLock;
 
@@ -95,8 +96,14 @@ async fn connect_in_process_service_peer(
             }
         }
     });
-    let client_service: rmcp::service::RunningService<RoleClient, ()> =
-        ().serve(client_transport).await?;
+    let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+        .serve_with_lifecycle(
+            client_transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![rmcp::model::ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await?;
     tracing::info!(
         service = service.name,
         phase = "in_process.client.ready",

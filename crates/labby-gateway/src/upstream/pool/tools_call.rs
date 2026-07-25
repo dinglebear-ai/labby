@@ -131,8 +131,8 @@ mod tests {
     use std::time::Instant;
 
     use rmcp::model::{
-        CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, ListToolsResult,
-        PaginatedRequestParams, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
+        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
     };
     use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -182,10 +182,10 @@ mod tests {
                 &self,
                 _: CallToolRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
-            ) -> Result<CallToolResult, ErrorData> {
+            ) -> Result<CallToolResponse, ErrorData> {
                 // 12 MB of 'x' characters — well above the default 10 MB cap.
                 let payload = "x".repeat(12 * 1024 * 1024);
-                Ok(CallToolResult::success(vec![ContentBlock::text(payload)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(payload)]).into())
             }
         }
 
@@ -242,9 +242,9 @@ mod tests {
     /// We verify by pre-seeding the subject_connections cache with a live in-process
     /// peer, then making two `call_tool` calls through the normal pool path (which
     /// shares the same underlying peer).  The `get_info` counter on the server
-    /// measures how many initialize handshakes occurred.
+    /// measures how many discovery handshakes occurred.
     #[tokio::test]
-    async fn subject_connection_cache_reuse_no_new_initialize() {
+    async fn subject_connection_cache_reuse_no_new_discovery() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
 
@@ -271,8 +271,8 @@ mod tests {
                 &self,
                 _: CallToolRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
-            ) -> Result<CallToolResult, ErrorData> {
-                Ok(CallToolResult::success(vec![]))
+            ) -> Result<CallToolResponse, ErrorData> {
+                Ok(CallToolResult::success(vec![]).into())
             }
         }
 
@@ -405,8 +405,8 @@ mod tests {
                 &self,
                 _: CallToolRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
-            ) -> Result<CallToolResult, ErrorData> {
-                Ok(CallToolResult::success(vec![]))
+            ) -> Result<CallToolResponse, ErrorData> {
+                Ok(CallToolResult::success(vec![]).into())
             }
         }
 
@@ -491,8 +491,8 @@ mod tests {
                 &self,
                 _: CallToolRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
-            ) -> Result<CallToolResult, ErrorData> {
-                Ok(CallToolResult::success(vec![]))
+            ) -> Result<CallToolResponse, ErrorData> {
+                Ok(CallToolResult::success(vec![]).into())
             }
         }
 

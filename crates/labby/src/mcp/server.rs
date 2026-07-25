@@ -3,6 +3,7 @@
 //! Extracted from `cli/serve.rs` so that both the stdio and HTTP transports
 //! can share the same handler logic.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
@@ -11,16 +12,17 @@ use axum::http;
 #[cfg(feature = "gateway")]
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, CompleteRequestParams, CompleteResult,
-    GetPromptRequestParams, GetPromptResult, ListPromptsResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-    ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, CompleteRequestParams, CompleteResult, DiscoverResult,
+    GetPromptRequestParams, GetPromptResponse, InitializeRequestParams, InitializeResult,
+    ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+    ServerInfo, SubscriptionFilter,
 };
-// rmcp 2.1 deprecates legacy logging under SEP-2577; the ServerHandler trait
+// rmcp deprecates legacy logging under SEP-2577; the ServerHandler trait
 // still requires this request type for clients using the old logging flow.
 #[allow(deprecated)]
 use rmcp::model::SetLevelRequestParams;
-use rmcp::service::{NotificationContext, RequestContext};
+use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 
 #[cfg(feature = "gateway")]
@@ -51,21 +53,21 @@ pub struct LabMcpServer {
     /// Shared gateway manager used to resolve the current live upstream pool.
     #[cfg(feature = "gateway")]
     pub gateway_manager: Option<Arc<GatewayManager>>,
-    /// Connected peers for list-changed notifications.
+    /// Active subscription sinks for list-changed notifications.
     pub peers: crate::mcp::peers::PeerRegistry,
-    /// Live inbound MCP client/session registry — shared with `GatewayManager`
+    /// Observed inbound MCP client registry — shared with `GatewayManager`
     /// via `with_client_registry` so `gateway.clients.list` can read it.
     #[cfg(feature = "gateway")]
     pub client_registry: labby_runtime::client_registry::ClientRegistryHandle,
-    /// This session's transport, recorded verbatim into
-    /// `ConnectedClient::transport` on `on_initialized`. One of `"stdio"`,
+    /// This route's transport, recorded verbatim into
+    /// `ConnectedClient::transport` during discovery. One of `"stdio"`,
     /// `"http"`, `"in-process"` (built-in service peers), or `"test"`.
     pub(crate) transport_label: &'static str,
-    /// Negotiated RMCP logging threshold for this server/session.
+    /// Negotiated RMCP logging threshold for this server route.
     pub logging_level: Arc<AtomicU8>,
-    /// Visibility and dispatch constraints for this MCP route/session.
+    /// Visibility and dispatch constraints for this MCP route.
     pub(crate) route_scope: McpRouteScope,
-    /// Unique id for this session's downstream agent connection. Used as the
+    /// Unique id for this route's downstream agent connection. Used as the
     /// second half of the upstream relay cache key so a cached relay connection
     /// is bound to exactly this agent (see `dispatch/upstream/pool/relay.rs`).
     pub(crate) relay_session_id: u64,
@@ -119,7 +121,7 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
     extensions
 }
 
-/// Build the `ConnectedClient` record for `on_initialized` — pulled out of
+/// Build the `ConnectedClient` record for `server/discover` — pulled out of
 /// the `ServerHandler` impl so redaction can be unit tested directly against
 /// a fabricated `Extensions`/`AuthContext` without standing up a full
 /// `NotificationContext<RoleServer>`.
@@ -129,9 +131,9 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
 /// subject, and it must never reach `labby_runtime::client_registry`
 /// unredacted. `connected_at` is threaded in rather than read here so this
 /// stays pure and testable (`jiff::Timestamp::now()` at the one real call
-/// site in `on_initialized`).
+/// site in `discover`).
 #[cfg(feature = "gateway")]
-fn connected_client_from_handshake(
+fn connected_client_from_discovery(
     client_info: Option<rmcp::model::Implementation>,
     extensions: &rmcp::model::Extensions,
     transport_label: &str,
@@ -149,6 +151,22 @@ fn connected_client_from_handshake(
 }
 
 impl ServerHandler for LabMcpServer {
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(&[ProtocolVersion::V_2026_07_28])
+    }
+
+    async fn initialize(
+        &self,
+        _request: InitializeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        Err(ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+            "legacy initialize lifecycle is not supported; use server/discover",
+            None,
+        ))
+    }
+
     #[allow(deprecated)]
     fn get_info(&self) -> ServerInfo {
         #[cfg(feature = "gateway")]
@@ -201,14 +219,14 @@ impl ServerHandler for LabMcpServer {
         Ok(())
     }
 
-    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+    async fn discover(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> Result<DiscoverResult, ErrorData> {
         #[cfg(feature = "gateway")]
         {
-            let client_info = context
-                .peer
-                .peer_info()
-                .map(|info| info.client_info.clone());
-            let connected_client = connected_client_from_handshake(
+            let client_info = context.client_info();
+            let connected_client = connected_client_from_discovery(
                 client_info,
                 &context.extensions,
                 self.transport_label,
@@ -216,36 +234,63 @@ impl ServerHandler for LabMcpServer {
             );
             self.client_registry.push(connected_client).await;
         }
-        // Seed the peer's last-published contract with what it will see on its
-        // own first `tools/list`, computed before it joins the registry. An
-        // empty seed would make the next catalog change look like a wholesale
-        // rewrite and notify a session that has seen nothing yet.
+
+        Ok(DiscoverResult::from_server_info(
+            self.supported_protocol_versions().into_owned(),
+            self.get_info(),
+        ))
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        Some(requested.clone())
+    }
+
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
+        // Seed the subscription's last-published contract with what this route
+        // currently exposes. A later catalog trigger only notifies this stream
+        // when its own visible contract actually moves.
         let contract = self.peer_contract();
         let last_contract = contract.visible_contract().await;
         let route_scope_label = self.route_scope.label();
-        // Sweep dead sessions before adding this one. Pruning is otherwise
-        // only a side effect of the notification fanout, so on a healthy
-        // gateway — one that has stopped emitting spurious notifications — it
-        // would never run at all. Doing it on connect bounds growth by
-        // connection rate without a background task.
         let pruned_peer_count = crate::mcp::peers::prune_closed_peers(&self.peers).await;
+        let subscription_id = context.sink().id().clone();
         let mut peers = self.peers.write().await;
-        peers.push(crate::mcp::peers::RegisteredPeer {
-            peer: context.peer,
+        peers.push(crate::mcp::peers::RegisteredPeer::from_subscription(
+            context.sink().clone(),
             contract,
             last_contract,
-        });
+        ));
         tracing::info!(
             surface = "mcp",
             service = "peers",
             action = "peer.connect",
             subsystem = "mcp_server",
-            phase = "session.initialized",
+            phase = "subscription.listen",
             peer_count = peers.len(),
             pruned_peer_count,
             route_scope = route_scope_label,
-            "mcp session connected"
+            "mcp notification subscription connected"
         );
+        drop(peers);
+
+        context.cancelled().await;
+
+        let mut peers = self.peers.write().await;
+        peers.retain(|registered| registered.target.subscription_id() != Some(&subscription_id));
+        tracing::info!(
+            surface = "mcp",
+            service = "peers",
+            action = "peer.disconnect",
+            subsystem = "mcp_server",
+            phase = "subscription.closed",
+            peer_count = peers.len(),
+            route_scope = route_scope_label,
+            "mcp notification subscription disconnected"
+        );
+        Ok(())
     }
 
     async fn complete(
@@ -315,8 +360,8 @@ impl ServerHandler for LabMcpServer {
         &self,
         request: GetPromptRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, ErrorData> {
-        self.get_prompt_impl(request, context).await
+    ) -> Result<GetPromptResponse, ErrorData> {
+        self.get_prompt_impl(request, context).await.map(Into::into)
     }
 
     async fn list_resources(
@@ -331,8 +376,10 @@ impl ServerHandler for LabMcpServer {
         &self,
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
-        self.read_resource_impl(request, context).await
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        self.read_resource_impl(request, context)
+            .await
+            .map(Into::into)
     }
 
     async fn list_tools(
@@ -347,8 +394,8 @@ impl ServerHandler for LabMcpServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.call_tool_impl(request, context).await
+    ) -> Result<CallToolResponse, ErrorData> {
+        self.call_tool_impl(request, context).await.map(Into::into)
     }
 }
 
@@ -376,19 +423,24 @@ impl LabMcpServer {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     #[cfg(feature = "gateway")]
     use super::verify_upstream_subject_resolution_support;
     use super::{LabMcpServer, logging_level_rank};
+    use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::registry::ToolRegistry;
     use rmcp::ServerHandler;
+    use rmcp::ServiceExt;
+    use rmcp::model::{ProtocolVersion, ServerNotification, SubscriptionFilter};
+    use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 
-    #[test]
-    fn server_capabilities_advertise_list_changed_support() {
-        let server = LabMcpServer {
+    fn stateless_test_server(peers: crate::mcp::peers::PeerRegistry) -> LabMcpServer {
+        LabMcpServer {
             registry: std::sync::Arc::new(ToolRegistry::new()),
             #[cfg(feature = "gateway")]
             gateway_manager: None,
-            peers: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            peers,
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",
@@ -398,7 +450,13 @@ mod tests {
             route_scope: crate::mcp::route_scope::McpRouteScope::Root,
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
-        };
+        }
+    }
+
+    #[test]
+    fn server_capabilities_advertise_list_changed_support() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
 
         let info = server.get_info();
         assert_eq!(info.server_info.name, "labby");
@@ -455,11 +513,11 @@ mod tests {
     }
 
     #[cfg(feature = "gateway")]
-    mod connected_client_from_handshake_tests {
+    mod connected_client_from_discovery_tests {
         use axum::http;
         use rmcp::model::Implementation;
 
-        use super::super::connected_client_from_handshake;
+        use super::super::connected_client_from_discovery;
 
         // Same `Extensions` fabrication as `verify_upstream_subject_resolution_support`
         // above — an `http::request::Parts` carrying an `AuthContext`, wrapped in
@@ -485,7 +543,7 @@ mod tests {
         #[test]
         fn never_stores_the_raw_authenticated_subject() {
             let extensions = extensions_with_subject("jacob@example.com");
-            let client = connected_client_from_handshake(
+            let client = connected_client_from_discovery(
                 Some(Implementation::new("claude-code", "2.4.1")),
                 &extensions,
                 "stdio",
@@ -502,13 +560,13 @@ mod tests {
 
         #[test]
         fn redaction_is_deterministic_for_the_same_subject() {
-            let a = connected_client_from_handshake(
+            let a = connected_client_from_discovery(
                 None,
                 &extensions_with_subject("same-subject"),
                 "http",
                 "2026-01-01T00:00:00Z".to_string(),
             );
-            let b = connected_client_from_handshake(
+            let b = connected_client_from_discovery(
                 None,
                 &extensions_with_subject("same-subject"),
                 "http",
@@ -520,13 +578,13 @@ mod tests {
 
         #[test]
         fn distinct_subjects_redact_to_distinct_tags() {
-            let a = connected_client_from_handshake(
+            let a = connected_client_from_discovery(
                 None,
                 &extensions_with_subject("alice"),
                 "http",
                 "2026-01-01T00:00:00Z".to_string(),
             );
-            let b = connected_client_from_handshake(
+            let b = connected_client_from_discovery(
                 None,
                 &extensions_with_subject("bob"),
                 "http",
@@ -539,7 +597,7 @@ mod tests {
         #[test]
         fn no_auth_context_yields_no_subject_tag() {
             let extensions = rmcp::model::Extensions::new();
-            let client = connected_client_from_handshake(
+            let client = connected_client_from_discovery(
                 None,
                 &extensions,
                 "in-process",
@@ -552,7 +610,7 @@ mod tests {
         #[test]
         fn client_info_and_transport_pass_through_unmodified() {
             let extensions = rmcp::model::Extensions::new();
-            let client = connected_client_from_handshake(
+            let client = connected_client_from_discovery(
                 Some(Implementation::new("codex-cli", "0.9.2")),
                 &extensions,
                 "stdio",
@@ -564,5 +622,63 @@ mod tests {
             assert_eq!(client.transport, "stdio");
             assert_eq!(client.connected_at, "2026-01-01T00:00:00Z");
         }
+    }
+
+    #[tokio::test]
+    async fn stateless_subscription_receives_catalog_notifications() {
+        let peers = std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let server = stateless_test_server(std::sync::Arc::clone(&peers));
+        let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
+        let server_handle = tokio::spawn(async move {
+            let running = server.serve(server_transport).await.expect("server starts");
+            running.waiting().await
+        });
+        let client_service = ()
+            .serve_with_lifecycle(
+                client_transport,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                },
+            )
+            .await
+            .expect("stateless client discovers server");
+
+        let mut subscription = client_service
+            .peer()
+            .listen(
+                SubscriptionFilter::builder()
+                    .resources_list_changed()
+                    .build(),
+            )
+            .await
+            .expect("subscription is acknowledged");
+        assert_eq!(peers.read().await.len(), 1);
+
+        notify_catalog_peers(
+            &peers,
+            CatalogNotificationChanges::new(false, true, false),
+            labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM,
+        )
+        .await;
+        let notification = tokio::time::timeout(Duration::from_secs(5), subscription.next())
+            .await
+            .expect("catalog notification timed out")
+            .expect("subscription remains healthy")
+            .expect("catalog notification exists");
+        assert!(matches!(
+            notification,
+            ServerNotification::ResourceListChangedNotification(_)
+        ));
+
+        subscription.cancel().await.expect("subscription cancels");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !peers.read().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled subscription is removed");
+        client_service.cancel().await.expect("client cancels");
+        server_handle.abort();
     }
 }

@@ -14,10 +14,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorData, GetPromptRequestParams, GetPromptResult,
-    ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt,
-    PromptMessage, ReadResourceRequestParams, ReadResourceResult, Resource, Role,
-    ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, GetPromptRequestParams,
+    GetPromptResponse, GetPromptResult, ListPromptsResult, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, Prompt, PromptMessage, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, Resource, Role, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
@@ -145,12 +145,13 @@ impl ServerHandler for StaticCatalogServer {
         &self,
         request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, ErrorData> {
+    ) -> Result<GetPromptResponse, ErrorData> {
         self.get_prompt_count.fetch_add(1, Ordering::SeqCst);
         Ok(GetPromptResult::new(vec![PromptMessage::new_text(
             Role::User,
             format!("proxied {}", request.name),
-        )]))
+        )])
+        .into())
     }
 }
 
@@ -224,27 +225,27 @@ impl ServerHandler for SlowResponseServer {
         &self,
         _request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        Ok(CallToolResult::success(Vec::new()))
+        Ok(CallToolResult::success(Vec::new()).into())
     }
 
     async fn read_resource(
         &self,
         _request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
+    ) -> Result<ReadResourceResponse, ErrorData> {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        Ok(ReadResourceResult::new(Vec::new()))
+        Ok(ReadResourceResult::new(Vec::new()).into())
     }
 
     async fn get_prompt(
         &self,
         _request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, ErrorData> {
+    ) -> Result<GetPromptResponse, ErrorData> {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        Ok(GetPromptResult::new(Vec::new()))
+        Ok(GetPromptResult::new(Vec::new()).into())
     }
 }
 

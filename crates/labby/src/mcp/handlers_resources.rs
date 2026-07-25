@@ -1574,7 +1574,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             &self,
             params: ReadResourceRequestParams,
             _context: RequestContext<RoleServer>,
-        ) -> Result<ReadResourceResult, ErrorData> {
+        ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
             if params.uri != UPSTREAM_UI_URI {
                 return Err(ErrorData::resource_not_found(
                     format!("unknown upstream UI resource: {}", params.uri),
@@ -1585,7 +1585,8 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             Ok(ReadResourceResult::new(vec![
                 ResourceContents::text("<main>quick shell widget</main>", params.uri)
                     .with_mime_type("text/html;profile=mcp-app"),
-            ]))
+            ])
+            .into())
         }
     }
 

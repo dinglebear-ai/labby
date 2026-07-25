@@ -889,18 +889,19 @@ impl UpstreamOauthManager {
             return Ok(meta);
         }
 
-        let mut metadata = match manager.discover_metadata().await {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                match discover_metadata_via_protected_resource(self.upstream_url()?.as_str())
-                    .await?
-                {
-                    Some(metadata) => metadata,
-                    None => {
-                        return Err(OauthError::Internal(format!("discover metadata: {error}")));
-                    }
+        let resolution = manager.resolve_metadata().await;
+        let mut metadata = match resolution {
+            Ok(resolution) if resolution.source.is_discovered() => resolution.metadata,
+            resolution => match discover_published_metadata(self.upstream_url()?.as_str()).await? {
+                Some(metadata) => metadata,
+                None => {
+                    let detail = resolution
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "no published OAuth metadata".to_string());
+                    return Err(OauthError::Internal(format!("discover metadata: {detail}")));
                 }
-            }
+            },
         };
 
         if self.upstream.name == "swag" {
@@ -1131,7 +1132,14 @@ struct ProtectedResourceMetadata {
     authorization_servers: Option<Vec<String>>,
 }
 
-async fn discover_metadata_via_protected_resource(
+/// Fetch published OAuth metadata without applying rmcp's discovery-URL
+/// issuer equality check.
+///
+/// Labby validates issuer and endpoint origins itself in
+/// `verify_issuer_binding`, including the explicitly allowed Google split
+/// token endpoint. rmcp 3 validates the issuer against the metadata URL while
+/// fetching, which would reject that policy before Labby can apply it.
+pub async fn discover_published_metadata(
     upstream_url: &str,
 ) -> Result<Option<AuthorizationMetadata>, OauthError> {
     let upstream = url::Url::parse(upstream_url)
@@ -1182,6 +1190,19 @@ async fn discover_metadata_via_protected_resource(
                     return Ok(Some(metadata));
                 }
             }
+        }
+    }
+
+    for authorization_metadata_url in authorization_metadata_candidates(&upstream) {
+        let response = match client.get(authorization_metadata_url).send().await {
+            Ok(response) => response,
+            Err(_) => continue,
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        if let Ok(metadata) = response.json::<AuthorizationMetadata>().await {
+            return Ok(Some(metadata));
         }
     }
 

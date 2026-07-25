@@ -13,8 +13,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use labby_auth::config::AuthMode;
 use rmcp::ServiceExt;
 use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService,
-    session::local::{LocalSessionManager, SessionConfig},
+    StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
 };
 #[cfg(feature = "gateway")]
 use tokio::sync::mpsc;
@@ -908,7 +907,9 @@ async fn log_mcp_request(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("<none>")
         .to_string();
-    let authorization_present = req.headers().contains_key(axum::http::header::AUTHORIZATION);
+    let authorization_present = req
+        .headers()
+        .contains_key(axum::http::header::AUTHORIZATION);
     let user_agent = req
         .headers()
         .get(axum::http::header::USER_AGENT)
@@ -1264,7 +1265,7 @@ async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<Exit
 
     // Shared with `BridgeClientHandler` so the daemon's server->client
     // requests (elicitation/sampling/roots) have the one downstream peer to
-    // relay to, once `BridgeServerHandler::on_initialized` populates it.
+    // relay to, once the bridge server's lifecycle callback populates it.
     let downstream = Arc::new(tokio::sync::OnceCell::new());
     let client_handler = BridgeClientHandler::new(Arc::clone(&downstream));
     let service = live
@@ -1396,7 +1397,7 @@ fn build_mcp_service(
     state: &AppState,
     mcp_config: &crate::config::McpPreferences,
     notifier: PeerNotifier,
-) -> Result<StreamableHttpService<LabMcpServer, LocalSessionManager>> {
+) -> Result<StreamableHttpService<LabMcpServer, NeverSessionManager>> {
     build_mcp_service_with_scope(
         state,
         mcp_config,
@@ -1412,27 +1413,12 @@ fn build_mcp_service_with_scope(
     notifier: PeerNotifier,
     route_scope: crate::mcp::route_scope::McpRouteScope,
     extra_allowed_hosts: &[String],
-) -> Result<StreamableHttpService<LabMcpServer, LocalSessionManager>> {
+) -> Result<StreamableHttpService<LabMcpServer, NeverSessionManager>> {
     let registry = Arc::clone(&state.registry);
     #[cfg(feature = "gateway")]
     let gateway_manager = state.gateway_manager.clone();
 
-    let session_ttl_secs = resolve_session_ttl_secs(
-        std::env::var("LABBY_MCP_SESSION_TTL_SECS").ok(),
-        mcp_config.session_ttl_secs,
-    )?;
-
-    let mut session_config = SessionConfig::default();
-    session_config.keep_alive = Some(Duration::from_secs(session_ttl_secs));
-
-    let mut session_manager = LocalSessionManager::default();
-    session_manager.session_config = session_config;
-    let session_manager = Arc::new(session_manager);
-
-    let stateful = resolve_stateful_mode(
-        std::env::var("LABBY_MCP_STATEFUL").ok(),
-        mcp_config.stateful,
-    )?;
+    let session_manager = Arc::new(NeverSessionManager::default());
 
     let mut allowed_hosts = allowed_hosts(
         mcp_config.allowed_hosts.as_deref().unwrap_or(&[]),
@@ -1450,7 +1436,8 @@ fn build_mcp_service_with_scope(
     }
     let config = StreamableHttpServerConfig::default()
         .with_allowed_hosts(allowed_hosts.clone())
-        .with_stateful_mode(stateful);
+        .with_legacy_session_mode(false)
+        .with_json_response(true);
     tracing::info!(
         surface = "mcp",
         service = "labby",
@@ -1458,8 +1445,8 @@ fn build_mcp_service_with_scope(
         subsystem = "mcp_server",
         phase = "http.mount",
         transport = "http",
-        stateful,
-        session_ttl_secs,
+        protocol_version = "2026-07-28",
+        lifecycle = "stateless",
         allowed_host_count = allowed_hosts.len(),
         "http mcp service configured"
     );
@@ -1559,24 +1546,6 @@ fn build_protected_mcp_router(
 ///
 /// Reads `LABBY_MCP_ALLOWED_HOSTS` (comma-separated) and the resolved resource
 /// URL. Always includes loopback defaults. Rejects wildcard.
-fn resolve_session_ttl_secs(env: Option<String>, config: Option<u64>) -> Result<u64> {
-    if let Some(value) = env {
-        return value
-            .parse::<u64>()
-            .with_context(|| format!("invalid LABBY_MCP_SESSION_TTL_SECS value `{value}`"));
-    }
-    Ok(config.unwrap_or(300))
-}
-
-fn resolve_stateful_mode(env: Option<String>, config: Option<bool>) -> Result<bool> {
-    if let Some(value) = env {
-        return value
-            .parse::<bool>()
-            .with_context(|| format!("invalid LABBY_MCP_STATEFUL value `{value}`"));
-    }
-    Ok(config.unwrap_or(true))
-}
-
 fn allowed_hosts(config_allowed_hosts: &[String], resource_url: Option<&str>) -> Vec<String> {
     let mut hosts = vec![
         "localhost".to_string(),
@@ -1786,8 +1755,8 @@ mod tests {
     use super::{
         McpArgs, PeerNotifier, ServeCommand, Transport, allowed_hosts, bind_addr,
         build_http_router, filter_registry, is_loopback_host, resolve_lab_spawn_depth,
-        resolve_port, resolve_session_ttl_secs, resolve_stateful_mode, resolve_transport,
-        resolve_web_ui_auth_disabled, should_run_stdio, stdio_recursion_guard_active,
+        resolve_port, resolve_transport, resolve_web_ui_auth_disabled, should_run_stdio,
+        stdio_recursion_guard_active,
     };
     use crate::api::AppState;
     use crate::cli::Cli;
@@ -1857,8 +1826,6 @@ mod tests {
                 transport: Some("stdio".into()),
                 host: Some("0.0.0.0".into()),
                 port: Some(9000),
-                session_ttl_secs: Some(120),
-                stateful: Some(false),
                 allowed_hosts: Some(vec!["lab.internal".into()]),
                 show_all: None,
                 destructive_elicitation_timeout_ms: None,
@@ -1867,8 +1834,6 @@ mod tests {
             ..LabConfig::default()
         };
         assert_eq!(cfg.mcp.host.as_deref(), Some("0.0.0.0"));
-        assert_eq!(cfg.mcp.session_ttl_secs, Some(120));
-        assert_eq!(cfg.mcp.stateful, Some(false));
     }
 
     #[test]
@@ -1980,23 +1945,6 @@ mod tests {
     }
 
     #[test]
-    fn session_ttl_resolution_prefers_env_then_config_then_default() {
-        assert_eq!(
-            resolve_session_ttl_secs(Some("120".into()), Some(90)).unwrap(),
-            120
-        );
-        assert_eq!(resolve_session_ttl_secs(None, Some(90)).unwrap(), 90);
-        assert_eq!(resolve_session_ttl_secs(None, None).unwrap(), 300);
-    }
-
-    #[test]
-    fn stateful_resolution_prefers_env_then_config_then_default() {
-        assert!(!resolve_stateful_mode(Some("false".into()), Some(true)).unwrap());
-        assert!(!resolve_stateful_mode(None, Some(false)).unwrap());
-        assert!(resolve_stateful_mode(None, None).unwrap());
-    }
-
-    #[test]
     fn allowed_hosts_include_configured_hosts() {
         let hosts = allowed_hosts(&["lab.internal".to_string()], None);
         assert!(hosts.contains(&"lab.internal".to_string()));
@@ -2067,6 +2015,109 @@ mod tests {
             .await
             .expect("response");
         assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn http_mcp_rejects_legacy_initialize_lifecycle() {
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            PeerNotifier::default(),
+            true,
+        )
+        .expect("router with HTTP MCP");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2025-11-25",
+                                "capabilities": {},
+                                "clientInfo": {"name": "legacy-test", "version": "1.0"}
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert!(response.headers().get("mcp-session-id").is_none());
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body");
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).expect("legacy rejection is JSON-RPC");
+        assert_eq!(body["error"]["code"], -32601);
+        assert!(body.get("result").is_none());
+    }
+
+    #[tokio::test]
+    async fn http_mcp_discovers_only_the_new_stateless_protocol() {
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            PeerNotifier::default(),
+            true,
+        )
+        .expect("router with HTTP MCP");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2026-07-28")
+                    .header("mcp-method", "server/discover")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "server/discover",
+                            "params": {
+                                "_meta": {
+                                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                    "io.modelcontextprotocol/clientInfo": {
+                                        "name": "stateless-test",
+                                        "version": "1.0"
+                                    },
+                                    "io.modelcontextprotocol/clientCapabilities": {}
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("mcp-session-id").is_none());
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body");
+        let body = String::from_utf8(body.to_vec()).expect("UTF-8 response");
+        assert!(body.contains("\"supportedVersions\":[\"2026-07-28\"]"));
+        assert!(!body.contains("2025-11-25"));
     }
 
     #[cfg(feature = "gateway")]

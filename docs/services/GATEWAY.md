@@ -591,7 +591,8 @@ the configured public resource:
 
 - preserve `Host`
 - set `X-Forwarded-Proto` to the original client scheme
-- forward `Authorization`, `Accept`, `Content-Type`, and MCP session headers
+- forward `Authorization`, `Accept`, `Content-Type`, `Mcp-Protocol-Version`,
+  and every SEP-2243 `Mcp-*` routing header
 - disable request/response buffering for the MCP proxy path
 - avoid response compression on the MCP proxy path
 - use long read/write/idle timeouts suitable for Streamable HTTP and SSE
@@ -685,7 +686,6 @@ Set:
 BASE=https://mcp.example.com
 ROUTE=/syslog
 TOKEN=<lab-oauth-access-token-for-this-resource>
-SESSION=<mcp-session-id-from-initialize-response>
 ```
 
 Metadata is public and route-specific:
@@ -707,7 +707,9 @@ Unauthenticated MCP request returns a challenge:
 ```bash
 curl -i -X POST "$BASE$ROUTE" \
   -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+  -H 'Mcp-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: server/discover' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
 
 Expected:
@@ -733,51 +735,61 @@ OAuth credential stored for the shared Gateway subject when proxying to the
 private upstream MCP server. The public Lab token is never passed through to the
 upstream authorization server.
 
-Streamable HTTP initialize:
+Stateless server discovery:
 
 ```bash
 curl -i -X POST "$BASE$ROUTE" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+  -H 'Mcp-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: server/discover' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
 
 Expected:
 
-- success response from the backend MCP server
-- MCP session header present when the backend is stateful
+- success response advertises only `2026-07-28`
+- no `Mcp-Session-Id` response header
 - no public response reveals `backend_url`
 
-GET SSE stream:
+Stateless tools list:
 
 ```bash
-curl -i -N "$BASE$ROUTE" \
+curl -i -X POST "$BASE$ROUTE" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Mcp-Session-Id: $SESSION" \
-  -H 'Accept: text/event-stream'
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Mcp-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: tools/list' \
+  --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
 
 Expected:
 
-- `200` with `Content-Type: text/event-stream`, or the backend's valid MCP
-  stream response
-- no buffering-delayed first bytes once the backend emits events
-- connection is not closed by the edge timeout during normal idle periods
-
-DELETE session:
-
-```bash
-curl -i -X DELETE "$BASE$ROUTE" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Mcp-Session-Id: $SESSION"
-```
-
-Expected:
-
-- backend MCP session is terminated or acknowledged according to backend
-  Streamable HTTP behavior
+- `200` with a valid `tools/list` result
+- no `Mcp-Session-Id` response header
 - no backend URL appears in headers or body
+
+Notification subscription:
+
+```bash
+curl -i -N -X POST "$BASE$ROUTE" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
+  -H 'Mcp-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: subscriptions/listen' \
+  --data '{"jsonrpc":"2.0","id":3,"method":"subscriptions/listen","params":{"notifications":{"toolsListChanged":true,"resourcesListChanged":true,"promptsListChanged":true},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+Expected:
+
+- the stream acknowledges the accepted notification filter
+- later catalog changes carry the subscription request ID in notification
+  metadata
+- cancelling the request ends the subscription; no session-delete request is
+  required
 
 Disabled and unknown route behavior:
 
@@ -875,7 +887,7 @@ else in this document, which covers the outbound upstream proxy.
 Each entry (`GatewayClientView`) carries a redacted actor display tag (never
 the raw authenticated subject — see [OBSERVABILITY.md](../dev/OBSERVABILITY.md)
 for the `actor_key` redaction convention this reuses), the client's
-self-declared MCP `clientInfo.name`/`version` from the initialize handshake,
+self-declared MCP client name/version from `server/discover` request metadata,
 the transport (`stdio`, `http`, `in-process`, or `test`), and a connect
 timestamp.
 
@@ -885,11 +897,10 @@ timestamp.
 
 Two things this is explicitly **not**:
 
-- **Not a live liveness view.** Entries are appended on `initialize` and never
-  proactively removed on disconnect — an entry can outlive its actual
-  connection. This mirrors the existing MCP peer-notification list's
-  behavior (reactive/best-effort pruning only), not a new limitation
-  introduced here.
+- **Not a live liveness view.** Entries are observations appended on
+  `server/discover`, not durable connections. Stateless requests carry their
+  own client metadata, while live catalog notifications use explicit
+  `subscriptions/listen` streams that are removed when cancelled.
 - **Not authenticated identity.** `client_name`/`client_version` are
   self-declared by the peer during the MCP handshake and are not verified —
   treat them as a display label, not an identity claim. The redacted subject

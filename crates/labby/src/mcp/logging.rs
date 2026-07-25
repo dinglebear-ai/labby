@@ -6,7 +6,7 @@ use serde_json::json;
 
 use super::server::LabMcpServer;
 
-// rmcp 2.1 deprecates the legacy logging capability under SEP-2577, but the
+// rmcp deprecates the legacy logging capability under SEP-2577, but the
 // server still supports it for clients that have not moved to protocol logging.
 #[allow(deprecated)]
 use rmcp::model::LoggingLevel as RmcpLoggingLevel;

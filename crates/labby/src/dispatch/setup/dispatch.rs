@@ -595,7 +595,8 @@ fn settings_surfaces_json(cfg: &crate::config::LabConfig) -> Value {
             "transport": mcp_transport,
             "host": mcp_host,
             "port": mcp_port,
-            "stateful": cfg.mcp.stateful,
+            "protocol_version": "2026-07-28",
+            "lifecycle": "stateless",
         },
         "web": {
             "auth_disabled": web_auth_disabled,

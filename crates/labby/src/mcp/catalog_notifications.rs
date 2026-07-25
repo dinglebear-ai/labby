@@ -152,11 +152,11 @@ pub(crate) async fn notify_catalog_peers(
 
     let notification_timeout = crate::config::resolved_catalog_notification_timeout();
     let notify_futures = evaluated.iter().enumerate().map(|(peer_index, evaluated)| {
-        let peer = evaluated.registered.peer.clone();
+        let target = evaluated.registered.target.clone();
         let changes = evaluated.changes;
         async move {
             let result = tokio::time::timeout(notification_timeout, async {
-                if changes.tools_changed && peer.notify_tool_list_changed().await.is_err() {
+                if changes.tools_changed && target.notify_tool_list_changed().await.is_err() {
                     tracing::warn!(
                         surface = "mcp",
                         service = "peers",
@@ -170,7 +170,8 @@ pub(crate) async fn notify_catalog_peers(
                     );
                     return false;
                 }
-                if changes.resources_changed && peer.notify_resource_list_changed().await.is_err() {
+                if changes.resources_changed && target.notify_resource_list_changed().await.is_err()
+                {
                     tracing::warn!(
                         surface = "mcp",
                         service = "peers",
@@ -184,7 +185,7 @@ pub(crate) async fn notify_catalog_peers(
                     );
                     return false;
                 }
-                if changes.prompts_changed && peer.notify_prompt_list_changed().await.is_err() {
+                if changes.prompts_changed && target.notify_prompt_list_changed().await.is_err() {
                     tracing::warn!(
                         surface = "mcp",
                         service = "peers",

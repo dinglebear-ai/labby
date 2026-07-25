@@ -15,7 +15,9 @@ front of that listener and configure public MCP routes in Lab.
 
 - Preserve the original `Host` header.
 - Set `X-Forwarded-Proto` to the original scheme.
-- Forward `Authorization`, `Accept`, `Content-Type`, `Mcp-Session-Id`, `Mcp-Protocol-Version`, and `Last-Event-Id`.
+- Forward `Authorization`, `Accept`, `Content-Type`, `Mcp-Protocol-Version`,
+  and every SEP-2243 `Mcp-*` routing header (`Mcp-Method`, `Mcp-Name`, and
+  `Mcp-Param-*`).
 - Disable request and response buffering on MCP paths.
 - Disable compression on MCP paths.
 - Use read/write/idle timeouts suitable for long-lived Streamable HTTP and SSE.
@@ -44,9 +46,9 @@ server {
         proxy_set_header Authorization $http_authorization;
         proxy_set_header Accept $http_accept;
         proxy_set_header Content-Type $http_content_type;
-        proxy_set_header Mcp-Session-Id $http_mcp_session_id;
         proxy_set_header Mcp-Protocol-Version $http_mcp_protocol_version;
-        proxy_set_header Last-Event-Id $http_last_event_id;
+        proxy_set_header Mcp-Method $http_mcp_method;
+        proxy_set_header Mcp-Name $http_mcp_name;
 
         proxy_buffering off;
         proxy_request_buffering off;

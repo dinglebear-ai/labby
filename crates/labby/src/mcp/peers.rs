@@ -1,5 +1,8 @@
+#[cfg(test)]
 use rmcp::RoleServer;
+#[cfg(test)]
 use rmcp::service::Peer;
+use rmcp::service::SubscriptionSink;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 #[cfg(feature = "gateway")]
@@ -17,12 +20,77 @@ use crate::dispatch::gateway::types::{CatalogChangeEvent, GatewayCatalogDiff};
 /// raw-exposing protected route miss its own changes.
 #[derive(Clone)]
 pub struct RegisteredPeer {
-    pub(crate) peer: Peer<RoleServer>,
+    pub(crate) target: NotificationTarget,
     pub(crate) contract: crate::mcp::peer_contract::PeerContract,
     /// Last contract this peer was notified about. Seeded at registration so
     /// the first diff compares against what the peer actually received in its
     /// initial `tools/list`, not against an empty set.
     pub(crate) last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
+}
+
+#[derive(Clone)]
+pub(crate) enum NotificationTarget {
+    #[cfg(test)]
+    LegacyPeer(Peer<RoleServer>),
+    Subscription(SubscriptionSink),
+}
+
+impl NotificationTarget {
+    pub(crate) fn is_closed(&self) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(peer) => peer.is_transport_closed(),
+            // Subscriptions are removed when `listen` returns. A failed send is
+            // also pruned by the fanout path.
+            Self::Subscription(_) => false,
+        }
+    }
+
+    pub(crate) async fn notify_tool_list_changed(&self) -> Result<(), ()> {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(peer) => peer.notify_tool_list_changed().await.map_err(|_| ()),
+            Self::Subscription(sink) => sink.notify_tool_list_changed().await.map_err(|_| ()),
+        }
+    }
+
+    pub(crate) async fn notify_resource_list_changed(&self) -> Result<(), ()> {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(peer) => peer.notify_resource_list_changed().await.map_err(|_| ()),
+            Self::Subscription(sink) => sink.notify_resource_list_changed().await.map_err(|_| ()),
+        }
+    }
+
+    pub(crate) async fn notify_prompt_list_changed(&self) -> Result<(), ()> {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(peer) => peer.notify_prompt_list_changed().await.map_err(|_| ()),
+            Self::Subscription(sink) => sink.notify_prompt_list_changed().await.map_err(|_| ()),
+        }
+    }
+
+    pub(crate) fn subscription_id(&self) -> Option<&rmcp::model::RequestId> {
+        match self {
+            #[cfg(test)]
+            Self::LegacyPeer(_) => None,
+            Self::Subscription(sink) => Some(sink.id()),
+        }
+    }
+}
+
+impl RegisteredPeer {
+    pub(crate) fn from_subscription(
+        sink: SubscriptionSink,
+        contract: crate::mcp::peer_contract::PeerContract,
+        last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
+    ) -> Self {
+        Self {
+            target: NotificationTarget::Subscription(sink),
+            contract,
+            last_contract,
+        }
+    }
 }
 
 /// Registry of live sessions, shared by every `LabMcpServer` and the notifier.
@@ -43,7 +111,7 @@ pub type PeerRegistry = Arc<RwLock<Vec<RegisteredPeer>>>;
 pub(crate) async fn prune_closed_peers(peers: &PeerRegistry) -> usize {
     let mut guard = peers.write().await;
     let before = guard.len();
-    guard.retain(|registered| !registered.peer.is_transport_closed());
+    guard.retain(|registered| !registered.target.is_closed());
     before - guard.len()
 }
 
@@ -59,7 +127,7 @@ impl RegisteredPeer {
         last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
     ) -> Self {
         Self {
-            peer,
+            target: NotificationTarget::LegacyPeer(peer),
             contract: crate::mcp::peer_contract::PeerContract {
                 registry: Arc::new(crate::registry::ToolRegistry::default()),
                 #[cfg(feature = "gateway")]
@@ -92,16 +160,16 @@ impl RegisteredPeer {
 }
 
 /// MCP-specific peer fanout that forwards catalog-change notifications to
-/// connected sessions whose visible contract actually changed.
+/// active subscriptions whose visible contract actually changed.
 ///
 /// This keeps `rmcp` types out of the dispatch layer while allowing
 /// `GatewayManager` to notify peers when the upstream pool changes.
 #[derive(Clone, Default)]
 pub struct PeerNotifier {
     pub peers: PeerRegistry,
-    /// Live inbound MCP client/session metadata (redacted subject, declared
+    /// Observed inbound MCP client metadata (redacted subject, declared
     /// client name/version, transport, connect time), one entry pushed per
-    /// `on_initialized` call. Read by `gateway.clients.list` via
+    /// successful discovery. Read by `gateway.clients.list` via
     /// `GatewayManager::with_client_registry`. Not index-paired with `peers`
     /// and not pruned on disconnect — see
     /// `labby_runtime::client_registry` module docs for the best-effort

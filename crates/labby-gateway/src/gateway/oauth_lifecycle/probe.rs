@@ -364,8 +364,9 @@ pub(crate) async fn run(
             }
         })?;
 
-    let metadata = match auth_manager.discover_metadata().await {
-        Ok(m) => {
+    let metadata = match auth_manager.resolve_metadata().await {
+        Ok(resolution) if resolution.source.is_discovered() => {
+            let m = resolution.metadata;
             tracing::info!(
                 service = "upstream_oauth",
                 action = "probe",
@@ -379,26 +380,50 @@ pub(crate) async fn run(
             );
             m
         }
-        Err(e) => {
-            tracing::info!(
-                service = "upstream_oauth",
-                action = "probe",
-                upstream = %name,
-                url = %redacted_url,
-                reason = %e,
-                elapsed_ms = started.elapsed().as_millis(),
-                "upstream oauth probe: no OAuth metadata found"
-            );
-            return Ok(ProbeResult {
-                upstream: name,
-                url: redacted_url.clone(),
-                transient: false,
-                durability: "not_registered_no_oauth_metadata".to_string(),
-                oauth_discovered: false,
-                issuer: None,
-                scopes: None,
-                registration_strategy: None,
-            });
+        resolution => {
+            let fallback =
+                labby_auth::upstream::manager::discover_published_metadata(&canonical_url)
+                    .await
+                    .map_err(|error| ToolError::Sdk {
+                        sdk_kind: "internal_error".to_string(),
+                        message: format!("OAuth metadata discovery failed: {error}"),
+                    })?;
+            if let Some(metadata) = fallback {
+                tracing::info!(
+                    service = "upstream_oauth",
+                    action = "probe",
+                    upstream = %name,
+                    url = %redacted_url,
+                    issuer = metadata.issuer.as_deref().unwrap_or("<none>"),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "upstream oauth probe: OAuth metadata discovered with Labby issuer policy"
+                );
+                metadata
+            } else {
+                let reason = resolution
+                    .err()
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "no published OAuth metadata".to_string());
+                tracing::info!(
+                    service = "upstream_oauth",
+                    action = "probe",
+                    upstream = %name,
+                    url = %redacted_url,
+                    reason,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "upstream oauth probe: no OAuth metadata found"
+                );
+                return Ok(ProbeResult {
+                    upstream: name,
+                    url: redacted_url.clone(),
+                    transient: false,
+                    durability: "not_registered_no_oauth_metadata".to_string(),
+                    oauth_discovered: false,
+                    issuer: None,
+                    scopes: None,
+                    registration_strategy: None,
+                });
+            }
         }
     };
 

@@ -168,8 +168,6 @@ Rules:
 | `transport` | `LABBY_MCP_TRANSPORT` | `"http"` | MCP transport: `"stdio"` or `"http"` |
 | `host` | `LABBY_MCP_HTTP_HOST` | `"127.0.0.1"` | HTTP bind address |
 | `port` | `LABBY_MCP_HTTP_PORT` | `8765` | HTTP bind port |
-| `session_ttl_secs` | `LABBY_MCP_SESSION_TTL_SECS` | `300` | HTTP MCP session keep-alive TTL (seconds) |
-| `stateful` | `LABBY_MCP_STATEFUL` | `true` | Whether HTTP MCP uses stateful sessions |
 | `allowed_hosts` | `LABBY_MCP_ALLOWED_HOSTS` | `[]` | Additional allowed hosts for DNS rebinding protection |
 | `show_all` | `LABBY_SHOW_ALL` | `false` | Show the full service catalog regardless of env-var presence |
 | `destructive_elicitation_timeout_ms` | `LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS` | `120000` | Deadline for destructive-action MCP confirmation prompts; valid range `1..=600000` milliseconds |
@@ -865,8 +863,6 @@ surfaces as `oauth_needs_reauth`, never as an internal error.
 | `LABBY_MCP_HTTP_HOST` | `127.0.0.1` | HTTP bind address. |
 | `LABBY_MCP_HTTP_PORT` | `8765` | HTTP bind port. |
 | `LABBY_MCP_HTTP_TOKEN` | — | Static bearer token for HTTP auth. |
-| `LABBY_MCP_SESSION_TTL_SECS` | `300` | MCP session keep-alive TTL (seconds). |
-| `LABBY_MCP_STATEFUL` | `true` | Whether to use stateful MCP sessions. |
 | `LABBY_MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames for DNS rebinding protection. |
 | `LABBY_CORS_ORIGINS` | — | Comma-separated CORS origin allowlist. |
 | `LABBY_WEB_ASSETS_DIR` | — | Override path to exported Labby assets for `labby serve`. |

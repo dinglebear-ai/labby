@@ -20,8 +20,8 @@
 
 use std::time::Duration;
 
+use rmcp::RoleClient;
 use rmcp::service::RunningService;
-use rmcp::{RoleClient, ServiceExt};
 use serde_json::Value;
 
 use crate::config::LabConfig;
@@ -267,6 +267,7 @@ impl LiveGateway {
         &self,
         handler: H,
     ) -> anyhow::Result<RunningService<RoleClient, H>> {
+        use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
         use rmcp::transport::streamable_http_client::{
             StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
         };
@@ -275,7 +276,14 @@ impl LiveGateway {
             StreamableHttpClientTransportConfig::with_uri(format!("{}/mcp", self.base_url));
         transport_config.auth_header = self.token.clone();
         let worker = StreamableHttpClientWorker::new(self.client.clone(), transport_config);
-        Ok(handler.serve(worker).await?)
+        Ok(handler
+            .serve_with_lifecycle(
+                worker,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![rmcp::model::ProtocolVersion::V_2026_07_28],
+                },
+            )
+            .await?)
     }
 }
 

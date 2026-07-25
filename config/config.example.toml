@@ -54,14 +54,6 @@
 # Override with --port or LAB_MCP_HTTP_PORT.
 # port = 8765                             # default: 8765
 
-# HTTP MCP session keep-alive TTL in seconds.
-# Override with LAB_MCP_SESSION_TTL_SECS.
-# session_ttl_secs = 300                  # default: 300
-
-# Whether HTTP MCP uses stateful sessions.
-# Override with LAB_MCP_STATEFUL.
-# stateful = true                         # default: true
-
 # Additional allowed hosts for DNS rebinding protection.
 # Override with LAB_MCP_ALLOWED_HOSTS env var (comma-separated).
 # allowed_hosts = []                      # default: []

@@ -16,26 +16,20 @@
 //! Downstream -> daemon: tools, resources (including `ui://` mcp-ui
 //! resources -- the bridge has no URI-scheme awareness of its own; it just
 //! forwards `read_resource` verbatim and the daemon does its normal `ui://`
-//! routing on the other end), prompts, `complete`, `set_level`,
-//! `subscribe`/`unsubscribe`, `ping`, and the full SEP-1319 async-task
-//! extension (`enqueue_task`/`list_tasks`/`get_task_info`/`get_task_result`/
-//! `cancel_task`) plus the generic `CustomRequest` escape hatch. None of
-//! these have a convenient typed method on `Peer<RoleClient>` (`ping` has no
-//! shortcut at all; the task methods reuse `tools/call` wire framing with a
-//! different expected response variant) -- they're forwarded via the
-//! generic `Peer::send_request` with a hand-built `ClientRequest` and a
-//! matching `ServerResult` variant, the same raw mechanism the typed
-//! shortcuts are themselves built on. There is nothing left in
-//! `ServerHandler`'s request surface that isn't forwarded.
+//! routing on the other end), prompts, `complete`, `set_level`, and
+//! the SEP-2663 task extension (`tasks/get`, `tasks/update`, and
+//! `tasks/cancel`) plus the generic `CustomRequest` escape hatch. MRTR
+//! `input_required` and task responses are forwarded without collapsing
+//! them to complete-only results.
 //!
-//! Downstream -> daemon (notifications): `cancelled`/`progress`/
-//! `roots_list_changed`/`task_status`/`CustomNotification` are forwarded
-//! too, so cancelling a call through the bridge actually interrupts it on
-//! the real daemon.
+//! Downstream -> daemon notifications (`cancelled`, `progress`,
+//! `roots_list_changed`, and custom notifications) are forwarded too, so
+//! cancelling a call through the bridge actually interrupts it on the real
+//! daemon.
 //!
 //! Daemon -> downstream: `get_info()` mirrors the real daemon's actual
 //! `ServerInfo` (fetched from the connection's own `peer_info()`, populated
-//! by the initialize handshake) instead of hand-declaring a capability
+//! by protocol discovery) instead of hand-declaring a capability
 //! subset -- otherwise a downstream client could see a capability set (e.g.
 //! `extensions` for mcp-ui) that doesn't match what the daemon it's
 //! actually talking to supports. `BridgeClientHandler` relays the daemon's
@@ -45,21 +39,20 @@
 //! connection instead of a per-call dedicated one, since stdio mode serves
 //! exactly one downstream session for the whole process lifetime.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequest, CallToolRequestParams, CallToolResult, CancelTaskParams, CancelTaskRequest,
-    CancelTaskResult, CancelledNotificationParam, ClientInfo, ClientNotification, ClientRequest,
-    CompleteRequestParams, CompleteResult, CreateTaskResult, CustomNotification, CustomRequest,
-    CustomResult, ElicitRequestParams, ElicitResult, GetPromptRequestParams, GetPromptResult,
-    GetTaskParams, GetTaskPayloadParams, GetTaskPayloadRequest, GetTaskPayloadResult,
-    GetTaskRequest, GetTaskResult, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListTasksRequest, ListTasksResult, ListToolsResult,
-    PaginatedRequestParams, PingRequest, ProgressNotificationParam, ReadResourceRequestParams,
-    ReadResourceResult, ServerInfo, ServerResult, SubscribeRequestParams,
-    TaskStatusNotificationParam, UnsubscribeRequestParams,
+    CallToolRequestParams, CallToolResponse, CancelTaskParams, CancelledNotificationParam,
+    ClientInfo, ClientNotification, ClientRequest, CompleteRequestParams, CompleteResult,
+    CustomNotification, CustomRequest, CustomResult, DiscoverResult, ElicitRequestParams,
+    ElicitResult, GetPromptRequestParams, GetPromptResponse, GetTaskParams, GetTaskResult,
+    InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, PingRequest,
+    ProgressNotificationParam, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
+    ServerInfo, ServerResult, UpdateTaskParams,
 };
-// rmcp 2.1 deprecates sampling/roots/logging under SEP-2577, but the bridge
+// rmcp deprecates sampling/roots/logging under SEP-2577, but the bridge
 // still forwards these legacy server<->client requests for compatibility
 // with whatever the daemon and downstream client actually negotiate.
 #[allow(deprecated)]
@@ -122,6 +115,9 @@ impl ClientHandler for BridgeClientHandler {
     /// against a bridge with nothing to forward to.
     fn get_info(&self) -> ClientInfo {
         let mut info = ClientInfo::default();
+        info.capabilities = rmcp::model::ClientCapabilities::builder()
+            .enable_tasks()
+            .build();
         if let Some(downstream) = self.downstream.get()
             && let Some(downstream_info) = downstream.peer_info()
         {
@@ -198,7 +194,7 @@ pub struct BridgeServerHandler {
 impl BridgeServerHandler {
     /// `downstream` must be the same cell passed to the `BridgeClientHandler`
     /// used to open `service`, so the daemon's server->client requests and
-    /// this handler's own `on_initialized` agree on which peer to relay to.
+    /// this handler's lifecycle callback agree on which peer to relay to.
     pub fn new(
         service: RunningService<RoleClient, BridgeClientHandler>,
         downstream: DownstreamCell,
@@ -254,6 +250,33 @@ fn unexpected_response(action: &str) -> ErrorData {
 }
 
 impl ServerHandler for BridgeServerHandler {
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(&[ProtocolVersion::V_2026_07_28])
+    }
+
+    async fn initialize(
+        &self,
+        _request: InitializeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        Err(ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+            "legacy initialize lifecycle is not supported; use server/discover",
+            None,
+        ))
+    }
+
+    async fn discover(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> Result<DiscoverResult, ErrorData> {
+        drop(self.downstream.set(context.peer));
+        Ok(DiscoverResult::from_server_info(
+            vec![ProtocolVersion::V_2026_07_28],
+            self.get_info(),
+        ))
+    }
+
     /// Mirror the real daemon's actual advertised `ServerInfo` -- fetched
     /// from the connection's `peer_info()`, populated by the initialize
     /// handshake when the bridge connected -- rather than hand-declaring a
@@ -298,9 +321,9 @@ impl ServerHandler for BridgeServerHandler {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         self.peer
-            .call_tool(request)
+            .call_tool_once(request)
             .await
             .map_err(|e| bridge_error("call_tool", e))
     }
@@ -331,9 +354,9 @@ impl ServerHandler for BridgeServerHandler {
         &self,
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
+    ) -> Result<ReadResourceResponse, ErrorData> {
         self.peer
-            .read_resource(request)
+            .read_resource_once(request)
             .await
             .map_err(|e| bridge_error("read_resource", e))
     }
@@ -353,9 +376,9 @@ impl ServerHandler for BridgeServerHandler {
         &self,
         request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, ErrorData> {
+    ) -> Result<GetPromptResponse, ErrorData> {
         self.peer
-            .get_prompt(request)
+            .get_prompt_once(request)
             .await
             .map_err(|e| bridge_error("get_prompt", e))
     }
@@ -383,28 +406,6 @@ impl ServerHandler for BridgeServerHandler {
             .map_err(|e| bridge_error("set_level", e))
     }
 
-    async fn subscribe(
-        &self,
-        request: SubscribeRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<(), ErrorData> {
-        self.peer
-            .subscribe(request)
-            .await
-            .map_err(|e| bridge_error("subscribe", e))
-    }
-
-    async fn unsubscribe(
-        &self,
-        request: UnsubscribeRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<(), ErrorData> {
-        self.peer
-            .unsubscribe(request)
-            .await
-            .map_err(|e| bridge_error("unsubscribe", e))
-    }
-
     /// `Peer<RoleClient>` has no typed `ping` shortcut, so build the
     /// `PingRequest` and match the raw `ServerResult` by hand -- the same
     /// thing the typed convenience methods do internally.
@@ -420,115 +421,37 @@ impl ServerHandler for BridgeServerHandler {
         }
     }
 
-    /// Task creation (SEP-1319) reuses `tools/call` wire framing -- there is
-    /// no distinct `ClientRequest` variant for it -- but expects
-    /// `ServerResult::CreateTaskResult` back instead of `CallToolResult`, so
-    /// it can't go through the typed `call_tool()` shortcut.
-    async fn enqueue_task(
-        &self,
-        request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<CreateTaskResult, ErrorData> {
-        match self
-            .peer
-            .send_request(ClientRequest::CallToolRequest(CallToolRequest::new(
-                request,
-            )))
-            .await
-            .map_err(|e| bridge_error("enqueue_task", e))?
-        {
-            ServerResult::CreateTaskResult(result) => Ok(result),
-            _ => Err(unexpected_response("enqueue_task")),
-        }
-    }
-
-    async fn list_tasks(
-        &self,
-        request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListTasksResult, ErrorData> {
-        match self
-            .peer
-            .send_request(ClientRequest::ListTasksRequest(ListTasksRequest {
-                method: Default::default(),
-                params: request,
-                extensions: Default::default(),
-            }))
-            .await
-            .map_err(|e| bridge_error("list_tasks", e))?
-        {
-            ServerResult::ListTasksResult(result) => Ok(result),
-            _ => Err(unexpected_response("list_tasks")),
-        }
-    }
-
-    async fn get_task_info(
+    async fn get_task(
         &self,
         request: GetTaskParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, ErrorData> {
-        match self
-            .peer
-            .send_request(ClientRequest::GetTaskRequest(GetTaskRequest::new(request)))
+        self.peer
+            .get_task(request)
             .await
-            .map_err(|e| bridge_error("get_task_info", e))?
-        {
-            ServerResult::GetTaskResult(result) => Ok(result),
-            _ => Err(unexpected_response("get_task_info")),
-        }
+            .map_err(|e| bridge_error("get_task", e))
     }
 
-    /// `GetTaskPayloadResult` deliberately errors on `Deserialize` (rmcp's
-    /// own doc comment on the type: it's wire-identical to `CustomResult`,
-    /// a bare JSON value, so rmcp's untagged `ServerResult` enum always
-    /// resolves a real one to `CustomResult` instead). A genuine daemon
-    /// response therefore never actually arrives as
-    /// `ServerResult::GetTaskPayloadResult` -- only `CustomResult` is
-    /// reachable in practice; the former arm is kept only in case a future
-    /// rmcp version changes this.
-    async fn get_task_result(
+    async fn update_task(
         &self,
-        request: GetTaskPayloadParams,
+        request: UpdateTaskParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<GetTaskPayloadResult, ErrorData> {
-        match self
-            .peer
-            .send_request(ClientRequest::GetTaskPayloadRequest(
-                GetTaskPayloadRequest::new(request),
-            ))
+    ) -> Result<(), ErrorData> {
+        self.peer
+            .update_task(request)
             .await
-            .map_err(|e| bridge_error("get_task_result", e))?
-        {
-            ServerResult::GetTaskPayloadResult(result) => Ok(result),
-            ServerResult::CustomResult(CustomResult(value)) => Ok(GetTaskPayloadResult::new(value)),
-            _ => Err(unexpected_response("get_task_result")),
-        }
+            .map_err(|e| bridge_error("update_task", e))
     }
 
-    /// `CancelTaskResult` and `GetTaskResult` are wire-identical
-    /// (`allOf[Result, Task]`, same fields, same flattening) and
-    /// `GetTaskResult` is declared earlier in `ServerResult`'s untagged
-    /// enum, so a genuine `CancelTaskResult` response always resolves to
-    /// `ServerResult::GetTaskResult` on the wire, never
-    /// `ServerResult::CancelTaskResult` -- the latter arm is unreachable in
-    /// practice but kept for forward-compatibility.
     async fn cancel_task(
         &self,
         request: CancelTaskParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CancelTaskResult, ErrorData> {
-        match self
-            .peer
-            .send_request(ClientRequest::CancelTaskRequest(CancelTaskRequest::new(
-                request,
-            )))
+    ) -> Result<(), ErrorData> {
+        self.peer
+            .cancel_task(request)
             .await
-            .map_err(|e| bridge_error("cancel_task", e))?
-        {
-            ServerResult::CancelTaskResult(result) => Ok(result),
-            ServerResult::GetTaskResult(result) => Ok(CancelTaskResult::new(result.task)),
-            _ => Err(unexpected_response("cancel_task")),
-        }
+            .map_err(|e| bridge_error("cancel_task", e))
     }
 
     /// Generic escape hatch for any method neither side has typed support
@@ -547,29 +470,6 @@ impl ServerHandler for BridgeServerHandler {
         {
             ServerResult::CustomResult(result) => Ok(result),
             _ => Err(unexpected_response("custom_request")),
-        }
-    }
-
-    async fn on_task_status(
-        &self,
-        params: TaskStatusNotificationParam,
-        _context: NotificationContext<RoleServer>,
-    ) {
-        if let Err(error) = self
-            .peer
-            .send_notification(ClientNotification::TaskStatusNotification(
-                rmcp::model::TaskStatusNotification::new(params),
-            ))
-            .await
-        {
-            tracing::warn!(
-                surface = "mcp",
-                service = "labby",
-                action = "bridge.on_task_status",
-                subsystem = "mcp_bridge",
-                error = %error,
-                "failed to forward task-status notification to live daemon"
-            );
         }
     }
 
@@ -668,11 +568,11 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::{
-        CancelTaskParams, CustomRequest, EmptyResult, ErrorData as McpError, GetTaskParams,
-        GetTaskPayloadParams, PaginatedRequestParams, ServerCapabilities, ServerInfo, Task,
-        TaskStatus,
+        CancelTaskParams, CancelTaskRequest, ClientCapabilities, CustomRequest, DetailedTask,
+        ErrorData as McpError, GetTaskParams, GetTaskRequest, ServerCapabilities, ServerInfo, Task,
+        TaskPayload, TaskStatus,
     };
-    use rmcp::service::{RequestContext, RunningService};
+    use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RequestContext, RunningService};
     use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
     use serde_json::json;
 
@@ -719,22 +619,19 @@ mod tests {
 
     impl ServerHandler for FakeDaemonHandler {
         fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            ServerInfo::new(
+                ServerCapabilities::builder()
+                    .enable_tools()
+                    .enable_tasks()
+                    .build(),
+            )
         }
 
         async fn ping(&self, _context: RequestContext<RoleServer>) -> Result<(), McpError> {
             Ok(())
         }
 
-        async fn list_tasks(
-            &self,
-            _request: Option<PaginatedRequestParams>,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<ListTasksResult, McpError> {
-            Ok(ListTasksResult::new(vec![fake_task()]))
-        }
-
-        async fn get_task_info(
+        async fn get_task(
             &self,
             request: GetTaskParams,
             _context: RequestContext<RoleServer>,
@@ -744,29 +641,22 @@ mod tests {
             // returning the same canned task.
             let mut task = fake_task();
             task.status_message = Some(format!("info-for:{}", request.task_id));
-            Ok(GetTaskResult::new(task))
-        }
-
-        async fn get_task_result(
-            &self,
-            request: GetTaskPayloadParams,
-            _context: RequestContext<RoleServer>,
-        ) -> Result<GetTaskPayloadResult, McpError> {
-            Ok(GetTaskPayloadResult::new(serde_json::json!({
-                "task_id": request.task_id,
-                "payload": "fake-result-payload",
-            })))
+            Ok(GetTaskResult::new(DetailedTask::new(
+                task,
+                TaskPayload::Working,
+            )))
         }
 
         async fn cancel_task(
             &self,
             request: CancelTaskParams,
             _context: RequestContext<RoleServer>,
-        ) -> Result<CancelTaskResult, McpError> {
-            let mut task = fake_task();
-            task.status = TaskStatus::Cancelled;
-            task.status_message = Some(format!("cancelled:{}", request.task_id));
-            Ok(CancelTaskResult::new(task))
+        ) -> Result<(), McpError> {
+            if request.task_id == FAKE_TASK_ID {
+                Ok(())
+            } else {
+                Err(McpError::invalid_params("unexpected task id", None))
+            }
         }
 
         async fn on_custom_request(
@@ -790,7 +680,13 @@ mod tests {
     #[derive(Clone)]
     struct TestDownstreamClient;
 
-    impl ClientHandler for TestDownstreamClient {}
+    impl ClientHandler for TestDownstreamClient {
+        fn get_info(&self) -> ClientInfo {
+            let mut info = ClientInfo::default();
+            info.capabilities = ClientCapabilities::builder().enable_tasks().build();
+            info
+        }
+    }
 
     /// A live bridge topology: the test client's peer for driving requests,
     /// plus the two `RunningService`s that must stay alive for the duration
@@ -821,7 +717,12 @@ mod tests {
         let downstream_cell: DownstreamCell = Arc::new(OnceCell::new());
         let bridge_client_service: RunningService<RoleClient, BridgeClientHandler> =
             BridgeClientHandler::new(downstream_cell.clone())
-                .serve(bridge_outbound_transport)
+                .serve_with_lifecycle(
+                    bridge_outbound_transport,
+                    ClientLifecycleMode::Discover {
+                        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                    },
+                )
                 .await
                 .expect("bridge connects to fake daemon");
 
@@ -837,7 +738,12 @@ mod tests {
             tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
         let (bridge_service, client_service) = tokio::join!(
             bridge_handler.serve(bridge_inbound_transport),
-            TestDownstreamClient.serve(client_transport),
+            TestDownstreamClient.serve_with_lifecycle(
+                client_transport,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                },
+            ),
         );
         let bridge_service: RunningService<RoleServer, BridgeServerHandler> =
             bridge_service.expect("test client connects to bridge");
@@ -853,49 +759,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ping_forwards_through_bridge_to_daemon() {
-        let harness = wire_bridge().await;
-
-        match harness
-            .peer
-            .send_request(ClientRequest::PingRequest(PingRequest::default()))
-            .await
-            .expect("ping round-trips through the bridge")
-        {
-            ServerResult::EmptyResult(EmptyResult {}) => {}
-            other => panic!("expected EmptyResult, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn list_tasks_returns_the_fake_daemons_exact_task() {
-        let harness = wire_bridge().await;
-
-        let result = match harness
-            .peer
-            .send_request(ClientRequest::ListTasksRequest(ListTasksRequest {
-                method: Default::default(),
-                params: None,
-                extensions: Default::default(),
-            }))
-            .await
-            .expect("list_tasks round-trips through the bridge")
-        {
-            ServerResult::ListTasksResult(result) => result,
-            other => panic!("expected ListTasksResult, got {other:?}"),
-        };
-
-        assert_eq!(result.tasks.len(), 1);
-        assert_eq!(result.tasks[0].task_id, FAKE_TASK_ID);
-        assert_eq!(result.tasks[0].status, TaskStatus::Working);
-        assert_eq!(
-            result.tasks[0].status_message.as_deref(),
-            Some("doing the fake thing")
-        );
-    }
-
-    #[tokio::test]
-    async fn get_task_info_reaches_the_daemon_with_the_requested_id() {
+    async fn get_task_reaches_the_daemon_with_the_requested_id() {
         let harness = wire_bridge().await;
 
         let result = match harness
@@ -904,33 +768,27 @@ mod tests {
                 GetTaskParams::new(FAKE_TASK_ID),
             )))
             .await
-            .expect("get_task_info round-trips through the bridge")
+            .expect("get_task round-trips through the bridge")
         {
             ServerResult::GetTaskResult(result) => result,
             other => panic!("expected GetTaskResult, got {other:?}"),
         };
 
-        assert_eq!(result.task.task_id, FAKE_TASK_ID);
+        assert_eq!(result.task.task.task_id, FAKE_TASK_ID);
         // The daemon's fake handler stamps the requested task id into the
         // status message, proving the request params -- not just the
         // response -- crossed the bridge intact.
         assert_eq!(
-            result.task.status_message.as_deref(),
+            result.task.task.status_message.as_deref(),
             Some(format!("info-for:{FAKE_TASK_ID}").as_str())
         );
     }
 
     #[tokio::test]
-    async fn cancel_task_reaches_the_daemon_and_returns_cancelled_status() {
+    async fn cancel_task_reaches_the_daemon_and_returns_acknowledgement() {
         let harness = wire_bridge().await;
 
-        // `CancelTaskResult` and `GetTaskResult` are wire-identical
-        // (`allOf[Result, Task]`), and `GetTaskResult` is declared earlier
-        // in `ServerResult`'s untagged enum, so a genuine daemon response
-        // always resolves to `GetTaskResult` on the wire -- never the
-        // `CancelTaskResult` variant itself. Accept either shape (mirrors
-        // the same ambiguity `get_task_result` handles just above).
-        let task = match harness
+        match harness
             .peer
             .send_request(ClientRequest::CancelTaskRequest(CancelTaskRequest::new(
                 CancelTaskParams::new(FAKE_TASK_ID),
@@ -938,47 +796,9 @@ mod tests {
             .await
             .expect("cancel_task round-trips through the bridge")
         {
-            ServerResult::CancelTaskResult(result) => result.task,
-            ServerResult::GetTaskResult(result) => result.task,
-            other => panic!("expected CancelTaskResult/GetTaskResult, got {other:?}"),
-        };
-
-        assert_eq!(task.task_id, FAKE_TASK_ID);
-        assert_eq!(task.status, TaskStatus::Cancelled);
-        assert_eq!(
-            task.status_message.as_deref(),
-            Some(format!("cancelled:{FAKE_TASK_ID}").as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn get_task_result_reaches_the_daemon_and_returns_its_payload() {
-        let harness = wire_bridge().await;
-
-        let response = harness
-            .peer
-            .send_request(ClientRequest::GetTaskPayloadRequest(
-                GetTaskPayloadRequest::new(GetTaskPayloadParams::new(FAKE_TASK_ID)),
-            ))
-            .await
-            .expect("get_task_result round-trips through the bridge");
-
-        // `GetTaskPayloadResult` is wire-indistinguishable from `CustomResult`
-        // (both are a bare JSON value) and its `Deserialize` impl
-        // unconditionally errors so that rmcp's untagged `ServerResult` enum
-        // skips over it -- so a value built server-side as
-        // `ServerResult::GetTaskPayloadResult` is received here as
-        // `ServerResult::CustomResult`. Accept either shape and check the
-        // payload underneath, which is what actually proves the daemon's
-        // data made the round trip.
-        let payload = match response {
-            ServerResult::GetTaskPayloadResult(result) => result.0,
-            ServerResult::CustomResult(CustomResult(value)) => value,
-            other => panic!("expected GetTaskPayloadResult/CustomResult, got {other:?}"),
-        };
-
-        assert_eq!(payload["task_id"], FAKE_TASK_ID);
-        assert_eq!(payload["payload"], "fake-result-payload");
+            ServerResult::TaskAckResult(_) | ServerResult::EmptyResult(_) => {}
+            other => panic!("expected task acknowledgement, got {other:?}"),
+        }
     }
 
     #[tokio::test]

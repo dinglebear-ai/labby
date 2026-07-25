@@ -1053,12 +1053,6 @@ pub struct McpPreferences {
     /// Default port for the HTTP transport.
     #[serde(default)]
     pub port: Option<u16>,
-    /// Default session keep-alive TTL in seconds for HTTP MCP sessions.
-    #[serde(default)]
-    pub session_ttl_secs: Option<u64>,
-    /// Whether HTTP MCP should use stateful sessions by default.
-    #[serde(default)]
-    pub stateful: Option<bool>,
     /// Additional allowed hosts for DNS rebinding protection.
     #[serde(default)]
     pub allowed_hosts: Option<Vec<String>>,
@@ -1842,8 +1836,6 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "mcp.transport" => serde_json::json!(cfg.mcp.transport),
         "mcp.host" => serde_json::json!(cfg.mcp.host),
         "mcp.port" => serde_json::json!(cfg.mcp.port),
-        "mcp.session_ttl_secs" => serde_json::json!(cfg.mcp.session_ttl_secs),
-        "mcp.stateful" => serde_json::json!(cfg.mcp.stateful),
         "mcp.allowed_hosts" => serde_json::json!(cfg.mcp.allowed_hosts),
         "log.filter" => serde_json::json!(cfg.log.filter),
         "log.format" => serde_json::json!(cfg.log.format),

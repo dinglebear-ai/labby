@@ -366,13 +366,14 @@ mod tests {
                 &self,
                 _: rmcp::model::ReadResourceRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
-            ) -> Result<ReadResourceResult, ErrorData> {
+            ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
                 // 12 MB of text — above the default 10 MB cap.
                 let payload = "x".repeat(12 * 1024 * 1024);
                 Ok(ReadResourceResult::new(vec![ResourceContents::text(
                     "file:///tmp/big",
                     payload,
-                )]))
+                )])
+                .into())
             }
         }
 
@@ -460,12 +461,13 @@ mod tests {
                 &self,
                 params: rmcp::model::ReadResourceRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
-            ) -> Result<ReadResourceResult, ErrorData> {
+            ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
                 // Echo back the requested (native ui://) URI with mcp-app HTML.
                 Ok(ReadResourceResult::new(vec![
                     ResourceContents::text(WIDGET_HTML, params.uri)
                         .with_mime_type("text/html;profile=mcp-app"),
-                ]))
+                ])
+                .into())
             }
         }
 
@@ -554,11 +556,12 @@ mod tests {
                 &self,
                 params: rmcp::model::ReadResourceRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
-            ) -> Result<ReadResourceResult, ErrorData> {
+            ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
                 Ok(ReadResourceResult::new(vec![
                     ResourceContents::text(WIDGET_HTML, params.uri)
                         .with_mime_type("text/html;profile=mcp-app"),
-                ]))
+                ])
+                .into())
             }
         }
 
@@ -638,12 +641,13 @@ mod tests {
                 &self,
                 params: rmcp::model::ReadResourceRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
-            ) -> Result<ReadResourceResult, ErrorData> {
+            ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
                 assert_eq!(params.uri, WIDGET_URI);
                 Ok(ReadResourceResult::new(vec![
                     ResourceContents::text(WIDGET_HTML, params.uri)
                         .with_mime_type("text/html;profile=mcp-app"),
-                ]))
+                ])
+                .into())
             }
         }
 
@@ -737,12 +741,13 @@ mod tests {
                 &self,
                 params: rmcp::model::ReadResourceRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
-            ) -> Result<ReadResourceResult, ErrorData> {
+            ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
                 self.reads.fetch_add(1, Ordering::SeqCst);
                 Ok(ReadResourceResult::new(vec![
                     ResourceContents::text(WIDGET_HTML, params.uri)
                         .with_mime_type("text/html;profile=mcp-app"),
-                ]))
+                ])
+                .into())
             }
         }
 

@@ -88,7 +88,7 @@ ratatui = "0.30.0"
 crossterm = "0.29"
 
 # mcp
-rmcp = { version = "2.1", features = [
+rmcp = { version = "=3.0.0-beta.2", features = [
   "server",
   "transport-io",
   "transport-child-process",

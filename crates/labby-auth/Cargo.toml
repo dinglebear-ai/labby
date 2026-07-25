@@ -49,7 +49,7 @@ oauth2 = { version = "5.0", default-features = false, optional = true }
 
 [dependencies.rmcp-client]
 package = "rmcp"
-version = "2.1"
+version = "=3.0.0-beta.2"
 default-features = false
 features = ["client", "auth", "transport-streamable-http-client-reqwest"]
 optional = true

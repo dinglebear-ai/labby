@@ -38,8 +38,6 @@ labby serve --services gateway,marketplace
 | `LABBY_MCP_HTTP_HOST` | `127.0.0.1` | Bind address. |
 | `LABBY_MCP_HTTP_PORT` | `8765` | Bind port. |
 | `LABBY_MCP_HTTP_TOKEN` | — | Static bearer token for authentication. |
-| `LABBY_MCP_SESSION_TTL_SECS` | `300` | Session keep-alive TTL in seconds. |
-| `LABBY_MCP_STATEFUL` | `true` | Whether to use stateful MCP sessions. |
 | `LABBY_MCP_ALLOWED_HOSTS` | — | Comma-separated hostnames for DNS rebinding protection. |
 | `LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS` | `120000` | Deadline for destructive-action MCP confirmation prompts. |
 | `LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS` | `5000` | Per-peer deadline for MCP catalog-change notifications. |
@@ -69,12 +67,13 @@ CLI flags take precedence over env vars, which take precedence over config.toml:
 3. `mcp.host`, `mcp.port`, `mcp.transport` (config.toml)
 4. Defaults: `127.0.0.1`, `8765`, `http`
 
-### Session Management
+### Stateless MCP lifecycle
 
-The HTTP transport uses RMCP's `StreamableHttpService` with a `LocalSessionManager`.
-
-- `LABBY_MCP_SESSION_TTL_SECS` controls the session keep-alive duration (default: 300 seconds / 5 minutes).
-- `LABBY_MCP_STATEFUL` controls whether stateful sessions are used (default: `true`). Set to `false` for stateless operation.
+Labby implements only the MCP `2026-07-28` stateless lifecycle. Clients open
+with `server/discover` and include the negotiated protocol version, client
+identity, and client capabilities in request `_meta`. Labby does not accept the
+legacy `initialize` / `notifications/initialized` lifecycle and does not issue
+or use `Mcp-Session-Id`.
 
 ### DNS Rebinding Protection
 
@@ -148,7 +147,8 @@ Any SWAG/nginx, Traefik, or tunnel layer in front of Lab must:
 
 - preserve `Host`
 - set `X-Forwarded-Proto` to the original client scheme
-- forward `Authorization`, `Accept`, `Content-Type`, and MCP session headers
+- forward `Authorization`, `Accept`, `Content-Type`, `Mcp-Protocol-Version`,
+  and every SEP-2243 `Mcp-*` routing header
 - avoid request buffering and response buffering on the MCP route
 - avoid compression on the MCP route
 - use read/write/idle timeouts that allow long-lived SSE streams

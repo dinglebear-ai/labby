@@ -327,7 +327,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
     async fn get_stream(
         &self,
         uri: Arc<str>,
-        session_id: Arc<str>,
+        session_id: Option<Arc<str>>,
         last_event_id: Option<String>,
         auth_token: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
@@ -335,8 +335,10 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         let mut request_builder = self
             .inner
             .get(uri.as_ref())
-            .header(ACCEPT, [EVENT_STREAM_MIME_TYPE, JSON_MIME_TYPE].join(", "))
-            .header(HEADER_SESSION_ID, session_id.as_ref());
+            .header(ACCEPT, [EVENT_STREAM_MIME_TYPE, JSON_MIME_TYPE].join(", "));
+        if let Some(session_id) = session_id {
+            request_builder = request_builder.header(HEADER_SESSION_ID, session_id.as_ref());
+        }
         if let Some(last_event_id) = last_event_id {
             request_builder = request_builder.header(HEADER_LAST_EVENT_ID, last_event_id);
         }
@@ -369,7 +371,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             }
         }
         let capped = per_event_capped_byte_stream(response.bytes_stream(), self.max_bytes);
-        Ok(SseStream::from_byte_stream(capped).boxed())
+        Ok(SseStream::from_bytes_stream(capped).boxed())
     }
 
     async fn delete_session(
@@ -490,7 +492,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             Some(ct) if ct.as_bytes().starts_with(EVENT_STREAM_MIME_TYPE.as_bytes()) => {
                 let capped = per_event_capped_byte_stream(response.bytes_stream(), self.max_bytes);
                 Ok(StreamableHttpPostResponse::Sse(
-                    SseStream::from_byte_stream(capped).boxed(),
+                    SseStream::from_bytes_stream(capped).boxed(),
                     session_id_resp,
                 ))
             }

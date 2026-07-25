@@ -255,19 +255,19 @@ test('SettingsScalarSection blocks invalid numeric input before save', async () 
   installDom()
   const numberField: SettingsFieldSpec = {
     ...fields[0],
-    key: 'mcp.session_ttl_secs',
-    label: 'Session TTL',
+    key: 'mcp.port',
+    label: 'MCP HTTP port',
     backend: 'config_toml',
     control: 'number',
     min: 1,
-    max: 86_400,
+    max: 65_535,
     env_override: null,
   }
   const numberState: SettingsState = {
     ...state,
-    values: { 'mcp.session_ttl_secs': 3600 },
+    values: { 'mcp.port': 8765 },
     sources: {
-      'mcp.session_ttl_secs': { source: 'config_toml', overridden_by_env: null },
+      'mcp.port': { source: 'config_toml', overridden_by_env: null },
     },
   }
   const originalConfigUpdate = setupApi.settingsConfigUpdate
@@ -287,7 +287,7 @@ test('SettingsScalarSection blocks invalid numeric input before save', async () 
     await click(view.container.querySelector('[data-slot="checkbox"]'))
     await click([...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('Save changes')) ?? null)
 
-    await waitFor(() => assert.match(view.container.textContent ?? '', /Must be at most 86400/))
+    await waitFor(() => assert.match(view.container.textContent ?? '', /Must be at most 65535/))
     assert.equal(calls, 0)
     await view.unmount()
   } finally {

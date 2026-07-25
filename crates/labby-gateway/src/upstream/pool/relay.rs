@@ -617,7 +617,7 @@ mod tests {
     use std::sync::Arc;
 
     use rmcp::model::{
-        CallToolRequestParams, CallToolResult, ClientCapabilities, ContentBlock,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock,
         ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, ErrorData,
         PaginatedRequestParams, PrimitiveSchemaDefinition, ServerCapabilities, ServerInfo,
     };
@@ -680,7 +680,7 @@ mod tests {
             &self,
             _request: CallToolRequestParams,
             context: RequestContext<RoleServer>,
-        ) -> Result<CallToolResult, ErrorData> {
+        ) -> Result<CallToolResponse, ErrorData> {
             let schema = ElicitationSchema::builder()
                 .required_property(
                     "confirm",
@@ -699,9 +699,10 @@ mod tests {
                 .await
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             let confirmed = matches!(result.action, ElicitationAction::Accept);
-            Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                "confirmed={confirmed}"
-            ))]))
+            Ok(
+                CallToolResult::success(vec![ContentBlock::text(format!("confirmed={confirmed}"))])
+                    .into(),
+            )
         }
 
         async fn list_tools(
@@ -1058,7 +1059,7 @@ mod tests {
                 &self,
                 _request: CallToolRequestParams,
                 _context: RequestContext<RoleServer>,
-            ) -> Result<CallToolResult, ErrorData> {
+            ) -> Result<CallToolResponse, ErrorData> {
                 Err(ErrorData::internal_error("boom".to_string(), None))
             }
             async fn list_tools(
@@ -1182,9 +1183,9 @@ mod tests {
                 &self,
                 _request: CallToolRequestParams,
                 _context: RequestContext<RoleServer>,
-            ) -> Result<CallToolResult, ErrorData> {
+            ) -> Result<CallToolResponse, ErrorData> {
                 let payload = "x".repeat(12 * 1024 * 1024);
-                Ok(CallToolResult::success(vec![ContentBlock::text(payload)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(payload)]).into())
             }
             async fn list_tools(
                 &self,
