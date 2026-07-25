@@ -2,6 +2,8 @@
 //! handle swaps, and virtual-server quarantine migration.
 
 use std::collections::BTreeSet;
+use std::future::Future as _;
+use std::task::{Context, Waker};
 
 use crate::gateway::config::{load_gateway_config, write_gateway_config};
 use crate::gateway::manager::pool_lifecycle::quarantine_unregistered_virtual_servers;
@@ -131,15 +133,32 @@ async fn detached_reload_applies_config_after_caller_cancellation() {
 
     // Simulate the timeout middleware dropping the request future after a
     // single poll: the reload must keep running in its owned task.
-    let cancelled = tokio::time::timeout(
-        Duration::ZERO,
-        manager.reload_with_origin_detached(None, None, Duration::from_secs(30)),
-    )
-    .await;
+    //
+    // Poll exactly once by hand rather than racing `timeout(Duration::ZERO, ..)`
+    // against the spawned task. That form `.await`s, which hands control to the
+    // runtime and lets the reload run to completion before the deadline check —
+    // whether it does is poll-ordering dependent, which is what made this test
+    // flaky in CI (issue #261 B1).
+    //
+    // One manual poll is deterministic here. `reload_with_origin_detached` runs
+    // synchronously up to its `tokio::spawn` and then awaits the `JoinHandle`,
+    // and `#[tokio::test]` gives a **current-thread** runtime, on which a
+    // spawned task cannot make progress until the caller yields. So the task is
+    // guaranteed to be spawned-but-unstarted at this point: `Poll::Pending`,
+    // asserted directly instead of inferred. (Converting this test to
+    // `flavor = "multi_thread"` would reintroduce the race.)
+    let mut detached =
+        Box::pin(manager.reload_with_origin_detached(None, None, Duration::from_secs(30)));
+    let first_poll = detached
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()));
     assert!(
-        cancelled.is_err(),
+        first_poll.is_pending(),
         "caller future completed within one poll; cancellation was not exercised"
     );
+    // The real drop — `Box::pin` owns the future, so this is the caller
+    // cancelling mid-reload rather than merely releasing a borrow.
+    drop(detached);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
