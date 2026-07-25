@@ -59,7 +59,9 @@ use std::{
 use anyhow::{Context, Result};
 use oauth2::{AccessToken, basic::BasicTokenType};
 use rmcp::{
-    model::{ClientJsonRpcMessage, ClientRequest, NumberOrString, PingRequest},
+    model::{
+        ClientJsonRpcMessage, ClientRequest, DiscoverRequest, DiscoverRequestParams, NumberOrString,
+    },
     transport::{
         auth::{
             AuthClient, AuthError, AuthorizationManager, AuthorizationMetadata,
@@ -164,12 +166,12 @@ async fn run_wiremock_spike() -> Result<()> {
     // the header; if AuthClient did NOT inject, the mock would not match and
     // wiremock would 404.
     let mcp_uri: Arc<str> = Arc::from(format!("{base_uri}/mcp").as_str());
-    let ping = ClientJsonRpcMessage::request(
-        ClientRequest::PingRequest(PingRequest::default()),
+    let discover = ClientJsonRpcMessage::request(
+        ClientRequest::DiscoverRequest(DiscoverRequest::new(DiscoverRequestParams {})),
         NumberOrString::Number(1),
     );
     let result = auth_client
-        .post_message(mcp_uri.clone(), ping, None, None, HashMap::new())
+        .post_message(mcp_uri.clone(), discover, None, None, HashMap::new())
         .await;
 
     match result {
@@ -332,12 +334,12 @@ async fn run_real_upstream(mcp_url: String) -> Result<()> {
     let auth_client = AuthClient::new(reqwest::Client::new(), manager);
 
     let uri: Arc<str> = Arc::from(mcp_url.as_str());
-    let ping = ClientJsonRpcMessage::request(
-        ClientRequest::PingRequest(PingRequest::default()),
+    let discover = ClientJsonRpcMessage::request(
+        ClientRequest::DiscoverRequest(DiscoverRequest::new(DiscoverRequestParams {})),
         NumberOrString::Number(1),
     );
     match auth_client
-        .post_message(uri, ping, None, None, HashMap::new())
+        .post_message(uri, discover, None, None, HashMap::new())
         .await
     {
         Ok(resp) => {

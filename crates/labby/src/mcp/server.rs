@@ -12,16 +12,12 @@ use axum::http;
 #[cfg(feature = "gateway")]
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CompleteRequestParams, CompleteResult, DiscoverResult,
-    GetPromptRequestParams, GetPromptResponse, InitializeRequestParams, InitializeResult,
-    ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
-    ServerInfo, SubscriptionFilter,
+    CacheScope, CallToolRequestParams, CallToolResponse, CompleteRequestParams, CompleteResult,
+    DiscoverResult, GetPromptRequestParams, GetPromptResponse, InitializeRequestParams,
+    InitializeResult, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse, ServerCapabilities, ServerInfo, SubscriptionFilter,
 };
-// rmcp deprecates legacy logging under SEP-2577; the ServerHandler trait
-// still requires this request type for clients using the old logging flow.
-#[allow(deprecated)]
-use rmcp::model::SetLevelRequestParams;
 use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 
@@ -30,7 +26,7 @@ use crate::dispatch::gateway::manager::GatewayManager;
 use crate::mcp::completion::{complete_prompt_arg, completion_info};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::subject_from_extensions;
-use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel, logging_level_rank};
+use crate::mcp::logging::DispatchLogOutcome;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
@@ -190,33 +186,12 @@ impl ServerHandler for LabMcpServer {
             .enable_resources_list_changed()
             .enable_prompts()
             .enable_prompts_list_changed()
-            .enable_logging()
             .enable_completions();
         #[cfg(feature = "gateway")]
         let builder = builder.enable_extensions_with(mcp_apps_ui_extension());
         let mut info = ServerInfo::new(builder.build());
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
         info
-    }
-
-    #[allow(deprecated)]
-    async fn set_level(
-        &self,
-        request: SetLevelRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<(), ErrorData> {
-        self.logging_level.store(
-            logging_level_rank(LoggingLevel::from_rmcp(request.level)),
-            Ordering::Release,
-        );
-        tracing::info!(
-            surface = "mcp",
-            service = "labby",
-            action = "logging.setLevel",
-            level = ?request.level,
-            "rmcp logging level updated"
-        );
-        Ok(())
     }
 
     async fn discover(
@@ -372,6 +347,16 @@ impl ServerHandler for LabMcpServer {
         self.list_resources_impl(request, context).await
     }
 
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        Ok(ListResourceTemplatesResult::with_all_items(Vec::new())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private))
+    }
+
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
@@ -379,7 +364,12 @@ impl ServerHandler for LabMcpServer {
     ) -> Result<ReadResourceResponse, ErrorData> {
         self.read_resource_impl(request, context)
             .await
-            .map(Into::into)
+            .map(|result| {
+                result
+                    .with_ttl_ms(0)
+                    .with_cache_scope(CacheScope::Private)
+                    .into()
+            })
     }
 
     async fn list_tools(
@@ -395,7 +385,7 @@ impl ServerHandler for LabMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        self.call_tool_impl(request, context).await.map(Into::into)
+        self.call_tool_response_impl(request, context).await
     }
 }
 
@@ -425,10 +415,11 @@ impl LabMcpServer {
 mod tests {
     use std::time::Duration;
 
+    use super::LabMcpServer;
     #[cfg(feature = "gateway")]
     use super::verify_upstream_subject_resolution_support;
-    use super::{LabMcpServer, logging_level_rank};
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
+    use crate::mcp::logging::logging_level_rank;
     use crate::registry::ToolRegistry;
     use rmcp::ServerHandler;
     use rmcp::ServiceExt;
@@ -474,8 +465,8 @@ mod tests {
             Some(true)
         );
         assert!(
-            info.capabilities.logging.is_some(),
-            "RMCP logging capability must be advertised"
+            info.capabilities.logging.is_none(),
+            "2026-07-28 removes logging/setLevel and must not advertise legacy logging"
         );
         assert!(
             info.capabilities.completions.is_some(),
@@ -504,6 +495,33 @@ mod tests {
             info.capabilities.extensions.is_none(),
             "no-gateway builds must not advertise MCP Apps UI"
         );
+    }
+
+    #[tokio::test]
+    async fn resource_templates_include_required_rc_cache_metadata() {
+        let server =
+            stateless_test_server(std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = rmcp::service::RequestContext::new(
+            rmcp::model::NumberOrString::Number(1),
+            running.peer().clone(),
+        );
+
+        let result = running
+            .service()
+            .list_resource_templates(None, context)
+            .await
+            .expect("resource templates");
+
+        assert_eq!(result.ttl_ms, Some(0));
+        assert_eq!(result.cache_scope, Some(rmcp::model::CacheScope::Private));
+        let wire = serde_json::to_value(result).expect("serialize resource templates");
+        assert_eq!(wire["resultType"], "complete");
+        assert_eq!(wire["ttlMs"], 0);
+        assert_eq!(wire["cacheScope"], "private");
     }
 
     #[cfg(feature = "gateway")]

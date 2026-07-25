@@ -76,26 +76,30 @@ Each service dispatcher must:
 
 ## Elicitation for destructive ops
 
-When an action's `ActionSpec.destructive == true`, the dispatcher **must** call the MCP elicitation flow before executing. The client confirms, then the dispatcher proceeds.
+When an action's `ActionSpec.destructive == true`, the 2026-07-28 protocol
+handler **must** return an MRTR `input_required` result containing form
+elicitation in `inputRequests`. The client retries the original request with
+`inputResponses`; do not send an in-flight `elicitation/create` RPC and do not
+invent custom `requestState`.
 
-When the MCP client does not support elicitation, the dispatcher executes normally. Do not add a `params.confirm`, `--yes`, header, or any other fake destructive gate to the MCP path. Request params are payload, not authorization. If a client advertises elicitation and declines, cancels, fails, or times out the prompt, the dispatcher refuses the action with `confirmation_required`.
+When the MCP client does not support form elicitation, the dispatcher executes
+normally. Do not add a `params.confirm`, `--yes`, header, or any other fake
+destructive gate to the MCP path. Request params are payload, not
+authorization. A declined or invalid elicitation retry returns
+`confirmation_required`.
 
-## Upstream elicitation relay (opt-in)
+## Upstream MRTR forwarding
 
-The above is lab's *own* server→downstream elicitation. The reverse direction —
-an **upstream** MCP server that raises `elicitation/create` (or sampling/roots)
-back at the gateway during a proxied tool call — is bridged by the relay path.
+The above is Labby's own destructive-action elicitation. For an upstream MCP
+server, the gateway preserves an `input_required` tool response for the
+downstream client.
 `mcp/call_tool_upstream.rs` routes the proxied call through
 `UpstreamPool::call_tool_relayed` (a dedicated connection served with
 `RelayClientHandler`, see `dispatch/upstream/pool/relay.rs`) instead of the
-pooled `call_tool` / `subject_scoped_call_tool` when **both**:
-`LABBY_UPSTREAM_RELAY_ENABLED` is set (legacy
-`LABBY_UPSTREAM_RELAY_ELICITATION` remains accepted), and the downstream agent
-advertised at least one relayed server→client capability (elicitation, sampling,
-or roots). Both proxy branches honor the gate — the raw branch passes
-`subject = None`, the OAuth/subject-scoped branch forwards the resolved
-`oauth_subject` so the dedicated connection authenticates as the caller. The
-relay forwards the upstream's request straight to `context.peer` (the agent).
+pooled path whenever the downstream agent advertises an MRTR input capability.
+Both proxy branches do this automatically — the raw branch passes
+`subject = None`, while the OAuth branch forwards `oauth_subject`. The relay
+uses `call_tool_once`; it never fulfills the input inside Labby.
 
 Relay connections are cached per `(upstream, session_id, subject)`. `session_id`
 is minted once per `LabMcpServer` session (`next_relay_session_id()`) and passed

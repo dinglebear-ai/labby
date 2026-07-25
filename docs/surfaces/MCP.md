@@ -313,25 +313,11 @@ Current completion behavior:
 
 The cached global action-name list exists to avoid re-sorting the full action set on every completion request.
 
-## Logging Notifications
+## Logging
 
-`lab` supports MCP logging via `logging/setLevel` and server-to-client logging notifications.
-
-Rules:
-
-- notifications are dispatch-boundary only
-- the client must opt in by calling `set_level`
-- the disabled sentinel is internal-only implementation detail; clients observe standard RFC 5424 severity semantics
-- success notifications emit `service`, `action`, and `elapsed_ms`
-- error notifications also include a sanitized `error` string
-
-Sanitization requirements:
-
-- `internal_error` and `server_error` notifications must not expose raw backend details
-- error strings are reduced to a single line
-- home-directory paths are redacted before the notification is sent
-
-MCP logging notifications are supplemental observability for the client session. They must never change dispatch results or leak secrets.
+The 2026-07-28 protocol removes `logging/setLevel`. Labby does not advertise
+the legacy logging capability or send `notifications/message`; structured
+server-side tracing remains the observability source of truth.
 
 ## Structured Error Kinds
 
@@ -398,18 +384,14 @@ Representative destructive actions include:
 
 ## Elicitation Policy
 
-MCP destructive calls require explicit confirmation. The server first uses MCP
-elicitation when the client supports it. If elicitation is unavailable, the MCP
-dispatcher executes normally and does not require or inspect `params.confirm`,
-headers, or CLI-style confirmation flags. If a client advertises elicitation and
-then declines, cancels, fails, or times out the prompt, the dispatcher returns
-`confirmation_required`.
-
-Destructive elicitation waits are bounded. The default deadline is 120 seconds;
-operators can set `[mcp].destructive_elicitation_timeout_ms` or
-`LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS` to any value from `1` through
-`600000` milliseconds. A timeout is returned as `confirmation_required`; callers
-can retry when ready to confirm.
+MCP destructive calls use 2026-07-28 multi round-trip requests (MRTR). When a
+client advertises form elicitation, the server returns `resultType:
+"input_required"` with an elicitation request in `inputRequests`; the client
+retries the original tool call with the answer in `inputResponses`. Labby does
+not create custom `requestState` or send an in-flight `elicitation/create` RPC.
+If elicitation is unavailable, the dispatcher executes normally and does not
+inspect `params.confirm`, headers, or CLI-style confirmation flags. A declined
+or invalid retry returns `confirmation_required`.
 
 Catalog-change notifications are bounded independently. Labby notifies MCP
 peers concurrently and waits up to 5 seconds per peer by default. Operators can
@@ -425,16 +407,14 @@ Prompts must include:
 - key params
 - plain-language risk description
 
-## Upstream Relay
+## Upstream MRTR
 
-Gateway-proxied upstream tool calls normally use the pooled upstream connection.
-When an upstream tool can raise server-to-client requests during a tool call,
-operators can opt into a dedicated relay connection by setting
-`LABBY_UPSTREAM_RELAY_ENABLED=1`. The relay forwards upstream elicitation,
-sampling, and roots requests to the downstream MCP client when that client
-advertises the corresponding capability. The older
-`LABBY_UPSTREAM_RELAY_ELICITATION=1` flag is still accepted for backward
-compatibility, but new deployments should use `LABBY_UPSTREAM_RELAY_ENABLED`.
+Gateway-proxied upstream tool calls automatically use a dedicated,
+capability-mirroring connection when the downstream client advertises an MRTR
+input capability. Labby invokes the upstream with rmcp's one-round API and
+returns `input_required` unchanged. The downstream client supplies
+`inputResponses` by retrying the original request; Labby does not invoke the
+removed server-initiated elicitation, sampling, or roots callback flow.
 
 ## Registry
 

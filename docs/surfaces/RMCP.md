@@ -60,7 +60,7 @@ The baseline posture is:
 | `client` | required in practice | `lab` must be able to act as an outbound MCP client and gateway |
 | `auth` | required | needed for outbound OAuth MCP clients and protected HTTP MCP deployments |
 | `transport-streamable-http-client` | required in practice | required for outbound MCP gateway/client work over HTTP |
-| logging capability | required in practice | `lab` emits sanitized RMCP log notifications when the client negotiates logging |
+| per-request logging | not advertised | 2026-07-28 removes `logging/setLevel`; Labby relies on server-side tracing |
 
 Notes:
 
@@ -88,7 +88,9 @@ HTTP MCP-specific rules:
 
 - use RMCP's streamable HTTP server transport, not a custom protocol
 - mount it as a Tower service inside Axum
-- preserve RMCP session semantics
+- use the 2026-07-28 stateless lifecycle; do not issue or require
+  `Mcp-Session-Id`
+- preserve the RC request metadata and HTTP method headers through Axum
 - respect RMCP host-header protections unless there is an explicit deployment override
 
 Axum route-boundary rules:
@@ -204,23 +206,11 @@ Rules:
 - outbound RMCP client and auth support are first-class capabilities because `lab` must connect to and proxy other MCP servers
 - if outbound MCP clients are added, their credentials and token lifecycle must still follow `lab`'s own config and secret-handling rules
 
-## Logging Capability Contract
+## Logging Contract
 
-`lab` implements RMCP logging capability as a first-class server feature.
-
-Rules:
-
-- advertise logging capability in server info when available
-- honor negotiated log level handling where RMCP supports it
-- map negotiated levels onto the same dispatch outcome vocabulary used by local
-  tracing (`success -> info`, caller/user errors -> warning, internal/upstream
-  failures -> error)
-- emit sanitized log notifications only; never send tokens, cookies, auth
-  headers, raw credential-bearing URLs, or secret env values
-- reuse the same action/service/upstream context and redaction rules that apply
-  to local structured logs
-- logging notifications supplement local tracing; they do not replace required
-  server-side observability
+Labby does not advertise the removed legacy logging capability and does not
+accept `logging/setLevel`. Local structured tracing remains required and uses
+the same action/service/upstream context and redaction rules.
 
 Current implementation notes:
 
@@ -243,11 +233,13 @@ Rules:
 
 ## Elicitation Contract
 
-Elicitation is a required part of the RMCP posture.
+MRTR elicitation is a required part of the RMCP posture.
 
 Rules:
 
 - destructive operations continue to derive confirmation behavior from shared action metadata
+- return `resultType: "input_required"` and retry with `inputResponses`; do
+  not send an in-flight `elicitation/create` request
 - RMCP elicitation must not become a second confirmation policy independent of `ActionSpec.destructive`
 - when elicitation is unavailable, fallback behavior must remain explicit and consistent with the owning surface contract
 - elicitation prompts must be short, structured, and safe to parse by both humans and agents

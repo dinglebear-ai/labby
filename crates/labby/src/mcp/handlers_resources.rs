@@ -548,7 +548,9 @@ impl LabMcpServer {
         )
         .await;
 
-        let mut result = ListResourcesResult::with_all_items(resources);
+        let mut result = ListResourcesResult::with_all_items(resources)
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private);
         result.next_cursor = next_cursor;
         Ok(result)
     }
@@ -2470,6 +2472,12 @@ for (const value of [
         );
         assert_eq!(first.resources[0].uri, "lab://catalog");
         assert_eq!(first.next_cursor.as_deref(), Some("100"));
+        assert_eq!(first.ttl_ms, Some(0));
+        assert_eq!(first.cache_scope, Some(rmcp::model::CacheScope::Private));
+        let wire = serde_json::to_value(&first).expect("serialize resource list");
+        assert_eq!(wire["resultType"], "complete");
+        assert_eq!(wire["ttlMs"], 0);
+        assert_eq!(wire["cacheScope"], "private");
         let first_page_service_resources = first
             .resources
             .iter()
@@ -2651,12 +2659,21 @@ for (const value of [
 
         let allowed = running
             .service()
-            .read_resource_impl(
+            .read_resource(
                 ReadResourceRequestParams::new(CODE_MODE_HISTORY_APP_URI),
                 scoped_context(running.peer().clone(), &["lab:read"]),
             )
             .await
             .expect("read history resource");
+        let rmcp::model::ReadResourceResponse::Complete(allowed) = allowed else {
+            panic!("history resource must complete in one round");
+        };
+        assert_eq!(allowed.ttl_ms, Some(0));
+        assert_eq!(allowed.cache_scope, Some(rmcp::model::CacheScope::Private));
+        let wire = serde_json::to_value(&allowed).expect("serialize resource read");
+        assert_eq!(wire["resultType"], "complete");
+        assert_eq!(wire["ttlMs"], 0);
+        assert_eq!(wire["cacheScope"], "private");
         assert_eq!(allowed.contents.len(), 1);
         match &allowed.contents[0] {
             ResourceContents::TextResourceContents {

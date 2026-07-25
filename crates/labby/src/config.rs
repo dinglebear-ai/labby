@@ -73,31 +73,6 @@ pub(crate) fn env_flag_enabled(name: &str) -> bool {
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
-fn truthy_env_flag_value(value: &str) -> bool {
-    matches!(value, "1" | "true" | "TRUE" | "yes" | "YES")
-}
-
-/// Whether upstream server→client request relay is enabled for proxied tool calls.
-///
-/// `LABBY_UPSTREAM_RELAY_ENABLED` is the clearer current name because the relay
-/// covers every mirrored server→client capability (elicitation, sampling, and
-/// roots). `LABBY_UPSTREAM_RELAY_ELICITATION` remains supported for existing
-/// deployments that enabled the original narrower flag.
-pub(crate) fn upstream_relay_enabled() -> bool {
-    resolve_upstream_relay_enabled(
-        std::env::var("LABBY_UPSTREAM_RELAY_ENABLED")
-            .ok()
-            .as_deref(),
-        std::env::var("LABBY_UPSTREAM_RELAY_ELICITATION")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn resolve_upstream_relay_enabled(current: Option<&str>, legacy: Option<&str>) -> bool {
-    current.is_some_and(truthy_env_flag_value) || legacy.is_some_and(truthy_env_flag_value)
-}
-
 fn parse_bounded_ms(raw: &str, max: u64) -> Option<u64> {
     raw.parse::<u64>()
         .ok()
@@ -115,16 +90,6 @@ fn parse_bounded_ms_env(name: &str, raw: &str, max: u64) -> Option<u64> {
         );
     }
     parsed
-}
-
-#[cfg(test)]
-fn resolve_destructive_elicitation_timeout_ms(
-    env_value: Option<&str>,
-    config_value: Option<u64>,
-) -> Option<u64> {
-    env_value
-        .and_then(|raw| parse_bounded_ms(raw, MAX_DESTRUCTIVE_ELICITATION_TIMEOUT_MS))
-        .or(config_value)
 }
 
 /// Whether mcp-ui widget -> host tool callbacks are permitted while the Code
@@ -156,7 +121,6 @@ static RESOLVED_WIDGET_CALLBACKS: AtomicBool = AtomicBool::new(false);
 static RESOLVED_INSTALL_ANDROID_SDK: AtomicBool = AtomicBool::new(false);
 static RESOLVED_SYMBOLS: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static RESOLVED_PROTECTED_MCP_TIMEOUT_SECS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
-static RESOLVED_DESTRUCTIVE_ELICITATION_TIMEOUT_MS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 static RESOLVED_CATALOG_NOTIFICATION_TIMEOUT_MS: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 
 fn resolved_symbols_cell() -> &'static Mutex<Option<String>> {
@@ -165,10 +129,6 @@ fn resolved_symbols_cell() -> &'static Mutex<Option<String>> {
 
 fn resolved_protected_mcp_timeout_cell() -> &'static Mutex<Option<u64>> {
     RESOLVED_PROTECTED_MCP_TIMEOUT_SECS.get_or_init(|| Mutex::new(None))
-}
-
-fn resolved_destructive_elicitation_timeout_cell() -> &'static Mutex<Option<u64>> {
-    RESOLVED_DESTRUCTIVE_ELICITATION_TIMEOUT_MS.get_or_init(|| Mutex::new(None))
 }
 
 fn resolved_catalog_notification_timeout_cell() -> &'static Mutex<Option<u64>> {
@@ -212,20 +172,6 @@ pub(crate) fn install_resolved_preferences(config: &LabConfig) {
     *resolved_protected_mcp_timeout_cell()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = protected_mcp_timeout_secs;
-    let destructive_elicitation_timeout_ms =
-        std::env::var("LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS")
-            .ok()
-            .and_then(|raw| {
-                parse_bounded_ms_env(
-                    "LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS",
-                    &raw,
-                    MAX_DESTRUCTIVE_ELICITATION_TIMEOUT_MS,
-                )
-            })
-            .or(config.mcp.destructive_elicitation_timeout_ms);
-    *resolved_destructive_elicitation_timeout_cell()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = destructive_elicitation_timeout_ms;
     let catalog_notification_timeout_ms =
         std::env::var("LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS")
             .ok()
@@ -274,15 +220,6 @@ pub(crate) fn resolved_protected_mcp_connect_timeout_secs() -> Option<u64> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-pub(crate) fn resolved_destructive_elicitation_timeout() -> Duration {
-    Duration::from_millis(
-        resolved_destructive_elicitation_timeout_cell()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .unwrap_or(DEFAULT_DESTRUCTIVE_ELICITATION_TIMEOUT_MS),
-    )
-}
-
 pub(crate) fn resolved_catalog_notification_timeout() -> Duration {
     Duration::from_millis(
         resolved_catalog_notification_timeout_cell()
@@ -301,8 +238,6 @@ pub const DEFAULT_MCPREGISTRY_URL: &str = "https://registry.modelcontextprotocol
 pub const WEB_UI_AUTH_DISABLED_ENV: &str = "LABBY_WEB_UI_AUTH_DISABLED";
 pub const WEB_UI_AUTH_DISABLED_LEGACY_ENV: &str = "LABBY_WEB_UI_DISABLE_AUTH";
 const DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS: u64 = 30_000;
-const DEFAULT_DESTRUCTIVE_ELICITATION_TIMEOUT_MS: u64 = 120_000;
-const MAX_DESTRUCTIVE_ELICITATION_TIMEOUT_MS: u64 = 600_000;
 const DEFAULT_CATALOG_NOTIFICATION_TIMEOUT_MS: u64 = 5_000;
 const MAX_CATALOG_NOTIFICATION_TIMEOUT_MS: u64 = 60_000;
 /// Default deadline for a *relayed* upstream tool call (see
@@ -381,12 +316,10 @@ pub struct LabConfig {
     /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
-    /// Maximum time to wait for one *relayed* upstream tool call — the opt-in
-    /// path (`LABBY_UPSTREAM_RELAY_ELICITATION`) that forwards an upstream's
-    /// `elicitation/create`/`sampling`/`roots` request down to the downstream
-    /// agent. Because a relayed call blocks on a human answering an elicitation,
-    /// it gets its own, longer deadline instead of `upstream_request_timeout_ms`
-    /// (default 5 minutes; see [`LabConfig::upstream_relay_timeout`]).
+    /// Maximum time to wait for one proxied MRTR-capable upstream tool call.
+    /// This path preserves `input_required` responses for the downstream
+    /// client and gets its own longer deadline (default 5 minutes; see
+    /// [`LabConfig::upstream_relay_timeout`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_relay_timeout_ms: Option<u64>,
     /// Upstream MCP servers to proxy through the gateway.
@@ -691,11 +624,6 @@ impl LabConfig {
             && !(1..=1_800_000).contains(&value)
         {
             return Err(ConfigError::InvalidUpstreamRelayTimeout { value });
-        }
-        if let Some(value) = self.mcp.destructive_elicitation_timeout_ms
-            && !(1..=MAX_DESTRUCTIVE_ELICITATION_TIMEOUT_MS).contains(&value)
-        {
-            return Err(ConfigError::InvalidDestructiveElicitationTimeout { value });
         }
         if let Some(value) = self.mcp.catalog_notification_timeout_ms
             && !(1..=MAX_CATALOG_NOTIFICATION_TIMEOUT_MS).contains(&value)
@@ -1060,11 +988,6 @@ pub struct McpPreferences {
     /// Overridden by `LABBY_SHOW_ALL` env var.
     #[serde(default)]
     pub show_all: Option<bool>,
-    /// Maximum time to wait for a downstream MCP client to answer a destructive
-    /// action confirmation elicitation.
-    /// Overridden by `LABBY_MCP_DESTRUCTIVE_ELICITATION_TIMEOUT_MS`.
-    #[serde(default)]
-    pub destructive_elicitation_timeout_ms: Option<u64>,
     /// Maximum time to wait for one MCP peer catalog-change notification.
     /// Overridden by `LABBY_MCP_CATALOG_NOTIFICATION_TIMEOUT_MS`.
     #[serde(default)]
@@ -2256,7 +2179,6 @@ mod tests {
         config.mcp.show_all = Some(true);
         config.api.dev_mode = Some(true);
         config.api.protected_mcp_connect_timeout_secs = Some(42);
-        config.mcp.destructive_elicitation_timeout_ms = Some(45_000);
         config.mcp.catalog_notification_timeout_ms = Some(2_500);
         config.code_mode.widget_callbacks = Some(true);
         config.output.symbols = Some("ascii".to_string());
@@ -2272,10 +2194,6 @@ mod tests {
         assert_eq!(resolved_symbols().as_deref(), Some("ascii"));
         assert_eq!(resolved_protected_mcp_connect_timeout_secs(), Some(42));
         assert_eq!(
-            resolved_destructive_elicitation_timeout(),
-            Duration::from_millis(45_000)
-        );
-        assert_eq!(
             resolved_catalog_notification_timeout(),
             Duration::from_millis(2_500)
         );
@@ -2289,10 +2207,6 @@ mod tests {
         assert!(!resolved_widget_callbacks_enabled());
         assert_eq!(resolved_symbols(), None);
         assert_eq!(resolved_protected_mcp_connect_timeout_secs(), None);
-        assert_eq!(
-            resolved_destructive_elicitation_timeout(),
-            Duration::from_millis(DEFAULT_DESTRUCTIVE_ELICITATION_TIMEOUT_MS)
-        );
         assert_eq!(
             resolved_catalog_notification_timeout(),
             Duration::from_millis(DEFAULT_CATALOG_NOTIFICATION_TIMEOUT_MS)
@@ -3253,71 +3167,6 @@ upstream_relay_timeout_ms = 600000
     }
 
     #[test]
-    fn destructive_elicitation_timeout_defaults_to_two_minutes_and_is_configurable() {
-        let default_cfg = LabConfig::default();
-        assert_eq!(default_cfg.mcp.destructive_elicitation_timeout_ms, None);
-
-        let cfg = toml::from_str::<LabConfig>(
-            r"
-[mcp]
-destructive_elicitation_timeout_ms = 45000
-",
-        )
-        .expect("mcp destructive elicitation timeout parses");
-
-        assert_eq!(cfg.mcp.destructive_elicitation_timeout_ms, Some(45_000));
-        cfg.validate().expect("destructive timeout validates");
-        assert_eq!(
-            resolve_destructive_elicitation_timeout_ms(
-                None,
-                cfg.mcp.destructive_elicitation_timeout_ms
-            ),
-            Some(45_000)
-        );
-        assert_eq!(
-            resolve_destructive_elicitation_timeout_ms(
-                Some("90000"),
-                cfg.mcp.destructive_elicitation_timeout_ms,
-            ),
-            Some(90_000)
-        );
-        assert_eq!(
-            resolve_destructive_elicitation_timeout_ms(
-                Some("900000"),
-                cfg.mcp.destructive_elicitation_timeout_ms,
-            ),
-            Some(45_000)
-        );
-    }
-
-    #[test]
-    fn destructive_elicitation_timeout_rejects_out_of_range() {
-        let too_big = LabConfig {
-            mcp: McpPreferences {
-                destructive_elicitation_timeout_ms: Some(600_001),
-                ..McpPreferences::default()
-            },
-            ..LabConfig::default()
-        };
-        assert!(matches!(
-            too_big.validate(),
-            Err(ConfigError::InvalidDestructiveElicitationTimeout { value: 600_001 })
-        ));
-
-        let zero = LabConfig {
-            mcp: McpPreferences {
-                destructive_elicitation_timeout_ms: Some(0),
-                ..McpPreferences::default()
-            },
-            ..LabConfig::default()
-        };
-        assert!(matches!(
-            zero.validate(),
-            Err(ConfigError::InvalidDestructiveElicitationTimeout { value: 0 })
-        ));
-    }
-
-    #[test]
     fn catalog_notification_timeout_defaults_to_five_seconds_and_is_configurable() {
         let default_cfg = LabConfig::default();
         assert_eq!(default_cfg.mcp.catalog_notification_timeout_ms, None);
@@ -3360,16 +3209,6 @@ catalog_notification_timeout_ms = 2500
             zero.validate(),
             Err(ConfigError::InvalidCatalogNotificationTimeout { value: 0 })
         ));
-    }
-
-    #[test]
-    fn upstream_relay_enabled_accepts_current_and_legacy_env_names() {
-        assert!(!resolve_upstream_relay_enabled(None, None));
-        assert!(resolve_upstream_relay_enabled(Some("1"), None));
-        assert!(resolve_upstream_relay_enabled(Some("yes"), None));
-        assert!(resolve_upstream_relay_enabled(None, Some("true")));
-        assert!(resolve_upstream_relay_enabled(Some("0"), Some("TRUE")));
-        assert!(!resolve_upstream_relay_enabled(Some("0"), Some("false")));
     }
 
     #[test]

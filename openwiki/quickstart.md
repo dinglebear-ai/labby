@@ -69,7 +69,7 @@ See [Architecture](architecture.md) for details on the crate split and dependenc
 The `labby` binary exposes the same operator capabilities through four surfaces:
 
 1. **CLI** - Human-readable command-line interface powered by clap
-2. **MCP server** - Model Context Protocol server (stdio and HTTP transport) using rmcp 2.1
+2. **MCP server** - Stateless MCP `2026-07-28` server (stdio and HTTP transport) using rmcp 3.0.0-beta.2
 3. **HTTP API** - RESTful JSON API powered by axum
 4. **Labby web UI** - Browser-based interface (served via labby-web)
 
@@ -117,7 +117,7 @@ The repo uses:
 - Rust 2024 edition with workspace resolver version 3
 - `tokio` for async runtime
 - `axum` for HTTP server
-- `rmcp 2.1` for MCP transport
+- `rmcp 3.0.0-beta.2` for the MCP `2026-07-28` stateless lifecycle
 - `clap` for CLI parsing
 
 ## Documentation Structure

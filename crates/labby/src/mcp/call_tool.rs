@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock};
 use rmcp::service::RequestContext;
 use serde_json::Value;
 
@@ -34,7 +34,6 @@ use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, GATEWAY_STA
 use crate::mcp::context::{
     auth_context_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
-use crate::mcp::elicitation::{ConfirmOutcome, elicit_confirm};
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::DispatchError;
 #[cfg(feature = "gateway")]
@@ -90,50 +89,6 @@ fn retain_route_visible_gateway_status_rows(
             _ => false,
         }
     });
-}
-
-/// Request MCP elicitation for a destructive action when the client supports it.
-async fn require_destructive_confirmation(
-    context: &RequestContext<RoleServer>,
-    service: &str,
-    action: &str,
-) -> Result<(), CallToolResult> {
-    match elicit_confirm(context, service, action).await {
-        ConfirmOutcome::Confirmed | ConfirmOutcome::NotSupported => Ok(()),
-        ConfirmOutcome::Declined | ConfirmOutcome::Cancelled => Err(CallToolResult::error(vec![
-            ContentBlock::text(
-                build_error(
-                    service,
-                    action,
-                    "confirmation_required",
-                    &format!("action `{action}` is destructive — confirm to proceed"),
-                )
-                .to_string(),
-            ),
-        ])),
-        ConfirmOutcome::Failed => Err(CallToolResult::error(vec![ContentBlock::text(
-            build_error(
-                service,
-                action,
-                "confirmation_required",
-                &format!(
-                    "action `{action}` is destructive — confirmation failed, retry with a client that supports MCP elicitation"
-                ),
-            )
-            .to_string(),
-        )])),
-        ConfirmOutcome::TimedOut => Err(CallToolResult::error(vec![ContentBlock::text(
-            build_error(
-                service,
-                action,
-                "confirmation_required",
-                &format!(
-                    "action `{action}` is destructive — confirmation timed out, retry when ready to confirm"
-                ),
-            )
-            .to_string(),
-        )])),
-    }
 }
 
 /// Attach the authenticated MCP subject to gateway mutations without replacing caller values.
@@ -248,11 +203,38 @@ impl LabMcpServer {
         );
     }
 
-    pub(crate) async fn call_tool_impl(
+    pub(crate) async fn call_tool_response_impl(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
+        if self.tool_request_is_destructive(&request, &context).await {
+            let service = request.name.as_ref();
+            let action = request
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("action"))
+                .and_then(Value::as_str)
+                .unwrap_or("call_tool");
+            match crate::mcp::elicitation::destructive_confirmation(&request, service, action) {
+                crate::mcp::elicitation::DestructiveConfirmation::Proceed => {}
+                crate::mcp::elicitation::DestructiveConfirmation::InputRequired(result) => {
+                    return Ok(CallToolResponse::InputRequired(result));
+                }
+                crate::mcp::elicitation::DestructiveConfirmation::Refused => {
+                    let envelope = build_error(
+                        service,
+                        action,
+                        "confirmation_required",
+                        &format!("action `{action}` is destructive — confirm to proceed"),
+                    );
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        envelope.to_string(),
+                    )])
+                    .into());
+                }
+            }
+        }
         let start = Instant::now();
         // Marks the caller's turn as open for the whole dispatch, including
         // every early return below. A catalog notification emitted while this
@@ -294,11 +276,13 @@ impl LabMcpServer {
                         &service,
                         "call_tool",
                         "Code Mode is not exposed on this MCP route".to_string(),
-                    ));
+                    )
+                    .into());
                 }
                 return self
                     .call_tool_codemode_impl(&service, &args, &context)
-                    .await;
+                    .await
+                    .map(Into::into);
             }
 
             let handles_add_server = service == ADD_SERVER_TOOL_NAME
@@ -331,7 +315,8 @@ impl LabMcpServer {
                                 build_error(&service, synthetic_action, "internal_error", message);
                             return Ok(CallToolResult::error(vec![ContentBlock::text(
                                 envelope.to_string(),
-                            )]));
+                            )])
+                            .into());
                         };
                         let gateway_action = if synthetic_action == "test" {
                             "gateway.test"
@@ -362,7 +347,8 @@ impl LabMcpServer {
                             );
                             return Ok(CallToolResult::error(vec![ContentBlock::text(
                                 envelope.to_string(),
-                            )]));
+                            )])
+                            .into());
                         }
                         let gateway_entry = self
                             .registry
@@ -383,7 +369,8 @@ impl LabMcpServer {
                                 build_error(&service, synthetic_action, "internal_error", message);
                             return Ok(CallToolResult::error(vec![ContentBlock::text(
                                 envelope.to_string(),
-                            )]));
+                            )])
+                            .into());
                         };
                         if !tool_execute_builtin_action_allowed(gateway_entry, gateway_action, auth)
                         {
@@ -406,28 +393,8 @@ impl LabMcpServer {
                             );
                             return Ok(CallToolResult::error(vec![ContentBlock::text(
                                 envelope.to_string(),
-                            )]));
-                        }
-                        if gateway_entry
-                            .actions
-                            .iter()
-                            .any(|entry| entry.name == gateway_action && entry.destructive)
-                            && let Err(result) = require_destructive_confirmation(
-                                &context,
-                                &service,
-                                synthetic_action,
-                            )
-                            .await
-                        {
-                            self.log_add_server_failure(
-                                &context,
-                                synthetic_action,
-                                "confirmation_required",
-                                "destructive action confirmation was not completed",
-                                start.elapsed().as_millis(),
-                            )
-                            .await;
-                            return Ok(result);
+                            )])
+                            .into());
                         }
                         let params =
                             inject_gateway_origin_param(params, self.request_subject(&context));
@@ -469,7 +436,7 @@ impl LabMcpServer {
                     outcome,
                 )
                 .await;
-                return Ok(result);
+                return Ok(result.into());
             }
 
             let handles_gateway_status = service == GATEWAY_STATUS_TOOL_NAME
@@ -529,7 +496,7 @@ impl LabMcpServer {
                     outcome,
                 )
                 .await;
-                return Ok(result);
+                return Ok(result.into());
             }
         }
 
@@ -537,7 +504,7 @@ impl LabMcpServer {
             let elapsed_ms = start.elapsed().as_millis();
             let message = format!("service `{service}` is not exposed on this MCP route");
             self.log_route_scope_denial(&context, &service, &action, &message, elapsed_ms);
-            return Ok(route_scope_denied_result(&service, &action, message));
+            return Ok(route_scope_denied_result(&service, &action, message).into());
         }
 
         if svc.is_some() && !self.service_visible_on_mcp(&service).await {
@@ -547,9 +514,9 @@ impl LabMcpServer {
                 "not_found",
                 &format!("service `{service}` is not enabled on the mcp surface"),
             );
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                envelope.to_string(),
-            )]));
+            return Ok(
+                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into(),
+            );
         }
 
         if svc.is_some() && !self.action_allowed_on_mcp(&service, &action).await {
@@ -567,9 +534,9 @@ impl LabMcpServer {
                 &format!("action `{action}` is not exposed for service `{service}`"),
                 &Value::Object(extra),
             );
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                envelope.to_string(),
-            )]));
+            return Ok(
+                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into(),
+            );
         }
 
         // Upstream widget-callback resolution is a gateway-only concern (it
@@ -587,7 +554,8 @@ impl LabMcpServer {
                         let envelope = tool_error_envelope(&service, "call_tool", &err);
                         return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
-                        )]));
+                        )])
+                        .into());
                     }
                 }
             } else {
@@ -614,55 +582,10 @@ impl LabMcpServer {
                         );
                         return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
-                        )]));
+                        )])
+                        .into());
                     }
-                    match elicit_confirm(&context, &service, "call_tool").await {
-                        ConfirmOutcome::Confirmed => {
-                            resolved_upstream_tool = Some(*resolved);
-                        }
-                        ConfirmOutcome::Declined | ConfirmOutcome::Cancelled => {
-                            let envelope = build_error(
-                                &service,
-                                &action,
-                                "confirmation_required",
-                                &format!(
-                                    "destructive upstream tool `{service}` requires MCP elicitation confirmation"
-                                ),
-                            );
-                            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                envelope.to_string(),
-                            )]));
-                        }
-                        ConfirmOutcome::NotSupported => {
-                            resolved_upstream_tool = Some(*resolved);
-                        }
-                        ConfirmOutcome::Failed => {
-                            let envelope = build_error(
-                                &service,
-                                &action,
-                                "confirmation_required",
-                                &format!(
-                                    "destructive upstream tool `{service}` requires MCP elicitation confirmation; confirmation failed"
-                                ),
-                            );
-                            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                envelope.to_string(),
-                            )]));
-                        }
-                        ConfirmOutcome::TimedOut => {
-                            let envelope = build_error(
-                                &service,
-                                &action,
-                                "confirmation_required",
-                                &format!(
-                                    "destructive upstream tool `{service}` requires MCP elicitation confirmation; confirmation timed out"
-                                ),
-                            );
-                            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                                envelope.to_string(),
-                            )]));
-                        }
-                    }
+                    resolved_upstream_tool = Some(*resolved);
                 }
                 Some(WidgetCallbackGate::Ambiguous { valid }) => {
                     let envelope = build_error_extra(
@@ -674,7 +597,8 @@ impl LabMcpServer {
                     );
                     return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
-                    )]));
+                    )])
+                    .into());
                 }
                 Some(WidgetCallbackGate::Allowed {
                     resolved,
@@ -696,7 +620,8 @@ impl LabMcpServer {
                         );
                         return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
-                        )]));
+                        )])
+                        .into());
                     }
                     tracing::info!(
                         surface = "mcp",
@@ -717,7 +642,8 @@ impl LabMcpServer {
                     );
                     return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
-                    )]));
+                    )])
+                    .into());
                 }
             }
         }
@@ -736,27 +662,9 @@ impl LabMcpServer {
                 &format!("action `{action}` for service `{service}` requires `lab:admin` scope"),
                 &serde_json::json!({ "required_scopes": ["lab:admin"] }),
             );
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                envelope.to_string(),
-            )]));
-        }
-
-        // Elicitation gate: if the client supports elicitation, destructive MCP
-        // confirmation must come from the elicitation response. If the client
-        // does not support elicitation, execute normally; request params are not
-        // an authorization signal on the MCP surface.
-        if let Some(entry) = svc {
-            let is_destructive = entry
-                .actions
-                .iter()
-                .any(|a| a.name == action && a.destructive);
-            if is_destructive {
-                if let Err(result) =
-                    require_destructive_confirmation(&context, &service, &action).await
-                {
-                    return Ok(result);
-                }
-            }
+            return Ok(
+                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into(),
+            );
         }
 
         let subject = self.request_subject_log_tag(&context);
@@ -794,7 +702,8 @@ impl LabMcpServer {
                     .call_snippets_promote_impl(
                         &action, params, &args, start, &subject, actor_key, &context,
                     )
-                    .await;
+                    .await
+                    .map(Into::into);
             }
             let result = if service == "gateway" {
                 #[cfg(feature = "gateway")]
@@ -808,7 +717,8 @@ impl LabMcpServer {
                         );
                         return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
-                        )]));
+                        )])
+                        .into());
                     };
                     let params =
                         inject_gateway_origin_param(params, self.request_subject(&context));
@@ -844,7 +754,7 @@ impl LabMcpServer {
             );
             self.emit_dispatch_notification(&context, &service, &action, elapsed_ms, outcome)
                 .await;
-            return Ok(result);
+            return Ok(result.into());
         }
 
         // Fall through to upstream proxy dispatch (raw + subject-scoped +
@@ -874,15 +784,122 @@ impl LabMcpServer {
                 "not_found",
                 &format!("service `{service}` not found"),
             );
-            Ok(CallToolResult::error(vec![ContentBlock::text(
-                envelope.to_string(),
-            )]))
+            Ok(CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into())
+        }
+    }
+
+    /// Complete-only test/internal adapter. Protocol callers use
+    /// [`Self::call_tool_response_impl`] so MRTR and task result variants are
+    /// preserved on the wire.
+    #[cfg(test)]
+    pub(crate) async fn call_tool_impl(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self.call_tool_response_impl(request, context).await? {
+            CallToolResponse::Complete(result) => Ok(result),
+            CallToolResponse::InputRequired(_) => Err(ErrorData::internal_error(
+                "complete-only call adapter received input_required",
+                None,
+            )),
+            CallToolResponse::Task(_) => Err(ErrorData::internal_error(
+                "complete-only call adapter received task result",
+                None,
+            )),
+            _ => Err(ErrorData::internal_error(
+                "complete-only call adapter received unknown result type",
+                None,
+            )),
         }
     }
 }
 
 #[cfg(feature = "gateway")]
 impl LabMcpServer {
+    /// Resolve whether a tool call needs RC-native MRTR elicitation.
+    ///
+    /// This is deliberately classification-only. The protocol handler returns
+    /// `input_required`; the normal dispatcher never starts an in-flight
+    /// server-to-client elicitation RPC.
+    pub(crate) async fn tool_request_is_destructive(
+        &self,
+        request: &CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> bool {
+        let service = request.name.as_ref();
+        let action = request
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("action"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+
+        if let Some(entry) = self
+            .registry
+            .services()
+            .iter()
+            .find(|entry| entry.name == service)
+        {
+            return entry
+                .actions
+                .iter()
+                .any(|candidate| candidate.name == action && candidate.destructive);
+        }
+
+        #[cfg(feature = "gateway")]
+        {
+            if service == ADD_SERVER_TOOL_NAME {
+                let gateway_action = match action {
+                    "test" => Some("gateway.test"),
+                    "create" => Some("gateway.add"),
+                    _ => None,
+                };
+                return gateway_action.is_some_and(|gateway_action| {
+                    self.registry
+                        .services()
+                        .iter()
+                        .find(|entry| entry.name == "gateway")
+                        .is_some_and(|entry| {
+                            entry.actions.iter().any(|candidate| {
+                                candidate.name == gateway_action && candidate.destructive
+                            })
+                        })
+                });
+            }
+
+            if self.code_mode_visibility().await.hides_raw_tools()
+                && service != SERVER_LOGS_TOOL_NAME
+            {
+                return matches!(
+                    self.resolve_widget_callback_gate(service, context).await,
+                    Ok(Some(WidgetCallbackGate::Destructive { .. }))
+                );
+            }
+
+            let Some(manager) = &self.gateway_manager else {
+                return false;
+            };
+            let owner = self.request_runtime_owner(context);
+            let oauth_subject = crate::mcp::context::oauth_upstream_subject_for_request(
+                auth_context_from_extensions(&context.extensions),
+                self.request_subject(context),
+            );
+            return manager
+                .resolve_raw_upstream_tool_scoped(
+                    service,
+                    self.route_scope.allowed_upstreams(),
+                    Some(&owner),
+                    oauth_subject.as_deref(),
+                )
+                .await
+                .is_ok_and(|(_, tool)| tool.destructive);
+        }
+
+        #[cfg(not(feature = "gateway"))]
+        false
+    }
+
     async fn resolve_widget_callback_gate(
         &self,
         service: &str,

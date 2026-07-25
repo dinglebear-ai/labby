@@ -16,14 +16,14 @@
 //! Downstream -> daemon: tools, resources (including `ui://` mcp-ui
 //! resources -- the bridge has no URI-scheme awareness of its own; it just
 //! forwards `read_resource` verbatim and the daemon does its normal `ui://`
-//! routing on the other end), prompts, `complete`, `set_level`, and
+//! routing on the other end), prompts, `complete`, and
 //! the SEP-2663 task extension (`tasks/get`, `tasks/update`, and
 //! `tasks/cancel`) plus the generic `CustomRequest` escape hatch. MRTR
 //! `input_required` and task responses are forwarded without collapsing
 //! them to complete-only results.
 //!
-//! Downstream -> daemon notifications (`cancelled`, `progress`,
-//! `roots_list_changed`, and custom notifications) are forwarded too, so
+//! Downstream -> daemon notifications (`cancelled`, `progress`, and custom
+//! notifications) are forwarded too, so
 //! cancelling a call through the bridge actually interrupts it on the real
 //! daemon.
 //!
@@ -32,152 +32,53 @@
 //! by protocol discovery) instead of hand-declaring a capability
 //! subset -- otherwise a downstream client could see a capability set (e.g.
 //! `extensions` for mcp-ui) that doesn't match what the daemon it's
-//! actually talking to supports. `BridgeClientHandler` relays the daemon's
-//! server->client requests (elicitation, sampling, roots) down to the one
-//! downstream peer connected to this bridge, mirroring
-//! `labby-gateway`'s `RelayClientHandler` -- just for a single long-lived
-//! connection instead of a per-call dedicated one, since stdio mode serves
-//! exactly one downstream session for the whole process lifetime.
+//! actually talking to supports. `BridgeClientHandler` advertises the
+//! capabilities required for MRTR, and the bridge uses the one-round helpers
+//! so `input_required` results are returned to the downstream client unchanged.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CancelTaskParams, CancelledNotificationParam,
     ClientInfo, ClientNotification, ClientRequest, CompleteRequestParams, CompleteResult,
-    CustomNotification, CustomRequest, CustomResult, DiscoverResult, ElicitRequestParams,
-    ElicitResult, GetPromptRequestParams, GetPromptResponse, GetTaskParams, GetTaskResult,
-    InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, PingRequest,
-    ProgressNotificationParam, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
-    ServerInfo, ServerResult, UpdateTaskParams,
+    CustomNotification, CustomRequest, CustomResult, DiscoverResult, GetPromptRequestParams,
+    GetPromptResponse, GetTaskParams, GetTaskResult, InitializeRequestParams, InitializeResult,
+    ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse, ServerInfo, ServerResult, UpdateTaskParams,
 };
-// rmcp deprecates sampling/roots/logging under SEP-2577, but the bridge
-// still forwards these legacy server<->client requests for compatibility
-// with whatever the daemon and downstream client actually negotiate.
-#[allow(deprecated)]
-use rmcp::model::SetLevelRequestParams;
-#[allow(deprecated)]
-use rmcp::model::{CreateMessageRequestParams, CreateMessageResult, ListRootsResult};
 use rmcp::service::{NotificationContext, Peer, RequestContext, RunningService, ServiceError};
 use rmcp::{ClientHandler, ErrorData, RoleClient, RoleServer, ServerHandler};
-use tokio::sync::OnceCell;
-
-/// Shared cell holding the one downstream peer connected to this bridge,
-/// populated once that peer's session initializes. Stdio mode serves
-/// exactly one downstream session for the process's whole lifetime, so a
-/// single cell -- not a per-connection map like the gateway's multiplexed
-/// `RelayClientHandler` needs -- is exactly right.
-pub type DownstreamCell = Arc<OnceCell<Peer<RoleServer>>>;
 
 /// `ClientHandler` for the bridge's outbound connection to the real daemon.
 ///
-/// Forwards any server->client request the daemon raises mid-call
-/// (elicitation, sampling, roots) down to the one downstream peer connected
-/// to this bridge. Without this, the connection would use the unit handler
-/// `()` and silently decline all three -- severing exactly the half of MCP
-/// that lets an upstream tool call (e.g. a `codemode` execution needing
-/// human confirmation) actually reach the human on the other end of the
-/// bridge.
+/// It advertises form elicitation because the bridge can preserve an MRTR
+/// `input_required` result for its downstream client. It does not implement
+/// the removed server-initiated request callbacks.
 #[derive(Clone)]
-pub struct BridgeClientHandler {
-    downstream: DownstreamCell,
-}
+pub struct BridgeClientHandler;
 
 impl BridgeClientHandler {
-    pub fn new(downstream: DownstreamCell) -> Self {
-        Self { downstream }
+    pub fn new() -> Self {
+        Self
     }
 }
 
-fn relay_error(capability: &str, error: impl std::fmt::Display) -> ErrorData {
-    tracing::warn!(
-        surface = "mcp",
-        service = "labby",
-        action = "bridge.relay",
-        subsystem = "mcp_bridge",
-        capability,
-        error = %error,
-        "relaying the live daemon's server->client request to the downstream peer failed"
-    );
-    ErrorData::internal_error(
-        format!("relay of {capability} to downstream peer failed"),
-        None,
-    )
+impl Default for BridgeClientHandler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ClientHandler for BridgeClientHandler {
-    /// Advertise to the daemon only the server->client capabilities the
-    /// downstream peer itself declared -- mirroring
-    /// `RelayClientHandler::get_info`. If the downstream peer hasn't
-    /// initialized yet (or none is connected), this advertises no
-    /// server->client capabilities, so the daemon will not attempt to elicit
-    /// against a bridge with nothing to forward to.
+    /// Advertise the capability that the bridge can preserve through MRTR.
     fn get_info(&self) -> ClientInfo {
         let mut info = ClientInfo::default();
         info.capabilities = rmcp::model::ClientCapabilities::builder()
             .enable_tasks()
+            .enable_elicitation()
             .build();
-        if let Some(downstream) = self.downstream.get()
-            && let Some(downstream_info) = downstream.peer_info()
-        {
-            info.capabilities.elicitation = downstream_info.capabilities.elicitation.clone();
-            info.capabilities.sampling = downstream_info.capabilities.sampling.clone();
-            info.capabilities.roots = downstream_info.capabilities.roots.clone();
-        }
         info
-    }
-
-    async fn create_elicitation(
-        &self,
-        params: ElicitRequestParams,
-        _context: RequestContext<RoleClient>,
-    ) -> Result<ElicitResult, ErrorData> {
-        let Some(downstream) = self.downstream.get() else {
-            return Err(ErrorData::internal_error(
-                "no downstream peer connected yet",
-                None,
-            ));
-        };
-        downstream
-            .create_elicitation(params)
-            .await
-            .map_err(|e| relay_error("elicitation", e))
-    }
-
-    #[allow(deprecated)]
-    async fn create_message(
-        &self,
-        params: CreateMessageRequestParams,
-        _context: RequestContext<RoleClient>,
-    ) -> Result<CreateMessageResult, ErrorData> {
-        let Some(downstream) = self.downstream.get() else {
-            return Err(ErrorData::internal_error(
-                "no downstream peer connected yet",
-                None,
-            ));
-        };
-        downstream
-            .create_message(params)
-            .await
-            .map_err(|e| relay_error("sampling", e))
-    }
-
-    #[allow(deprecated)]
-    async fn list_roots(
-        &self,
-        _context: RequestContext<RoleClient>,
-    ) -> Result<ListRootsResult, ErrorData> {
-        let Some(downstream) = self.downstream.get() else {
-            return Err(ErrorData::internal_error(
-                "no downstream peer connected yet",
-                None,
-            ));
-        };
-        downstream
-            .list_roots()
-            .await
-            .map_err(|e| relay_error("roots", e))
     }
 }
 
@@ -188,22 +89,14 @@ impl ClientHandler for BridgeClientHandler {
 pub struct BridgeServerHandler {
     _service: RunningService<RoleClient, BridgeClientHandler>,
     peer: Peer<RoleClient>,
-    downstream: DownstreamCell,
 }
 
 impl BridgeServerHandler {
-    /// `downstream` must be the same cell passed to the `BridgeClientHandler`
-    /// used to open `service`, so the daemon's server->client requests and
-    /// this handler's lifecycle callback agree on which peer to relay to.
-    pub fn new(
-        service: RunningService<RoleClient, BridgeClientHandler>,
-        downstream: DownstreamCell,
-    ) -> Self {
+    pub fn new(service: RunningService<RoleClient, BridgeClientHandler>) -> Self {
         let peer = service.peer().clone();
         Self {
             _service: service,
             peer,
-            downstream,
         }
     }
 }
@@ -268,9 +161,8 @@ impl ServerHandler for BridgeServerHandler {
 
     async fn discover(
         &self,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
-        drop(self.downstream.set(context.peer));
         Ok(DiscoverResult::from_server_info(
             vec![ProtocolVersion::V_2026_07_28],
             self.get_info(),
@@ -287,23 +179,6 @@ impl ServerHandler for BridgeServerHandler {
             .peer_info()
             .map(|info| (*info).clone())
             .unwrap_or_default()
-    }
-
-    /// Capture the one downstream peer this bridge serves, so
-    /// `BridgeClientHandler` has someone to relay the daemon's
-    /// elicitation/sampling/roots requests to. Fires once per stdio session
-    /// (there is only ever one), right after `initialize` -- well before any
-    /// real tool call could raise an elicitation.
-    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
-        if self.downstream.set(context.peer).is_err() {
-            tracing::debug!(
-                surface = "mcp",
-                service = "labby",
-                action = "bridge.on_initialized",
-                subsystem = "mcp_bridge",
-                "downstream peer already set; ignoring duplicate initialized notification"
-            );
-        }
     }
 
     async fn list_tools(
@@ -392,33 +267,6 @@ impl ServerHandler for BridgeServerHandler {
             .complete(request)
             .await
             .map_err(|e| bridge_error("complete", e))
-    }
-
-    #[allow(deprecated)]
-    async fn set_level(
-        &self,
-        request: SetLevelRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<(), ErrorData> {
-        self.peer
-            .set_level(request)
-            .await
-            .map_err(|e| bridge_error("set_level", e))
-    }
-
-    /// `Peer<RoleClient>` has no typed `ping` shortcut, so build the
-    /// `PingRequest` and match the raw `ServerResult` by hand -- the same
-    /// thing the typed convenience methods do internally.
-    async fn ping(&self, _context: RequestContext<RoleServer>) -> Result<(), ErrorData> {
-        match self
-            .peer
-            .send_request(ClientRequest::PingRequest(PingRequest::default()))
-            .await
-            .map_err(|e| bridge_error("ping", e))?
-        {
-            ServerResult::EmptyResult(_) => Ok(()),
-            _ => Err(unexpected_response("ping")),
-        }
     }
 
     async fn get_task(
@@ -531,19 +379,6 @@ impl ServerHandler for BridgeServerHandler {
             );
         }
     }
-
-    async fn on_roots_list_changed(&self, _context: NotificationContext<RoleServer>) {
-        if let Err(error) = self.peer.notify_roots_list_changed().await {
-            tracing::warn!(
-                surface = "mcp",
-                service = "labby",
-                action = "bridge.notify_roots_list_changed",
-                subsystem = "mcp_bridge",
-                error = %error,
-                "failed to forward roots-list-changed notification to live daemon"
-            );
-        }
-    }
 }
 
 #[cfg(test)]
@@ -565,8 +400,6 @@ mod tests {
     //! is the bridge's own inbound transport, served with
     //! `BridgeServerHandler`. A bare test-only `ClientHandler` drives that
     //! second connection to exercise every forwarded request/response path.
-    use std::sync::Arc;
-
     use rmcp::model::{
         CancelTaskParams, CancelTaskRequest, ClientCapabilities, CustomRequest, DetailedTask,
         ErrorData as McpError, GetTaskParams, GetTaskRequest, ServerCapabilities, ServerInfo, Task,
@@ -625,10 +458,6 @@ mod tests {
                     .enable_tasks()
                     .build(),
             )
-        }
-
-        async fn ping(&self, _context: RequestContext<RoleServer>) -> Result<(), McpError> {
-            Ok(())
         }
 
         async fn get_task(
@@ -714,9 +543,8 @@ mod tests {
                 running.waiting().await.ok();
             }
         });
-        let downstream_cell: DownstreamCell = Arc::new(OnceCell::new());
         let bridge_client_service: RunningService<RoleClient, BridgeClientHandler> =
-            BridgeClientHandler::new(downstream_cell.clone())
+            BridgeClientHandler::new()
                 .serve_with_lifecycle(
                     bridge_outbound_transport,
                     ClientLifecycleMode::Discover {
@@ -726,7 +554,7 @@ mod tests {
                 .await
                 .expect("bridge connects to fake daemon");
 
-        let bridge_handler = BridgeServerHandler::new(bridge_client_service, downstream_cell);
+        let bridge_handler = BridgeServerHandler::new(bridge_client_service);
 
         // Hop 2: test client -> bridge, served with the bridge's own
         // `ServerHandler` impl over its own independent in-memory transport.

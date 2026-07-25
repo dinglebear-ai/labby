@@ -11,7 +11,9 @@ use std::io::Write;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use rmcp::model::{CallToolResult, Prompt, ReadResourceResult, Resource, ResourceContents};
+use rmcp::model::{
+    CallToolResponse, CallToolResult, Prompt, ReadResourceResult, Resource, ResourceContents,
+};
 use serde_json::Value;
 
 use labby_runtime::gateway_config::UpstreamConfig;
@@ -105,6 +107,18 @@ impl Write for ByteCounter {
 pub(super) fn estimate_response_size(result: &CallToolResult) -> usize {
     let mut counter = ByteCounter(0);
     serde_json::to_writer(&mut counter, result).map_or(0, |()| counter.0)
+}
+
+/// Estimate the serialized payload size of any `tools/call` response variant.
+pub(super) fn estimate_call_tool_response_size(result: &CallToolResponse) -> usize {
+    match result {
+        CallToolResponse::Complete(result) => estimate_response_size(result),
+        CallToolResponse::InputRequired(result) => {
+            serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
+        }
+        CallToolResponse::Task(result) => serde_json::to_vec(result).map_or(0, |bytes| bytes.len()),
+        _ => 0,
+    }
 }
 
 /// Estimate the serialized size of a `ReadResourceResult`.

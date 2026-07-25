@@ -378,7 +378,9 @@ impl LabMcpServer {
         )
         .await;
 
-        let mut result = ListToolsResult::with_all_items(tools);
+        let mut result = ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private);
         result.next_cursor = next_cursor;
         Ok(result)
     }

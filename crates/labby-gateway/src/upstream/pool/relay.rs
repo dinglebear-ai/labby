@@ -1,42 +1,16 @@
-//! Relaying `ClientHandler` for upstream server→client requests.
+//! MRTR-capable client handler for proxied upstream tool calls.
 //!
-//! The pool's normal upstream connections are served with the unit handler
-//! (`().serve(...)`), which advertises no client capabilities and declines any
-//! `elicitation/create`, `sampling/createMessage`, or `roots/list` request a
-//! server sends back. That severs the server→client half of MCP: an upstream
-//! that needs interactive confirmation (elicitation), an LLM completion
-//! (sampling), or the caller's roots cannot reach the agent driving the
+//! The pool's normal upstream connections are served with the unit handler,
+//! which advertises no client input capabilities. [`RelayClientHandler`]
+//! mirrors the downstream client's input capabilities to the upstream. Tool
+//! calls use rmcp's `call_tool_once`, so an upstream `input_required` result is
+//! preserved for the downstream client instead of being fulfilled inside the
 //! gateway.
 //!
-//! [`RelayClientHandler`] is the bridge. Each instance closes over the single
-//! downstream `Peer<RoleServer>` — the agent connection whose in-flight
-//! `call_tool` opened this upstream connection — and forwards server→client
-//! requests straight down to it. The relay therefore only makes sense on a
-//! **dedicated, non-multiplexed** upstream connection: one connection per
-//! in-flight downstream call, so an upstream elicitation maps unambiguously to
-//! the one agent that should answer it. A pooled connection shared by many
-//! agents has no single "current" downstream peer to forward to — which is
-//! exactly why the existing pool path uses `()` and this is opt-in.
-//!
-//! ## Capability mirroring
-//!
-//! `get_info()` advertises to the upstream only the server→client capabilities
-//! the downstream agent itself declared (elicitation / sampling / roots). If
-//! the agent cannot elicit, the gateway does not claim it can, so a well-behaved
-//! upstream will not attempt it. This keeps the proxied capability set honest
-//! end to end instead of advertising support the gateway cannot actually honor.
-//!
-//! ## Live entry point
-//!
-//! [`UpstreamPool::call_tool_relayed`] opens a dedicated connection via the
-//! generic `connect_upstream_with_handler` seam (so HTTP, WebSocket, stdio, and
-//! OAuth all reuse the existing transport + process-reaping machinery) and
-//! invokes one tool with the relay handler installed. The connection is cached
-//! per `(upstream, session_id, subject)` (see "Cache key" below), so the first
-//! relayed call in a session pays the connect cost and later calls reuse it.
-//! The MCP proxy paths call it (behind an opt-in env gate) when the downstream
-//! agent advertises elicitation — the gate keeps relaying off the default hot
-//! path, which stays on the pooled multiplexed `()` connection.
+//! The handler deliberately does not implement the removed server-initiated
+//! elicitation, sampling, or roots callbacks. Its dedicated connection is
+//! cached per `(upstream, session_id, subject)` so capabilities and OAuth
+//! identity cannot cross downstream sessions.
 //!
 //! ## Cache key — `(upstream, session_id, subject)`
 //!
@@ -54,11 +28,9 @@
 //!
 //! ## Deadlines
 //!
-//! A relayed call blocks on a **human** answering the forwarded elicitation, so
-//! [`UpstreamPool::call_tool_relayed`] bounds it with the pool's `relay_timeout`
-//! (default 5 minutes, `upstream_relay_timeout_ms`) — **not** the 30s
-//! `request_timeout` used by the pooled path, which would abort real
-//! confirmations mid-dialog.
+//! [`UpstreamPool::call_tool_relayed`] uses the pool's `relay_timeout`
+//! (default 5 minutes, `upstream_relay_timeout_ms`) instead of the normal
+//! upstream request timeout.
 //!
 //! ## Scope — `call_tool` only
 //!
@@ -74,15 +46,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientInfo, ElicitRequestParams, ElicitResult,
-};
-// rmcp 2.1 deprecates sampling/roots under SEP-2577, but the relay still
-// mirrors these legacy server-to-client requests for upstream compatibility.
-#[allow(deprecated)]
-use rmcp::model::{CreateMessageRequestParams, CreateMessageResult, ListRootsResult};
-use rmcp::service::{Peer, RequestContext};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, ClientInfo};
+use rmcp::service::Peer;
 use rmcp::{ClientHandler, RoleClient, RoleServer};
 use tokio::sync::Mutex;
 
@@ -91,8 +56,8 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::connect::connect_upstream_with_handler;
 use super::helpers::{
-    SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, estimate_response_size, max_response_bytes,
-    upstream_transport,
+    SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES, estimate_call_tool_response_size,
+    max_response_bytes, upstream_transport,
 };
 use super::logging::{
     UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish,
@@ -100,8 +65,8 @@ use super::logging::{
 };
 use super::{UpstreamConnection, UpstreamPool};
 
-/// A client handler that relays an upstream server's server→client requests
-/// (elicitation, sampling, roots) down to the gateway's downstream agent peer.
+/// A client handler that mirrors the downstream agent's MRTR input
+/// capabilities to one upstream connection.
 ///
 /// Construct one per dedicated upstream connection with [`RelayClientHandler::new`].
 #[derive(Clone)]
@@ -121,29 +86,8 @@ impl RelayClientHandler {
     }
 }
 
-/// Map a downstream `ServiceError` into the `McpError` returned to the upstream.
-///
-/// The upstream sees a generic `internal_error`; the underlying cause is logged
-/// at the gateway rather than leaked verbatim across the proxy boundary.
-fn relay_error(upstream: &str, capability: &str, error: &rmcp::service::ServiceError) -> McpError {
-    tracing::warn!(
-        surface = "dispatch",
-        service = "upstream.pool",
-        action = "upstream.relay",
-        upstream = %upstream,
-        capability,
-        kind = "upstream_relay_error",
-        error = %error,
-        "relaying upstream server->client request to downstream agent failed",
-    );
-    McpError::internal_error(
-        format!("relay of {capability} to downstream agent failed"),
-        None,
-    )
-}
-
 impl ClientHandler for RelayClientHandler {
-    /// Advertise to the upstream exactly the server→client capabilities the
+    /// Advertise to the upstream exactly the MRTR input capabilities the
     /// downstream agent declared. Anything the agent cannot do, the gateway
     /// does not claim on its behalf.
     fn get_info(&self) -> ClientInfo {
@@ -154,8 +98,8 @@ impl ClientHandler for RelayClientHandler {
             info.capabilities.roots = downstream_info.capabilities.roots.clone();
         } else {
             // No downstream `peer_info()` yet — advertise no server→client
-            // capabilities, so the relay silently behaves like the unit handler
-            // (declines elicitation/sampling/roots). In practice the downstream
+            // capabilities, so the relay silently behaves like the unit handler.
+            // In practice the downstream
             // peer is always initialized by the time a relay connection opens
             // mid-`call_tool`, so reaching here is an invariant violation: warn
             // (not debug) so it is visible at the default log level rather than
@@ -172,75 +116,6 @@ impl ClientHandler for RelayClientHandler {
         }
         info
     }
-
-    /// Relay an upstream elicitation request to the downstream agent.
-    async fn create_elicitation(
-        &self,
-        params: ElicitRequestParams,
-        _context: RequestContext<RoleClient>,
-    ) -> Result<ElicitResult, McpError> {
-        tracing::debug!(
-            surface = "dispatch",
-            service = "upstream.pool",
-            action = "upstream.relay",
-            upstream = %self.upstream_name,
-            capability = "elicitation",
-            "relaying upstream elicitation to downstream agent",
-        );
-        self.downstream
-            .create_elicitation(params)
-            .await
-            .map_err(|e| relay_error(&self.upstream_name, "elicitation", &e))
-    }
-
-    /// Relay an upstream sampling request to the downstream agent.
-    ///
-    /// rmcp 2.1 keeps sampling for backwards compatibility but marks it
-    /// deprecated under SEP-2577. Labby intentionally mirrors it while older
-    /// upstreams still raise `sampling/createMessage` during tool calls.
-    #[allow(deprecated)]
-    async fn create_message(
-        &self,
-        params: CreateMessageRequestParams,
-        _context: RequestContext<RoleClient>,
-    ) -> Result<CreateMessageResult, McpError> {
-        tracing::debug!(
-            surface = "dispatch",
-            service = "upstream.pool",
-            action = "upstream.relay",
-            upstream = %self.upstream_name,
-            capability = "sampling",
-            "relaying upstream sampling request to downstream agent",
-        );
-        self.downstream
-            .create_message(params)
-            .await
-            .map_err(|e| relay_error(&self.upstream_name, "sampling", &e))
-    }
-
-    /// Relay an upstream roots request to the downstream agent.
-    ///
-    /// rmcp 2.1 keeps roots for backwards compatibility but marks it
-    /// deprecated under SEP-2577. Labby intentionally mirrors it while older
-    /// upstreams still raise `roots/list` during tool calls.
-    #[allow(deprecated)]
-    async fn list_roots(
-        &self,
-        _context: RequestContext<RoleClient>,
-    ) -> Result<ListRootsResult, McpError> {
-        tracing::debug!(
-            surface = "dispatch",
-            service = "upstream.pool",
-            action = "upstream.relay",
-            upstream = %self.upstream_name,
-            capability = "roots",
-            "relaying upstream roots request to downstream agent",
-        );
-        self.downstream
-            .list_roots()
-            .await
-            .map_err(|e| relay_error(&self.upstream_name, "roots", &e))
-    }
 }
 
 /// A cached relay connection, keyed in the pool by
@@ -249,10 +124,9 @@ impl ClientHandler for RelayClientHandler {
 /// The `RelayClientHandler` inside `_connection` is bound to **one** downstream
 /// agent peer (the session identified by the key) and authenticated as **one**
 /// OAuth subject. Because the key includes the downstream session id, a cached
-/// entry is only ever reused by the same agent — never shared across sessions,
-/// which is what keeps relayed elicitation from being misrouted. Because it also
-/// includes the subject, a connection authenticated as one identity is never
-/// reused for a call made as another.
+/// entry is only ever reused by the same agent — never shared across sessions.
+/// Because it also includes the subject, a connection authenticated as one
+/// identity is never reused for a call made as another.
 pub(super) struct RelayCachedConnection {
     /// Keeps the relay-served running service (and any stdio child) alive.
     _connection: UpstreamConnection<RelayClientHandler>,
@@ -320,7 +194,7 @@ impl UpstreamPool {
         params: CallToolRequestParams,
         downstream: Peer<RoleServer>,
         session_id: u64,
-    ) -> Option<Result<CallToolResult, String>> {
+    ) -> Option<Result<CallToolResponse, String>> {
         let started = Instant::now();
         let tool_name = params.name.to_string();
         let peer = self
@@ -344,9 +218,9 @@ impl UpstreamPool {
         // 30s `request_timeout` the pooled path uses — otherwise a confirmation
         // dialog left open for a minute would abort the whole upstream call.
         let timeout = self.relay_timeout;
-        match tokio::time::timeout(timeout, peer.call_tool(params)).await {
+        match tokio::time::timeout(timeout, peer.call_tool_once(params)).await {
             Ok(Ok(result)) => {
-                let response_size = estimate_response_size(&result);
+                let response_size = estimate_call_tool_response_size(&result);
                 let max_bytes = max_response_bytes();
                 if response_size > max_bytes {
                     self.record_failure_for(
@@ -618,11 +492,13 @@ mod tests {
 
     use rmcp::model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock,
-        ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, ErrorData,
-        PaginatedRequestParams, PrimitiveSchemaDefinition, ServerCapabilities, ServerInfo,
+        ElicitRequest, ElicitRequestParams, ElicitationSchema, ErrorData, InputRequest,
+        InputRequests, InputRequiredResult, PaginatedRequestParams, PrimitiveSchemaDefinition,
+        ProtocolVersion, ServerCapabilities, ServerInfo,
     };
+    use rmcp::service::ClientLifecycleMode;
     use rmcp::service::{RequestContext, RunningService};
-    use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
+    use rmcp::{ClientHandler, ClientServiceExt, RoleServer, ServerHandler, ServiceExt};
 
     use std::time::Instant;
 
@@ -631,27 +507,15 @@ mod tests {
     use super::super::helpers::IN_PROCESS_PEER_BUFFER_BYTES;
     use super::*;
 
-    /// A mock agent (downstream client) that answers any elicitation by
-    /// accepting with `{"confirm": true}`. Advertises elicitation support.
+    /// A downstream client that advertises form elicitation for MRTR.
     #[derive(Clone)]
-    struct AnsweringAgent;
+    struct CapableAgent;
 
-    impl ClientHandler for AnsweringAgent {
+    impl ClientHandler for CapableAgent {
         fn get_info(&self) -> ClientInfo {
             let mut info = ClientInfo::default();
             info.capabilities = ClientCapabilities::builder().enable_elicitation().build();
             info
-        }
-
-        async fn create_elicitation(
-            &self,
-            _params: ElicitRequestParams,
-            _context: RequestContext<RoleClient>,
-        ) -> Result<ElicitResult, McpError> {
-            let mut content = serde_json::Map::new();
-            content.insert("confirm".to_string(), serde_json::Value::Bool(true));
-            Ok(ElicitResult::new(ElicitationAction::Accept)
-                .with_content(serde_json::Value::Object(content)))
         }
     }
 
@@ -666,8 +530,7 @@ mod tests {
         }
     }
 
-    /// A mock upstream server whose `call_tool` issues a server→client
-    /// elicitation mid-call and reports whether it was accepted.
+    /// A mock upstream server whose `call_tool` returns an MRTR input request.
     #[derive(Clone)]
     struct ElicitingUpstream;
 
@@ -679,7 +542,7 @@ mod tests {
         async fn call_tool(
             &self,
             _request: CallToolRequestParams,
-            context: RequestContext<RoleServer>,
+            _context: RequestContext<RoleServer>,
         ) -> Result<CallToolResponse, ErrorData> {
             let schema = ElicitationSchema::builder()
                 .required_property(
@@ -693,16 +556,11 @@ mod tests {
                 message: "confirm the action?".to_string(),
                 requested_schema: schema,
             };
-            let result = context
-                .peer
-                .create_elicitation(params)
-                .await
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            let confirmed = matches!(result.action, ElicitationAction::Accept);
-            Ok(
-                CallToolResult::success(vec![ContentBlock::text(format!("confirmed={confirmed}"))])
-                    .into(),
-            )
+            let requests = InputRequests::from([(
+                "confirmation".to_string(),
+                InputRequest::Elicitation(ElicitRequest::new(params)),
+            )]);
+            Ok(InputRequiredResult::from_input_requests(requests).into())
         }
 
         async fn list_tools(
@@ -720,19 +578,20 @@ mod tests {
         }
     }
 
-    /// End-to-end proof: an upstream elicitation, raised during a tool call, is
-    /// relayed through the gateway's [`RelayClientHandler`] to the downstream
-    /// agent, answered, and the answer flows back to the upstream — all over a
-    /// dedicated connection.
+    /// End-to-end proof that the one-round path preserves an upstream MRTR
+    /// result instead of invoking a server-initiated callback.
     #[tokio::test]
-    async fn upstream_elicitation_is_relayed_to_downstream_agent() {
-        // 1. Wire the gateway's downstream side to a mock agent that answers
-        //    elicitation. The gateway-server peer is what the relay forwards to.
+    async fn upstream_input_required_is_preserved_for_downstream() {
         let (gw_server_transport, agent_transport) =
             tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
         let _agent_task = tokio::spawn(async move {
-            let running = AnsweringAgent
-                .serve(agent_transport)
+            let running = CapableAgent
+                .serve_with_lifecycle(
+                    agent_transport,
+                    ClientLifecycleMode::Discover {
+                        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                    },
+                )
                 .await
                 .expect("agent connects");
             running.waiting().await.expect("agent runs");
@@ -743,8 +602,6 @@ mod tests {
             .expect("gateway server side connects");
         let downstream = gw_server.peer().clone();
 
-        // 2. Wire the gateway's upstream side to a mock upstream that elicits.
-        //    The dedicated connection is served with the relay handler.
         let (upstream_transport, gw_client_transport) =
             tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
         let _upstream_task = tokio::spawn(async move {
@@ -755,62 +612,23 @@ mod tests {
             running.waiting().await.expect("upstream runs");
         });
         let gw_client = RelayClientHandler::new(downstream, Arc::from("test-upstream"))
-            .serve(gw_client_transport)
+            .serve_with_lifecycle(
+                gw_client_transport,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                },
+            )
             .await
             .expect("relayed upstream connection establishes");
         let upstream_peer = gw_client.peer().clone();
 
-        // 3. Drive a tool call on the upstream. Its handler elicits → relay →
-        //    agent → accept → back to the upstream, which reports the outcome.
         let result = upstream_peer
-            .call_tool(CallToolRequestParams::new("echo"))
+            .call_tool_once(CallToolRequestParams::new("echo"))
             .await
-            .expect("tool call succeeds with relayed elicitation");
-
-        let text = result
-            .content
-            .iter()
-            .find_map(|c| c.as_text().map(|t| t.text.clone()))
-            .expect("tool result has text content");
-        assert_eq!(
-            text, "confirmed=true",
-            "the upstream should observe the downstream agent's acceptance"
-        );
-    }
-
-    /// Without the relay, the unit handler declines elicitation, so the same
-    /// upstream tool call reports `confirmed=false`. This pins the behavioral
-    /// difference the relay introduces.
-    #[tokio::test]
-    async fn unit_handler_declines_upstream_elicitation() {
-        let (upstream_transport, gw_client_transport) =
-            tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
-        let _upstream_task = tokio::spawn(async move {
-            let running = ElicitingUpstream
-                .serve(upstream_transport)
-                .await
-                .expect("upstream connects");
-            running.waiting().await.expect("upstream runs");
-        });
-        let gw_client: RunningService<RoleClient, ()> = ()
-            .serve(gw_client_transport)
-            .await
-            .expect("plain upstream connection establishes");
-        let upstream_peer = gw_client.peer().clone();
-
-        let result = upstream_peer
-            .call_tool(CallToolRequestParams::new("echo"))
-            .await
-            .expect("tool call still completes");
-
-        let text = result
-            .content
-            .iter()
-            .find_map(|c| c.as_text().map(|t| t.text.clone()))
-            .expect("tool result has text content");
-        assert_eq!(
-            text, "confirmed=false",
-            "the unit handler declines elicitation, so nothing is confirmed"
+            .expect("one-round tool call succeeds");
+        assert!(
+            matches!(result, CallToolResponse::InputRequired(_)),
+            "the gateway-facing client must receive the input_required result"
         );
     }
 

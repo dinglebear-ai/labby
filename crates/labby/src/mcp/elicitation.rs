@@ -1,48 +1,56 @@
-use rmcp::RoleServer;
 use rmcp::model::{
-    ElicitRequestParams, ElicitationAction, ElicitationSchema, PrimitiveSchemaDefinition,
+    CallToolRequestParams, ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction,
+    ElicitationSchema, InputRequest, InputRequests, InputRequiredResult, PrimitiveSchemaDefinition,
 };
-use rmcp::service::{ElicitationMode, RequestContext};
 use serde_json::Value;
-use tokio::time::timeout;
 
-pub(crate) enum ConfirmOutcome {
-    /// User confirmed the destructive action.
-    Confirmed,
-    /// User explicitly declined.
-    Declined,
-    /// User cancelled (closed the dialog without choosing).
-    Cancelled,
-    /// MCP client does not support the elicitation capability.
-    NotSupported,
-    /// The client advertised elicitation support, but the RPC failed.
-    Failed,
-    /// The client did not answer the confirmation request before the deadline.
-    TimedOut,
+pub(crate) const DESTRUCTIVE_CONFIRMATION_INPUT: &str = "destructive_confirmation";
+
+pub(crate) enum DestructiveConfirmation {
+    Proceed,
+    InputRequired(InputRequiredResult),
+    Refused,
 }
 
-pub(crate) async fn elicit_confirm(
-    context: &RequestContext<RoleServer>,
+/// Apply the 2026-07-28 MRTR elicitation pattern to one destructive tool call.
+///
+/// The original tool request already identifies the operation, so this carries
+/// no custom `requestState`: the client simply retries that request with the
+/// elicitation result in `inputResponses`.
+pub(crate) fn destructive_confirmation(
+    request: &CallToolRequestParams,
     service: &str,
     action: &str,
-) -> ConfirmOutcome {
-    if !context
-        .peer
-        .supported_elicitation_modes()
-        .contains(&ElicitationMode::Form)
-    {
-        tracing::warn!(
-            surface = "mcp",
-            service,
-            action,
-            actor = "mcp_client",
-            outcome = "not_supported",
-            entity_kind = "destructive_action",
-            entity_id = %format!("{service}.{action}"),
-            kind = "confirmation_required",
-            "destructive action elicitation not supported",
-        );
-        return ConfirmOutcome::NotSupported;
+) -> DestructiveConfirmation {
+    let supports_form_elicitation = request
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.client_capabilities())
+        .and_then(|capabilities| capabilities.elicitation)
+        .and_then(|elicitation| elicitation.form)
+        .is_some();
+    if !supports_form_elicitation {
+        return DestructiveConfirmation::Proceed;
+    }
+
+    if let Some(responses) = request.input_responses.as_ref() {
+        let accepted = responses
+            .get(DESTRUCTIVE_CONFIRMATION_INPUT)
+            .and_then(|value| serde_json::from_value::<ElicitResult>(value.clone()).ok())
+            .is_some_and(|result| {
+                result.action == ElicitationAction::Accept
+                    && result
+                        .content
+                        .as_ref()
+                        .and_then(|content| content.get("confirm"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+            });
+        return if accepted {
+            DestructiveConfirmation::Proceed
+        } else {
+            DestructiveConfirmation::Refused
+        };
     }
 
     let Ok(schema) = ElicitationSchema::builder()
@@ -52,20 +60,8 @@ pub(crate) async fn elicit_confirm(
         )
         .build()
     else {
-        tracing::warn!(
-            surface = "mcp",
-            service,
-            action,
-            actor = "lab",
-            outcome = "schema_failed",
-            entity_kind = "destructive_action",
-            entity_id = %format!("{service}.{action}"),
-            kind = "internal_error",
-            "destructive action elicitation schema build failed",
-        );
-        return ConfirmOutcome::NotSupported;
+        return DestructiveConfirmation::Proceed;
     };
-
     let params = ElicitRequestParams::FormElicitationParams {
         meta: None,
         message: format!(
@@ -74,118 +70,77 @@ pub(crate) async fn elicit_confirm(
         ),
         requested_schema: schema,
     };
+    let requests = InputRequests::from([(
+        DESTRUCTIVE_CONFIRMATION_INPUT.to_string(),
+        InputRequest::Elicitation(ElicitRequest::new(params)),
+    )]);
+    DestructiveConfirmation::InputRequired(InputRequiredResult::from_input_requests(requests))
+}
 
-    let deadline = crate::config::resolved_destructive_elicitation_timeout();
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
 
-    match timeout(deadline, context.peer.create_elicitation(params)).await {
-        Err(_) => {
-            tracing::warn!(
-                surface = "mcp",
-                service,
-                action,
-                actor = "mcp_client",
-                outcome = "timed_out",
-                timeout_ms = deadline.as_millis(),
-                entity_kind = "destructive_action",
-                entity_id = %format!("{service}.{action}"),
-                kind = "confirmation_required",
-                "destructive action elicitation timed out",
-            );
-            ConfirmOutcome::TimedOut
-        }
-        Ok(result) => match result {
-            Ok(result) => match result.action {
-                ElicitationAction::Accept => {
-                    let confirmed = result
-                        .content
-                        .as_ref()
-                        .and_then(|v| v.get("confirm"))
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
-                    if confirmed {
-                        tracing::info!(
-                            surface = "mcp",
-                            service,
-                            action,
-                            actor = "mcp_client",
-                            outcome = "confirmed",
-                            entity_kind = "destructive_action",
-                            entity_id = %format!("{service}.{action}"),
-                            "destructive action elicitation confirmed",
-                        );
-                        ConfirmOutcome::Confirmed
-                    } else {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service,
-                            action,
-                            actor = "mcp_client",
-                            outcome = "declined",
-                            entity_kind = "destructive_action",
-                            entity_id = %format!("{service}.{action}"),
-                            kind = "confirmation_required",
-                            "destructive action elicitation accepted without confirmation",
-                        );
-                        ConfirmOutcome::Declined
-                    }
-                }
-                ElicitationAction::Decline => {
-                    tracing::warn!(
-                        surface = "mcp",
-                        service,
-                        action,
-                        actor = "mcp_client",
-                        outcome = "declined",
-                        entity_kind = "destructive_action",
-                        entity_id = %format!("{service}.{action}"),
-                        kind = "confirmation_required",
-                        "destructive action elicitation declined",
-                    );
-                    ConfirmOutcome::Declined
-                }
-                ElicitationAction::Cancel => {
-                    tracing::warn!(
-                        surface = "mcp",
-                        service,
-                        action,
-                        actor = "mcp_client",
-                        outcome = "cancelled",
-                        entity_kind = "destructive_action",
-                        entity_id = %format!("{service}.{action}"),
-                        kind = "confirmation_required",
-                        "destructive action elicitation cancelled",
-                    );
-                    ConfirmOutcome::Cancelled
-                }
-                _ => {
-                    tracing::warn!(
-                        surface = "mcp",
-                        service,
-                        action,
-                        actor = "mcp_client",
-                        outcome = "unknown_action",
-                        entity_kind = "destructive_action",
-                        entity_id = %format!("{service}.{action}"),
-                        kind = "confirmation_required",
-                        "destructive action elicitation returned unknown action",
-                    );
-                    ConfirmOutcome::Cancelled
-                }
-            },
-            Err(_) => {
-                tracing::warn!(
-                    surface = "mcp",
-                    service,
-                    action,
-                    actor = "mcp_client",
-                    outcome = "failed",
-                    entity_kind = "destructive_action",
-                    entity_id = %format!("{service}.{action}"),
-                    kind = "confirmation_required",
-                    "destructive action elicitation request failed",
-                );
-                ConfirmOutcome::Failed
-            }
-        },
+    use rmcp::model::{
+        CallToolRequestParams, ClientCapabilities, ElicitationCapability,
+        FormElicitationCapability, Implementation, ProtocolVersion, RequestMetaObject,
+    };
+    use serde_json::json;
+
+    use super::{DestructiveConfirmation, destructive_confirmation};
+
+    fn elicitation_request() -> CallToolRequestParams {
+        let capabilities = ClientCapabilities::builder()
+            .enable_elicitation_with(
+                ElicitationCapability::new().with_form(FormElicitationCapability::new()),
+            )
+            .build();
+        let mut request = CallToolRequestParams::new("danger");
+        request.meta = Some(RequestMetaObject::with_client_context(
+            ProtocolVersion::V_2026_07_28,
+            Implementation::new("test-client", "1.0.0"),
+            capabilities,
+        ));
+        request
+    }
+
+    #[test]
+    fn destructive_confirmation_uses_mrtr_without_request_state() {
+        let request = elicitation_request();
+
+        let DestructiveConfirmation::InputRequired(result) =
+            destructive_confirmation(&request, "danger", "danger.delete")
+        else {
+            panic!("expected input_required");
+        };
+
+        assert!(result.request_state.is_none());
+        let requests = result.input_requests.expect("inputRequests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests.contains_key("destructive_confirmation"));
+    }
+
+    #[test]
+    fn destructive_confirmation_accepts_the_retried_elicitation_response() {
+        let mut request = elicitation_request();
+        request.input_responses = Some(BTreeMap::from([(
+            "destructive_confirmation".to_string(),
+            json!({"action": "accept", "content": {"confirm": true}}),
+        )]));
+
+        assert!(matches!(
+            destructive_confirmation(&request, "danger", "danger.delete"),
+            DestructiveConfirmation::Proceed
+        ));
+    }
+
+    #[test]
+    fn destructive_confirmation_does_not_gate_clients_without_elicitation() {
+        let request = CallToolRequestParams::new("danger");
+
+        assert!(matches!(
+            destructive_confirmation(&request, "danger", "danger.delete"),
+            DestructiveConfirmation::Proceed
+        ));
     }
 }

@@ -230,7 +230,10 @@ pub fn log_context(reason: &'static str) -> Cow<'static, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::{ClientRequest, ErrorCode, ErrorData, NumberOrString, ServerResult};
+    use rmcp::model::{
+        ClientRequest, DiscoverRequest, DiscoverRequestParams, ErrorCode, ErrorData,
+        NumberOrString, ServerResult,
+    };
 
     #[test]
     fn parse_ws_url_accepts_websocket_schemes() {
@@ -248,7 +251,7 @@ mod tests {
     #[test]
     fn json_rpc_frame_codec_round_trips_requests_responses_and_errors() {
         let request = TxJsonRpcMessage::<RoleClient>::request(
-            ClientRequest::PingRequest(Default::default()),
+            ClientRequest::DiscoverRequest(DiscoverRequest::new(DiscoverRequestParams {})),
             NumberOrString::Number(7),
         );
         let encoded_request = encode_client_message(&request).expect("encode request");

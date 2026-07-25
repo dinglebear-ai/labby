@@ -22,7 +22,9 @@ use std::time::Instant;
 use labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM;
 use rmcp::ErrorData;
 use rmcp::RoleServer;
-use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, JsonObject};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
+};
 use rmcp::service::{Peer, RequestContext};
 
 use crate::mcp::context::{
@@ -73,7 +75,7 @@ impl LabMcpServer {
         subject: &str,
         actor_key: Option<&str>,
         context: &RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         // Upstream tools don't use lab's action/params wrapper — they receive
         // raw arguments. Use "call_tool" as the action label for logging/envelopes.
         let upstream_action = "call_tool";
@@ -141,9 +143,9 @@ impl LabMcpServer {
                 },
             )
             .await;
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                envelope.to_string(),
-            )]));
+            return Ok(
+                CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]).into(),
+            );
         }
         if let Some(pool) = self.current_upstream_pool().await
             && let Some(Ok((upstream_name, _tool, route))) = raw_resolved
@@ -174,14 +176,10 @@ impl LabMcpServer {
             let mut upstream_params = CallToolRequestParams::new(service.to_string());
             upstream_params.arguments = raw_arguments;
 
-            // Relay path (opt-in): when the downstream agent advertises
-            // elicitation and the operator enabled relaying, route this call
-            // over a dedicated connection that forwards the upstream's
-            // server→client requests (elicitation/sampling/roots) down to the
-            // agent. Falls back to the pooled multiplexed call when the gate is
-            // off, the agent can't elicit, or the config can't be resolved.
-            let relay_enabled =
-                crate::config::upstream_relay_enabled() && downstream_supports_relay(&context.peer);
+            // A downstream that advertises MRTR input capabilities gets a
+            // dedicated upstream connection whose request metadata mirrors
+            // those capabilities. The response itself is forwarded unchanged.
+            let relay_enabled = downstream_supports_relay(&context.peer);
             let relay_config = if relay_enabled {
                 match &self.gateway_manager {
                     Some(manager) => manager.upstream_config(&upstream_name).await,
@@ -216,11 +214,27 @@ impl LabMcpServer {
                 )
                 .await
             } else {
-                pool.call_tool(&upstream_name, upstream_params).await
+                pool.call_tool_once(&upstream_name, upstream_params).await
             };
 
             match call_outcome {
                 Some(Ok(result)) => {
+                    let CallToolResponse::Complete(result) = result else {
+                        let elapsed_ms = start.elapsed().as_millis();
+                        pool.record_success(&upstream_name).await;
+                        tracing::info!(
+                            surface = "mcp",
+                            service,
+                            action = upstream_action,
+                            subject,
+                            tool = %service,
+                            upstream = %upstream_name,
+                            elapsed_ms,
+                            result_type = "incomplete",
+                            "upstream proxy returned non-complete result"
+                        );
+                        return Ok(result);
+                    };
                     let elapsed_ms = start.elapsed().as_millis();
                     let (result, kind, counts_as_failure) =
                         normalize_upstream_result(service, upstream_action, result);
@@ -285,7 +299,7 @@ impl LabMcpServer {
                         SOURCE_MCP_CALL_UPSTREAM,
                     )
                     .await;
-                    return Ok(result);
+                    return Ok(result.into());
                 }
                 Some(Err(e)) => {
                     pool.record_failure(&upstream_name, e.clone()).await;
@@ -329,7 +343,8 @@ impl LabMcpServer {
                     .await;
                     return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
-                    )]));
+                    )])
+                    .into());
                 }
                 None => {
                     // Connection is gone — record failure so the circuit
@@ -385,7 +400,8 @@ impl LabMcpServer {
                     .await;
                     return Ok(CallToolResult::error(vec![ContentBlock::text(
                         envelope.to_string(),
-                    )]));
+                    )])
+                    .into());
                 }
             }
         }
@@ -431,14 +447,13 @@ impl LabMcpServer {
                 let input_tokens = raw_arguments.as_ref().map_or(0, estimate_tokens_args);
                 let mut upstream_params = CallToolRequestParams::new(service.to_string());
                 upstream_params.arguments = raw_arguments;
-                // Relay path (opt-in): for OAuth/subject-scoped upstreams, route
+                // Relay path: for OAuth/subject-scoped upstreams, route
                 // over a dedicated relay-handled connection so the upstream's
-                // server→client requests (elicitation/sampling/roots) reach the
-                // downstream agent. The relay connect forwards `oauth_subject`
-                // so the dedicated connection authenticates as this caller.
-                let relay_enabled = crate::config::upstream_relay_enabled()
-                    && downstream_supports_relay(&context.peer);
-                let call_result: Result<CallToolResult, String> = if relay_enabled {
+                // MRTR input requirements are preserved for the downstream
+                // agent. The relay connect forwards `oauth_subject` so the
+                // dedicated connection authenticates as this caller.
+                let relay_enabled = downstream_supports_relay(&context.peer);
+                let call_result: Result<CallToolResponse, String> = if relay_enabled {
                     tracing::debug!(
                         surface = "mcp",
                         service,
@@ -462,11 +477,18 @@ impl LabMcpServer {
                         None => Err(format!("relayed upstream `{upstream_name}` connect failed")),
                     }
                 } else {
-                    pool.subject_scoped_call_tool(&config, oauth_subject.as_ref(), upstream_params)
-                        .await
+                    pool.subject_scoped_call_tool_once(
+                        &config,
+                        oauth_subject.as_ref(),
+                        upstream_params,
+                    )
+                    .await
                 };
                 match call_result {
                     Ok(result) => {
+                        let CallToolResponse::Complete(result) = result else {
+                            return Ok(result);
+                        };
                         let elapsed_ms = start.elapsed().as_millis();
                         let (result, kind, counts_as_failure) =
                             normalize_upstream_result(service, upstream_action, result);
@@ -532,7 +554,7 @@ impl LabMcpServer {
                             outcome,
                         )
                         .await;
-                        return Ok(result);
+                        return Ok(result.into());
                     }
                     Err(_e) => {
                         let elapsed_ms = start.elapsed().as_millis();
@@ -575,7 +597,8 @@ impl LabMcpServer {
                         .await;
                         return Ok(CallToolResult::error(vec![ContentBlock::text(
                             envelope.to_string(),
-                        )]));
+                        )])
+                        .into());
                     }
                 }
             }
@@ -596,7 +619,7 @@ impl LabMcpServer {
         );
         self.emit_dispatch_notification(context, service, action, elapsed_ms, outcome)
             .await;
-        Ok(result)
+        Ok(result.into())
     }
 }
 

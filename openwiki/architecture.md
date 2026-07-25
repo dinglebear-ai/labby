@@ -143,7 +143,7 @@ Lab is a Rust workspace with a split between reusable upstream-facing SDK client
 - [`entrypoint.rs`](../crates/labby/src/entrypoint.rs) - Binary entry point, tracing initialization
 - [`cli.rs`](../crates/labby/src/cli.rs) - CLI command definitions (clap-based)
 - [`api/`](../crates/labby/src/api/) - HTTP API routes and handlers (axum-based)
-- [`mcp/`](../crates/labby/src/mcp/) - MCP server implementation (rmcp 2.1)
+- [`mcp/`](../crates/labby/src/mcp/) - Stateless MCP `2026-07-28` server implementation (rmcp 3.0.0-beta.2)
 - [`dispatch/`](../crates/labby/src/dispatch/) - Service-neutral operation handlers
 - [`config.rs`](../crates/labby/src/config.rs) - Configuration loading and rendering
 - Surface-specific modules (CLI shims, MCP handlers, HTTP middleware)

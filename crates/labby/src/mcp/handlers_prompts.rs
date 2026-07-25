@@ -176,7 +176,9 @@ impl LabMcpServer {
         )
         .await;
 
-        let mut result = ListPromptsResult::with_all_items(prompts);
+        let mut result = ListPromptsResult::with_all_items(prompts)
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private);
         result.next_cursor = next_cursor;
         Ok(result)
     }
@@ -571,6 +573,28 @@ mod tests {
             err.data.as_ref().expect("error data")["kind"],
             serde_json::json!("invalid_cursor")
         );
+    }
+
+    #[tokio::test]
+    async fn list_prompts_includes_required_private_cache_metadata() {
+        let server = prompt_test_server(McpRouteScope::Root);
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let result = running
+            .service()
+            .list_prompts_impl(None, request_context(running.peer().clone()))
+            .await
+            .expect("prompt list");
+
+        assert_eq!(result.ttl_ms, Some(0));
+        assert_eq!(result.cache_scope, Some(rmcp::model::CacheScope::Private));
+        let wire = serde_json::to_value(result).expect("serialize prompt list");
+        assert_eq!(wire["resultType"], "complete");
+        assert_eq!(wire["ttlMs"], 0);
+        assert_eq!(wire["cacheScope"], "private");
     }
 
     #[tokio::test]

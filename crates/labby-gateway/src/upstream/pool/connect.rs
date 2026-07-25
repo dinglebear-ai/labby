@@ -8,10 +8,12 @@
 
 use std::time::Instant;
 
+use rmcp::model::ProtocolVersion;
+use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
-use rmcp::{ClientHandler, RoleClient, ServiceExt};
+use rmcp::{ClientHandler, RoleClient};
 
 use labby_auth::upstream::cache::OauthClientCache;
 use labby_runtime::gateway_config::UpstreamConfig;
@@ -189,7 +191,14 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler>(
     let transport = connect_websocket_transport(
         WebSocketTransportConfig::new(parsed.to_string()).with_authorization(authorization),
     );
-    let service: rmcp::service::RunningService<RoleClient, H> = handler.serve(transport).await?;
+    let service: rmcp::service::RunningService<RoleClient, H> = handler
+        .serve_with_lifecycle(
+            transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await?;
     let peer = service.peer().clone();
     let tools = peer.list_all_tools().await?;
     tracing::info!(
@@ -278,7 +287,14 @@ pub(super) async fn connect_http_upstream<H: ClientHandler>(
             .map_err(|e| anyhow::anyhow!("oauth_required: {e}"))?;
 
         let worker = StreamableHttpClientWorker::new(auth_client, transport_config);
-        let service: rmcp::service::RunningService<RoleClient, H> = handler.serve(worker).await?;
+        let service: rmcp::service::RunningService<RoleClient, H> = handler
+            .serve_with_lifecycle(
+                worker,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                },
+            )
+            .await?;
         let peer = service.peer().clone();
         let tools = peer.list_all_tools().await?;
         return Ok((
@@ -308,7 +324,14 @@ pub(super) async fn connect_http_upstream<H: ClientHandler>(
 
     // `capped` is already built above with the shared/fresh base client.
     let worker = StreamableHttpClientWorker::new(capped, transport_config);
-    let service: rmcp::service::RunningService<RoleClient, H> = handler.serve(worker).await?;
+    let service: rmcp::service::RunningService<RoleClient, H> = handler
+        .serve_with_lifecycle(
+            worker,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await?;
     let peer = service.peer().clone();
     let tools = peer.list_all_tools().await?;
     tracing::info!(

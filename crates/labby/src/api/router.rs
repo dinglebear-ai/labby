@@ -3129,7 +3129,9 @@ mod tests {
                     .header(header::HOST, "mcp.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","method":"server/discover","id":1,"params":{}}"#,
+                    ))
                     .unwrap(),
             )
             .await
@@ -3223,7 +3225,9 @@ mod tests {
                     .header(header::HOST, "mcp.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","method":"server/discover","id":1,"params":{}}"#,
+                    ))
                     .unwrap(),
             )
             .await
@@ -3290,7 +3294,9 @@ mod tests {
                     .header(header::HOST, "telemetry.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","method":"server/discover","id":1,"params":{}}"#,
+                    ))
                     .unwrap(),
             )
             .await
@@ -3386,7 +3392,9 @@ mod tests {
                     .header("x-request-id", "protected-subset-test")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","method":"server/discover","id":1,"params":{}}"#,
+                    ))
                     .unwrap(),
             )
             .await
@@ -3455,7 +3463,9 @@ mod tests {
                     .header(header::HOST, "mcp.example.com")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping"}"#))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","method":"server/discover","id":1,"params":{}}"#,
+                    ))
                     .unwrap(),
             )
             .await

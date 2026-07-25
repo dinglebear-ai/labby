@@ -13,7 +13,8 @@
 //! - `post_message` → `Sse(_, _)`: PER-EVENT cap (not cumulative), so
 //!   long-lived legitimate SSE subscriptions are not disconnected.
 //! - `get_stream`: PER-EVENT cap (not cumulative).
-//! - `delete_session`: no significant body; cap not applied.
+//! - Stateful session headers and session deletion are intentionally ignored;
+//!   Labby only connects with the 2026-07-28 stateless lifecycle.
 //!
 //! The cap applies to DECODED bytes — reqwest auto-decodes
 //! `Content-Encoding: gzip|br|zstd` by default, and `bytes_stream()` yields
@@ -37,10 +38,8 @@ use rmcp::transport::streamable_http_client::{
 };
 use sse_stream::{Sse, SseStream};
 
-// rmcp 1.6 exposes the constants above but keeps `validate_custom_header` and
-// `extract_scope_from_header` as `pub(crate)`. Re-implementing them locally
-// (small, well-defined contracts mirrored from rmcp's source) keeps this
-// wrapper compatible without forking rmcp.
+// Re-implement the SDK's small reserved-header and OAuth-scope helpers locally
+// so the body-capped adapter can stay transport-compatible without forking rmcp.
 const RESERVED_HEADERS: &[&str] = &[
     "accept",
     HEADER_SESSION_ID,
@@ -327,7 +326,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
     async fn get_stream(
         &self,
         uri: Arc<str>,
-        session_id: Option<Arc<str>>,
+        _session_id: Option<Arc<str>>,
         last_event_id: Option<String>,
         auth_token: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
@@ -336,9 +335,6 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             .inner
             .get(uri.as_ref())
             .header(ACCEPT, [EVENT_STREAM_MIME_TYPE, JSON_MIME_TYPE].join(", "));
-        if let Some(session_id) = session_id {
-            request_builder = request_builder.header(HEADER_SESSION_ID, session_id.as_ref());
-        }
         if let Some(last_event_id) = last_event_id {
             request_builder = request_builder.header(HEADER_LAST_EVENT_ID, last_event_id);
         }
@@ -376,28 +372,13 @@ impl StreamableHttpClient for BodyCappedHttpClient {
 
     async fn delete_session(
         &self,
-        uri: Arc<str>,
-        session: Arc<str>,
-        auth_token: Option<String>,
-        custom_headers: HashMap<HeaderName, HeaderValue>,
+        _uri: Arc<str>,
+        _session: Arc<str>,
+        _auth_token: Option<String>,
+        _custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<(), StreamableHttpError<Self::Error>> {
-        let mut request_builder = self.inner.delete(uri.as_ref());
-        if let Some(auth_header) = auth_token {
-            request_builder = request_builder.bearer_auth(auth_header);
-        }
-        request_builder = request_builder.header(HEADER_SESSION_ID, session.as_ref());
-        request_builder = apply_custom_headers(request_builder, custom_headers)?;
-        let response = request_builder
-            .send()
-            .await
-            .map_err(StreamableHttpError::Client)?;
-        if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
-            tracing::debug!("this server doesn't support deleting session");
-            return Ok(());
-        }
-        let _response = response
-            .error_for_status()
-            .map_err(StreamableHttpError::Client)?;
+        // The trait retains this legacy hook, but the 2026-07-28 lifecycle has
+        // no session to delete.
         Ok(())
     }
 
@@ -405,7 +386,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         &self,
         uri: Arc<str>,
         message: ClientJsonRpcMessage,
-        session_id: Option<Arc<str>>,
+        _session_id: Option<Arc<str>>,
         auth_token: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
@@ -417,10 +398,6 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             request = request.bearer_auth(auth_header);
         }
         request = apply_custom_headers(request, custom_headers)?;
-        let session_was_attached = session_id.is_some();
-        if let Some(session_id) = session_id {
-            request = request.header(HEADER_SESSION_ID, session_id.as_ref());
-        }
         let response = request
             .json(&message)
             .send()
@@ -461,18 +438,10 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         ) {
             return Ok(StreamableHttpPostResponse::Accepted);
         }
-        if status == reqwest::StatusCode::NOT_FOUND && session_was_attached {
-            return Err(StreamableHttpError::SessionExpired);
-        }
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .map(|ct| String::from_utf8_lossy(ct.as_bytes()).to_string());
-        let session_id_resp = response
-            .headers()
-            .get(HEADER_SESSION_ID)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
         // Non-success: read body with cap so a hostile error response can't OOM.
         if !status.is_success() {
             let body_bytes = read_body_capped(response, self.max_bytes).await?;
@@ -482,7 +451,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
                 .is_some_and(|ct| ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()))
                 && let Some(message) = parse_json_rpc_error(&body)
             {
-                return Ok(StreamableHttpPostResponse::Json(message, session_id_resp));
+                return Ok(StreamableHttpPostResponse::Json(message, None));
             }
             return Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
                 format!("HTTP {status}: {body}"),
@@ -493,13 +462,13 @@ impl StreamableHttpClient for BodyCappedHttpClient {
                 let capped = per_event_capped_byte_stream(response.bytes_stream(), self.max_bytes);
                 Ok(StreamableHttpPostResponse::Sse(
                     SseStream::from_bytes_stream(capped).boxed(),
-                    session_id_resp,
+                    None,
                 ))
             }
             Some(ct) if ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()) => {
                 let body_bytes = read_body_capped(response, self.max_bytes).await?;
                 match serde_json::from_slice::<ServerJsonRpcMessage>(&body_bytes) {
-                    Ok(message) => Ok(StreamableHttpPostResponse::Json(message, session_id_resp)),
+                    Ok(message) => Ok(StreamableHttpPostResponse::Json(message, None)),
                     Err(e) => {
                         tracing::warn!(
                             "could not parse JSON response as ServerJsonRpcMessage, treating as accepted: {e}"
@@ -709,6 +678,51 @@ mod tests {
             }
         }
         assert!(event_count >= 1, "must yield at least one SSE event");
+    }
+
+    #[tokio::test]
+    async fn stateless_adapter_ignores_legacy_session_ids_in_both_directions() {
+        use rmcp::transport::streamable_http_client::StreamableHttpPostResponse as Resp;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(|request: &wiremock::Request| {
+                assert!(
+                    request.headers.get("mcp-session-id").is_none(),
+                    "stateless upstream requests must not send Mcp-Session-Id"
+                );
+                ResponseTemplate::new(200)
+                    .insert_header("Mcp-Session-Id", "legacy-session")
+                    .set_body_raw(
+                        br#"{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","tools":[],"ttlMs":0,"cacheScope":"private"}}"#
+                            .to_vec(),
+                        "application/json",
+                    )
+            })
+            .mount(&server)
+            .await;
+
+        let client = build(1024 * 1024);
+        let uri: Arc<str> = format!("{}/mcp", server.uri()).into();
+        let response = client
+            .post_message(
+                uri,
+                jsonrpc_request(),
+                Some(Arc::from("legacy-session")),
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect("stateless post succeeds");
+
+        let Resp::Json(_, session_id) = response else {
+            panic!("expected JSON response");
+        };
+        assert!(
+            session_id.is_none(),
+            "legacy response session IDs must not enter transport state"
+        );
     }
 
     #[test]

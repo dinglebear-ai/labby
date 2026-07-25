@@ -4,17 +4,51 @@
 
 use std::time::Instant;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult};
 
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::timed_capability_call;
-use super::helpers::{estimate_response_size, upstream_transport};
+use super::helpers::{
+    estimate_call_tool_response_size, estimate_response_size, upstream_transport,
+};
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
 
 impl UpstreamPool {
+    /// Call an OAuth-subject-scoped tool once, preserving MRTR/task outcomes.
+    pub async fn subject_scoped_call_tool_once(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        params: CallToolRequestParams,
+    ) -> Result<CallToolResponse, String> {
+        let start = Instant::now();
+        let tool_name = params.name.to_string();
+        let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
+            .with_transport(upstream_transport(config));
+        log_upstream_request_start(event);
+        let (peer, _tools) = self
+            .acquire_or_connect_subject(config, subject)
+            .await
+            .map_err(|error| error.to_string())?;
+        let timeout_ms = self.request_timeout.as_millis();
+        timed_capability_call(
+            self,
+            &config.name,
+            UpstreamCapability::Tools,
+            event,
+            start,
+            peer.call_tool_once(params),
+            estimate_call_tool_response_size,
+            Some(subject),
+            |error| format!("upstream call failed: {error}"),
+            format!("upstream call timed out after {timeout_ms}ms"),
+        )
+        .await
+    }
+
     /// Call a tool on an OAuth-subject-scoped upstream.
     ///
     /// P-C1 fix: uses `acquire_or_connect_subject` so the per-(upstream,subject)
@@ -117,6 +151,37 @@ impl UpstreamPool {
                 estimate_response_size,
                 None,
                 |e| format!("upstream call failed: {e}"),
+                format!("upstream call timed out after {timeout_ms}ms"),
+            )
+            .await,
+        )
+    }
+
+    /// Call a tool once, preserving MRTR `input_required` and task outcomes.
+    pub async fn call_tool_once(
+        &self,
+        upstream_name: &str,
+        params: CallToolRequestParams,
+    ) -> Option<Result<CallToolResponse, String>> {
+        let start = Instant::now();
+        let tool_name = params.name.to_string();
+        let event = UpstreamRequestLog::tool(upstream_name, &tool_name, false);
+        let peer = self
+            .acquire_peer(upstream_name, UpstreamCapability::Tools, "tool.call")
+            .await?;
+        log_upstream_request_start(event);
+        let timeout_ms = self.request_timeout.as_millis();
+        Some(
+            timed_capability_call(
+                self,
+                upstream_name,
+                UpstreamCapability::Tools,
+                event,
+                start,
+                peer.call_tool_once(params),
+                estimate_call_tool_response_size,
+                None,
+                |error| format!("upstream call failed: {error}"),
                 format!("upstream call timed out after {timeout_ms}ms"),
             )
             .await,

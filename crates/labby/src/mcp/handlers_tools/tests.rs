@@ -26,7 +26,12 @@ use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
 use crate::registry::{RegisteredService, ToolRegistry};
 use labby_primitives::action::ActionSpec;
-use rmcp::model::{CallToolRequestParams, Meta, PaginatedRequestParams, Tool};
+use rmcp::ServerHandler;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, ClientCapabilities, ElicitationCapability,
+    FormElicitationCapability, Implementation, Meta, PaginatedRequestParams, ProtocolVersion,
+    RequestMetaObject, Tool,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -736,6 +741,75 @@ async fn call_tool_runs_destructive_builtin_when_elicitation_is_not_supported() 
         1,
         "MCP clients without elicitation support must not hit a fake destructive gate"
     );
+}
+
+fn destructive_request_with_elicitation() -> CallToolRequestParams {
+    let capabilities = ClientCapabilities::builder()
+        .enable_elicitation_with(
+            ElicitationCapability::new().with_form(FormElicitationCapability::new()),
+        )
+        .build();
+    let mut request =
+        CallToolRequestParams::new("danger").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("danger.delete".to_string()),
+            ),
+            ("params".to_string(), serde_json::json!({})),
+        ]));
+    request.meta = Some(RequestMetaObject::with_client_context(
+        ProtocolVersion::V_2026_07_28,
+        Implementation::new("test-client", "1.0.0"),
+        capabilities,
+    ));
+    request
+}
+
+#[tokio::test]
+async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
+    DESTRUCTIVE_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    let server = test_server(
+        destructive_test_registry(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "danger-only",
+            std::iter::empty::<&str>(),
+            ["danger"],
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let first = running
+        .service()
+        .call_tool(
+            destructive_request_with_elicitation(),
+            request_context_with_peer(running.peer().clone()),
+        )
+        .await
+        .expect("input required");
+    let CallToolResponse::InputRequired(input_required) = first else {
+        panic!("destructive call must return input_required");
+    };
+    assert!(input_required.request_state.is_none());
+    assert_eq!(DESTRUCTIVE_DISPATCH_COUNT.load(Ordering::SeqCst), 0);
+
+    let mut retry = destructive_request_with_elicitation();
+    retry.input_responses = Some(BTreeMap::from([(
+        "destructive_confirmation".to_string(),
+        serde_json::json!({"action": "accept", "content": {"confirm": true}}),
+    )]));
+    let second = running
+        .service()
+        .call_tool(retry, request_context_with_peer(running.peer().clone()))
+        .await
+        .expect("completed retry");
+    assert!(matches!(second, CallToolResponse::Complete(_)));
+    assert_eq!(DESTRUCTIVE_DISPATCH_COUNT.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -2406,6 +2480,12 @@ async fn list_tools_paginates_large_builtin_catalog() {
     assert_eq!(first.tools[0].name.as_ref(), "service_000");
     assert_eq!(first.tools[99].name.as_ref(), "service_099");
     assert_eq!(first.next_cursor.as_deref(), Some("100"));
+    assert_eq!(first.ttl_ms, Some(0));
+    assert_eq!(first.cache_scope, Some(rmcp::model::CacheScope::Private));
+    let wire = serde_json::to_value(&first).expect("serialize tool list");
+    assert_eq!(wire["resultType"], "complete");
+    assert_eq!(wire["ttlMs"], 0);
+    assert_eq!(wire["cacheScope"], "private");
 
     let second_request = PaginatedRequestParams::default().with_cursor(first.next_cursor.clone());
     let second = running

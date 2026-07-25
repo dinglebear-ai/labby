@@ -176,7 +176,9 @@ marketplace({ "action": "schema", "params": { "action": "mcp.install" } })  // p
 
 `ActionSpec.destructive: bool` is the **single source of truth** for dangerous operations. It drives:
 
-- **MCP:** elicitation — the dispatcher prompts the client to confirm before executing.
+- **MCP:** 2026-07-28 MRTR elicitation — the dispatcher returns
+  `input_required`, then validates the elicitation answer from the retried
+  request's `inputResponses`.
 - **CLI:** requires `-y` / `--yes` to run non-interactively. `--no-confirm` and `--dry-run` are also honored.
 
 Mark actions `destructive: true` whenever they delete, overwrite, spawn local processes, or push state that can't be trivially reversed (`gateway.test`, `gateway.remove`, `marketplace.mcp.install`, `stash.component.export`, etc.).

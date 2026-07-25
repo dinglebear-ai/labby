@@ -12,8 +12,8 @@ All proxies must satisfy these constraints regardless of the specific tool:
 - Preserve the original `Host` header (Lab uses `Host` for protected-route
   lookup; do NOT rely on `X-Forwarded-Host`).
 - Set `X-Forwarded-Proto` to the original scheme.
-- Forward `Authorization`, `Accept`, `Content-Type`, `Mcp-Session-Id`,
-  `Mcp-Protocol-Version`, and `Last-Event-Id` headers.
+- Forward `Authorization`, `Accept`, `Content-Type`, `Mcp-Protocol-Version`,
+  `Mcp-Method`, `Mcp-Name`, every `Mcp-Param-*` header, and `Last-Event-Id`.
 - Disable request and response buffering on MCP paths (chunked/SSE traffic).
 - Disable compression on MCP paths.
 - Use read/write/idle timeouts suitable for long-lived Streamable HTTP and

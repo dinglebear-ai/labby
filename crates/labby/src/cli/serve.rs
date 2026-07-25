@@ -1263,16 +1263,12 @@ fn reject_protected_routes_without_gateway(config: &LabConfig) -> Result<()> {
 async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<ExitCode> {
     use crate::mcp::bridge::{BridgeClientHandler, BridgeServerHandler};
 
-    // Shared with `BridgeClientHandler` so the daemon's server->client
-    // requests (elicitation/sampling/roots) have the one downstream peer to
-    // relay to, once the bridge server's lifecycle callback populates it.
-    let downstream = Arc::new(tokio::sync::OnceCell::new());
-    let client_handler = BridgeClientHandler::new(Arc::clone(&downstream));
+    let client_handler = BridgeClientHandler::new();
     let service = live
         .connect_service(client_handler)
         .await
         .context("connect to live labby serve daemon for stdio bridging")?;
-    let handler = BridgeServerHandler::new(service, downstream);
+    let handler = BridgeServerHandler::new(service);
     let running = handler.serve(rmcp::transport::stdio()).await?;
     tracing::info!(
         subsystem = "startup",
@@ -1828,7 +1824,6 @@ mod tests {
                 port: Some(9000),
                 allowed_hosts: Some(vec!["lab.internal".into()]),
                 show_all: None,
-                destructive_elicitation_timeout_ms: None,
                 catalog_notification_timeout_ms: None,
             },
             ..LabConfig::default()
@@ -2117,6 +2112,7 @@ mod tests {
             .expect("response body");
         let body = String::from_utf8(body.to_vec()).expect("UTF-8 response");
         assert!(body.contains("\"supportedVersions\":[\"2026-07-28\"]"));
+        assert!(body.contains("\"resultType\":\"complete\""));
         assert!(!body.contains("2025-11-25"));
     }
 
@@ -2170,12 +2166,17 @@ mod tests {
                     .uri("/media")
                     .header("host", "mcp.example.com")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"jsonrpc":"2.0","method":"ping","id":1}"#))
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2026-07-28")
+                    .header("mcp-method", "server/discover")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","method":"server/discover","id":1,"params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"route-test","version":"1.0.0"},"io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+                    ))
                     .expect("request"),
             )
             .await
             .expect("response");
 
-        assert_ne!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

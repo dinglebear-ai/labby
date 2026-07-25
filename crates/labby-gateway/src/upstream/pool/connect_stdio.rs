@@ -6,7 +6,9 @@
 //! `crate::mcp` (A-M6 fix).
 
 use labby_runtime::gateway_config::UpstreamConfig;
-use rmcp::{ClientHandler, RoleClient, ServiceExt};
+use rmcp::model::ProtocolVersion;
+use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
+use rmcp::{ClientHandler, RoleClient};
 
 use super::super::auth::configured_bearer_token;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
@@ -246,7 +248,15 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     #[cfg(windows)]
     let job_guard = pid.map(super::super::process_guard::JobObjectGuard::arm);
 
-    let service: rmcp::service::RunningService<RoleClient, H> = match handler.serve(process).await {
+    let service: rmcp::service::RunningService<RoleClient, H> = match handler
+        .serve_with_lifecycle(
+            process,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await
+    {
         Ok(service) => service,
         Err(error) => return Err(StdioConnectError::with_diagnostics(error, &stderr_capture).await),
     };
