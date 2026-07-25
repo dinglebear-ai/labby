@@ -36,6 +36,11 @@ pub const SOURCE_MCP_CALL_CODEMODE: &str = "mcp.call.codemode";
 /// mid-turn caveat as [`SOURCE_MCP_CALL_CODEMODE`].
 pub const SOURCE_MCP_CALL_UPSTREAM: &str = "mcp.call.upstream";
 
+/// Several emitters converged on one net visible change and were delivered as
+/// a single notification. The contributing emitters are listed on the
+/// `catalog.notify.flush` event.
+pub const SOURCE_COALESCED: &str = "coalesced";
+
 /// Fallback for a notification that reached the fanout without attribution.
 /// Seeing this in logs means a new emitter was added without a source label.
 pub const SOURCE_UNKNOWN: &str = "unknown";
@@ -48,6 +53,7 @@ pub const SOURCES: &[&str] = &[
     SOURCE_GATEWAY_ENRICH_HINT,
     SOURCE_MCP_CALL_CODEMODE,
     SOURCE_MCP_CALL_UPSTREAM,
+    SOURCE_COALESCED,
     SOURCE_UNKNOWN,
 ];
 

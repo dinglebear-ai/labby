@@ -29,6 +29,16 @@ impl CatalogNotificationChanges {
     pub(crate) const fn any(self) -> bool {
         self.tools_changed || self.resources_changed || self.prompts_changed
     }
+
+    /// Union of two triggers. Coalescing must never drop a kind because a
+    /// later trigger in the batch only moved a different one.
+    pub(crate) const fn merged_with(self, other: Self) -> Self {
+        Self {
+            tools_changed: self.tools_changed || other.tools_changed,
+            resources_changed: self.resources_changed || other.resources_changed,
+            prompts_changed: self.prompts_changed || other.prompts_changed,
+        }
+    }
 }
 
 impl From<CatalogChangeSet> for CatalogNotificationChanges {
@@ -312,6 +322,8 @@ mod tests {
 
     use super::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::catalog::CatalogChangeSet;
+    use crate::mcp::catalog_churn::InFlightToolCall;
+    use crate::mcp::catalog_coalesce::{reset_for_test, schedule_catalog_notification};
     use crate::mcp::peers::{PeerRegistry, RegisteredPeer};
 
     #[derive(Clone)]
@@ -585,5 +597,80 @@ mod tests {
         unchanged_service.cancel().await.expect("client cancels");
         moved_handle.abort();
         unchanged_handle.abort();
+    }
+
+    /// A4: a burst of triggers for one net visible change must reach the client
+    /// as a single `tools/list_changed`, not one per trigger.
+    #[tokio::test]
+    async fn scheduled_notifications_coalesce_into_one_delivery() {
+        reset_for_test();
+        crate::mcp::catalog_churn::reset_for_test();
+        let peers = Arc::new(RwLock::new(Vec::new()));
+        let (client, client_service, server_handle) = connect_peer(&peers, true).await;
+
+        // Five emitters firing in quick succession — a reconcile plus its
+        // follow-on triggers, the shape that produced duplicate notifications.
+        for source in [
+            labby_runtime::catalog_notify::SOURCE_GATEWAY_RELOAD_FULL,
+            labby_runtime::catalog_notify::SOURCE_GATEWAY_RELOAD_SELECTIVE,
+            labby_runtime::catalog_notify::SOURCE_GATEWAY_ENRICH_HINT,
+            labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE,
+            labby_runtime::catalog_notify::SOURCE_MCP_CALL_UPSTREAM,
+        ] {
+            schedule_catalog_notification(
+                &peers,
+                CatalogNotificationChanges::new(true, false, false),
+                source,
+            );
+        }
+
+        client.wait_for_notifications(1).await;
+        // Give any second delivery the chance to arrive before asserting it didn't.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(
+            client.tool_count.load(Ordering::SeqCst),
+            1,
+            "five triggers for one net change must coalesce into one notification"
+        );
+
+        client_service.cancel().await.expect("client cancels");
+        server_handle.abort();
+    }
+
+    /// A4: a notification must not land while a tool call is open — that is
+    /// what invalidates the binding the caller is mid-way through using.
+    #[tokio::test]
+    async fn scheduled_notification_defers_until_the_turn_closes() {
+        reset_for_test();
+        crate::mcp::catalog_churn::reset_for_test();
+        let peers = Arc::new(RwLock::new(Vec::new()));
+        let (client, client_service, server_handle) = connect_peer(&peers, true).await;
+
+        let call = InFlightToolCall::enter();
+        schedule_catalog_notification(
+            &peers,
+            CatalogNotificationChanges::new(true, false, false),
+            labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE,
+        );
+
+        // Well past the coalesce window: without deferral this would already
+        // have been delivered into the open turn.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(
+            client.tool_count.load(Ordering::SeqCst),
+            0,
+            "must not notify while a tool call is in flight"
+        );
+
+        drop(call);
+        client.wait_for_notifications(1).await;
+        assert_eq!(
+            client.tool_count.load(Ordering::SeqCst),
+            1,
+            "the notification must be delivered once the turn closes, not dropped"
+        );
+
+        client_service.cancel().await.expect("client cancels");
+        server_handle.abort();
     }
 }

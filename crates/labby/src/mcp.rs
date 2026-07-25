@@ -11,6 +11,7 @@ pub mod call_tool_codemode;
 pub mod call_tool_upstream;
 pub mod catalog;
 pub(crate) mod catalog_churn;
+pub(crate) mod catalog_coalesce;
 pub(crate) mod catalog_notifications;
 pub mod completion;
 pub mod context;

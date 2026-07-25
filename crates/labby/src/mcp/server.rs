@@ -356,12 +356,14 @@ impl LabMcpServer {
         changes: CatalogChangeSet,
         source: &'static str,
     ) {
-        crate::mcp::catalog_notifications::notify_catalog_peers(
+        // Scheduled, not sent: this runs at the tail of a tool call, and the
+        // caller's turn is still open. Delivering here would invalidate the
+        // binding that call is using. See `catalog_coalesce`.
+        crate::mcp::catalog_coalesce::schedule_catalog_notification(
             &self.peers,
             changes.into(),
             source,
-        )
-        .await;
+        );
     }
 }
 
