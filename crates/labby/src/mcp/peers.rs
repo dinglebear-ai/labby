@@ -118,9 +118,16 @@ impl PeerNotifier {
         );
     }
 
+    /// Hands the diff to the coalescer rather than fanning out immediately: a
+    /// reconcile commonly produces several triggers for one net visible change,
+    /// and a notification delivered into an open turn invalidates the binding
+    /// that turn is using. See `catalog_coalesce`.
     #[cfg(feature = "gateway")]
     async fn notify_catalog_changes(&self, diff: &GatewayCatalogDiff, source: &'static str) {
-        crate::mcp::catalog_notifications::notify_catalog_peers(&self.peers, diff.into(), source)
-            .await;
+        crate::mcp::catalog_coalesce::schedule_catalog_notification(
+            &self.peers,
+            diff.into(),
+            source,
+        );
     }
 }

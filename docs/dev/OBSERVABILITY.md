@@ -277,6 +277,7 @@ shared by the gateway and MCP crates:
 | `gateway.enrich.hint_apply` | `gateway.enrich.hint.apply` writing a `code_mode_hint` |
 | `mcp.call.codemode` | post-run catalog delta observed by a `codemode` call |
 | `mcp.call.upstream` | post-call catalog delta observed by a raw upstream proxy call |
+| `coalesced` | several emitters converged on one net change; see the `catalog.notify.flush` event for the contributors |
 | `unknown` | unattributed — means a new emitter shipped without a label |
 
 Adding or renaming a label is a change to this table in the same commit.
@@ -315,6 +316,29 @@ raw upstream churn under Code Mode.
 while a caller's turn was open, so it can invalidate a binding that caller is
 using. It is the difference between catalog movement and the flapping clients
 actually feel.
+
+**Notifications are coalesced and never delivered mid-turn.** Emitters call
+`catalog_coalesce::schedule_catalog_notification` rather than the fanout
+directly. A trigger starts a settle window (restarted by each new trigger), so
+a burst — a reload plus its follow-on enrichment and per-call triggers — is
+delivered as one notification instead of one per trigger. The flush then waits
+for in-flight tool calls to drain, because a notification delivered while a
+call is open invalidates the binding that call is using; that is the failure
+clients report, and it leaves no trace on the dispatch path because the call
+dies before reaching Labby. Deferral is bounded by `max_hold` — a late
+notification is a nuisance, a lost one is a bug — and a flush forced by that
+bound logs a non-zero `in_flight_tool_calls`.
+
+The batch is logged at `DEBUG` as `action = "catalog.notify.flush"` with
+`sources` (every contributing emitter, not just the last), `source_count`, and
+`deferred_for_calls_ms`. When more than one emitter contributed, the fanout's
+`source` field becomes `coalesced` and the flush event is where the real
+attribution lives. What is finally sent is recomputed per peer at flush time,
+so the delivered notification reflects settled state, never a stale
+intermediate.
+
+- `LABBY_MCP_CATALOG_COALESCE_MS` — settle window (default `250`, clamped 1–10000)
+- `LABBY_MCP_CATALOG_MAX_HOLD_MS` — total deferral bound (default `5000`, clamped 100–120000)
 
 **Churn is a `WARN`, not an inference.** When the window count reaches the
 threshold, the fanout also emits `action = "catalog.notify.churn"` at `WARN`
