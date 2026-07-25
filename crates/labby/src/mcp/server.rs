@@ -337,11 +337,18 @@ impl ServerHandler for LabMcpServer {
 use crate::mcp::catalog::CatalogChangeSet;
 
 impl LabMcpServer {
-    pub(crate) async fn notify_catalog_changes(&self, changes: CatalogChangeSet) {
+    /// `source` attributes the emission — see `labby_runtime::catalog_notify`.
+    /// Per-call sites pass their own label so a notification triggered by a
+    /// tool call is never confused with a gateway reconcile.
+    pub(crate) async fn notify_catalog_changes(
+        &self,
+        changes: CatalogChangeSet,
+        source: &'static str,
+    ) {
         crate::mcp::catalog_notifications::notify_catalog_peers(
             &self.peers,
             changes.into(),
-            "notifying MCP peers about catalog change",
+            source,
         )
         .await;
     }

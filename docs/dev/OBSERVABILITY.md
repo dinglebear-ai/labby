@@ -251,6 +251,98 @@ Those actions must also log reconcile phase transitions and outcome details
 without exposing credential-bearing URLs, commands, tokens, or secret env
 values.
 
+### Catalog Change Notifications
+
+`notifications/tools/list_changed` is a client-visible side effect, not an
+internal event: clients discard and rebuild their connector namespace when they
+receive one. A burst of them invalidates tool bindings mid-turn, so calls fail
+*before* reaching Labby and carry no dispatch trace of their own. That makes the
+notification path the only place the failure is observable, and it is therefore
+instrumented as a first-class boundary.
+
+**One choke point.** Every emitter funnels through
+`mcp/catalog_notifications.rs::notify_catalog_peers`. Churn accounting happens
+there and nowhere else — recording at the individual emitters would count one
+diff once per connected peer. New emitters must route through it rather than
+calling `peer.notify_*_list_changed()` directly.
+
+**Every emission must be attributed.** `notify_catalog_peers` takes a `source`
+label from `labby_runtime::catalog_notify`, which is the single vocabulary
+shared by the gateway and MCP crates:
+
+| `source` | Emitted by |
+|---|---|
+| `gateway.reload.selective` | reconcile that kept the live pool and selectively reconciled added upstreams |
+| `gateway.reload.full` | reconcile that rebuilt the upstream pool |
+| `gateway.enrich.hint_apply` | `gateway.enrich.hint.apply` writing a `code_mode_hint` |
+| `mcp.call.codemode` | post-run catalog delta observed by a `codemode` call |
+| `mcp.call.upstream` | post-call catalog delta observed by a raw upstream proxy call |
+| `unknown` | unattributed — means a new emitter shipped without a label |
+
+Adding or renaming a label is a change to this table in the same commit.
+
+**Required fields on `action = "catalog.notify"`** (`surface = "mcp"`,
+`service = "peers"`):
+
+| Field | Meaning |
+|---|---|
+| `source` | emitting site, from the table above |
+| `peer_count` | peers this notification fans out to |
+| `notify_total` | notifications since process start |
+| `since_last_ms` | gap since the previous notification; absent for the first |
+| `window_count` / `window_secs` | notifications within the recent window |
+| `in_flight_tool_calls` | tool calls open at emission time |
+| `during_tool_call` | `in_flight_tool_calls > 0` |
+
+`during_tool_call = true` is the field that matters: the notification landed
+while a caller's turn was open, so it can invalidate a binding that caller is
+using. It is the difference between catalog movement and the flapping clients
+actually feel.
+
+**Churn is a `WARN`, not an inference.** When the window count reaches the
+threshold, the fanout also emits `action = "catalog.notify.churn"` at `WARN`
+with the same fields plus `threshold`. Operators should not have to count
+`INFO` lines to notice a burst. Both knobs are env-tunable, read once per
+process:
+
+- `LABBY_MCP_CATALOG_CHURN_WINDOW_SECS` — window length (default `60`, clamped to 5–3600)
+- `LABBY_MCP_CATALOG_CHURN_THRESHOLD` — notifications per window that count as churn (default `4`, minimum 2)
+
+**Gateway reconcile must report what moved and what it withheld.** The
+`event = "catalog.refresh.finish"` log on both reconcile paths carries, beyond
+the existing counts:
+
+| Field | Meaning |
+|---|---|
+| `projection` | `code_mode_visible` or `raw` — which contract the diff measured |
+| `tools_added` / `tools_removed` | changed tool names, capped at 20 per list |
+| `namespaces_added` / `namespaces_removed` | changed Code Mode namespaces, rendered as bare upstream names |
+| `delta_truncated_count` | names dropped by the cap |
+| `raw_tools_changed` | whether the raw upstream tool set moved |
+| `suppressed_raw_churn` | raw set moved but the visible contract did not — a notification correctly withheld |
+| `suppressed_raw_churn_total` | process-lifetime count of the above |
+
+`suppressed_raw_churn` exists because a working filter is otherwise invisible: a
+quiet log looks identical whether nothing happened or everything was correctly
+filtered. A climbing `suppressed_raw_churn_total` is the healthy signal that raw
+upstreams are flapping and clients are being shielded from it.
+
+**Diagnosing reported flapping:**
+
+1. Filter for `action = "catalog.notify"` and group by `source` — that names the
+   emitting site.
+2. Check `during_tool_call` on those events. `true` means bindings were
+   invalidated mid-turn, which is the reported symptom rather than a correlate.
+3. Check `suppressed_raw_churn_total` on the reconcile logs. Climbing means raw
+   upstream churn is being filtered correctly; flat while notifications continue
+   means the churn is a genuine visible-contract change.
+4. `since_last_ms` and `window_count` bound how fast it is happening.
+
+Notification field values include upstream-controlled tool names, so they are
+subject to the sanitization rule in **Redaction Rules** below; the namespace
+sentinel tokens used internally by the reconcile snapshot are decoded to bare
+upstream names before logging rather than being emitted raw.
+
 ## Required Fields
 
 ### Dispatch Events
