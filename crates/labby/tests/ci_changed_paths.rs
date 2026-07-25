@@ -159,6 +159,20 @@ fn workflow_changes_enable_everything() {
 }
 
 #[test]
+fn mcp_conformance_inputs_enable_the_full_gate() {
+    for path in [
+        "scripts/ci/mcp-conformance.sh",
+        "conformance/expected-failures-extensions.yaml",
+        ".github/labeler.yml",
+    ] {
+        let out = classify("pull_request", &[path]);
+        for (key, value) in out {
+            assert_eq!(value, "true", "{path} must enable {key}");
+        }
+    }
+}
+
+#[test]
 fn scheduled_and_manual_runs_enable_everything() {
     for event in ["schedule", "workflow_dispatch"] {
         let out = classify(event, &["docs/runtime/CICD.md"]);

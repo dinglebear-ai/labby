@@ -2116,6 +2116,119 @@ mod tests {
         assert!(!body.contains("2025-11-25"));
     }
 
+    #[tokio::test]
+    async fn http_mcp_rejects_mismatched_sep_2243_method_header() {
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            PeerNotifier::default(),
+            true,
+        )
+        .expect("router with HTTP MCP");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2026-07-28")
+                    .header("mcp-method", "resources/list")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "tools/list",
+                            "params": {
+                                "_meta": {
+                                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                    "io.modelcontextprotocol/clientInfo": {
+                                        "name": "header-test",
+                                        "version": "1.0"
+                                    },
+                                    "io.modelcontextprotocol/clientCapabilities": {}
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body");
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).expect("header rejection is JSON-RPC");
+        assert_eq!(body["error"]["code"], -32020);
+    }
+
+    #[tokio::test]
+    async fn http_mcp_rejects_missing_sep_2243_name_header_for_tool_call() {
+        let app = build_http_router(
+            AppState::new(),
+            None,
+            None,
+            &McpPreferences::default(),
+            &[],
+            PeerNotifier::default(),
+            true,
+        )
+        .expect("router with HTTP MCP");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2026-07-28")
+                    .header("mcp-method", "tools/call")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "setup",
+                                "arguments": {
+                                    "action": "help",
+                                    "params": {}
+                                },
+                                "_meta": {
+                                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                    "io.modelcontextprotocol/clientInfo": {
+                                        "name": "header-test",
+                                        "version": "1.0"
+                                    },
+                                    "io.modelcontextprotocol/clientCapabilities": {}
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body");
+        let body: serde_json::Value =
+            serde_json::from_slice(&body).expect("header rejection is JSON-RPC");
+        assert_eq!(body["error"]["code"], -32020);
+    }
+
     #[cfg(feature = "gateway")]
     #[tokio::test]
     async fn protected_gateway_subset_builder_mounts_scoped_mcp_service() {

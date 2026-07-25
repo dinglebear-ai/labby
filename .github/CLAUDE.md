@@ -7,8 +7,10 @@ This directory contains the GitHub Actions workflows for `lab`. The authoritativ
 | File | Trigger | Purpose |
 |------|---------|---------|
 | `workflows/ci.yml` | push/PR to `main`, weekly schedule, manual dispatch | Correctness, release-smoke, and container-smoke checks |
+| `workflows/labeler.yml` | pull request activity | Applies path-based documentation, dependency, and JavaScript labels |
 | `workflows/openwiki-update.yml` | daily schedule, manual dispatch | Refreshes `/openwiki` through the OpenAI-compatible gateway on the trusted `linux-lab` runner |
 | `workflows/release.yml` | push of `v*.*.*` tag, manual dispatch | Release builds, container image, and GitHub Release |
+| `workflows/stale.yml` | weekly schedule, manual dispatch | Marks and closes inactive issues and pull requests with protected-label exemptions |
 
 ## CI Path Routing
 
@@ -32,15 +34,17 @@ their category is enabled:
 | actionlint | `workflow` | `go run github.com/rhysd/actionlint/cmd/actionlint@latest` |
 | frontend-assets | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin` |
 | check | `rust_compile` | `cargo check --workspace --all-features` |
+| msrv | `rust_compile` | `cargo +1.92.0 check --workspace --all-features --all-targets --locked` |
 | feature-slices | `rust_compile` | `cargo check -p labby --no-default-features --features <slice>` per slice (`gateway`/`fs`) — catches cross-slice coupling (a shared module unconditionally referencing a feature-gated one). Gates compilation only; overrides the global `-D warnings` because per-slice dead-code warnings are expected. |
 | extracted-crate-slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | fmt | `rust_compile` | `cargo fmt --all -- --check` |
 | clippy | `rust_compile` | `cargo clippy --workspace --all-features -- -D warnings` |
 | deny | `security` | `cargo deny check` (via `EmbarkStudios/cargo-deny-action`) |
-| docs-check (name: `Generated docs`) | `docs_check` | `just docs-check` — the generated-docs freshness gate; fails if `docs/generated/*` (action catalog, MCP help, CLI help) drift from the registry. This is the only freshness check; there is **no** standalone `doc-freshness.yml` or `code-conventions.yml` workflow — only `ci.yml` and `release.yml` exist. |
+| docs-check (name: `Generated docs`) | `docs_check` | `just docs-check` — the generated-docs freshness gate; fails if `docs/generated/*` (action catalog, MCP help, CLI help) drift from the registry. This is the only freshness check; there is **no** standalone `doc-freshness.yml` or `code-conventions.yml` workflow. |
 | test | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` (`self-hosted` `linux-lab` runner for trusted events) |
 | test-fork | `rust_test` | same `cargo nextest` command on `ubuntu-latest` for fork PRs only |
 | test-windows | `rust_test` | same nextest run on the self-hosted `windows-ci` runner (label `windows-lab`); fork PRs never reach this runner |
+| mcp-conformance | `rust_test` or `workflow` | exact rmcp beta.2 dated `2026-07-28` server/client suites and separately baselined extension suites |
 | release-smoke | `release` | `cargo build --workspace --all-features --release` — Windows skipped on PRs (see below) |
 | container | `docker` | Docker build with `config/Dockerfile` |
 

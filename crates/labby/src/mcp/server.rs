@@ -95,8 +95,8 @@ pub fn verify_upstream_subject_resolution_support() -> anyhow::Result<()> {
 
     anyhow::bail!(
         "rmcp subject extraction self-test failed: RequestContext.extensions did not yield \
-         http::request::Parts/AuthContext. The current runtime expects rmcp 1.4 request \
-         extension propagation (Plan A). Wire the tokio::task_local fallback (Plan B) or pin \
+         http::request::Parts/AuthContext. The current runtime expects rmcp 3 request \
+         extension propagation. Wire the tokio::task_local fallback or pin \
          a compatible rmcp version before starting."
     );
 }

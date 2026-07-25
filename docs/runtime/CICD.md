@@ -29,6 +29,7 @@ jobs when their changed-path category is enabled:
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
+| MSRV | `rust_compile` | `cargo +1.92.0 check --workspace --all-features --all-targets --locked` |
 | Feature slices | `rust_compile` | `cargo check -p labby --no-default-features --features <slice>` |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | Generated docs freshness | `docs_check` | `just docs-check` |
@@ -41,6 +42,7 @@ jobs when their changed-path category is enabled:
 | Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the self-hosted `linux-ci` runner for trusted events |
 | Tests (Linux fork PR fallback) | `rust_test` | same nextest run on `ubuntu-latest` for fork PRs |
 | Tests (Windows) | `rust_test` | same nextest run on the self-hosted `windows-ci` Windows runner, with fork PRs excluded from self-hosted runners |
+| MCP conformance | `rust_test` or `workflow` | pinned rmcp `3.0.0-beta.2` dated `2026-07-28` server/client suites plus separately scored extension suites |
 | Release smoke | `release` | `cargo build --workspace --all-features --release`; Windows release smoke still skips PRs via the matrix |
 | Container smoke | `docker` | Docker build using `config/Dockerfile` |
 
@@ -51,6 +53,10 @@ Labby assets. It is a production build gate, not a TypeScript strictness gate:
 `apps/gateway-admin/next.config.mjs` currently sets
 `typescript.ignoreBuildErrors = true`. Run `pnpm test` in
 `apps/gateway-admin` for the frontend unit/ACP test contract.
+
+MCP conformance details, exact reproducibility pins, and the strict extension
+gap baseline are documented in
+[MCP_CONFORMANCE.md](../surfaces/MCP_CONFORMANCE.md).
 
 ## CI Platform
 

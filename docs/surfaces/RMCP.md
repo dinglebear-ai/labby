@@ -12,6 +12,9 @@ It is the source of truth for:
 
 This document is normative for future work even where the codebase is still converging.
 
+The reproducible rmcp `3.0.0-beta.2` and MCP `2026-07-28` validation matrix is
+documented in [MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md).
+
 ## Scope
 
 `lab` has one MCP server product surface.

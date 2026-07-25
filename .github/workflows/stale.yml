@@ -1,0 +1,35 @@
+name: Stale issue and pull request cleanup
+
+on:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629 # v10
+        with:
+          days-before-stale: 60
+          days-before-close: 14
+          stale-issue-message: >-
+            This issue has been inactive for 60 days. Add current reproduction
+            details or implementation context to keep it open.
+          close-issue-message: >-
+            Closing after the stale grace period. Reopen with current evidence
+            if this still affects Labby.
+          stale-pr-message: >-
+            This pull request has been inactive for 60 days. Rebase it and
+            confirm the current verification status to keep it open.
+          close-pr-message: >-
+            Closing after the stale grace period. A refreshed pull request is
+            welcome when the work is ready to continue.
+          exempt-issue-labels: "bug,autorelease: pending"
+          exempt-pr-labels: "autorelease: pending,dependencies"
+          operations-per-run: 100

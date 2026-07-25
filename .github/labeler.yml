@@ -1,0 +1,24 @@
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "openwiki/**"
+          - "**/*.md"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Cargo.lock"
+          - "Cargo.toml"
+          - "**/Cargo.toml"
+          - "pnpm-lock.yaml"
+          - "**/package.json"
+
+javascript:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "apps/**/*.js"
+          - "apps/**/*.jsx"
+          - "apps/**/*.mjs"
+          - "apps/**/*.ts"
+          - "apps/**/*.tsx"
