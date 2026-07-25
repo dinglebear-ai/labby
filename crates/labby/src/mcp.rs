@@ -25,6 +25,7 @@ pub mod in_process_peer;
 pub mod logging;
 pub mod meta;
 pub(crate) mod pagination;
+pub(crate) mod peer_contract;
 pub mod peers;
 pub mod prompts;
 pub mod registry;

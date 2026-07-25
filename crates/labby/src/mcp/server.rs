@@ -20,9 +20,8 @@ use rmcp::model::{
 // still requires this request type for clients using the old logging flow.
 #[allow(deprecated)]
 use rmcp::model::SetLevelRequestParams;
-use rmcp::service::{NotificationContext, Peer, RequestContext};
+use rmcp::service::{NotificationContext, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
-use tokio::sync::RwLock;
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
@@ -53,7 +52,7 @@ pub struct LabMcpServer {
     #[cfg(feature = "gateway")]
     pub gateway_manager: Option<Arc<GatewayManager>>,
     /// Connected peers for list-changed notifications.
-    pub peers: Arc<RwLock<Vec<Peer<RoleServer>>>>,
+    pub peers: crate::mcp::peers::PeerRegistry,
     /// Live inbound MCP client/session registry — shared with `GatewayManager`
     /// via `with_client_registry` so `gateway.clients.list` can read it.
     #[cfg(feature = "gateway")]
@@ -217,8 +216,19 @@ impl ServerHandler for LabMcpServer {
             );
             self.client_registry.push(connected_client).await;
         }
+        // Seed the peer's last-published contract with what it will see on its
+        // own first `tools/list`, computed before it joins the registry. An
+        // empty seed would make the next catalog change look like a wholesale
+        // rewrite and notify a session that has seen nothing yet.
+        let contract = self.peer_contract();
+        let last_contract = contract.visible_contract().await;
+        let route_scope_label = self.route_scope.label();
         let mut peers = self.peers.write().await;
-        peers.push(context.peer);
+        peers.push(crate::mcp::peers::RegisteredPeer {
+            peer: context.peer,
+            contract,
+            last_contract,
+        });
         tracing::info!(
             surface = "mcp",
             service = "peers",
@@ -226,6 +236,7 @@ impl ServerHandler for LabMcpServer {
             subsystem = "mcp_server",
             phase = "session.initialized",
             peer_count = peers.len(),
+            route_scope = route_scope_label,
             "mcp session connected"
         );
     }

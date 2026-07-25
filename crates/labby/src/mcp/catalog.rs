@@ -85,25 +85,24 @@ pub(crate) fn upstream_name_for_uri(uri: &str) -> Option<&str> {
 }
 
 impl LabMcpServer {
-    #[cfg(feature = "gateway")]
-    pub(crate) async fn current_upstream_pool(&self) -> Option<Arc<UpstreamPool>> {
-        match &self.gateway_manager {
-            Some(manager) => manager.current_pool().await,
-            None => None,
+    /// This session's visible-contract inputs, in the form the notification
+    /// fanout can hold onto and re-evaluate later. See `peer_contract.rs`.
+    pub(crate) fn peer_contract(&self) -> crate::mcp::peer_contract::PeerContract {
+        crate::mcp::peer_contract::PeerContract {
+            registry: Arc::clone(&self.registry),
+            #[cfg(feature = "gateway")]
+            gateway_manager: self.gateway_manager.clone(),
+            route_scope: self.route_scope.clone(),
         }
     }
 
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn current_upstream_pool(&self) -> Option<Arc<UpstreamPool>> {
+        self.peer_contract().current_upstream_pool().await
+    }
+
     pub(crate) async fn service_visible_on_mcp(&self, service: &str) -> bool {
-        if !self.route_scope.allows_service(service) {
-            return false;
-        }
-        #[cfg(feature = "gateway")]
-        match &self.gateway_manager {
-            Some(manager) => manager.surface_enabled_for_service(service, "mcp").await,
-            None => true,
-        }
-        #[cfg(not(feature = "gateway"))]
-        true
+        self.peer_contract().service_visible_on_mcp(service).await
     }
 
     pub(crate) async fn action_allowed_on_mcp(&self, service: &str, action: &str) -> bool {
@@ -166,24 +165,7 @@ impl LabMcpServer {
     }
 
     pub(crate) async fn code_mode_visibility(&self) -> CodeModeVisibility {
-        #[cfg(feature = "gateway")]
-        {
-            if !self.route_scope.exposes_code_mode() {
-                return CodeModeVisibility::Raw;
-            }
-            let manager_code_mode_enabled = if let Some(manager) = &self.gateway_manager {
-                manager.code_mode_enabled().await
-            } else {
-                false
-            };
-            if manager_code_mode_enabled {
-                return CodeModeVisibility::RootSynthetic;
-            }
-            if self.gateway_manager.is_none() && crate::config::process_code_mode_enabled() {
-                return CodeModeVisibility::InProcessPeer;
-            }
-        }
-        CodeModeVisibility::Raw
+        self.peer_contract().code_mode_visibility().await
     }
 
     fn service_visible_by_env_or_gateway(&self, service: &str) -> bool {
@@ -347,33 +329,9 @@ impl LabMcpServer {
     /// upstream tool health. This intentionally omits resources/prompts and
     /// avoids cloning upstream schemas.
     pub(crate) async fn snapshot_tool_catalog(&self) -> ToolCatalogSnapshot {
-        let visibility = self.code_mode_visibility().await;
-        let mut tools = BTreeSet::new();
-        if visibility.exposes_synthetic_tools() {
-            tools.insert(CODE_MODE_TOOL_NAME.to_string());
-        } else {
-            for svc in self.registry.services() {
-                if !visibility.hides_raw_tools() && self.service_visible_on_mcp(svc.name).await {
-                    tools.insert(svc.name.to_string());
-                }
-            }
+        ToolCatalogSnapshot {
+            tools: self.peer_contract().visible_tools().await,
         }
-
-        #[cfg(feature = "gateway")]
-        if let Some(pool) = self.current_upstream_pool().await {
-            let upstream_tool_names = if visibility.hides_raw_tools() {
-                pool.healthy_ui_tool_names_allowed(self.route_scope.allowed_upstreams())
-                    .await
-            } else {
-                pool.healthy_tool_names_allowed(self.route_scope.allowed_upstreams())
-                    .await
-            };
-            for tool_name in upstream_tool_names {
-                tools.insert(tool_name);
-            }
-        }
-
-        ToolCatalogSnapshot { tools }
     }
 }
 

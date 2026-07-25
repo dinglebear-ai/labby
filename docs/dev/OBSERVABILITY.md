@@ -281,13 +281,30 @@ shared by the gateway and MCP crates:
 
 Adding or renaming a label is a change to this table in the same commit.
 
+**The fanout is per peer, not a broadcast.** `tools/list_changed` is a claim
+about one session's tool list, and two sessions can hold different contracts
+over the same gateway state — `McpRouteScope` restricts which upstreams and
+services a route exposes, and a protected route may set
+`expose_code_mode = false`, which shows that session raw upstream tools while
+everyone else sees the constant `codemode` tool. So `tools_changed` reaching
+`notify_catalog_peers` is a **hint** ("something happened that could move a tool
+list"), and the verdict is computed per peer by re-deriving that peer's
+`PeerContract` and comparing it to the contract the peer was last told about.
+Resources and prompts remain global signals and are forwarded unchanged.
+
+A trigger that moves nobody's contract emits `action = "catalog.notify.skipped"`
+at `DEBUG` and is **not** counted as a notification — the healthy outcome for
+raw upstream churn under Code Mode.
+
 **Required fields on `action = "catalog.notify"`** (`surface = "mcp"`,
 `service = "peers"`):
 
 | Field | Meaning |
 |---|---|
 | `source` | emitting site, from the table above |
-| `peer_count` | peers this notification fans out to |
+| `peer_count` | connected peers considered |
+| `peers_notified` | peers whose contract actually moved |
+| `peers_skipped` | peers left alone because their contract was unchanged |
 | `notify_total` | notifications since process start |
 | `since_last_ms` | gap since the previous notification; absent for the first |
 | `window_count` / `window_secs` | notifications within the recent window |
@@ -330,7 +347,8 @@ upstreams are flapping and clients are being shielded from it.
 **Diagnosing reported flapping:**
 
 1. Filter for `action = "catalog.notify"` and group by `source` — that names the
-   emitting site.
+   emitting site. `peers_notified` vs `peers_skipped` says how much of the fleet
+   each one actually disturbed.
 2. Check `during_tool_call` on those events. `true` means bindings were
    invalidated mid-turn, which is the reported symptom rather than a correlate.
 3. Check `suppressed_raw_churn_total` on the reconcile logs. Climbing means raw

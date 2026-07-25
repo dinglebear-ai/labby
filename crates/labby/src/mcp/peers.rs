@@ -8,14 +8,78 @@ use tokio::sync::mpsc;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::types::{CatalogChangeEvent, GatewayCatalogDiff};
 
-/// MCP-specific peer fanout that forwards catalog-change notifications to all
-/// connected `rmcp::Peer<RoleServer>` instances.
+/// A connected peer plus what it can see and what it was last told.
+///
+/// `tools/list_changed` is a claim about one session's tool list, so the
+/// fanout has to be able to answer "did *this* peer's contract move" — which
+/// needs the peer's own scope (`contract`) and the contract it last published
+/// (`last_contract`). Broadcasting one global diff instead is what let a
+/// raw-exposing protected route miss its own changes.
+#[derive(Clone)]
+pub struct RegisteredPeer {
+    pub(crate) peer: Peer<RoleServer>,
+    pub(crate) contract: crate::mcp::peer_contract::PeerContract,
+    /// Last contract this peer was notified about. Seeded at registration so
+    /// the first diff compares against what the peer actually received in its
+    /// initial `tools/list`, not against an empty set.
+    pub(crate) last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
+}
+
+/// Registry of live sessions, shared by every `LabMcpServer` and the notifier.
+pub type PeerRegistry = Arc<RwLock<Vec<RegisteredPeer>>>;
+
+#[cfg(test)]
+impl RegisteredPeer {
+    /// Register a gateway-less peer whose live contract is empty, with
+    /// `last_contract` supplied by the caller. A non-empty `last_contract`
+    /// therefore re-derives to a *changed* contract and the peer is owed a
+    /// notification; an empty one re-derives unchanged and the peer is not.
+    /// Lets fanout tests drive both outcomes without standing up a gateway.
+    pub(crate) fn with_last_contract_for_test(
+        peer: Peer<RoleServer>,
+        last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
+    ) -> Self {
+        Self {
+            peer,
+            contract: crate::mcp::peer_contract::PeerContract {
+                registry: Arc::new(crate::registry::ToolRegistry::default()),
+                #[cfg(feature = "gateway")]
+                gateway_manager: None,
+                route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+            },
+            last_contract,
+        }
+    }
+
+    /// A peer whose contract has moved since it was last notified.
+    pub(crate) fn stale_for_test(peer: Peer<RoleServer>) -> Self {
+        Self::with_last_contract_for_test(
+            peer,
+            crate::mcp::catalog::ToolCatalogSnapshot {
+                tools: std::iter::once("stale-tool-from-a-previous-contract".to_string()).collect(),
+            },
+        )
+    }
+
+    /// A peer already in sync with what it would see now.
+    pub(crate) fn current_for_test(peer: Peer<RoleServer>) -> Self {
+        Self::with_last_contract_for_test(
+            peer,
+            crate::mcp::catalog::ToolCatalogSnapshot {
+                tools: std::collections::BTreeSet::new(),
+            },
+        )
+    }
+}
+
+/// MCP-specific peer fanout that forwards catalog-change notifications to
+/// connected sessions whose visible contract actually changed.
 ///
 /// This keeps `rmcp` types out of the dispatch layer while allowing
 /// `GatewayManager` to notify peers when the upstream pool changes.
 #[derive(Clone, Default)]
 pub struct PeerNotifier {
-    pub peers: Arc<RwLock<Vec<Peer<RoleServer>>>>,
+    pub peers: PeerRegistry,
     /// Live inbound MCP client/session metadata (redacted subject, declared
     /// client name/version, transport, connect time), one entry pushed per
     /// `on_initialized` call. Read by `gateway.clients.list` via

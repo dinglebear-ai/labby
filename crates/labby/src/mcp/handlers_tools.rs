@@ -383,29 +383,14 @@ impl LabMcpServer {
         Ok(result)
     }
 
+    /// Delegates to `PeerContract` so the description rendered here and the
+    /// description determinants the notification fanout diffs are computed by
+    /// one function — otherwise a change to either drifts silently.
     #[cfg(feature = "gateway")]
     async fn code_mode_upstreams_for_description(&self) -> Vec<CodeModeUpstreamDescription> {
-        let Some(manager) = &self.gateway_manager else {
-            return Vec::new();
-        };
-        let mut upstreams = manager
-            .current_config()
+        self.peer_contract()
+            .code_mode_upstreams_for_description()
             .await
-            .upstream
-            .into_iter()
-            .filter(|upstream| upstream.enabled)
-            .filter(|upstream| self.route_scope.allows_upstream(&upstream.name))
-            .map(|upstream| CodeModeUpstreamDescription {
-                name: upstream.name,
-                hint: upstream
-                    .code_mode_hint
-                    .as_deref()
-                    .and_then(labby_runtime::gateway_config::normalize_code_mode_hint),
-            })
-            .collect::<Vec<_>>();
-        upstreams.sort_by(|a, b| a.name.cmp(&b.name));
-        upstreams.dedup_by(|a, b| a.name == b.name);
-        upstreams
     }
 }
 
