@@ -598,6 +598,7 @@ Full details in [OAUTH.md](./OAUTH.md).
 | `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
 | `LABBY_MCP_HTTP_TOKEN` | bearer mode only | Static bearer token for protected HTTP routes. |
 | `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata, JWT issuer/audience, and allowed-host derivation. It supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
+| `LABBY_AUTH_SCOPES_SUPPORTED` | no | Comma-separated scope vocabulary advertised and accepted for the **canonical** resource (`LABBY_PUBLIC_URL` + resource path). Defaults to `lab,lab:admin`. Must include the default scope (`lab`) or startup fails. Widen it — e.g. `lab,lab:admin,mcp:read,mcp:write` — when an MCP client requests the spec's `mcp:*` scopes against the root endpoint: `validate_scope` short-circuits protected-route lookup for the canonical resource, so per-route `scopes` cannot cover it. Admin gating keys off `lab:admin` specifically, so an `mcp:*`-only token still cannot perform admin actions. |
 | `LABBY_AUTH_SQLITE_PATH` | no | Override path for the auth SQLite database. Defaults to `~/.labby/auth.db`. |
 | `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. Defaults to `~/.labby/auth-jwt.pem`. |
 | `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
