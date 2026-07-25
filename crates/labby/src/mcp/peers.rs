@@ -28,6 +28,25 @@ pub struct RegisteredPeer {
 /// Registry of live sessions, shared by every `LabMcpServer` and the notifier.
 pub type PeerRegistry = Arc<RwLock<Vec<RegisteredPeer>>>;
 
+/// Drop peers whose transport has definitively closed, returning how many went.
+///
+/// Peers were previously removed only inside the notification fanout, as a side
+/// effect of a send failing. That made pruning depend on notifications being
+/// emitted — which was fine when the gateway emitted spurious ones constantly,
+/// and stopped being fine once that was fixed: with notifications correctly
+/// rare, the registry only ever grew (119 dead sessions accumulated in about a
+/// day of real use).
+///
+/// Only `is_transport_closed()` peers are dropped. A live-but-idle session must
+/// never be evicted — that would silently cost it every future notification,
+/// which is a worse failure than briefly holding a dead entry.
+pub(crate) async fn prune_closed_peers(peers: &PeerRegistry) -> usize {
+    let mut guard = peers.write().await;
+    let before = guard.len();
+    guard.retain(|registered| !registered.peer.is_transport_closed());
+    before - guard.len()
+}
+
 #[cfg(test)]
 impl RegisteredPeer {
     /// Register a gateway-less peer whose live contract is empty, with

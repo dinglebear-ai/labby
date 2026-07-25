@@ -324,7 +324,7 @@ mod tests {
     use crate::mcp::catalog::CatalogChangeSet;
     use crate::mcp::catalog_churn::InFlightToolCall;
     use crate::mcp::catalog_coalesce::{reset_for_test, schedule_catalog_notification};
-    use crate::mcp::peers::{PeerRegistry, RegisteredPeer};
+    use crate::mcp::peers::{PeerRegistry, RegisteredPeer, prune_closed_peers};
 
     #[derive(Clone)]
     struct TestServer {
@@ -672,5 +672,37 @@ mod tests {
 
         client_service.cancel().await.expect("client cancels");
         server_handle.abort();
+    }
+
+    /// Regression: dead sessions must not accumulate. Pruning used to happen
+    /// only as a side effect of the notification fanout, so once the gateway
+    /// stopped emitting spurious notifications the registry only ever grew.
+    #[tokio::test]
+    async fn closed_peers_are_pruned_and_live_ones_are_kept() {
+        let peers = Arc::new(RwLock::new(Vec::new()));
+        let (_doomed_client, doomed_service, doomed_handle) = connect_peer(&peers, true).await;
+        let (_live_client, live_service, live_handle) = connect_peer(&peers, true).await;
+        assert_eq!(peers.read().await.len(), 2);
+
+        // Nothing is closed yet: a sweep must not evict a live-but-idle
+        // session, which would silently cost it every future notification.
+        assert_eq!(prune_closed_peers(&peers).await, 0);
+        assert_eq!(peers.read().await.len(), 2);
+
+        doomed_service.cancel().await.expect("client cancels");
+        doomed_handle.abort();
+        // Let the server side observe the closed transport.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let pruned = prune_closed_peers(&peers).await;
+        assert_eq!(pruned, 1, "the closed session must be dropped");
+        assert_eq!(
+            peers.read().await.len(),
+            1,
+            "the live session must survive the sweep"
+        );
+
+        live_service.cancel().await.expect("client cancels");
+        live_handle.abort();
     }
 }
