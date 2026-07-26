@@ -909,7 +909,13 @@ jobs:
       - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
         with:
           tool: cargo-deny@0.20.2
-      - run: cargo deny --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --config apps/palette-tauri/src-tauri/deny.toml check advisories
+      - name: Audit Palette dependencies
+        run: |
+          "$CARGO_HOME/bin/cargo-deny" --version
+          "$CARGO_HOME/bin/cargo-deny" \
+            --manifest-path apps/palette-tauri/src-tauri/Cargo.toml \
+            --config apps/palette-tauri/src-tauri/deny.toml \
+            check advisories
 
   palette-windows:
     name: Palette Tauri (Windows advisory)
