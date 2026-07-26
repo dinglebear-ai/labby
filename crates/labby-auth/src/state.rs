@@ -15,6 +15,7 @@ use crate::error::AuthError;
 use crate::google::GoogleProvider;
 use crate::jwt::SigningKeys;
 use crate::sqlite::SqliteStore;
+#[cfg(feature = "http-axum")]
 use crate::types::RegisteredClient;
 
 const RATE_LIMIT_RETRY_AFTER_MS: u64 = 60_000;
@@ -178,8 +179,11 @@ pub struct AuthState {
     authorize_limiter: PerIpRateLimiter,
     register_limiter: PerIpRateLimiter,
     token_limiter: PerIpRateLimiter,
+    #[cfg(feature = "http-axum")]
     pub(crate) cimd_cache: Arc<DashMap<String, (RegisteredClient, i64)>>,
+    #[cfg(feature = "http-axum")]
     pub(crate) jwks_cache: Arc<DashMap<String, (jsonwebtoken::jwk::JwkSet, i64)>>,
+    #[cfg(feature = "http-axum")]
     pub(crate) remote_cache_lock: Arc<Mutex<()>>,
 }
 
@@ -233,8 +237,11 @@ impl AuthState {
             authorize_limiter,
             register_limiter,
             token_limiter,
+            #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
             remote_cache_lock: Arc::new(Mutex::new(())),
         })
     }
@@ -400,8 +407,11 @@ impl AuthState {
             authorize_limiter,
             register_limiter,
             token_limiter,
+            #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
             remote_cache_lock: Arc::new(Mutex::new(())),
         }
     }
