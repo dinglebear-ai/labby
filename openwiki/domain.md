@@ -13,11 +13,12 @@ Lab's primary domain is the MCP (Model Context Protocol) gateway: a proxy that c
 - **HTTP (streamable)** - Connect to upstream HTTP MCP server via reqwest
 
 **Connection lifecycle** ([`labby-gateway/src/upstream/`](../crates/labby-gateway/src/upstream/)):
-1. **Discovery** - Import upstream by URL or command, inspect capabilities
-2. **Pool management** - Maintain connection pool with circuit breaker
-3. **Virtual server** - Expose filtered tools/resources/prompts as virtual MCP server
-4. **Protected routes** - OAuth-protected HTTP routes for upstream access
-5. **Resource proxying** - Intercept and proxy resource reads with auth checks
+1. **Lifecycle negotiation** - Attempt stateless MCP `2026-07-28` discovery first; reconnect with the `2025-11-25` initialize lifecycle only after an explicit upstream compatibility rejection
+2. **Discovery** - Import upstream by URL or command, inspect capabilities
+3. **Pool management** - Maintain connection pool with circuit breaker
+4. **Virtual server** - Expose filtered tools/resources/prompts as virtual MCP server
+5. **Protected routes** - OAuth-protected HTTP routes for upstream access
+6. **Resource proxying** - Intercept and proxy resource reads with auth checks
 
 ### Capability Inspection
 

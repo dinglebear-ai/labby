@@ -25,6 +25,8 @@ mod capability;
 mod capability_call;
 mod connect;
 mod connect_stdio;
+#[cfg(test)]
+mod connect_tests;
 mod connection;
 mod discover;
 mod ensure;
@@ -32,6 +34,7 @@ mod entries;
 mod health;
 mod helpers;
 mod lifecycle;
+mod lifecycle_compat;
 mod logging;
 mod probe;
 mod prompts_get;

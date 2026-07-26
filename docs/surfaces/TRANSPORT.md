@@ -66,11 +66,20 @@ CLI flags take precedence over env vars, which take precedence over config.toml:
 
 ### Stateless MCP lifecycle
 
-Labby implements only the MCP `2026-07-28` stateless lifecycle. Clients open
-with `server/discover` and include the negotiated protocol version, client
-identity, and client capabilities in request `_meta`. Labby does not accept the
-legacy `initialize` / `notifications/initialized` lifecycle and does not issue
-or use `Mcp-Session-Id`.
+Labby's downstream MCP endpoint implements only the `2026-07-28` stateless
+lifecycle. Clients open with `server/discover` and include the negotiated
+protocol version, client identity, and client capabilities in request `_meta`.
+The endpoint does not accept legacy `initialize` /
+`notifications/initialized` requests and does not issue or use
+`Mcp-Session-Id`.
+
+The gateway-to-upstream boundary negotiates independently. It attempts
+`server/discover` with `2026-07-28` first. When an upstream explicitly proves
+that lifecycle is unsupported, Labby reconnects using the compatible
+`2025-11-25` initialize lifecycle. Authentication failures, TLS failures,
+timeouts, and generic upstream errors never trigger compatibility fallback.
+This preserves a fully stateless downstream surface without requiring every
+upstream server to upgrade in lockstep.
 
 ### DNS Rebinding Protection
 

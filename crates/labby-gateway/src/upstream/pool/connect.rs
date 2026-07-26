@@ -8,8 +8,7 @@
 
 use std::time::Instant;
 
-use rmcp::model::ProtocolVersion;
-use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
+use rmcp::service::ClientServiceExt;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
@@ -30,6 +29,7 @@ use super::helpers::{
     DEFAULT_REQUEST_TIMEOUT, is_websocket_url, max_response_bytes, upstream_target_redacted,
     upstream_transport,
 };
+use super::lifecycle_compat::{LifecycleAttempt, compatibility_retry, log_fallback};
 
 /// Connect to an upstream MCP server, optionally reusing a caller-supplied
 /// `reqwest::Client` for HTTP connections (P-M10).
@@ -168,10 +168,30 @@ pub(super) async fn connect_upstream(
     .await
 }
 
-pub(super) async fn connect_websocket_upstream<H: ClientHandler>(
+pub(super) async fn connect_websocket_upstream<H: ClientHandler + Clone>(
     url: &str,
     config: &UpstreamConfig,
     handler: H,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    match connect_websocket_upstream_once(url, config, handler.clone(), LifecycleAttempt::Modern)
+        .await
+    {
+        Ok(connection) => Ok(connection),
+        Err(error) => {
+            let Some(attempt) = compatibility_retry(&error) else {
+                return Err(error);
+            };
+            log_fallback(&config.name, "websocket", attempt, &error);
+            connect_websocket_upstream_once(url, config, handler, attempt).await
+        }
+    }
+}
+
+async fn connect_websocket_upstream_once<H: ClientHandler>(
+    url: &str,
+    config: &UpstreamConfig,
+    handler: H,
+    lifecycle: LifecycleAttempt,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -192,12 +212,7 @@ pub(super) async fn connect_websocket_upstream<H: ClientHandler>(
         WebSocketTransportConfig::new(parsed.to_string()).with_authorization(authorization),
     );
     let service: rmcp::service::RunningService<RoleClient, H> = handler
-        .serve_with_lifecycle(
-            transport,
-            ClientLifecycleMode::Discover {
-                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-            },
-        )
+        .serve_with_lifecycle(transport, lifecycle.mode())
         .await?;
     let peer = service.peer().clone();
     let tools = peer.list_all_tools().await?;
@@ -233,13 +248,53 @@ pub(super) fn stable_jitter_seed(name: &str, attempt: u32) -> u64 {
 /// for connection-pooling and TLS session reuse (P-M10).  When `None` a fresh
 /// client is built.  Both the OAuth and non-OAuth paths wrap the base client in
 /// `BodyCappedHttpClient` so the response-size cap (P-H4) is always applied.
-pub(super) async fn connect_http_upstream<H: ClientHandler>(
+pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
     url: &str,
     config: &UpstreamConfig,
     subject: Option<&str>,
     oauth_client_cache: Option<&OauthClientCache>,
     shared_client: Option<&reqwest::Client>,
     handler: H,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    match connect_http_upstream_once(
+        url,
+        config,
+        subject,
+        oauth_client_cache,
+        shared_client,
+        handler.clone(),
+        LifecycleAttempt::Modern,
+    )
+    .await
+    {
+        Ok(connection) => Ok(connection),
+        Err(error) => {
+            let Some(attempt) = compatibility_retry(&error) else {
+                return Err(error);
+            };
+            log_fallback(&config.name, "http", attempt, &error);
+            connect_http_upstream_once(
+                url,
+                config,
+                subject,
+                oauth_client_cache,
+                shared_client,
+                handler,
+                attempt,
+            )
+            .await
+        }
+    }
+}
+
+async fn connect_http_upstream_once<H: ClientHandler>(
+    url: &str,
+    config: &UpstreamConfig,
+    subject: Option<&str>,
+    oauth_client_cache: Option<&OauthClientCache>,
+    shared_client: Option<&reqwest::Client>,
+    handler: H,
+    lifecycle: LifecycleAttempt,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -288,12 +343,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler>(
 
         let worker = StreamableHttpClientWorker::new(auth_client, transport_config);
         let service: rmcp::service::RunningService<RoleClient, H> = handler
-            .serve_with_lifecycle(
-                worker,
-                ClientLifecycleMode::Discover {
-                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-                },
-            )
+            .serve_with_lifecycle(worker, lifecycle.mode())
             .await?;
         let peer = service.peer().clone();
         let tools = peer.list_all_tools().await?;
@@ -325,12 +375,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler>(
     // `capped` is already built above with the shared/fresh base client.
     let worker = StreamableHttpClientWorker::new(capped, transport_config);
     let service: rmcp::service::RunningService<RoleClient, H> = handler
-        .serve_with_lifecycle(
-            worker,
-            ClientLifecycleMode::Discover {
-                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-            },
-        )
+        .serve_with_lifecycle(worker, lifecycle.mode())
         .await?;
     let peer = service.peer().clone();
     let tools = peer.list_all_tools().await?;
@@ -391,96 +436,4 @@ pub(super) fn runtime_origin_label(
     }
 
     Some("gateway-managed".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::super::UpstreamPool;
-    use super::*;
-    use labby_runtime::gateway_config::{
-        UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
-    };
-
-    fn oauth_http_config() -> UpstreamConfig {
-        UpstreamConfig {
-            enabled: true,
-            name: "oauth-upstream".into(),
-            url: Some("http://127.0.0.1:8080/mcp".into()),
-            bearer_token_env: None,
-            command: None,
-            args: vec![],
-            env: std::collections::BTreeMap::new(),
-            proxy_resources: false,
-            proxy_prompts: false,
-            expose_tools: None,
-            expose_resources: None,
-            expose_prompts: None,
-            code_mode_hint: None,
-            oauth: Some(UpstreamOauthConfig {
-                mode: UpstreamOauthMode::AuthorizationCodePkce,
-                registration: UpstreamOauthRegistration::Preregistered {
-                    client_id: "client-id".into(),
-                    client_secret_env: None,
-                },
-                scopes: None,
-                prefer_client_metadata_document: None,
-            }),
-            imported_from: None,
-            priority: 1.0,
-        }
-    }
-
-    #[tokio::test]
-    async fn subject_scoped_upstream_requires_authenticated_subject_for_oauth_http_connect() {
-        let config = oauth_http_config();
-        let error = connect_http_upstream(
-            config.url.as_deref().expect("url"),
-            &config,
-            None,
-            Some(&OauthClientCache::new(Arc::new(dashmap::DashMap::new()))),
-            None,
-            (),
-        )
-        .await
-        .expect_err("missing subject should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("requires an authenticated subject")
-        );
-    }
-
-    #[tokio::test]
-    async fn subject_scoped_upstream_requires_registered_cache_for_oauth_http_connect() {
-        let config = oauth_http_config();
-        let error = connect_http_upstream(
-            config.url.as_deref().expect("url"),
-            &config,
-            Some("alice"),
-            None,
-            None,
-            (),
-        )
-        .await
-        .expect_err("missing cache should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("no auth client cache is registered")
-        );
-    }
-
-    #[tokio::test]
-    async fn shared_discovery_skips_oauth_http_upstreams() {
-        let pool = UpstreamPool::new()
-            .with_oauth_client_cache(OauthClientCache::new(Arc::new(dashmap::DashMap::new())));
-        pool.discover_all(&[oauth_http_config()]).await;
-
-        assert_eq!(pool.upstream_count().await, 0);
-        assert!(pool.upstream_status().await.is_empty());
-    }
 }

@@ -6,14 +6,14 @@
 //! `crate::mcp` (A-M6 fix).
 
 use labby_runtime::gateway_config::UpstreamConfig;
-use rmcp::model::ProtocolVersion;
-use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
+use rmcp::service::ClientServiceExt;
 use rmcp::{ClientHandler, RoleClient};
 
 use super::super::auth::configured_bearer_token;
 use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 use super::UpstreamConnection;
 use super::connect::runtime_origin_label;
+use super::lifecycle_compat::{LifecycleAttempt, compatibility_retry, log_fallback};
 use super::stdio_stderr::{
     StdioConnectError, StdioDiagnostics, forward_upstream_stderr, upstream_stderr_log_level,
 };
@@ -59,11 +59,28 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
         runtime_origin,
         runtime_owner,
         handler.clone(),
+        LifecycleAttempt::Modern,
     )
     .await
     {
         Ok(ok) => Ok(ok),
         Err(first_error) => {
+            let lifecycle_error = anyhow::anyhow!(first_error.diagnostics_with_error());
+            if let Some(attempt) = compatibility_retry(&lifecycle_error) {
+                log_fallback(&config.name, "stdio", attempt, &lifecycle_error);
+                return connect_stdio_upstream_once(
+                    command,
+                    args,
+                    config,
+                    runtime_origin,
+                    runtime_owner,
+                    handler,
+                    attempt,
+                )
+                .await
+                .map_err(StdioConnectError::into_anyhow);
+            }
+
             let diagnostics = first_error.diagnostics_with_error();
             let repair = super::cache_repair::maybe_repair(command, &diagnostics).await;
             match &repair {
@@ -100,6 +117,7 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
                 runtime_origin,
                 runtime_owner,
                 handler,
+                LifecycleAttempt::Modern,
             )
             .await
             {
@@ -120,6 +138,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     runtime_origin: Option<&str>,
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     handler: H,
+    lifecycle: LifecycleAttempt,
 ) -> Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>), StdioConnectError> {
     #[cfg(unix)]
     use process_wrap::tokio::{CommandWrap, ProcessGroup};
@@ -249,12 +268,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     let job_guard = pid.map(super::super::process_guard::JobObjectGuard::arm);
 
     let service: rmcp::service::RunningService<RoleClient, H> = match handler
-        .serve_with_lifecycle(
-            process,
-            ClientLifecycleMode::Discover {
-                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-            },
-        )
+        .serve_with_lifecycle(process, lifecycle.mode())
         .await
     {
         Ok(service) => service,
