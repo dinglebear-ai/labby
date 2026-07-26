@@ -1825,6 +1825,76 @@ async fn call_tool_allows_direct_mcp_app_ui_callbacks_with_read_scope() {
 }
 
 #[tokio::test]
+async fn advertised_app_visible_callbacks_are_directly_callable_with_read_scope() {
+    let upstream_name: Arc<str> = Arc::from("apps");
+    let mut standard = fixture_upstream_tool(&upstream_name, "standard_app_callback", None);
+    standard.tool.meta = Some(Meta(serde_json::Map::from_iter([(
+        "ui".to_string(),
+        serde_json::json!({ "visibility": ["app"] }),
+    )])));
+    let mut openai = fixture_upstream_tool(&upstream_name, "openai_app_callback", None);
+    openai.tool.meta = Some(Meta(serde_json::Map::from_iter([(
+        "openai/widgetAccessible".to_string(),
+        Value::Bool(true),
+    )])));
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "apps",
+        fixture_upstream_entry(
+            "apps",
+            HashMap::from([
+                ("standard_app_callback".to_string(), standard),
+                ("openai_app_callback".to_string(), openai),
+            ]),
+        ),
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(true, fixture_upstream_config("apps"), pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let advertised = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .await
+        .expect("read-scope tools");
+    for name in ["standard_app_callback", "openai_app_callback"] {
+        assert!(
+            advertised
+                .tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == name),
+            "{name} should be advertised to an MCP App host"
+        );
+
+        let result = Box::pin(running.service().call_tool_impl(
+            CallToolRequestParams::new(name),
+            scoped_context(running.peer().clone(), &["lab:read"]),
+        ))
+        .await
+        .expect("call tool result");
+        assert!(result.is_error.unwrap_or(false));
+        let text = result.content[0].as_text().expect("text").text.as_str();
+        assert!(
+            !text.contains("\"kind\":\"forbidden\""),
+            "advertised MCP App callback {name} should pass the direct read-scope gate, got {text}"
+        );
+        assert!(
+            text.contains("upstream_error"),
+            "test fixture has no live peer, so allowed callback {name} should fail at proxy call, got {text}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn call_tool_rejects_priority_zero_direct_mcp_app_ui_callbacks() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let ui_tool = fixture_upstream_tool(

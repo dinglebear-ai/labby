@@ -1186,7 +1186,7 @@ if (window.openai) {
       if (!hydrated) setState("connected", true);
       scheduleResize();
     })
-    .catch(() => { if (!hydrated) state.hidden=true; });
+    .catch(() => { if (!hydrated) setState("unavailable", false); });
 }
 })();
 </script>

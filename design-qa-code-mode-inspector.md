@@ -1,8 +1,7 @@
 # Design QA: Compact Code Mode Inspector
 
-- Source visual truth: `/home/jmagar/.codex/generated_images/019f8d08-74a8-7b92-ab3f-0db4bba145ae/call_Wp5f5SfyFvmx9ykgs7xnP0VW.png`
-- Implementation screenshot: `/home/jmagar/.codex/visualizations/2026/07/23/019f8d08-74a8-7b92-ab3f-0db4bba145ae/code-mode-inspector-compact-implementation-v2.png`
-- Combined comparison: `/home/jmagar/.codex/visualizations/2026/07/23/019f8d08-74a8-7b92-ab3f-0db4bba145ae/design-qa-comparison.png`
+- Durable review record: [PR #272](https://github.com/dinglebear-ai/labby/pull/272)
+- Reproduce the implementation evidence with `pnpm run test:unit`, `pnpm exec tsc --noEmit`, and `just web-build`.
 - Viewport: 1280 x 720 CSS px, device scale factor 1
 - Source pixels: 1464 x 1076
 - Implementation pixels: 1280 x 720

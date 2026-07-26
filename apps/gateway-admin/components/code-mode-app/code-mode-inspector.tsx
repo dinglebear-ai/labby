@@ -1,6 +1,6 @@
 'use client'
 
-import { type CSSProperties, type ReactNode, useCallback, useEffect, useState } from 'react'
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -514,11 +514,27 @@ function RunMenu({
   selected: RunSelection
   onSelect: (selection: RunSelection) => void
 }) {
-  if (history.length < 2) return null
   const liveSeq =
     live?.execution_id !== undefined
       ? history.find((entry) => entry.execution_id === live.execution_id)?.seq
       : undefined
+  const runs: { key: string; label: string; ok: boolean; target: RunSelection }[] = history.map(
+    (entry) => ({
+      key: `seq-${entry.seq}`,
+      label: entry.seq === liveSeq ? `Run #${entry.seq} · live` : `Run #${entry.seq}`,
+      ok: entry.ok,
+      target: entry.seq === liveSeq ? 'live' : entry.seq,
+    }),
+  )
+  if (live && liveSeq === undefined) {
+    runs.push({
+      key: 'live',
+      label: 'Live',
+      ok: live.calls.every((call) => call.ok),
+      target: 'live',
+    })
+  }
+  if (runs.length < 2) return null
   return (
     <details className="group relative">
       <summary
@@ -540,15 +556,14 @@ function RunMenu({
           <History className="size-3" strokeWidth={1.75} />
           Run history
         </span>
-        {history.map((entry) => {
-          const target: RunSelection = entry.seq === liveSeq ? 'live' : entry.seq
-          const active = target === selected
+        {runs.map((run) => {
+          const active = run.target === selected
           return (
             <button
-              key={entry.seq}
+              key={run.key}
               type="button"
               onClick={(event) => {
-                onSelect(target)
+                onSelect(run.target)
                 event.currentTarget.closest('details')?.removeAttribute('open')
               }}
               className={cn(
@@ -556,8 +571,8 @@ function RunMenu({
                 active && 'bg-aurora-hover-bg/60 text-aurora-text-primary',
               )}
             >
-              <StatusDot tone={entry.ok ? 'success' : 'error'} label={entry.ok ? 'success' : 'failed'} />
-              Run #{entry.seq}{target === 'live' ? ' · live' : ''}
+              <StatusDot tone={run.ok ? 'success' : 'error'} label={run.ok ? 'success' : 'failed'} />
+              {run.label}
             </button>
           )
         })}
@@ -1120,6 +1135,13 @@ function HistoryNote() {
 
 function CodeBlock({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
+    },
+    [],
+  )
   return (
     <div className="relative">
       <pre
@@ -1140,7 +1162,11 @@ function CodeBlock({ value }: { value: string }) {
             ?.writeText(value)
             .then(() => {
               setCopied(true)
-              setTimeout(() => setCopied(false), 1200)
+              if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
+              copiedTimer.current = setTimeout(() => {
+                copiedTimer.current = null
+                setCopied(false)
+              }, 1200)
             })
             .catch(() => {})
         }}

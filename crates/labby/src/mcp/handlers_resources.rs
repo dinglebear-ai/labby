@@ -3107,6 +3107,10 @@ for (const value of [
             html.contains("if (!hydrated) setState(\"connected\", true)"),
             "MCP Apps branch must gate 'connected' on the connect() handshake"
         );
+        assert!(
+            html.contains("if (!hydrated) setState(\"unavailable\", false)"),
+            "MCP Apps branch must keep a rejected bridge handshake diagnostically visible"
+        );
     }
 
     #[test]

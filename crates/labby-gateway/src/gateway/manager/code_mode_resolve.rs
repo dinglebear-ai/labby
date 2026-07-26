@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::gateway::code_mode::split_namespaced_id;
-use crate::upstream::pool::tool_has_mcp_app_ui_resource;
+use crate::upstream::pool::{tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 
@@ -47,7 +47,7 @@ impl GatewayManager {
 
             let matched = match lookup {
                 CallbackToolLookup::LegacyAnyExposed => true,
-                CallbackToolLookup::DirectMcpApp => tool_has_mcp_app_ui_resource(candidate),
+                CallbackToolLookup::DirectMcpApp => tool_is_mcp_app_host_visible(candidate),
                 CallbackToolLookup::SiblingOfMcpApp => {
                     upstream_tools.iter().any(tool_has_mcp_app_ui_resource)
                 }

@@ -571,7 +571,7 @@ pub fn tool_has_mcp_app_ui_resource(tool: &UpstreamTool) -> bool {
     tool_mcp_app_ui_resource_uri(tool).is_some()
 }
 
-fn tool_is_mcp_app_host_visible(tool: &UpstreamTool) -> bool {
+pub fn tool_is_mcp_app_host_visible(tool: &UpstreamTool) -> bool {
     if tool_has_mcp_app_ui_resource(tool) {
         return true;
     }
@@ -584,13 +584,12 @@ fn tool_is_mcp_app_host_visible(tool: &UpstreamTool) -> bool {
         .and_then(|ui| ui.get("visibility"))
         .and_then(Value::as_array)
         .is_some_and(|visibility| visibility.iter().any(|value| value.as_str() == Some("app")));
-    let openai_private_callback = meta
+    let openai_widget_callback = meta
         .0
         .get("openai/widgetAccessible")
         .and_then(Value::as_bool)
-        == Some(true)
-        && meta.0.get("openai/visibility").and_then(Value::as_str) == Some("private");
-    app_visible || openai_private_callback
+        == Some(true);
+    app_visible || openai_widget_callback
 }
 
 #[cfg(test)]
@@ -613,14 +612,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn code_mode_ui_catalog_includes_private_app_callbacks() {
+    async fn code_mode_ui_catalog_includes_standard_and_openai_app_callbacks() {
         let pool = UpstreamPool::new();
         let upstream_name: Arc<str> = Arc::from("quick-shell");
         let mut tools = test_upstream_tools(
             &upstream_name,
             &[
                 "open_quick_shell",
-                "get_quick_shell_session",
+                "standard_app_callback",
+                "openai_public_callback",
+                "openai_private_callback",
                 "unrelated_model_tool",
             ],
         );
@@ -639,13 +640,29 @@ mod tests {
             ("openai/visibility".to_string(), serde_json::json!("public")),
         ])));
         tools
-            .get_mut("get_quick_shell_session")
-            .expect("app callback")
+            .get_mut("standard_app_callback")
+            .expect("standard app callback")
+            .tool
+            .meta = Some(Meta(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({ "visibility": ["app"] }),
+        )])));
+        tools
+            .get_mut("openai_public_callback")
+            .expect("OpenAI public callback")
+            .tool
+            .meta = Some(Meta(serde_json::Map::from_iter([(
+            "openai/widgetAccessible".to_string(),
+            serde_json::json!(true),
+        )])));
+        tools
+            .get_mut("openai_private_callback")
+            .expect("OpenAI private callback")
             .tool
             .meta = Some(Meta(serde_json::Map::from_iter([
             (
-                "ui".to_string(),
-                serde_json::json!({ "visibility": ["app"] }),
+                "openai/widgetAccessible".to_string(),
+                serde_json::json!(true),
             ),
             (
                 "openai/visibility".to_string(),
@@ -667,8 +684,13 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["get_quick_shell_session", "open_quick_shell"],
-            "the host needs private app callbacks in tools/list, while unrelated model tools stay hidden"
+            vec![
+                "open_quick_shell",
+                "openai_private_callback",
+                "openai_public_callback",
+                "standard_app_callback",
+            ],
+            "the host needs standard and compatibility app callbacks in tools/list, while unrelated model tools stay hidden"
         );
     }
 
