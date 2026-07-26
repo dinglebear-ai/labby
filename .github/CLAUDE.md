@@ -11,6 +11,7 @@ This directory contains the GitHub Actions workflows for `lab`. The authoritativ
 | `workflows/openwiki-update.yml` | daily schedule, manual dispatch | Refreshes `/openwiki` through the OpenAI-compatible gateway on the trusted `linux-lab` runner |
 | `workflows/release.yml` | push of `v*.*.*` tag, manual dispatch | Release builds, container image, and GitHub Release |
 | `workflows/stale.yml` | weekly schedule, manual dispatch | Marks and closes inactive issues and pull requests with protected-label exemptions |
+| `workflows/mcp-upstream-drift.yml` | weekly schedule, manual dispatch | Compares pinned MCP spec/rmcp baselines, maps upstream changes to Labby owners/tests, and updates one actionable issue |
 
 ## CI Path Routing
 
@@ -45,6 +46,13 @@ their category is enabled:
 | test-fork | `rust_test` | same `cargo nextest` command on `ubuntu-latest` for fork PRs only |
 | test-windows | `rust_test` | same nextest run on the self-hosted `windows-ci` runner (label `windows-lab`); fork PRs never reach this runner |
 | mcp-conformance | `rust_test` or `workflow` | exact rmcp beta.2 dated `2026-07-28` server/client suites and separately baselined extension suites |
+
+`mcp-upstream-drift.yml` is advisory rather than a required PR gate. It
+compares `conformance/upstream-baseline.json` with the current MCP
+specification branch and latest rmcp release, then maps changed upstream paths
+and release notes to concrete Labby code/test owners. Drift opens or updates
+one stable GitHub issue. Adopt the upstream change and its validation before
+advancing the baseline in the same PR.
 | release-smoke | `release` | `cargo build --workspace --all-features --release` — Windows skipped on PRs (see below) |
 | container | `docker` | Docker build with `config/Dockerfile` |
 

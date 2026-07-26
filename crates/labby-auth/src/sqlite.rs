@@ -8,6 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
+mod assertions;
 mod migrations;
 mod rows;
 mod tokens;
@@ -25,7 +26,7 @@ use crate::types::{
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
 /// Schema version for the `PRAGMA user_version` migration guard.
 /// Increment this whenever a migration step is added to `run_migrations`.
-pub(super) const SCHEMA_VERSION: i64 = 4;
+pub(super) const SCHEMA_VERSION: i64 = 6;
 
 use crate::util::{
     ensure_restrictive_permissions, fingerprint, now_unix, set_restrictive_permissions,
@@ -149,6 +150,8 @@ impl SqliteStore {
                         client_id: row.get(0)?,
                         redirect_uris,
                         created_at: row.get(2)?,
+                        token_endpoint_auth_method: "none".to_string(),
+                        jwks: None,
                     })
                 },
             )
@@ -913,7 +916,7 @@ impl SqliteStore {
     async fn with_conn<T, F>(&self, op: F) -> Result<T, AuthError>
     where
         T: Send + 'static,
-        F: FnOnce(&Connection) -> Result<T, AuthError> + Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, AuthError> + Send + 'static,
     {
         let conns = Arc::clone(&self.conns);
         let path = Arc::clone(&self.path);
@@ -924,7 +927,7 @@ impl SqliteStore {
                 .lock()
                 .map_err(|_| AuthError::Storage("sqlite mutex poisoned".to_string()))?;
             validate_or_reopen_connection(&mut guard, path.as_ref())?;
-            op(&guard)
+            op(&mut guard)
         })
         .await
         .map_err(|error| AuthError::Storage(format!("sqlite task failed: {error}")))?
@@ -993,7 +996,9 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             code_challenge_method TEXT NOT NULL,
             provider_refresh_token TEXT,
             created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL
+            expires_at INTEGER NOT NULL,
+            refresh_claim_id TEXT,
+            refresh_claim_expires_at INTEGER
         );
         CREATE TABLE IF NOT EXISTS refresh_tokens (
             refresh_token_hash TEXT PRIMARY KEY,
@@ -1005,6 +1010,14 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS assertion_jtis (
+            issuer TEXT NOT NULL,
+            jti TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            PRIMARY KEY (issuer, jti)
+        );
+        CREATE INDEX IF NOT EXISTS idx_assertion_jtis_expiry
+            ON assertion_jtis(expires_at);
         CREATE TABLE IF NOT EXISTS browser_sessions (
             session_id TEXT PRIMARY KEY,
             subject TEXT NOT NULL,
@@ -1493,6 +1506,8 @@ mod tests {
                 client_id: client_id.to_string(),
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
             })
             .await
             .unwrap();
@@ -1868,6 +1883,47 @@ mod tests {
         let path = temp_db_path();
         let _store1 = SqliteStore::open(path.clone()).await.unwrap();
         let _store2 = SqliteStore::open(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn assertion_replay_rejection_survives_store_reopen() {
+        let path = temp_db_path();
+        let now = now_unix();
+        let store = SqliteStore::open(path.clone()).await.unwrap();
+        assert!(
+            store
+                .consume_assertion_jti("https://issuer.example", "one-shot", now, now + 60, now)
+                .await
+                .unwrap()
+        );
+        drop(store);
+
+        let reopened = SqliteStore::open(path).await.unwrap();
+        assert!(
+            !reopened
+                .consume_assertion_jti("https://issuer.example", "one-shot", now, now + 60, now)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_assertion_consumption_has_exactly_one_winner() {
+        let store = temp_store().await;
+        let now = now_unix();
+        let first = store.clone();
+        let second = store.clone();
+        let (first, second) = tokio::join!(
+            first.consume_assertion_jti("https://issuer.example", "concurrent", now, now + 60, now),
+            second.consume_assertion_jti(
+                "https://issuer.example",
+                "concurrent",
+                now,
+                now + 60,
+                now
+            )
+        );
+        assert_ne!(first.unwrap(), second.unwrap());
     }
 
     // Ensure AllowedUserRow is importable as the right type in tests.

@@ -43,6 +43,7 @@ jobs when their changed-path category is enabled:
 | Tests (Linux fork PR fallback) | `rust_test` | same nextest run on `ubuntu-latest` for fork PRs |
 | Tests (Windows) | `rust_test` | same nextest run on the self-hosted `windows-ci` Windows runner, with fork PRs excluded from self-hosted runners |
 | MCP conformance | `rust_test` or `workflow` | pinned rmcp `3.0.0-beta.2` dated `2026-07-28` server/client suites plus separately scored extension suites |
+| MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release smoke | `release` | `cargo build --workspace --all-features --release`; Windows release smoke still skips PRs via the matrix |
 | Container smoke | `docker` | Docker build using `config/Dockerfile` |
 
@@ -57,6 +58,14 @@ Labby assets. It is a production build gate, not a TypeScript strictness gate:
 MCP conformance details, exact reproducibility pins, and the strict extension
 gap baseline are documented in
 [MCP_CONFORMANCE.md](../surfaces/MCP_CONFORMANCE.md).
+
+The advisory `MCP upstream drift` workflow watches both the MCP specification
+repository and the latest rmcp release. Its pinned inputs live in
+`conformance/upstream-baseline.json`; `scripts/ci/mcp_upstream_drift.py`
+translates upstream file/release changes into the Labby modules and validation
+commands that must be reviewed. It updates a stable issue rather than creating
+notification spam. Never advance the baseline merely to silence the issue:
+land the required code/tests and the baseline update together.
 
 ## CI Platform
 

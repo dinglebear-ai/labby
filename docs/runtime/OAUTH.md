@@ -33,6 +33,9 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
 | `LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `POST /register`. Defaults to `20`. |
 | `LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `/authorize` and browser login initiation. Defaults to `60`. |
+| `LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE` | no | Per-IP rate limit for credential-bearing `/token` and `/revoke` requests. Defaults to `120`. |
+| `LABBY_AUTH_MACHINE_CLIENTS_JSON` | client credentials | JSON array of preregistered machine clients. Each entry selects exactly one of `client_secret` or `jwks` and lists allowed `resources` and `scopes`. |
+| `LABBY_AUTH_ENTERPRISE_ISSUERS_JSON` | enterprise authorization | JSON array of trusted ID-JAG issuers with inline `jwks` or HTTPS `jwks_uri` and optional `allowed_client_ids`. |
 | `LABBY_AUTH_MAX_PENDING_OAUTH_STATES` | no | Maximum non-expired pending authorization + browser-login states stored at once. Defaults to `1024`. |
 
 ## Startup Behavior
@@ -359,10 +362,10 @@ Current constraints:
   token is invalid immediately
 - `POST /revoke` implements idempotent refresh-token revocation
 - machine clients are preregistered out of band with
-  `LAB_AUTH_MACHINE_CLIENTS_JSON` and authenticate with `client_secret_basic`
+  `LABBY_AUTH_MACHINE_CLIENTS_JSON` and authenticate with `client_secret_basic`
   or RFC 7523 `private_key_jwt`
 - trusted enterprise ID-JAG issuers are configured with
-  `LAB_AUTH_ENTERPRISE_ISSUERS_JSON`; assertions must use
+  `LABBY_AUTH_ENTERPRISE_ISSUERS_JSON`; assertions must use
   `typ=oauth-id-jag+jwt` and are issuer, audience, client, resource, scope,
   expiry, signature, and replay validated
 - successful and failed `/token` responses must send `Cache-Control: no-store`
@@ -375,7 +378,8 @@ Example machine-client configuration:
   {
     "client_id": "ci-agent",
     "client_secret": "load-this-from-a-secret-manager",
-    "scopes": ["lab"]
+    "scopes": ["lab"],
+    "resources": ["https://lab.example.com/mcp"]
   }
 ]
 ```
@@ -445,6 +449,9 @@ Documented auth-specific exception:
 - `invalid_grant` remains a stable OAuth token/authorization error for
   authorization-code and refresh-token redemption failures such as expired,
   unknown, or mismatched grants
+- `oauth_needs_reauth` is returned with `401 Unauthorized` when Google rejects
+  the provider refresh token with `invalid_grant`; the client must reconnect to
+  complete a new interactive authorization flow
 
 ## RFC 9728 Protected Resource Metadata
 

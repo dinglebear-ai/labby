@@ -5,14 +5,21 @@ use crate::state::AuthState;
 use crate::types::RegisteredClient;
 use crate::util::now_unix;
 
-const DEFAULT_CACHE_SECS: i64 = 300;
-const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
+const MAX_CACHE_ENTRIES: usize = 1_024;
 
 #[derive(Debug, Deserialize)]
 struct ClientMetadataDocument {
     client_id: String,
     client_name: String,
     redirect_uris: Vec<String>,
+    #[serde(default = "default_token_endpoint_auth_method")]
+    token_endpoint_auth_method: String,
+    #[serde(default)]
+    jwks: Option<serde_json::Value>,
+}
+
+fn default_token_endpoint_auth_method() -> String {
+    "none".to_string()
 }
 
 pub async fn resolve_client(
@@ -32,48 +39,48 @@ pub async fn resolve_client(
     {
         return Ok(Some(entry.value().0.clone()));
     }
-    let response = crate::remote::secure_get(&url).await?;
-    if !response.status().is_success() {
-        return Err(AuthError::InvalidGrant(format!(
-            "client metadata document returned HTTP {}",
-            response.status()
-        )));
-    }
-    if response
-        .content_length()
-        .is_some_and(|len| len as usize > MAX_DOCUMENT_BYTES)
+    let _guard = state.remote_cache_lock.lock().await;
+    if let Some(entry) = state.cimd_cache.get(client_id)
+        && entry.value().1 > now_unix()
     {
-        return Err(AuthError::Validation(
-            "client metadata document exceeds 1 MiB".to_string(),
-        ));
+        return Ok(Some(entry.value().0.clone()));
     }
-    let cache_secs = response
-        .headers()
-        .get(reqwest::header::CACHE_CONTROL)
-        .and_then(|value| value.to_str().ok())
-        .and_then(cache_max_age)
-        .unwrap_or(DEFAULT_CACHE_SECS);
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| AuthError::Network(format!("read client metadata document: {error}")))?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(AuthError::Validation(
-            "client metadata document exceeds 1 MiB".to_string(),
-        ));
+    let (document, cache_policy) =
+        crate::remote::fetch_json::<ClientMetadataDocument>(&url, "client metadata document")
+            .await?;
+    let client = validate_document(
+        client_id,
+        document,
+        &state.config.allowed_client_redirect_uris,
+    )?;
+    if cache_policy.cacheable {
+        state
+            .cimd_cache
+            .retain(|_, (_, expires_at)| *expires_at > now_unix());
+        if state.cimd_cache.len() >= MAX_CACHE_ENTRIES
+            && let Some(oldest) = state
+                .cimd_cache
+                .iter()
+                .min_by_key(|entry| entry.value().1)
+                .map(|entry| entry.key().clone())
+        {
+            state.cimd_cache.remove(&oldest);
+        }
+        state.cimd_cache.insert(
+            client_id.to_string(),
+            (
+                client.clone(),
+                now_unix().saturating_add(cache_policy.max_age_secs),
+            ),
+        );
     }
-    let document: ClientMetadataDocument = serde_json::from_slice(&bytes)
-        .map_err(|error| AuthError::Validation(format!("invalid client metadata JSON: {error}")))?;
-    let client = validate_document(client_id, document)?;
-    state
-        .cimd_cache
-        .insert(client_id.to_string(), (client.clone(), now + cache_secs));
     Ok(Some(client))
 }
 
 fn validate_document(
     expected_client_id: &str,
     document: ClientMetadataDocument,
+    allowed_redirect_patterns: &[String],
 ) -> Result<RegisteredClient, AuthError> {
     if document.client_id != expected_client_id {
         return Err(AuthError::InvalidGrant(
@@ -88,33 +95,38 @@ fn validate_document(
     if document
         .redirect_uris
         .iter()
-        .any(|uri| url::Url::parse(uri).is_err())
+        .any(|uri| !crate::authorize::is_allowed_redirect_uri(uri, allowed_redirect_patterns))
     {
         return Err(AuthError::Validation(
-            "client metadata contains an invalid redirect URI".to_string(),
+            "client metadata contains an unsafe redirect URI".to_string(),
+        ));
+    }
+    if !matches!(
+        document.token_endpoint_auth_method.as_str(),
+        "none" | "private_key_jwt"
+    ) {
+        return Err(AuthError::Validation(
+            "client metadata token_endpoint_auth_method must be none or private_key_jwt"
+                .to_string(),
+        ));
+    }
+    if document.token_endpoint_auth_method == "private_key_jwt" && document.jwks.is_none() {
+        return Err(AuthError::Validation(
+            "private_key_jwt client metadata requires inline jwks".to_string(),
         ));
     }
     Ok(RegisteredClient {
         client_id: document.client_id,
         redirect_uris: document.redirect_uris,
         created_at: now_unix(),
-    })
-}
-
-fn cache_max_age(value: &str) -> Option<i64> {
-    value.split(',').find_map(|directive| {
-        directive
-            .trim()
-            .strip_prefix("max-age=")?
-            .parse::<i64>()
-            .ok()
-            .filter(|seconds| *seconds >= 0)
+        token_endpoint_auth_method: document.token_endpoint_auth_method,
+        jwks: document.jwks,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMetadataDocument, cache_max_age, validate_document};
+    use super::{ClientMetadataDocument, validate_document};
 
     #[test]
     fn rejects_document_whose_client_id_does_not_exactly_match_url() {
@@ -124,14 +136,35 @@ mod tests {
                 client_id: "https://attacker.example/client.json".to_string(),
                 client_name: "Client".to_string(),
                 redirect_uris: vec!["http://127.0.0.1:3000/callback".to_string()],
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
             },
+            &[],
         )
         .unwrap_err();
         assert!(error.to_string().contains("does not match"));
     }
 
     #[test]
-    fn parses_cache_control_max_age() {
-        assert_eq!(cache_max_age("public, max-age=600"), Some(600));
+    fn rejects_unsafe_redirect_schemes() {
+        for redirect_uri in [
+            "javascript:alert(1)",
+            "data:text/html,boom",
+            "http://example.com/callback",
+        ] {
+            let error = validate_document(
+                "https://client.example/client.json",
+                ClientMetadataDocument {
+                    client_id: "https://client.example/client.json".to_string(),
+                    client_name: "Client".to_string(),
+                    redirect_uris: vec![redirect_uri.to_string()],
+                    token_endpoint_auth_method: "none".to_string(),
+                    jwks: None,
+                },
+                &[],
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("unsafe"));
+        }
     }
 }

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{ConnectInfo, Query, State},
+    extract::{ConnectInfo, Extension, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, header},
     middleware::Next,
     response::{Html, IntoResponse},
@@ -232,11 +232,13 @@ async fn auth_callback(
 
 async fn auth_token(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     form: axum::extract::Form<labby_auth::types::TokenRequest>,
 ) -> Result<impl IntoResponse, LabAuthError> {
     Ok(labby_auth::token::token(
         State(app_auth_state_with_protected_routes(&state).await?),
+        Some(Extension(ConnectInfo(addr))),
         headers,
         form,
     )
@@ -245,9 +247,17 @@ async fn auth_token(
 
 async fn auth_revoke(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     form: axum::extract::Form<labby_auth::types::RevocationRequest>,
 ) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(labby_auth::token::revoke(State(app_auth_state(&state)?), form).await)
+    Ok(labby_auth::token::revoke(
+        State(app_auth_state(&state)?),
+        Some(Extension(ConnectInfo(addr))),
+        headers,
+        form,
+    )
+    .await)
 }
 
 async fn auth_native_callback(

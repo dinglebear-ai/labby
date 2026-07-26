@@ -36,6 +36,9 @@ LABBY_GOOGLE_SCOPES=openid,email,profile
 LABBY_AUTH_ACCESS_TOKEN_TTL_SECS=3600
 LABBY_AUTH_REFRESH_TOKEN_TTL_SECS=2592000
 LABBY_AUTH_CODE_TTL_SECS=300
+LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE=120
+LABBY_AUTH_MACHINE_CLIENTS_JSON=[{"client_id":"ci-agent","client_secret":"replace-me","resources":["https://lab.example.com/mcp"],"scopes":["lab"]}]
+LABBY_AUTH_ENTERPRISE_ISSUERS_JSON=[{"issuer":"https://idp.example.com","jwks_uri":"https://idp.example.com/jwks","allowed_client_ids":["ci-agent"]}]
 ```
 
 These non-secret overrides can also live in `config.toml` under `[auth]`.

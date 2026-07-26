@@ -156,6 +156,8 @@ pub async fn register_client(
         client_id: random_token(18)?,
         redirect_uris: request.redirect_uris,
         created_at: now_unix(),
+        token_endpoint_auth_method: "none".to_string(),
+        jwks: None,
     };
     state.store.register_client(client.clone()).await?;
     info!(
@@ -178,19 +180,7 @@ pub async fn authorize(
 ) -> Result<Response, AuthError> {
     state.check_authorize_rate_limit(remote_ip(addr)).await?;
     state.ensure_pending_oauth_state_capacity().await?;
-    validate_response_type(&query.response_type)?;
-    let resource = validate_resource(&state, query.resource.as_deref())?;
-    let scope = validate_scope(&state, &resource, &query.scope)?;
     let client_state_id = fingerprint(&query.state);
-    info!(
-        client_id = %query.client_id,
-        redirect_uri = %query.redirect_uri,
-        client_state_id = %client_state_id,
-        resource = %resource,
-        requested_scope = %query.scope,
-        normalized_scope = %scope,
-        "oauth authorize request received"
-    );
     let client = crate::cimd::resolve_client(&state, &query.client_id)
         .await?
         .ok_or_else(|| {
@@ -216,6 +206,30 @@ pub async fn authorize(
             "redirect_uri does not match the registered client".to_string(),
         ));
     }
+    if let Err(error) = validate_response_type(&query.response_type) {
+        return authorization_error_redirect(&state, &query, "unsupported_response_type", error);
+    }
+    let resource = match validate_resource(&state, query.resource.as_deref()) {
+        Ok(resource) => resource,
+        Err(error) => {
+            return authorization_error_redirect(&state, &query, "invalid_target", error);
+        }
+    };
+    let scope = match validate_scope(&state, &resource, &query.scope) {
+        Ok(scope) => scope,
+        Err(error) => {
+            return authorization_error_redirect(&state, &query, "invalid_scope", error);
+        }
+    };
+    info!(
+        client_id = %query.client_id,
+        redirect_uri = %query.redirect_uri,
+        client_state_id = %client_state_id,
+        resource = %resource,
+        requested_scope = %query.scope,
+        normalized_scope = %scope,
+        "oauth authorize request received"
+    );
     if query.code_challenge_method != "S256" {
         warn!(
             client_id = %query.client_id,
@@ -223,9 +237,12 @@ pub async fn authorize(
             code_challenge_method = %query.code_challenge_method,
             "oauth authorize rejected: unsupported PKCE method"
         );
-        return Err(AuthError::Validation(
-            "code_challenge_method must be S256".to_string(),
-        ));
+        return authorization_error_redirect(
+            &state,
+            &query,
+            "invalid_request",
+            AuthError::Validation("code_challenge_method must be S256".to_string()),
+        );
     }
 
     let provider_code_verifier = random_token(32)?;
@@ -299,6 +316,26 @@ pub async fn authorize(
         [(header::LOCATION, location.to_string())],
     )
         .into_response())
+}
+
+fn authorization_error_redirect(
+    state: &AuthState,
+    query: &AuthorizeQuery,
+    error_code: &str,
+    error: AuthError,
+) -> Result<Response, AuthError> {
+    let mut redirect = url::Url::parse(&query.redirect_uri).map_err(|parse_error| {
+        AuthError::Config(format!(
+            "validated redirect_uri could not be parsed: {parse_error}"
+        ))
+    })?;
+    redirect
+        .query_pairs_mut()
+        .append_pair("error", error_code)
+        .append_pair("error_description", &error.to_string())
+        .append_pair("state", &query.state)
+        .append_pair("iss", &crate::metadata::public_base_url(state));
+    Ok(Redirect::to(redirect.as_str()).into_response())
 }
 
 pub async fn callback(
@@ -733,7 +770,7 @@ fn is_native_app_scheme_redirect(value: &str) -> bool {
     )
 }
 
-fn is_allowed_redirect_uri(value: &str, patterns: &[String]) -> bool {
+pub(crate) fn is_allowed_redirect_uri(value: &str, patterns: &[String]) -> bool {
     if is_loopback_redirect(value) || is_native_app_scheme_redirect(value) {
         return true;
     }
@@ -878,6 +915,31 @@ pub mod tests {
     fn router(state: AuthState) -> Router {
         crate::routes::router(state)
             .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9001))))
+    }
+
+    fn assert_authorization_error(response: &axum::response::Response, expected_error: &str) {
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| Url::parse(value).ok())
+            .expect("authorization error redirect location");
+        let query = location
+            .query_pairs()
+            .into_owned()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(query.get("error").map(String::as_str), Some(expected_error));
+        assert_eq!(query.get("state").map(String::as_str), Some("abc"));
+        assert_eq!(
+            query.get("iss").map(String::as_str),
+            Some("https://lab.example.com")
+        );
+        assert!(
+            query
+                .get("error_description")
+                .is_some_and(|description| !description.is_empty())
+        );
     }
 
     #[tokio::test]
@@ -1391,6 +1453,8 @@ pub mod tests {
                 client_id: "other-client".to_string(),
                 redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
                 created_at: now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
             })
             .await
             .unwrap();
@@ -1523,6 +1587,8 @@ pub mod tests {
                 client_id: "client".to_string(),
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
             })
             .await
             .unwrap();
@@ -1699,6 +1765,8 @@ pub mod tests {
                 client_id: "client".to_string(),
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
             })
             .await
             .unwrap();
@@ -1802,6 +1870,8 @@ pub mod tests {
                 client_id: "client".to_string(),
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
             })
             .await
             .unwrap();
@@ -1894,7 +1964,7 @@ pub mod tests {
                 .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_authorization_error(&response, "unsupported_response_type");
         }
     }
 
@@ -1985,7 +2055,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_authorization_error(&response, "invalid_scope");
     }
 
     #[tokio::test]
@@ -2000,7 +2070,7 @@ pub mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_authorization_error(&response, "invalid_target");
     }
 
     #[tokio::test]
@@ -2080,6 +2150,8 @@ pub mod tests {
                 client_id: "client".to_string(),
                 redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                 created_at: now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
             })
             .await
             .unwrap();
@@ -2153,6 +2225,8 @@ pub mod tests {
                 client_id: "native-client".to_string(),
                 redirect_uris: vec![native_callback_endpoint.clone()],
                 created_at: now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
             })
             .await
             .unwrap();
@@ -2424,6 +2498,8 @@ pub mod tests {
                     client_id: "client".to_string(),
                     redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
                     created_at: now_unix(),
+                    token_endpoint_auth_method: "none".to_string(),
+                    jwks: None,
                 })
                 .await
                 .unwrap();

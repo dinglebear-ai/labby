@@ -815,6 +815,38 @@ impl LabMcpServer {
     }
 }
 
+#[cfg(not(feature = "gateway"))]
+impl LabMcpServer {
+    /// Resolve whether a built-in tool call needs RC-native MRTR elicitation.
+    ///
+    /// Gateway-only synthetic and upstream tools are unavailable in this
+    /// feature slice, so the registry is the complete classification source.
+    pub(crate) async fn tool_request_is_destructive(
+        &self,
+        request: &CallToolRequestParams,
+        _context: &RequestContext<RoleServer>,
+    ) -> bool {
+        let service = request.name.as_ref();
+        let action = request
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("action"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+
+        self.registry
+            .services()
+            .iter()
+            .find(|entry| entry.name == service)
+            .is_some_and(|entry| {
+                entry
+                    .actions
+                    .iter()
+                    .any(|candidate| candidate.name == action && candidate.destructive)
+            })
+    }
+}
+
 #[cfg(feature = "gateway")]
 impl LabMcpServer {
     /// Resolve whether a tool call needs RC-native MRTR elicitation.
