@@ -221,13 +221,27 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "mcp-regressions",
         "palette-web",
         "palette-rust",
-        "palette-windows",
         "rust-coverage",
     ] {
         assert!(
             workflow.contains(&format!("- {required}"))
                 && workflow.contains(&format!("needs.{required}.result")),
             "ci-gate must aggregate {required}"
+        );
+    }
+    let gate = workflow
+        .split("  ci-gate:")
+        .nth(1)
+        .expect("ci-gate job body");
+    for advisory in ["test-windows", "palette-windows"] {
+        assert!(
+            workflow.contains(&format!("  {advisory}:")),
+            "CI must retain the advisory {advisory} job"
+        );
+        assert!(
+            !gate.contains(&format!("- {advisory}"))
+                && !gate.contains(&format!("needs.{advisory}.result")),
+            "ci-gate must not aggregate advisory job {advisory}"
         );
     }
 
