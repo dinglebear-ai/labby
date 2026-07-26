@@ -15,7 +15,8 @@ category so periodic/manual validation stays broad.
 Branch protection should require the stable aggregate `ci-gate` check. The
 heavy jobs below may be skipped when their category is false; `ci-gate` treats
 `success` and intentionally `skipped` jobs as acceptable, and fails on failed or
-cancelled dependencies.
+cancelled dependencies. Native Windows workspace and Palette jobs are advisory:
+they stay visible on pull requests and main but do not block `ci-gate`.
 
 ## CI Checks
 
@@ -37,11 +38,11 @@ jobs when their changed-path category is enabled:
 | Lint | `rust_compile` | `cargo clippy --workspace --all-features -- -D warnings` |
 | Deny | `security` | `cargo deny check` |
 | Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
-| Palette Tauri | `palette` | independent lockfile audit plus Linux tests and native Windows build/test smoke |
+| Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
 | Rust coverage | `rust_test` | LCOV trend artifact with project and critical auth/gateway/dispatch/config floors |
 | Tests (Linux) | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` on the self-hosted `linux-ci` runner for trusted events |
 | Tests (Linux fork PR fallback) | `rust_test` | same nextest run on `ubuntu-latest` for fork PRs |
-| Tests (Windows) | `rust_test` | same nextest run on the self-hosted `windows-ci` Windows runner, with fork PRs excluded from self-hosted runners |
+| Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | pinned rmcp `3.0.0-beta.2` dated `2026-07-28` server/client suites plus separately scored extension suites |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release smoke | `release` | `cargo build --workspace --all-features --release`; Windows release smoke still skips PRs via the matrix |
@@ -77,6 +78,7 @@ land the required code/tests and the baseline update together.
   - `changes` classifies paths first and exports category booleans
   - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/gateway-admin/out` artifact
   - Heavy jobs run only when their category is enabled; `ci-gate` is the stable required check for branch protection
+  - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; they report portability regressions without blocking `ci-gate`
   - Release builds on `vX.Y.Z` tags only
   - Container image publishing and GitHub Release publishing after successful tag builds
 
