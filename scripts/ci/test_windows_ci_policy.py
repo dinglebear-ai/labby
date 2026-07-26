@@ -1,0 +1,46 @@
+from pathlib import Path
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+
+
+def job_block(workflow: str, job: str, next_job: str) -> str:
+    start = workflow.index(f"  {job}:\n")
+    end = workflow.index(f"  {next_job}:\n", start)
+    return workflow[start:end]
+
+
+class WindowsCiPolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    def test_workspace_windows_job_is_hosted_cached_and_bounded(self) -> None:
+        block = job_block(self.workflow, "test-windows", "release-smoke")
+        self.assertIn("runs-on: windows-latest", block)
+        self.assertNotIn("self-hosted", block)
+        self.assertIn("timeout-minutes: 60", block)
+        self.assertIn("Swatinem/rust-cache@", block)
+        self.assertIn("key: workspace-nextest-v1", block)
+        self.assertIn("cache-on-failure: true", block)
+
+    def test_palette_windows_job_is_hosted_cached_and_bounded(self) -> None:
+        block = job_block(self.workflow, "palette-windows", "rust-coverage")
+        self.assertIn("runs-on: windows-latest", block)
+        self.assertIn("timeout-minutes: 60", block)
+        self.assertIn("Swatinem/rust-cache@", block)
+        self.assertIn("key: palette-tauri-windows-v1", block)
+        self.assertIn("cache-on-failure: true", block)
+
+    def test_windows_jobs_are_advisory_to_ci_gate(self) -> None:
+        block = self.workflow[self.workflow.index("  ci-gate:\n") :]
+        self.assertNotIn("      - test-windows\n", block)
+        self.assertNotIn("      - palette-windows\n", block)
+        self.assertNotIn("needs.test-windows.result", block)
+        self.assertNotIn("needs.palette-windows.result", block)
+
+
+if __name__ == "__main__":
+    unittest.main()

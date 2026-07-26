@@ -29,6 +29,9 @@ individual heavyweight jobs may be skipped when their category is false, and `ci
 Every push and PR to `main` must pass `ci-gate`, which covers these jobs when
 their category is enabled:
 
+The native Windows workspace and Palette jobs are advisory exceptions: they run
+and report independently but are not `ci-gate` dependencies.
+
 | Job | Category | Command |
 |-----|----------|---------|
 | unraid-plugin-check | always | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form that additionally checks `labbyVersion` and the release-tarball checksum is a manual tool, not wired into any CI job — `labbyVersion` intentionally pins to a specific already-published release, not whatever tag is currently being built, and a freshly-built tarball's MD5 is not reproducible run-to-run (GNU tar embeds file mtimes), so there is no safe way to auto-verify it against a same-run build. |
@@ -44,7 +47,7 @@ their category is enabled:
 | docs-check (name: `Generated docs`) | `docs_check` | `just docs-check` — the generated-docs freshness gate; fails if `docs/generated/*` (action catalog, MCP help, CLI help) drift from the registry. This is the only freshness check; there is **no** standalone `doc-freshness.yml` or `code-conventions.yml` workflow. |
 | test | `rust_test` | `cargo nextest run --workspace --all-features --profile ci` (`self-hosted` `linux-lab` runner for trusted events) |
 | test-fork | `rust_test` | same `cargo nextest` command on `ubuntu-latest` for fork PRs only |
-| test-windows | `rust_test` | same nextest run on the self-hosted `windows-ci` runner (label `windows-lab`); fork PRs never reach this runner |
+| test-windows | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; advisory and excluded from `ci-gate` |
 | mcp-conformance | `rust_test` or `workflow` | exact rmcp beta.2 dated `2026-07-28` server/client suites and separately baselined extension suites |
 
 `mcp-upstream-drift.yml` is advisory rather than a required PR gate. It
@@ -57,8 +60,11 @@ advancing the baseline in the same PR.
 | container | `docker` | Docker build with `config/Dockerfile` |
 
 Most jobs run on `ubuntu-latest`. Linux test runs on `linux-lab` for trusted
-events and `test-fork` uses `ubuntu-latest` for fork PRs. Windows is a
-supported target; the release smoke matrix includes `windows-latest` to prove
+events and `test-fork` uses `ubuntu-latest` for fork PRs. Native Windows
+workspace and Palette checks run on GitHub-hosted `windows-latest` with keyed
+Cargo caches and bounded timeouts. They are visible advisory checks rather than
+`ci-gate` dependencies. Windows is a supported target; the release smoke matrix
+includes `windows-latest` to prove
 the native MSVC release binary builds, but ONLY when the `release` category is
 enabled and the event is not a PR. Windows release smoke is skipped on PRs
 (20-25 min of runner time per PR, and a Linux cross-check is not viable because
