@@ -48,8 +48,9 @@ Lab is a Rust workspace with a split between reusable upstream-facing SDK client
 **Purpose**: OAuth 2.0 and JWT authentication for HTTP surfaces.
 
 **Contents**:
-- OAuth 2.0 authorization server (Google OIDC provider)
-- JWT signing and validation (RS256)
+- OAuth 2.1 authorization server with Google OIDC, CIMD, machine credentials,
+  enterprise ID-JAG exchange, refresh rotation, and revocation
+- JWT signing and validation (EdDSA access tokens; EdDSA/RS256/ES256 client assertions)
 - SQLite-backed token and session storage
 - axum middleware and route handlers
 - Upstream OAuth manager, cache, and runtime helpers

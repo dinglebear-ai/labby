@@ -1942,6 +1942,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.2",
  "jsonwebtoken",
+ "labby-primitives",
  "labby-runtime",
  "oauth2",
  "rand 0.10.1",

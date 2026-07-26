@@ -30,6 +30,7 @@ dashmap = "6"
 getrandom = "0.4"
 jsonwebtoken.workspace = true
 labby-runtime = { path = "../labby-runtime" }
+labby-primitives = { path = "../labby-primitives" }
 reqwest.workspace = true
 rustls.workspace = true
 ed25519-dalek.workspace = true

@@ -95,6 +95,28 @@ pub struct GoogleConfig {
     pub scopes: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineClientConfig {
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub jwks: Option<serde_json::Value>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnterpriseIssuerConfig {
+    pub issuer: String,
+    #[serde(default)]
+    pub jwks_uri: Option<Url>,
+    #[serde(default)]
+    pub jwks: Option<serde_json::Value>,
+    #[serde(default)]
+    pub allowed_client_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthConfig {
     pub mode: AuthMode,
@@ -155,6 +177,11 @@ pub struct AuthConfig {
     /// `{PREFIX}_TOKEN_ENCRYPTION_KEY` (64 hex digits or 43 base64url chars).
     /// When absent, tokens are stored as plaintext (backward-compatible).
     pub token_encryption_key: Option<TokenEncryptionKey>,
+    /// Out-of-band machine identities authorized for the optional MCP OAuth
+    /// Client Credentials extension.
+    pub machine_clients: Vec<MachineClientConfig>,
+    /// Trusted enterprise IdPs authorized to issue ID-JAG grants.
+    pub enterprise_issuers: Vec<EnterpriseIssuerConfig>,
 }
 
 impl Default for AuthConfig {
@@ -190,6 +217,8 @@ impl Default for AuthConfig {
             enable_dynamic_registration: false,
             disable_static_token_with_oauth: false,
             token_encryption_key: None,
+            machine_clients: Vec::new(),
+            enterprise_issuers: Vec::new(),
         }
     }
 }
@@ -244,6 +273,31 @@ impl AuthConfig {
                 "default_scope `{}` must be listed in scopes_supported",
                 self.default_scope
             )));
+        }
+        for client in &self.machine_clients {
+            if client.client_id.trim().is_empty()
+                || (client.client_secret.is_none() && client.jwks.is_none())
+            {
+                return Err(AuthError::Config(
+                    "machine clients require client_id and client_secret or jwks".to_string(),
+                ));
+            }
+        }
+        for issuer in &self.enterprise_issuers {
+            if issuer.issuer.trim().is_empty()
+                || (issuer.jwks_uri.is_none() && issuer.jwks.is_none())
+            {
+                return Err(AuthError::Config(
+                    "enterprise issuers require issuer and jwks_uri or jwks".to_string(),
+                ));
+            }
+            if let Some(uri) = &issuer.jwks_uri
+                && uri.scheme() != "https"
+            {
+                return Err(AuthError::Config(
+                    "enterprise issuer jwks_uri must use https".to_string(),
+                ));
+            }
         }
 
         if matches!(self.mode, AuthMode::OAuth) {
@@ -413,6 +467,8 @@ impl AuthConfigBuilder {
         let key_max_pending = env_key(&prefix, "AUTH_MAX_PENDING_OAUTH_STATES");
         let key_enc_key = env_key(&prefix, "TOKEN_ENCRYPTION_KEY");
         let key_scopes_supported = env_key(&prefix, "AUTH_SCOPES_SUPPORTED");
+        let key_machine_clients = env_key(&prefix, "AUTH_MACHINE_CLIENTS_JSON");
+        let key_enterprise_issuers = env_key(&prefix, "AUTH_ENTERPRISE_ISSUERS_JSON");
 
         let mode = AuthMode::parse(vars.get(&key_mode).map(String::as_str), &key_mode)?;
         let admin_email = read_string(&vars, &key_admin)
@@ -479,6 +535,8 @@ impl AuthConfigBuilder {
                         .map_err(|e| AuthError::Config(format!("invalid {key_enc_key}: {e}")))
                 })
                 .transpose()?,
+            machine_clients: read_json(&vars, &key_machine_clients)?.unwrap_or_default(),
+            enterprise_issuers: read_json(&vars, &key_enterprise_issuers)?.unwrap_or_default(),
         };
 
         config.validate()?;
@@ -558,6 +616,18 @@ fn read_url(vars: &HashMap<String, String>, key: &str) -> Result<Option<Url>, Au
         .transpose()
 }
 
+fn read_json<T: serde::de::DeserializeOwned>(
+    vars: &HashMap<String, String>,
+    key: &str,
+) -> Result<Option<T>, AuthError> {
+    read_string(vars, key)
+        .map(|value| {
+            serde_json::from_str(&value)
+                .map_err(|error| AuthError::Config(format!("{key} must be valid JSON: {error}")))
+        })
+        .transpose()
+}
+
 fn read_u64(vars: &HashMap<String, String>, key: &str) -> Result<Option<u64>, AuthError> {
     read_string(vars, key)
         .map(|value| {
@@ -625,6 +695,28 @@ mod tests {
         assert_eq!(cfg.sqlite_path.file_name().unwrap(), "auth.db");
         assert_eq!(cfg.key_path.file_name().unwrap(), "auth-jwt.pem");
         assert_eq!(cfg.google.callback_path, "/auth/google/callback");
+    }
+
+    #[test]
+    fn oauth_extensions_parse_machine_clients_and_enterprise_issuers() {
+        let cfg = AuthConfig::from_sources(fake_env_with_many([
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_PUBLIC_URL", "https://lab.example.com"),
+            ("LAB_GOOGLE_CLIENT_ID", "id"),
+            ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+            ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            (
+                "LAB_AUTH_MACHINE_CLIENTS_JSON",
+                r#"[{"client_id":"ci","client_secret":"secret","scopes":["lab"]}]"#,
+            ),
+            (
+                "LAB_AUTH_ENTERPRISE_ISSUERS_JSON",
+                r#"[{"issuer":"https://idp.example.com","jwks_uri":"https://idp.example.com/jwks","allowed_client_ids":["codex"]}]"#,
+            ),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.machine_clients[0].client_id, "ci");
+        assert_eq!(cfg.enterprise_issuers[0].issuer, "https://idp.example.com");
     }
 
     #[test]

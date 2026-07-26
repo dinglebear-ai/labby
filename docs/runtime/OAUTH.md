@@ -346,16 +346,46 @@ Downstream handlers can read `AuthContext` from request extensions for audit tra
 
 - `grant_type=authorization_code`
 - `grant_type=refresh_token`
+- `grant_type=client_credentials` when a machine client is configured
+- `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` when an enterprise
+  issuer is configured
 
 Current constraints:
 
 - authorization-code redemption is atomic and single-use
 - `refresh_token` is only issued when Google returned an upstream refresh token
 - refresh grants are rejected if the local token is not backed by an upstream refresh token
-- refresh tokens do not rotate in this batch
-- `/revoke` is not implemented in this batch
+- successful refresh grants atomically rotate the local refresh token; the old
+  token is invalid immediately
+- `POST /revoke` implements idempotent refresh-token revocation
+- machine clients are preregistered out of band with
+  `LAB_AUTH_MACHINE_CLIENTS_JSON` and authenticate with `client_secret_basic`
+  or RFC 7523 `private_key_jwt`
+- trusted enterprise ID-JAG issuers are configured with
+  `LAB_AUTH_ENTERPRISE_ISSUERS_JSON`; assertions must use
+  `typ=oauth-id-jag+jwt` and are issuer, audience, client, resource, scope,
+  expiry, signature, and replay validated
 - successful and failed `/token` responses must send `Cache-Control: no-store`
   and `Pragma: no-cache`
+
+Example machine-client configuration:
+
+```json
+[
+  {
+    "client_id": "ci-agent",
+    "client_secret": "load-this-from-a-secret-manager",
+    "scopes": ["lab"]
+  }
+]
+```
+
+For `private_key_jwt`, omit `client_secret` and provide a standard `jwks`
+document. Enterprise issuer entries use `issuer`, either `jwks_uri` (HTTPS) or
+an inline `jwks`, and an optional `allowed_client_ids` list. Remote CIMD and
+JWKS reads reject redirects, non-HTTPS URLs, private/loopback DNS results, and
+oversized CIMD responses; successful documents are cached according to
+`Cache-Control: max-age`.
 
 ### Auth Failure Semantics
 

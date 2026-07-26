@@ -260,12 +260,14 @@ Lab supports multiple authentication modes for different surfaces.
 
 1. **Static bearer token** - Pre-shared token (compatibility)
 2. **Google OAuth** - OIDC flow with Google provider
-3. **Lab-issued JWT** - RS256-signed tokens (default)
+3. **Machine OAuth** - Client secret or `private_key_jwt`
+4. **Enterprise-managed OAuth** - Trusted ID-JAG exchange
+5. **Lab-issued JWT** - EdDSA-signed, audience-restricted access tokens
 
 **JWT flow**:
 1. User initiates OAuth via Google
 2. Lab validates ID token, creates session
-3. Lab issues JWT signed with Lab's RSA key
+3. Lab issues JWT signed with Lab's Ed25519 key
 4. Client includes JWT in `Authorization: Bearer <token>` header
 5. axum middleware validates JWT signature and claims
 6. Request proceeds to handler

@@ -15,6 +15,7 @@ use crate::error::AuthError;
 use crate::google::GoogleProvider;
 use crate::jwt::SigningKeys;
 use crate::sqlite::SqliteStore;
+use crate::types::RegisteredClient;
 
 const RATE_LIMIT_RETRY_AFTER_MS: u64 = 60_000;
 const RATE_LIMIT_MAX_IP_BUCKETS: usize = 4_096;
@@ -176,6 +177,9 @@ pub struct AuthState {
     allowed_resource_scopes: Arc<RwLock<BTreeMap<String, BTreeSet<String>>>>,
     authorize_limiter: PerIpRateLimiter,
     register_limiter: PerIpRateLimiter,
+    assertion_jtis: Arc<DashMap<String, i64>>,
+    pub(crate) cimd_cache: Arc<DashMap<String, (RegisteredClient, i64)>>,
+    pub(crate) jwks_cache: Arc<DashMap<String, (jsonwebtoken::jwk::JwkSet, i64)>>,
 }
 
 impl AuthState {
@@ -226,6 +230,9 @@ impl AuthState {
             allowed_resource_scopes: Arc::new(RwLock::new(BTreeMap::new())),
             authorize_limiter,
             register_limiter,
+            assertion_jtis: Arc::new(DashMap::new()),
+            cimd_cache: Arc::new(DashMap::new()),
+            jwks_cache: Arc::new(DashMap::new()),
         })
     }
 
@@ -346,6 +353,15 @@ impl AuthState {
         Ok(())
     }
 
+    /// Consume a signed assertion identifier once, pruning expired entries.
+    pub fn consume_assertion_jti(&self, issuer: &str, jti: &str, expires_at: i64) -> bool {
+        let now = crate::util::now_unix();
+        self.assertion_jtis.retain(|_, expiry| *expiry > now);
+        self.assertion_jtis
+            .insert(format!("{issuer}\0{jti}"), expires_at)
+            .is_none()
+    }
+
     #[cfg(test)]
     pub fn for_tests(
         config: AuthConfig,
@@ -363,6 +379,9 @@ impl AuthState {
             allowed_resource_scopes: Arc::new(RwLock::new(BTreeMap::new())),
             authorize_limiter,
             register_limiter,
+            assertion_jtis: Arc::new(DashMap::new()),
+            cimd_cache: Arc::new(DashMap::new()),
+            jwks_cache: Arc::new(DashMap::new()),
         }
     }
 }

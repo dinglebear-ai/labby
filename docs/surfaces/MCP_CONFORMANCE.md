@@ -53,7 +53,7 @@ gateway proxy.
 | Tasks | Gateway/bridge preserves upstream task outcomes and get/cancel operations | bridge tests plus the rmcp Tasks extension suite |
 | Subscriptions | List-changed notifications work without a legacy session identifier | `stateless_subscription_receives_catalog_notifications` |
 | Disconnect | Stateless HTTP owns no resumable server session to delete | rmcp dated lifecycle suite |
-| Auth and scope step-up | Labby owns inbound bearer/OAuth policy; rmcp client conformance exercises protocol auth dispatch | dated client suite and auth middleware tests |
+| Auth and scope step-up | Labby owns inbound OAuth 2.1 policy, CIMD, RFC 9207 issuer binding, revocation, client credentials, ID-JAG exchange, and RFC 9728 challenges | dated client suite plus the Labby auth contract step in conformance CI |
 
 ### MRTR confirmation
 
@@ -85,13 +85,25 @@ Catalog mutations notify connected peers through list-changed subscriptions.
 Clients that do not honor those notifications must reconnect to refresh their
 cached catalog.
 
-### OAuth client credentials and scope step-up
+### OAuth extensions and scope step-up
 
-Labby's inbound authorization server remains authorization-code based for
-interactive operators. OAuth client-credentials examples belong to rmcp's
-outbound client/auth implementation and are exercised by the extension suite.
-Labby does not claim a product-level machine-credential grant that it does not
-expose.
+Labby's inbound authorization server supports the interactive authorization-code
+flow, refresh-token rotation and revocation, and the optional
+`io.modelcontextprotocol/oauth-client-credentials` extension. Machine clients
+are preregistered out of band and may authenticate with `client_secret_basic`
+or RFC 7523 `private_key_jwt`; assertions are audience-bound to `/token` and
+replay-protected.
+
+Trusted enterprise issuers may also be configured for
+`io.modelcontextprotocol/enterprise-managed-authorization`. Labby validates
+`oauth-id-jag+jwt` assertions against pinned inline or HTTPS JWKS, enforces
+issuer, audience, client, resource, scope, expiry, and one-time `jti`, and mints
+the same audience-restricted Labby access token used by the interactive flow.
+
+The remaining `auth/enterprise-managed-authorization` expected-failure entry is
+specifically the pinned rmcp beta.2 **outbound conformance client**, not Labby's
+authorization server. Product-server coverage runs immediately before the
+upstream SDK conformance harness in the same CI job.
 
 ### Event stores and disconnect
 

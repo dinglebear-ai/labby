@@ -191,9 +191,7 @@ pub async fn authorize(
         normalized_scope = %scope,
         "oauth authorize request received"
     );
-    let client = state
-        .store
-        .find_client(&query.client_id)
+    let client = crate::cimd::resolve_client(&state, &query.client_id)
         .await?
         .ok_or_else(|| {
             warn!(
@@ -376,7 +374,8 @@ pub async fn callback(
             .query_pairs_mut()
             .append_pair("error", "access_denied")
             .append_pair("error_description", &denial.to_string())
-            .append_pair("state", &request.client_state);
+            .append_pair("state", &request.client_state)
+            .append_pair("iss", &crate::metadata::public_base_url(&state));
         return Ok(Redirect::to(redirect_target.as_str()).into_response());
     }
 
@@ -474,7 +473,8 @@ pub async fn callback(
     redirect_uri
         .query_pairs_mut()
         .append_pair("code", &auth_code)
-        .append_pair("state", &request.client_state);
+        .append_pair("state", &request.client_state)
+        .append_pair("iss", &crate::metadata::public_base_url(&state));
     debug!(
         auth_code_id = %auth_code_id,
         redirect_uri = %redirect_uri,
@@ -615,7 +615,11 @@ pub(crate) fn elevate_scope_for_allowed_user(scope: &str, default_scope: &str) -
     scopes.join(" ")
 }
 
-fn validate_scope(state: &AuthState, resource: &str, scope: &str) -> Result<String, AuthError> {
+pub(crate) fn validate_scope(
+    state: &AuthState,
+    resource: &str,
+    scope: &str,
+) -> Result<String, AuthError> {
     let canonical = crate::metadata::canonical_resource_url(state);
     let supported = if resource.trim_end_matches('/') == canonical {
         state.config.scopes_supported.clone()
@@ -1779,6 +1783,10 @@ pub mod tests {
             Some("access_denied")
         );
         assert_eq!(params.get("state").map(|v| v.as_ref()), Some("client-abc"));
+        assert_eq!(
+            params.get("iss").map(|v| v.as_ref()),
+            Some("https://lab.example.com")
+        );
     }
 
     #[tokio::test]

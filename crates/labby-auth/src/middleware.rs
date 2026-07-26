@@ -306,6 +306,7 @@ async fn authenticate(
                         auth_state.config.env_prefix
                     ),
                     layer.resource_url.as_deref(),
+                    challenge_scopes(layer),
                 ));
             };
             let expected_aud = canonical_resource_url(auth_state);
@@ -342,6 +343,7 @@ async fn authenticate(
         return Err(auth_error_response(
             "invalid bearer token",
             layer.resource_url.as_deref(),
+            challenge_scopes(layer),
         ));
     }
 
@@ -413,6 +415,7 @@ async fn authenticate(
             "missing bearer token"
         },
         layer.resource_url.as_deref(),
+        challenge_scopes(layer),
     ))
 }
 
@@ -442,10 +445,14 @@ fn derive_actor_key(deriver: Option<&ActorKeyDeriver>, subject: &str) -> Option<
 
 /// Build a 401 response wrapping [`AuthError::AuthFailed`] and decorate it
 /// with `WWW-Authenticate` when a `resource_url` was supplied.
-fn auth_error_response(message: &str, resource_url: Option<&str>) -> Response {
+fn auth_error_response(message: &str, resource_url: Option<&str>, scopes: &[String]) -> Response {
     let mut response = AuthError::AuthFailed(message.to_string()).into_response();
     if let Some(url) = resource_url {
-        let www_auth = www_authenticate_value(url);
+        let www_auth = format!(
+            "{}, scope=\"{}\"",
+            www_authenticate_value(url),
+            scopes.join(" ")
+        );
         if let Ok(value) = HeaderValue::from_str(&www_auth) {
             response
                 .headers_mut()
@@ -453,6 +460,15 @@ fn auth_error_response(message: &str, resource_url: Option<&str>) -> Response {
         }
     }
     response
+}
+
+fn challenge_scopes(layer: &AuthLayerInner) -> &[String] {
+    layer
+        .auth_state
+        .as_ref()
+        .map_or(layer.static_token_scopes.as_slice(), |state| {
+            state.config.scopes_supported.as_slice()
+        })
 }
 
 fn csrf_error_response(message: &str) -> Response {

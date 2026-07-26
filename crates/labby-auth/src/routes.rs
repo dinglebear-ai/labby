@@ -12,7 +12,7 @@ use crate::authorize::{
 use crate::error::AuthErrorKind;
 use crate::metadata::{authorization_server_metadata, jwks, protected_resource_metadata};
 use crate::state::AuthState;
-use crate::token::token;
+use crate::token::{revoke, token};
 
 pub fn router(state: AuthState) -> Router {
     let enable_registration = state.config.enable_dynamic_registration;
@@ -35,7 +35,8 @@ pub fn router(state: AuthState) -> Router {
         .route("/auth/google/callback", get(callback))
         .route("/native/callback", get(native_callback))
         .route("/native/poll", get(native_poll))
-        .route("/token", post(token));
+        .route("/token", post(token))
+        .route("/revoke", post(revoke));
     if enable_registration {
         app = app.route("/register", post(register_client));
     }
@@ -73,6 +74,7 @@ pub fn bearer_only_router(state: AuthState) -> Router {
         .route("/authorize", get(authorize))
         .route("/auth/google/callback", get(callback))
         .route("/token", post(token))
+        .route("/revoke", post(revoke))
         .with_state(state)
         .layer(middleware::from_fn(auth_dispatch_observability))
 }
@@ -91,6 +93,7 @@ pub const BEARER_ONLY_ROUTER_PATHS: &[(&str, &str)] = &[
     ("GET", "/auth/google/callback"),
     ("GET", "/jwks"),
     ("POST", "/token"),
+    ("POST", "/revoke"),
 ];
 
 /// Paths that must NOT be mounted by [`bearer_only_router`] — verified
@@ -171,6 +174,7 @@ fn auth_dispatch_action(path: &str) -> &'static str {
         "/native/callback" => "oauth.native_callback",
         "/native/poll" => "oauth.native_poll",
         "/token" => "oauth.token",
+        "/revoke" => "oauth.revoke",
         _ if path.starts_with("/.well-known/oauth-authorization-server/") => {
             "oauth.metadata.authorization_server"
         }

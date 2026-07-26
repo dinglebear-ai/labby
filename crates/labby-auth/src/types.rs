@@ -5,6 +5,7 @@ pub struct AuthorizationServerMetadata {
     pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
+    pub revocation_endpoint: String,
     pub registration_endpoint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_callback_endpoint: Option<String>,
@@ -12,9 +13,16 @@ pub struct AuthorizationServerMetadata {
     pub native_poll_endpoint: Option<String>,
     pub jwks_uri: String,
     pub response_types_supported: Vec<String>,
+    pub scopes_supported: Vec<String>,
     pub grant_types_supported: Vec<String>,
     pub code_challenge_methods_supported: Vec<String>,
     pub token_endpoint_auth_methods_supported: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub token_endpoint_auth_signing_alg_values_supported: Vec<String>,
+    pub authorization_response_iss_parameter_supported: bool,
+    pub client_id_metadata_document_supported: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub authorization_grant_profiles_supported: Vec<String>,
 }
 
 /// Query params for `GET /native/callback` and `GET /native/poll` — the
@@ -105,6 +113,25 @@ pub struct TokenRequest {
     pub code_verifier: Option<String>,
     #[serde(default)]
     pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub client_assertion_type: Option<String>,
+    #[serde(default)]
+    pub client_assertion: Option<String>,
+    #[serde(default)]
+    pub assertion: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevocationRequest {
+    pub token: String,
+    #[serde(default)]
+    pub token_type_hint: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

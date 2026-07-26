@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 
 use axum::http;
-#[cfg(feature = "gateway")]
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CompleteRequestParams, CompleteResult,
@@ -117,6 +116,21 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
     extensions
 }
 
+fn auth_extensions() -> ExtensionCapabilities {
+    let mut extensions = ExtensionCapabilities::new();
+    extensions.insert(
+        "io.modelcontextprotocol/oauth-client-credentials".to_string(),
+        serde_json::Map::new(),
+    );
+    extensions.insert(
+        "io.modelcontextprotocol/enterprise-managed-authorization".to_string(),
+        serde_json::Map::new(),
+    );
+    #[cfg(feature = "gateway")]
+    extensions.extend(mcp_apps_ui_extension());
+    extensions
+}
+
 /// Build the `ConnectedClient` record for `server/discover` — pulled out of
 /// the `ServerHandler` impl so redaction can be unit tested directly against
 /// a fabricated `Extensions`/`AuthContext` without standing up a full
@@ -187,8 +201,7 @@ impl ServerHandler for LabMcpServer {
             .enable_prompts()
             .enable_prompts_list_changed()
             .enable_completions();
-        #[cfg(feature = "gateway")]
-        let builder = builder.enable_extensions_with(mcp_apps_ui_extension());
+        let builder = builder.enable_extensions_with(auth_extensions());
         let mut info = ServerInfo::new(builder.build());
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
         info

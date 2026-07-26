@@ -175,6 +175,21 @@ impl SqliteStore {
         .await
     }
 
+    /// Revoke a refresh token. Unknown tokens are deliberately indistinguishable
+    /// from known tokens, as required by RFC 7009.
+    pub async fn revoke_refresh_token(&self, refresh_token: &str) -> Result<(), AuthError> {
+        let hash = hash_token(refresh_token);
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM refresh_tokens WHERE refresh_token_hash = ?1",
+                params![hash],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Whether this local OAuth client holds an unexpired Lab refresh token.
     ///
     /// The check is scoped to `client_id`: consent established for one DCR

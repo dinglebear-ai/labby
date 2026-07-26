@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{ConnectInfo, Query, State},
-    http::{HeaderName, HeaderValue, Method, Request, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, header},
     middleware::Next,
     response::{Html, IntoResponse},
     routing::{get, post},
@@ -232,13 +232,22 @@ async fn auth_callback(
 
 async fn auth_token(
     State(state): State<AppState>,
+    headers: HeaderMap,
     form: axum::extract::Form<labby_auth::types::TokenRequest>,
 ) -> Result<impl IntoResponse, LabAuthError> {
     Ok(labby_auth::token::token(
         State(app_auth_state_with_protected_routes(&state).await?),
+        headers,
         form,
     )
     .await)
+}
+
+async fn auth_revoke(
+    State(state): State<AppState>,
+    form: axum::extract::Form<labby_auth::types::RevocationRequest>,
+) -> Result<impl IntoResponse, LabAuthError> {
+    Ok(labby_auth::token::revoke(State(app_auth_state(&state)?), form).await)
 }
 
 async fn auth_native_callback(
@@ -254,14 +263,23 @@ async fn auth_native_poll(
     Ok(labby_auth::authorize::native_poll(State(app_auth_state(&state)?), query).await?)
 }
 
-fn auth_error_response(message: &str, resource_url: Option<&str>) -> axum::response::Response {
+fn auth_error_response(
+    message: &str,
+    resource_url: Option<&str>,
+    scopes: &[String],
+) -> axum::response::Response {
     let err = ToolError::Sdk {
         sdk_kind: "auth_failed".into(),
         message: message.into(),
     };
     let mut response = ApiError(err).into_response();
     if let Some(url) = resource_url {
-        let www_auth = crate::api::oauth::www_authenticate_value(url);
+        let scope = scopes.join(" ");
+        let www_auth = format!(
+            "{}, scope=\"{}\"",
+            crate::api::oauth::www_authenticate_value(url),
+            scope
+        );
         if let Ok(value) = HeaderValue::from_str(&www_auth) {
             response
                 .headers_mut()
@@ -404,11 +422,22 @@ async fn authenticate_protected_route_request(
             granted_scopes = ?granted,
             "protected MCP route auth failed: insufficient scope"
         );
-        return Err(ApiError(ToolError::Sdk {
+        let mut response = ApiError(ToolError::Sdk {
             sdk_kind: "forbidden".into(),
             message: "insufficient OAuth scope for protected MCP route".into(),
         })
-        .into_response());
+        .into_response();
+        let scope = required_scopes.join(" ");
+        let challenge = format!(
+            "Bearer error=\"insufficient_scope\", scope=\"{scope}\", resource_metadata=\"{}\"",
+            route_resource_metadata_url(route)
+        );
+        if let Ok(value) = HeaderValue::from_str(&challenge) {
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, value);
+        }
+        return Err(response);
     }
     let subject_id = labby_auth::util::fingerprint(&claims.sub);
     let issuer = claims.iss.clone();
@@ -891,6 +920,7 @@ async fn authenticate_request(
                 return Ok(auth_error_response(
                     "server misconfigured: LABBY_PUBLIC_URL required for JWT validation",
                     resource_url.as_deref(),
+                    &auth_state.config.scopes_supported,
                 ));
             };
             let expected_aud = labby_auth::metadata::canonical_resource_url(auth_state);
@@ -927,6 +957,9 @@ async fn authenticate_request(
         return Ok(auth_error_response(
             "invalid bearer token",
             resource_url.as_deref(),
+            auth_state
+                .as_ref()
+                .map_or(&[], |state| state.config.scopes_supported.as_slice()),
         ));
     }
 
@@ -1001,6 +1034,9 @@ async fn authenticate_request(
             "missing bearer token"
         },
         resource_url.as_deref(),
+        auth_state
+            .as_ref()
+            .map_or(&[], |state| state.config.scopes_supported.as_slice()),
     ))
 }
 
@@ -1438,7 +1474,8 @@ pub fn build_router(
             .route("/auth/google/callback", get(auth_callback))
             .route("/native/callback", get(auth_native_callback))
             .route("/native/poll", get(auth_native_poll))
-            .route("/token", post(auth_token));
+            .route("/token", post(auth_token))
+            .route("/revoke", post(auth_revoke));
         #[cfg(feature = "gateway")]
         {
             router = router.route(
@@ -2872,6 +2909,7 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(header.contains("resource_metadata="));
+        assert!(header.contains("scope=\"lab lab:admin\""));
     }
 
     #[tokio::test]
@@ -3037,6 +3075,50 @@ mod tests {
         assert_eq!(
             response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
             "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/telemetry\", scope=\"mcp:read mcp:write\""
+        );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn protected_mcp_route_insufficient_scope_returns_rfc_9728_challenge() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                tempdir.path().join("gateway.toml"),
+                crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+            ),
+        );
+        let config = protected_route_config(
+            "telemetry",
+            "mcp.example.com",
+            "/telemetry",
+            "http://10.0.0.2:3100",
+        );
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager);
+        let auth_state = test_lab_auth_state().await;
+        let token = issue_test_token(&auth_state, "https://mcp.example.com/telemetry", "mcp:read");
+        let app = build_router(state, None, Some(auth_state), None, &[]);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/telemetry")
+                    .header(header::HOST, "mcp.example.com")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            "Bearer error=\"insufficient_scope\", scope=\"mcp:read mcp:write\", resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/telemetry\""
         );
     }
 

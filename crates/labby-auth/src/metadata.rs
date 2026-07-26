@@ -7,21 +7,55 @@ pub async fn authorization_server_metadata(
     State(state): State<AuthState>,
 ) -> Json<AuthorizationServerMetadata> {
     let base = public_base_url(&state);
+    let has_machine_clients = !state.config.machine_clients.is_empty();
+    let has_enterprise_issuers = !state.config.enterprise_issuers.is_empty();
+    let mut grant_types_supported = vec![
+        "authorization_code".to_string(),
+        "refresh_token".to_string(),
+    ];
+    if has_machine_clients {
+        grant_types_supported.push("client_credentials".to_string());
+    }
+    if has_enterprise_issuers {
+        grant_types_supported.push("urn:ietf:params:oauth:grant-type:jwt-bearer".to_string());
+    }
+    let mut token_auth_methods = vec!["none".to_string()];
+    if has_machine_clients {
+        token_auth_methods.extend([
+            "client_secret_basic".to_string(),
+            "private_key_jwt".to_string(),
+        ]);
+    }
     Json(AuthorizationServerMetadata {
         issuer: base.clone(),
         authorization_endpoint: format!("{base}/authorize"),
         token_endpoint: format!("{base}/token"),
+        revocation_endpoint: format!("{base}/revoke"),
         registration_endpoint: format!("{base}/register"),
         native_callback_endpoint: Some(native_callback_endpoint(&state)),
         native_poll_endpoint: Some(native_poll_endpoint(&state)),
         jwks_uri: format!("{base}/jwks"),
         response_types_supported: vec!["code".to_string()],
-        grant_types_supported: vec![
-            "authorization_code".to_string(),
-            "refresh_token".to_string(),
-        ],
+        scopes_supported: state.config.scopes_supported.clone(),
+        grant_types_supported,
         code_challenge_methods_supported: vec!["S256".to_string()],
-        token_endpoint_auth_methods_supported: vec!["none".to_string()],
+        token_endpoint_auth_methods_supported: token_auth_methods,
+        token_endpoint_auth_signing_alg_values_supported: if has_machine_clients {
+            vec![
+                "EdDSA".to_string(),
+                "RS256".to_string(),
+                "ES256".to_string(),
+            ]
+        } else {
+            Vec::new()
+        },
+        authorization_response_iss_parameter_supported: true,
+        client_id_metadata_document_supported: true,
+        authorization_grant_profiles_supported: if has_enterprise_issuers {
+            vec!["urn:ietf:params:oauth:grant-profile:id-jag".to_string()]
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -101,6 +135,12 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["token_endpoint"], "https://lab.example.com/token");
+        assert_eq!(json["authorization_response_iss_parameter_supported"], true);
+        assert_eq!(json["client_id_metadata_document_supported"], true);
+        assert_eq!(
+            json["revocation_endpoint"],
+            "https://lab.example.com/revoke"
+        );
     }
 
     #[tokio::test]

@@ -5,7 +5,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use jsonwebtoken::jwk::JwkSet;
+use jsonwebtoken::{DecodingKey, Validation, decode, decode_header};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::{info, warn};
@@ -14,37 +17,390 @@ use crate::error::{AuthError, AuthErrorKind};
 use crate::jwt::AccessClaims;
 use crate::state::AuthState;
 use crate::types::AuthorizationCodeRow;
-use crate::types::{RefreshTokenRow, TokenRequest, TokenResponse};
+use crate::types::{RefreshTokenRow, RevocationRequest, TokenRequest, TokenResponse};
 use crate::util::{
     duration_secs_usize, expires_at, fingerprint, now_unix, random_token, timestamp_usize,
 };
 
-pub async fn token(State(state): State<AuthState>, Form(request): Form<TokenRequest>) -> Response {
+pub async fn token(
+    State(state): State<AuthState>,
+    headers: axum::http::HeaderMap,
+    Form(mut request): Form<TokenRequest>,
+) -> Response {
+    if let Some((client_id, client_secret)) = basic_client_credentials(&headers) {
+        request.client_id.get_or_insert(client_id);
+        request.client_secret.get_or_insert(client_secret);
+    }
+    if request.client_id.is_none()
+        && let Some(assertion) = request.client_assertion.as_deref()
+        && let Ok(data) =
+            jsonwebtoken::dangerous::insecure_decode::<ClientAssertionClaims>(assertion)
+    {
+        request.client_id = Some(data.claims.sub);
+    }
     info!(
         grant_type = %request.grant_type,
         client_id = request.client_id.as_deref().unwrap_or("<missing>"),
         requested_resource = request.resource.as_deref().unwrap_or("<default>"),
         "oauth token request received"
     );
-    let response: Result<TokenResponseWithCache, TokenEndpointError> =
-        match request.grant_type.as_str() {
-            "authorization_code" => authorization_code_grant(state, request)
-                .await
-                .map(|response| TokenResponseWithCache(Json(response)))
-                .map_err(TokenEndpointError::Auth),
-            "refresh_token" => refresh_token_grant(state, request)
-                .await
-                .map(|response| TokenResponseWithCache(Json(response)))
-                .map_err(TokenEndpointError::Auth),
-            other => {
-                warn!(grant_type = %other, "oauth token rejected: unsupported grant type");
-                Err(TokenEndpointError::UnsupportedGrantType(other.to_string()))
-            }
-        };
+    let response: Result<TokenResponseWithCache, TokenEndpointError> = match request
+        .grant_type
+        .as_str()
+    {
+        "authorization_code" => authorization_code_grant(state, request)
+            .await
+            .map(|response| TokenResponseWithCache(Json(response)))
+            .map_err(TokenEndpointError::Auth),
+        "refresh_token" => refresh_token_grant(state, request)
+            .await
+            .map(|response| TokenResponseWithCache(Json(response)))
+            .map_err(TokenEndpointError::Auth),
+        "client_credentials" => client_credentials_grant(state, request)
+            .await
+            .map(|response| TokenResponseWithCache(Json(response)))
+            .map_err(TokenEndpointError::Auth),
+        "urn:ietf:params:oauth:grant-type:jwt-bearer" => enterprise_managed_grant(state, request)
+            .await
+            .map(|response| TokenResponseWithCache(Json(response)))
+            .map_err(TokenEndpointError::Auth),
+        other => {
+            warn!(grant_type = %other, "oauth token rejected: unsupported grant type");
+            Err(TokenEndpointError::UnsupportedGrantType(other.to_string()))
+        }
+    };
 
     match response {
         Ok(response) => response.into_response(),
         Err(error) => error.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct IdJagClaims {
+    iss: String,
+    sub: String,
+    aud: String,
+    exp: i64,
+    iat: i64,
+    jti: String,
+    client_id: String,
+    resource: String,
+    scope: String,
+}
+
+async fn enterprise_managed_grant(
+    state: AuthState,
+    request: TokenRequest,
+) -> Result<TokenResponse, AuthError> {
+    let assertion = require_field(request.assertion, "assertion")?;
+    let unverified = jsonwebtoken::dangerous::insecure_decode::<IdJagClaims>(&assertion)
+        .map_err(|_| AuthError::InvalidGrant("invalid ID-JAG".to_string()))?
+        .claims;
+    let issuer = state
+        .config
+        .enterprise_issuers
+        .iter()
+        .find(|issuer| issuer.issuer.trim_end_matches('/') == unverified.iss.trim_end_matches('/'))
+        .ok_or_else(|| AuthError::InvalidGrant("untrusted ID-JAG issuer".to_string()))?;
+    let client_id = require_field(request.client_id, "client_id")?;
+    if unverified.client_id != client_id
+        || (!issuer.allowed_client_ids.is_empty()
+            && !issuer
+                .allowed_client_ids
+                .iter()
+                .any(|allowed| allowed == &client_id))
+    {
+        return Err(AuthError::InvalidGrant(
+            "ID-JAG client_id is not authorized".to_string(),
+        ));
+    }
+    let known_client = state.store.find_client(&client_id).await?.is_some()
+        || state
+            .config
+            .machine_clients
+            .iter()
+            .any(|client| client.client_id == client_id)
+        || crate::cimd::resolve_client(&state, &client_id)
+            .await?
+            .is_some();
+    if !known_client {
+        return Err(AuthError::AuthFailed(
+            "enterprise client is not registered".to_string(),
+        ));
+    }
+    let jwks = load_enterprise_jwks(&state, issuer).await?;
+    let header = decode_header(&assertion)
+        .map_err(|_| AuthError::InvalidGrant("invalid ID-JAG header".to_string()))?;
+    if header.typ.as_deref() != Some("oauth-id-jag+jwt") {
+        return Err(AuthError::InvalidGrant(
+            "ID-JAG typ must be oauth-id-jag+jwt".to_string(),
+        ));
+    }
+    let kid = header
+        .kid
+        .as_deref()
+        .ok_or_else(|| AuthError::InvalidGrant("ID-JAG is missing kid".to_string()))?;
+    let key = jwks
+        .find(kid)
+        .ok_or_else(|| AuthError::InvalidGrant("unknown ID-JAG signing key".to_string()))
+        .and_then(|jwk| {
+            DecodingKey::from_jwk(jwk)
+                .map_err(|_| AuthError::InvalidGrant("invalid ID-JAG signing key".to_string()))
+        })?;
+    let audience = crate::metadata::public_base_url(&state);
+    let mut validation = Validation::new(header.alg);
+    validation.set_audience(&[audience.as_str()]);
+    validation.set_issuer(&[issuer.issuer.as_str()]);
+    validation.set_required_spec_claims(&[
+        "exp",
+        "iat",
+        "iss",
+        "sub",
+        "aud",
+        "jti",
+        "client_id",
+        "resource",
+        "scope",
+    ]);
+    let claims = decode::<IdJagClaims>(&assertion, &key, &validation)
+        .map_err(|_| AuthError::InvalidGrant("invalid ID-JAG".to_string()))?
+        .claims;
+    let now = now_unix();
+    if claims.aud.trim_end_matches('/') != audience.trim_end_matches('/')
+        || claims.iat > now + 60
+        || claims.exp <= now
+        || !state.consume_assertion_jti(&claims.iss, &claims.jti, claims.exp)
+    {
+        return Err(AuthError::InvalidGrant(
+            "expired, replayed, or misdirected ID-JAG".to_string(),
+        ));
+    }
+    let resource = crate::authorize::validate_resource(&state, Some(&claims.resource))?;
+    if request
+        .resource
+        .as_deref()
+        .is_some_and(|requested| requested.trim_end_matches('/') != resource)
+    {
+        return Err(AuthError::InvalidGrant(
+            "requested resource does not match ID-JAG".to_string(),
+        ));
+    }
+    let scope = crate::authorize::validate_scope(&state, &resource, &claims.scope)?;
+    if let Some(requested) = request.scope.as_deref() {
+        let requested = crate::authorize::validate_scope(&state, &resource, requested)?;
+        if !requested
+            .split_whitespace()
+            .all(|value| scope.split_whitespace().any(|granted| granted == value))
+        {
+            return Err(AuthError::InvalidGrant(
+                "requested scope exceeds ID-JAG grant".to_string(),
+            ));
+        }
+        return build_token_response(&state, client_id, claims.sub, resource, requested, None);
+    }
+    build_token_response(&state, client_id, claims.sub, resource, scope, None)
+}
+
+async fn load_enterprise_jwks(
+    state: &AuthState,
+    issuer: &crate::config::EnterpriseIssuerConfig,
+) -> Result<JwkSet, AuthError> {
+    if let Some(value) = &issuer.jwks {
+        return serde_json::from_value(value.clone())
+            .map_err(|error| AuthError::Config(format!("invalid enterprise JWKS: {error}")));
+    }
+    let uri = issuer
+        .jwks_uri
+        .as_ref()
+        .ok_or_else(|| AuthError::Config("enterprise issuer has no JWKS".to_string()))?;
+    labby_primitives::ssrf::parse_validated_https_url(uri.as_str())
+        .map_err(|error| AuthError::Config(error.to_string()))?;
+    let cache_key = uri.as_str();
+    let now = now_unix();
+    if let Some(entry) = state.jwks_cache.get(cache_key)
+        && entry.value().1 > now
+    {
+        return Ok(entry.value().0.clone());
+    }
+    let response = crate::remote::secure_get(uri)
+        .await?
+        .error_for_status()
+        .map_err(|error| AuthError::Network(format!("fetch enterprise JWKS: {error}")))?;
+    let max_age = response
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.split(',').find_map(|directive| {
+                directive
+                    .trim()
+                    .strip_prefix("max-age=")?
+                    .parse::<i64>()
+                    .ok()
+            })
+        })
+        .unwrap_or(300);
+    let jwks = response
+        .json::<JwkSet>()
+        .await
+        .map_err(|error| AuthError::Decode(format!("decode enterprise JWKS: {error}")))?;
+    state
+        .jwks_cache
+        .insert(cache_key.to_string(), (jwks.clone(), now + max_age.max(0)));
+    Ok(jwks)
+}
+
+async fn client_credentials_grant(
+    state: AuthState,
+    request: TokenRequest,
+) -> Result<TokenResponse, AuthError> {
+    let client_id = require_field(request.client_id, "client_id")?;
+    let client = state
+        .config
+        .machine_clients
+        .iter()
+        .find(|client| client.client_id == client_id)
+        .ok_or_else(|| AuthError::AuthFailed("unknown machine client".to_string()))?;
+    match (
+        request.client_secret.as_deref(),
+        request.client_assertion.as_deref(),
+    ) {
+        (Some(supplied_secret), None) => {
+            let expected_secret = client.client_secret.as_deref().ok_or_else(|| {
+                AuthError::AuthFailed("client secret authentication is disabled".into())
+            })?;
+            if !bool::from(supplied_secret.as_bytes().ct_eq(expected_secret.as_bytes())) {
+                return Err(AuthError::AuthFailed(
+                    "invalid machine client credentials".to_string(),
+                ));
+            }
+        }
+        (None, Some(assertion)) => {
+            if request.client_assertion_type.as_deref()
+                != Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+            {
+                return Err(AuthError::Validation(
+                    "unsupported client_assertion_type".to_string(),
+                ));
+            }
+            let jwks: JwkSet = serde_json::from_value(client.jwks.clone().ok_or_else(|| {
+                AuthError::AuthFailed("private_key_jwt authentication is disabled".into())
+            })?)
+            .map_err(|error| AuthError::Config(format!("invalid machine client JWKS: {error}")))?;
+            validate_client_assertion(&state, assertion, &client_id, &jwks)?;
+        }
+        _ => {
+            return Err(AuthError::AuthFailed(
+                "exactly one machine client authentication method is required".to_string(),
+            ));
+        }
+    }
+    let resource = crate::authorize::validate_resource(&state, request.resource.as_deref())?;
+    let requested_scope = request.scope.as_deref().unwrap_or_else(|| {
+        if client.scopes.is_empty() {
+            state.config.default_scope.as_str()
+        } else {
+            ""
+        }
+    });
+    let requested_scope = if requested_scope.is_empty() {
+        client.scopes.join(" ")
+    } else {
+        requested_scope.to_string()
+    };
+    let scope = crate::authorize::validate_scope(&state, &resource, &requested_scope)?;
+    if !client.scopes.is_empty()
+        && !scope
+            .split_whitespace()
+            .all(|requested| client.scopes.iter().any(|allowed| allowed == requested))
+    {
+        return Err(AuthError::AuthFailed(
+            "requested scope exceeds machine client grant".to_string(),
+        ));
+    }
+    build_token_response(&state, client_id.clone(), client_id, resource, scope, None)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ClientAssertionClaims {
+    iss: String,
+    sub: String,
+    aud: String,
+    exp: i64,
+    iat: i64,
+    jti: String,
+}
+
+fn validate_client_assertion(
+    state: &AuthState,
+    assertion: &str,
+    client_id: &str,
+    jwks: &JwkSet,
+) -> Result<(), AuthError> {
+    let header = decode_header(assertion)
+        .map_err(|_| AuthError::AuthFailed("invalid client assertion".to_string()))?;
+    let kid = header
+        .kid
+        .as_deref()
+        .ok_or_else(|| AuthError::AuthFailed("client assertion is missing kid".to_string()))?;
+    let jwk = jwks
+        .find(kid)
+        .ok_or_else(|| AuthError::AuthFailed("unknown client assertion key".to_string()))?;
+    let key = DecodingKey::from_jwk(jwk)
+        .map_err(|_| AuthError::AuthFailed("invalid client assertion key".to_string()))?;
+    let audience = format!("{}/token", crate::metadata::public_base_url(state));
+    let mut validation = Validation::new(header.alg);
+    validation.set_audience(&[audience.as_str()]);
+    validation.set_issuer(&[client_id]);
+    validation.set_required_spec_claims(&["exp", "iat", "iss", "sub", "aud", "jti"]);
+    let claims = decode::<ClientAssertionClaims>(assertion, &key, &validation)
+        .map_err(|_| AuthError::AuthFailed("invalid client assertion".to_string()))?
+        .claims;
+    let now = now_unix();
+    if claims.iss != client_id
+        || claims.sub != client_id
+        || claims.aud != audience
+        || claims.iat > now + 60
+        || claims.exp <= now
+        || !state.consume_assertion_jti(&claims.iss, &claims.jti, claims.exp)
+    {
+        return Err(AuthError::AuthFailed(
+            "invalid or replayed client assertion".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn basic_client_credentials(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
+    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let encoded = raw.strip_prefix("Basic ")?;
+    let decoded = STANDARD.decode(encoded).ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (client_id, client_secret) = decoded.split_once(':')?;
+    Some((client_id.to_string(), client_secret.to_string()))
+}
+
+pub async fn revoke(
+    State(state): State<AuthState>,
+    Form(request): Form<RevocationRequest>,
+) -> Response {
+    let token_id = fingerprint(&request.token);
+    match state.store.find_refresh_token(&request.token).await {
+        Ok(Some(row))
+            if request
+                .client_id
+                .as_deref()
+                .is_none_or(|client_id| client_id == row.client_id) =>
+        {
+            if let Err(error) = state.store.revoke_refresh_token(&request.token).await {
+                return TokenEndpointError::Auth(error).into_response();
+            }
+            info!(token_id = %token_id, client_id = %row.client_id, "oauth refresh token revoked");
+            apply_token_cache_headers(StatusCode::OK.into_response())
+        }
+        Ok(_) => apply_token_cache_headers(StatusCode::OK.into_response()),
+        Err(error) => TokenEndpointError::Auth(error).into_response(),
     }
 }
 
@@ -347,8 +703,9 @@ async fn refresh_token_grant(
     // instead of being stranded with an unreturned replacement.
     let google = state.google.refresh(&provider_refresh_token).await?;
 
+    let now = now_unix();
     let refreshed_expires_at = expires_at(
-        now_unix(),
+        now,
         state.config.refresh_token_ttl,
         &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
     )?;
@@ -365,19 +722,22 @@ async fn refresh_token_grant(
         &state.config.default_scope,
     );
 
+    let replacement_refresh_token = random_token(24)?;
+    let replacement = RefreshTokenRow {
+        refresh_token: replacement_refresh_token.clone(),
+        client_id: stored.client_id.clone(),
+        subject: google.subject.clone(),
+        resource: stored_resource.clone(),
+        scope: elevated_scope.clone(),
+        provider_refresh_token: Some(next_provider_refresh_token),
+        created_at: now,
+        expires_at: refreshed_expires_at,
+    };
     state
         .store
-        .upsert_refresh_token(RefreshTokenRow {
-            refresh_token: refresh_token.clone(),
-            client_id: stored.client_id.clone(),
-            subject: google.subject.clone(),
-            resource: stored_resource.clone(),
-            scope: elevated_scope.clone(),
-            provider_refresh_token: Some(next_provider_refresh_token),
-            created_at: stored.created_at,
-            expires_at: refreshed_expires_at,
-        })
-        .await?;
+        .rotate_refresh_token(&refresh_token, replacement)
+        .await?
+        .ok_or_else(|| AuthError::InvalidGrant("refresh token was already used".to_string()))?;
 
     info!(
         grant_type = "refresh_token",
@@ -386,7 +746,7 @@ async fn refresh_token_grant(
         subject_id = %fingerprint(&google.subject),
         resource = %stored_resource,
         scope = %elevated_scope,
-        "oauth refresh_token grant refreshed stable local token and issued new access token"
+        "oauth refresh_token grant rotated local token and issued new access token"
     );
 
     build_token_response(
@@ -395,7 +755,7 @@ async fn refresh_token_grant(
         google.subject,
         stored_resource,
         elevated_scope,
-        Some(refresh_token),
+        Some(replacement_refresh_token),
     )
 }
 
@@ -515,7 +875,12 @@ fn validate_authorization_code_row(
 mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::pkcs8::EncodePrivateKey;
     use jsonwebtoken::dangerous::insecure_decode;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use tower::util::ServiceExt;
     use url::Url;
     use wiremock::matchers::{method, path};
@@ -602,6 +967,252 @@ mod tests {
             .expect("decode access token")
             .claims;
         assert_eq!(claims.aud, "https://lab.example.com/mcp");
+    }
+
+    #[tokio::test]
+    async fn client_credentials_secret_mints_audience_bound_machine_token() {
+        let base = test_auth_state_with_registered_client().await;
+        let mut config = (*base.config).clone();
+        config.machine_clients = vec![crate::config::MachineClientConfig {
+            client_id: "ci-agent".to_string(),
+            client_secret: Some("correct-horse".to_string()),
+            jwks: None,
+            scopes: vec!["lab".to_string()],
+        }];
+        let state = AuthState::for_tests(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            (*base.google).clone(),
+        );
+        let app = router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/token")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!(
+                            "Basic {}",
+                            base64::engine::general_purpose::STANDARD
+                                .encode("ci-agent:correct-horse")
+                        ),
+                    )
+                    .header(
+                        header::CONTENT_TYPE,
+                        "application/x-www-form-urlencoded",
+                    )
+                    .body(Body::from(
+                        "grant_type=client_credentials&resource=https%3A%2F%2Flab.example.com%2Fmcp&scope=lab",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let claims =
+            insecure_decode::<crate::jwt::AccessClaims>(json["access_token"].as_str().unwrap())
+                .unwrap()
+                .claims;
+        assert_eq!(claims.sub, "ci-agent");
+        assert_eq!(claims.aud, "https://lab.example.com/mcp");
+        assert_eq!(claims.scope, "lab");
+        assert!(json.get("refresh_token").is_none());
+    }
+
+    #[tokio::test]
+    async fn revocation_endpoint_invalidates_refresh_token_and_is_idempotent() {
+        let state = test_auth_state_with_registered_client().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "revoke-me".to_string(),
+                client_id: "client".to_string(),
+                subject: "subject".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: Some("provider-refresh".to_string()),
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state.clone());
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(form_request(
+                    "/revoke",
+                    form(&[("token", "revoke-me"), ("client_id", "client")]),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        assert!(
+            state
+                .store
+                .find_refresh_token("revoke-me")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn private_key_jwt_client_credentials_rejects_assertion_replay() {
+        let base = test_auth_state_with_registered_client().await;
+        let (encoding_key, jwks) = assertion_key();
+        let mut config = (*base.config).clone();
+        config.machine_clients = vec![crate::config::MachineClientConfig {
+            client_id: "jwt-agent".to_string(),
+            client_secret: None,
+            jwks: Some(jwks),
+            scopes: vec!["lab".to_string()],
+        }];
+        let state = AuthState::for_tests(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            (*base.google).clone(),
+        );
+        let now = crate::util::now_unix();
+        let assertion = sign_assertion(
+            &encoding_key,
+            &super::ClientAssertionClaims {
+                iss: "jwt-agent".to_string(),
+                sub: "jwt-agent".to_string(),
+                aud: "https://lab.example.com/token".to_string(),
+                exp: now + 300,
+                iat: now,
+                jti: "one-shot".to_string(),
+            },
+            None,
+        );
+        let body = form(&[
+            ("grant_type", "client_credentials"),
+            (
+                "client_assertion_type",
+                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            ),
+            ("client_assertion", &assertion),
+            ("resource", "https://lab.example.com/mcp"),
+            ("scope", "lab"),
+        ]);
+        let app = router(state);
+        let first = app
+            .clone()
+            .oneshot(form_request("/token", body.clone()))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let replay = app.oneshot(form_request("/token", body)).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn enterprise_id_jag_mints_user_token_bound_to_claimed_resource() {
+        let base = test_auth_state_with_registered_client().await;
+        let (encoding_key, jwks) = assertion_key();
+        let mut config = (*base.config).clone();
+        config.enterprise_issuers = vec![crate::config::EnterpriseIssuerConfig {
+            issuer: "https://idp.example.com".to_string(),
+            jwks_uri: None,
+            jwks: Some(jwks),
+            allowed_client_ids: vec!["client".to_string()],
+        }];
+        let state = AuthState::for_tests(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            (*base.google).clone(),
+        );
+        let now = crate::util::now_unix();
+        let assertion = sign_assertion(
+            &encoding_key,
+            &super::IdJagClaims {
+                iss: "https://idp.example.com".to_string(),
+                sub: "employee-42".to_string(),
+                aud: "https://lab.example.com".to_string(),
+                exp: now + 300,
+                iat: now,
+                jti: "id-jag-1".to_string(),
+                client_id: "client".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+            },
+            Some("oauth-id-jag+jwt"),
+        );
+        let response = router(state)
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                    ("assertion", &assertion),
+                    ("client_id", "client"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let claims =
+            insecure_decode::<crate::jwt::AccessClaims>(json["access_token"].as_str().unwrap())
+                .unwrap()
+                .claims;
+        assert_eq!(claims.sub, "employee-42");
+        assert_eq!(claims.aud, "https://lab.example.com/mcp");
+    }
+
+    fn assertion_key() -> (EncodingKey, serde_json::Value) {
+        let key = SigningKey::from_bytes(&[7_u8; 32]);
+        let der = key.to_pkcs8_der().unwrap();
+        let encoding = EncodingKey::from_ed_der(der.as_bytes());
+        let jwks = serde_json::json!({
+            "keys": [{
+                "kty": "OKP",
+                "use": "sig",
+                "alg": "EdDSA",
+                "kid": "assertion-key",
+                "crv": "Ed25519",
+                "x": URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes())
+            }]
+        });
+        (encoding, jwks)
+    }
+
+    fn sign_assertion<T: serde::Serialize>(
+        key: &EncodingKey,
+        claims: &T,
+        typ: Option<&str>,
+    ) -> String {
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some("assertion-key".to_string());
+        header.typ = typ.map(ToOwned::to_owned);
+        encode(&header, claims, key).unwrap()
+    }
+
+    fn form(fields: &[(&str, &str)]) -> String {
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        serializer.extend_pairs(fields.iter().copied());
+        serializer.finish()
+    }
+
+    fn form_request(uri: &str, body: String) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap()
     }
 
     #[tokio::test]
@@ -1078,7 +1689,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_grant_preserves_local_token_on_success() {
+    async fn refresh_grant_rotates_local_token_on_success() {
         let state = test_auth_state_with_mock_google().await;
         state
             .store
@@ -1114,18 +1725,24 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let new_token = json["refresh_token"].as_str().expect("refresh_token");
-        assert_eq!(
-            new_token, "original-token",
-            "local token must remain stable"
-        );
+        assert_ne!(new_token, "original-token", "refresh token must rotate");
         assert!(
             state
                 .store
                 .find_refresh_token("original-token")
                 .await
                 .unwrap()
+                .is_none(),
+            "rotated refresh token must be revoked"
+        );
+        assert!(
+            state
+                .store
+                .find_refresh_token(new_token)
+                .await
+                .unwrap()
                 .is_some(),
-            "local refresh token must remain usable after successful refresh"
+            "replacement refresh token must be usable"
         );
     }
 
@@ -1233,7 +1850,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_grant_allows_reuse_of_stable_local_token() {
+    async fn refresh_grant_rejects_reuse_of_rotated_local_token() {
         let state = test_auth_state_with_mock_google().await;
         state
             .store
@@ -1280,8 +1897,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             replay.status(),
-            StatusCode::OK,
-            "same local refresh token must be reusable across client restarts"
+            StatusCode::BAD_REQUEST,
+            "a rotated refresh token must not be reusable"
         );
     }
 }
