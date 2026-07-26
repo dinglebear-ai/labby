@@ -2107,6 +2107,10 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
                 "server logs app must include marker `{expected}`"
             );
         }
+        assert!(
+            !html.contains(">read only</span>"),
+            "read-only state should use the compact lock affordance, not a full badge"
+        );
     }
 
     #[test]
@@ -3103,6 +3107,10 @@ for (const value of [
             html.contains("if (!hydrated) setState(\"connected\", true)"),
             "MCP Apps branch must gate 'connected' on the connect() handshake"
         );
+        assert!(
+            html.contains("if (!hydrated) setState(\"unavailable\", false)"),
+            "MCP Apps branch must keep a rejected bridge handshake diagnostically visible"
+        );
     }
 
     #[test]
@@ -3168,7 +3176,7 @@ for (const value of [
         let html = code_mode_app_html(CODE_MODE_APP_URI, None).expect("codemode resource");
 
         for expected in [
-            "summaryStats",
+            "paintHeadMeta",
             "section(\"Calls\"",
             "section(\"Request\"",
             "section(\"Response\"",
@@ -3180,6 +3188,8 @@ for (const value of [
             "longest",
             "Run ",
             "border-radius:10px",
+            "head-tools-panel",
+            "aria-label=\"Read only\"",
         ] {
             assert!(
                 html.contains(expected),

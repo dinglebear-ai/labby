@@ -1,6 +1,6 @@
 'use client'
 
-import { type CSSProperties, type ReactNode, useCallback, useEffect, useState } from 'react'
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -9,8 +9,8 @@ import {
   CornerDownLeft,
   FileBox,
   History,
-  Maximize2,
-  Minimize2,
+  LockKeyhole,
+  MoreHorizontal,
   Terminal,
   Wrench,
   X,
@@ -312,23 +312,35 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
         }}
       >
         <WidgetHead
-          subLabel={
-            !run
-              ? null
-              : discovery
-                ? `${discovery.hits.length} of ${discovery.total} match${discovery.total === 1 ? '' : 'es'}`
-                : describeDoc
-                  ? 'describe'
-                  : `${calls.length} call${calls.length === 1 ? '' : 's'}`
-          }
+          calls={run ? calls.length : null}
+          matches={discovery?.hits.length}
+          describe={describeDoc !== null}
           ok={runOk}
           errorKind={errorKind}
           elapsedMs={elapsedMs}
+          inputTokens={tokens?.input_tokens}
+          outputTokens={tokens?.output_tokens}
+          logsCount={live?.logs_count}
           // A rendered trace proves the bridge works — the state label only
           // earns its place while the card is empty, explaining why.
           bridgeLabel={run ? null : bridgeState}
           minimized={minimized}
           onToggleMinimized={() => setMinimized((current) => !current)}
+          history={state.history}
+          live={state.live}
+          selected={state.selected}
+          onSelect={(selection) => {
+            setState((previous) => ({ ...previous, selected: selection }))
+            const entry =
+              selection === 'live'
+                ? null
+                : state.history.find((candidate) => candidate.seq === selection)
+            setExpanded(
+              selection === 'live'
+                ? expandFirstFailedCall(state.live?.calls)
+                : expandFirstFailedCall(entry?.calls),
+            )
+          }}
         />
 
         {!minimized ? (
@@ -380,26 +392,6 @@ export function CodeModeInspector({ initialTrace }: CodeModeInspectorProps) {
               </div>
             )}
 
-            <WidgetFoot
-              history={state.history}
-              live={state.live}
-              selected={state.selected}
-              onSelect={(selection) => {
-                setState((previous) => ({ ...previous, selected: selection }))
-                const entry =
-                  selection === 'live'
-                    ? null
-                    : state.history.find((candidate) => candidate.seq === selection)
-                setExpanded(
-                  selection === 'live'
-                    ? expandFirstFailedCall(state.live?.calls)
-                    : expandFirstFailedCall(entry?.calls),
-                )
-              }}
-              inputTokens={tokens?.input_tokens}
-              outputTokens={tokens?.output_tokens}
-              logsCount={live?.logs_count}
-            />
           </>
         ) : null}
       </section>
@@ -418,22 +410,53 @@ const HEAD_FOOT_BG = 'color-mix(in srgb, var(--aurora-page-bg) 25%, transparent)
 const HEAD_FOOT_BORDER = 'color-mix(in srgb, var(--aurora-border-default) 50%, var(--aurora-page-bg))'
 
 function WidgetHead({
-  subLabel,
+  calls,
+  matches,
+  describe,
   ok,
   errorKind,
   elapsedMs,
+  inputTokens,
+  outputTokens,
+  logsCount,
   bridgeLabel,
   minimized,
   onToggleMinimized,
+  history,
+  live,
+  selected,
+  onSelect,
 }: {
-  subLabel: string | null
+  calls: number | null
+  matches: number | undefined
+  describe: boolean
   ok: boolean
   errorKind: string | undefined
   elapsedMs: number | undefined
+  inputTokens: number | undefined
+  outputTokens: number | undefined
+  logsCount: number | undefined
   bridgeLabel: string | null
   minimized: boolean
   onToggleMinimized: () => void
+  history: CodeModeHistoryEntry[]
+  live: CodeModeExecuteTrace | null
+  selected: RunSelection
+  onSelect: (selection: RunSelection) => void
 }) {
+  const meta =
+    calls === null
+      ? []
+      : [
+          `${calls} call${calls === 1 ? '' : 's'}`,
+          elapsedMs !== undefined ? formatMs(elapsedMs) : null,
+          inputTokens !== undefined || outputTokens !== undefined
+            ? `${inputTokens ?? 0}→${outputTokens ?? 0} tokens`
+            : null,
+          matches !== undefined ? `${matches} match${matches === 1 ? '' : 'es'}` : null,
+          describe ? 'describe' : null,
+          logsCount ? `${logsCount} log${logsCount === 1 ? '' : 's'}` : null,
+        ].filter((item): item is string => item !== null)
   return (
     <div
       className={cn('flex min-w-0 items-center gap-2 px-3', minimized ? 'py-1.5' : 'border-b py-2')}
@@ -441,25 +464,28 @@ function WidgetHead({
     >
       <LabbyMark />
       <span className="text-[12.5px] font-bold">Execute</span>
-      {subLabel !== null ? (
-        <span className="truncate text-[11.5px] text-aurora-text-muted">· {subLabel}</span>
-      ) : null}
-      <span className="flex-1" />
-      {subLabel !== null ? (
+      {calls !== null ? (
         ok ? (
           <StatusDot tone="success" label="success" />
         ) : (
           <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-error')}>{errorKind ?? 'error'}</span>
         )
       ) : null}
-      {elapsedMs !== undefined ? (
-        <span className="text-[11px] font-semibold tabular-nums text-aurora-text-muted">
-          {formatMs(elapsedMs)}
+      {meta.length > 0 ? (
+        <span className="min-w-0 truncate text-[11px] font-medium tabular-nums text-aurora-text-muted">
+          {meta.join(' · ')}
         </span>
       ) : null}
+      <span className="flex-1" />
       {bridgeLabel !== null && bridgeLabel !== 'connected' ? (
         <span className={cn(AURORA_BADGE_LABEL, 'text-aurora-text-muted')}>{bridgeLabel}</span>
       ) : null}
+      <RunMenu history={history} live={live} selected={selected} onSelect={onSelect} />
+      <LockKeyhole
+        aria-label="Read only"
+        className="size-3 shrink-0 text-aurora-text-muted"
+        strokeWidth={1.75}
+      />
       <button
         type="button"
         aria-label={minimized ? 'Restore inspector' : 'Minimize inspector'}
@@ -468,9 +494,90 @@ function WidgetHead({
         onClick={onToggleMinimized}
         className="flex size-5 shrink-0 items-center justify-center rounded border border-transparent text-aurora-text-muted transition-colors hover:border-aurora-border-strong hover:text-aurora-text-primary"
       >
-        {minimized ? <Maximize2 className="size-3" strokeWidth={1.75} /> : <Minimize2 className="size-3" strokeWidth={1.75} />}
+        <ChevronRight
+          className={cn('size-3 transition-transform', minimized ? 'rotate-90' : '-rotate-90')}
+          strokeWidth={1.75}
+        />
       </button>
     </div>
+  )
+}
+
+function RunMenu({
+  history,
+  live,
+  selected,
+  onSelect,
+}: {
+  history: CodeModeHistoryEntry[]
+  live: CodeModeExecuteTrace | null
+  selected: RunSelection
+  onSelect: (selection: RunSelection) => void
+}) {
+  const liveSeq =
+    live?.execution_id !== undefined
+      ? history.find((entry) => entry.execution_id === live.execution_id)?.seq
+      : undefined
+  const runs: { key: string; label: string; ok: boolean; target: RunSelection }[] = history.map(
+    (entry) => ({
+      key: `seq-${entry.seq}`,
+      label: entry.seq === liveSeq ? `Run #${entry.seq} · live` : `Run #${entry.seq}`,
+      ok: entry.ok,
+      target: entry.seq === liveSeq ? 'live' : entry.seq,
+    }),
+  )
+  if (live && liveSeq === undefined) {
+    runs.push({
+      key: 'live',
+      label: 'Live',
+      ok: live.calls.every((call) => call.ok),
+      target: 'live',
+    })
+  }
+  if (runs.length < 2) return null
+  return (
+    <details className="group relative">
+      <summary
+        aria-label="Run history"
+        title="Run history"
+        className="flex size-5 cursor-pointer list-none items-center justify-center rounded border border-transparent text-aurora-text-muted transition-colors hover:border-aurora-border-strong hover:text-aurora-text-primary"
+      >
+        <MoreHorizontal className="size-3" strokeWidth={1.75} />
+      </summary>
+      <div
+        className="absolute right-0 top-6 z-20 grid min-w-36 gap-1 rounded-lg border p-1.5"
+        style={{
+          borderColor: 'var(--aurora-border-strong)',
+          background: 'var(--aurora-control-surface)',
+          boxShadow: 'var(--aurora-shadow-medium)',
+        }}
+      >
+        <span className={cn(AURORA_BADGE_LABEL, 'flex items-center gap-1.5 px-1.5 py-1 text-aurora-text-muted')}>
+          <History className="size-3" strokeWidth={1.75} />
+          Run history
+        </span>
+        {runs.map((run) => {
+          const active = run.target === selected
+          return (
+            <button
+              key={run.key}
+              type="button"
+              onClick={(event) => {
+                onSelect(run.target)
+                event.currentTarget.closest('details')?.removeAttribute('open')
+              }}
+              className={cn(
+                'flex items-center gap-2 rounded px-2 py-1 text-left text-[11px] text-aurora-text-muted hover:bg-aurora-hover-bg/60 hover:text-aurora-text-primary',
+                active && 'bg-aurora-hover-bg/60 text-aurora-text-primary',
+              )}
+            >
+              <StatusDot tone={run.ok ? 'success' : 'error'} label={run.ok ? 'success' : 'failed'} />
+              {run.label}
+            </button>
+          )
+        })}
+      </div>
+    </details>
   )
 }
 
@@ -681,14 +788,27 @@ function McpUiResourcePanel({
         background: HEAD_FOOT_BG,
       }}
       >
-        <FileBox className="size-3 shrink-0 text-aurora-accent-primary" strokeWidth={1.75} />
-        <span className={cn(AURORA_BADGE_LABEL, 'shrink-0 text-aurora-accent-strong')}>MCP UI</span>
-        <span className="min-w-0 truncate font-mono text-[11px] text-aurora-text-muted">
-          {ui.resourceUri}
+        <span
+          className="flex size-7 shrink-0 items-center justify-center rounded-md border text-aurora-accent-strong"
+          style={{
+            borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 42%, var(--aurora-border-default))',
+            background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-control-surface))',
+          }}
+        >
+          <Terminal className="size-3.5" strokeWidth={1.75} />
+        </span>
+        <span className="shrink-0 text-[12.5px] font-bold">MCP App</span>
+        <span className="min-w-0 truncate text-[11.5px] text-aurora-text-muted" title={ui.resourceUri}>
+          {externalAppName(ui.resourceUri)}
         </span>
         {state === 'loading' ? (
           <span className={cn(AURORA_BADGE_LABEL, 'ml-auto shrink-0 text-aurora-text-muted')}>
             loading
+          </span>
+        ) : state === 'ready' ? (
+          <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[11px] text-aurora-success">
+            <StatusDot tone="success" label="ready" />
+            Ready
           </span>
         ) : null}
         {state === 'error' ? (
@@ -718,6 +838,14 @@ function McpUiResourcePanel({
       </div>
     </section>
   )
+}
+
+function externalAppName(resourceUri: string): string {
+  try {
+    return new URL(resourceUri).hostname || resourceUri
+  } catch {
+    return resourceUri
+  }
 }
 
 function DiscoveryRows({
@@ -1007,6 +1135,13 @@ function HistoryNote() {
 
 function CodeBlock({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
+    },
+    [],
+  )
   return (
     <div className="relative">
       <pre
@@ -1027,7 +1162,11 @@ function CodeBlock({ value }: { value: string }) {
             ?.writeText(value)
             .then(() => {
               setCopied(true)
-              setTimeout(() => setCopied(false), 1200)
+              if (copiedTimer.current !== null) clearTimeout(copiedTimer.current)
+              copiedTimer.current = setTimeout(() => {
+                copiedTimer.current = null
+                setCopied(false)
+              }, 1200)
             })
             .catch(() => {})
         }}
@@ -1039,100 +1178,6 @@ function CodeBlock({ value }: { value: string }) {
           <Copy className="size-3" strokeWidth={1.75} />
         )}
       </button>
-    </div>
-  )
-}
-
-function WidgetFoot({
-  history,
-  live,
-  selected,
-  onSelect,
-  inputTokens,
-  outputTokens,
-  logsCount,
-}: {
-  history: CodeModeHistoryEntry[]
-  live: CodeModeExecuteTrace | null
-  selected: RunSelection
-  onSelect: (selection: RunSelection) => void
-  inputTokens: number | undefined
-  outputTokens: number | undefined
-  logsCount: number | undefined
-}) {
-  const liveEntrySeq =
-    live?.execution_id !== undefined
-      ? history.find((entry) => entry.execution_id === live.execution_id)?.seq
-      : undefined
-  const chips: { key: string; label: string; ok: boolean; target: RunSelection }[] = history.map(
-    (entry) => ({
-      key: `seq-${entry.seq}`,
-      label: entry.seq === liveEntrySeq ? `#${entry.seq} live` : `#${entry.seq}`,
-      ok: entry.ok,
-      target: entry.seq === liveEntrySeq ? 'live' : entry.seq,
-    }),
-  )
-  if (live && liveEntrySeq === undefined) {
-    chips.push({ key: 'live', label: 'live', ok: live.calls.every((call) => call.ok), target: 'live' })
-  }
-  // A single run has nothing to switch between — the chip strip only earns
-  // its place once history gives it a second entry.
-  const showChips = chips.length > 1
-
-  const meta: string[] = []
-  if (inputTokens !== undefined || outputTokens !== undefined) {
-    meta.push(`${inputTokens ?? 0} in · ${outputTokens ?? 0} out`)
-  }
-  if (logsCount) meta.push(`${logsCount} log${logsCount === 1 ? '' : 's'}`)
-
-  if (!showChips && meta.length === 0) return null
-
-  return (
-    <div
-      className="flex items-center gap-1.5 border-t px-3 py-1.5"
-      style={{ borderColor: HEAD_FOOT_BORDER, background: HEAD_FOOT_BG }}
-    >
-      {showChips ? (
-        <span className={cn(AURORA_BADGE_LABEL, 'mr-0.5 text-aurora-text-muted')}>Session</span>
-      ) : null}
-      {(showChips ? chips : []).map((chip) => {
-        const isSelected =
-          chip.target === selected || (chip.target === 'live' && selected === 'live')
-        return (
-          <button
-            key={chip.key}
-            type="button"
-            onClick={() => onSelect(chip.target)}
-            className={cn(
-              'inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] font-semibold transition-colors',
-              isSelected
-                ? 'text-aurora-text-primary'
-                : 'text-aurora-text-muted hover:text-aurora-text-primary',
-            )}
-            style={{
-              background: isSelected
-                ? 'color-mix(in srgb, var(--aurora-accent-primary) 8%, var(--aurora-control-surface))'
-                : 'var(--aurora-control-surface)',
-              borderColor: isSelected
-                ? 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))'
-                : 'color-mix(in srgb, var(--aurora-border-default) 55%, var(--aurora-page-bg))',
-              boxShadow: isSelected ? '0 0 0 1px rgba(41,182,246,0.24)' : undefined,
-            }}
-          >
-            <span
-              className={cn(
-                'inline-block size-[5px] rounded-full',
-                chip.ok ? 'bg-aurora-success' : 'bg-aurora-error',
-              )}
-            />
-            {chip.label}
-          </button>
-        )
-      })}
-      <span className="flex-1" />
-      {meta.length > 0 ? (
-        <span className="text-[10.5px] tabular-nums text-aurora-text-muted">{meta.join(' · ')}</span>
-      ) : null}
     </div>
   )
 }
