@@ -82,10 +82,10 @@ fn windows_powershell() -> std::path::PathBuf {
         .join("powershell.exe")
 }
 
-/// Apply the platform's owner-only file policy to a secret-bearing file.
+/// Apply the platform's current-user-only file policy to a secret-bearing file.
 ///
 /// On Windows this replaces inherited and explicit ACEs with one FullControl
-/// rule for the file owner. Passing the path through an environment variable
+/// rule for the current user. Passing the path through an environment variable
 /// avoids interpolating attacker-controlled characters into PowerShell code.
 #[cfg(windows)]
 pub fn harden_secret_file(path: &Path) -> Result<(), AuthError> {
@@ -101,7 +101,7 @@ function Invoke-Icacls {
   }
 }
 # Reset removes every prior explicit ACE, then removing inheritance leaves an
-# empty DACL before the current owner SID receives the sole FullControl rule.
+# empty DACL before the current user SID receives the sole FullControl rule.
 Invoke-Icacls $path '/reset'
 Invoke-Icacls $path '/inheritance:r'
 Invoke-Icacls $path '/grant:r' ("*" + $sid + ':(F)')
@@ -113,11 +113,14 @@ $rules = @($verified.Access)
 if ($rules.Count -ne 1) {
   throw "secret file ACL contains $($rules.Count) access rules instead of one"
 }
-if ($rules[0].IdentityReference.Value -ne $verified.Owner -or
+$ruleSid = $rules[0].IdentityReference.Translate(
+  [System.Security.Principal.SecurityIdentifier]
+).Value
+if ($ruleSid -ne $sid -or
     $rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
     ($rules[0].FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne
       [System.Security.AccessControl.FileSystemRights]::FullControl) {
-  throw 'secret file ACL is not an owner-only FullControl rule'
+  throw 'secret file ACL is not a current-user-only FullControl rule'
 }
 "#;
     let output = std::process::Command::new(windows_powershell())
@@ -270,7 +273,7 @@ mod windows_tests {
     use super::*;
 
     #[test]
-    fn secret_acl_is_protected_and_contains_only_owner_rule() {
+    fn secret_acl_is_protected_and_contains_only_current_user_rule() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secret.env");
         std::fs::write(&path, "TOKEN=secret\n").unwrap();
@@ -278,9 +281,13 @@ mod windows_tests {
 
         let script = r#"
 $acl = Get-Acl -LiteralPath $env:LABBY_SECRET_FILE_PATH
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if (-not $acl.AreAccessRulesProtected) { exit 2 }
 if (@($acl.Access).Count -ne 1) { exit 3 }
-if ($acl.Access[0].IdentityReference.Value -ne $acl.Owner) { exit 4 }
+$ruleSid = $acl.Access[0].IdentityReference.Translate(
+  [System.Security.Principal.SecurityIdentifier]
+).Value
+if ($ruleSid -ne $sid) { exit 4 }
 "#;
         let status = std::process::Command::new(windows_powershell())
             .args([
