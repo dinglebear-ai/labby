@@ -15,6 +15,7 @@ use crate::error::AuthError;
 use crate::google::GoogleProvider;
 use crate::jwt::SigningKeys;
 use crate::sqlite::SqliteStore;
+#[cfg(feature = "http-axum")]
 use crate::types::RegisteredClient;
 
 const RATE_LIMIT_RETRY_AFTER_MS: u64 = 60_000;
@@ -177,9 +178,13 @@ pub struct AuthState {
     allowed_resource_scopes: Arc<RwLock<BTreeMap<String, BTreeSet<String>>>>,
     authorize_limiter: PerIpRateLimiter,
     register_limiter: PerIpRateLimiter,
-    assertion_jtis: Arc<DashMap<String, i64>>,
+    token_limiter: PerIpRateLimiter,
+    #[cfg(feature = "http-axum")]
     pub(crate) cimd_cache: Arc<DashMap<String, (RegisteredClient, i64)>>,
+    #[cfg(feature = "http-axum")]
     pub(crate) jwks_cache: Arc<DashMap<String, (jsonwebtoken::jwk::JwkSet, i64)>>,
+    #[cfg(feature = "http-axum")]
+    pub(crate) remote_cache_lock: Arc<Mutex<()>>,
 }
 
 impl AuthState {
@@ -222,6 +227,7 @@ impl AuthState {
 
         let authorize_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
         let register_limiter = PerIpRateLimiter::new(config.register_requests_per_minute);
+        let token_limiter = PerIpRateLimiter::new(config.token_requests_per_minute);
         Ok(Self {
             config: Arc::new(config),
             store,
@@ -230,9 +236,13 @@ impl AuthState {
             allowed_resource_scopes: Arc::new(RwLock::new(BTreeMap::new())),
             authorize_limiter,
             register_limiter,
-            assertion_jtis: Arc::new(DashMap::new()),
+            token_limiter,
+            #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            remote_cache_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -322,6 +332,18 @@ impl AuthState {
         }
     }
 
+    /// Rate-limit guard for the credential-bearing `/token` endpoint.
+    pub async fn check_token_rate_limit(&self, ip: IpAddr) -> Result<(), AuthError> {
+        if self.token_limiter.try_acquire(ip).await {
+            Ok(())
+        } else {
+            Err(AuthError::RateLimited {
+                message: "token rate limit exceeded".to_string(),
+                retry_after_ms: RATE_LIMIT_RETRY_AFTER_MS,
+            })
+        }
+    }
+
     /// Returns the merged email allowlist: admin first, then all `allowed_users` rows,
     /// deduplicating case-insensitively so admin is never counted twice.
     ///
@@ -353,13 +375,17 @@ impl AuthState {
         Ok(())
     }
 
-    /// Consume a signed assertion identifier once, pruning expired entries.
-    pub fn consume_assertion_jti(&self, issuer: &str, jti: &str, expires_at: i64) -> bool {
-        let now = crate::util::now_unix();
-        self.assertion_jtis.retain(|_, expiry| *expiry > now);
-        self.assertion_jtis
-            .insert(format!("{issuer}\0{jti}"), expires_at)
-            .is_none()
+    /// Consume a signed assertion identifier once in the durable auth store.
+    pub async fn consume_assertion_jti(
+        &self,
+        issuer: &str,
+        jti: &str,
+        issued_at: i64,
+        expires_at: i64,
+    ) -> Result<bool, AuthError> {
+        self.store
+            .consume_assertion_jti(issuer, jti, issued_at, expires_at, crate::util::now_unix())
+            .await
     }
 
     #[cfg(test)]
@@ -371,6 +397,7 @@ impl AuthState {
     ) -> Self {
         let authorize_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
         let register_limiter = PerIpRateLimiter::new(config.register_requests_per_minute);
+        let token_limiter = PerIpRateLimiter::new(config.token_requests_per_minute);
         Self {
             config: Arc::new(config),
             store,
@@ -379,9 +406,13 @@ impl AuthState {
             allowed_resource_scopes: Arc::new(RwLock::new(BTreeMap::new())),
             authorize_limiter,
             register_limiter,
-            assertion_jtis: Arc::new(DashMap::new()),
+            token_limiter,
+            #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            remote_cache_lock: Arc::new(Mutex::new(())),
         }
     }
 }

@@ -51,6 +51,9 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "conformance/expected-failures-extensions.yaml",
             "scripts/ci/changed_paths.py",
             "scripts/ci/mcp-conformance.sh",
+            "scripts/ci/mcp_upstream_drift.py",
+            "scripts/ci/test_mcp_upstream_drift.py",
+            "conformance/upstream-baseline.json",
             "crates/labby/tests/ci_changed_paths.rs",
         },
     )

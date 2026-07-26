@@ -13,6 +13,84 @@ use crate::util::now_unix;
 use super::{SqliteStore, hash_token, sqlite_error};
 
 impl SqliteStore {
+    /// Atomically lease a refresh token before contacting the upstream
+    /// provider. A stale lease can be recovered after `lease_expires_at`.
+    pub async fn claim_refresh_token(
+        &self,
+        refresh_token: &str,
+        claim_id: &str,
+        lease_expires_at: i64,
+    ) -> Result<Option<RefreshTokenRow>, AuthError> {
+        let hash = hash_token(refresh_token);
+        let plaintext = refresh_token.to_string();
+        let claim_id = claim_id.to_string();
+        let now = now_unix();
+        let enc_key = self.enc_key.clone();
+        self.with_conn(move |conn| {
+            let transaction = conn.transaction().map_err(sqlite_error)?;
+            let claimed = transaction
+                .execute(
+                    "UPDATE refresh_tokens
+                     SET refresh_claim_id = ?2, refresh_claim_expires_at = ?3
+                     WHERE refresh_token_hash = ?1
+                       AND expires_at > ?4
+                       AND (refresh_claim_id IS NULL OR refresh_claim_expires_at <= ?4)",
+                    params![hash, claim_id, lease_expires_at, now],
+                )
+                .map_err(sqlite_error)?;
+            if claimed == 0 {
+                return Ok(None);
+            }
+            let mut row = transaction
+                .query_row(
+                    "SELECT client_id, subject, scope, provider_refresh_token,
+                            created_at, expires_at, resource
+                     FROM refresh_tokens
+                     WHERE refresh_token_hash = ?1 AND refresh_claim_id = ?2",
+                    params![hash, claim_id],
+                    |row| {
+                        Ok(RefreshTokenRow {
+                            refresh_token: plaintext,
+                            client_id: row.get(0)?,
+                            subject: row.get(1)?,
+                            scope: row.get(2)?,
+                            provider_refresh_token: row.get(3)?,
+                            created_at: row.get(4)?,
+                            expires_at: row.get(5)?,
+                            resource: row.get(6)?,
+                        })
+                    },
+                )
+                .map_err(sqlite_error)?;
+            transaction.commit().map_err(sqlite_error)?;
+            if let Some(raw) = row.provider_refresh_token.as_deref() {
+                row.provider_refresh_token = Some(maybe_decrypt(enc_key.as_deref(), raw)?);
+            }
+            Ok(Some(row))
+        })
+        .await
+    }
+
+    pub async fn release_refresh_claim(
+        &self,
+        refresh_token: &str,
+        claim_id: &str,
+    ) -> Result<(), AuthError> {
+        let hash = hash_token(refresh_token);
+        let claim_id = claim_id.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE refresh_tokens
+                 SET refresh_claim_id = NULL, refresh_claim_expires_at = NULL
+                 WHERE refresh_token_hash = ?1 AND refresh_claim_id = ?2",
+                params![hash, claim_id],
+            )
+            .map_err(sqlite_error)?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Insert a new refresh token row, storing a SHA-256 hash of the raw token
     /// as the primary key. The plaintext token is never persisted.
     ///
@@ -72,31 +150,21 @@ impl SqliteStore {
             .map(|raw| maybe_encrypt(self.enc_key.as_deref(), raw))
             .transpose()?;
         self.with_conn(move |conn| {
-            conn.execute_batch("BEGIN").map_err(sqlite_error)?;
-
-            let delete_result = conn
+            let transaction = conn.transaction().map_err(sqlite_error)?;
+            let deleted = transaction
                 .execute(
                     "DELETE FROM refresh_tokens
                      WHERE refresh_token_hash = ?1
                        AND expires_at > ?2",
                     params![old_hash, now],
                 )
-                .map_err(sqlite_error);
-
-            let deleted = match delete_result {
-                Ok(count) => count,
-                Err(error) => {
-                    drop(conn.execute_batch("ROLLBACK"));
-                    return Err(error);
-                }
-            };
+                .map_err(sqlite_error)?;
 
             if deleted == 0 {
-                drop(conn.execute_batch("ROLLBACK"));
                 return Ok(None);
             }
 
-            let insert_result = conn
+            transaction
                 .execute(
                     "INSERT INTO refresh_tokens (
                         refresh_token_hash, client_id, subject, resource, scope,
@@ -113,18 +181,64 @@ impl SqliteStore {
                         new_token.expires_at,
                     ],
                 )
-                .map_err(sqlite_error);
+                .map_err(sqlite_error)?;
+            transaction.commit().map_err(sqlite_error)?;
+            Ok(Some(new_token))
+        })
+        .await
+    }
 
-            match insert_result {
-                Ok(_) => {
-                    conn.execute_batch("COMMIT").map_err(sqlite_error)?;
-                    Ok(Some(new_token))
-                }
-                Err(error) => {
-                    drop(conn.execute_batch("ROLLBACK"));
-                    Err(error)
-                }
+    /// Atomically replace a refresh token only when the caller owns its lease.
+    pub async fn rotate_claimed_refresh_token(
+        &self,
+        old_token: &str,
+        claim_id: &str,
+        new_token: RefreshTokenRow,
+    ) -> Result<Option<RefreshTokenRow>, AuthError> {
+        let old_hash = hash_token(old_token);
+        let claim_id = claim_id.to_string();
+        let new_hash = hash_token(&new_token.refresh_token);
+        let now = now_unix();
+        let encrypted_provider_rt = new_token
+            .provider_refresh_token
+            .as_deref()
+            .map(|raw| maybe_encrypt(self.enc_key.as_deref(), raw))
+            .transpose()?;
+        self.with_conn(move |conn| {
+            let transaction = conn.transaction().map_err(sqlite_error)?;
+            let deleted = transaction
+                .execute(
+                    "DELETE FROM refresh_tokens
+                     WHERE refresh_token_hash = ?1
+                       AND refresh_claim_id = ?2
+                       AND refresh_claim_expires_at > ?3
+                       AND expires_at > ?3",
+                    params![old_hash, claim_id, now],
+                )
+                .map_err(sqlite_error)?;
+            if deleted == 0 {
+                return Ok(None);
             }
+            transaction
+                .execute(
+                    "INSERT INTO refresh_tokens (
+                        refresh_token_hash, client_id, subject, resource, scope,
+                        provider_refresh_token, created_at, expires_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        new_hash,
+                        new_token.client_id,
+                        new_token.subject,
+                        new_token.resource,
+                        new_token.scope,
+                        encrypted_provider_rt,
+                        new_token.created_at,
+                        new_token.expires_at,
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            transaction.commit().map_err(sqlite_error)?;
+            Ok(Some(new_token))
         })
         .await
     }

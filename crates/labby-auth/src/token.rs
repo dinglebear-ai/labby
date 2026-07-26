@@ -1,19 +1,21 @@
-use axum::extract::{Form, State};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+use axum::extract::{ConnectInfo, Extension, Form, State};
 use axum::{
     Json,
-    http::{HeaderValue, StatusCode, header},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-use jsonwebtoken::jwk::JwkSet;
-use jsonwebtoken::{DecodingKey, Validation, decode, decode_header};
+use jsonwebtoken::jwk::{Jwk, JwkSet, KeyAlgorithm};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
-use crate::error::{AuthError, AuthErrorKind};
+use crate::error::AuthError;
 use crate::jwt::AccessClaims;
 use crate::state::AuthState;
 use crate::types::AuthorizationCodeRow;
@@ -22,14 +24,37 @@ use crate::util::{
     duration_secs_usize, expires_at, fingerprint, now_unix, random_token, timestamp_usize,
 };
 
+mod response;
+use response::{TokenEndpointError, TokenResponseWithCache, apply_token_cache_headers};
+
 pub async fn token(
     State(state): State<AuthState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: axum::http::HeaderMap,
     Form(mut request): Form<TokenRequest>,
 ) -> Response {
-    if let Some((client_id, client_secret)) = basic_client_credentials(&headers) {
-        request.client_id.get_or_insert(client_id);
-        request.client_secret.get_or_insert(client_secret);
+    let remote_ip = connect_info
+        .map(|Extension(ConnectInfo(address))| address.ip())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    if let Err(error) = state.check_token_rate_limit(remote_ip).await {
+        return TokenEndpointError::Auth(error).into_response();
+    }
+    match basic_client_credentials(&headers) {
+        Ok(Some((client_id, client_secret))) => {
+            if request.client_id.is_some()
+                || request.client_secret.is_some()
+                || request.client_assertion.is_some()
+            {
+                return TokenEndpointError::Auth(AuthError::AuthFailed(
+                    "invalid client credentials".to_string(),
+                ))
+                .into_response();
+            }
+            request.client_id = Some(client_id);
+            request.client_secret = Some(client_secret);
+        }
+        Ok(None) => {}
+        Err(error) => return TokenEndpointError::Auth(error).into_response(),
     }
     if request.client_id.is_none()
         && let Some(assertion) = request.client_assertion.as_deref()
@@ -94,44 +119,10 @@ async fn enterprise_managed_grant(
     request: TokenRequest,
 ) -> Result<TokenResponse, AuthError> {
     let assertion = require_field(request.assertion, "assertion")?;
-    let unverified = jsonwebtoken::dangerous::insecure_decode::<IdJagClaims>(&assertion)
-        .map_err(|_| AuthError::InvalidGrant("invalid ID-JAG".to_string()))?
-        .claims;
-    let issuer = state
-        .config
-        .enterprise_issuers
-        .iter()
-        .find(|issuer| issuer.issuer.trim_end_matches('/') == unverified.iss.trim_end_matches('/'))
-        .ok_or_else(|| AuthError::InvalidGrant("untrusted ID-JAG issuer".to_string()))?;
-    let client_id = require_field(request.client_id, "client_id")?;
-    if unverified.client_id != client_id
-        || (!issuer.allowed_client_ids.is_empty()
-            && !issuer
-                .allowed_client_ids
-                .iter()
-                .any(|allowed| allowed == &client_id))
-    {
-        return Err(AuthError::InvalidGrant(
-            "ID-JAG client_id is not authorized".to_string(),
-        ));
-    }
-    let known_client = state.store.find_client(&client_id).await?.is_some()
-        || state
-            .config
-            .machine_clients
-            .iter()
-            .any(|client| client.client_id == client_id)
-        || crate::cimd::resolve_client(&state, &client_id)
-            .await?
-            .is_some();
-    if !known_client {
-        return Err(AuthError::AuthFailed(
-            "enterprise client is not registered".to_string(),
-        ));
-    }
-    let jwks = load_enterprise_jwks(&state, issuer).await?;
     let header = decode_header(&assertion)
         .map_err(|_| AuthError::InvalidGrant("invalid ID-JAG header".to_string()))?;
+    ensure_allowed_algorithm(header.alg)
+        .map_err(|_| AuthError::InvalidGrant("unsupported ID-JAG algorithm".to_string()))?;
     if header.typ.as_deref() != Some("oauth-id-jag+jwt") {
         return Err(AuthError::InvalidGrant(
             "ID-JAG typ must be oauth-id-jag+jwt".to_string(),
@@ -141,13 +132,23 @@ async fn enterprise_managed_grant(
         .kid
         .as_deref()
         .ok_or_else(|| AuthError::InvalidGrant("ID-JAG is missing kid".to_string()))?;
-    let key = jwks
+    let unverified = jsonwebtoken::dangerous::insecure_decode::<IdJagClaims>(&assertion)
+        .map_err(|_| AuthError::InvalidGrant("invalid ID-JAG".to_string()))?
+        .claims;
+    let issuer = state
+        .config
+        .enterprise_issuers
+        .iter()
+        .find(|issuer| issuer.issuer.trim_end_matches('/') == unverified.iss.trim_end_matches('/'))
+        .ok_or_else(|| AuthError::InvalidGrant("untrusted ID-JAG issuer".to_string()))?;
+    let jwks = load_enterprise_jwks(&state, issuer, kid).await?;
+    let jwk = jwks
         .find(kid)
-        .ok_or_else(|| AuthError::InvalidGrant("unknown ID-JAG signing key".to_string()))
-        .and_then(|jwk| {
-            DecodingKey::from_jwk(jwk)
-                .map_err(|_| AuthError::InvalidGrant("invalid ID-JAG signing key".to_string()))
-        })?;
+        .ok_or_else(|| AuthError::InvalidGrant("unknown ID-JAG signing key".to_string()))?;
+    ensure_jwk_algorithm(jwk, header.alg)
+        .map_err(|_| AuthError::InvalidGrant("ID-JAG key algorithm mismatch".to_string()))?;
+    let key = DecodingKey::from_jwk(jwk)
+        .map_err(|_| AuthError::InvalidGrant("invalid ID-JAG signing key".to_string()))?;
     let audience = crate::metadata::public_base_url(&state);
     let mut validation = Validation::new(header.alg);
     validation.set_audience(&[audience.as_str()]);
@@ -170,7 +171,34 @@ async fn enterprise_managed_grant(
     if claims.aud.trim_end_matches('/') != audience.trim_end_matches('/')
         || claims.iat > now + 60
         || claims.exp <= now
-        || !state.consume_assertion_jti(&claims.iss, &claims.jti, claims.exp)
+    {
+        return Err(AuthError::InvalidGrant(
+            "expired, replayed, or misdirected ID-JAG".to_string(),
+        ));
+    }
+    let client_id = require_field(request.client_id.clone(), "client_id")?;
+    if claims.client_id != client_id
+        || (!issuer.allowed_client_ids.is_empty()
+            && !issuer
+                .allowed_client_ids
+                .iter()
+                .any(|allowed| allowed == &client_id))
+    {
+        return Err(AuthError::InvalidGrant(
+            "ID-JAG client_id is not authorized".to_string(),
+        ));
+    }
+    authenticate_oauth_client(
+        &state,
+        &client_id,
+        request.client_secret.as_deref(),
+        request.client_assertion_type.as_deref(),
+        request.client_assertion.as_deref(),
+    )
+    .await?;
+    if !state
+        .consume_assertion_jti(&claims.iss, &claims.jti, claims.iat, claims.exp)
+        .await?
     {
         return Err(AuthError::InvalidGrant(
             "expired, replayed, or misdirected ID-JAG".to_string(),
@@ -186,14 +214,14 @@ async fn enterprise_managed_grant(
             "requested resource does not match ID-JAG".to_string(),
         ));
     }
-    let scope = crate::authorize::validate_scope(&state, &resource, &claims.scope)?;
+    let scope = validate_token_scope(&state, &resource, &claims.scope)?;
     if let Some(requested) = request.scope.as_deref() {
-        let requested = crate::authorize::validate_scope(&state, &resource, requested)?;
+        let requested = validate_token_scope(&state, &resource, requested)?;
         if !requested
             .split_whitespace()
             .all(|value| scope.split_whitespace().any(|granted| granted == value))
         {
-            return Err(AuthError::InvalidGrant(
+            return Err(AuthError::InvalidScope(
                 "requested scope exceeds ID-JAG grant".to_string(),
             ));
         }
@@ -202,9 +230,36 @@ async fn enterprise_managed_grant(
     build_token_response(&state, client_id, claims.sub, resource, scope, None)
 }
 
+fn ensure_allowed_algorithm(algorithm: Algorithm) -> Result<(), AuthError> {
+    if matches!(
+        algorithm,
+        Algorithm::EdDSA | Algorithm::RS256 | Algorithm::ES256
+    ) {
+        Ok(())
+    } else {
+        Err(invalid_client())
+    }
+}
+
+fn ensure_jwk_algorithm(jwk: &Jwk, algorithm: Algorithm) -> Result<(), AuthError> {
+    let matches = match jwk.common.key_algorithm {
+        None => true,
+        Some(KeyAlgorithm::EdDSA) => algorithm == Algorithm::EdDSA,
+        Some(KeyAlgorithm::RS256) => algorithm == Algorithm::RS256,
+        Some(KeyAlgorithm::ES256) => algorithm == Algorithm::ES256,
+        _ => false,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(invalid_client())
+    }
+}
+
 async fn load_enterprise_jwks(
     state: &AuthState,
     issuer: &crate::config::EnterpriseIssuerConfig,
+    required_kid: &str,
 ) -> Result<JwkSet, AuthError> {
     if let Some(value) = &issuer.jwks {
         return serde_json::from_value(value.clone())
@@ -220,34 +275,39 @@ async fn load_enterprise_jwks(
     let now = now_unix();
     if let Some(entry) = state.jwks_cache.get(cache_key)
         && entry.value().1 > now
+        && entry.value().0.find(required_kid).is_some()
     {
         return Ok(entry.value().0.clone());
     }
-    let response = crate::remote::secure_get(uri)
-        .await?
-        .error_for_status()
-        .map_err(|error| AuthError::Network(format!("fetch enterprise JWKS: {error}")))?;
-    let max_age = response
-        .headers()
-        .get(header::CACHE_CONTROL)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            value.split(',').find_map(|directive| {
-                directive
-                    .trim()
-                    .strip_prefix("max-age=")?
-                    .parse::<i64>()
-                    .ok()
-            })
-        })
-        .unwrap_or(300);
-    let jwks = response
-        .json::<JwkSet>()
-        .await
-        .map_err(|error| AuthError::Decode(format!("decode enterprise JWKS: {error}")))?;
-    state
-        .jwks_cache
-        .insert(cache_key.to_string(), (jwks.clone(), now + max_age.max(0)));
+    let _guard = state.remote_cache_lock.lock().await;
+    if let Some(entry) = state.jwks_cache.get(cache_key)
+        && entry.value().1 > now_unix()
+        && entry.value().0.find(required_kid).is_some()
+    {
+        return Ok(entry.value().0.clone());
+    }
+    let (jwks, cache_policy) = crate::remote::fetch_json::<JwkSet>(uri, "enterprise JWKS").await?;
+    if cache_policy.cacheable {
+        state
+            .jwks_cache
+            .retain(|_, (_, expires_at)| *expires_at > now_unix());
+        if state.jwks_cache.len() >= 256
+            && let Some(oldest) = state
+                .jwks_cache
+                .iter()
+                .min_by_key(|entry| entry.value().1)
+                .map(|entry| entry.key().clone())
+        {
+            state.jwks_cache.remove(&oldest);
+        }
+        state.jwks_cache.insert(
+            cache_key.to_string(),
+            (
+                jwks.clone(),
+                now_unix().saturating_add(cache_policy.max_age_secs),
+            ),
+        );
+    }
     Ok(jwks)
 }
 
@@ -261,42 +321,29 @@ async fn client_credentials_grant(
         .machine_clients
         .iter()
         .find(|client| client.client_id == client_id)
-        .ok_or_else(|| AuthError::AuthFailed("unknown machine client".to_string()))?;
-    match (
+        .ok_or_else(invalid_client)?;
+    authenticate_machine_client(
+        &state,
+        client,
         request.client_secret.as_deref(),
+        request.client_assertion_type.as_deref(),
         request.client_assertion.as_deref(),
-    ) {
-        (Some(supplied_secret), None) => {
-            let expected_secret = client.client_secret.as_deref().ok_or_else(|| {
-                AuthError::AuthFailed("client secret authentication is disabled".into())
-            })?;
-            if !bool::from(supplied_secret.as_bytes().ct_eq(expected_secret.as_bytes())) {
-                return Err(AuthError::AuthFailed(
-                    "invalid machine client credentials".to_string(),
-                ));
-            }
-        }
-        (None, Some(assertion)) => {
-            if request.client_assertion_type.as_deref()
-                != Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
-            {
-                return Err(AuthError::Validation(
-                    "unsupported client_assertion_type".to_string(),
-                ));
-            }
-            let jwks: JwkSet = serde_json::from_value(client.jwks.clone().ok_or_else(|| {
-                AuthError::AuthFailed("private_key_jwt authentication is disabled".into())
-            })?)
-            .map_err(|error| AuthError::Config(format!("invalid machine client JWKS: {error}")))?;
-            validate_client_assertion(&state, assertion, &client_id, &jwks)?;
-        }
-        _ => {
-            return Err(AuthError::AuthFailed(
-                "exactly one machine client authentication method is required".to_string(),
-            ));
-        }
+    )
+    .await?;
+    let resource = crate::authorize::validate_resource(&state, request.resource.as_deref())
+        .map_err(|error| match error {
+            AuthError::Validation(message) => AuthError::InvalidScope(message),
+            other => other,
+        })?;
+    if !client
+        .resources
+        .iter()
+        .any(|allowed| allowed.trim_end_matches('/') == resource)
+    {
+        return Err(AuthError::InvalidScope(
+            "requested resource exceeds machine client grant".to_string(),
+        ));
     }
-    let resource = crate::authorize::validate_resource(&state, request.resource.as_deref())?;
     let requested_scope = request.scope.as_deref().unwrap_or_else(|| {
         if client.scopes.is_empty() {
             state.config.default_scope.as_str()
@@ -309,17 +356,109 @@ async fn client_credentials_grant(
     } else {
         requested_scope.to_string()
     };
-    let scope = crate::authorize::validate_scope(&state, &resource, &requested_scope)?;
+    let scope = validate_token_scope(&state, &resource, &requested_scope)?;
     if !client.scopes.is_empty()
         && !scope
             .split_whitespace()
             .all(|requested| client.scopes.iter().any(|allowed| allowed == requested))
     {
-        return Err(AuthError::AuthFailed(
+        return Err(AuthError::InvalidScope(
             "requested scope exceeds machine client grant".to_string(),
         ));
     }
     build_token_response(&state, client_id.clone(), client_id, resource, scope, None)
+}
+
+async fn authenticate_machine_client(
+    state: &AuthState,
+    client: &crate::config::MachineClientConfig,
+    client_secret: Option<&str>,
+    client_assertion_type: Option<&str>,
+    client_assertion: Option<&str>,
+) -> Result<(), AuthError> {
+    match (client_secret, client_assertion) {
+        (Some(supplied_secret), None) => {
+            let expected_secret = client.client_secret.as_deref().ok_or_else(invalid_client)?;
+            if !bool::from(supplied_secret.as_bytes().ct_eq(expected_secret.as_bytes())) {
+                return Err(invalid_client());
+            }
+        }
+        (None, Some(assertion)) => {
+            if client_assertion_type
+                != Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+            {
+                return Err(invalid_client());
+            }
+            let jwks: JwkSet = serde_json::from_value(
+                client.jwks.clone().ok_or_else(invalid_client)?,
+            )
+            .map_err(|error| AuthError::Config(format!("invalid machine client JWKS: {error}")))?;
+            validate_client_assertion(state, assertion, &client.client_id, &jwks).await?;
+        }
+        _ => return Err(invalid_client()),
+    }
+    Ok(())
+}
+
+async fn authenticate_oauth_client(
+    state: &AuthState,
+    client_id: &str,
+    client_secret: Option<&str>,
+    client_assertion_type: Option<&str>,
+    client_assertion: Option<&str>,
+) -> Result<(), AuthError> {
+    if let Some(client) = state
+        .config
+        .machine_clients
+        .iter()
+        .find(|client| client.client_id == client_id)
+    {
+        return authenticate_machine_client(
+            state,
+            client,
+            client_secret,
+            client_assertion_type,
+            client_assertion,
+        )
+        .await;
+    }
+    let client = crate::cimd::resolve_client(state, client_id)
+        .await?
+        .ok_or_else(invalid_client)?;
+    match client.token_endpoint_auth_method.as_str() {
+        "none" if client_secret.is_none() && client_assertion.is_none() => Ok(()),
+        "private_key_jwt"
+            if client_secret.is_none()
+                && client_assertion_type
+                    == Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer") =>
+        {
+            let jwks: JwkSet = serde_json::from_value(client.jwks.ok_or_else(invalid_client)?)
+                .map_err(|_| invalid_client())?;
+            validate_client_assertion(
+                state,
+                client_assertion.ok_or_else(invalid_client)?,
+                client_id,
+                &jwks,
+            )
+            .await
+        }
+        _ => Err(invalid_client()),
+    }
+}
+
+fn invalid_client() -> AuthError {
+    AuthError::AuthFailed("invalid client credentials".to_string())
+}
+
+fn validate_token_scope(
+    state: &AuthState,
+    resource: &str,
+    scope: &str,
+) -> Result<String, AuthError> {
+    crate::authorize::validate_scope(state, resource, scope).map_err(|error| match error {
+        AuthError::Validation(message) => AuthError::InvalidScope(message),
+        other => other,
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -332,7 +471,7 @@ struct ClientAssertionClaims {
     jti: String,
 }
 
-fn validate_client_assertion(
+async fn validate_client_assertion(
     state: &AuthState,
     assertion: &str,
     client_id: &str,
@@ -340,6 +479,7 @@ fn validate_client_assertion(
 ) -> Result<(), AuthError> {
     let header = decode_header(assertion)
         .map_err(|_| AuthError::AuthFailed("invalid client assertion".to_string()))?;
+    ensure_allowed_algorithm(header.alg)?;
     let kid = header
         .kid
         .as_deref()
@@ -347,6 +487,7 @@ fn validate_client_assertion(
     let jwk = jwks
         .find(kid)
         .ok_or_else(|| AuthError::AuthFailed("unknown client assertion key".to_string()))?;
+    ensure_jwk_algorithm(jwk, header.alg)?;
     let key = DecodingKey::from_jwk(jwk)
         .map_err(|_| AuthError::AuthFailed("invalid client assertion key".to_string()))?;
     let audience = format!("{}/token", crate::metadata::public_base_url(state));
@@ -363,7 +504,14 @@ fn validate_client_assertion(
         || claims.aud != audience
         || claims.iat > now + 60
         || claims.exp <= now
-        || !state.consume_assertion_jti(&claims.iss, &claims.jti, claims.exp)
+    {
+        return Err(AuthError::AuthFailed(
+            "invalid or replayed client assertion".to_string(),
+        ));
+    }
+    if !state
+        .consume_assertion_jti(&claims.iss, &claims.jti, claims.iat, claims.exp)
+        .await?
     {
         return Err(AuthError::AuthFailed(
             "invalid or replayed client assertion".to_string(),
@@ -372,27 +520,91 @@ fn validate_client_assertion(
     Ok(())
 }
 
-fn basic_client_credentials(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
-    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let encoded = raw.strip_prefix("Basic ")?;
-    let decoded = STANDARD.decode(encoded).ok()?;
-    let decoded = String::from_utf8(decoded).ok()?;
-    let (client_id, client_secret) = decoded.split_once(':')?;
-    Some((client_id.to_string(), client_secret.to_string()))
+fn basic_client_credentials(
+    headers: &axum::http::HeaderMap,
+) -> Result<Option<(String, String)>, AuthError> {
+    let Some(raw) = headers.get(header::AUTHORIZATION) else {
+        return Ok(None);
+    };
+    let raw = raw
+        .to_str()
+        .map_err(|_| AuthError::AuthFailed("invalid client credentials".to_string()))?;
+    let Some((scheme, encoded)) = raw.split_once(' ') else {
+        return Err(AuthError::AuthFailed(
+            "invalid client credentials".to_string(),
+        ));
+    };
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return Err(AuthError::AuthFailed(
+            "invalid client credentials".to_string(),
+        ));
+    }
+    let decoded = STANDARD
+        .decode(encoded.trim())
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .ok_or_else(|| AuthError::AuthFailed("invalid client credentials".to_string()))?;
+    let (client_id, client_secret) = decoded
+        .split_once(':')
+        .ok_or_else(|| AuthError::AuthFailed("invalid client credentials".to_string()))?;
+    let decode_component = |value: &str| {
+        url::form_urlencoded::parse(format!("value={value}").as_bytes())
+            .next()
+            .map(|(_, value)| value.into_owned())
+            .ok_or_else(|| AuthError::AuthFailed("invalid client credentials".to_string()))
+    };
+    Ok(Some((
+        decode_component(client_id)?,
+        decode_component(client_secret)?,
+    )))
 }
 
 pub async fn revoke(
     State(state): State<AuthState>,
-    Form(request): Form<RevocationRequest>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: axum::http::HeaderMap,
+    Form(mut request): Form<RevocationRequest>,
 ) -> Response {
+    let remote_ip = connect_info
+        .map(|Extension(ConnectInfo(address))| address.ip())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    if let Err(error) = state.check_token_rate_limit(remote_ip).await {
+        return TokenEndpointError::Auth(error).into_response();
+    }
+    match basic_client_credentials(&headers) {
+        Ok(Some((client_id, client_secret))) => {
+            if request.client_id.is_some()
+                || request.client_secret.is_some()
+                || request.client_assertion.is_some()
+            {
+                return TokenEndpointError::Auth(invalid_client()).into_response();
+            }
+            request.client_id = Some(client_id);
+            request.client_secret = Some(client_secret);
+        }
+        Ok(None) => {}
+        Err(error) => return TokenEndpointError::Auth(error).into_response(),
+    }
     let token_id = fingerprint(&request.token);
     match state.store.find_refresh_token(&request.token).await {
-        Ok(Some(row))
-            if request
-                .client_id
-                .as_deref()
-                .is_none_or(|client_id| client_id == row.client_id) =>
-        {
+        Ok(Some(row)) => {
+            let Some(client_id) = request.client_id.as_deref() else {
+                return TokenEndpointError::Auth(invalid_client()).into_response();
+            };
+            if client_id != row.client_id {
+                return TokenEndpointError::Auth(invalid_client()).into_response();
+            }
+            if let Err(error) = authenticate_oauth_client(
+                &state,
+                client_id,
+                request.client_secret.as_deref(),
+                request.client_assertion_type.as_deref(),
+                request.client_assertion.as_deref(),
+            )
+            .await
+            {
+                return TokenEndpointError::Auth(error).into_response();
+            }
             if let Err(error) = state.store.revoke_refresh_token(&request.token).await {
                 return TokenEndpointError::Auth(error).into_response();
             }
@@ -402,113 +614,6 @@ pub async fn revoke(
         Ok(_) => apply_token_cache_headers(StatusCode::OK.into_response()),
         Err(error) => TokenEndpointError::Auth(error).into_response(),
     }
-}
-
-enum TokenEndpointError {
-    Auth(AuthError),
-    UnsupportedGrantType(String),
-}
-
-impl TokenEndpointError {
-    fn oauth_error(&self) -> &'static str {
-        match self {
-            Self::Auth(AuthError::InvalidGrant(_)) => "invalid_grant",
-            Self::UnsupportedGrantType(_) => "unsupported_grant_type",
-            Self::Auth(AuthError::AuthFailed(_) | AuthError::InvalidAccessToken) => {
-                "invalid_client"
-            }
-            Self::Auth(AuthError::RateLimited { .. }) => "temporarily_unavailable",
-            Self::Auth(AuthError::Validation(_)) => "invalid_request",
-            Self::Auth(
-                AuthError::Config(_)
-                | AuthError::Storage(_)
-                | AuthError::Network(_)
-                | AuthError::Server(_)
-                | AuthError::Decode(_)
-                | AuthError::InsecurePermissions { .. },
-            ) => "server_error",
-        }
-    }
-
-    fn log_kind(&self) -> &'static str {
-        match self {
-            Self::Auth(error) => error.kind(),
-            Self::UnsupportedGrantType(_) => "unsupported_grant_type",
-        }
-    }
-
-    fn status(&self) -> StatusCode {
-        match self {
-            Self::Auth(AuthError::InvalidGrant(_) | AuthError::Validation(_))
-            | Self::UnsupportedGrantType(_) => StatusCode::BAD_REQUEST,
-            Self::Auth(AuthError::AuthFailed(_) | AuthError::InvalidAccessToken) => {
-                StatusCode::UNAUTHORIZED
-            }
-            Self::Auth(AuthError::RateLimited { .. }) => StatusCode::TOO_MANY_REQUESTS,
-            Self::Auth(
-                AuthError::Config(_)
-                | AuthError::Storage(_)
-                | AuthError::Network(_)
-                | AuthError::Server(_)
-                | AuthError::Decode(_)
-                | AuthError::InsecurePermissions { .. },
-            ) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    fn description(&self) -> String {
-        match self {
-            Self::Auth(error) => error.to_string(),
-            Self::UnsupportedGrantType(grant_type) => {
-                format!("unsupported grant_type `{grant_type}`")
-            }
-        }
-    }
-
-    fn retry_after_ms(&self) -> Option<u64> {
-        match self {
-            Self::Auth(AuthError::RateLimited { retry_after_ms, .. }) => Some(*retry_after_ms),
-            _ => None,
-        }
-    }
-}
-
-impl IntoResponse for TokenEndpointError {
-    fn into_response(self) -> Response {
-        let status = self.status();
-        let log_kind = self.log_kind();
-        let retry_after_ms = self.retry_after_ms();
-        let body = Json(serde_json::json!({
-            "error": self.oauth_error(),
-            "error_description": self.description(),
-        }));
-        let mut response = (status, body).into_response();
-        response.extensions_mut().insert(AuthErrorKind(log_kind));
-        if let Some(retry_after_ms) = retry_after_ms
-            && let Ok(value) = HeaderValue::from_str(&(retry_after_ms / 1_000).max(1).to_string())
-        {
-            response.headers_mut().insert(header::RETRY_AFTER, value);
-        }
-        apply_token_cache_headers(response)
-    }
-}
-
-struct TokenResponseWithCache(Json<TokenResponse>);
-
-impl IntoResponse for TokenResponseWithCache {
-    fn into_response(self) -> Response {
-        apply_token_cache_headers(self.0.into_response())
-    }
-}
-
-fn apply_token_cache_headers(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-        .headers_mut()
-        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
-    response
 }
 
 async fn authorization_code_grant(
@@ -645,9 +750,11 @@ async fn refresh_token_grant(
         requested_resource = requested_resource.as_deref().unwrap_or("<refresh-token-resource>"),
         "oauth refresh_token grant received"
     );
+    let claim_id = random_token(18)?;
+    let claim_expires_at = now_unix().saturating_add(30);
     let stored = state
         .store
-        .find_refresh_token(&refresh_token)
+        .claim_refresh_token(&refresh_token, &claim_id, claim_expires_at)
         .await?
         .ok_or_else(|| {
             warn!(
@@ -657,10 +764,38 @@ async fn refresh_token_grant(
             );
             AuthError::InvalidGrant("unknown refresh_token".to_string())
         })?;
+    let result = complete_claimed_refresh(
+        &state,
+        &client_id,
+        &refresh_token,
+        &claim_id,
+        &refresh_token_id,
+        requested_resource,
+        stored,
+    )
+    .await;
+    if result.is_err() {
+        state
+            .store
+            .release_refresh_claim(&refresh_token, &claim_id)
+            .await?;
+    }
+    result
+}
+
+async fn complete_claimed_refresh(
+    state: &AuthState,
+    client_id: &str,
+    refresh_token: &str,
+    claim_id: &str,
+    refresh_token_id: &str,
+    requested_resource: Option<String>,
+    stored: RefreshTokenRow,
+) -> Result<TokenResponse, AuthError> {
     if stored.client_id != client_id {
         warn!(
             refresh_token_id = %refresh_token_id,
-            requested_client_id = %client_id,
+            requested_client_id = client_id,
             stored_client_id = %stored.client_id,
             "oauth token rejected: client_id does not match refresh token"
         );
@@ -669,7 +804,7 @@ async fn refresh_token_grant(
         ));
     }
     let stored_resource = if stored.resource.trim().is_empty() {
-        crate::metadata::canonical_resource_url(&state)
+        crate::metadata::canonical_resource_url(state)
     } else {
         stored.resource.clone()
     };
@@ -733,9 +868,17 @@ async fn refresh_token_grant(
         created_at: now,
         expires_at: refreshed_expires_at,
     };
+    let response = build_token_response(
+        state,
+        stored.client_id.clone(),
+        google.subject.clone(),
+        stored_resource.clone(),
+        elevated_scope.clone(),
+        Some(replacement_refresh_token),
+    )?;
     state
         .store
-        .rotate_refresh_token(&refresh_token, replacement)
+        .rotate_claimed_refresh_token(refresh_token, claim_id, replacement)
         .await?
         .ok_or_else(|| AuthError::InvalidGrant("refresh token was already used".to_string()))?;
 
@@ -749,14 +892,7 @@ async fn refresh_token_grant(
         "oauth refresh_token grant rotated local token and issued new access token"
     );
 
-    build_token_response(
-        &state,
-        stored.client_id,
-        google.subject,
-        stored_resource,
-        elevated_scope,
-        Some(replacement_refresh_token),
-    )
+    Ok(response)
 }
 
 fn build_token_response(
@@ -922,6 +1058,35 @@ mod tests {
         )
     }
 
+    async fn test_auth_state_with_invalid_google_refresh() -> AuthState {
+        let state = test_auth_state_with_registered_client().await;
+        let server = Box::leak(Box::new(MockServer::start().await));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant",
+                "error_description": "Token has been expired or revoked."
+            })))
+            .mount(server)
+            .await;
+        let google = GoogleProvider::new(
+            "client-id".to_string(),
+            "client-secret".to_string(),
+            Url::parse("https://lab.example.com/auth/google/callback").unwrap(),
+        )
+        .unwrap()
+        .with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
+        );
+        AuthState::for_tests(
+            (*state.config).clone(),
+            state.store.clone(),
+            (*state.signing_keys).clone(),
+            google,
+        )
+    }
+
     #[tokio::test]
     async fn token_endpoint_mints_lab_jwt_and_refresh_token() {
         let state = test_auth_state_with_registered_client().await;
@@ -970,7 +1135,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn client_credentials_secret_mints_audience_bound_machine_token() {
+    async fn black_box_machine_auth_discovery_and_token_flow() {
         let base = test_auth_state_with_registered_client().await;
         let mut config = (*base.config).clone();
         config.machine_clients = vec![crate::config::MachineClientConfig {
@@ -978,6 +1143,7 @@ mod tests {
             client_secret: Some("correct-horse".to_string()),
             jwks: None,
             scopes: vec!["lab".to_string()],
+            resources: vec!["https://lab.example.com/mcp".to_string()],
         }];
         let state = AuthState::for_tests(
             config,
@@ -986,6 +1152,35 @@ mod tests {
             (*base.google).clone(),
         );
         let app = router(state);
+        let metadata = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(metadata.status(), StatusCode::OK);
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(metadata.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            metadata["grant_types_supported"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("client_credentials"))
+        );
+        assert!(
+            metadata["token_endpoint_auth_methods_supported"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("client_secret_basic"))
+        );
         let response = app
             .oneshot(
                 Request::builder()
@@ -1023,6 +1218,171 @@ mod tests {
         assert_eq!(claims.aud, "https://lab.example.com/mcp");
         assert_eq!(claims.scope, "lab");
         assert!(json.get("refresh_token").is_none());
+    }
+
+    #[test]
+    fn basic_client_credentials_decode_form_components_and_reject_malformed_values() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!(
+                "bAsIc {}",
+                base64::engine::general_purpose::STANDARD.encode("client%2Bid:p%40ss%3Aword")
+            )
+            .parse()
+            .unwrap(),
+        );
+        assert_eq!(
+            super::basic_client_credentials(&headers).unwrap(),
+            Some(("client+id".to_string(), "p@ss:word".to_string()))
+        );
+
+        for value in ["Basic not-base64", "Bearer token", "Basic bm9jb2xvbg=="] {
+            headers.insert(header::AUTHORIZATION, value.parse().unwrap());
+            assert!(super::basic_client_credentials(&headers).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn client_credentials_rejects_ungranted_resource_and_scope() {
+        let base = test_auth_state_with_registered_client().await;
+        let mut config = (*base.config).clone();
+        config.machine_clients = vec![crate::config::MachineClientConfig {
+            client_id: "bounded-agent".to_string(),
+            client_secret: Some("secret".to_string()),
+            jwks: None,
+            scopes: vec!["lab".to_string()],
+            resources: vec!["https://lab.example.com/mcp".to_string()],
+        }];
+        let state = AuthState::for_tests(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            (*base.google).clone(),
+        );
+        let app = router(state);
+        for (resource, scope, expected_error) in [
+            ("https://other.example/mcp", "lab", "invalid_scope"),
+            ("https://lab.example.com/mcp", "lab:admin", "invalid_scope"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(form_request(
+                    "/token",
+                    form(&[
+                        ("grant_type", "client_credentials"),
+                        ("client_id", "bounded-agent"),
+                        ("client_secret", "secret"),
+                        ("resource", resource),
+                        ("scope", scope),
+                    ]),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"], expected_error);
+        }
+    }
+
+    #[tokio::test]
+    async fn token_rate_limit_applies_before_client_authentication() {
+        let base = test_auth_state_with_registered_client().await;
+        let mut config = (*base.config).clone();
+        config.token_requests_per_minute = 1;
+        let state = AuthState::for_tests(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            (*base.google).clone(),
+        );
+        let app = router(state);
+        let request_body = form(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", "unknown"),
+            ("client_secret", "wrong"),
+        ]);
+        let first = app
+            .clone()
+            .oneshot(form_request("/token", request_body.clone()))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+        let second = app
+            .oneshot(form_request("/token", request_body))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(second.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    #[tokio::test]
+    async fn invalid_client_responses_are_uniform_and_auth_methods_cannot_be_combined() {
+        let base = test_auth_state_with_registered_client().await;
+        let mut config = (*base.config).clone();
+        config.machine_clients = vec![crate::config::MachineClientConfig {
+            client_id: "known".to_string(),
+            client_secret: Some("correct".to_string()),
+            jwks: None,
+            scopes: vec!["lab".to_string()],
+            resources: vec!["https://lab.example.com/mcp".to_string()],
+        }];
+        let state = AuthState::for_tests(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            (*base.google).clone(),
+        );
+        let app = router(state);
+        let mut bodies = Vec::new();
+        for (client_id, secret) in [("unknown", "wrong"), ("known", "wrong")] {
+            let response = app
+                .clone()
+                .oneshot(form_request(
+                    "/token",
+                    form(&[
+                        ("grant_type", "client_credentials"),
+                        ("client_id", client_id),
+                        ("client_secret", secret),
+                    ]),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            bodies.push(
+                axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert_eq!(bodies[0], bodies[1]);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/token")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!(
+                            "Basic {}",
+                            base64::engine::general_purpose::STANDARD.encode("known:correct")
+                        ),
+                    )
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(form(&[
+                        ("grant_type", "client_credentials"),
+                        ("client_id", "known"),
+                        ("client_secret", "correct"),
+                    ])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -1074,6 +1434,7 @@ mod tests {
             client_secret: None,
             jwks: Some(jwks),
             scopes: vec!["lab".to_string()],
+            resources: vec!["https://lab.example.com/mcp".to_string()],
         }];
         let state = AuthState::for_tests(
             config,
@@ -1126,6 +1487,13 @@ mod tests {
             jwks: Some(jwks),
             allowed_client_ids: vec!["client".to_string()],
         }];
+        config.machine_clients = vec![crate::config::MachineClientConfig {
+            client_id: "client".to_string(),
+            client_secret: Some("enterprise-client-secret".to_string()),
+            jwks: None,
+            scopes: vec!["lab".to_string()],
+            resources: vec!["https://lab.example.com/mcp".to_string()],
+        }];
         let state = AuthState::for_tests(
             config,
             base.store.clone(),
@@ -1148,13 +1516,29 @@ mod tests {
             },
             Some("oauth-id-jag+jwt"),
         );
-        let response = router(state)
+        let app = router(state);
+        let missing_auth = app
+            .clone()
             .oneshot(form_request(
                 "/token",
                 form(&[
                     ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
                     ("assertion", &assertion),
                     ("client_id", "client"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing_auth.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                    ("assertion", &assertion),
+                    ("client_id", "client"),
+                    ("client_secret", "enterprise-client-secret"),
                 ]),
             ))
             .await
@@ -1747,6 +2131,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_refresh_has_exactly_one_winner() {
+        let state = test_auth_state_with_mock_google().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "concurrent-refresh".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: Some("provider-refresh".to_string()),
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+        let request = || {
+            form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", "concurrent-refresh"),
+                    ("client_id", "client"),
+                ]),
+            )
+        };
+        let (first, second) = tokio::join!(
+            app.clone().oneshot(request()),
+            app.clone().oneshot(request())
+        );
+        let statuses = [first.unwrap().status(), second.unwrap().status()];
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::OK)
+                .count(),
+            1
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|status| **status == StatusCode::BAD_REQUEST)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn refresh_grant_preserves_original_token_when_upstream_refresh_fails() {
         let state = test_auth_state_with_failing_google_refresh().await;
         state
@@ -1789,6 +2222,47 @@ mod tests {
                 .is_some(),
             "local refresh token must remain usable after upstream refresh failure"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_grant_surfaces_google_invalid_grant_as_oauth_needs_reauth() {
+        let state = test_auth_state_with_invalid_google_refresh().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "expired-provider-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: String::new(),
+                scope: "lab".to_string(),
+                provider_refresh_token: Some("provider-refresh".to_string()),
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/token")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        "grant_type=refresh_token&refresh_token=expired-provider-token&client_id=client",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "oauth_needs_reauth");
     }
 
     #[tokio::test]

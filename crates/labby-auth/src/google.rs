@@ -83,6 +83,11 @@ struct GoogleTokenResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct GoogleTokenErrorResponse {
+    error: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct GoogleIdTokenClaims {
     iss: String,
     sub: String,
@@ -185,6 +190,7 @@ struct GoogleRequestErrors {
     status_log: &'static str,
     decode_context: &'static str,
     decode_log: &'static str,
+    invalid_grant_requires_reauth: bool,
 }
 
 async fn read_json_response<T: DeserializeOwned>(
@@ -211,7 +217,7 @@ async fn read_json_response<T: DeserializeOwned>(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
         .map(|seconds| seconds.saturating_mul(1_000));
-    let response = response.error_for_status().map_err(|error| {
+    if let Err(error) = response.error_for_status_ref() {
         let auth_error = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             AuthError::RateLimited {
                 message: format!("{}: {}", errors.status_context, status),
@@ -219,6 +225,15 @@ async fn read_json_response<T: DeserializeOwned>(
             }
         } else if status.is_server_error() {
             AuthError::Server(format!("{}: {error}", errors.status_context))
+        } else if errors.invalid_grant_requires_reauth
+            && response
+                .json::<GoogleTokenErrorResponse>()
+                .await
+                .is_ok_and(|payload| payload.error == "invalid_grant")
+        {
+            AuthError::OauthNeedsReauth(
+                "google refresh token is expired or revoked; reauthorization required".to_string(),
+            )
         } else {
             AuthError::AuthFailed(format!("{}: {error}", errors.status_context))
         };
@@ -230,8 +245,8 @@ async fn read_json_response<T: DeserializeOwned>(
             "{}",
             errors.status_log
         );
-        auth_error
-    })?;
+        return Err(auth_error);
+    }
     trace.finish(status);
     response.json::<T>().await.map_err(|error| {
         let auth_error = AuthError::Decode(format!("{}: {error}", errors.decode_context));
@@ -361,6 +376,7 @@ impl GoogleProvider {
                 status_log: "oauth upstream code exchange returned error status",
                 decode_context: "decode google token response",
                 decode_log: "oauth upstream code exchange returned an unreadable payload",
+                invalid_grant_requires_reauth: false,
             },
         )
         .await?;
@@ -405,6 +421,7 @@ impl GoogleProvider {
                 status_log: "oauth upstream refresh returned error status",
                 decode_context: "decode google refresh response",
                 decode_log: "oauth upstream refresh returned an unreadable payload",
+                invalid_grant_requires_reauth: true,
             },
         )
         .await?;
@@ -638,6 +655,27 @@ mod tests {
         let token = provider.exchange_code("code", "verifier").await.unwrap();
         assert_eq!(token.subject, "google-subject-123");
         assert_eq!(token.refresh_token.as_deref(), Some("refresh-token"));
+    }
+
+    #[tokio::test]
+    async fn google_refresh_maps_invalid_grant_to_oauth_needs_reauth() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": "invalid_grant",
+                "error_description": "Token has been expired or revoked."
+            })))
+            .mount(&server)
+            .await;
+        let provider = test_google_provider().with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
+        );
+
+        let error = provider.refresh("revoked-refresh-token").await.unwrap_err();
+
+        assert_eq!(error.kind(), "oauth_needs_reauth");
     }
 
     #[tokio::test]

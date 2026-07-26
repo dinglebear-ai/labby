@@ -304,9 +304,13 @@ simply no longer part of the generic HTTP dispatch gate.
 
 Do not invent new kinds casually. If a new cross-service kind is needed, update the owning docs and all public surfaces together.
 
-### Upstream OAuth Kinds
+### OAuth Reauthorization Kind
 
-The upstream OAuth (outbound) surface adds five stable kinds for operator- and user-facing failures in the authorization-code + PKCE flow against OAuth-protected upstream MCP servers. Full flow documented in [UPSTREAM.md](../services/UPSTREAM.md).
+`oauth_needs_reauth` is shared by inbound Google-backed client sessions and
+outbound upstream OAuth credentials. The remaining upstream OAuth kinds are
+specific to the authorization-code + PKCE flow against OAuth-protected
+upstream MCP servers. Full outbound flow documented in
+[UPSTREAM.md](../services/UPSTREAM.md).
 
 #### `oauth_needs_reauth`
 
@@ -316,10 +320,14 @@ The upstream OAuth (outbound) surface adds five stable kinds for operator- and u
 - the encrypted `token_blob` failed to decrypt (for example after `LABBY_OAUTH_ENCRYPTION_KEY` rotation)
 - a 401 was received on a non-idempotent request and retry is not safe
 - no persisted credential exists yet for the `(upstream, subject)` pair
+- Google rejected the provider refresh token backing an inbound client session
+  with `invalid_grant`
 
-**Surface:** MCP proxied calls, `/mcp`, hosted UI, `/v1/gateway/oauth/status`.
+**Surface:** OAuth `/token`, MCP proxied calls, `/mcp`, hosted UI,
+`/v1/gateway/oauth/status`.
 
-**Resolution:** Start a fresh authorization via `POST /v1/gateway/oauth/start`.
+**Resolution:** Reconnect the client for an inbound session, or start a fresh
+upstream authorization via `POST /v1/gateway/oauth/start`.
 
 **Status code:** `401 Unauthorized`.
 

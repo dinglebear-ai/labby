@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 
 use axum::http;
+#[cfg(feature = "gateway")]
 use rmcp::model::ExtensionCapabilities;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CompleteRequestParams, CompleteResult,
@@ -116,17 +117,9 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
     extensions
 }
 
-fn auth_extensions() -> ExtensionCapabilities {
+#[cfg(feature = "gateway")]
+fn mcp_extensions() -> ExtensionCapabilities {
     let mut extensions = ExtensionCapabilities::new();
-    extensions.insert(
-        "io.modelcontextprotocol/oauth-client-credentials".to_string(),
-        serde_json::Map::new(),
-    );
-    extensions.insert(
-        "io.modelcontextprotocol/enterprise-managed-authorization".to_string(),
-        serde_json::Map::new(),
-    );
-    #[cfg(feature = "gateway")]
     extensions.extend(mcp_apps_ui_extension());
     extensions
 }
@@ -201,8 +194,11 @@ impl ServerHandler for LabMcpServer {
             .enable_prompts()
             .enable_prompts_list_changed()
             .enable_completions();
-        let builder = builder.enable_extensions_with(auth_extensions());
-        let mut info = ServerInfo::new(builder.build());
+        #[cfg(feature = "gateway")]
+        let capabilities = builder.enable_extensions_with(mcp_extensions()).build();
+        #[cfg(not(feature = "gateway"))]
+        let capabilities = builder.build();
+        let mut info = ServerInfo::new(capabilities);
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
         info
     }
@@ -485,6 +481,18 @@ mod tests {
             info.capabilities.completions.is_some(),
             "RMCP completion capability must be advertised"
         );
+        if let Some(extensions) = info.capabilities.extensions.as_ref() {
+            for invented_auth_extension in [
+                "io.modelcontextprotocol/enterprise-managed-authorization",
+                "io.modelcontextprotocol/oauth-client-credentials",
+                "io.modelcontextprotocol/client-id-metadata-document",
+            ] {
+                assert!(
+                    !extensions.contains_key(invented_auth_extension),
+                    "OAuth extensions are discovered through authorization metadata, not MCP initialize capabilities"
+                );
+            }
+        }
 
         #[cfg(feature = "gateway")]
         {

@@ -1072,6 +1072,16 @@ pub struct AuthFileConfig {
     /// Overridden by `LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE`.
     #[serde(default)]
     pub authorize_requests_per_minute: Option<u32>,
+    /// Per-IP rate limit for the `/token` endpoint (requests per minute).
+    /// Overridden by `LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE`.
+    #[serde(default)]
+    pub token_requests_per_minute: Option<u32>,
+    /// Out-of-band machine OAuth clients.
+    #[serde(default)]
+    pub machine_clients: Option<Vec<auth_config::MachineClientConfig>>,
+    /// Trusted enterprise ID-JAG issuers.
+    #[serde(default)]
+    pub enterprise_issuers: Option<Vec<auth_config::EnterpriseIssuerConfig>>,
     /// Max in-flight OAuth state rows. Overridden by
     /// `LABBY_AUTH_MAX_PENDING_OAUTH_STATES`.
     #[serde(default)]
@@ -1203,6 +1213,26 @@ pub fn resolve_auth(config: Option<&AuthFileConfig>) -> Result<auth_config::Auth
                 .authorize_requests_per_minute
                 .map(|value| value.to_string()),
         );
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE",
+            config
+                .token_requests_per_minute
+                .map(|value| value.to_string()),
+        );
+        if let Some(machine_clients) = config.machine_clients.as_ref() {
+            merged.insert(
+                "LABBY_AUTH_MACHINE_CLIENTS_JSON".to_string(),
+                serde_json::to_string(machine_clients).context("serialize auth.machine_clients")?,
+            );
+        }
+        if let Some(enterprise_issuers) = config.enterprise_issuers.as_ref() {
+            merged.insert(
+                "LABBY_AUTH_ENTERPRISE_ISSUERS_JSON".to_string(),
+                serde_json::to_string(enterprise_issuers)
+                    .context("serialize auth.enterprise_issuers")?,
+            );
+        }
         insert_if_some(
             &mut merged,
             "LABBY_AUTH_MAX_PENDING_OAUTH_STATES",
@@ -2529,6 +2559,9 @@ future = "keep"
             admin_email: Some("admin@example.com".to_string()),
             register_requests_per_minute: Some(5),
             authorize_requests_per_minute: Some(15),
+            token_requests_per_minute: Some(25),
+            machine_clients: None,
+            enterprise_issuers: None,
             max_pending_oauth_states: Some(256),
         };
 
@@ -2542,7 +2575,39 @@ future = "keep"
         );
         assert_eq!(resolved.register_requests_per_minute, 5);
         assert_eq!(resolved.authorize_requests_per_minute, 15);
+        assert_eq!(resolved.token_requests_per_minute, 25);
         assert_eq!(resolved.max_pending_oauth_states, 256);
+    }
+
+    #[test]
+    fn resolve_auth_preserves_structured_machine_and_enterprise_configuration() {
+        let machine = auth_config::MachineClientConfig {
+            client_id: "ci-agent".to_string(),
+            client_secret: Some("secret".to_string()),
+            jwks: None,
+            scopes: vec!["lab".to_string()],
+            resources: vec!["https://lab.example.com/mcp".to_string()],
+        };
+        let issuer = auth_config::EnterpriseIssuerConfig {
+            issuer: "https://idp.example.com".to_string(),
+            jwks_uri: Some("https://idp.example.com/jwks".parse().unwrap()),
+            jwks: None,
+            allowed_client_ids: vec!["ci-agent".to_string()],
+        };
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            google_client_id: Some("google-client".to_string()),
+            google_client_secret: Some("google-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            machine_clients: Some(vec![machine.clone()]),
+            enterprise_issuers: Some(vec![issuer.clone()]),
+            ..AuthFileConfig::default()
+        };
+
+        let resolved = resolve_auth(Some(&cfg)).unwrap();
+        assert_eq!(resolved.machine_clients, vec![machine]);
+        assert_eq!(resolved.enterprise_issuers, vec![issuer]);
     }
 
     #[test]

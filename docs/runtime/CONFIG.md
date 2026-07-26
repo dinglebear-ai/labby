@@ -609,6 +609,9 @@ Full details in [OAUTH.md](./OAUTH.md).
 | `LABBY_AUTH_CODE_TTL_SECS` | no | Override authorization code lifetime. Defaults to `300`. |
 | `LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `POST /register`. Defaults to `20`. |
 | `LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `/authorize` and hosted browser-login initiation. Defaults to `60`. |
+| `LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE` | no | Per-IP rate limit for credential-bearing `/token` and `/revoke` requests. Defaults to `120`. |
+| `LABBY_AUTH_MACHINE_CLIENTS_JSON` | no | JSON array of machine clients with one credential method plus explicit resource and scope grants. |
+| `LABBY_AUTH_ENTERPRISE_ISSUERS_JSON` | no | JSON array of trusted enterprise ID-JAG issuers and their JWKS source/client allowlist. |
 | `LABBY_AUTH_MAX_PENDING_OAUTH_STATES` | no | Maximum non-expired authorization and browser-login states kept in the auth store. Defaults to `1024`. |
 
 ### config.toml

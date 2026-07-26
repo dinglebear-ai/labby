@@ -88,14 +88,14 @@ cached catalog.
 ### OAuth extensions and scope step-up
 
 Labby's inbound authorization server supports the interactive authorization-code
-flow, refresh-token rotation and revocation, and the optional
-`io.modelcontextprotocol/oauth-client-credentials` extension. Machine clients
+flow, refresh-token rotation and revocation, and the optional MCP OAuth client
+credentials extension. Machine clients
 are preregistered out of band and may authenticate with `client_secret_basic`
 or RFC 7523 `private_key_jwt`; assertions are audience-bound to `/token` and
 replay-protected.
 
 Trusted enterprise issuers may also be configured for
-`io.modelcontextprotocol/enterprise-managed-authorization`. Labby validates
+enterprise-managed authorization extension. Labby validates
 `oauth-id-jag+jwt` assertions against pinned inline or HTTPS JWKS, enforces
 issuer, audience, client, resource, scope, expiry, and one-time `jti`, and mints
 the same audience-restricted Labby access token used by the interactive flow.
@@ -119,6 +119,13 @@ The `MCP 2026-07-28 conformance` CI job is part of `ci-gate`. Its JavaScript
 dependency installation is serialized before scenarios start. Bump the four
 pins above together and review the scenario list plus extension baseline on
 every conformance package update.
+
+The separate `MCP upstream drift` workflow compares
+`conformance/upstream-baseline.json` with the current MCP specification branch
+and latest rmcp release. Its report lists upstream files, the Labby modules
+that must be inspected, and the validation commands that must run. Detected
+drift opens or updates one stable issue; advance the baseline only in the PR
+that adopts and verifies the upstream change.
 
 `rmcp` and `rmcp-macros` are upstream packages. Labby's release automation
 publishes Labby artifacts only; it consumes the exact published rmcp version

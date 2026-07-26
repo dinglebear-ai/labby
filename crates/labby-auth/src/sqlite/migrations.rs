@@ -71,5 +71,30 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
             .map_err(sqlite_error)?;
     }
+    if current < 5 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS assertion_jtis (
+               issuer TEXT NOT NULL,
+               jti TEXT NOT NULL,
+               expires_at INTEGER NOT NULL,
+               PRIMARY KEY (issuer, jti)
+             );
+             CREATE INDEX IF NOT EXISTS idx_assertion_jtis_expiry
+               ON assertion_jtis(expires_at);
+             PRAGMA user_version = 5;",
+        )
+        .map_err(sqlite_error)?;
+    }
+    if current < 6 {
+        add_column_if_missing(conn, "refresh_tokens", "refresh_claim_id", "TEXT")?;
+        add_column_if_missing(
+            conn,
+            "refresh_tokens",
+            "refresh_claim_expires_at",
+            "INTEGER",
+        )?;
+        conn.execute_batch("PRAGMA user_version = 6;")
+            .map_err(sqlite_error)?;
+    }
     Ok(())
 }

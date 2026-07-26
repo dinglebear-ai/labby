@@ -16,6 +16,7 @@ const DEFAULT_REFRESH_TOKEN_TTL_SECS: u64 = 30 * 24 * 3600;
 const DEFAULT_AUTH_CODE_TTL_SECS: u64 = 300;
 const DEFAULT_REGISTER_REQUESTS_PER_MINUTE: u32 = 20;
 const DEFAULT_AUTHORIZE_REQUESTS_PER_MINUTE: u32 = 60;
+const DEFAULT_TOKEN_REQUESTS_PER_MINUTE: u32 = 120;
 const DEFAULT_MAX_PENDING_OAUTH_STATES: usize = 1024;
 
 /// Default env-var prefix used when consumers do not specify one.
@@ -95,7 +96,7 @@ pub struct GoogleConfig {
     pub scopes: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachineClientConfig {
     pub client_id: String,
     #[serde(default)]
@@ -104,6 +105,23 @@ pub struct MachineClientConfig {
     pub jwks: Option<serde_json::Value>,
     #[serde(default)]
     pub scopes: Vec<String>,
+    #[serde(default)]
+    pub resources: Vec<String>,
+}
+
+impl std::fmt::Debug for MachineClientConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MachineClientConfig")
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("jwks", &self.jwks.as_ref().map(|_| "<configured>"))
+            .field("scopes", &self.scopes)
+            .field("resources", &self.resources)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +153,7 @@ pub struct AuthConfig {
     pub auth_code_ttl: Duration,
     pub register_requests_per_minute: u32,
     pub authorize_requests_per_minute: u32,
+    pub token_requests_per_minute: u32,
     pub max_pending_oauth_states: usize,
 
     // ---- Brand / consumer-specific parameterization (see L1 bead) ----
@@ -201,6 +220,7 @@ impl Default for AuthConfig {
             auth_code_ttl: Duration::from_secs(DEFAULT_AUTH_CODE_TTL_SECS),
             register_requests_per_minute: DEFAULT_REGISTER_REQUESTS_PER_MINUTE,
             authorize_requests_per_minute: DEFAULT_AUTHORIZE_REQUESTS_PER_MINUTE,
+            token_requests_per_minute: DEFAULT_TOKEN_REQUESTS_PER_MINUTE,
             max_pending_oauth_states: DEFAULT_MAX_PENDING_OAUTH_STATES,
             env_prefix: DEFAULT_ENV_PREFIX.to_string(),
             default_data_dir: base_dir,
@@ -275,11 +295,19 @@ impl AuthConfig {
             )));
         }
         for client in &self.machine_clients {
-            if client.client_id.trim().is_empty()
-                || (client.client_secret.is_none() && client.jwks.is_none())
-            {
+            if client.client_id.trim().is_empty() {
                 return Err(AuthError::Config(
-                    "machine clients require client_id and client_secret or jwks".to_string(),
+                    "machine clients require client_id".to_string(),
+                ));
+            }
+            if client.client_secret.is_some() == client.jwks.is_some() {
+                return Err(AuthError::Config(
+                    "machine clients require exactly one of client_secret or jwks".to_string(),
+                ));
+            }
+            if client.resources.is_empty() {
+                return Err(AuthError::Config(
+                    "machine clients require at least one allowed resource".to_string(),
                 ));
             }
         }
@@ -464,6 +492,7 @@ impl AuthConfigBuilder {
         let key_code_ttl = env_key(&prefix, "AUTH_CODE_TTL_SECS");
         let key_reg_rpm = env_key(&prefix, "AUTH_REGISTER_REQUESTS_PER_MINUTE");
         let key_az_rpm = env_key(&prefix, "AUTH_AUTHORIZE_REQUESTS_PER_MINUTE");
+        let key_token_rpm = env_key(&prefix, "AUTH_TOKEN_REQUESTS_PER_MINUTE");
         let key_max_pending = env_key(&prefix, "AUTH_MAX_PENDING_OAUTH_STATES");
         let key_enc_key = env_key(&prefix, "TOKEN_ENCRYPTION_KEY");
         let key_scopes_supported = env_key(&prefix, "AUTH_SCOPES_SUPPORTED");
@@ -509,6 +538,8 @@ impl AuthConfigBuilder {
                 .unwrap_or(DEFAULT_REGISTER_REQUESTS_PER_MINUTE),
             authorize_requests_per_minute: read_u32(&vars, &key_az_rpm)?
                 .unwrap_or(DEFAULT_AUTHORIZE_REQUESTS_PER_MINUTE),
+            token_requests_per_minute: read_u32(&vars, &key_token_rpm)?
+                .unwrap_or(DEFAULT_TOKEN_REQUESTS_PER_MINUTE),
             max_pending_oauth_states: read_usize(&vars, &key_max_pending)?
                 .unwrap_or(DEFAULT_MAX_PENDING_OAUTH_STATES),
             env_prefix: prefix,
@@ -664,7 +695,7 @@ fn read_usize(vars: &HashMap<String, String>, key: &str) -> Result<Option<usize>
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthConfig, AuthConfigBuilder, AuthMode, AuthModeConfig};
+    use super::{AuthConfig, AuthConfigBuilder, AuthMode, AuthModeConfig, MachineClientConfig};
 
     #[test]
     fn bearer_mode_preserves_existing_http_token_behavior() {
@@ -707,7 +738,7 @@ mod tests {
             ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
             (
                 "LAB_AUTH_MACHINE_CLIENTS_JSON",
-                r#"[{"client_id":"ci","client_secret":"secret","scopes":["lab"]}]"#,
+                r#"[{"client_id":"ci","client_secret":"secret","scopes":["lab"],"resources":["https://lab.example.com/mcp"]}]"#,
             ),
             (
                 "LAB_AUTH_ENTERPRISE_ISSUERS_JSON",
@@ -717,6 +748,22 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.machine_clients[0].client_id, "ci");
         assert_eq!(cfg.enterprise_issuers[0].issuer, "https://idp.example.com");
+    }
+
+    #[test]
+    fn machine_client_debug_redacts_credentials_and_keys() {
+        let client = MachineClientConfig {
+            client_id: "ci".to_string(),
+            client_secret: Some("super-secret-value".to_string()),
+            jwks: Some(serde_json::json!({"keys": [{"k": "private-key-material"}]})),
+            scopes: vec!["lab".to_string()],
+            resources: vec!["https://lab.example.com/mcp".to_string()],
+        };
+        let debug = format!("{client:?}");
+        assert!(!debug.contains("super-secret-value"));
+        assert!(!debug.contains("private-key-material"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("<configured>"));
     }
 
     #[test]

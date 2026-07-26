@@ -132,6 +132,12 @@ pub struct RevocationRequest {
     pub token_type_hint: Option<String>,
     #[serde(default)]
     pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub client_assertion_type: Option<String>,
+    #[serde(default)]
+    pub client_assertion: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +155,14 @@ pub struct RegisteredClient {
     pub client_id: String,
     pub redirect_uris: Vec<String>,
     pub created_at: i64,
+    #[serde(default = "default_token_endpoint_auth_method")]
+    pub token_endpoint_auth_method: String,
+    #[serde(default)]
+    pub jwks: Option<serde_json::Value>,
+}
+
+fn default_token_endpoint_auth_method() -> String {
+    "none".to_string()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

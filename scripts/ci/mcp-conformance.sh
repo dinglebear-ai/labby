@@ -30,7 +30,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! rg -q "rmcp = \\{ version = \"=${RMCP_VERSION}\"" "${repo_root}/Cargo.toml"; then
+if ! grep -Eq "rmcp = \\{ version = \"=${RMCP_VERSION}\"" "${repo_root}/Cargo.toml"; then
   echo "Cargo.toml must pin rmcp exactly to =${RMCP_VERSION}" >&2
   exit 1
 fi

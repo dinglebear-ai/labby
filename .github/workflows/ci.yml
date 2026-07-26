@@ -467,14 +467,7 @@ jobs:
       - name: Install Rust + soldr
         uses: ./.github/actions/setup-rust-soldr
       - name: Verify Labby auth core and extension contracts
-        run: |
-          cargo test -p labby-auth --all-features --locked metadata::tests
-          cargo test -p labby-auth --all-features --locked cimd::tests
-          cargo test -p labby-auth --all-features --locked token::tests::client_credentials_
-          cargo test -p labby-auth --all-features --locked token::tests::private_key_jwt_
-          cargo test -p labby-auth --all-features --locked token::tests::enterprise_id_jag_
-          cargo test -p labby-auth --all-features --locked token::tests::revocation_endpoint_
-          cargo test -p labby-auth --all-features --locked token::tests::refresh_grant_rotates_
+        run: cargo test -p labby-auth --all-features --locked
       - name: Run dated protocol and extension suites
         run: scripts/ci/mcp-conformance.sh
       - name: Upload conformance reports
@@ -939,7 +932,7 @@ jobs:
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - run: cargo test --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --locked
       - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
         with:
