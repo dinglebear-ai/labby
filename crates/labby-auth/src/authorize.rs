@@ -417,11 +417,24 @@ pub async fn callback(
     }
 
     let subject_id = fingerprint(&google.subject);
+    let received_provider_refresh_token = google.refresh_token.is_some();
+    let provider_refresh_token = match google.refresh_token {
+        Some(refresh_token) => Some(refresh_token),
+        None => {
+            state
+                .store
+                .find_provider_refresh_token(&request.client_id, &google.subject)
+                .await?
+        }
+    };
+    let reused_provider_refresh_token =
+        !received_provider_refresh_token && provider_refresh_token.is_some();
     info!(
         client_id = %request.client_id,
         oauth_state_id = %oauth_state_id,
         subject_id = %subject_id,
-        has_provider_refresh_token = google.refresh_token.is_some(),
+        has_provider_refresh_token = provider_refresh_token.is_some(),
+        reused_provider_refresh_token,
         "oauth callback exchanged upstream code successfully"
     );
     let auth_code = random_token(24)?;
@@ -448,7 +461,7 @@ pub async fn callback(
             scope: elevated_scope,
             code_challenge: request.code_challenge,
             code_challenge_method: request.code_challenge_method,
-            provider_refresh_token: google.refresh_token,
+            provider_refresh_token,
             created_at: now_unix(),
             expires_at: expires_at(
                 now_unix(),
@@ -1698,6 +1711,104 @@ pub mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_reuses_existing_provider_refresh_for_same_client_and_subject() {
+        let base_state = test_auth_state_with_registered_client().await;
+        base_state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "existing-local-refresh".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: Some("existing-provider-refresh".to_string()),
+                created_at: now_unix(),
+                expires_at: now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        base_state
+            .store
+            .insert_authorization_request(AuthorizationRequestRow {
+                state: "repeat-state".to_string(),
+                client_id: "client".to_string(),
+                redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
+                client_state: "client-state".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_code_verifier: "provider-verifier".to_string(),
+                code_challenge: "challenge".to_string(),
+                code_challenge_method: "S256".to_string(),
+                created_at: now_unix(),
+                expires_at: now_unix() + 300,
+            })
+            .await
+            .unwrap();
+
+        let server = Box::leak(Box::new(MockServer::start().await));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "google-access-token",
+                "expires_in": 3600,
+                "id_token": signed_test_id_token(),
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/certs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(test_jwks()))
+            .mount(server)
+            .await;
+        let google = GoogleProvider::new(
+            "client-id".to_string(),
+            "client-secret".to_string(),
+            Url::parse("https://lab.example.com/auth/google/callback").unwrap(),
+        )
+        .unwrap()
+        .with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
+        )
+        .with_jwks_endpoint(server.uri().parse::<Url>().unwrap().join("/certs").unwrap());
+        let state = AuthState::for_tests(
+            (*base_state.config).clone(),
+            base_state.store.clone(),
+            (*base_state.signing_keys).clone(),
+            google,
+        );
+
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/auth/google/callback?state=repeat-state&code=upstream-code")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let redirect = Url::parse(location).unwrap();
+        let code = redirect
+            .query_pairs()
+            .find(|(key, _)| key == "code")
+            .map(|(_, value)| value.into_owned())
+            .unwrap();
+        let authorization = state.store.redeem_auth_code(&code).await.unwrap();
+        assert_eq!(
+            authorization.provider_refresh_token.as_deref(),
+            Some("existing-provider-refresh")
+        );
     }
 
     #[tokio::test]

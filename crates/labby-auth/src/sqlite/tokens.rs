@@ -289,6 +289,43 @@ impl SqliteStore {
         .await
     }
 
+    /// Return the newest unexpired upstream refresh credential held by this
+    /// exact local OAuth client and verified provider subject.
+    ///
+    /// Google commonly omits `refresh_token` from repeat authorization-code
+    /// exchanges. Reuse must remain scoped to both identifiers so one DCR
+    /// client or Google account can never inherit another's credential.
+    pub async fn find_provider_refresh_token(
+        &self,
+        client_id: &str,
+        subject: &str,
+    ) -> Result<Option<String>, AuthError> {
+        let client_id = client_id.to_string();
+        let subject = subject.to_string();
+        let now = now_unix();
+        let enc_key = self.enc_key.clone();
+        self.with_conn(move |conn| {
+            let row = conn
+                .query_row(
+                    "SELECT provider_refresh_token
+                     FROM refresh_tokens
+                     WHERE client_id = ?1
+                       AND subject = ?2
+                       AND expires_at > ?3
+                       AND provider_refresh_token IS NOT NULL
+                     ORDER BY created_at DESC
+                     LIMIT 1",
+                    params![client_id, subject, now],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(sqlite_error)?;
+            row.map(|raw| maybe_decrypt(enc_key.as_deref(), &raw))
+                .transpose()
+        })
+        .await
+    }
+
     /// Revoke a refresh token. Unknown tokens are deliberately indistinguishable
     /// from known tokens, as required by RFC 7009.
     pub async fn revoke_refresh_token(&self, refresh_token: &str) -> Result<(), AuthError> {

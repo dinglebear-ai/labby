@@ -1307,6 +1307,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_refresh_lookup_is_scoped_to_client_subject_and_expiry() {
+        let store = temp_store().await;
+        register_test_client(&store, "chatgpt-client").await;
+        register_test_client(&store, "other-client").await;
+
+        let mut matching = sample_refresh_token("chatgpt-client", "matching-refresh");
+        matching.subject = "google-subject-123".to_string();
+        matching.provider_refresh_token = Some("provider-refresh".to_string());
+        store.upsert_refresh_token(matching).await.unwrap();
+
+        let mut expired = sample_refresh_token("other-client", "expired-refresh");
+        expired.subject = "expired-subject".to_string();
+        expired.provider_refresh_token = Some("expired-provider-refresh".to_string());
+        expired.expires_at = now_unix() - 1;
+        store.upsert_refresh_token(expired).await.unwrap();
+
+        assert_eq!(
+            store
+                .find_provider_refresh_token("chatgpt-client", "google-subject-123")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("provider-refresh")
+        );
+        assert!(
+            store
+                .find_provider_refresh_token("other-client", "google-subject-123")
+                .await
+                .unwrap()
+                .is_none(),
+            "provider credentials must not cross local OAuth clients"
+        );
+        assert!(
+            store
+                .find_provider_refresh_token("chatgpt-client", "other-google-subject")
+                .await
+                .unwrap()
+                .is_none(),
+            "provider credentials must not cross verified Google subjects"
+        );
+        assert!(
+            store
+                .find_provider_refresh_token("other-client", "expired-subject")
+                .await
+                .unwrap()
+                .is_none(),
+            "expired provider credentials must not be reused"
+        );
+    }
+
+    #[tokio::test]
     async fn refresh_token_insert_fails_for_unregistered_client() {
         let store = temp_store().await;
         // Deliberately skip register_test_client — "ghost-client" was never
