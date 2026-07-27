@@ -221,6 +221,16 @@ pub(crate) fn update_upstream(
         })?;
 
     let renamed_to = patch.name.clone().filter(|new_name| new_name != name);
+    if renamed_to.is_some() {
+        ensure_no_startup_mounted_subset_depends_on(cfg, name, "rename")?;
+    }
+    if patch.code_mode.is_some() {
+        return Err(ToolError::InvalidParam {
+            message: "code_mode config is gateway-wide; use gateway.code_mode.set instead of gateway.update"
+                .to_string(),
+            param: "code_mode".to_string(),
+        });
+    }
     if let Some(new_name) = patch.name {
         if new_name != name
             && cfg
@@ -279,14 +289,6 @@ pub(crate) fn update_upstream(
     if let Some(oauth) = patch.oauth {
         cfg.upstream[index].oauth = oauth;
     }
-    if patch.code_mode.is_some() {
-        return Err(ToolError::InvalidParam {
-            message: "code_mode config is gateway-wide; use gateway.code_mode.set instead of gateway.update"
-                .to_string(),
-            param: "code_mode".to_string(),
-        });
-    }
-
     validate_upstream(&cfg.upstream[index], &cfg.gateway)?;
     if let Some(new_name) = renamed_to {
         cascade_upstream_rename(cfg, name, &new_name);
@@ -310,6 +312,7 @@ fn cascade_upstream_rename(cfg: &mut GatewayConfig, old_name: &str, new_name: &s
 }
 
 pub fn remove_upstream(cfg: &mut GatewayConfig, name: &str) -> Result<UpstreamConfig, ToolError> {
+    ensure_no_startup_mounted_subset_depends_on(cfg, name, "remove")?;
     let index = cfg
         .upstream
         .iter()
@@ -321,6 +324,34 @@ pub fn remove_upstream(cfg: &mut GatewayConfig, name: &str) -> Result<UpstreamCo
     let removed = cfg.upstream.remove(index);
     cascade_upstream_removal(cfg, name);
     Ok(removed)
+}
+
+/// Gateway-subset routes are mounted when the Axum router starts. Updating
+/// their upstream membership without rebuilding that router leaves live
+/// requests on the old scope, so make the restart boundary explicit rather
+/// than persisting a misleading partial live update.
+fn ensure_no_startup_mounted_subset_depends_on(
+    cfg: &GatewayConfig,
+    upstream: &str,
+    operation: &str,
+) -> Result<(), ToolError> {
+    let affected = cfg.protected_mcp_routes.iter().find(|route| {
+        route.enabled
+            && route.is_gateway_subset()
+            && route
+                .gateway_subset_target()
+                .is_some_and(|target| target.upstreams.iter().any(|name| name == upstream))
+    });
+    let Some(route) = affected else {
+        return Ok(());
+    };
+    Err(ToolError::Sdk {
+        sdk_kind: "restart_required".to_string(),
+        message: format!(
+            "cannot {operation} gateway `{upstream}` while protected gateway_subset route `{}` is mounted; remove or update that route and restart Labby first",
+            route.name
+        ),
+    })
 }
 
 fn cascade_upstream_removal(cfg: &mut GatewayConfig, removed_name: &str) {

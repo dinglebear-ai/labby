@@ -227,22 +227,35 @@ pub(crate) async fn notify_catalog_peers(
     // A peer that was successfully told about its new contract has now been
     // told; record that so the next fanout diffs against what it actually
     // received. A peer that failed is being pruned, so its bookkeeping is moot.
-    let alive: Vec<RegisteredPeer> = evaluated
-        .into_iter()
-        .zip(results)
-        .filter_map(|(evaluated, ok)| ok.then(|| evaluated.into_published()))
-        .collect();
+    let outcomes: Vec<_> = evaluated.into_iter().zip(results).collect();
 
-    let alive_count = alive.len();
     let mut guard = peers.write().await;
-    let added_since_snapshot = if guard.len() > peer_count {
-        guard.split_off(peer_count)
-    } else {
-        Vec::new()
-    };
-    *guard = alive;
-    guard.extend(added_since_snapshot);
-    let pruned = peer_count.saturating_sub(alive_count);
+    let mut pruned = 0;
+    for (evaluated, ok) in &outcomes {
+        if !ok {
+            continue;
+        }
+        let registered = evaluated.clone().into_published();
+        let registration_id = registered.registration_id;
+        if let Some(index) = guard
+            .iter()
+            .position(|current| current.registration_id == registration_id)
+        {
+            guard[index] = registered;
+        }
+    }
+    for (evaluated, ok) in outcomes {
+        if ok {
+            continue;
+        }
+        if let Some(index) = guard
+            .iter()
+            .position(|current| current.registration_id == evaluated.registered.registration_id)
+        {
+            guard.remove(index);
+            pruned += 1;
+        }
+    }
     tracing::info!(
         surface = "mcp",
         service = "peers",
@@ -255,6 +268,7 @@ pub(crate) async fn notify_catalog_peers(
 
 /// One peer's evaluated outcome for a single fanout: what it will be told, and
 /// the contract to remember if that succeeds.
+#[derive(Clone)]
 struct EvaluatedPeer {
     registered: RegisteredPeer,
     changes: CatalogNotificationChanges,

@@ -279,14 +279,37 @@ async fn load_enterprise_jwks(
     {
         return Ok(entry.value().0.clone());
     }
-    let _guard = state.remote_cache_lock.lock().await;
+    let lock_key = format!("jwks:{cache_key}");
+    let fetch_lock = state
+        .remote_fetch_locks
+        .entry(lock_key.clone())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _guard = fetch_lock.lock().await;
     if let Some(entry) = state.jwks_cache.get(cache_key)
         && entry.value().1 > now_unix()
         && entry.value().0.find(required_kid).is_some()
     {
-        return Ok(entry.value().0.clone());
+        let jwks = entry.value().0.clone();
+        drop(entry);
+        drop(_guard);
+        state.remote_fetch_locks.remove(&lock_key);
+        return Ok(jwks);
     }
-    let (jwks, cache_policy) = crate::remote::fetch_json::<JwkSet>(uri, "enterprise JWKS").await?;
+    let _permit = state
+        .remote_fetch_permits
+        .acquire()
+        .await
+        .map_err(|_| AuthError::Server("remote metadata fetch limiter closed".to_string()))?;
+    let (jwks, cache_policy) =
+        match crate::remote::fetch_json::<JwkSet>(uri, "enterprise JWKS").await {
+            Ok(value) => value,
+            Err(error) => {
+                drop(_guard);
+                state.remote_fetch_locks.remove(&lock_key);
+                return Err(error);
+            }
+        };
     if cache_policy.cacheable {
         state
             .jwks_cache
@@ -308,6 +331,8 @@ async fn load_enterprise_jwks(
             ),
         );
     }
+    drop(_guard);
+    state.remote_fetch_locks.remove(&lock_key);
     Ok(jwks)
 }
 
@@ -631,6 +656,14 @@ async fn authorization_code_grant(
     let client_id = require_field(request.client_id, "client_id")?;
     let redirect_uri = require_field(request.redirect_uri, "redirect_uri")?;
     let code_verifier = require_field(request.code_verifier, "code_verifier")?;
+    authenticate_oauth_client(
+        &state,
+        &client_id,
+        request.client_secret.as_deref(),
+        request.client_assertion_type.as_deref(),
+        request.client_assertion.as_deref(),
+    )
+    .await?;
     let auth_code_id = fingerprint(&code);
     info!(
         grant_type = "authorization_code",
@@ -742,6 +775,14 @@ async fn refresh_token_grant(
         .transpose()?;
     let client_id = require_field(request.client_id, "client_id")?;
     let refresh_token = require_field(request.refresh_token, "refresh_token")?;
+    authenticate_oauth_client(
+        &state,
+        &client_id,
+        request.client_secret.as_deref(),
+        request.client_assertion_type.as_deref(),
+        request.client_assertion.as_deref(),
+    )
+    .await?;
     let refresh_token_id = fingerprint(&refresh_token);
     info!(
         grant_type = "refresh_token",
@@ -1474,6 +1515,133 @@ mod tests {
         assert_eq!(first.status(), StatusCode::OK);
         let replay = app.oneshot(form_request("/token", body)).await.unwrap();
         assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn private_key_jwt_authenticates_authorization_code_and_refresh_grants_before_redemption()
+    {
+        let base = test_auth_state_with_registered_client().await;
+        let (encoding_key, jwks) = assertion_key();
+        let mut config = (*base.config).clone();
+        config.machine_clients = vec![crate::config::MachineClientConfig {
+            client_id: "jwt-agent".to_string(),
+            client_secret: None,
+            jwks: Some(jwks),
+            scopes: vec!["lab".to_string()],
+            resources: vec!["https://lab.example.com/mcp".to_string()],
+        }];
+        let state = AuthState::for_tests(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            (*base.google).clone(),
+        );
+        state
+            .store
+            .register_client(crate::types::RegisteredClient {
+                client_id: "jwt-agent".to_string(),
+                redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
+                created_at: crate::util::now_unix(),
+                token_endpoint_auth_method: "private_key_jwt".to_string(),
+                jwks: None,
+            })
+            .await
+            .unwrap();
+        state
+            .store
+            .insert_auth_code(crate::types::AuthorizationCodeRow {
+                code: "jwt-code".to_string(),
+                client_id: "jwt-agent".to_string(),
+                subject: "subject".to_string(),
+                redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                code_challenge: super::pkce_challenge("verifier"),
+                code_challenge_method: "S256".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 3_600,
+            })
+            .await
+            .unwrap();
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "jwt-refresh".to_string(),
+                client_id: "jwt-agent".to_string(),
+                subject: "subject".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 3_600,
+            })
+            .await
+            .unwrap();
+
+        let app = router(state.clone());
+        let unauthorized_code = app
+            .clone()
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "authorization_code"),
+                    ("code", "jwt-code"),
+                    ("client_id", "jwt-agent"),
+                    ("redirect_uri", "http://127.0.0.1:7777/callback"),
+                    ("code_verifier", "verifier"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unauthorized_code.status(), StatusCode::UNAUTHORIZED);
+
+        let unauthorized_refresh = app
+            .clone()
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", "jwt-refresh"),
+                    ("client_id", "jwt-agent"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unauthorized_refresh.status(), StatusCode::UNAUTHORIZED);
+
+        let now = crate::util::now_unix();
+        let assertion = sign_assertion(
+            &encoding_key,
+            &super::ClientAssertionClaims {
+                iss: "jwt-agent".to_string(),
+                sub: "jwt-agent".to_string(),
+                aud: "https://lab.example.com/token".to_string(),
+                exp: now + 300,
+                iat: now,
+                jti: "authorization-code-redemption".to_string(),
+            },
+            None,
+        );
+        let authorized_code = app
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "authorization_code"),
+                    ("code", "jwt-code"),
+                    ("client_id", "jwt-agent"),
+                    ("redirect_uri", "http://127.0.0.1:7777/callback"),
+                    ("code_verifier", "verifier"),
+                    (
+                        "client_assertion_type",
+                        "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                    ),
+                    ("client_assertion", &assertion),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(authorized_code.status(), StatusCode::OK);
     }
 
     #[tokio::test]

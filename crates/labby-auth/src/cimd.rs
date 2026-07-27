@@ -34,20 +34,43 @@ pub async fn resolve_client(
         _ => return Ok(None),
     };
     let now = now_unix();
+    let lock_key = format!("cimd:{client_id}");
+    let fetch_lock = state
+        .remote_fetch_locks
+        .entry(lock_key.clone())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _guard = fetch_lock.lock().await;
     if let Some(entry) = state.cimd_cache.get(client_id)
         && entry.value().1 > now
     {
         return Ok(Some(entry.value().0.clone()));
     }
-    let _guard = state.remote_cache_lock.lock().await;
     if let Some(entry) = state.cimd_cache.get(client_id)
         && entry.value().1 > now_unix()
     {
-        return Ok(Some(entry.value().0.clone()));
+        let client = entry.value().0.clone();
+        drop(entry);
+        drop(_guard);
+        state.remote_fetch_locks.remove(&lock_key);
+        return Ok(Some(client));
     }
+    let _permit = state
+        .remote_fetch_permits
+        .acquire()
+        .await
+        .map_err(|_| AuthError::Server("remote metadata fetch limiter closed".to_string()))?;
     let (document, cache_policy) =
-        crate::remote::fetch_json::<ClientMetadataDocument>(&url, "client metadata document")
-            .await?;
+        match crate::remote::fetch_json::<ClientMetadataDocument>(&url, "client metadata document")
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                drop(_guard);
+                state.remote_fetch_locks.remove(&lock_key);
+                return Err(error);
+            }
+        };
     let client = validate_document(
         client_id,
         document,
@@ -74,6 +97,8 @@ pub async fn resolve_client(
             ),
         );
     }
+    drop(_guard);
+    state.remote_fetch_locks.remove(&lock_key);
     Ok(Some(client))
 }
 

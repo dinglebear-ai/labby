@@ -73,13 +73,9 @@ The endpoint does not accept legacy `initialize` /
 `notifications/initialized` requests and does not issue or use
 `Mcp-Session-Id`.
 
-The gateway-to-upstream boundary negotiates independently. It attempts
-`server/discover` with `2026-07-28` first. When an upstream explicitly proves
-that lifecycle is unsupported, Labby reconnects using the compatible
-`2025-11-25` initialize lifecycle. Authentication failures, TLS failures,
-timeouts, and generic upstream errors never trigger compatibility fallback.
-This preserves a fully stateless downstream surface without requiring every
-upstream server to upgrade in lockstep.
+The gateway-to-upstream boundary uses that same lifecycle. It sends
+`server/discover` with `2026-07-28` and never retries with legacy
+`initialize`. Upstreams must support the stateless lifecycle.
 
 ### DNS Rebinding Protection
 

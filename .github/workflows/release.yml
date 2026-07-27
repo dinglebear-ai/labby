@@ -78,14 +78,14 @@ jobs:
 
   build:
     name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
     needs: frontend-assets
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            runner: '["self-hosted", "unraid"]'
             use-cross: false
             binary: labby
             archive: lab-x86_64-unknown-linux-gnu.tar.gz
@@ -94,7 +94,7 @@ jobs:
           # cannot find stdbool.h for the target). No fleet host is aarch64.
           # Tracked in beads (restore aarch64 release builds).
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            runner: '"windows-latest"'
             use-cross: false
             binary: labby.exe
             archive: lab-x86_64-pc-windows-msvc.zip
@@ -106,7 +106,11 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - name: Install Rust + soldr
+        if: runner.os != 'Windows'
+        uses: ./.github/actions/setup-rust-soldr
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
+        if: runner.os == 'Windows'
         with:
           targets: ${{ matrix.target }}
 

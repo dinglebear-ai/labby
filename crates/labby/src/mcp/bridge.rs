@@ -45,9 +45,12 @@ use rmcp::model::{
     GetPromptResponse, GetTaskParams, GetTaskResult, InitializeRequestParams, InitializeResult,
     ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
     PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResponse, ServerInfo, ServerResult, UpdateTaskParams,
+    ReadResourceResponse, ServerInfo, ServerNotification, ServerResult, SubscriptionFilter,
+    UpdateTaskParams,
 };
-use rmcp::service::{NotificationContext, Peer, RequestContext, RunningService, ServiceError};
+use rmcp::service::{
+    NotificationContext, Peer, RequestContext, RunningService, ServiceError, SubscriptionContext,
+};
 use rmcp::{ClientHandler, ErrorData, RoleClient, RoleServer, ServerHandler};
 
 /// `ClientHandler` for the bridge's outbound connection to the real daemon.
@@ -149,9 +152,19 @@ impl ServerHandler for BridgeServerHandler {
 
     async fn initialize(
         &self,
-        _request: InitializeRequestParams,
+        request: InitializeRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
+        tracing::warn!(
+            surface = "mcp",
+            service = "labby",
+            action = "bridge.lifecycle.reject_legacy_initialize",
+            subsystem = "mcp_bridge",
+            requested_protocol_version = %request.protocol_version,
+            client_name = %request.client_info.name,
+            client_version = %request.client_info.version,
+            "rejected unsupported legacy MCP initialize lifecycle on stdio bridge"
+        );
         Err(ErrorData::new(
             rmcp::model::ErrorCode::METHOD_NOT_FOUND,
             "legacy initialize lifecycle is not supported; use server/discover",
@@ -167,6 +180,48 @@ impl ServerHandler for BridgeServerHandler {
             vec![ProtocolVersion::V_2026_07_28],
             self.get_info(),
         ))
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        // The daemon validates the final filter when its subscription is
+        // established; preserving the requested subset keeps the bridge
+        // transparent while still letting the downstream sink enforce it.
+        Some(requested.clone())
+    }
+
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
+        let mut upstream = self
+            .peer
+            .listen(context.accepted().clone())
+            .await
+            .map_err(|error| bridge_error("subscriptions.listen", error))?;
+        let sink = context.sink().clone();
+
+        loop {
+            tokio::select! {
+                _ = context.cancelled() => {
+                    drop(upstream.cancel().await);
+                    return Ok(());
+                }
+                notification = upstream.next() => {
+                    match notification.map_err(|error| bridge_error("subscriptions.relay", error))? {
+                        Some(notification @ (
+                            ServerNotification::ToolListChangedNotification(_)
+                            | ServerNotification::ResourceListChangedNotification(_)
+                            | ServerNotification::PromptListChangedNotification(_)
+                            | ServerNotification::ResourceUpdatedNotification(_)
+                        )) => sink.send(notification).await.map_err(|error| {
+                            ErrorData::internal_error(format!("failed to relay subscription notification: {error}"), None)
+                        })?,
+                        Some(_) => {}
+                        None => return Ok(()),
+                    }
+                }
+            }
+        }
     }
 
     /// Mirror the real daemon's actual advertised `ServerInfo` -- fetched

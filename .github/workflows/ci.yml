@@ -215,7 +215,7 @@ jobs:
 
   msrv:
     name: MSRV 1.92
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
@@ -449,7 +449,7 @@ jobs:
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, unraid]
     timeout-minutes: 20
     needs: changes
     if: >-
@@ -480,11 +480,7 @@ jobs:
 
   test:
     name: Test
-    # Self-hosted Linux runner on a PUBLIC repo: fork PRs must NEVER reach it.
-    # Run on self-hosted for trusted events and same-repo PRs only.
-    # Fork PRs are routed to `test-fork` on github-hosted Ubuntu.
-    #
-    # linux-lab is a persistent, durable machine, so soldr's zccache compile
+    # The Linux runner is persistent, so soldr's zccache compile
     # store persists on local disk across runs (SOLDR_CACHE_DIR at the top of
     # this workflow) — no GitHub-cache save/restore layer needed.
     runs-on: [self-hosted, unraid]
@@ -754,27 +750,21 @@ jobs:
           Enforce-HardCap $targetDir $targetMaxBytes "Persistent Cargo target dir"
 
   release-smoke:
-    name: Release smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Release smoke (${{ matrix.name }})
+    runs-on: ${{ fromJSON(matrix.runner) }}
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.release == 'true' }}
-    # GitHub-hosted job: neutralize the repo's .cargo/config.toml
-    # `rustc-wrapper = scripts/cargo-rustc-wrapper` shim, which Windows runners
-    # cannot exec (os error 193). soldr jobs override this via setup-rust-soldr;
-    # this hosted job keeps the empty-wrapper disabler at job scope.
+    # The release artifact workflow covers Windows on a hosted runner. This
+    # smoke job exercises only the Linux release artifact on Soldr.
     env:
       RUSTC_WRAPPER: ""
       CARGO_BUILD_RUSTC_WRAPPER: ""
     strategy:
       fail-fast: false
       matrix:
-        # windows-latest release builds take 20-25 min on GitHub-hosted
-        # runners and a Linux cross-check is not viable (aws-lc-sys needs a
-        # real Windows C toolchain even under `cargo check`). Skip Windows on
-        # PRs; it still runs on every push to main, the weekly schedule, and
-        # release.yml — so Windows breakage surfaces minutes after merge
-        # instead of blocking every PR.
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "windows-latest"]') }}
+        include:
+          - name: linux
+            runner: '["self-hosted", "unraid"]'
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -783,10 +773,9 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
-        with:
-          save-if: true
+      - name: Install Rust + soldr
+        if: runner.os != 'Windows'
+        uses: ./.github/actions/setup-rust-soldr
       - run: cargo build --workspace --all-features --locked --release
       - name: Verify release binary
         if: runner.os != 'Windows'

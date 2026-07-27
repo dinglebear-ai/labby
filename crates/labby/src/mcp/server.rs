@@ -160,9 +160,19 @@ impl ServerHandler for LabMcpServer {
 
     async fn initialize(
         &self,
-        _request: InitializeRequestParams,
+        request: InitializeRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
+        tracing::warn!(
+            surface = "mcp",
+            service = "labby",
+            action = "lifecycle.reject_legacy_initialize",
+            subsystem = "mcp_server",
+            requested_protocol_version = %request.protocol_version,
+            client_name = %request.client_info.name,
+            client_version = %request.client_info.version,
+            "rejected unsupported legacy MCP initialize lifecycle"
+        );
         Err(ErrorData::new(
             rmcp::model::ErrorCode::METHOD_NOT_FOUND,
             "legacy initialize lifecycle is not supported; use server/discover",
@@ -240,13 +250,14 @@ impl ServerHandler for LabMcpServer {
         let last_contract = contract.visible_contract().await;
         let route_scope_label = self.route_scope.label();
         let pruned_peer_count = crate::mcp::peers::prune_closed_peers(&self.peers).await;
-        let subscription_id = context.sink().id().clone();
         let mut peers = self.peers.write().await;
-        peers.push(crate::mcp::peers::RegisteredPeer::from_subscription(
+        let registered = crate::mcp::peers::RegisteredPeer::from_subscription(
             context.sink().clone(),
             contract,
             last_contract,
-        ));
+        );
+        let registration_id = registered.registration_id;
+        peers.push(registered);
         tracing::info!(
             surface = "mcp",
             service = "peers",
@@ -263,7 +274,7 @@ impl ServerHandler for LabMcpServer {
         context.cancelled().await;
 
         let mut peers = self.peers.write().await;
-        peers.retain(|registered| registered.target.subscription_id() != Some(&subscription_id));
+        peers.retain(|registered| registered.registration_id != registration_id);
         tracing::info!(
             surface = "mcp",
             service = "peers",

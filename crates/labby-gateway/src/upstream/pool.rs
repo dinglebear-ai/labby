@@ -34,7 +34,6 @@ mod entries;
 mod health;
 mod helpers;
 mod lifecycle;
-mod lifecycle_compat;
 mod logging;
 mod probe;
 mod prompts_get;

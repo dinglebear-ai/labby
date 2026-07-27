@@ -4,6 +4,7 @@ use rmcp::RoleServer;
 use rmcp::service::Peer;
 use rmcp::service::SubscriptionSink;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
 #[cfg(feature = "gateway")]
 use tokio::sync::mpsc;
@@ -20,12 +21,21 @@ use crate::dispatch::gateway::types::{CatalogChangeEvent, GatewayCatalogDiff};
 /// raw-exposing protected route miss its own changes.
 #[derive(Clone)]
 pub struct RegisteredPeer {
+    /// Server-global identity. JSON-RPC request IDs are client-local, so they
+    /// cannot identify a registry entry shared by all transports.
+    pub(crate) registration_id: u64,
     pub(crate) target: NotificationTarget,
     pub(crate) contract: crate::mcp::peer_contract::PeerContract,
     /// Last contract this peer was notified about. Seeded at registration so
     /// the first diff compares against what the peer actually received in its
     /// initial `tools/list`, not against an empty set.
     pub(crate) last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
+}
+
+static PEER_REGISTRATION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_registration_id() -> u64 {
+    PEER_REGISTRATION_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 #[derive(Clone)]
@@ -69,14 +79,6 @@ impl NotificationTarget {
             Self::Subscription(sink) => sink.notify_prompt_list_changed().await.map_err(|_| ()),
         }
     }
-
-    pub(crate) fn subscription_id(&self) -> Option<&rmcp::model::RequestId> {
-        match self {
-            #[cfg(test)]
-            Self::LegacyPeer(_) => None,
-            Self::Subscription(sink) => Some(sink.id()),
-        }
-    }
 }
 
 impl RegisteredPeer {
@@ -86,6 +88,7 @@ impl RegisteredPeer {
         last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
     ) -> Self {
         Self {
+            registration_id: next_registration_id(),
             target: NotificationTarget::Subscription(sink),
             contract,
             last_contract,
@@ -127,6 +130,7 @@ impl RegisteredPeer {
         last_contract: crate::mcp::catalog::ToolCatalogSnapshot,
     ) -> Self {
         Self {
+            registration_id: next_registration_id(),
             target: NotificationTarget::LegacyPeer(peer),
             contract: crate::mcp::peer_contract::PeerContract {
                 registry: Arc::new(crate::registry::ToolRegistry::default()),

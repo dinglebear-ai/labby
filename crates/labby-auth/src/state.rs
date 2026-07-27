@@ -7,6 +7,8 @@ use std::time::Instant;
 
 use dashmap::DashMap;
 use tokio::sync::Mutex;
+#[cfg(feature = "http-axum")]
+use tokio::sync::Semaphore;
 use tracing::{debug, info};
 use url::Url;
 
@@ -21,6 +23,10 @@ use crate::types::RegisteredClient;
 const RATE_LIMIT_RETRY_AFTER_MS: u64 = 60_000;
 const RATE_LIMIT_MAX_IP_BUCKETS: usize = 4_096;
 const RATE_LIMIT_IDLE_TTL_SECS: u64 = 10 * 60;
+/// Bound concurrent untrusted metadata fetches while per-document locks
+/// coalesce duplicate requests without serializing independent documents.
+#[cfg(feature = "http-axum")]
+const REMOTE_FETCH_MAX_CONCURRENT: usize = 16;
 
 /// Per-request parameters for rate-limiting. Each bucket is independent.
 struct RateLimiterInner {
@@ -183,8 +189,14 @@ pub struct AuthState {
     pub(crate) cimd_cache: Arc<DashMap<String, (RegisteredClient, i64)>>,
     #[cfg(feature = "http-axum")]
     pub(crate) jwks_cache: Arc<DashMap<String, (jsonwebtoken::jwk::JwkSet, i64)>>,
+    /// Per-document single-flight locks. Never hold one global lock across
+    /// remote I/O: an unrelated slow metadata endpoint must not block OAuth.
     #[cfg(feature = "http-axum")]
-    pub(crate) remote_cache_lock: Arc<Mutex<()>>,
+    pub(crate) remote_fetch_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
+    /// Global concurrency cap for untrusted remote metadata fetches. This is a
+    /// semaphore, not a mutex: unrelated documents may still fetch in parallel.
+    #[cfg(feature = "http-axum")]
+    pub(crate) remote_fetch_permits: Arc<Semaphore>,
 }
 
 impl AuthState {
@@ -242,7 +254,9 @@ impl AuthState {
             #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
-            remote_cache_lock: Arc::new(Mutex::new(())),
+            remote_fetch_locks: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            remote_fetch_permits: Arc::new(Semaphore::new(REMOTE_FETCH_MAX_CONCURRENT)),
         })
     }
 
@@ -412,7 +426,9 @@ impl AuthState {
             #[cfg(feature = "http-axum")]
             jwks_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
-            remote_cache_lock: Arc::new(Mutex::new(())),
+            remote_fetch_locks: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            remote_fetch_permits: Arc::new(Semaphore::new(REMOTE_FETCH_MAX_CONCURRENT)),
         }
     }
 }

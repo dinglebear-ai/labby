@@ -332,7 +332,7 @@ fn update_upstream_replaces_named_upstream_only() {
 }
 
 #[test]
-fn update_upstream_rename_cascades_into_protected_route_targets() {
+fn update_upstream_rename_rejects_startup_mounted_subset_routes() {
     let mut cfg = sample_config();
     let mut direct_route = sample_protected_route("direct");
     direct_route.backend_url = String::new();
@@ -344,7 +344,7 @@ fn update_upstream_rename_cascades_into_protected_route_targets() {
     target.upstreams = vec!["a".to_string(), "b".to_string()];
     cfg.protected_mcp_routes = vec![direct_route, subset_route];
 
-    update_upstream(
+    let error = update_upstream(
         &mut cfg,
         "b",
         GatewayUpdatePatch {
@@ -352,19 +352,10 @@ fn update_upstream_rename_cascades_into_protected_route_targets() {
             ..GatewayUpdatePatch::default()
         },
     )
-    .expect("rename should cascade");
+    .expect_err("rename must not mutate a startup-mounted subset route");
 
-    assert!(cfg.upstream.iter().any(|u| u.name == "claude-labby"));
-    assert_eq!(
-        cfg.protected_mcp_routes[0].upstream.as_deref(),
-        Some("claude-labby")
-    );
-    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &cfg.protected_mcp_routes[1].target
-    else {
-        panic!("gateway subset target");
-    };
-    assert_eq!(target.upstreams, ["a", "claude-labby"]);
-    validate_config(&cfg).expect("renamed config should remain valid");
+    assert_eq!(error.kind(), "restart_required");
+    assert!(cfg.upstream.iter().any(|u| u.name == "b"));
 }
 
 #[test]
@@ -512,7 +503,7 @@ fn remove_upstream_removes_named_gateway_entry() {
 }
 
 #[test]
-fn remove_upstream_cascades_into_protected_route_targets() {
+fn remove_upstream_rejects_startup_mounted_subset_routes() {
     let mut cfg = sample_config();
 
     let mut direct_route = sample_protected_route("direct");
@@ -535,17 +526,11 @@ fn remove_upstream_cascades_into_protected_route_targets() {
 
     cfg.protected_mcp_routes = vec![direct_route, retained_subset, emptied_subset];
 
-    let removed = remove_upstream(&mut cfg, "b").expect("remove");
+    let error = remove_upstream(&mut cfg, "b")
+        .expect_err("remove must not mutate a startup-mounted subset route");
 
-    assert_eq!(removed.name, "b");
-    assert_eq!(cfg.protected_mcp_routes.len(), 1);
-    assert_eq!(cfg.protected_mcp_routes[0].name, "retained-subset");
-    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &cfg.protected_mcp_routes[0].target
-    else {
-        panic!("gateway subset target");
-    };
-    assert_eq!(target.upstreams, ["a"]);
-    validate_config(&cfg).expect("removed config should remain valid");
+    assert_eq!(error.kind(), "restart_required");
+    assert!(cfg.upstream.iter().any(|upstream| upstream.name == "b"));
 }
 
 #[test]

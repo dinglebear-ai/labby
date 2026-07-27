@@ -900,13 +900,12 @@ async fn log_mcp_request(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let method = req.method().to_string();
-    let uri = req.uri().to_string();
-    let mcp_session_id = req
-        .headers()
-        .get("mcp-session-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("<none>")
-        .to_string();
+    // Queries and session ids are opaque caller-controlled values. They can
+    // contain credentials, so request observability records only safe shape
+    // metadata rather than their raw contents.
+    let path = req.uri().path().to_string();
+    let query_present = req.uri().query().is_some();
+    let mcp_session_present = req.headers().contains_key("mcp-session-id");
     let authorization_present = req
         .headers()
         .contains_key(axum::http::header::AUTHORIZATION);
@@ -928,8 +927,9 @@ async fn log_mcp_request(
         subsystem = "mcp_server",
         action = "http_request",
         method = %method,
-        uri = %uri,
-        mcp_session_id = %mcp_session_id,
+        path = %path,
+        query_present,
+        mcp_session_present,
         authorization_present,
         user_agent = %user_agent,
         origin = %origin,
