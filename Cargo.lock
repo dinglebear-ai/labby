@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "labby"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "labby-apis"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "futures",
  "jiff",
@@ -1932,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "labby-auth"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1967,7 +1967,7 @@ dependencies = [
 
 [[package]]
 name = "labby-codemode"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -1994,7 +1994,7 @@ dependencies = [
 
 [[package]]
 name = "labby-gateway"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2043,7 +2043,7 @@ dependencies = [
 
 [[package]]
 name = "labby-openapi"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "futures",
  "labby-primitives",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "labby-primitives"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "thiserror 2.0.18",
  "url",
@@ -2070,7 +2070,7 @@ dependencies = [
 
 [[package]]
 name = "labby-runtime"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "jiff",
  "labby-apis",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "labby-web"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "tempfile",
  "thiserror 2.0.18",
@@ -2097,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "labby-winjob"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "tracing",
  "windows-sys 0.59.0",
@@ -4919,7 +4919,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "serde_json",
 ]
