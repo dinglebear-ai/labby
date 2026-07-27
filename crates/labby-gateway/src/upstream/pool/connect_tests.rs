@@ -124,6 +124,117 @@ async fn http_upstream_falls_back_after_transport_rejects_2026_discovery() {
 }
 
 #[derive(Clone, Default)]
+struct MisclassifiedDiscoveryResponder {
+    discover_requests: Arc<AtomicUsize>,
+    initialize_requests: Arc<AtomicUsize>,
+    list_tools_requests: Arc<AtomicUsize>,
+}
+
+impl Respond for MisclassifiedDiscoveryResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC request");
+        let method = body
+            .get("method")
+            .and_then(Value::as_str)
+            .expect("JSON-RPC method");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+
+        match method {
+            "server/discover" => {
+                self.discover_requests.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "resultType": "complete",
+                        "supportedVersions": [
+                            "2026-07-28",
+                            "2025-11-25",
+                            "2025-06-18"
+                        ],
+                        "capabilities": {"tools": {}},
+                        "ttlMs": 0,
+                        "cacheScope": "private",
+                        "_meta": {
+                            "io.modelcontextprotocol/serverInfo": {
+                                "name": "metadata-discovery-test",
+                                "version": "1.0.0"
+                            }
+                        }
+                    }
+                }))
+            }
+            "initialize" => {
+                self.initialize_requests.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .insert_header("Mcp-Session-Id", "metadata-fallback-session")
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {
+                                "name": "metadata-discovery-test",
+                                "version": "1.0.0"
+                            }
+                        }
+                    }))
+            }
+            "notifications/initialized" => ResponseTemplate::new(202),
+            "tools/list" => {
+                self.list_tools_requests.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "tools": [{
+                            "name": "metadata_fallback_echo",
+                            "description": "misclassified discovery fallback proof",
+                            "inputSchema": {"type": "object"}
+                        }]
+                    }
+                }))
+            }
+            other => ResponseTemplate::new(500)
+                .set_body_string(format!("unexpected MCP method: {other}")),
+        }
+    }
+}
+
+#[tokio::test]
+async fn http_upstream_falls_back_when_discovery_result_is_misclassified() {
+    let server = MockServer::start().await;
+    let responder = MisclassifiedDiscoveryResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let mut config = test_upstream_config();
+    config.name = "metadata-fallback-http".to_string();
+    config.url = Some(format!("{}/mcp", server.uri()));
+
+    let (_connection, tools) = connect_http_upstream(
+        config.url.as_deref().expect("url"),
+        &config,
+        None,
+        None,
+        None,
+        (),
+    )
+    .await
+    .expect("gateway should retry a misclassified discovery response through initialize");
+
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(responder.list_tools_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "metadata_fallback_echo");
+}
+
+#[derive(Clone, Default)]
 struct SseMethodNotFoundResponder {
     initialize_requests: Arc<AtomicUsize>,
 }
