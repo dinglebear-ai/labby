@@ -65,18 +65,31 @@ ensure_incus_ready() {
         return
     fi
 
+    have systemctl || die "incus is installed but systemctl is unavailable to start its daemon"
+    log "starting incus socket and daemon"
+    sudo_cmd systemctl daemon-reload
+    sudo_cmd systemctl enable --now incus.socket
+    sudo_cmd systemctl start incus.service
+
+    for _ in $(seq 1 30); do
+        if incus info >/dev/null 2>&1; then
+            break
+        fi
+        if have sudo && sudo incus info >/dev/null 2>&1; then
+            INCUS_USE_SUDO=1
+            break
+        fi
+        sleep 1
+    done
+
+    if ! incus_cmd info >/dev/null 2>&1; then
+        die "incus daemon did not become usable after service startup"
+    fi
+
     log "initializing incus with minimal defaults"
-    sudo_cmd incus admin init --minimal || true
+    incus_cmd admin init --minimal || true
 
-    if incus info >/dev/null 2>&1; then
-        return
-    fi
-    if have sudo && sudo incus info >/dev/null 2>&1; then
-        INCUS_USE_SUDO=1
-        return
-    fi
-
-    die "incus did not become usable after initialization"
+    incus_cmd info >/dev/null 2>&1 || die "incus did not remain usable after initialization"
 }
 
 default_storage_pool() {

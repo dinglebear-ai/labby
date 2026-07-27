@@ -88,7 +88,6 @@ jobs:
           # Runner packages are bound to the reviewed host snapshot; record the
           # resolved versions because cross-image apt pins are not stable.
           dpkg-query -W debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
-          sudo incus admin init --minimal || true
 
       - name: Validate image scripts and definition
         run: |
