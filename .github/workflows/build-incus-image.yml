@@ -37,7 +37,6 @@ env:
   RUSTFLAGS: -D warnings
   # Persistent per-runner zccache compile store for soldr (replaces sccache).
   SOLDR_CACHE_DIR: ${{ github.workspace }}/../.soldr-cache
-  DISTROBUILDER_SNAP_REVISION: "2114"
 
 jobs:
   build-image:
@@ -60,14 +59,11 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
-          sudo snap install distrobuilder --classic --revision "$DISTROBUILDER_SNAP_REVISION"
+          sudo apt-get install -y debootstrap distrobuilder gpg incus rsync shellcheck squashfs-tools uidmap
           sudo distrobuilder --version
-          snap list distrobuilder
-          # Ubuntu runner packages are bound to GitHub's reviewed image
-          # snapshot; record the resolved versions because cross-image apt
-          # version pins are not stable or consistently retained.
-          dpkg-query -W debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
+          # Runner packages are bound to the reviewed host snapshot; record the
+          # resolved versions because cross-image apt pins are not stable.
+          dpkg-query -W debootstrap distrobuilder gpg incus rsync shellcheck squashfs-tools uidmap
           sudo incus admin init --minimal || true
 
       - name: Validate image scripts and definition
