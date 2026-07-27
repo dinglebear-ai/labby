@@ -2114,6 +2114,19 @@ mod tests {
     #[tokio::test]
     async fn token_endpoint_rejects_refresh_token_client_mismatch() {
         let state = test_auth_state_with_registered_client().await;
+        // Authenticate the second client successfully so this test reaches the
+        // refresh-token binding check instead of testing unknown-client auth.
+        state
+            .store
+            .register_client(crate::types::RegisteredClient {
+                client_id: "other-client".to_string(),
+                redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
+                created_at: crate::util::now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
+            })
+            .await
+            .unwrap();
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -2145,7 +2158,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             response
                 .headers()
@@ -2159,6 +2172,15 @@ mod tests {
                 .get(header::PRAGMA)
                 .and_then(|value| value.to_str().ok()),
             Some("no-cache")
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "invalid_grant");
+        assert_eq!(
+            json["error_description"],
+            "client_id does not match the refresh token"
         );
     }
 
