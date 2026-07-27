@@ -25,7 +25,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use crate::mcp::catalog::{CODE_MODE_TOOL_NAME, CodeModeVisibility, ToolCatalogSnapshot};
+use crate::mcp::catalog::{
+    CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, CodeModeVisibility, MCP_APP_TOOL_NAME,
+    ToolCatalogSnapshot, code_mode_app_enabled,
+};
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
@@ -137,6 +140,10 @@ impl PeerContract {
         let mut tools = BTreeSet::new();
         if visibility.exposes_synthetic_tools() {
             tools.insert(CODE_MODE_TOOL_NAME.to_string());
+            tools.insert(MCP_APP_TOOL_NAME.to_string());
+            if code_mode_app_enabled() {
+                tools.insert(CODE_MODE_UI_TOOL_NAME.to_string());
+            }
         } else {
             for svc in self.registry.services() {
                 if !visibility.hides_raw_tools() && self.service_visible_on_mcp(svc.name).await {

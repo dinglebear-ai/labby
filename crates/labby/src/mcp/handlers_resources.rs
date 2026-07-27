@@ -32,7 +32,7 @@ pub(crate) use crate::app_assets::{
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
-use crate::mcp::catalog::{CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
+use crate::mcp::catalog::{CODE_MODE_UI_TOOL_NAME, SERVER_LOGS_TOOL_NAME, code_mode_app_enabled};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
@@ -98,7 +98,7 @@ pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = 
         uri: CODE_MODE_APP_URI,
         name: "code-mode/codemode",
         runtime: CodeModeRuntime::McpApp,
-        tool_name: Some(CODE_MODE_TOOL_NAME),
+        tool_name: Some(CODE_MODE_UI_TOOL_NAME),
         resource_description: "Read-only MCP App for Code Mode call traces",
         skybridge_widget_description: None,
     },
@@ -114,7 +114,7 @@ pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = 
         uri: CODE_MODE_APP_SKYBRIDGE_URI,
         name: "code-mode/codemode.skybridge",
         runtime: CodeModeRuntime::Skybridge,
-        tool_name: Some(CODE_MODE_TOOL_NAME),
+        tool_name: Some(CODE_MODE_UI_TOOL_NAME),
         resource_description: "Read-only MCP App for Code Mode call traces",
         skybridge_widget_description: Some(
             "Live Code Mode call trace — upstream tool calls, catalog search matches, and recent gateway history.",
@@ -382,6 +382,7 @@ impl LabMcpServer {
         );
 
         if !resources.finished()
+            && code_mode_app_enabled()
             && code_mode_app_resources_visible(
                 self.code_mode_visibility().await.exposes_synthetic_tools(),
                 auth,
@@ -1917,8 +1918,8 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         let codemode_tool = tools
             .tools
             .iter()
-            .find(|tool| tool.name.as_ref() == CODE_MODE_TOOL_NAME)
-            .expect("Code Mode tool should be listed");
+            .find(|tool| tool.name.as_ref() == CODE_MODE_UI_TOOL_NAME)
+            .expect("Code Mode UI tool should be listed");
         let upstream_ui_tool = tools
             .tools
             .iter()
@@ -2838,7 +2839,7 @@ for (const value of [
         // The one convention left is the tool↔descriptor mapping: every Code Mode
         // tool must have exactly one MCP (Claude) descriptor and exactly one
         // skybridge (OpenAI) descriptor, or it silently loses one runtime's binding.
-        for tool in [CODE_MODE_TOOL_NAME] {
+        for tool in [CODE_MODE_UI_TOOL_NAME] {
             assert_eq!(
                 CODE_MODE_APP_RESOURCE_DESCRIPTORS
                     .iter()
@@ -3034,7 +3035,7 @@ for (const value of [
         // The tool-binding URI carries the cache-bust token but resolves to the
         // canonical base after stripping it.
         let codemode_uri =
-            code_mode_app_resource_uri_for_tool(CODE_MODE_TOOL_NAME).expect("codemode uri");
+            code_mode_app_resource_uri_for_tool(CODE_MODE_UI_TOOL_NAME).expect("codemode UI uri");
         assert!(codemode_uri.contains("?v="));
         assert_eq!(strip_app_version(&codemode_uri), CODE_MODE_APP_URI);
     }

@@ -10,7 +10,8 @@ use crate::dispatch::upstream::types::{
     ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
 };
 use crate::mcp::catalog::{
-    ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
+    ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME,
+    MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME, code_mode_app_enabled,
 };
 use crate::mcp::handlers_resources::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
@@ -20,7 +21,7 @@ use crate::mcp::handlers_resources::{
 use crate::mcp::handlers_tools::{
     add_server_tool_meta, add_server_tool_schema, code_mode_tool_meta,
     code_mode_trace_output_schema, gateway_status_tool_meta, gateway_status_tool_schema,
-    server_logs_tool_meta,
+    mcp_app_tool_schema, server_logs_tool_meta,
 };
 use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
@@ -813,8 +814,8 @@ async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
 }
 
 #[test]
-fn code_mode_tool_meta_points_to_canonical_ui_resource() {
-    let codemode = code_mode_tool_meta(CODE_MODE_TOOL_NAME);
+fn code_mode_ui_tool_meta_points_to_canonical_ui_resource() {
+    let codemode = code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME);
 
     // The binding URI carries a `?v=<hash>` cache-bust token (so a rebuilt widget
     // forces the host to refetch), but resolves to the canonical base URI.
@@ -837,6 +838,20 @@ fn code_mode_tool_meta_points_to_canonical_ui_resource() {
         "codemode tool must expose the OpenAI Apps output template"
     );
     assert!(codemode_skybridge.contains("?v="));
+}
+
+#[test]
+fn mcp_app_schema_is_text_only_and_reversible() {
+    let schema = mcp_app_tool_schema();
+    assert_eq!(
+        schema["properties"]["action"]["enum"],
+        serde_json::json!(["status", "enable", "disable"])
+    );
+    assert_eq!(
+        schema["properties"]["target"]["enum"],
+        serde_json::json!(["codemode"])
+    );
+    assert_eq!(schema["additionalProperties"], false);
 }
 
 #[test]
@@ -962,6 +977,7 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         serde_json::json!(1),
         "codemode must advertise non-empty code"
     );
+    assert!(codemode.meta.is_none(), "codemode must remain text-only");
     let schema = codemode.output_schema.as_ref().expect("outputSchema");
     let kinds = schema["oneOf"]
         .as_array()
@@ -970,6 +986,136 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         .filter_map(|variant| variant["properties"]["kind"]["const"].as_str())
         .collect::<Vec<_>>();
     assert_eq!(kinds, vec!["code_mode_execute_trace"]);
+
+    let codemode_ui = result
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == CODE_MODE_UI_TOOL_NAME)
+        .expect("codemode_ui tool");
+    assert_eq!(codemode_ui.input_schema, codemode.input_schema);
+    assert_eq!(codemode_ui.output_schema, codemode.output_schema);
+    assert!(
+        codemode_ui.meta.is_some(),
+        "codemode_ui must own app metadata"
+    );
+
+    let control = result
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
+        .expect("mcp_app tool");
+    assert!(control.meta.is_none(), "mcp_app must remain text-only");
+}
+
+#[tokio::test]
+async fn mcp_app_status_is_text_only_and_reports_runtime_state() {
+    let server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({ "action": "status", "target": "codemode" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(running.peer().clone(), &["lab"]),
+        )
+        .await
+        .expect("mcp_app status result");
+
+    assert!(!result.is_error.unwrap_or(false));
+    let structured = result.structured_content.expect("structured status");
+    assert_eq!(structured["kind"], "mcp_app_control");
+    assert_eq!(structured["enabled"], code_mode_app_enabled());
+    assert_eq!(structured["text_tool"], CODE_MODE_TOOL_NAME);
+    assert_eq!(structured["ui_tool"], CODE_MODE_UI_TOOL_NAME);
+    assert_eq!(structured["changed"], false);
+    assert!(
+        result.meta.is_none(),
+        "control result must not attach UI metadata"
+    );
+}
+
+#[tokio::test]
+async fn mcp_app_enable_is_idempotent_for_admin_scope() {
+    assert!(
+        code_mode_app_enabled(),
+        "the process-wide MCP App switch defaults to enabled"
+    );
+    let server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({ "action": "enable", "target": "codemode" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("mcp_app enable result");
+
+    assert!(!result.is_error.unwrap_or(false));
+    let structured = result.structured_content.expect("structured enable result");
+    assert_eq!(structured["enabled"], true);
+    assert_eq!(structured["changed"], false);
+    assert_eq!(structured["notification_scheduled"], false);
+    assert!(
+        result.meta.is_none(),
+        "control result must remain text-only"
+    );
+}
+
+#[tokio::test]
+async fn mcp_app_mutation_requires_admin_scope() {
+    let server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({ "action": "disable", "target": "codemode" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(running.peer().clone(), &["lab"]),
+        )
+        .await
+        .expect("mcp_app forbidden result");
+
+    assert!(result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    assert!(text.contains("lab:admin"), "{text}");
 }
 
 #[tokio::test]
@@ -1380,6 +1526,8 @@ async fn tool_catalog_snapshot_tracks_promoted_mcp_app_tools_in_code_mode() {
     let snapshot = server.snapshot_tool_catalog().await;
 
     assert!(snapshot.tools.contains(CODE_MODE_TOOL_NAME));
+    assert!(snapshot.tools.contains(CODE_MODE_UI_TOOL_NAME));
+    assert!(snapshot.tools.contains(MCP_APP_TOOL_NAME));
     assert!(snapshot.tools.contains("youtube_search_ui"));
     assert!(!snapshot.tools.contains("youtube_probe"));
 }
@@ -3307,7 +3455,14 @@ async fn snapshot_catalog_shows_no_gateway_tools_when_surface_is_disabled() {
     let snapshot = server.snapshot_catalog().await;
 
     // Raw mode — none of the gateway meta-tools should appear.
-    for meta_tool in ["codemode", "search", "execute", "code"] {
+    for meta_tool in [
+        CODE_MODE_TOOL_NAME,
+        CODE_MODE_UI_TOOL_NAME,
+        MCP_APP_TOOL_NAME,
+        "search",
+        "execute",
+        "code",
+    ] {
         assert!(
             !snapshot.tools.contains(meta_tool),
             "gateway meta-tool '{meta_tool}' must not appear when neither mode is enabled"
@@ -3337,7 +3492,11 @@ async fn protected_scope_denies_direct_code_mode_calls_when_hidden() {
         running.peer().clone(),
     );
 
-    for tool_name in [CODE_MODE_TOOL_NAME] {
+    for tool_name in [
+        CODE_MODE_TOOL_NAME,
+        CODE_MODE_UI_TOOL_NAME,
+        MCP_APP_TOOL_NAME,
+    ] {
         let result = Box::pin(
             running
                 .service()
@@ -3726,6 +3885,8 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
     // The Code Mode session sees the synthetic tool and the MCP-App UI tool,
     // never the plain upstream tool behind them.
     assert!(code_mode_contract.tools.contains(CODE_MODE_TOOL_NAME));
+    assert!(code_mode_contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
+    assert!(code_mode_contract.tools.contains(MCP_APP_TOOL_NAME));
     assert!(code_mode_contract.tools.contains("youtube_search_ui"));
     assert!(
         !code_mode_contract.tools.contains("youtube_probe"),
@@ -3739,6 +3900,8 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
         "a route with expose_code_mode = false sees raw upstream tools"
     );
     assert!(!raw_contract.tools.contains(CODE_MODE_TOOL_NAME));
+    assert!(!raw_contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
+    assert!(!raw_contract.tools.contains(MCP_APP_TOOL_NAME));
 
     // The whole point: one global projection cannot stand in for both.
     assert_ne!(

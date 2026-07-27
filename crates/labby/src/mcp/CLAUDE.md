@@ -22,17 +22,15 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
 - `deploy` sets the MCP elicitation context before calling shared deploy dispatch.
 - `fs` filters `fs.preview` out of MCP discovery and execution.
 - `nodes` owns MCP-only enrollment actions.
-- `codemode` is registered directly in the MCP layer as a gateway meta-tool and
-  bypasses both `dispatch/` and `mcp/services/`. It exposes the upstream MCP
-  proxy surface to clients through JavaScript snippets rather than the
-  action+params contract. Code Mode business logic lives in
-  `dispatch/gateway/code_mode.rs`.
-- `codemode` is registered directly in the MCP layer as the gateway Code Mode
-  tool. MCP owns
-  tool registration, scope extraction, MCP request parsing, and
-  `CallToolResult` envelope conversion. Code Mode business logic lives
-  in `dispatch/gateway/code_mode.rs` so the native CLI can call the same
-  broker without routing through MCP.
+- Code Mode is registered directly in the MCP layer and bypasses both
+  `dispatch/` and `mcp/services/`. The public surface is intentionally split:
+  `codemode` is always text-only, `codemode_ui` shares the same execution
+  backend but owns the MCP App metadata, and `mcp_app` is the text-only
+  `status|enable|disable` recovery control. App mutations require `lab:admin`,
+  are process-scoped, and schedule coalesced `tools/list_changed` plus
+  `resources/list_changed` notifications after the open tool turn drains.
+  Code Mode business logic remains in `dispatch/gateway/code_mode.rs` so the
+  native CLI can call the same broker without routing through MCP.
 
 **No business logic anywhere in `mcp/`.** If you find yourself calling `reqwest`, parsing JSON beyond param extraction, or retrying, move it to `lab-apis/src/<service>/client.rs`.
 
@@ -150,7 +148,10 @@ Resources are read-only. Do not use them for mutations.
 `read_resource_impl` splits the `ui://` namespace:
 
 - `ui://lab/code-mode/*` — Lab's own Code Mode app resources, served locally
-  from bundled HTML (`read_code_mode_app_resource_impl`).
+  from bundled HTML (`read_code_mode_app_resource_impl`). The app descriptors
+  bind only to `codemode_ui`; disabling the app hides that tool and these
+  resources from discovery, while direct resource reads remain valid so cards
+  already rendered by a host do not break.
 - `ui://lab/gateway/add-server` — the admin-only Add Server app bound to the
   synthetic `add_server` tool. Its `test` and `create` callbacks delegate to
   `gateway.test` and `gateway.add`; do not duplicate gateway persistence logic.

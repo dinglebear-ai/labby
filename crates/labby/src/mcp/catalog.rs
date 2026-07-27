@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 
@@ -9,8 +10,26 @@ use crate::dispatch::upstream::pool::UpstreamPool;
 #[cfg(test)]
 use crate::mcp::prompts::list_all as list_builtin_prompts;
 
-/// Primary Cloudflare-style Code Mode tool name.
+/// Primary Cloudflare-style Code Mode tool name. This entry point is always text-only.
 pub(crate) const CODE_MODE_TOOL_NAME: &str = "codemode";
+/// Explicit Code Mode MCP App entry point.
+pub(crate) const CODE_MODE_UI_TOOL_NAME: &str = "codemode_ui";
+/// Text-only management tool for the Lab-owned MCP App surface.
+pub(crate) const MCP_APP_TOOL_NAME: &str = "mcp_app";
+/// Process-wide Code Mode app switch. The execution backend remains available through
+/// `codemode`; this only controls the explicit `codemode_ui` tool and discoverable
+/// Code Mode app resources.
+static CODE_MODE_APP_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn code_mode_app_enabled() -> bool {
+    CODE_MODE_APP_ENABLED.load(Ordering::Acquire)
+}
+
+/// Set the process-wide Code Mode app state and return the previous value.
+pub(crate) fn set_code_mode_app_enabled(enabled: bool) -> bool {
+    CODE_MODE_APP_ENABLED.swap(enabled, Ordering::AcqRel)
+}
+
 /// Lab-owned server process log viewer tool name.
 pub(crate) const SERVER_LOGS_TOOL_NAME: &str = "server_logs";
 /// Lab-owned MCP App entry point for adding a gateway upstream.
@@ -265,6 +284,10 @@ impl LabMcpServer {
         let mut tools = BTreeSet::new();
         if visibility.exposes_synthetic_tools() {
             tools.insert(CODE_MODE_TOOL_NAME.to_string());
+            tools.insert(MCP_APP_TOOL_NAME.to_string());
+            if code_mode_app_enabled() {
+                tools.insert(CODE_MODE_UI_TOOL_NAME.to_string());
+            }
         } else {
             for svc in self.registry.services() {
                 if !visibility.hides_raw_tools() && self.service_visible_on_mcp(svc.name).await {
@@ -342,12 +365,10 @@ mod tests {
     // ── Tool name constants (Cloudflare-parity, no aliases) ─────────────────
 
     #[test]
-    fn canonical_tool_name_is_codemode() {
-        // PRESENCE: canonical names match expected Cloudflare-parity values
-        assert_eq!(
-            CODE_MODE_TOOL_NAME, "codemode",
-            "primary Code Mode tool name must be 'codemode'"
-        );
+    fn canonical_code_mode_tool_names_are_stable() {
+        assert_eq!(CODE_MODE_TOOL_NAME, "codemode");
+        assert_eq!(CODE_MODE_UI_TOOL_NAME, "codemode_ui");
+        assert_eq!(MCP_APP_TOOL_NAME, "mcp_app");
     }
 
     #[test]
