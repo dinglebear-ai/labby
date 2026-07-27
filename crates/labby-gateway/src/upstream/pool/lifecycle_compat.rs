@@ -3,6 +3,7 @@
 //! Labby's downstream server remains on the current stateless lifecycle. This
 //! module only handles independently versioned upstream servers.
 
+use rmcp::model::ProtocolVersion;
 use rmcp::service::ClientLifecycleMode;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -14,18 +15,19 @@ pub(super) enum LifecycleAttempt {
 impl LifecycleAttempt {
     pub(super) fn mode(self) -> ClientLifecycleMode {
         match self {
-            // Labby's configured upstream fleet is legacy-only. Keep the
-            // compatibility boundary deterministic: probing server/discover
-            // first leaves legacy streamable transports in inconsistent state
-            // and makes a later initialize retry unreliable.
-            Self::Modern => ClientLifecycleMode::Initialize,
+            // Modern first. Callers retry on a newly-created transport when a
+            // legacy server explicitly rejects discovery; never reuse a
+            // partially-negotiated stream for the initialize fallback.
+            Self::Modern => ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
             Self::LegacyInitialize => ClientLifecycleMode::Initialize,
         }
     }
 
     pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::Modern => "initialize-legacy",
+            Self::Modern => "discover-2026",
             Self::LegacyInitialize => "initialize",
         }
     }
@@ -37,6 +39,8 @@ pub(super) fn compatibility_retry(error: &anyhow::Error) -> Option<LifecycleAtte
 
     if message.contains("unsupported mcp-protocol-version")
         || message.contains("unsupported protocol version")
+        || message.contains("method not found")
+        || message.contains("unknown method")
     {
         return Some(LifecycleAttempt::LegacyInitialize);
     }
