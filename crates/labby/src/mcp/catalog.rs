@@ -16,18 +16,30 @@ pub(crate) const CODE_MODE_TOOL_NAME: &str = "codemode";
 pub(crate) const CODE_MODE_UI_TOOL_NAME: &str = "codemode_ui";
 /// Text-only management tool for the Lab-owned MCP App surface.
 pub(crate) const MCP_APP_TOOL_NAME: &str = "mcp_app";
-/// Process-wide Code Mode app switch. The execution backend remains available through
-/// `codemode`; this only controls the explicit `codemode_ui` tool and discoverable
-/// Code Mode app resources.
-static CODE_MODE_APP_ENABLED: AtomicBool = AtomicBool::new(true);
-
-pub(crate) fn code_mode_app_enabled() -> bool {
-    CODE_MODE_APP_ENABLED.load(Ordering::Acquire)
+/// Shared Code Mode MCP App state for one running gateway. Every downstream MCP
+/// session receives a clone, while independent gateways and tests remain isolated.
+#[derive(Clone, Debug)]
+pub(crate) struct CodeModeAppState {
+    enabled: Arc<AtomicBool>,
 }
 
-/// Set the process-wide Code Mode app state and return the previous value.
-pub(crate) fn set_code_mode_app_enabled(enabled: bool) -> bool {
-    CODE_MODE_APP_ENABLED.swap(enabled, Ordering::AcqRel)
+impl Default for CodeModeAppState {
+    fn default() -> Self {
+        Self {
+            enabled: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+impl CodeModeAppState {
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    /// Set the gateway-wide state and return the previous value.
+    pub(crate) fn set_enabled(&self, enabled: bool) -> bool {
+        self.enabled.swap(enabled, Ordering::AcqRel)
+    }
 }
 
 /// Lab-owned server process log viewer tool name.
@@ -112,6 +124,7 @@ impl LabMcpServer {
             #[cfg(feature = "gateway")]
             gateway_manager: self.gateway_manager.clone(),
             route_scope: self.route_scope.clone(),
+            code_mode_app_state: self.code_mode_app_state.clone(),
         }
     }
 
@@ -285,7 +298,7 @@ impl LabMcpServer {
         if visibility.exposes_synthetic_tools() {
             tools.insert(CODE_MODE_TOOL_NAME.to_string());
             tools.insert(MCP_APP_TOOL_NAME.to_string());
-            if code_mode_app_enabled() {
+            if self.code_mode_app_state.is_enabled() {
                 tools.insert(CODE_MODE_UI_TOOL_NAME.to_string());
             }
         } else {

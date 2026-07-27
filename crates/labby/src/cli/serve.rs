@@ -1339,6 +1339,7 @@ async fn run_stdio(
         #[cfg(feature = "gateway")]
         gateway_manager: Some(Arc::clone(&gateway_manager)),
         peers: Arc::clone(&notifier.peers),
+        code_mode_app_state: notifier.code_mode_app_state.clone(),
         #[cfg(feature = "gateway")]
         client_registry: notifier.client_registry.clone(),
         transport_label: "stdio",
@@ -1450,6 +1451,7 @@ fn build_mcp_service_with_scope(
     // All HTTP sessions share the same PeerNotifier (and thus the same peers
     // vec) so that gateway reload notifications reach every connected session.
     let shared_peers = Arc::clone(&notifier.peers);
+    let shared_code_mode_app_state = notifier.code_mode_app_state.clone();
     #[cfg(feature = "gateway")]
     let shared_client_registry = notifier.client_registry.clone();
     let route_scope_label = route_scope.label();
@@ -1464,6 +1466,7 @@ fn build_mcp_service_with_scope(
             #[cfg(not(feature = "gateway"))]
             let gateway_manager_configured = false;
             let peers = Arc::clone(&shared_peers);
+            let code_mode_app_state = shared_code_mode_app_state.clone();
             #[cfg(feature = "gateway")]
             let client_registry = shared_client_registry.clone();
             let route_scope = route_scope.clone();
@@ -1484,6 +1487,7 @@ fn build_mcp_service_with_scope(
                 #[cfg(feature = "gateway")]
                 gateway_manager: manager,
                 peers,
+                code_mode_app_state,
                 #[cfg(feature = "gateway")]
                 client_registry,
                 transport_label: "http",

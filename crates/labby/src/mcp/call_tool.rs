@@ -32,7 +32,7 @@ use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME,
-    MCP_APP_TOOL_NAME, code_mode_app_enabled, set_code_mode_app_enabled,
+    MCP_APP_TOOL_NAME,
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog_coalesce::schedule_catalog_notification;
@@ -360,8 +360,8 @@ impl LabMcpServer {
                     .into());
                 }
 
-                let previous = desired.map(set_code_mode_app_enabled);
-                let enabled = code_mode_app_enabled();
+                let previous = desired.map(|enabled| self.code_mode_app_state.set_enabled(enabled));
+                let enabled = self.code_mode_app_state.is_enabled();
                 let changed = previous.is_some_and(|previous| previous != enabled);
                 if changed {
                     schedule_catalog_notification(
@@ -371,15 +371,28 @@ impl LabMcpServer {
                     );
                 }
 
+                let notification_scheduled = changed;
+                tracing::info!(
+                    surface = "mcp",
+                    service = MCP_APP_TOOL_NAME,
+                    action = synthetic_action,
+                    subject = self.request_subject_log_tag(&context),
+                    target,
+                    enabled,
+                    changed,
+                    notification_scheduled,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "Code Mode MCP App state evaluated"
+                );
                 let payload = serde_json::json!({
                     "kind": "mcp_app_control",
                     "target": "codemode",
                     "enabled": enabled,
                     "changed": changed,
-                    "scope": "process",
+                    "scope": "gateway",
                     "text_tool": CODE_MODE_TOOL_NAME,
                     "ui_tool": CODE_MODE_UI_TOOL_NAME,
-                    "notification_scheduled": changed,
+                    "notification_scheduled": notification_scheduled,
                 });
                 let mut result =
                     CallToolResult::success(vec![ContentBlock::text(payload.to_string())]);
@@ -406,7 +419,7 @@ impl LabMcpServer {
                     )
                     .into());
                 }
-                if service == CODE_MODE_UI_TOOL_NAME && !code_mode_app_enabled() {
+                if service == CODE_MODE_UI_TOOL_NAME && !self.code_mode_app_state.is_enabled() {
                     let envelope = build_error_extra(
                         &service,
                         "call_tool",

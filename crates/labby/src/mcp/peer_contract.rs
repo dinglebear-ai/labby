@@ -26,8 +26,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::mcp::catalog::{
-    CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, CodeModeVisibility, MCP_APP_TOOL_NAME,
-    ToolCatalogSnapshot, code_mode_app_enabled,
+    CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, CodeModeAppState, CodeModeVisibility,
+    MCP_APP_TOOL_NAME, ToolCatalogSnapshot,
 };
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
@@ -50,6 +50,7 @@ pub(crate) struct PeerContract {
     #[cfg(feature = "gateway")]
     pub(crate) gateway_manager: Option<Arc<GatewayManager>>,
     pub(crate) route_scope: McpRouteScope,
+    pub(crate) code_mode_app_state: CodeModeAppState,
 }
 
 impl PeerContract {
@@ -141,7 +142,7 @@ impl PeerContract {
         if visibility.exposes_synthetic_tools() {
             tools.insert(CODE_MODE_TOOL_NAME.to_string());
             tools.insert(MCP_APP_TOOL_NAME.to_string());
-            if code_mode_app_enabled() {
+            if self.code_mode_app_state.is_enabled() {
                 tools.insert(CODE_MODE_UI_TOOL_NAME.to_string());
             }
         } else {
@@ -227,6 +228,7 @@ mod tests {
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             route_scope,
+            code_mode_app_state: Default::default(),
         }
     }
 

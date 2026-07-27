@@ -511,6 +511,7 @@ mod tests {
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            code_mode_app_state: Default::default(),
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",

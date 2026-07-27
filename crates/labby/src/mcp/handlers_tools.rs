@@ -24,7 +24,7 @@ use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME,
-    MCP_APP_TOOL_NAME, code_mode_app_enabled,
+    MCP_APP_TOOL_NAME,
 };
 use crate::mcp::completion::action_schema;
 #[cfg(feature = "gateway")]
@@ -172,7 +172,7 @@ impl LabMcpServer {
                 "registered primary Code Mode description"
             );
             let text_description = format!(
-                "{code_mode_description}\n\nThis text-only entry point never attaches an MCP App UI. Use `{CODE_MODE_UI_TOOL_NAME}` when you want the visual trace inspector."
+                "{code_mode_description}\n\nThis text-only entry point never attaches an MCP App UI. When advertised, use `{CODE_MODE_UI_TOOL_NAME}` for the visual trace inspector; `{MCP_APP_TOOL_NAME}` can inspect or restore that app surface."
             );
             tools.accept(
                 Tool::new(
@@ -185,7 +185,7 @@ impl LabMcpServer {
             advertised_names.insert(CODE_MODE_TOOL_NAME.to_string());
             gateway_tool_count += 1;
 
-            if !tools.finished() && code_mode_app_enabled() {
+            if !tools.finished() && self.code_mode_app_state.is_enabled() {
                 let codemode_resource_uri =
                     code_mode_app_resource_uri_for_tool(CODE_MODE_UI_TOOL_NAME)
                         .unwrap_or_else(|| "<missing>".to_string());
@@ -204,7 +204,9 @@ impl LabMcpServer {
                 tools.accept(
                     Tool::new(
                         CODE_MODE_UI_TOOL_NAME,
-                        code_mode_description,
+                        format!(
+                            "{code_mode_description}\n\nThis explicit UI entry point renders the Code Mode trace inspector. Use `{CODE_MODE_TOOL_NAME}` for text-only execution."
+                        ),
                         Arc::clone(&execute_schema),
                     )
                     .with_raw_output_schema(Arc::clone(&trace_output_schema))

@@ -27,7 +27,7 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
   `codemode` is always text-only, `codemode_ui` shares the same execution
   backend but owns the MCP App metadata, and `mcp_app` is the text-only
   `status|enable|disable` recovery control. App mutations require `lab:admin`,
-  are process-scoped, and schedule coalesced `tools/list_changed` plus
+  are gateway-scoped, and schedule coalesced `tools/list_changed` plus
   `resources/list_changed` notifications after the open tool turn drains.
   Code Mode business logic remains in `dispatch/gateway/code_mode.rs` so the
   native CLI can call the same broker without routing through MCP.

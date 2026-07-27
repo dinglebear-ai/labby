@@ -51,6 +51,8 @@ pub struct LabMcpServer {
     pub gateway_manager: Option<Arc<GatewayManager>>,
     /// Active subscription sinks for list-changed notifications.
     pub peers: crate::mcp::peers::PeerRegistry,
+    /// Gateway-wide switch for the explicit Code Mode MCP App surface.
+    pub(crate) code_mode_app_state: crate::mcp::catalog::CodeModeAppState,
     /// Observed inbound MCP client registry — shared with `GatewayManager`
     /// via `with_client_registry` so `gateway.clients.list` can read it.
     #[cfg(feature = "gateway")]
@@ -454,6 +456,7 @@ mod tests {
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             peers,
+            code_mode_app_state: Default::default(),
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",

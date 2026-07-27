@@ -32,7 +32,7 @@ pub(crate) use crate::app_assets::{
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
-use crate::mcp::catalog::{CODE_MODE_UI_TOOL_NAME, SERVER_LOGS_TOOL_NAME, code_mode_app_enabled};
+use crate::mcp::catalog::{CODE_MODE_UI_TOOL_NAME, SERVER_LOGS_TOOL_NAME};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
@@ -382,7 +382,7 @@ impl LabMcpServer {
         );
 
         if !resources.finished()
-            && code_mode_app_enabled()
+            && self.code_mode_app_state.is_enabled()
             && code_mode_app_resources_visible(
                 self.code_mode_visibility().await.exposes_synthetic_tools(),
                 auth,
@@ -1623,6 +1623,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             registry: Arc::new(crate::registry::ToolRegistry::new()),
             gateway_manager: Some(manager),
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            code_mode_app_state: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
@@ -1734,6 +1735,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             registry: Arc::new(registry),
             gateway_manager: Some(manager),
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            code_mode_app_state: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
@@ -1802,6 +1804,7 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             registry: Arc::new(registry),
             gateway_manager: None,
             peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            code_mode_app_state: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
             logging_level: Arc::new(std::sync::atomic::AtomicU8::new(

@@ -11,7 +11,7 @@ use crate::dispatch::upstream::types::{
 };
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME,
-    MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME, code_mode_app_enabled,
+    MCP_APP_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
 };
 use crate::mcp::handlers_resources::{
     ADD_SERVER_APP_SKYBRIDGE_URI, ADD_SERVER_APP_URI, CODE_MODE_APP_SKYBRIDGE_URI,
@@ -31,7 +31,7 @@ use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ClientCapabilities, ElicitationCapability,
     FormElicitationCapability, Implementation, Meta, PaginatedRequestParams, ProtocolVersion,
-    RequestMetaObject, Tool,
+    ReadResourceRequestParams, RequestMetaObject, Tool,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -172,6 +172,7 @@ fn test_server(
         registry: Arc::new(registry),
         gateway_manager,
         peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+        code_mode_app_state: Default::default(),
         client_registry: Default::default(),
         transport_label: "test",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(logging_level))),
@@ -1036,7 +1037,10 @@ async fn mcp_app_status_is_text_only_and_reports_runtime_state() {
     assert!(!result.is_error.unwrap_or(false));
     let structured = result.structured_content.expect("structured status");
     assert_eq!(structured["kind"], "mcp_app_control");
-    assert_eq!(structured["enabled"], code_mode_app_enabled());
+    assert_eq!(
+        structured["enabled"],
+        running.service().code_mode_app_state.is_enabled()
+    );
     assert_eq!(structured["text_tool"], CODE_MODE_TOOL_NAME);
     assert_eq!(structured["ui_tool"], CODE_MODE_UI_TOOL_NAME);
     assert_eq!(structured["changed"], false);
@@ -1048,9 +1052,10 @@ async fn mcp_app_status_is_text_only_and_reports_runtime_state() {
 
 #[tokio::test]
 async fn mcp_app_enable_is_idempotent_for_admin_scope() {
+    let app_state = crate::mcp::catalog::CodeModeAppState::default();
     assert!(
-        code_mode_app_enabled(),
-        "the process-wide MCP App switch defaults to enabled"
+        app_state.is_enabled(),
+        "the gateway MCP App switch defaults to enabled"
     );
     let server = test_server(
         completion_test_registry(),
@@ -1084,6 +1089,150 @@ async fn mcp_app_enable_is_idempotent_for_admin_scope() {
     assert!(
         result.meta.is_none(),
         "control result must remain text-only"
+    );
+}
+
+#[tokio::test]
+async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
+    let shared_state = crate::mcp::catalog::CodeModeAppState::default();
+    let mut server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.code_mode_app_state = shared_state.clone();
+
+    let mut sibling_session = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    sibling_session.code_mode_app_state = shared_state;
+    let independent_gateway = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+
+    let disable = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({ "action": "disable", "target": "codemode" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(peer.clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("mcp_app disable result");
+    assert!(!disable.is_error.unwrap_or(false));
+    let structured = disable
+        .structured_content
+        .expect("structured disable result");
+    assert_eq!(structured["enabled"], false);
+    assert_eq!(structured["changed"], true);
+    assert_eq!(structured["scope"], "gateway");
+    assert_eq!(structured["notification_scheduled"], true);
+    assert!(!running.service().code_mode_app_state.is_enabled());
+    assert!(!sibling_session.code_mode_app_state.is_enabled());
+    assert!(independent_gateway.code_mode_app_state.is_enabled());
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
+        .await
+        .expect("tools after disable");
+    let names = tools
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&CODE_MODE_TOOL_NAME));
+    assert!(names.contains(&MCP_APP_TOOL_NAME));
+    assert!(!names.contains(&CODE_MODE_UI_TOOL_NAME));
+
+    let resources = running
+        .service()
+        .list_resources_impl(None, scoped_context(peer.clone(), &["lab:read"]))
+        .await
+        .expect("resources after disable");
+    assert!(
+        resources
+            .resources
+            .iter()
+            .all(|resource| { !resource.uri.starts_with("ui://lab/code-mode/") })
+    );
+
+    let stale_ui_call = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(CODE_MODE_UI_TOOL_NAME).with_arguments(
+                serde_json::json!({ "code": "async () => 1" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(peer.clone(), &["lab"]),
+        )
+        .await
+        .expect("stale codemode_ui call result");
+    assert!(stale_ui_call.is_error.unwrap_or(false));
+    let text = stale_ui_call.content[0]
+        .as_text()
+        .expect("text")
+        .text
+        .as_str();
+    assert!(text.contains("app_disabled"), "{text}");
+
+    running
+        .service()
+        .read_resource_impl(
+            ReadResourceRequestParams::new(CODE_MODE_APP_URI),
+            scoped_context(peer.clone(), &["lab:read"]),
+        )
+        .await
+        .expect("existing app resource remains readable while disabled");
+
+    let enable = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(MCP_APP_TOOL_NAME).with_arguments(
+                serde_json::json!({ "action": "enable", "target": "codemode" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(peer.clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("mcp_app enable result");
+    let structured = enable.structured_content.expect("structured enable result");
+    assert_eq!(structured["enabled"], true);
+    assert_eq!(structured["changed"], true);
+    assert!(running.service().code_mode_app_state.is_enabled());
+    assert!(sibling_session.code_mode_app_state.is_enabled());
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer, &["lab:admin"]))
+        .await
+        .expect("tools after re-enable");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == CODE_MODE_UI_TOOL_NAME)
     );
 }
 
@@ -1631,20 +1780,23 @@ async fn list_tools_does_not_promote_upstream_mcp_app_tools_when_resources_are_n
 #[tokio::test]
 async fn list_tools_skips_upstream_ui_tools_that_collide_with_synthetic_names() {
     let upstream_name: Arc<str> = Arc::from("apps");
-    let colliding_tool = fixture_upstream_tool(
-        &upstream_name,
+    let synthetic_names = [
         CODE_MODE_TOOL_NAME,
-        Some("ui://apps/codemode.html"),
-    );
+        CODE_MODE_UI_TOOL_NAME,
+        MCP_APP_TOOL_NAME,
+    ];
+    let colliding_tools = synthetic_names
+        .iter()
+        .map(|name| {
+            (
+                (*name).to_string(),
+                fixture_upstream_tool(&upstream_name, name, Some("ui://apps/collision.html")),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let pool = Arc::new(UpstreamPool::new());
-    pool.insert_entry_for_test(
-        "apps",
-        fixture_upstream_entry(
-            "apps",
-            HashMap::from([(CODE_MODE_TOOL_NAME.to_string(), colliding_tool)]),
-        ),
-    )
-    .await;
+    pool.insert_entry_for_test("apps", fixture_upstream_entry("apps", colliding_tools))
+        .await;
     let manager = code_mode_manager_with_pool(true, fixture_upstream_config("apps"), pool).await;
     let server = test_server(
         completion_test_registry(),
@@ -1666,16 +1818,18 @@ async fn list_tools_skips_upstream_ui_tools_that_collide_with_synthetic_names() 
         .list_tools_impl(None, context)
         .await
         .expect("list tools");
-    let codemode_count = result
-        .tools
-        .iter()
-        .filter(|tool| tool.name.as_ref() == CODE_MODE_TOOL_NAME)
-        .count();
 
-    assert_eq!(
-        codemode_count, 1,
-        "upstream UI tool must not duplicate the synthetic codemode tool"
-    );
+    for synthetic_name in synthetic_names {
+        let count = result
+            .tools
+            .iter()
+            .filter(|tool| tool.name.as_ref() == synthetic_name)
+            .count();
+        assert_eq!(
+            count, 1,
+            "upstream UI tool must not duplicate synthetic tool {synthetic_name}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3430,10 +3584,17 @@ async fn snapshot_catalog_hides_builtin_tools_when_code_mode_is_enabled() {
 
     let snapshot = server.snapshot_catalog().await;
 
-    // Code Mode mode: exactly the primary `codemode` tool. NO legacy aliases.
+    // Code Mode mode exposes the text entry point, explicit UI entry point, and
+    // text-only recovery control. No legacy aliases are permitted.
     assert_eq!(
         snapshot.tools,
-        ["codemode".to_string()].into_iter().collect()
+        [
+            CODE_MODE_TOOL_NAME.to_string(),
+            CODE_MODE_UI_TOOL_NAME.to_string(),
+            MCP_APP_TOOL_NAME.to_string(),
+        ]
+        .into_iter()
+        .collect()
     );
     assert!(
         !snapshot.tools.contains("code"),
@@ -3527,6 +3688,7 @@ async fn server_reads_current_pool_from_gateway_manager() {
         registry: Arc::new(ToolRegistry::new()),
         gateway_manager: Some(Arc::clone(&manager)),
         peers: Arc::clone(&notifier.peers),
+        code_mode_app_state: notifier.code_mode_app_state.clone(),
         client_registry: notifier.client_registry.clone(),
         transport_label: "test",
         logging_level: Arc::new(AtomicU8::new(logging_level_rank(
