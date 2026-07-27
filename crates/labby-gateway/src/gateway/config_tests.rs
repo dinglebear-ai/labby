@@ -512,6 +512,43 @@ fn remove_upstream_removes_named_gateway_entry() {
 }
 
 #[test]
+fn remove_upstream_cascades_into_protected_route_targets() {
+    let mut cfg = sample_config();
+
+    let mut direct_route = sample_protected_route("direct");
+    direct_route.backend_url = String::new();
+    direct_route.upstream = Some("b".to_string());
+
+    let mut retained_subset =
+        sample_gateway_subset_route("retained-subset", "/retained", "retained.example.com");
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut retained_subset.target else {
+        panic!("gateway subset fixture");
+    };
+    target.upstreams = vec!["a".to_string(), "b".to_string()];
+
+    let mut emptied_subset =
+        sample_gateway_subset_route("emptied-subset", "/emptied", "emptied.example.com");
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut emptied_subset.target else {
+        panic!("gateway subset fixture");
+    };
+    target.upstreams = vec!["b".to_string()];
+
+    cfg.protected_mcp_routes = vec![direct_route, retained_subset, emptied_subset];
+
+    let removed = remove_upstream(&mut cfg, "b").expect("remove");
+
+    assert_eq!(removed.name, "b");
+    assert_eq!(cfg.protected_mcp_routes.len(), 1);
+    assert_eq!(cfg.protected_mcp_routes[0].name, "retained-subset");
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &cfg.protected_mcp_routes[0].target
+    else {
+        panic!("gateway subset target");
+    };
+    assert_eq!(target.upstreams, ["a"]);
+    validate_config(&cfg).expect("removed config should remain valid");
+}
+
+#[test]
 fn tombstone_removed_import_records_imported_gateway_deletion() {
     let mut cfg = sample_config();
     cfg.upstream[1].imported_from = Some(sample_import_source());

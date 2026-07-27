@@ -318,7 +318,23 @@ pub fn remove_upstream(cfg: &mut GatewayConfig, name: &str) -> Result<UpstreamCo
             sdk_kind: "not_found".to_string(),
             message: format!("gateway `{name}` not found"),
         })?;
-    Ok(cfg.upstream.remove(index))
+    let removed = cfg.upstream.remove(index);
+    cascade_upstream_removal(cfg, name);
+    Ok(removed)
+}
+
+fn cascade_upstream_removal(cfg: &mut GatewayConfig, removed_name: &str) {
+    cfg.protected_mcp_routes.retain_mut(|route| {
+        if route.upstream.as_deref() == Some(removed_name) {
+            return false;
+        }
+
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target else {
+            return true;
+        };
+        target.upstreams.retain(|upstream| upstream != removed_name);
+        !target.upstreams.is_empty() || !target.services.is_empty() || target.expose_code_mode
+    });
 }
 
 pub fn tombstone_removed_import(cfg: &mut GatewayConfig, removed: &UpstreamConfig) {
