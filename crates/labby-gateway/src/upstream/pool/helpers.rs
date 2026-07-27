@@ -16,7 +16,7 @@ use rmcp::model::{
 };
 use serde_json::Value;
 
-use labby_runtime::gateway_config::UpstreamConfig;
+use labby_runtime::gateway_config::{UpstreamConfig, UpstreamTransport};
 use labby_runtime::redact::{redact_stdio_value, redact_url};
 
 use super::super::types::UpstreamTool;
@@ -209,12 +209,12 @@ pub(super) fn auth_error_should_backoff_aggressively(kind: &str) -> bool {
 }
 
 pub(super) fn upstream_transport(config: &UpstreamConfig) -> &'static str {
-    if config.url.as_deref().is_some_and(is_websocket_url) {
-        "websocket"
-    } else if config.url.is_some() {
-        "http"
-    } else {
-        "stdio"
+    match config.effective_transport() {
+        Some(UpstreamTransport::Http) => "http",
+        Some(UpstreamTransport::Websocket) => "websocket",
+        Some(UpstreamTransport::Stdio) => "stdio",
+        Some(UpstreamTransport::UnixSocket) => "unix_socket",
+        None => "unknown",
     }
 }
 
@@ -269,15 +269,23 @@ pub fn redact_resource_uri_for_logging(uri: &str) -> &str {
 }
 
 pub(super) fn upstream_target_redacted(config: &UpstreamConfig) -> String {
-    // SECURITY: Never log raw URLs or command fragments without central redaction.
-    match &config.url {
-        Some(url_str) => redact_url(url_str),
-        None => config
+    // SECURITY: Never log raw URLs, socket paths, or command fragments without
+    // central redaction. Filesystem socket paths can reveal host layout.
+    match config.effective_transport() {
+        Some(UpstreamTransport::UnixSocket) => config.url.as_deref().map_or_else(
+            || "<unix-socket>".to_string(),
+            |url| format!("{} via <unix-socket>", redact_url(url)),
+        ),
+        Some(UpstreamTransport::Http | UpstreamTransport::Websocket) => config
+            .url
+            .as_deref()
+            .map(redact_url)
+            .unwrap_or_else(|| "<missing>".to_string()),
+        Some(UpstreamTransport::Stdio) | None => config
             .command
             .as_deref()
             .map(redact_stdio_value)
-            .or_else(|| Some("<missing>".to_string()))
-            .expect("static fallback is present"),
+            .unwrap_or_else(|| "<missing>".to_string()),
     }
 }
 
@@ -429,6 +437,9 @@ mod tests {
             enabled: true,
             name: "test".into(),
             url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: vec![],

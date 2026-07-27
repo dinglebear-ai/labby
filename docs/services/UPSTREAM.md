@@ -37,7 +37,7 @@ globally.
 That means the client connects only to `lab`:
 
 - `labby mcp` for stdio clients such as Claude Desktop
-- `labby serve` for streamable HTTP MCP clients
+- `labby serve` for streamable HTTP MCP clients over TCP or a configured Unix-domain socket
 
 The client never connects directly to the upstreams once `lab` is acting as the gateway.
 
@@ -55,6 +55,26 @@ bearer_token_env = "LABBY_UPSTREAM_TOKEN"
 proxy_resources = true
 expose_tools = ["search_repos", "github_*"]
 ```
+
+### Unix-Socket Upstream
+
+Unix-socket upstreams speak the same Streamable HTTP protocol as TCP upstreams. `socket_path` selects the local connection endpoint, while `url` supplies the request path and `Host` authority.
+
+```toml
+[[upstream]]
+name = "cortex"
+transport = "unix_socket"
+socket_path = "/run/labby/cortex.sock"
+url = "http://cortex.local/mcp"
+bearer_token_env = "CORTEX_MCP_TOKEN"
+
+[upstream.headers]
+x-labby-tenant = "infrastructure"
+```
+
+Filesystem paths work on Unix targets. Linux also supports abstract `@name` notation, for example `socket_path = "@cortex-mcp"`. The gateway and upstream must share the same socket namespace, directly or through a bind mount. Unix sockets are same-host transports; cross-node and Tailscale traffic remains HTTP/TCP.
+
+The Unix connector reuses the normal capped HTTP worker, so response-size limits, SSE event limits, timeouts, retry/lifecycle policy, bearer/OAuth handling, custom headers, and structured error mapping remain aligned with HTTP/TCP upstreams.
 
 ### Stdio Upstream
 
@@ -78,14 +98,19 @@ clients without elicitation run without a parameter gate. See
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | Human-readable name. Must be non-empty, unique, and URI-safe (no `/`, `?`, `#`). |
-| `url` | string | one of url/command | HTTP(S) URL of the upstream MCP server. |
-| `command` | string | one of url/command | Command to run for stdio transport. |
-| `args` | string[] | no | Arguments for the stdio command. |
-| `bearer_token_env` | string | no | Name of an env var holding a bearer token. Not the token itself. |
-| `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `false`. |
+| `transport` | string | Unix socket only | Explicit `http`, `websocket`, `stdio`, or `unix_socket`. Legacy URL/command inference remains supported when omitted. |
+| `url` | string | HTTP/WebSocket/Unix | Network URL, or for `unix_socket`, the HTTP(S) request URI and `Host` authority. |
+| `socket_path` | string | Unix socket | Filesystem socket path, or Linux abstract `@name` notation. |
+| `headers` | table | no | Custom headers for HTTP and Unix-socket requests. Inline `Authorization` is forbidden; use `bearer_token_env` or OAuth. |
+| `command` | string | stdio | Command to run for stdio transport. |
+| `args` | string[] | no | Arguments to pass to a stdio command. |
+| `env` | table | no | Environment variables injected into a stdio child process. |
+| `bearer_token_env` | string | no | Name of an env var holding a bearer token for HTTP or Unix-socket transport. Not the token itself. |
+| `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `true`. |
+| `proxy_prompts` | bool | no | Whether to proxy prompts from this upstream. Default: `true`. |
 | `expose_tools` | string[] | no | Optional allowlist of tool names/patterns to expose from this upstream. Supports exact names and `*` wildcards. |
 
-Exactly one of `url` or `command` must be set.
+When `transport` is omitted, an HTTP/WebSocket `url` or stdio `command` preserves legacy inference. `unix_socket` must be explicit and requires both `socket_path` and an HTTP(S) `url`; it cannot also configure `command`.
 
 ### Config File Locations
 
@@ -135,16 +160,20 @@ Validation runs before discovery. Invalid entries are skipped with a warning dur
 | Empty name | Skipped |
 | Duplicate name | Startup keeps the first and warns; runtime gateway mutations reject the write |
 | Name contains `/`, `?`, or `#` | Skipped |
-| URL not `http://` or `https://` | Skipped |
+| URL scheme does not match the selected transport | Skipped |
 | URL uses bind-all address (`0.0.0.0`, `::`) | Skipped |
-| Both `url` and `command` set | Skipped |
-| Neither `url` nor `command` set | Skipped |
+| `socket_path` without `transport = "unix_socket"` | Skipped |
+| Unix socket missing `socket_path` or HTTP(S) `url` | Skipped |
+| Abstract `@name` socket on a non-Linux target | Skipped |
+| Custom header name/value is invalid, or attempts to set `Authorization` | Skipped |
+| Transport configures conflicting fields such as both `url` and `command` | Skipped |
+| No transport can be inferred | Skipped |
 
 ### Bearer Token
 
-The `bearer_token_env` field names an environment variable — it does not contain the token directly. At connection time, the pool reads the env var and passes the token as an auth header for HTTP upstreams, or injects it into the child process environment for stdio upstreams.
+The `bearer_token_env` field names an environment variable; it does not contain the token directly. At connection time, the pool reads the env var and sends the token as a bearer header for HTTP and Unix-socket upstreams. Stdio upstreams reject HTTP authentication fields; use the `env` table for child-process environment variables.
 
-If the named env var is not set, the connection proceeds without auth (HTTP upstreams log a warning; stdio upstreams currently skip injection silently).
+If the named env var is not set, HTTP and Unix-socket connections proceed without bearer auth and log a warning.
 
 Changing a bearer-token env var does not hot-apply by itself. Use `gateway.reload` when you want the live pool to re-read `bearer_token_env`.
 

@@ -24,7 +24,7 @@ That surface may be exposed through multiple transports and may filter which ser
 Rules:
 
 - do not model `lab` as many unrelated mini-servers
-- do not let stdio and HTTP MCP drift in behavior
+- do not let stdio and hosted Streamable HTTP drift in behavior
 - do not let transport choice change catalog, schemas, envelopes, or destructive-op policy
 - do not let RMCP-specific code become a second business-logic layer
 
@@ -36,7 +36,7 @@ The intended shape is:
 
 1. shared dispatch/catalog ownership remains in `lab`
 2. a reusable MCP server module adapts that shared layer into `rmcp::ServerHandler`
-3. stdio and HTTP transports wrap the same server core
+3. stdio, HTTP/TCP, and HTTP/Unix transports wrap the same server core
 4. CLI, MCP, and HTTP API continue to share the same service/action model
 
 Rules:
@@ -73,21 +73,23 @@ Notes:
 
 ## Transport Contract
 
-`lab` supports two MCP transports:
+`lab` supports three MCP transports:
 
 - `stdio`
-- streamable HTTP
+- streamable HTTP over TCP
+- streamable HTTP over a Unix-domain socket
 
 Rules:
 
-- both transports expose the same server behavior
-- `labby serve` defaults to HTTP unless CLI, env, or config selects stdio
+- all transports expose the same MCP server behavior
+- `labby serve` defaults to HTTP/TCP unless CLI, env, or config selects stdio or `unix_socket`
 - stdio remains available for explicit local child-process sessions via `labby mcp`
-- HTTP MCP is mounted inside the Axum application under a dedicated MCP path such as `/mcp`
-- the Axum API continues to own non-MCP HTTP routes such as `/health`, `/ready`, and `/v1/...`
-- HTTP transport configuration must not fork the catalog or discovery model
+- hosted Streamable HTTP is mounted inside the Axum application under a dedicated MCP path such as `/mcp`
+- the Axum API continues to own non-MCP routes such as `/health`, `/ready`, and `/v1/...` for both TCP and Unix listeners
+- transport configuration must not fork the catalog or discovery model
+- Unix listeners may use bearer/OAuth or Linux kernel peer credentials; client-supplied identity headers never substitute for peer credentials
 
-HTTP MCP-specific rules:
+Hosted Streamable HTTP-specific rules:
 
 - use RMCP's streamable HTTP server transport, not a custom protocol
 - mount it as a Tower service inside Axum
@@ -165,7 +167,7 @@ Allowed RMCP macro usage:
 Disallowed patterns:
 
 - hiding the main server shape behind tools-only shortcut macros
-- duplicating handler logic between stdio and HTTP adapters
+- duplicating handler logic between stdio, TCP, and Unix adapters
 - placing business logic directly inside macro-heavy handler bodies when it should live in shared dispatch code
 
 ## Schema Contract
@@ -291,7 +293,7 @@ Rules:
 
 Any RMCP-related PR should be reviewable against this checklist:
 
-- Are stdio and HTTP MCP using the same server core?
+- Are stdio, HTTP/TCP, and HTTP/Unix MCP using the same server core?
 - Does the change preserve one-tool-per-service?
 - Are prompts/resources/elicitation aligned with shared catalog and action metadata?
 - Is auth owned in the correct layer?

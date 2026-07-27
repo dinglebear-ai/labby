@@ -357,6 +357,17 @@ pub enum GatewayImportMode {
 
 // ─── Upstreams ───────────────────────────────────────────────────────────────
 
+/// Explicit transport for an upstream MCP server. Omitted configurations
+/// retain the legacy URL/command inference behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamTransport {
+    Http,
+    Websocket,
+    Stdio,
+    UnixSocket,
+}
+
 /// Configuration for a single upstream MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamConfig {
@@ -372,8 +383,22 @@ pub struct UpstreamConfig {
     pub priority: f32,
     /// URL of the upstream MCP server (must be `http://`, `https://`, `ws://`, or `wss://`).
     /// For stdio upstreams, omit `url` and use `command`/`args` fields instead.
+    /// For Unix sockets this is still an HTTP(S) URI and supplies the request
+    /// target plus Host authority; the connection itself uses `socket_path`.
     #[serde(default)]
     pub url: Option<String>,
+    /// Explicit transport. When omitted, legacy URL/command inference is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<UpstreamTransport>,
+    /// Filesystem Unix-domain socket path, or Linux abstract `@name` notation.
+    /// Valid only with `transport = "unix_socket"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<String>,
+    /// Custom HTTP headers sent with every request for HTTP and Unix-socket
+    /// transports. Use `bearer_token_env` for Authorization rather than storing
+    /// credentials directly in this map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
     /// Name of an env var holding the bearer token (not the token itself).
     #[serde(default)]
     pub bearer_token_env: Option<String>,
@@ -583,6 +608,27 @@ fn looks_like_path_or_endpoint(normalized: &str, lower: &str) -> bool {
     })
 }
 
+fn is_http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
+}
+
 impl UpstreamConfig {
     /// Validate the upstream name and mutually-exclusive auth shapes.
     /// `bearer_token_env` and `oauth` both configured is a config error.
@@ -618,6 +664,7 @@ impl UpstreamConfig {
                 name: self.name.clone(),
             });
         }
+        self.validate_transport()?;
         if self.oauth.is_some() && self.url.is_none() {
             return Err(ConfigError::MissingOauthUrl {
                 name: self.name.clone(),
@@ -638,6 +685,146 @@ impl UpstreamConfig {
                     name: self.name.clone(),
                     url: raw.to_string(),
                 });
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve an explicit transport or preserve legacy URL/command inference.
+    #[must_use]
+    pub fn effective_transport(&self) -> Option<UpstreamTransport> {
+        self.transport.or_else(|| {
+            if self
+                .url
+                .as_deref()
+                .is_some_and(|url| url.starts_with("ws://") || url.starts_with("wss://"))
+            {
+                Some(UpstreamTransport::Websocket)
+            } else if self.url.is_some() {
+                Some(UpstreamTransport::Http)
+            } else if self.command.is_some() {
+                Some(UpstreamTransport::Stdio)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn validate_transport(&self) -> Result<(), ConfigError> {
+        let invalid = |reason: &str| ConfigError::InvalidTransport {
+            name: self.name.clone(),
+            reason: reason.to_string(),
+        };
+        for (name, value) in &self.headers {
+            if name.is_empty() || !name.bytes().all(is_http_token_byte) {
+                return Err(invalid(
+                    "custom header names must be valid HTTP token values",
+                ));
+            }
+            if name.eq_ignore_ascii_case("authorization") {
+                return Err(invalid(
+                    "custom Authorization headers are forbidden; use bearer_token_env or OAuth",
+                ));
+            }
+            if value.bytes().any(|byte| {
+                byte == b'\r'
+                    || byte == b'\n'
+                    || byte == 0
+                    || (byte < 0x20 && byte != b'\t')
+                    || byte == 0x7f
+            }) {
+                return Err(invalid(
+                    "custom header values contain invalid control bytes",
+                ));
+            }
+        }
+        if self.transport.is_none() && self.socket_path.is_some() {
+            return Err(invalid("socket_path requires transport = \"unix_socket\""));
+        }
+        match self.effective_transport() {
+            None => return Err(invalid("upstream requires a url or command")),
+            Some(UpstreamTransport::UnixSocket) => {
+                if !cfg!(unix) {
+                    return Err(invalid("unix_socket is unsupported on this platform"));
+                }
+                let path = self
+                    .socket_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .ok_or_else(|| invalid("unix_socket requires a non-empty socket_path"))?;
+                if path == "@" {
+                    return Err(invalid(
+                        "abstract socket_path must include a name after '@'",
+                    ));
+                }
+                if path.starts_with('@') && !cfg!(target_os = "linux") {
+                    return Err(invalid(
+                        "abstract @name sockets are supported only on Linux",
+                    ));
+                }
+                let Some(url) = self.url.as_deref() else {
+                    return Err(invalid(
+                        "unix_socket requires an HTTP(S) url for request URI and Host authority",
+                    ));
+                };
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err(invalid("unix_socket url must use http:// or https://"));
+                }
+                if self.command.is_some() {
+                    return Err(invalid("unix_socket cannot also configure command"));
+                }
+            }
+            Some(UpstreamTransport::Http) => {
+                if self.socket_path.is_some() || self.command.is_some() {
+                    return Err(invalid("http cannot configure socket_path or command"));
+                }
+                if !self
+                    .url
+                    .as_deref()
+                    .is_some_and(|url| url.starts_with("http://") || url.starts_with("https://"))
+                {
+                    return Err(invalid("http requires an http:// or https:// url"));
+                }
+            }
+            Some(UpstreamTransport::Websocket) => {
+                if self.socket_path.is_some() || self.command.is_some() {
+                    return Err(invalid("websocket cannot configure socket_path or command"));
+                }
+                if !self.headers.is_empty() {
+                    return Err(invalid("websocket custom headers are not supported"));
+                }
+                if !self
+                    .url
+                    .as_deref()
+                    .is_some_and(|url| url.starts_with("ws://") || url.starts_with("wss://"))
+                {
+                    return Err(invalid("websocket requires a ws:// or wss:// url"));
+                }
+                if self.oauth.is_some() {
+                    return Err(invalid("websocket does not support outbound OAuth"));
+                }
+            }
+            Some(UpstreamTransport::Stdio) => {
+                if self.url.is_some() || self.socket_path.is_some() {
+                    return Err(invalid("stdio cannot configure url or socket_path"));
+                }
+                if self
+                    .command
+                    .as_deref()
+                    .map(str::trim)
+                    .is_none_or(str::is_empty)
+                {
+                    return Err(invalid("stdio requires a non-empty command"));
+                }
+                if self.oauth.is_some()
+                    || self.bearer_token_env.is_some()
+                    || !self.headers.is_empty()
+                {
+                    return Err(invalid(
+                        "stdio cannot configure HTTP authentication or headers",
+                    ));
+                }
             }
         }
         Ok(())
@@ -814,6 +1001,8 @@ pub enum ConfigError {
     InvalidUrl { name: String, url: String },
     #[error("upstream '{name}' has oauth configured but no url — oauth requires an HTTP url")]
     MissingOauthUrl { name: String },
+    #[error("upstream '{name}' has invalid transport configuration: {reason}")]
+    InvalidTransport { name: String, reason: String },
     #[error("gateway code_mode.timeout_ms={value} is invalid — expected 1..=60000")]
     InvalidCodeModeTimeout { value: u64 },
     #[error("gateway code_mode.max_response_bytes={value} is invalid — expected 1024..=1048576")]
@@ -1204,6 +1393,120 @@ mod tests {
         assert!(cfg.enabled);
         assert!((cfg.priority - default_upstream_priority()).abs() < f32::EPSILON);
         assert!(cfg.oauth.is_none());
+    }
+
+    #[test]
+    fn omitted_transport_preserves_legacy_inference() {
+        let http: UpstreamConfig =
+            toml::from_str("name=\"http\"\nurl=\"https://example.com/mcp\"\n").unwrap();
+        assert_eq!(http.effective_transport(), Some(UpstreamTransport::Http));
+
+        let websocket: UpstreamConfig =
+            toml::from_str("name=\"ws\"\nurl=\"wss://example.com/mcp\"\n").unwrap();
+        assert_eq!(
+            websocket.effective_transport(),
+            Some(UpstreamTransport::Websocket)
+        );
+
+        let stdio: UpstreamConfig = toml::from_str("name=\"stdio\"\ncommand=\"server\"\n").unwrap();
+        assert_eq!(stdio.effective_transport(), Some(UpstreamTransport::Stdio));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_unix_socket_transport_parses_and_validates() {
+        let cfg: UpstreamConfig = toml::from_str(
+            "name=\"local\"\ntransport=\"unix_socket\"\nsocket_path=\"/tmp/local-mcp.sock\"\nurl=\"http://local.internal/mcp\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            cfg.effective_transport(),
+            Some(UpstreamTransport::UnixSocket)
+        );
+        assert_eq!(cfg.socket_path.as_deref(), Some("/tmp/local-mcp.sock"));
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn socket_path_without_unix_transport_is_rejected() {
+        let cfg: UpstreamConfig = toml::from_str(
+            "name=\"bad\"\nsocket_path=\"/tmp/local-mcp.sock\"\nurl=\"http://local.internal/mcp\"\n",
+        )
+        .unwrap();
+
+        let error = cfg.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::InvalidTransport { .. }));
+        assert!(error.to_string().contains("socket_path requires transport"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_requires_url_and_valid_path() {
+        let missing_url: UpstreamConfig = toml::from_str(
+            "name=\"bad\"\ntransport=\"unix_socket\"\nsocket_path=\"/tmp/local-mcp.sock\"\n",
+        )
+        .unwrap();
+        assert!(missing_url.validate().is_err());
+
+        let empty_abstract_socket: UpstreamConfig = toml::from_str(
+            "name=\"bad\"\ntransport=\"unix_socket\"\nsocket_path=\"@\"\nurl=\"http://local.internal/mcp\"\n",
+        )
+        .unwrap();
+        assert!(empty_abstract_socket.validate().is_err());
+
+        #[cfg(target_os = "linux")]
+        {
+            let abstract_socket: UpstreamConfig = toml::from_str(
+                "name=\"local\"\ntransport=\"unix_socket\"\nsocket_path=\"@local-mcp\"\nurl=\"http://local.internal/mcp\"\n",
+            )
+            .unwrap();
+            assert!(abstract_socket.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn custom_headers_validate_before_pool_publication() {
+        let valid: UpstreamConfig = toml::from_str(
+            "name=\"local\"\nurl=\"http://local.internal/mcp\"\n[headers]\nx-labby-test=\"present\"\n",
+        )
+        .unwrap();
+        assert!(valid.validate().is_ok());
+
+        for invalid_toml in [
+            "name=\"bad\"\nurl=\"http://local.internal/mcp\"\n[headers]\nauthorization=\"Bearer secret\"\n",
+            "name=\"bad\"\nurl=\"http://local.internal/mcp\"\n[headers]\n\"bad header\"=\"value\"\n",
+            "name=\"bad\"\nurl=\"http://local.internal/mcp\"\n[headers]\nx-test=\"bad\\nvalue\"\n",
+        ] {
+            let cfg: UpstreamConfig = toml::from_str(invalid_toml).unwrap();
+            assert!(cfg.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn inferred_transports_enforce_their_field_contracts() {
+        for invalid_toml in [
+            "name=\"bad\"\ncommand=\"server\"\nbearer_token_env=\"TOKEN\"\n",
+            "name=\"bad\"\ncommand=\"server\"\n[headers]\nx-test=\"value\"\n",
+            "name=\"bad\"\nurl=\"ws://local.internal/mcp\"\n[headers]\nx-test=\"value\"\n",
+            "name=\"bad\"\nurl=\"http://local.internal/mcp\"\ncommand=\"server\"\n",
+            "name=\"bad\"\n",
+        ] {
+            let cfg: UpstreamConfig = toml::from_str(invalid_toml).unwrap();
+            assert!(
+                cfg.validate().is_err(),
+                "config should fail: {invalid_toml}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_transport_rejects_conflicting_fields() {
+        let cfg: UpstreamConfig = toml::from_str(
+            "name=\"bad\"\ntransport=\"stdio\"\ncommand=\"server\"\nurl=\"http://local.internal/mcp\"\n",
+        )
+        .unwrap();
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

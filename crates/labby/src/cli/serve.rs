@@ -41,6 +41,15 @@ use crate::output::theme::{CliTheme, ColorPolicy, RenderContext, RenderEnv};
 use crate::process::unix::{exe_path, terminate_sigterm};
 use crate::registry::{ToolRegistry, build_default_registry};
 
+#[cfg(unix)]
+mod unix_listener;
+
+#[cfg(unix)]
+type HostedUnixConfig = unix_listener::UnixListenerConfig;
+#[cfg(not(unix))]
+#[derive(Debug, Clone)]
+struct HostedUnixConfig;
+
 /// Aurora theme for `serve` startup banners. These print before the CLI
 /// `--color` flag is in scope, so resolve styling from the environment
 /// (`NO_COLOR`, stderr TTY) with the default `Auto` policy.
@@ -59,6 +68,9 @@ pub enum Transport {
     Stdio,
     /// HTTP transport (default) — requires `LABBY_MCP_HTTP_TOKEN` or OAuth when exposed remotely.
     Http,
+    /// Streamable HTTP served over a Unix-domain socket.
+    #[value(name = "unix_socket", alias = "unix-socket")]
+    UnixSocket,
 }
 
 #[derive(Debug, Subcommand)]
@@ -142,19 +154,25 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         requested_service_count = args.services.len(),
         "starting serve command"
     );
-    // Resolve host and port here for source-of-truth ordering, but defer
-    // address parsing and validation until the actual bind call in run_http.
-    // This way an invalid host string only errors when the hosted HTTP app path is chosen.
-    let host = args
-        .host
-        .or_else(|| std::env::var("LABBY_MCP_HTTP_HOST").ok())
-        .or_else(|| config.mcp.host.clone())
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    let port = resolve_port(
-        args.port,
-        std::env::var("LABBY_MCP_HTTP_PORT").ok(),
-        config.mcp.port,
-    )?;
+    // Resolve TCP-only host/port settings only for the HTTP transport. Unix
+    // and stdio modes must not fail because an unrelated HTTP env value is bad.
+    let (host, port) = if matches!(transport, Transport::Http) {
+        let host = args
+            .host
+            .or_else(|| std::env::var("LABBY_MCP_HTTP_HOST").ok())
+            .or_else(|| config.mcp.host.clone())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let port = resolve_port(
+            args.port,
+            std::env::var("LABBY_MCP_HTTP_PORT").ok(),
+            config.mcp.port,
+        )?;
+        (host, port)
+    } else {
+        ("127.0.0.1".to_string(), 8765)
+    };
+    let unix_listener_config = resolve_unix_listener_config(transport, &config.mcp)?;
+    let peer_auth_enabled = unix_peer_auth_enabled(unix_listener_config.as_ref());
     let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
     tracing::info!(
         subsystem = "startup",
@@ -277,7 +295,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         }
     }
 
-    if host.is_empty() {
+    if matches!(transport, Transport::Http) && host.is_empty() {
         anyhow::bail!("HTTP host cannot be empty — set LABBY_MCP_HTTP_HOST or mcp.host in config");
     }
 
@@ -302,10 +320,12 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // readers also see it. dotenvy owns its
     // own set_var, keeping this crate unsafe-free (the workspace forbids
     // unsafe_code) and not overriding already-set vars.
-    if crate::dispatch::setup::should_bootstrap(
-        bearer_token.is_some(),
-        matches!(auth_config.mode, AuthMode::OAuth),
-    ) && is_loopback_host(&host)
+    if !peer_auth_enabled
+        && crate::dispatch::setup::should_bootstrap(
+            bearer_token.is_some(),
+            matches!(auth_config.mode, AuthMode::OAuth),
+        )
+        && (is_loopback_host(&host) || matches!(transport, Transport::UnixSocket))
     {
         match crate::dispatch::setup::bootstrap() {
             Ok(crate::dispatch::setup::BootstrapOutcome::Created { env_path, token }) => {
@@ -333,7 +353,13 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                     "  Generated an MCP bearer token in {} (mode 0600).",
                     env_path.display()
                 );
-                eprintln!("  Open http://{host}:{port}/setup to finish configuration.");
+                if matches!(transport, Transport::Http) {
+                    eprintln!("  Open http://{host}:{port}/setup to finish configuration.");
+                } else {
+                    eprintln!(
+                        "  Connect through the configured Unix socket to finish configuration."
+                    );
+                }
                 eprintln!(
                     "  For remote clients, read the token from that file (e.g. `grep LABBY_MCP_HTTP_TOKEN {}`).\n",
                     env_path.display()
@@ -346,16 +372,28 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         }
     }
 
-    let auth_configured = bearer_token.is_some() || matches!(auth_config.mode, AuthMode::OAuth);
+    let credential_auth_configured =
+        bearer_token.is_some() || matches!(auth_config.mode, AuthMode::OAuth);
+    if peer_auth_enabled && credential_auth_configured {
+        anyhow::bail!(
+            "Unix peer-credential authorization cannot be combined with bearer or OAuth authentication"
+        );
+    }
+    let auth_configured = credential_auth_configured || peer_auth_enabled;
 
-    // Safety gate: refuse to bind on a non-localhost address without
+    // Safety gate: refuse to bind on a non-localhost HTTP address without
     // any auth configured (lab-319g). This prevents accidental
     // unauthenticated deployment on a LAN-accessible address.
-    if !auth_configured && !is_loopback_host(&host) {
+    if matches!(transport, Transport::Http) && !auth_configured && !is_loopback_host(&host) {
         anyhow::bail!(
             "refusing to bind HTTP on {host}:{port} without authentication. \
              Set LABBY_MCP_HTTP_TOKEN or LABBY_AUTH_MODE=oauth, or bind to \
              127.0.0.1 for local-only access."
+        );
+    }
+    if matches!(transport, Transport::UnixSocket) && !auth_configured {
+        anyhow::bail!(
+            "refusing to bind a Unix socket without authentication; configure a bearer token, OAuth, or mcp.peer_uid/mcp.peer_gid"
         );
     }
 
@@ -418,7 +456,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     } else {
         crate::oauth::public_relay::set_public_relay_manager(None);
     }
-    if auth_configured {
+    if credential_auth_configured {
         match crate::observability::activity::ActorKeyDeriver::load_or_create() {
             Ok(deriver) => {
                 state = state.with_actor_key_deriver(deriver);
@@ -436,11 +474,15 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         state = state.with_gateway_manager(Arc::clone(&gateway_manager));
     }
     state = state.with_auth_config(auth_config);
-    let web_ui_auth_disabled = resolve_web_ui_auth_disabled(
-        &config.web,
-        web_assets_dir.is_some() || embedded_web_assets_enabled,
-        oauth_enabled,
-    )?;
+    let web_ui_auth_disabled = if peer_auth_enabled {
+        false
+    } else {
+        resolve_web_ui_auth_disabled(
+            &config.web,
+            web_assets_dir.is_some() || embedded_web_assets_enabled,
+            oauth_enabled,
+        )?
+    };
     state = state.with_web_ui_auth_disabled(web_ui_auth_disabled);
 
     // lab-bg3e.3 Q5 reframe: prominent startup banner whenever the web UI
@@ -526,7 +568,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         phase = "bootstrap.plan",
         api_server_enabled = true,
         web_server_enabled = state.web_assets_enabled(),
-        mcp_server_enabled = matches!(transport, Transport::Http),
+        mcp_server_enabled = matches!(transport, Transport::Http | Transport::UnixSocket),
         gateway_client_enabled = cfg!(feature = "gateway") && !config.upstream.is_empty(),
         oauth_upstream_enabled = config
             .upstream
@@ -545,7 +587,10 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         &config.mcp,
         &config.api.cors_origins,
         notifier,
-        matches!(transport, Transport::Http),
+        matches!(transport, Transport::Http | Transport::UnixSocket),
+        transport,
+        unix_listener_config,
+        peer_auth_enabled,
     )
     .await
 }
@@ -610,6 +655,38 @@ fn resolve_web_ui_auth_disabled(
     // (gated separately by needs_auth), but it renders a misleading
     // "logged in" UI shell. Tracked in lab-0bl3m; not changed here.
     Ok(web_assets_enabled && !oauth_enabled)
+}
+
+#[cfg(unix)]
+fn resolve_unix_listener_config(
+    transport: Transport,
+    preferences: &crate::config::McpPreferences,
+) -> Result<Option<HostedUnixConfig>> {
+    if !matches!(transport, Transport::UnixSocket) {
+        return Ok(None);
+    }
+    unix_listener::resolve_config(preferences, &|key| std::env::var(key).ok()).map(Some)
+}
+
+#[cfg(not(unix))]
+fn resolve_unix_listener_config(
+    transport: Transport,
+    _preferences: &crate::config::McpPreferences,
+) -> Result<Option<HostedUnixConfig>> {
+    if matches!(transport, Transport::UnixSocket) {
+        anyhow::bail!("unix_socket transport is unsupported on this platform");
+    }
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn unix_peer_auth_enabled(config: Option<&HostedUnixConfig>) -> bool {
+    config.is_some_and(|config| config.peer_policy.enabled())
+}
+
+#[cfg(not(unix))]
+fn unix_peer_auth_enabled(_config: Option<&HostedUnixConfig>) -> bool {
+    false
 }
 
 fn should_run_stdio(transport: Transport, command: Option<&ServeCommand>) -> bool {
@@ -714,6 +791,9 @@ async fn run_http(
     config_cors_origins: &[String],
     notifier: PeerNotifier,
     mount_http_mcp: bool,
+    transport: Transport,
+    unix_listener_config: Option<HostedUnixConfig>,
+    peer_auth_enabled: bool,
 ) -> Result<ExitCode> {
     // ── Single-master lock ────────────────────────────────────────────────────
     // Only one HTTP master instance may run per device at a time. Exits
@@ -799,38 +879,130 @@ async fn run_http(
         http_mcp_enabled = mount_http_mcp,
         "http router ready"
     );
-    // Parse and validate the address at bind time, not at CLI parse time.
-    let addr = bind_addr(host, port);
-    tracing::info!(
-        subsystem = "api_server",
-        phase = "listener.bind.start",
-        addr,
-        "binding http listener"
-    );
-    let listener = bind_or_reclaim(&addr, port).await?;
-    // Notify systemd that the socket is ready (sd_notify READY=1).
+    let listener_status = HostedListenerStatus {
+        web_assets_enabled,
+        bearer_token_configured,
+        mount_http_mcp,
+        peer_auth_enabled,
+    };
+    match transport {
+        Transport::Http => {
+            serve_tcp_listener(host, port, router, listener_status).await?;
+        }
+        Transport::UnixSocket => {
+            let unix_config = unix_listener_config.ok_or_else(|| {
+                anyhow::anyhow!("unix_socket transport resolved without listener configuration")
+            })?;
+            serve_unix_listener(unix_config, router, listener_status).await?;
+        }
+        Transport::Stdio => {
+            anyhow::bail!("stdio transport reached hosted listener startup unexpectedly");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HostedListenerStatus {
+    web_assets_enabled: bool,
+    bearer_token_configured: bool,
+    mount_http_mcp: bool,
+    peer_auth_enabled: bool,
+}
+
+fn notify_systemd_ready(service: &'static str) {
     #[cfg(all(feature = "systemd", unix))]
     {
         if std::env::var_os("NOTIFY_SOCKET").is_some() {
-            if let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
+            if let Err(error) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
                 tracing::warn!(
-                    surface = "api", service = "http", action = "sd_notify.error",
-                    error = %e, "sd_notify failed"
+                    surface = "api",
+                    service,
+                    action = "sd_notify.error",
+                    error = %error,
+                    "sd_notify failed"
                 );
             } else {
                 tracing::info!(
                     surface = "api",
-                    service = "http",
+                    service,
                     action = "sd_notify.ready",
                     "systemd READY=1 sent"
                 );
             }
         }
     }
+    #[cfg(not(all(feature = "systemd", unix)))]
+    let _ = service;
+}
+
+#[cfg(unix)]
+async fn wait_for_reload_signals(transport: &'static str) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigusr1 =
+        signal(SignalKind::user_defined1()).context("failed to register SIGUSR1 handler")?;
+    loop {
+        sigusr1.recv().await;
+        tracing::info!(
+            surface = "api",
+            service = transport,
+            action = "config.reload",
+            "SIGUSR1 received; config reload triggered",
+        );
+        // Future: re-read config.toml and apply diffs here.
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal(transport: &'static str) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigterm =
+        signal(SignalKind::terminate()).context("failed to register SIGTERM handler")?;
+    tokio::select! {
+        _ = sigterm.recv() => {}
+        result = tokio::signal::ctrl_c() => {
+            result.context("failed to register Ctrl-C handler")?;
+        }
+    }
+    tracing::info!(
+        surface = "api",
+        service = transport,
+        action = "shutdown.signal",
+        "shutdown signal received; stopping hosted listener"
+    );
+    Ok(())
+}
+
+async fn serve_tcp_listener(
+    host: &str,
+    port: u16,
+    router: axum::Router,
+    status: HostedListenerStatus,
+) -> Result<()> {
+    let HostedListenerStatus {
+        web_assets_enabled,
+        bearer_token_configured,
+        mount_http_mcp,
+        ..
+    } = status;
+    // Parse and validate the address at bind time, not at CLI parse time.
+    let addr = bind_addr(host, port);
+    tracing::info!(
+        subsystem = "api_server",
+        phase = "listener.bind.start",
+        addr,
+        transport = "http",
+        "binding HTTP listener"
+    );
+    let listener = bind_or_reclaim(&addr, port).await?;
+    notify_systemd_ready("http");
     tracing::info!(
         subsystem = "api_server",
         phase = "ready",
         addr,
+        transport = "http",
         pid = std::process::id(),
         route = "/v1,/health,/ready",
         bearer_token_configured,
@@ -844,6 +1016,7 @@ async fn run_http(
             "disabled"
         },
         addr,
+        transport = "http",
         pid = std::process::id(),
         route = "/",
     );
@@ -859,40 +1032,119 @@ async fn run_http(
         subsystem = "startup",
         phase = "ready",
         addr,
+        transport = "http",
         pid = std::process::id(),
         web_server_enabled = web_assets_enabled,
         mcp_server_enabled = mount_http_mcp,
         "labby serve ready"
     );
-    // SIGUSR1 → config reload signal handler (unix only).
+
+    let service = router.into_make_service_with_connect_info::<SocketAddr>();
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut sigusr1 =
-            signal(SignalKind::user_defined1()).context("failed to register SIGUSR1 handler")?;
-        tokio::select! {
-            result = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()) => { result?; }
-            _ = async {
-                loop {
-                    sigusr1.recv().await;
-                    tracing::info!(
-                        surface = "api", service = "http", action = "config.reload",
-                        "SIGUSR1 received — config reload triggered",
-                    );
-                    // Future: re-read config.toml and apply diffs here.
-                }
-            } => {}
-        }
+    tokio::select! {
+        result = axum::serve(listener, service) => { result?; }
+        result = wait_for_reload_signals("http") => { result?; }
+        result = wait_for_shutdown_signal("http") => { result?; }
     }
     #[cfg(not(unix))]
-    {
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await?;
+    axum::serve(listener, service).await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn serve_unix_listener(
+    config: HostedUnixConfig,
+    mut router: axum::Router,
+    status: HostedListenerStatus,
+) -> Result<()> {
+    let HostedListenerStatus {
+        web_assets_enabled,
+        bearer_token_configured,
+        mount_http_mcp,
+        peer_auth_enabled,
+    } = status;
+    let socket_kind = if config.abstract_socket() {
+        "abstract"
+    } else {
+        "filesystem"
+    };
+    tracing::info!(
+        subsystem = "api_server",
+        phase = "listener.bind.start",
+        transport = "unix_socket",
+        socket_kind,
+        socket_mode = ?config.mode(),
+        socket_uid = ?config.owner_uid(),
+        socket_gid = ?config.owner_gid(),
+        peer_auth_enabled,
+        "binding Unix-domain listener"
+    );
+    let listener = unix_listener::bind(&config).await?;
+
+    router = router.layer(axum::Extension(unix_listener::loopback_connect_info()));
+    if peer_auth_enabled {
+        router = router.layer(axum::middleware::from_fn(unix_listener::inject_peer_auth));
     }
-    Ok(ExitCode::SUCCESS)
+
+    notify_systemd_ready("unix_socket");
+    tracing::info!(
+        subsystem = "api_server",
+        phase = "ready",
+        transport = "unix_socket",
+        socket_kind,
+        pid = std::process::id(),
+        route = "/v1,/health,/ready",
+        bearer_token_configured,
+        peer_auth_enabled,
+        "api server ready"
+    );
+    tracing::info!(
+        subsystem = "web_server",
+        phase = if web_assets_enabled {
+            "ready"
+        } else {
+            "disabled"
+        },
+        transport = "unix_socket",
+        socket_kind,
+        pid = std::process::id(),
+        route = "/",
+    );
+    tracing::info!(
+        subsystem = "mcp_server",
+        phase = if mount_http_mcp { "ready" } else { "disabled" },
+        transport = "unix_socket",
+        socket_kind,
+        pid = std::process::id(),
+        route = "/mcp",
+    );
+    tracing::info!(
+        subsystem = "startup",
+        phase = "ready",
+        transport = "unix_socket",
+        socket_kind,
+        pid = std::process::id(),
+        web_server_enabled = web_assets_enabled,
+        mcp_server_enabled = mount_http_mcp,
+        "labby serve ready"
+    );
+
+    let service = router.into_make_service_with_connect_info::<unix_listener::UnixConnectInfo>();
+    tokio::select! {
+        result = axum::serve(listener, service) => { result?; }
+        result = wait_for_reload_signals("unix_socket") => { result?; }
+        result = wait_for_shutdown_signal("unix_socket") => { result?; }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn serve_unix_listener(
+    _config: HostedUnixConfig,
+    _router: axum::Router,
+    _status: HostedListenerStatus,
+) -> Result<()> {
+    anyhow::bail!("unix_socket transport is unsupported on this platform")
 }
 
 async fn log_mcp_request(
@@ -1795,6 +2047,20 @@ mod tests {
         let resolved =
             resolve_transport(None, None, None, None).expect("http should be the default");
         assert!(matches!(resolved, Transport::Http));
+
+        let resolved = resolve_transport(
+            Some(Transport::UnixSocket),
+            None,
+            Some("http".into()),
+            Some("stdio"),
+        )
+        .expect("explicit Unix socket transport should win");
+        assert!(matches!(resolved, Transport::UnixSocket));
+
+        let resolved = resolve_transport(None, None, Some("unix_socket".into()), None)
+            .expect("Unix socket env value should parse");
+        assert!(matches!(resolved, Transport::UnixSocket));
+        assert!(!should_run_stdio(Transport::UnixSocket, None));
     }
 
     #[test]
@@ -1829,6 +2095,7 @@ mod tests {
                 allowed_hosts: Some(vec!["lab.internal".into()]),
                 show_all: None,
                 catalog_notification_timeout_ms: None,
+                ..McpPreferences::default()
             },
             ..LabConfig::default()
         };

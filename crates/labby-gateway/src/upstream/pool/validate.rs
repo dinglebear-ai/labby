@@ -1,8 +1,8 @@
 //! Upstream config validation.
 //!
-//! `validate_upstream_config` enforces the supported transport invariants:
-//! non-empty name, mutually-exclusive `url`/`command`, supported URL scheme, and
-//! rejection of bind-all hosts. `pub(super)` for the pool module and descendants.
+//! `validate_upstream_config` first applies the shared typed transport/auth/header
+//! contract, then adds pool-specific URL and bind-all-host checks. `pub(super)`
+//! for the pool module and descendants.
 //!
 //! ## SSRF / DNS rebinding posture (S4 + T6)
 //!
@@ -34,6 +34,8 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 /// Validate an upstream config entry.
 pub(super) fn validate_upstream_config(config: &UpstreamConfig) -> Result<(), String> {
+    config.validate().map_err(|error| error.to_string())?;
+
     if config.name.is_empty() {
         return Err("upstream name cannot be empty".into());
     }
@@ -77,12 +79,37 @@ pub(super) fn validate_upstream_config(config: &UpstreamConfig) -> Result<(), St
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn validate_applies_typed_unix_contract_before_publication() {
+        let valid: UpstreamConfig = toml::from_str(
+            "name=\"local\"\ntransport=\"unix_socket\"\nsocket_path=\"/tmp/local.sock\"\nurl=\"http://local.internal/mcp\"\n",
+        )
+        .unwrap();
+        assert!(validate_upstream_config(&valid).is_ok());
+
+        for invalid_toml in [
+            "name=\"bad\"\ntransport=\"unix_socket\"\nurl=\"http://local.internal/mcp\"\n",
+            "name=\"bad\"\ncommand=\"server\"\nbearer_token_env=\"TOKEN\"\n",
+            "name=\"bad\"\nurl=\"ws://local.internal/mcp\"\n[headers]\nx-test=\"value\"\n",
+        ] {
+            let cfg: UpstreamConfig = toml::from_str(invalid_toml).unwrap();
+            assert!(
+                validate_upstream_config(&cfg).is_err(),
+                "config should fail before publication: {invalid_toml}"
+            );
+        }
+    }
+
     #[test]
     fn validate_rejects_empty_name() {
         let config = UpstreamConfig {
             enabled: true,
             name: String::new(),
             url: Some("http://localhost:8080".into()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: vec![],
@@ -106,6 +133,9 @@ mod tests {
             enabled: true,
             name: "test".into(),
             url: Some("ftp://example.com".into()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: vec![],
@@ -130,6 +160,9 @@ mod tests {
                 enabled: true,
                 name: "test".into(),
                 url: Some((*url).into()),
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
                 bearer_token_env: None,
                 command: None,
                 args: vec![],
@@ -157,6 +190,9 @@ mod tests {
             enabled: true,
             name: "test".into(),
             url: Some("http://localhost:8080/mcp".into()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: vec![],
@@ -181,6 +217,9 @@ mod tests {
                 enabled: true,
                 name: "test".into(),
                 url: Some(url.into()),
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
                 bearer_token_env: None,
                 command: None,
                 args: vec![],
@@ -208,6 +247,9 @@ mod tests {
             enabled: true,
             name: "test".into(),
             url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: Some("my-mcp-server".into()),
             args: vec!["--port".into(), "8080".into()],
@@ -231,6 +273,9 @@ mod tests {
             enabled: true,
             name: "test".into(),
             url: Some("http://localhost:8080".into()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: Some("my-mcp-server".into()),
             args: vec![],
@@ -254,6 +299,9 @@ mod tests {
             enabled: true,
             name: "test".into(),
             url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: vec![],
@@ -289,6 +337,9 @@ mod tests {
                 enabled: true,
                 name: "test".into(),
                 url: Some((*url).into()),
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
                 bearer_token_env: None,
                 command: None,
                 args: vec![],
@@ -323,6 +374,9 @@ mod tests {
                 enabled: true,
                 name: "test".into(),
                 url: Some((*url).into()),
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
                 bearer_token_env: None,
                 command: None,
                 args: vec![],
@@ -366,6 +420,9 @@ mod tests {
             enabled: true,
             name: "rebind-risk-documented".into(),
             url: Some("http://mcp.example.com/mcp".into()),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
             bearer_token_env: None,
             command: None,
             args: vec![],
