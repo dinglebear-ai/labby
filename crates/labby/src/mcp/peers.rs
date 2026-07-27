@@ -137,6 +137,7 @@ impl RegisteredPeer {
                 #[cfg(feature = "gateway")]
                 gateway_manager: None,
                 route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+                code_mode_app_state: Default::default(),
             },
             last_contract,
         }
@@ -171,6 +172,7 @@ impl RegisteredPeer {
 #[derive(Clone, Default)]
 pub struct PeerNotifier {
     pub peers: PeerRegistry,
+    pub(crate) code_mode_app_state: crate::mcp::catalog::CodeModeAppState,
     /// Observed inbound MCP client metadata (redacted subject, declared
     /// client name/version, transport, connect time), one entry pushed per
     /// successful discovery. Read by `gateway.clients.list` via

@@ -30,7 +30,14 @@ use crate::dispatch::upstream::types::UpstreamTool;
 use crate::mcp::call_tool_upstream::PreResolvedUpstreamTool;
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
-use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
+use crate::mcp::catalog::{
+    ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME,
+    MCP_APP_TOOL_NAME,
+};
+#[cfg(feature = "gateway")]
+use crate::mcp::catalog_coalesce::schedule_catalog_notification;
+#[cfg(feature = "gateway")]
+use crate::mcp::catalog_notifications::CatalogNotificationChanges;
 use crate::mcp::context::{
     auth_context_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
@@ -261,8 +268,10 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         {
-            // ── Gateway `codemode` tool: run caller's JS in the subprocess sandbox.
-            if service == CODE_MODE_TOOL_NAME {
+            // ── Text-only MCP App control surface. This is intentionally separate
+            // from `codemode_ui` so disabling the app never removes the tool needed
+            // to restore it.
+            if service == MCP_APP_TOOL_NAME {
                 if !self.route_scope.exposes_code_mode() {
                     let elapsed_ms = start.elapsed().as_millis();
                     self.log_route_scope_denial(
@@ -277,6 +286,153 @@ impl LabMcpServer {
                         "call_tool",
                         "Code Mode is not exposed on this MCP route".to_string(),
                     )
+                    .into());
+                }
+
+                let auth = auth_context_from_extensions(&context.extensions);
+                let synthetic_action = if action.is_empty() {
+                    "status"
+                } else {
+                    action.as_str()
+                };
+                if !tool_execute_scope_allowed(auth) {
+                    let envelope = build_error_extra(
+                        &service,
+                        synthetic_action,
+                        "forbidden",
+                        "mcp_app requires one of scopes: lab, lab:admin",
+                        &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
+                    );
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        envelope.to_string(),
+                    )])
+                    .into());
+                }
+
+                let target = args
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .unwrap_or("codemode");
+                if target != "codemode" {
+                    let envelope = build_error_extra(
+                        &service,
+                        synthetic_action,
+                        "invalid_param",
+                        &format!("unsupported MCP App target `{target}`"),
+                        &serde_json::json!({ "valid": ["codemode"] }),
+                    );
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        envelope.to_string(),
+                    )])
+                    .into());
+                }
+
+                let desired = match synthetic_action {
+                    "status" => None,
+                    "enable" => Some(true),
+                    "disable" => Some(false),
+                    _ => {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "unknown_action",
+                            &format!("unknown MCP App action `{synthetic_action}`"),
+                            &serde_json::json!({ "valid": ["status", "enable", "disable"] }),
+                        );
+                        return Ok(CallToolResult::error(vec![ContentBlock::text(
+                            envelope.to_string(),
+                        )])
+                        .into());
+                    }
+                };
+
+                if desired.is_some() && !admin_app_resources_visible(auth) {
+                    let envelope = build_error_extra(
+                        &service,
+                        synthetic_action,
+                        "forbidden",
+                        "changing MCP App state requires lab:admin scope",
+                        &serde_json::json!({ "required_scopes": ["lab:admin"] }),
+                    );
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        envelope.to_string(),
+                    )])
+                    .into());
+                }
+
+                let previous = desired.map(|enabled| self.code_mode_app_state.set_enabled(enabled));
+                let enabled = self.code_mode_app_state.is_enabled();
+                let changed = previous.is_some_and(|previous| previous != enabled);
+                if changed {
+                    schedule_catalog_notification(
+                        &self.peers,
+                        CatalogNotificationChanges::new(true, true, false),
+                        labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE,
+                    );
+                }
+
+                let notification_scheduled = changed;
+                tracing::info!(
+                    surface = "mcp",
+                    service = MCP_APP_TOOL_NAME,
+                    action = synthetic_action,
+                    subject = self.request_subject_log_tag(&context),
+                    target,
+                    enabled,
+                    changed,
+                    notification_scheduled,
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "Code Mode MCP App state evaluated"
+                );
+                let payload = serde_json::json!({
+                    "kind": "mcp_app_control",
+                    "target": "codemode",
+                    "enabled": enabled,
+                    "changed": changed,
+                    "scope": "gateway",
+                    "text_tool": CODE_MODE_TOOL_NAME,
+                    "ui_tool": CODE_MODE_UI_TOOL_NAME,
+                    "notification_scheduled": notification_scheduled,
+                });
+                let mut result =
+                    CallToolResult::success(vec![ContentBlock::text(payload.to_string())]);
+                result.structured_content = Some(payload);
+                return Ok(result.into());
+            }
+
+            // ── Gateway Code Mode execution. Both public names share one backend;
+            // only `codemode_ui` is advertised with MCP App metadata.
+            if service == CODE_MODE_TOOL_NAME || service == CODE_MODE_UI_TOOL_NAME {
+                if !self.route_scope.exposes_code_mode() {
+                    let elapsed_ms = start.elapsed().as_millis();
+                    self.log_route_scope_denial(
+                        &context,
+                        &service,
+                        "call_tool",
+                        "Code Mode is not exposed on this MCP route",
+                        elapsed_ms,
+                    );
+                    return Ok(route_scope_denied_result(
+                        &service,
+                        "call_tool",
+                        "Code Mode is not exposed on this MCP route".to_string(),
+                    )
+                    .into());
+                }
+                if service == CODE_MODE_UI_TOOL_NAME && !self.code_mode_app_state.is_enabled() {
+                    let envelope = build_error_extra(
+                        &service,
+                        "call_tool",
+                        "app_disabled",
+                        "the Code Mode MCP App is disabled; use codemode for text-only execution or mcp_app to re-enable it",
+                        &serde_json::json!({
+                            "text_tool": CODE_MODE_TOOL_NAME,
+                            "control_tool": MCP_APP_TOOL_NAME,
+                        }),
+                    );
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        envelope.to_string(),
+                    )])
                     .into());
                 }
                 return self

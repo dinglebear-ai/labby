@@ -25,7 +25,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use crate::mcp::catalog::{CODE_MODE_TOOL_NAME, CodeModeVisibility, ToolCatalogSnapshot};
+use crate::mcp::catalog::{
+    CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, CodeModeAppState, CodeModeVisibility,
+    MCP_APP_TOOL_NAME, ToolCatalogSnapshot,
+};
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
@@ -47,6 +50,7 @@ pub(crate) struct PeerContract {
     #[cfg(feature = "gateway")]
     pub(crate) gateway_manager: Option<Arc<GatewayManager>>,
     pub(crate) route_scope: McpRouteScope,
+    pub(crate) code_mode_app_state: CodeModeAppState,
 }
 
 impl PeerContract {
@@ -137,6 +141,10 @@ impl PeerContract {
         let mut tools = BTreeSet::new();
         if visibility.exposes_synthetic_tools() {
             tools.insert(CODE_MODE_TOOL_NAME.to_string());
+            tools.insert(MCP_APP_TOOL_NAME.to_string());
+            if self.code_mode_app_state.is_enabled() {
+                tools.insert(CODE_MODE_UI_TOOL_NAME.to_string());
+            }
         } else {
             for svc in self.registry.services() {
                 if !visibility.hides_raw_tools() && self.service_visible_on_mcp(svc.name).await {
@@ -220,6 +228,7 @@ mod tests {
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             route_scope,
+            code_mode_app_state: Default::default(),
         }
     }
 

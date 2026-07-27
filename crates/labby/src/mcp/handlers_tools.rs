@@ -22,7 +22,10 @@ use serde_json::Value;
 use crate::mcp::call_tool_codemode::{CodeModeUpstreamDescription, code_mode_description};
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
-use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
+use crate::mcp::catalog::{
+    ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME,
+    MCP_APP_TOOL_NAME,
+};
 use crate::mcp::completion::action_schema;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::auth_context_from_extensions;
@@ -168,29 +171,60 @@ impl LabMcpServer {
                 upstream_count = code_mode_upstreams.len(),
                 "registered primary Code Mode description"
             );
-            let codemode_resource_uri = code_mode_app_resource_uri_for_tool(CODE_MODE_TOOL_NAME)
-                .unwrap_or_else(|| "<missing>".to_string());
-            let codemode_skybridge_uri = code_mode_app_skybridge_uri_for_tool(CODE_MODE_TOOL_NAME)
-                .unwrap_or_else(|| "<missing>".to_string());
-            tracing::info!(
-                surface = "mcp",
-                service = labby_codemode::SERVICE,
-                action = "mcp_app.advertise",
-                resource_uri = %codemode_resource_uri,
-                skybridge_uri = %codemode_skybridge_uri,
-                "advertised primary Code Mode MCP app metadata"
+            let text_description = format!(
+                "{code_mode_description}\n\nThis text-only entry point never attaches an MCP App UI. When advertised, use `{CODE_MODE_UI_TOOL_NAME}` for the visual trace inspector; `{MCP_APP_TOOL_NAME}` can inspect or restore that app surface."
             );
             tools.accept(
                 Tool::new(
                     CODE_MODE_TOOL_NAME,
-                    code_mode_description,
+                    text_description,
                     Arc::clone(&execute_schema),
                 )
-                .with_raw_output_schema(Arc::clone(&trace_output_schema))
-                .with_meta(code_mode_tool_meta(CODE_MODE_TOOL_NAME)),
+                .with_raw_output_schema(Arc::clone(&trace_output_schema)),
             );
             advertised_names.insert(CODE_MODE_TOOL_NAME.to_string());
             gateway_tool_count += 1;
+
+            if !tools.finished() && self.code_mode_app_state.is_enabled() {
+                let codemode_resource_uri =
+                    code_mode_app_resource_uri_for_tool(CODE_MODE_UI_TOOL_NAME)
+                        .unwrap_or_else(|| "<missing>".to_string());
+                let codemode_skybridge_uri =
+                    code_mode_app_skybridge_uri_for_tool(CODE_MODE_UI_TOOL_NAME)
+                        .unwrap_or_else(|| "<missing>".to_string());
+                tracing::info!(
+                    surface = "mcp",
+                    service = labby_codemode::SERVICE,
+                    action = "mcp_app.advertise",
+                    tool = CODE_MODE_UI_TOOL_NAME,
+                    resource_uri = %codemode_resource_uri,
+                    skybridge_uri = %codemode_skybridge_uri,
+                    "advertised explicit Code Mode MCP app tool"
+                );
+                tools.accept(
+                    Tool::new(
+                        CODE_MODE_UI_TOOL_NAME,
+                        format!(
+                            "{code_mode_description}\n\nThis explicit UI entry point renders the Code Mode trace inspector. Use `{CODE_MODE_TOOL_NAME}` for text-only execution."
+                        ),
+                        Arc::clone(&execute_schema),
+                    )
+                    .with_raw_output_schema(Arc::clone(&trace_output_schema))
+                    .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME)),
+                );
+                advertised_names.insert(CODE_MODE_UI_TOOL_NAME.to_string());
+                gateway_tool_count += 1;
+            }
+
+            if !tools.finished() {
+                tools.accept(Tool::new(
+                    MCP_APP_TOOL_NAME,
+                    "Enable, disable, or inspect Labby's Code Mode MCP App surface. This controls the explicit codemode_ui tool and discoverable app resources; codemode remains text-only and available.",
+                    mcp_app_tool_schema(),
+                ));
+                advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
+                gateway_tool_count += 1;
+            }
         }
 
         #[cfg(feature = "gateway")]
@@ -397,7 +431,35 @@ impl LabMcpServer {
 }
 
 #[cfg(feature = "gateway")]
-/// Build MCP Apps metadata for the synthetic Code Mode tool.
+fn mcp_app_tool_schema() -> Arc<serde_json::Map<String, Value>> {
+    static SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(|| {
+        let Value::Object(schema) = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "enable", "disable"],
+                    "default": "status",
+                    "description": "Inspect or change whether the explicit Code Mode MCP App is advertised."
+                },
+                "target": {
+                    "type": "string",
+                    "enum": ["codemode"],
+                    "default": "codemode",
+                    "description": "Lab-owned MCP App target."
+                }
+            },
+            "additionalProperties": false
+        }) else {
+            unreachable!("MCP App management schema is an object")
+        };
+        Arc::new(schema)
+    });
+    Arc::clone(&SCHEMA)
+}
+
+#[cfg(feature = "gateway")]
+/// Build MCP Apps metadata for the explicit Code Mode UI tool.
 fn code_mode_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = code_mode_app_resource_uri_for_tool(tool_name)
         .expect("Code Mode tools must have an associated UI resource");
