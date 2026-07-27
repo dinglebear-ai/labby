@@ -28,6 +28,10 @@ on:
       - scripts/ci/build-incus-image.sh
       - scripts/ci/smoke-incus-image.sh
 
+concurrency:
+  group: incus-image-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -65,12 +69,15 @@ jobs:
       - name: Install validation and image dependencies
         run: |
           set -euo pipefail
+          distrobuilder_bin="$RUNNER_TEMP/labby-distrobuilder-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/distrobuilder"
           sudo apt-get update
           sudo apt-get install -y debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
 
           distrobuilder_dir="$(mktemp -d)"
+          trap 'rm -rf "$distrobuilder_dir"' EXIT
           distrobuilder_archive="$distrobuilder_dir/distrobuilder.tar.gz"
           curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+            --retry 5 --retry-all-errors --retry-delay 2 \
             --output "$distrobuilder_archive" \
             "https://github.com/lxc/distrobuilder/releases/download/v${DISTROBUILDER_VERSION}/distrobuilder-${DISTROBUILDER_VERSION}.tar.gz"
           printf '%s  %s\n' "$DISTROBUILDER_SHA256" "$distrobuilder_archive" \
@@ -82,8 +89,9 @@ jobs:
               -tags=containers_image_storage_stub,containers_image_docker_daemon_stub,containers_image_openpgp \
               -o "$distrobuilder_dir/distrobuilder" ./distrobuilder
           )
-          sudo install -m 0755 "$distrobuilder_dir/distrobuilder" /usr/local/bin/distrobuilder
-          distrobuilder --version
+          install -D -m 0755 "$distrobuilder_dir/distrobuilder" "$distrobuilder_bin"
+          "$distrobuilder_bin" --version
+          printf 'DISTROBUILDER_BIN=%s\n' "$distrobuilder_bin" >> "$GITHUB_ENV"
 
           # Runner packages are bound to the reviewed host snapshot; record the
           # resolved versions because cross-image apt pins are not stable.
@@ -95,7 +103,7 @@ jobs:
           sh -n scripts/incus-bootstrap.sh
           bash -n scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
           shellcheck scripts/incus-bootstrap.sh scripts/ci/build-incus-image.sh scripts/ci/smoke-incus-image.sh
-          sudo distrobuilder validate config/incus/labby-image.yaml -o image.serial=ci
+          sudo "$DISTROBUILDER_BIN" validate config/incus/labby-image.yaml -o image.serial=ci
 
       - name: Build Labby release binary
         run: cargo build --workspace --all-features --locked --release --target x86_64-unknown-linux-gnu
@@ -121,9 +129,10 @@ jobs:
         run: scripts/ci/smoke-incus-image.sh
         env:
           EXPORT_DIR: ${{ github.workspace }}/dist
-          IMAGE_ALIAS: labby-incus-ci-smoke
-          SMOKE_CONTAINER_NAME: labby-incus-ci-smoke
-          SMOKE_PROFILE_NAME: labby-gateway-ci-smoke
+          IMAGE_ALIAS: labby-incus-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_CONTAINER_NAME: labby-incus-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_PROFILE_NAME: labby-gateway-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_EXPECT_ANDROID_SDK: "0"
 
       - name: Upload Incus image artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
