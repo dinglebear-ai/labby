@@ -3,7 +3,7 @@ name = "labby-auth"
 description = "Parameterizable OAuth 2.0 + JWT auth crate (axum) for lab and other consumers."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.90"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -18,7 +18,7 @@ default = []
 # Outbound upstream OAuth runtime (client cache, manager, refresh, store, runtime).
 # Gated because it pulls in the rmcp client/auth transport stack and oauth2, which
 # pure-auth consumers (browser/API OAuth) do not need.
-upstream-oauth-rmcp = ["dep:rmcp-client", "dep:oauth2", "dep:anyhow"]
+upstream-oauth-rmcp = ["dep:rmcp-client", "dep:oauth2", "dep:anyhow", "dep:labby-runtime"]
 # Axum HTTP middleware and OAuth route handlers. Runtime crates that only need
 # auth storage or outbound upstream OAuth should leave this off.
 http-axum = ["dep:axum", "dep:tower"]
@@ -31,7 +31,7 @@ getrandom = "0.4"
 # Use aws-lc-rs for EdDSA signing and Google RS256 verification without
 # pulling RustCrypto RSA's timing-side-channel advisory into consumers.
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
-labby-runtime = { path = "../labby-runtime" }
+labby-runtime = { path = "../labby-runtime", optional = true }
 labby-primitives = { path = "../labby-primitives" }
 reqwest.workspace = true
 rustls.workspace = true
