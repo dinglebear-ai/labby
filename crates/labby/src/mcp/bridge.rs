@@ -153,23 +153,22 @@ impl ServerHandler for BridgeServerHandler {
     async fn initialize(
         &self,
         request: InitializeRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
         tracing::warn!(
             surface = "mcp",
             service = "labby",
-            action = "bridge.lifecycle.reject_legacy_initialize",
+            action = "bridge.lifecycle.compat_legacy_initialize",
             subsystem = "mcp_bridge",
             requested_protocol_version = %request.protocol_version,
             client_name = %request.client_info.name,
             client_version = %request.client_info.version,
-            "rejected unsupported legacy MCP initialize lifecycle on stdio bridge"
+            "adapting legacy MCP initialize lifecycle on stdio bridge"
         );
-        Err(ErrorData::new(
-            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
-            "legacy initialize lifecycle is not supported; use server/discover",
-            None,
-        ))
+        context.peer.set_peer_info(request.clone());
+        let mut info = self.get_info();
+        info.protocol_version = request.protocol_version;
+        Ok(info)
     }
 
     async fn discover(

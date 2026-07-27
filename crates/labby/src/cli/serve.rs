@@ -2013,7 +2013,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_mcp_rejects_legacy_initialize_lifecycle() {
+    async fn http_mcp_adapts_legacy_initialize_lifecycle() {
         let app = build_http_router(
             AppState::new(),
             None,
@@ -2050,14 +2050,13 @@ mod tests {
             .await
             .expect("response");
 
-        assert!(response.headers().get("mcp-session-id").is_none());
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .expect("response body");
         let body: serde_json::Value =
-            serde_json::from_slice(&body).expect("legacy rejection is JSON-RPC");
-        assert_eq!(body["error"]["code"], -32601);
-        assert!(body.get("result").is_none());
+            serde_json::from_slice(&body).expect("legacy initialize response is JSON-RPC");
+        assert!(body.get("error").is_none());
+        assert_eq!(body["result"]["protocolVersion"], "2025-11-25");
     }
 
     #[tokio::test]

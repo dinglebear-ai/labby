@@ -161,23 +161,25 @@ impl ServerHandler for LabMcpServer {
     async fn initialize(
         &self,
         request: InitializeRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
         tracing::warn!(
             surface = "mcp",
             service = "labby",
-            action = "lifecycle.reject_legacy_initialize",
+            action = "lifecycle.compat_legacy_initialize",
             subsystem = "mcp_server",
             requested_protocol_version = %request.protocol_version,
             client_name = %request.client_info.name,
             client_version = %request.client_info.version,
-            "rejected unsupported legacy MCP initialize lifecycle"
+            "adapting legacy MCP initialize lifecycle to the stateless server"
         );
-        Err(ErrorData::new(
-            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
-            "legacy initialize lifecycle is not supported; use server/discover",
-            None,
-        ))
+        context.peer.set_peer_info(request.clone());
+        let mut info = self.get_info();
+        // The legacy wire protocol requires echoing the negotiated version in
+        // initialize/result. This is an edge adapter only; internal handling
+        // remains stateless and all modern clients use server/discover.
+        info.protocol_version = request.protocol_version;
+        Ok(info)
     }
 
     #[allow(deprecated)]
