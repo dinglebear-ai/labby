@@ -220,6 +220,7 @@ pub(crate) fn update_upstream(
             message: format!("gateway `{name}` not found"),
         })?;
 
+    let renamed_to = patch.name.clone().filter(|new_name| new_name != name);
     if let Some(new_name) = patch.name {
         if new_name != name
             && cfg
@@ -287,7 +288,25 @@ pub(crate) fn update_upstream(
     }
 
     validate_upstream(&cfg.upstream[index], &cfg.gateway)?;
+    if let Some(new_name) = renamed_to {
+        cascade_upstream_rename(cfg, name, &new_name);
+    }
     Ok(())
+}
+
+fn cascade_upstream_rename(cfg: &mut GatewayConfig, old_name: &str, new_name: &str) {
+    for route in &mut cfg.protected_mcp_routes {
+        if route.upstream.as_deref() == Some(old_name) {
+            route.upstream = Some(new_name.to_string());
+        }
+        if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+            for upstream in &mut target.upstreams {
+                if upstream == old_name {
+                    *upstream = new_name.to_string();
+                }
+            }
+        }
+    }
 }
 
 pub fn remove_upstream(cfg: &mut GatewayConfig, name: &str) -> Result<UpstreamConfig, ToolError> {

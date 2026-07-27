@@ -332,6 +332,42 @@ fn update_upstream_replaces_named_upstream_only() {
 }
 
 #[test]
+fn update_upstream_rename_cascades_into_protected_route_targets() {
+    let mut cfg = sample_config();
+    let mut direct_route = sample_protected_route("direct");
+    direct_route.backend_url = String::new();
+    direct_route.upstream = Some("b".to_string());
+    let mut subset_route = sample_gateway_subset_route("subset", "/subset", "subset.example.com");
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut subset_route.target else {
+        panic!("gateway subset fixture");
+    };
+    target.upstreams = vec!["a".to_string(), "b".to_string()];
+    cfg.protected_mcp_routes = vec![direct_route, subset_route];
+
+    update_upstream(
+        &mut cfg,
+        "b",
+        GatewayUpdatePatch {
+            name: Some("claude-labby".to_string()),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("rename should cascade");
+
+    assert!(cfg.upstream.iter().any(|u| u.name == "claude-labby"));
+    assert_eq!(
+        cfg.protected_mcp_routes[0].upstream.as_deref(),
+        Some("claude-labby")
+    );
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &cfg.protected_mcp_routes[1].target
+    else {
+        panic!("gateway subset target");
+    };
+    assert_eq!(target.upstreams, ["a", "claude-labby"]);
+    validate_config(&cfg).expect("renamed config should remain valid");
+}
+
+#[test]
 fn update_upstream_clears_bearer_token_env_with_null_patch() {
     let mut cfg = sample_config();
 
