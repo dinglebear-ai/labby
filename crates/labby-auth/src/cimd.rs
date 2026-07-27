@@ -26,12 +26,8 @@ pub async fn resolve_client(
     state: &AuthState,
     client_id: &str,
 ) -> Result<Option<RegisteredClient>, AuthError> {
-    if let Some(client) = state.store.find_client(client_id).await? {
-        return Ok(Some(client));
-    }
-    let url = match labby_primitives::ssrf::parse_validated_https_url(client_id) {
-        Ok(url) if url.path() != "/" && !url.path().is_empty() => url,
-        _ => return Ok(None),
+    let Some(url) = metadata_document_url(client_id) else {
+        return state.store.find_client(client_id).await;
     };
     let now = now_unix();
     let lock_key = format!("cimd:{client_id}");
@@ -102,6 +98,23 @@ pub async fn resolve_client(
     Ok(Some(client))
 }
 
+/// Whether a client identifier names a Client ID Metadata Document (CIMD).
+///
+/// URL-based clients must always be resolved from their metadata document,
+/// rather than the local `registered_clients` reference row.  That row exists
+/// only to satisfy the refresh-token foreign key; it deliberately does not
+/// replace the document's authentication method or JWK set.
+pub fn is_metadata_document_client_id(client_id: &str) -> bool {
+    metadata_document_url(client_id).is_some()
+}
+
+fn metadata_document_url(client_id: &str) -> Option<url::Url> {
+    match labby_primitives::ssrf::parse_validated_https_url(client_id) {
+        Ok(url) if url.path() != "/" && !url.path().is_empty() => Some(url),
+        _ => None,
+    }
+}
+
 fn validate_document(
     expected_client_id: &str,
     document: ClientMetadataDocument,
@@ -151,7 +164,10 @@ fn validate_document(
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMetadataDocument, validate_document};
+    use super::{ClientMetadataDocument, resolve_client, validate_document};
+    use crate::authorize::tests::test_auth_state;
+    use crate::types::RegisteredClient;
+    use crate::util::now_unix;
 
     #[test]
     fn rejects_document_whose_client_id_does_not_exactly_match_url() {
@@ -191,5 +207,43 @@ mod tests {
             .unwrap_err();
             assert!(error.to_string().contains("unsafe"));
         }
+    }
+
+    #[tokio::test]
+    async fn cimd_client_resolution_does_not_downgrade_to_its_local_reference() {
+        let state = test_auth_state().await;
+        let client_id = "https://chatgpt.com/oauth/test-client/client.json";
+        // The persisted row exists solely as the refresh-token foreign-key
+        // parent. Its older SQLite representation cannot carry the CIMD JWKs.
+        state
+            .store
+            .register_client(RegisteredClient {
+                client_id: client_id.to_string(),
+                redirect_uris: vec!["https://chatgpt.com/connector/oauth/test-client".to_string()],
+                created_at: now_unix(),
+                token_endpoint_auth_method: "none".to_string(),
+                jwks: None,
+            })
+            .await
+            .unwrap();
+        state.cimd_cache.insert(
+            client_id.to_string(),
+            (
+                RegisteredClient {
+                    client_id: client_id.to_string(),
+                    redirect_uris: vec![
+                        "https://chatgpt.com/connector/oauth/test-client".to_string(),
+                    ],
+                    created_at: now_unix(),
+                    token_endpoint_auth_method: "private_key_jwt".to_string(),
+                    jwks: Some(serde_json::json!({"keys": []})),
+                },
+                now_unix() + 60,
+            ),
+        );
+
+        let resolved = resolve_client(&state, client_id).await.unwrap().unwrap();
+        assert_eq!(resolved.token_endpoint_auth_method, "private_key_jwt");
+        assert!(resolved.jwks.is_some());
     }
 }

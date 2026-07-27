@@ -206,6 +206,15 @@ pub async fn authorize(
             "redirect_uri does not match the registered client".to_string(),
         ));
     }
+    // A CIMD URL is the client ID, not an RFC 7591 registration.  Keep a
+    // validated local reference nonetheless: refresh_tokens has a foreign key
+    // to registered_clients, and the authorization-code grant must be able to
+    // issue a durable refresh token for a CIMD client.  `resolve_client`
+    // continues to fetch URL-based clients from their metadata document, so
+    // this reference cannot downgrade private_key_jwt authentication.
+    if crate::cimd::is_metadata_document_client_id(&query.client_id) {
+        state.store.register_client(client.clone()).await?;
+    }
     if let Err(error) = validate_response_type(&query.response_type) {
         return authorization_error_redirect(&state, &query, "unsupported_response_type", error);
     }
@@ -1415,6 +1424,44 @@ pub mod tests {
             .unwrap();
         assert!(location.contains("accounts.google.com"));
         assert!(location.contains("prompt=consent"));
+    }
+
+    #[tokio::test]
+    async fn authorize_persists_a_cimd_client_reference_for_token_issuance() {
+        let mut config = test_auth_config();
+        config.allowed_client_redirect_uris =
+            vec!["https://chatgpt.com/connector/oauth/*".to_string()];
+        let state = test_auth_state_with_config(config).await;
+        let client_id = "https://chatgpt.com/oauth/test-client/client.json";
+        state.cimd_cache.insert(
+            client_id.to_string(),
+            (
+                RegisteredClient {
+                    client_id: client_id.to_string(),
+                    redirect_uris: vec![
+                        "https://chatgpt.com/connector/oauth/test-client".to_string(),
+                    ],
+                    created_at: now_unix(),
+                    token_endpoint_auth_method: "none".to_string(),
+                    jwks: None,
+                },
+                now_unix() + 60,
+            ),
+        );
+
+        let app = router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=https%3A%2F%2Fchatgpt.com%2Foauth%2Ftest-client%2Fclient.json&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector%2Foauth%2Ftest-client&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert!(state.store.find_client(client_id).await.unwrap().is_some());
     }
 
     #[tokio::test]
