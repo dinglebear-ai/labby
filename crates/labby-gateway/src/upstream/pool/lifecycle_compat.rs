@@ -3,7 +3,6 @@
 //! Labby's downstream server remains on the current stateless lifecycle. This
 //! module only handles independently versioned upstream servers.
 
-use rmcp::model::ProtocolVersion;
 use rmcp::service::ClientLifecycleMode;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15,17 +14,18 @@ pub(super) enum LifecycleAttempt {
 impl LifecycleAttempt {
     pub(super) fn mode(self) -> ClientLifecycleMode {
         match self {
-            Self::Modern => ClientLifecycleMode::Auto {
-                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-                legacy_version: Some(ProtocolVersion::V_2025_11_25),
-            },
+            // Labby's configured upstream fleet is legacy-only. Keep the
+            // compatibility boundary deterministic: probing server/discover
+            // first leaves legacy streamable transports in inconsistent state
+            // and makes a later initialize retry unreliable.
+            Self::Modern => ClientLifecycleMode::Initialize,
             Self::LegacyInitialize => ClientLifecycleMode::Initialize,
         }
     }
 
     pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::Modern => "discover-2026",
+            Self::Modern => "initialize-legacy",
             Self::LegacyInitialize => "initialize",
         }
     }
