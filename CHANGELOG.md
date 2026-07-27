@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0](https://github.com/dinglebear-ai/labby/compare/v1.6.0...v1.7.0) (2026-07-27)
+
+
+### Added
+
+* **auth:** complete MCP 2026 authorization ([68b4079](https://github.com/dinglebear-ai/labby/commit/68b4079fd2ecf00f17fd56c3dbfe77f3ae2b39de))
+* **auth:** make the canonical resource scope vocabulary configurable ([#268](https://github.com/dinglebear-ai/labby/issues/268)) ([bd11914](https://github.com/dinglebear-ai/labby/commit/bd1191416b72ad016b5630470d2868fe7bc993cb))
+* **mcp:** align gateway with 2026-07-28 RC ([f076fc9](https://github.com/dinglebear-ai/labby/commit/f076fc9e7b513a0a84a9c30095a756dc8c59a907))
+* **mcp:** coalesce catalog notifications and keep them out of open turns ([#267](https://github.com/dinglebear-ai/labby/issues/267)) ([7a76aa6](https://github.com/dinglebear-ai/labby/commit/7a76aa671fe8d7b06e200eeb00e79eb10fbab331)), closes [#261](https://github.com/dinglebear-ai/labby/issues/261)
+* **mcp:** evaluate tools/list_changed per peer, not as a broadcast ([#264](https://github.com/dinglebear-ai/labby/issues/264)) ([e617a22](https://github.com/dinglebear-ai/labby/commit/e617a22c35d4ecbed270a8d8501245333dd30b61)), closes [#261](https://github.com/dinglebear-ai/labby/issues/261)
+* **mcp:** land compact inspector and private app callbacks ([#272](https://github.com/dinglebear-ai/labby/issues/272)) ([c314f8f](https://github.com/dinglebear-ai/labby/commit/c314f8f88a2ba82834ec9c5b8a20ebe38f48335b))
+* **mcp:** migrate to rmcp 3 stateless lifecycle ([41fbdae](https://github.com/dinglebear-ai/labby/commit/41fbdae5f7f38f1446a883f64e6708272921036e))
+* **observability:** detect tools/list_changed notification churn ([#262](https://github.com/dinglebear-ai/labby/issues/262)) ([845d59c](https://github.com/dinglebear-ai/labby/commit/845d59c04391f7f4f155a7af28b28c5bff1bf734))
+* **setup:** slim and harden Incus provisioning ([db77f71](https://github.com/dinglebear-ai/labby/commit/db77f71c5af2dce2818072e9996fd3be06645a1a))
+* **unraid:** add live dashboard widget ([5240bc9](https://github.com/dinglebear-ai/labby/commit/5240bc9472c124445637b7a936fd25a161b59b91))
+* **unraid:** polish mobile gateway management ([28fef10](https://github.com/dinglebear-ai/labby/commit/28fef10de84f9ca6e0cf2f95b2d5c65e22200e42))
+* **web:** add operational Unraid settings page ([c31ca4d](https://github.com/dinglebear-ai/labby/commit/c31ca4d6002240a8108736905359014a1b9e5b1f))
+
+
+### Fixed
+
+* **auth:** harden MCP 2026 authorization ([#270](https://github.com/dinglebear-ai/labby/issues/270)) ([c667b3c](https://github.com/dinglebear-ai/labby/commit/c667b3c714c95eee7786ff58f63bad506a2cd88b))
+* **auth:** separate browser callback from issuer ([#258](https://github.com/dinglebear-ai/labby/issues/258)) ([4dc5ce6](https://github.com/dinglebear-ai/labby/commit/4dc5ce628077ad71523ca9ece7b141222edba81e))
+* **gateway:** bridge legacy upstream MCP lifecycle ([a4a2ada](https://github.com/dinglebear-ai/labby/commit/a4a2ada9750344ce07df9f70b84155bda3f55495))
+* **gateway:** cascade upstream removals ([2d518f9](https://github.com/dinglebear-ai/labby/commit/2d518f9e8e160c24e04e2700ae8e1f562126ad92))
+* **gateway:** cascade upstream renames into protected routes ([43a1412](https://github.com/dinglebear-ai/labby/commit/43a1412edb39382a117401d1cd0a01d04ea4dccb))
+* **gateway:** stop tools/list_changed churn on Code Mode raw tool flapping ([6f81a7c](https://github.com/dinglebear-ai/labby/commit/6f81a7c17785884e508ba2b8aee564a009351a7c))
+* **mcp:** prune closed peers so the registry stops growing without bound ([#269](https://github.com/dinglebear-ai/labby/issues/269)) ([23b2afb](https://github.com/dinglebear-ai/labby/commit/23b2afbb559c3a5b97bafc0b239d948e78349fe3))
+* **unraid:** align settings shell with source mock ([ce825fe](https://github.com/dinglebear-ai/labby/commit/ce825fe0b636549cbbce5e03d4b9459c6e128a93))
+* **unraid:** expose Incus CLI to dashboard status ([b89a6d7](https://github.com/dinglebear-ai/labby/commit/b89a6d7b705e4cddc5b8f302a828a95040cf81eb))
+* **unraid:** honor Incus daemon state path ([ebdb087](https://github.com/dinglebear-ai/labby/commit/ebdb087e9aca6e50ba1fb8fa01fd862bcfe0715e))
+* **unraid:** preserve xtables extensions in Incus mode ([c20daf4](https://github.com/dinglebear-ai/labby/commit/c20daf45e0d38aa958929e748115d25f28ca4e77))
+* **unraid:** prevent mobile gateway row overlap ([05087a5](https://github.com/dinglebear-ai/labby/commit/05087a57cdcf6441ad5f4c4802a5ab3cfcda9ce0))
+* **unraid:** run Incus UI commands as numeric user ([d084926](https://github.com/dinglebear-ai/labby/commit/d084926aa1993fe9f727936223aeb304206dcb22))
+* **unraid:** ship the real Labby plugin control plane ([49d5707](https://github.com/dinglebear-ai/labby/commit/49d57074f0bf42411e22b75f9e7bb9739b727c56))
+
 ## [1.6.0](https://github.com/jmagar/labby/compare/v1.5.0...v1.6.0) (2026-07-17)
 
 
