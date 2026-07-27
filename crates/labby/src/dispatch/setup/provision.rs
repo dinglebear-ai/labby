@@ -1067,7 +1067,7 @@ mod tests {
         assert!(text.contains("ffmpeg"));
         // android-sdk is opt-in (LABBY_ENABLE_ANDROID_SDK); not in the default plan.
         assert!(!text.contains("install android-sdk"));
-        assert!(!text.contains("apt install: git openssh-client gh ca-certificates curl rsync xz-utils python3 zsh ffmpeg adb"));
+        assert!(!text.contains("apt install: git openssh-client gh ca-certificates curl jq ripgrep lsof rsync xz-utils python3 zsh ffmpeg adb"));
         assert!(text.contains("[labby] install node v24.x"));
         assert!(text.contains("[labby] install rust + go toolchains"));
         assert!(text.contains("[labby] install claude + codex + gemini"));
@@ -1096,6 +1096,9 @@ mod tests {
                 "gh",
                 "ca-certificates",
                 "curl",
+                "jq",
+                "ripgrep",
+                "lsof",
                 "rsync",
                 "xz-utils",
                 "python3",
