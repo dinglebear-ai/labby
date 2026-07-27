@@ -121,6 +121,7 @@ pub enum RegisteredServiceKind {
 pub struct ToolRegistry {
     services: Vec<RegisteredService>,
     action_names: Vec<&'static str>,
+    permanent_tools: crate::mcp::permanent_tools::PermanentToolRegistry,
 }
 
 impl ToolRegistry {
@@ -130,6 +131,7 @@ impl ToolRegistry {
         Self {
             services: Vec::new(),
             action_names: Vec::new(),
+            permanent_tools: crate::mcp::permanent_tools::PermanentToolRegistry::new(),
         }
     }
 
@@ -171,6 +173,12 @@ impl ToolRegistry {
     #[must_use]
     pub fn services(&self) -> &[RegisteredService] {
         &self.services
+    }
+
+    /// Borrow the product-level MCP tool registry composed at startup.
+    #[must_use]
+    pub(crate) fn permanent_tools(&self) -> &crate::mcp::permanent_tools::PermanentToolRegistry {
+        &self.permanent_tools
     }
 
     /// Borrow the cached sorted unique action-name list.

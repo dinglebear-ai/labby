@@ -137,6 +137,7 @@ impl RegisteredPeer {
                 #[cfg(feature = "gateway")]
                 gateway_manager: None,
                 route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+                audience: crate::mcp::peer_contract::PeerCatalogAudience::default(),
             },
             last_contract,
         }
@@ -146,9 +147,9 @@ impl RegisteredPeer {
     pub(crate) fn stale_for_test(peer: Peer<RoleServer>) -> Self {
         Self::with_last_contract_for_test(
             peer,
-            crate::mcp::catalog::ToolCatalogSnapshot {
-                tools: std::iter::once("stale-tool-from-a-previous-contract".to_string()).collect(),
-            },
+            crate::mcp::catalog::ToolCatalogSnapshot::from_names(
+                std::iter::once("stale-tool-from-a-previous-contract".to_string()).collect(),
+            ),
         )
     }
 
@@ -156,9 +157,7 @@ impl RegisteredPeer {
     pub(crate) fn current_for_test(peer: Peer<RoleServer>) -> Self {
         Self::with_last_contract_for_test(
             peer,
-            crate::mcp::catalog::ToolCatalogSnapshot {
-                tools: std::collections::BTreeSet::new(),
-            },
+            crate::mcp::catalog::ToolCatalogSnapshot::from_names(std::collections::BTreeSet::new()),
         )
     }
 }

@@ -28,6 +28,7 @@ pub mod meta;
 pub(crate) mod pagination;
 pub(crate) mod peer_contract;
 pub mod peers;
+pub(crate) mod permanent_tools;
 pub mod prompts;
 pub mod registry;
 #[cfg(feature = "gateway")]

@@ -1,11 +1,22 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use rmcp::RoleServer;
+use rmcp::model::Tool;
+use rmcp::service::RequestContext;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::server::LabMcpServer;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::UpstreamPool;
+#[cfg(feature = "gateway")]
+use crate::mcp::context::{
+    auth_context_from_extensions, oauth_upstream_subject_for_request, tool_execute_scope_allowed,
+};
+#[cfg(feature = "gateway")]
+use crate::mcp::handlers_resources::admin_app_resources_visible;
+use crate::mcp::peer_contract::{PeerCatalogAudience, PeerContract};
 #[cfg(test)]
 use crate::mcp::prompts::list_all as list_builtin_prompts;
 
@@ -58,6 +69,10 @@ pub(crate) struct CatalogSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolCatalogSnapshot {
     pub(crate) tools: BTreeSet<String>,
+    /// SHA-256 of the canonical, post-filter descriptor set presented to this
+    /// peer. The digest includes every serialized Tool field, including schemas,
+    /// annotations, and `_meta`, and excludes gateway runtime state by construction.
+    pub(crate) contract_hash: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -68,12 +83,75 @@ pub(crate) struct CatalogChangeSet {
 }
 
 impl ToolCatalogSnapshot {
+    #[must_use]
+    pub(crate) fn from_descriptors(descriptors: &[Tool]) -> Self {
+        let tools = descriptors
+            .iter()
+            .map(|tool| tool.name.as_ref().to_string())
+            .collect();
+        Self {
+            tools,
+            contract_hash: descriptor_contract_hash(descriptors),
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_names(tools: BTreeSet<String>) -> Self {
+        let descriptors = tools
+            .iter()
+            .map(|name| Tool::new(name.clone(), "", Arc::new(serde_json::Map::new())))
+            .collect::<Vec<_>>();
+        Self::from_descriptors(&descriptors)
+    }
+
     pub(crate) fn changes_since(&self, before: &Self) -> CatalogChangeSet {
         CatalogChangeSet {
-            tools_changed: before.tools != self.tools,
+            tools_changed: before.contract_hash != self.contract_hash,
             resources_changed: false,
             prompts_changed: false,
         }
+    }
+}
+
+fn descriptor_contract_hash(descriptors: &[Tool]) -> [u8; 32] {
+    let mut canonical = descriptors
+        .iter()
+        .map(|tool| {
+            let value = serde_json::to_value(tool).unwrap_or(Value::Null);
+            let value = canonicalize_json(value);
+            let bytes = serde_json::to_vec(&value).unwrap_or_default();
+            (tool.name.as_ref().to_string(), bytes)
+        })
+        .collect::<Vec<_>>();
+    canonical.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    let mut hasher = Sha256::new();
+    for (name, descriptor) in canonical {
+        hash_len_prefixed(&mut hasher, name.as_bytes());
+        hash_len_prefixed(&mut hasher, &descriptor);
+    }
+    hasher.finalize().into()
+}
+
+fn hash_len_prefixed(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
+
+fn canonicalize_json(value: Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries = object.into_iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            let mut canonical = serde_json::Map::new();
+            for (key, value) in entries {
+                canonical.insert(key, canonicalize_json(value));
+            }
+            Value::Object(canonical)
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
+        scalar => scalar,
     }
 }
 
@@ -87,12 +165,42 @@ pub(crate) fn upstream_name_for_uri(uri: &str) -> Option<&str> {
 impl LabMcpServer {
     /// This session's visible-contract inputs, in the form the notification
     /// fanout can hold onto and re-evaluate later. See `peer_contract.rs`.
-    pub(crate) fn peer_contract(&self) -> crate::mcp::peer_contract::PeerContract {
-        crate::mcp::peer_contract::PeerContract {
+    pub(crate) fn peer_contract(&self) -> PeerContract {
+        PeerContract {
             registry: Arc::clone(&self.registry),
             #[cfg(feature = "gateway")]
             gateway_manager: self.gateway_manager.clone(),
             route_scope: self.route_scope.clone(),
+            audience: PeerCatalogAudience::default(),
+        }
+    }
+
+    pub(crate) fn peer_contract_for_request(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> PeerContract {
+        #[cfg(feature = "gateway")]
+        let audience = {
+            let auth = auth_context_from_extensions(&context.extensions);
+            PeerCatalogAudience {
+                code_mode_execute_allowed: tool_execute_scope_allowed(auth),
+                admin_apps_visible: admin_app_resources_visible(auth),
+                oauth_subject: oauth_upstream_subject_for_request(
+                    auth,
+                    self.request_subject(context),
+                )
+                .map(std::borrow::Cow::into_owned),
+            }
+        };
+        #[cfg(not(feature = "gateway"))]
+        let audience = PeerCatalogAudience::default();
+
+        PeerContract {
+            registry: Arc::clone(&self.registry),
+            #[cfg(feature = "gateway")]
+            gateway_manager: self.gateway_manager.clone(),
+            route_scope: self.route_scope.clone(),
+            audience,
         }
     }
 
@@ -325,13 +433,20 @@ impl LabMcpServer {
         }
     }
 
-    /// Lightweight tool-list projection for call paths that can only mutate
-    /// upstream tool health. This intentionally omits resources/prompts and
-    /// avoids cloning upstream schemas.
+    /// Full client-visible tool contract for trusted/local test paths.
+    #[cfg(test)]
     pub(crate) async fn snapshot_tool_catalog(&self) -> ToolCatalogSnapshot {
-        ToolCatalogSnapshot {
-            tools: self.peer_contract().visible_tools().await,
-        }
+        self.peer_contract().visible_contract().await
+    }
+
+    /// Full client-visible tool contract for one authenticated request.
+    pub(crate) async fn snapshot_tool_catalog_for_request(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> ToolCatalogSnapshot {
+        self.peer_contract_for_request(context)
+            .visible_contract()
+            .await
     }
 }
 
@@ -363,15 +478,29 @@ mod tests {
         assert!(!CodeModeVisibility::Raw.hides_raw_tools());
     }
 
-    #[test]
-    fn tool_catalog_snapshot_only_reports_tool_changes() {
-        let before = ToolCatalogSnapshot {
-            tools: BTreeSet::from(["a".to_string()]),
-        };
-        let after = ToolCatalogSnapshot {
-            tools: BTreeSet::from(["a".to_string(), "b".to_string()]),
-        };
+    fn schema(properties: Value) -> Arc<serde_json::Map<String, Value>> {
+        Arc::new(
+            serde_json::json!({ "type": "object", "properties": properties })
+                .as_object()
+                .expect("schema object")
+                .clone(),
+        )
+    }
 
+    fn descriptor(description: &str) -> Tool {
+        Tool::new(
+            "alpha",
+            description.to_string(),
+            schema(serde_json::json!({ "value": { "type": "string" } })),
+        )
+    }
+
+    #[test]
+    fn descriptor_only_change_reports_tool_change() {
+        let before = ToolCatalogSnapshot::from_descriptors(&[descriptor("before")]);
+        let after = ToolCatalogSnapshot::from_descriptors(&[descriptor("after")]);
+
+        assert_eq!(before.tools, after.tools);
         assert_eq!(
             after.changes_since(&before),
             CatalogChangeSet {
@@ -379,6 +508,76 @@ mod tests {
                 resources_changed: false,
                 prompts_changed: false,
             }
+        );
+    }
+
+    #[test]
+    fn schema_annotation_and_meta_changes_affect_contract_hash() {
+        let base = descriptor("same");
+        let schema_changed = Tool::new(
+            "alpha",
+            "same",
+            schema(serde_json::json!({ "value": { "type": "integer" } })),
+        );
+        let annotation_changed = descriptor("same")
+            .with_annotations(rmcp::model::ToolAnnotations::new().read_only(true));
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "ui/resourceUri".to_string(),
+            Value::String("ui://alpha".to_string()),
+        );
+        let meta_changed = descriptor("same").with_meta(rmcp::model::MetaObject(meta));
+
+        let base = ToolCatalogSnapshot::from_descriptors(&[base]);
+        for changed in [schema_changed, annotation_changed, meta_changed] {
+            let changed = ToolCatalogSnapshot::from_descriptors(&[changed]);
+            assert_ne!(base.contract_hash, changed.contract_hash);
+        }
+    }
+
+    #[test]
+    fn descriptor_and_json_object_order_do_not_affect_contract_hash() {
+        let left = Tool::new(
+            "alpha",
+            "same",
+            schema(serde_json::json!({
+                "a": { "type": "string" },
+                "b": { "type": "integer" }
+            })),
+        );
+        let right = Tool::new(
+            "beta",
+            "same",
+            schema(serde_json::json!({ "value": { "type": "boolean" } })),
+        );
+        let reordered_alpha = Tool::new(
+            "alpha",
+            "same",
+            schema(serde_json::json!({
+                "b": { "type": "integer" },
+                "a": { "type": "string" }
+            })),
+        );
+
+        let first = ToolCatalogSnapshot::from_descriptors(&[left, right.clone()]);
+        let second = ToolCatalogSnapshot::from_descriptors(&[right, reordered_alpha]);
+        assert_eq!(first.contract_hash, second.contract_hash);
+        assert!(!second.changes_since(&first).tools_changed);
+    }
+
+    #[test]
+    fn tool_name_changes_remain_available_for_diagnostics() {
+        let before = ToolCatalogSnapshot::from_names(BTreeSet::from(["a".to_string()]));
+        let after =
+            ToolCatalogSnapshot::from_names(BTreeSet::from(["a".to_string(), "b".to_string()]));
+        assert!(after.changes_since(&before).tools_changed);
+        assert_eq!(
+            after
+                .tools
+                .difference(&before.tools)
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["b"]
         );
     }
 }

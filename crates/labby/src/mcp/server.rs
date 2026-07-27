@@ -248,7 +248,7 @@ impl ServerHandler for LabMcpServer {
         // Seed the subscription's last-published contract with what this route
         // currently exposes. A later catalog trigger only notifies this stream
         // when its own visible contract actually moves.
-        let contract = self.peer_contract();
+        let contract = self.peer_contract_for_request(context.request_context());
         let last_contract = contract.visible_contract().await;
         let route_scope_label = self.route_scope.label();
         let pruned_peer_count = crate::mcp::peers::prune_closed_peers(&self.peers).await;

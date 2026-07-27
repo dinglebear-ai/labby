@@ -30,7 +30,7 @@ use crate::dispatch::upstream::types::UpstreamTool;
 use crate::mcp::call_tool_upstream::PreResolvedUpstreamTool;
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
-use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
+use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
 use crate::mcp::context::{
     auth_context_from_extensions, tool_execute_builtin_action_allowed, tool_execute_scope_allowed,
 };
@@ -39,6 +39,8 @@ use crate::mcp::error::DispatchError;
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::admin_app_resources_visible;
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel, spawn_dispatch_notification};
+#[cfg(feature = "gateway")]
+use crate::mcp::permanent_tools::PermanentToolId;
 use crate::mcp::result_format::{
     estimate_tokens_args, format_dispatch_result, tool_error_envelope,
 };
@@ -262,7 +264,10 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         {
             // ── Gateway `codemode` tool: run caller's JS in the subprocess sandbox.
-            if service == CODE_MODE_TOOL_NAME {
+            if matches!(
+                self.registry.permanent_tools().resolve(&service),
+                Some(PermanentToolId::CodeMode)
+            ) {
                 if !self.route_scope.exposes_code_mode() {
                     let elapsed_ms = start.elapsed().as_millis();
                     self.log_route_scope_denial(

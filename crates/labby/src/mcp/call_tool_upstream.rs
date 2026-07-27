@@ -151,7 +151,7 @@ impl LabMcpServer {
             && let Some(Ok((upstream_name, _tool, route))) = raw_resolved
             && pre_resolved_oauth_config.is_none()
         {
-            let before = self.snapshot_tool_catalog().await;
+            let before = self.snapshot_tool_catalog_for_request(context).await;
             tracing::info!(
                 surface = "mcp",
                 service,
@@ -293,7 +293,7 @@ impl LabMcpServer {
                         outcome,
                     )
                     .await;
-                    let after = self.snapshot_tool_catalog().await;
+                    let after = self.snapshot_tool_catalog_for_request(context).await;
                     self.notify_catalog_changes(
                         after.changes_since(&before),
                         SOURCE_MCP_CALL_UPSTREAM,
@@ -303,7 +303,7 @@ impl LabMcpServer {
                 }
                 Some(Err(e)) => {
                     pool.record_failure(&upstream_name, e.clone()).await;
-                    let after = self.snapshot_tool_catalog().await;
+                    let after = self.snapshot_tool_catalog_for_request(context).await;
                     self.notify_catalog_changes(
                         after.changes_since(&before),
                         SOURCE_MCP_CALL_UPSTREAM,
@@ -360,7 +360,7 @@ impl LabMcpServer {
                         )
                         .await;
                     }
-                    let after = self.snapshot_tool_catalog().await;
+                    let after = self.snapshot_tool_catalog_for_request(context).await;
                     self.notify_catalog_changes(
                         after.changes_since(&before),
                         SOURCE_MCP_CALL_UPSTREAM,

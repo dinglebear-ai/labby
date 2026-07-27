@@ -19,15 +19,15 @@ use rmcp::service::RequestContext;
 use serde_json::Value;
 
 #[cfg(feature = "gateway")]
-use crate::mcp::call_tool_codemode::{CodeModeUpstreamDescription, code_mode_description};
+use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, CODE_MODE_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
 use crate::mcp::completion::action_schema;
 #[cfg(feature = "gateway")]
-use crate::mcp::context::auth_context_from_extensions;
-#[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
+#[cfg(feature = "gateway")]
+use crate::mcp::context::{auth_context_from_extensions, tool_execute_scope_allowed};
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::{
     add_server_app_resource_uri_for_tool, add_server_app_skybridge_uri_for_tool,
@@ -150,21 +150,25 @@ impl LabMcpServer {
         // Early pagination can leave builtin_names/advertised_names partial; every later
         // source that depends on those dedup sets must stay gated behind tools.finished().
         #[cfg(feature = "gateway")]
-        if !tools.finished() && visibility.exposes_synthetic_tools() {
+        if !tools.finished()
+            && visibility.exposes_synthetic_tools()
+            && tool_execute_scope_allowed(auth)
+        {
             // ── Gateway Code Mode tool. It takes `{ code, upstreams?, tools? }`
             // and exposes in-sandbox discovery through `codemode.search()` /
             // `codemode.describe()`.
             // See mcp/CLAUDE.md for the exception rationale and
             // dispatch/gateway/dispatch.rs guard.
-            let trace_output_schema = code_mode_trace_output_schema();
-            let execute_schema = code_mode_execute_schema();
             let code_mode_upstreams = self.code_mode_upstreams_for_description().await;
-            let code_mode_description = code_mode_description(&code_mode_upstreams);
+            let descriptor = self
+                .registry
+                .permanent_tools()
+                .code_mode_descriptor(&code_mode_upstreams);
             tracing::info!(
                 surface = "mcp",
                 service = labby_codemode::SERVICE,
                 action = "tool.describe",
-                description_bytes = code_mode_description.len(),
+                description_bytes = descriptor.description.as_deref().map(str::len).unwrap_or(0),
                 upstream_count = code_mode_upstreams.len(),
                 "registered primary Code Mode description"
             );
@@ -180,15 +184,7 @@ impl LabMcpServer {
                 skybridge_uri = %codemode_skybridge_uri,
                 "advertised primary Code Mode MCP app metadata"
             );
-            tools.accept(
-                Tool::new(
-                    CODE_MODE_TOOL_NAME,
-                    code_mode_description,
-                    Arc::clone(&execute_schema),
-                )
-                .with_raw_output_schema(Arc::clone(&trace_output_schema))
-                .with_meta(code_mode_tool_meta(CODE_MODE_TOOL_NAME)),
-            );
+            tools.accept(descriptor);
             advertised_names.insert(CODE_MODE_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
@@ -398,7 +394,7 @@ impl LabMcpServer {
 
 #[cfg(feature = "gateway")]
 /// Build MCP Apps metadata for the synthetic Code Mode tool.
-fn code_mode_tool_meta(tool_name: &str) -> Meta {
+pub(crate) fn code_mode_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = code_mode_app_resource_uri_for_tool(tool_name)
         .expect("Code Mode tools must have an associated UI resource");
     // Anthropic / MCP Apps (SEP-1724) binding: hosts read `_meta.ui.resourceUri`.
@@ -414,7 +410,7 @@ fn code_mode_tool_meta(tool_name: &str) -> Meta {
 }
 
 /// Build MCP Apps metadata for the Server Logs tool.
-fn server_logs_tool_meta(tool_name: &str) -> Meta {
+pub(crate) fn server_logs_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = server_logs_app_resource_uri_for_tool(tool_name)
         .expect("server log tools must have an associated UI resource");
     owned_app_tool_meta(
@@ -425,7 +421,7 @@ fn server_logs_tool_meta(tool_name: &str) -> Meta {
 
 #[cfg(feature = "gateway")]
 /// Build MCP Apps metadata for the synthetic Add Server tool.
-fn add_server_tool_meta(tool_name: &str) -> Meta {
+pub(crate) fn add_server_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = add_server_app_resource_uri_for_tool(tool_name)
         .expect("Add Server tool must have an associated UI resource");
     owned_app_tool_meta(
@@ -436,7 +432,7 @@ fn add_server_tool_meta(tool_name: &str) -> Meta {
 
 #[cfg(feature = "gateway")]
 /// Build MCP Apps metadata for the synthetic Gateway Status tool.
-fn gateway_status_tool_meta(tool_name: &str) -> Meta {
+pub(crate) fn gateway_status_tool_meta(tool_name: &str) -> Meta {
     let resource_uri = gateway_status_app_resource_uri_for_tool(tool_name)
         .expect("Gateway Status tool must have an associated UI resource");
     owned_app_tool_meta(
@@ -463,7 +459,7 @@ fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> M
 
 #[cfg(feature = "gateway")]
 /// Describe the synthetic Add Server callback contract for agent clients.
-fn add_server_tool_schema() -> Arc<serde_json::Map<String, Value>> {
+pub(crate) fn add_server_tool_schema() -> Arc<serde_json::Map<String, Value>> {
     static SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(|| {
         let Value::Object(schema) = serde_json::json!({
             "type": "object",
@@ -546,7 +542,7 @@ fn add_server_tool_schema() -> Arc<serde_json::Map<String, Value>> {
 
 #[cfg(feature = "gateway")]
 /// Describe the read-only Gateway Status callback contract.
-fn gateway_status_tool_schema() -> Arc<serde_json::Map<String, Value>> {
+pub(crate) fn gateway_status_tool_schema() -> Arc<serde_json::Map<String, Value>> {
     static SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(|| {
         let Value::Object(schema) = serde_json::json!({
             "type": "object",
@@ -572,7 +568,7 @@ fn gateway_status_tool_schema() -> Arc<serde_json::Map<String, Value>> {
 }
 
 #[cfg(feature = "gateway")]
-fn code_mode_execute_schema() -> Arc<serde_json::Map<String, Value>> {
+pub(crate) fn code_mode_execute_schema() -> Arc<serde_json::Map<String, Value>> {
     static EXECUTE_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(
         || match serde_json::json!({
             "type": "object",
@@ -603,7 +599,7 @@ fn code_mode_execute_schema() -> Arc<serde_json::Map<String, Value>> {
 }
 
 #[cfg(feature = "gateway")]
-fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
+pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Value>> {
     static TRACE_OUTPUT_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(
         || match serde_json::json!({
         "type": "object",

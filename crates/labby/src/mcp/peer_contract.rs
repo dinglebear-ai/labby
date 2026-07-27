@@ -1,73 +1,81 @@
-//! Per-peer visible tool contract.
+//! Per-peer client-visible tool contract.
 //!
-//! `tools/list_changed` is a per-session statement — "the tool list *you* would
-//! get from `tools/list` has changed" — but the catalog it is derived from is
-//! global. Two sessions can see different contracts from the same gateway
-//! state: `McpRouteScope` restricts which upstreams and services a route
-//! exposes, and a protected route may set `expose_code_mode = false`, which
-//! shows that session raw upstream tools while every other session sees the
-//! constant `codemode` tool.
-//!
-//! Diffing one global projection and broadcasting the result therefore gets it
-//! wrong in both directions: sessions are told about changes they cannot see,
-//! and — the sharper failure — a raw-exposing route is told *nothing* when its
-//! own tool set moves, because the global projection was computed under Code
-//! Mode and filtered that movement out.
-//!
-//! `PeerContract` is the fix: it captures exactly the inputs a session's
-//! visible tool list depends on, so the notification fanout can recompute each
-//! peer's own contract and notify only the peers whose contract actually moved.
-//!
-//! It holds cheap clones (two `Arc`s and a small enum), never a `LabMcpServer`
-//! — a server holds the peer registry, so storing one inside that registry
-//! would close a reference cycle.
+//! A tools/list_changed notification is a statement about one subscription's
+//! post-filter descriptor set. PeerContract retains the durable inputs needed
+//! to rebuild that set after gateway state changes: route scope, caller class,
+//! registry composition, and the current gateway manager.
 
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::mcp::catalog::{CODE_MODE_TOOL_NAME, CodeModeVisibility, ToolCatalogSnapshot};
+use rmcp::model::Tool;
+
+use crate::mcp::catalog::{CodeModeVisibility, SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
+use crate::mcp::completion::action_schema;
+use crate::mcp::handlers_tools::server_logs_tool_meta;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
+#[cfg(feature = "gateway")]
+use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::UpstreamPool;
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
+#[cfg(feature = "gateway")]
+use crate::mcp::catalog::{ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME};
+#[cfg(feature = "gateway")]
+use crate::mcp::handlers_tools::{
+    add_server_tool_meta, add_server_tool_schema, gateway_status_tool_meta,
+    gateway_status_tool_schema,
+};
 
-/// Everything a session's visible tool list is derived from.
-///
-/// Kept deliberately minimal: `LabMcpServer` has these three fields plus
-/// session-local state (logging level, relay id, transport label) that cannot
-/// affect which tools are visible.
+/// Request-derived inputs that affect the descriptor set for one peer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PeerCatalogAudience {
+    pub(crate) code_mode_execute_allowed: bool,
+    pub(crate) admin_apps_visible: bool,
+    #[cfg(feature = "gateway")]
+    pub(crate) oauth_subject: Option<String>,
+}
+
+impl Default for PeerCatalogAudience {
+    fn default() -> Self {
+        Self {
+            code_mode_execute_allowed: true,
+            admin_apps_visible: true,
+            #[cfg(feature = "gateway")]
+            oauth_subject: Some(SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
+        }
+    }
+}
+
+/// Everything a subscription's visible tool descriptors derive from.
 #[derive(Clone)]
 pub(crate) struct PeerContract {
     pub(crate) registry: Arc<ToolRegistry>,
     #[cfg(feature = "gateway")]
     pub(crate) gateway_manager: Option<Arc<GatewayManager>>,
     pub(crate) route_scope: McpRouteScope,
+    pub(crate) audience: PeerCatalogAudience,
 }
 
 impl PeerContract {
-    /// Which Code Mode regime applies to this session.
-    ///
-    /// Route scope wins over global config: a protected route with
-    /// `expose_code_mode = false` sees raw tools even while the gateway has
-    /// Code Mode enabled for everyone else. That asymmetry is the reason the
-    /// notification fanout cannot use one global regime for all peers.
+    /// Which Code Mode regime applies to this peer.
     pub(crate) async fn code_mode_visibility(&self) -> CodeModeVisibility {
         #[cfg(feature = "gateway")]
         {
             if !self.route_scope.exposes_code_mode() {
                 return CodeModeVisibility::Raw;
             }
-            let manager_code_mode_enabled = if let Some(manager) = &self.gateway_manager {
+            let enabled = if let Some(manager) = &self.gateway_manager {
                 manager.code_mode_enabled().await
             } else {
                 false
             };
-            if manager_code_mode_enabled {
+            if enabled {
                 return CodeModeVisibility::RootSynthetic;
             }
             if self.gateway_manager.is_none() && crate::config::process_code_mode_enabled() {
@@ -98,8 +106,39 @@ impl PeerContract {
         true
     }
 
-    /// Enabled upstreams this route can see, with their normalized hints — the
-    /// determinants of the rendered `codemode` tool description.
+    #[cfg(feature = "gateway")]
+    async fn action_allowed_on_mcp(&self, service: &str, action: &str) -> bool {
+        match &self.gateway_manager {
+            Some(manager) => {
+                manager
+                    .mcp_action_allowed_for_service(service, action)
+                    .await
+            }
+            None => true,
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    async fn add_server_app_available(&self) -> bool {
+        self.route_scope.allows_service("gateway")
+            && self.gateway_manager.is_some()
+            && self.registry.service("gateway").is_some()
+            && self.service_visible_on_mcp("gateway").await
+            && self.action_allowed_on_mcp("gateway", "gateway.test").await
+            && self.action_allowed_on_mcp("gateway", "gateway.add").await
+    }
+
+    #[cfg(feature = "gateway")]
+    async fn gateway_status_app_available(&self) -> bool {
+        self.route_scope.allows_service("gateway")
+            && self.gateway_manager.is_some()
+            && self.registry.service("gateway").is_some()
+            && self.service_visible_on_mcp("gateway").await
+            && self.action_allowed_on_mcp("gateway", "gateway.list").await
+    }
+
+    /// Enabled upstream namespaces and normalized hints rendered in codemode's
+    /// descriptor. Descriptor hashing therefore catches a hint-only edit.
     #[cfg(feature = "gateway")]
     pub(crate) async fn code_mode_upstreams_for_description(
         &self,
@@ -127,89 +166,125 @@ impl PeerContract {
         upstreams
     }
 
-    /// The tool-name projection this session would see from `tools/list`.
-    ///
-    /// This is the single implementation — `LabMcpServer::snapshot_tool_catalog`
-    /// delegates here so a session's own view and the fanout's view of that
-    /// session can never drift apart.
-    pub(crate) async fn visible_tools(&self) -> BTreeSet<String> {
+    #[cfg(feature = "gateway")]
+    async fn route_scoped_oauth_upstream_configs(&self) -> Vec<crate::config::UpstreamConfig> {
+        let Some(manager) = &self.gateway_manager else {
+            return Vec::new();
+        };
+        let mut configs = manager.oauth_upstream_configs().await;
+        configs.retain(|config| self.route_scope.allows_upstream(&config.name));
+        configs
+    }
+
+    /// Exact, unpaginated descriptor set this peer would receive from
+    /// tools/list, before cursor slicing. Collision and visibility rules mirror
+    /// the handler; only request telemetry and pagination are omitted.
+    pub(crate) async fn visible_tool_descriptors(&self) -> Vec<Tool> {
         let visibility = self.code_mode_visibility().await;
-        let mut tools = BTreeSet::new();
-        if visibility.exposes_synthetic_tools() {
-            tools.insert(CODE_MODE_TOOL_NAME.to_string());
-        } else {
-            for svc in self.registry.services() {
-                if !visibility.hides_raw_tools() && self.service_visible_on_mcp(svc.name).await {
-                    tools.insert(svc.name.to_string());
+        let hide_raw_tools = visibility.hides_raw_tools();
+        let schema = Arc::new(action_schema());
+        let mut descriptors = Vec::new();
+        let mut builtin_names = HashSet::new();
+        let mut advertised_names = HashSet::new();
+
+        for service in self.registry.services() {
+            if self.service_visible_on_mcp(service.name).await {
+                builtin_names.insert(service.name.to_string());
+                if hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME {
+                    continue;
                 }
+                let tool = Tool::new(service.name, service.description, Arc::clone(&schema));
+                let tool =
+                    if service.name == SERVER_LOGS_TOOL_NAME && self.audience.admin_apps_visible {
+                        tool.with_meta(server_logs_tool_meta(service.name))
+                    } else {
+                        tool
+                    };
+                advertised_names.insert(service.name.to_string());
+                descriptors.push(tool);
             }
         }
 
         #[cfg(feature = "gateway")]
+        if visibility.exposes_synthetic_tools() && self.audience.code_mode_execute_allowed {
+            let upstreams = self.code_mode_upstreams_for_description().await;
+            let tool = self
+                .registry
+                .permanent_tools()
+                .code_mode_descriptor(&upstreams);
+            advertised_names.insert(tool.name.as_ref().to_string());
+            descriptors.push(tool);
+        }
+
+        #[cfg(feature = "gateway")]
+        if self.audience.admin_apps_visible && self.add_server_app_available().await {
+            let tool = Tool::new(
+                ADD_SERVER_TOOL_NAME,
+                "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
+                add_server_tool_schema(),
+            )
+            .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME));
+            advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
+            descriptors.push(tool);
+        }
+
+        #[cfg(feature = "gateway")]
+        if self.audience.admin_apps_visible && self.gateway_status_app_available().await {
+            let tool = Tool::new(
+                GATEWAY_STATUS_TOOL_NAME,
+                "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
+                gateway_status_tool_schema(),
+            )
+            .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME));
+            advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
+            descriptors.push(tool);
+        }
+
+        #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
-            let upstream_tool_names = if visibility.hides_raw_tools() {
-                pool.healthy_ui_tool_names_allowed(self.route_scope.allowed_upstreams())
+            let upstream_tools = if hide_raw_tools {
+                pool.healthy_ui_tools_allowed(self.route_scope.allowed_upstreams())
                     .await
             } else {
-                pool.healthy_tool_names_allowed(self.route_scope.allowed_upstreams())
+                pool.healthy_tools_allowed(self.route_scope.allowed_upstreams())
                     .await
             };
-            for tool_name in upstream_tool_names {
-                tools.insert(tool_name);
+            for upstream_tool in upstream_tools {
+                let name = upstream_tool.tool.name.as_ref();
+                if builtin_names.contains(name) || !advertised_names.insert(name.to_string()) {
+                    continue;
+                }
+                descriptors.push(upstream_tool.tool);
+            }
+
+            if !hide_raw_tools && let Some(subject) = self.audience.oauth_subject.as_deref() {
+                let configs = self.route_scoped_oauth_upstream_configs().await;
+                for (_, tools) in pool.subject_scoped_tools(&configs, subject).await {
+                    for tool in tools {
+                        let name = tool.name.as_ref();
+                        if builtin_names.contains(name)
+                            || !advertised_names.insert(name.to_string())
+                        {
+                            continue;
+                        }
+                        descriptors.push(tool);
+                    }
+                }
             }
         }
 
-        tools
+        descriptors
     }
 
-    /// The session's full visible contract: its tool names plus the
-    /// determinants of the `codemode` tool *description*.
-    ///
-    /// The description embeds this route's enabled upstream namespaces and
-    /// their hints, so an operator editing a hint changes what the session sees
-    /// without changing any tool name. A name-set-only comparison is blind to
-    /// that; folding the determinants in as synthetic tokens keeps one
-    /// comparable set. Unlike the gateway-side reconcile approximation these
-    /// tokens are route-filtered, so a hint on an upstream this route cannot
-    /// see does not notify it.
     pub(crate) async fn visible_contract(&self) -> ToolCatalogSnapshot {
-        let mut tools = self.visible_tools().await;
-        tools.extend(self.description_tokens().await);
-        ToolCatalogSnapshot { tools }
-    }
-
-    #[cfg(feature = "gateway")]
-    async fn description_tokens(&self) -> BTreeSet<String> {
-        // Only the synthetic `codemode` tool carries a description built from
-        // upstream state; a raw-exposing route has no such coupling.
-        if !self.code_mode_visibility().await.exposes_synthetic_tools() {
-            return BTreeSet::new();
-        }
-        self.code_mode_upstreams_for_description()
-            .await
-            .into_iter()
-            .map(|upstream| {
-                // \u{1} cannot appear in an upstream or tool name, so these
-                // tokens stay disjoint from the tool names they share a set
-                // with. Decoded before logging, never rendered raw.
-                format!(
-                    "\u{1}ns\u{1}{}\u{1}{}",
-                    upstream.name,
-                    upstream.hint.unwrap_or_default()
-                )
-            })
-            .collect()
-    }
-
-    #[cfg(not(feature = "gateway"))]
-    async fn description_tokens(&self) -> BTreeSet<String> {
-        BTreeSet::new()
+        let descriptors = self.visible_tool_descriptors().await;
+        ToolCatalogSnapshot::from_descriptors(&descriptors)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::PeerContract;
+    use super::{PeerCatalogAudience, PeerContract};
     use crate::mcp::route_scope::McpRouteScope;
     use crate::registry::ToolRegistry;
     use std::sync::Arc;
@@ -220,27 +295,19 @@ mod tests {
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             route_scope,
+            audience: PeerCatalogAudience::default(),
         }
     }
 
     #[tokio::test]
-    async fn contract_without_gateway_exposes_no_description_tokens() {
-        // No gateway manager means no Code Mode and no upstream namespaces —
-        // the contract must be a plain (here empty) tool-name set rather than
-        // carrying stray sentinel tokens.
+    async fn contract_without_gateway_is_a_real_descriptor_hash() {
         let snapshot = contract(McpRouteScope::Root).visible_contract().await;
-
-        assert!(
-            !snapshot.tools.iter().any(|tool| tool.starts_with('\u{1}')),
-            "no namespace tokens without a gateway"
-        );
+        assert_eq!(snapshot.tools.len(), 0);
+        assert_ne!(snapshot.contract_hash, [0; 32]);
     }
 
     #[tokio::test]
-    async fn route_scope_is_part_of_the_contract_identity() {
-        // Two scopes over identical global state are allowed to produce
-        // identical contracts; what matters is that the scope is an input at
-        // all, so the fanout can ask "what does *this* peer see".
+    async fn route_scope_is_part_of_descriptor_collection() {
         let root = contract(McpRouteScope::Root).visible_contract().await;
         let scoped = contract(McpRouteScope::protected_subset(
             "ops",
@@ -250,9 +317,6 @@ mod tests {
         ))
         .visible_contract()
         .await;
-
-        // Root exposes builtin service tools; a subset route that allows only
-        // `gateway` cannot expose more than root does.
         assert!(scoped.tools.is_subset(&root.tools));
     }
 }
