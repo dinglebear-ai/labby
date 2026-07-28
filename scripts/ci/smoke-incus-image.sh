@@ -106,13 +106,25 @@ cleanup() {
     fi
 
     if [[ "$status" -ne 0 ]]; then
-        [[ -f "$MANUAL_INCUS_STDIO" ]] && tail -n 80 "$MANUAL_INCUS_STDIO" >&2 || true
-        [[ -n "$MANUAL_INCUS_LOG" ]] && sudo_cmd tail -n 80 "$MANUAL_INCUS_LOG" >&2 || true
+        if [[ -f "$MANUAL_INCUS_STDIO" ]]; then
+            tail -n 80 "$MANUAL_INCUS_STDIO" >&2 || true
+        fi
+        if [[ -n "$MANUAL_INCUS_LOG" ]]; then
+            sudo_cmd tail -n 80 "$MANUAL_INCUS_LOG" >&2 || true
+        fi
     fi
-    [[ -n "$SMOKE_RENDERED_PROFILE" ]] && rm -f "$SMOKE_RENDERED_PROFILE" || true
-    [[ -n "$MANUAL_INCUS_STDIO" ]] && rm -f "$MANUAL_INCUS_STDIO" || true
-    [[ -n "$MANUAL_INCUS_LOG" ]] && sudo_cmd rm -f "$MANUAL_INCUS_LOG" || true
-    [[ -n "$MANUAL_INCUS_DIR" ]] && sudo_cmd rm -rf "$MANUAL_INCUS_DIR" || true
+    if [[ -n "$SMOKE_RENDERED_PROFILE" ]]; then
+        rm -f "$SMOKE_RENDERED_PROFILE" || true
+    fi
+    if [[ -n "$MANUAL_INCUS_STDIO" ]]; then
+        rm -f "$MANUAL_INCUS_STDIO" || true
+    fi
+    if [[ -n "$MANUAL_INCUS_LOG" ]]; then
+        sudo_cmd rm -f "$MANUAL_INCUS_LOG" || true
+    fi
+    if [[ -n "$MANUAL_INCUS_DIR" ]]; then
+        sudo_cmd rm -rf "$MANUAL_INCUS_DIR" || true
+    fi
 
     exit "$status"
 }
